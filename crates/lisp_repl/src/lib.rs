@@ -465,7 +465,6 @@ fn print_help() {
     println!("  Only #f is false. Everything else is truthy, including:");
     println!("  - nil / '() (empty list)");
     println!("  - 0 (zero)");
-    println!("  - \"\" (empty string, if supported)");
     println!();
     println!("Literals:");
     println!("  #t, #f      - Boolean true and false");
@@ -477,6 +476,7 @@ fn print_help() {
     println!("  (quote x) or 'x       - Return x unevaluated");
     println!("  (if cond then else)   - Conditional (TCO in branches)");
     println!("  (cond (c1 e1)...)     - Multi-way conditional");
+    println!("  (case key ((d1) e1)...)-Pattern matching");
     println!("  (lambda (args) body)  - Create closure");
     println!("  (define name val)     - Define variable");
     println!("  (define (f x) body)   - Define function");
@@ -485,6 +485,15 @@ fn print_help() {
     println!("  (begin e1 e2...)      - Sequence");
     println!("  (and e1 e2...)        - Short-circuit and");
     println!("  (or e1 e2...)         - Short-circuit or");
+    println!("  (do ((v i s)...) (t r) b) - Iteration loop");
+    println!("  (quasiquote ...)      - Template with unquote");
+    println!("  (eval expr)           - Evaluate at runtime");
+    println!("  (apply f args)        - Apply function to list");
+    println!("  (values v1 v2...)     - Multiple return values");
+    println!();
+    println!("Macros:");
+    println!("  (defmacro name (params) body) - Define a macro");
+    println!("  (gensym)              - Generate unique symbol");
     println!();
     println!("Built-in Functions:");
     println!("  List:   car, cdr, cons, list");
@@ -495,6 +504,7 @@ fn print_help() {
     println!("  Cmp:    <, >, <=, >=, =");
     println!("  I/O:    print, display, newline");
     println!("  Err:    error");
+    println!("  Memo:   memoize");
     println!();
     println!("NOTE: This is a PURE Lisp with HYBRID EVALUATION!");
     println!("      - Tail calls: STRICT (enables proper TCO)");
@@ -516,6 +526,17 @@ fn print_help() {
     println!("  (define (ones) (cons 1 (ones)))");
     println!("  (car (ones))       ; => 1");
     println!("  (car (cdr (ones))) ; => 1");
+    println!();
+    println!("  ; Pattern matching with case");
+    println!("  (case 'b ((a) 1) ((b c) 2) (else 3))  ; => 2");
+    println!();
+    println!("  ; Iteration with do");
+    println!("  (do ((i 1 (+ i 1)) (sum 0 (+ sum i)))");
+    println!("      ((> i 5) sum))  ; => 15");
+    println!();
+    println!("  ; Macros");
+    println!("  (defmacro unless (c t e) (list 'if c e t))");
+    println!("  (unless #f 'yes 'no)  ; => yes");
     println!();
 }
 
