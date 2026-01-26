@@ -14,6 +14,10 @@
 //! - **Lexically Scoped Closures**: First-class functions with captured environments
 //! - **Lazy Data Structures**: Infinite streams like Haskell
 //! - **Rich Error Handling**: Error messages with stack traces
+//! - **Pattern Matching**: `case` for value matching
+//! - **Iteration**: `do` loops for imperative-style iteration
+//! - **Macros**: `defmacro` with `quasiquote`/`unquote` and `gensym`
+//! - **Meta-programming**: `eval` for runtime code evaluation
 //!
 //! ## Hybrid Evaluation Strategy
 //!
@@ -57,12 +61,19 @@
 //! - `quote` - Return expression unevaluated
 //! - `if` - Conditional (lazy in branches)
 //! - `cond` - Multi-way conditional
+//! - `case` - Pattern matching on values
 //! - `lambda` - Create closure
 //! - `define` - Define variable/function
 //! - `let` - Local binding
 //! - `let*` - Sequential local binding
 //! - `begin` - Sequence of expressions
 //! - `and` / `or` - Short-circuit boolean operations
+//! - `do` - Iteration with initialization and step expressions
+//! - `quasiquote` - Template with `unquote` and `unquote-splicing`
+//! - `eval` - Evaluate expression at runtime
+//! - `apply` - Apply function to argument list
+//! - `values` - Return multiple values as a list
+//! - `defmacro` - Define a macro
 
 pub use lisp_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
@@ -1983,10 +1994,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let init_val = self.eval_in_env(init, env)?;
                     loop_env = self.env_extend(loop_env, var, init_val)?;
                     
-                    if var_count < 16 {
-                        var_info[var_count] = (var, step);
-                        var_count += 1;
+                    if var_count >= 16 {
+                        return Err(self.make_error(ErrorKind::StackOverflow, bindings)
+                            .with_message("do: too many variables (max 16)"));
                     }
+                    var_info[var_count] = (var, step);
+                    var_count += 1;
                     
                     current = rest;
                 }
@@ -2254,21 +2267,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Evaluate function and arguments list
         let func = self.eval_in_env(func_expr, env)?;
         let args_list = self.eval_in_env(args_list_expr, env)?;
+        // Force the args list to get actual values
+        let forced_args = self.deep_force_for_macro(args_list)?;
         
-        // Build application: (func . args_list)
-        let application = self.lisp.cons(func, args_list)?;
-        
-        // Evaluate the application
-        let call_expr = self.lisp.cons(func_expr, args)?;
+        // Evaluate the application using forced arguments
+        let call_expr = self.lisp.cons(func, forced_args)?;
         self.push_frame(call_expr, func)?;
-        self.push_cont(Cont::ApplyForced { args_expr: args_list, env, call_expr })?;
+        self.push_cont(Cont::ApplyForced { args_expr: forced_args, env, call_expr })?;
         self.push_cont(Cont::Force)?;
         Ok(TrampolineState::Return { val: func })
     }
     
     /// Evaluate values - create a multi-value return
     fn eval_values(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // Evaluate all arguments and return as a list (simple implementation)
+        // Evaluate all arguments and return as a list
+        // Note: Limited to 16 values due to no_std constraints
         let mut result = self.lisp.nil()?;
         let mut current = args;
         let mut vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
@@ -2278,10 +2291,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             match self.lisp.get(current)? {
                 Value::Nil => break,
                 Value::Cons { car, cdr } => {
-                    if count < 16 {
-                        vals[count] = self.eval_in_env(car, env)?;
-                        count += 1;
+                    if count >= 16 {
+                        return Err(self.make_error(ErrorKind::StackOverflow, args)
+                            .with_message("values: too many values (max 16)"));
                     }
+                    vals[count] = self.eval_in_env(car, env)?;
+                    count += 1;
                     current = cdr;
                 }
                 _ => break,
@@ -2308,30 +2323,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let prefix_len = prefix_bytes.len().min(20);
         buf[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
         
-        // Format number
-        let mut num = n;
-        let mut num_len = 0;
+        // Format number into num_buf (right-aligned)
         let mut num_buf = [0u8; 10];
-        if num == 0 {
-            num_buf[0] = b'0';
+        let mut num_len;
+        
+        if n == 0 {
+            num_buf[9] = b'0';
             num_len = 1;
         } else {
-            while num > 0 && num_len < 10 {
-                num_buf[9 - num_len] = b'0' + (num % 10) as u8;
-                num /= 10;
+            num_len = 0;
+            let mut tmp = n;
+            while tmp > 0 && num_len < 10 {
+                num_buf[9 - num_len] = b'0' + (tmp % 10) as u8;
+                tmp /= 10;
                 num_len += 1;
             }
         }
         
+        // Copy number to output buffer
         let total_len = prefix_len + num_len;
-        if num == 0 && n != 0 {
-            // Copy number digits
-            buf[prefix_len..total_len].copy_from_slice(&num_buf[10 - num_len..]);
-        } else if n == 0 {
-            buf[prefix_len] = b'0';
-        } else {
-            buf[prefix_len..total_len].copy_from_slice(&num_buf[10 - num_len..]);
-        }
+        buf[prefix_len..total_len].copy_from_slice(&num_buf[10 - num_len..]);
         
         // Convert to str
         let name = core::str::from_utf8(&buf[..total_len]).unwrap_or("g0");
