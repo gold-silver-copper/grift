@@ -623,6 +623,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     
     /// Extend an environment with a binding
+    #[inline]
     fn env_extend(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         let binding = self.lisp.cons(name, value)?;
         self.lisp.cons(binding, env).map_err(Into::into)
@@ -710,6 +711,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     
     /// Push a continuation onto the stack
+    #[inline]
     fn push_cont(&mut self, cont: Cont) -> Result<(), EvalError> {
         if self.cont_depth >= MAX_CONT_DEPTH {
             return Err(EvalError::new(ErrorKind::StackOverflow));
@@ -720,6 +722,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Pop a continuation from the stack
+    #[inline]
     fn pop_cont(&mut self) -> Cont {
         if self.cont_depth == 0 {
             Cont::Done
@@ -2116,6 +2119,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Check if a value is false (ONLY #f is false)
+    #[inline]
     fn is_false(&self, val: ArenaIndex) -> Result<bool, EvalError> {
         Ok(self.lisp.get(val)?.is_false())
     }

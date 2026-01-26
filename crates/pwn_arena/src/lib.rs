@@ -383,6 +383,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let idx = arena.alloc(42).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 42);
     /// ```
+    #[must_use]
     pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
         let mut free_head = self.free_head.borrow_mut();
 
@@ -404,7 +405,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         slots[idx] = Slot::Occupied { value };
         *free_head = next_free;
 
-        // Get current generation for this slot
+        // Get current generation for this slot - reuse slots borrow scope
+        drop(slots);
         let generation = self.generations.borrow()[idx];
 
         // Increment allocated count
@@ -413,9 +415,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         Ok(ArenaIndex::new(idx, generation))
     }
 
-    /// Validate an index and return the slot index if valid.
+    /// Check that an index is valid (in bounds and generation matches).
+    /// Returns the slot index if valid.
+    /// Note: Does NOT check if the slot is occupied - caller must verify.
     #[inline]
-    fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
+    fn check_bounds_and_generation(&self, index: ArenaIndex) -> ArenaResult<usize> {
         let idx = index.raw();
 
         if idx >= N {
@@ -427,6 +431,14 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         if index.generation() != current_gen {
             return Err(ArenaError::GenerationMismatch);
         }
+
+        Ok(idx)
+    }
+
+    /// Validate an index and return the slot index if valid.
+    #[inline]
+    fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
+        let idx = self.check_bounds_and_generation(index)?;
 
         // Check if slot is occupied
         match self.slots.borrow()[idx] {
@@ -441,9 +453,12 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
     /// Returns `ArenaError::GenerationMismatch` if the index is stale (slot was freed and reused).
+    #[inline]
+    #[must_use]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
-        let idx = self.validate_index(index)?;
+        let idx = self.check_bounds_and_generation(index)?;
 
+        // Check if slot is occupied and get value in one borrow
         match self.slots.borrow()[idx] {
             Slot::Occupied { value } => Ok(value),
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
@@ -456,6 +471,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
     /// Returns `ArenaError::GenerationMismatch` if the index is stale.
+    #[inline]
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
@@ -483,6 +499,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// arena.modify(idx, |v| *v += 10).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 52);
     /// ```
+    #[inline]
     pub fn modify<F>(&self, index: ArenaIndex, f: F) -> ArenaResult<()>
     where
         F: FnOnce(&mut T),
@@ -503,6 +520,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// This is a convenience method for cases where you expect the index
     /// might be invalid and want to handle it with `Option` instead of `Result`.
     #[inline]
+    #[must_use]
     pub fn try_get(&self, index: ArenaIndex) -> Option<T> {
         self.get(index).ok()
     }
@@ -571,6 +589,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// arena.free(idx).unwrap();
     /// assert_eq!(arena.len(), 0);
     /// ```
+    #[inline]
     pub fn free(&self, index: ArenaIndex) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
