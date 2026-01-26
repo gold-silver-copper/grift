@@ -417,6 +417,7 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Get car of a cons cell
+    #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { car, .. } => Ok(car),
@@ -426,6 +427,7 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Get cdr of a cons cell
+    #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { cdr, .. } => Ok(cdr),
@@ -512,7 +514,13 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Check if two symbols are equal (compare char lists)
+    #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        // Fast path: same index means same symbol
+        if a == b {
+            return Ok(true);
+        }
+        
         let val_a = self.get(a)?;
         let val_b = self.get(b)?;
         
@@ -526,6 +534,11 @@ impl<const N: usize> Lisp<N> {
     
     /// Compare two char lists for equality
     fn char_list_eq(&self, mut a: ArenaIndex, mut b: ArenaIndex) -> ArenaResult<bool> {
+        // Fast path: same index means same char list
+        if a == b {
+            return Ok(true);
+        }
+        
         loop {
             let val_a = self.get(a)?;
             let val_b = self.get(b)?;
@@ -550,6 +563,7 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Check if a symbol matches a string
+    #[inline]
     pub fn symbol_matches(&self, sym: ArenaIndex, name: &str) -> ArenaResult<bool> {
         let val = self.get(sym)?;
         
