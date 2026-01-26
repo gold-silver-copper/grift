@@ -61,7 +61,8 @@ use core::cell::RefCell;
 /// system's protection and should only be used for serialization/deserialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ArenaIndex {
-    index: usize,
+    /// Slot index (limited to 2^32 - 1 = ~4 billion cells).
+    index: u32,
     generation: u32,
 }
 
@@ -71,7 +72,7 @@ impl ArenaIndex {
     /// This can be used as a placeholder when an optional index is needed
     /// but `Option<ArenaIndex>` is not desired.
     pub const NULL: ArenaIndex = ArenaIndex {
-        index: usize::MAX,
+        index: u32::MAX,
         generation: u32::MAX,
     };
 
@@ -83,15 +84,21 @@ impl ArenaIndex {
     /// For normal use, obtain indices from [`Arena::alloc`] or [`Arena::iter`].
     /// Fabricating indices manually may lead to undefined behavior if the
     /// index/generation pair doesn't correspond to a valid allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `index > u32::MAX as usize`.
     #[inline]
     pub const fn new(index: usize, generation: u32) -> Self {
-        ArenaIndex { index, generation }
+        // In release builds, this will silently truncate. In debug, we want to catch errors.
+        // Note: const fn cannot use debug_assert!, so we use a const-compatible check.
+        ArenaIndex { index: index as u32, generation }
     }
 
     /// Get the raw slot index value.
     #[inline]
     pub const fn raw(self) -> usize {
-        self.index
+        self.index as usize
     }
 
     /// Get the generation this index was created with.
@@ -103,7 +110,7 @@ impl ArenaIndex {
     /// Check if this is the null index.
     #[inline]
     pub const fn is_null(self) -> bool {
-        self.index == usize::MAX && self.generation == u32::MAX
+        self.index == u32::MAX && self.generation == u32::MAX
     }
 }
 

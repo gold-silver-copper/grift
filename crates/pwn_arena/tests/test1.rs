@@ -2912,7 +2912,8 @@ fn test_gc_stress_incremental_tree_building() {
 fn test_arena_index_null() {
     let null_idx = ArenaIndex::NULL;
     assert!(null_idx.is_null());
-    assert_eq!(null_idx.raw(), usize::MAX);
+    // Note: index is stored as u32 internally, so raw() returns u32::MAX as usize
+    assert_eq!(null_idx.raw(), u32::MAX as usize);
     assert_eq!(null_idx.generation(), u32::MAX);
 
     let default_idx = ArenaIndex::default();
