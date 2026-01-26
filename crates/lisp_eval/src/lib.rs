@@ -1628,14 +1628,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Gensym => {
-                // (gensym) or (gensym prefix) - generate a unique symbol
-                let prefix = if self.lisp.get(args)?.is_nil() {
-                    "g"
-                } else {
-                    // For now, just use "g" as prefix since we can't easily extract string
-                    "g"
-                };
-                self.gensym(prefix)
+                // (gensym) - generate a unique symbol
+                // Note: prefix argument is not supported in no_std (would require string extraction)
+                self.gensym("g")
             }
         }
     }
@@ -2344,7 +2339,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let total_len = prefix_len + num_len;
         buf[prefix_len..total_len].copy_from_slice(&num_buf[10 - num_len..]);
         
-        // Convert to str
+        // Convert to str - this can't fail since we only use ASCII bytes
+        // The unwrap_or is defensive but should never trigger
         let name = core::str::from_utf8(&buf[..total_len]).unwrap_or("g0");
         self.lisp.symbol(name).map_err(Into::into)
     }
