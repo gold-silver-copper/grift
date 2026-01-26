@@ -1948,8 +1948,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// ITERATIVE implementation to avoid Rust stack overflow
     fn make_thunk_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> EvalResult {
         const MAX_ARGS: usize = 64;
-        let dummy = ArenaIndex::new(usize::MAX, u32::MAX);
-        let mut thunks: [ArenaIndex; MAX_ARGS] = [dummy; MAX_ARGS];
+        let mut thunks: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
         let mut count = 0;
         let mut current = list;
         

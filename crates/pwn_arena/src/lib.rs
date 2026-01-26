@@ -61,7 +61,8 @@ use core::cell::RefCell;
 /// system's protection and should only be used for serialization/deserialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ArenaIndex {
-    index: usize,
+    /// Slot index (limited to 2^32 - 1 = ~4 billion cells).
+    index: u32,
     generation: u32,
 }
 
@@ -71,7 +72,7 @@ impl ArenaIndex {
     /// This can be used as a placeholder when an optional index is needed
     /// but `Option<ArenaIndex>` is not desired.
     pub const NULL: ArenaIndex = ArenaIndex {
-        index: usize::MAX,
+        index: u32::MAX,
         generation: u32::MAX,
     };
 
@@ -83,15 +84,20 @@ impl ArenaIndex {
     /// For normal use, obtain indices from [`Arena::alloc`] or [`Arena::iter`].
     /// Fabricating indices manually may lead to undefined behavior if the
     /// index/generation pair doesn't correspond to a valid allocation.
+    ///
+    /// # Note
+    ///
+    /// The index is stored as `u32` internally. Values larger than `u32::MAX`
+    /// will be truncated. Arena capacity is limited to 2^32 cells.
     #[inline]
     pub const fn new(index: usize, generation: u32) -> Self {
-        ArenaIndex { index, generation }
+        ArenaIndex { index: index as u32, generation }
     }
 
     /// Get the raw slot index value.
     #[inline]
     pub const fn raw(self) -> usize {
-        self.index
+        self.index as usize
     }
 
     /// Get the generation this index was created with.
@@ -103,7 +109,7 @@ impl ArenaIndex {
     /// Check if this is the null index.
     #[inline]
     pub const fn is_null(self) -> bool {
-        self.index == usize::MAX && self.generation == u32::MAX
+        self.index == u32::MAX && self.generation == u32::MAX
     }
 }
 
@@ -230,6 +236,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let arena: Arena<i32, 100> = Arena::new(0);
     /// ```
     pub fn new(_default_value: T) -> Self {
+        // Compile-time assertion: arena capacity must fit in u32
+        // This is required because ArenaIndex stores index as u32 for memory efficiency
+        const { assert!(N <= u32::MAX as usize, "Arena capacity exceeds u32::MAX") };
+        
         // Initialize all slots as free, linked together
         // Slot 0 -> 1 -> 2 -> ... -> N-1 -> FREE_LIST_END
         let mut slots = [Slot::Free { next_free: FREE_LIST_END }; N];
