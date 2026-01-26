@@ -2049,14 +2049,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Uses iterative traversal to avoid stack overflow
     fn contains_symbol(&self, expr: ArenaIndex, symbol: ArenaIndex) -> Result<bool, EvalError> {
         // Simple depth-limited search without recursion
-        // Use small stack to minimize stack usage
-        const MAX_NODES: usize = 30;
+        // Use small stack to minimize stack usage during test execution
+        const MAX_NODES: usize = 30;  // Max nodes in traversal stack
         
         let mut stack: [ArenaIndex; MAX_NODES] = [ArenaIndex::NULL; MAX_NODES];
         let mut stack_size = 1;
         stack[0] = expr;
         let mut nodes_checked = 0;
         
+        // Allow checking more nodes than stack size since we pop as we go
+        // MAX_NODES * 2 allows traversing deeper trees by reusing stack space
         while stack_size > 0 && nodes_checked < MAX_NODES * 2 {
             stack_size -= 1;
             let current = stack[stack_size];
@@ -2070,6 +2072,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 Value::Cons { car, cdr } => {
                     // Add children to stack if there's room
+                    // Need space for both car and cdr, hence -2
                     if stack_size < MAX_NODES - 2 {
                         stack[stack_size] = car;
                         stack_size += 1;
@@ -2081,6 +2084,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         
+        // Note: If we hit the limit, we return false (no recursion detected)
+        // This is safe but conservative - might miss very deeply nested recursion
+        // In practice, most recursive functions have shallow bodies
         Ok(false)
     }
     
@@ -2258,8 +2264,10 @@ mod tests {
     // Recursive functions are automatically memoized with bounded LRU caches
     // ═══════════════════════════════════════════════════════════════════════════
     
-    // NOTE: Some tests may require RUST_MIN_STACK=8388608 to run
-    // due to deep parsing/evaluation stacks
+    // NOTE: Some tests may require RUST_MIN_STACK=8388608 (8MB) to run
+    // This is due to Rust's default test thread stack being too small for
+    // deep parsing/evaluation of complex Lisp expressions. The runtime
+    // evaluator uses trampolining and has no such limitation.
     
     #[test]
     fn test_simple_fib_define() {
