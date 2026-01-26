@@ -63,7 +63,7 @@ fn eval_str<const N: usize>(
     }
 }
 
-/// Run a simple timed benchmark with periodic GC to prevent arena exhaustion
+/// Run a simple timed benchmark with GC after completion
 fn run_bench<const N: usize>(
     name: &str,
     lisp: &Lisp<N>,
@@ -78,15 +78,8 @@ fn run_bench<const N: usize>(
     let mut last_result = String::new();
     let mut error = None;
     let mut successful_iters = 0;
-    
-    // Run GC periodically to prevent arena exhaustion during iteration
-    const GC_INTERVAL: usize = 50;
 
-    for i in 0..iterations {
-        if i > 0 && i % GC_INTERVAL == 0 {
-            eval.gc();
-        }
-        
+    for _ in 0..iterations {
         match eval_str(lisp, eval, code) {
             Ok(r) => {
                 last_result = r;
