@@ -344,15 +344,57 @@ impl<const N: usize> Trace<Value, N> for Value {
 // ============================================================================
 
 /// A Lisp execution context wrapping an arena
+/// 
+/// ## Reserved Slots
+/// 
+/// The first 3 slots of the arena are reserved for singleton values:
+/// - Slot 0: `Value::Nil` - the empty list
+/// - Slot 1: `Value::True` - boolean true (#t)
+/// - Slot 2: `Value::False` - boolean false (#f)
+/// 
+/// These slots are pre-allocated during `Lisp::new()` and returned as
+/// constants from `nil()`, `true_val()`, and `false_val()`. This optimization
+/// avoids allocating new slots for these frequently-used values.
 pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
+    /// Pre-allocated Nil slot (always slot 0)
+    nil_slot: ArenaIndex,
+    /// Pre-allocated True slot (always slot 1)
+    true_slot: ArenaIndex,
+    /// Pre-allocated False slot (always slot 2)
+    false_slot: ArenaIndex,
 }
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
+    /// 
+    /// Pre-allocates reserved slots for Nil, True, and False singletons.
+    /// These slots (0, 1, 2) are never freed and are returned as constants
+    /// from `nil()`, `true_val()`, and `false_val()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the arena capacity N < 3, as we need at least 3 slots
+    /// for the reserved singleton values.
     pub fn new() -> Self {
+        const { assert!(N >= 3, "Lisp arena must have capacity >= 3 for reserved slots") };
+        
+        let arena = Arena::new(Value::Nil);
+        
+        // Pre-allocate reserved slots in order: Nil, True, False
+        // These will be slots 0, 1, 2 respectively
+        let nil_slot = arena.alloc(Value::Nil)
+            .expect("Failed to pre-allocate reserved Nil slot during Lisp initialization");
+        let true_slot = arena.alloc(Value::True)
+            .expect("Failed to pre-allocate reserved True slot during Lisp initialization");
+        let false_slot = arena.alloc(Value::False)
+            .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
+        
         Lisp {
-            arena: Arena::new(Value::Nil),
+            arena,
+            nil_slot,
+            true_slot,
+            false_slot,
         }
     }
     
@@ -379,22 +421,31 @@ impl<const N: usize> Lisp<N> {
         self.arena.set(index, value)
     }
     
-    /// Allocate Nil (empty list)
+    /// Get the pre-allocated Nil singleton (empty list)
+    /// 
+    /// This returns the reserved slot 0 which always contains `Value::Nil`.
+    /// No allocation is performed.
     #[inline]
     pub fn nil(&self) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Nil)
+        Ok(self.nil_slot)
     }
     
-    /// Allocate True (#t)
+    /// Get the pre-allocated True singleton (#t)
+    /// 
+    /// This returns the reserved slot 1 which always contains `Value::True`.
+    /// No allocation is performed.
     #[inline]
     pub fn true_val(&self) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::True)
+        Ok(self.true_slot)
     }
     
-    /// Allocate False (#f)
+    /// Get the pre-allocated False singleton (#f)
+    /// 
+    /// This returns the reserved slot 2 which always contains `Value::False`.
+    /// No allocation is performed.
     #[inline]
     pub fn false_val(&self) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::False)
+        Ok(self.false_slot)
     }
     
     /// Allocate a boolean based on a Rust bool
@@ -1014,6 +1065,138 @@ pub fn parse_all<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaInd
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    // ========================================================================
+    // Reserved Slots Tests
+    // ========================================================================
+    
+    #[test]
+    fn test_reserved_slots_are_singletons() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        // Multiple calls to nil() should return the same index
+        let nil1 = lisp.nil().unwrap();
+        let nil2 = lisp.nil().unwrap();
+        let nil3 = lisp.nil().unwrap();
+        assert_eq!(nil1, nil2);
+        assert_eq!(nil2, nil3);
+        
+        // Multiple calls to true_val() should return the same index
+        let true1 = lisp.true_val().unwrap();
+        let true2 = lisp.true_val().unwrap();
+        let true3 = lisp.true_val().unwrap();
+        assert_eq!(true1, true2);
+        assert_eq!(true2, true3);
+        
+        // Multiple calls to false_val() should return the same index
+        let false1 = lisp.false_val().unwrap();
+        let false2 = lisp.false_val().unwrap();
+        let false3 = lisp.false_val().unwrap();
+        assert_eq!(false1, false2);
+        assert_eq!(false2, false3);
+        
+        // Each singleton should be different
+        assert_ne!(nil1, true1);
+        assert_ne!(nil1, false1);
+        assert_ne!(true1, false1);
+    }
+    
+    #[test]
+    fn test_reserved_slots_have_correct_values() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        // Verify the values in reserved slots
+        assert_eq!(lisp.get(lisp.nil().unwrap()).unwrap(), Value::Nil);
+        assert_eq!(lisp.get(lisp.true_val().unwrap()).unwrap(), Value::True);
+        assert_eq!(lisp.get(lisp.false_val().unwrap()).unwrap(), Value::False);
+    }
+    
+    #[test]
+    fn test_reserved_slots_occupy_first_three_slots() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        // Reserved slots should be the first 3 slots
+        assert_eq!(lisp.nil().unwrap().raw(), 0);
+        assert_eq!(lisp.true_val().unwrap().raw(), 1);
+        assert_eq!(lisp.false_val().unwrap().raw(), 2);
+    }
+    
+    #[test]
+    fn test_reserved_slots_not_reallocated() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        // After creating the Lisp context, 3 slots should be used
+        assert_eq!(lisp.arena().len(), 3);
+        
+        // Calling nil/true_val/false_val should NOT increase allocation count
+        let _ = lisp.nil();
+        let _ = lisp.true_val();
+        let _ = lisp.false_val();
+        assert_eq!(lisp.arena().len(), 3);
+        
+        // Calling many times should not increase count
+        for _ in 0..100 {
+            let _ = lisp.nil();
+            let _ = lisp.true_val();
+            let _ = lisp.false_val();
+        }
+        assert_eq!(lisp.arena().len(), 3);
+    }
+    
+    #[test]
+    fn test_boolean_uses_reserved_slots() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        // boolean() should use the reserved slots
+        let b_true = lisp.boolean(true).unwrap();
+        let b_false = lisp.boolean(false).unwrap();
+        
+        assert_eq!(b_true, lisp.true_val().unwrap());
+        assert_eq!(b_false, lisp.false_val().unwrap());
+    }
+    
+    #[test]
+    fn test_reserved_slots_survive_gc() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        let nil = lisp.nil().unwrap();
+        let true_val = lisp.true_val().unwrap();
+        let false_val = lisp.false_val().unwrap();
+        
+        // Allocate some garbage
+        let _ = lisp.number(1);
+        let _ = lisp.number(2);
+        let _ = lisp.number(3);
+        
+        // Run GC with empty roots - reserved slots should NOT be collected
+        // because they're implicitly roots
+        let stats = lisp.gc(&[nil, true_val, false_val]);
+        
+        // The numbers should be collected
+        assert_eq!(stats.collected, 3);
+        
+        // Reserved slots should still be valid
+        assert_eq!(lisp.get(nil).unwrap(), Value::Nil);
+        assert_eq!(lisp.get(true_val).unwrap(), Value::True);
+        assert_eq!(lisp.get(false_val).unwrap(), Value::False);
+    }
+    
+    #[test]
+    fn test_regular_allocation_starts_after_reserved_slots() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        // First regular allocation should be at slot 3 (after reserved 0, 1, 2)
+        let num = lisp.number(42).unwrap();
+        assert_eq!(num.raw(), 3);
+        
+        // Next allocations continue from there
+        let num2 = lisp.number(43).unwrap();
+        assert_eq!(num2.raw(), 4);
+    }
+    
+    // ========================================================================
+    // Parser Tests
+    // ========================================================================
     
     #[test]
     fn test_parse_number() {
