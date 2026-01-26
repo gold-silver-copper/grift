@@ -85,13 +85,12 @@ impl ArenaIndex {
     /// Fabricating indices manually may lead to undefined behavior if the
     /// index/generation pair doesn't correspond to a valid allocation.
     ///
-    /// # Panics
+    /// # Note
     ///
-    /// Panics in debug builds if `index > u32::MAX as usize`.
+    /// The index is stored as `u32` internally. Values larger than `u32::MAX`
+    /// will be truncated. Arena capacity is limited to 2^32 cells.
     #[inline]
     pub const fn new(index: usize, generation: u32) -> Self {
-        // In release builds, this will silently truncate. In debug, we want to catch errors.
-        // Note: const fn cannot use debug_assert!, so we use a const-compatible check.
         ArenaIndex { index: index as u32, generation }
     }
 
@@ -237,6 +236,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let arena: Arena<i32, 100> = Arena::new(0);
     /// ```
     pub fn new(_default_value: T) -> Self {
+        // Compile-time assertion: arena capacity must fit in u32
+        // This is required because ArenaIndex stores index as u32 for memory efficiency
+        const { assert!(N <= u32::MAX as usize, "Arena capacity exceeds u32::MAX") };
+        
         // Initialize all slots as free, linked together
         // Slot 0 -> 1 -> 2 -> ... -> N-1 -> FREE_LIST_END
         let mut slots = [Slot::Free { next_free: FREE_LIST_END }; N];
