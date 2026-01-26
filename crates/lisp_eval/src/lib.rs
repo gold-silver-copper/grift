@@ -77,6 +77,8 @@ pub use lisp_parser::{
 const MAX_STACK_DEPTH: usize = 64;
 /// Maximum frames to include in error backtrace
 const MAX_BACKTRACE: usize = 16;
+/// Maximum number of entries in memoization cache (LRU eviction after this)
+const MAX_MEMO_CACHE_SIZE: usize = 100;
 
 /// Error kind enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1165,13 +1167,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Cont::MemoCacheResult { memo_idx, args, cache } => {
                 // val is the result of calling the memoized function
-                // Store it in the cache
+                // Store it in the cache with LRU eviction
                 let new_entry = self.lisp.cons(args, val)?;
                 let new_cache = self.lisp.cons(new_entry, cache)?;
                 
-                // Update the memo value with the new cache
+                // Apply LRU eviction if cache is too large
+                let bounded_cache = self.limit_cache_size(new_cache, MAX_MEMO_CACHE_SIZE)?;
+                
+                // Update the memo value with the bounded cache
                 if let Value::Memo { func, .. } = self.lisp.get(memo_idx)? {
-                    self.lisp.set(memo_idx, Value::Memo { func, cache: new_cache })?;
+                    self.lisp.set(memo_idx, Value::Memo { func, cache: bounded_cache })?;
                 }
                 
                 Ok(Some(TrampolineState::Return { val }))
@@ -1885,7 +1890,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.cons(begin, body_list)?
                 };
                 let lambda = self.lisp.lambda(params, body, env)?;
-                self.define(name, lambda)
+                
+                // AUTO-MEMOIZATION: Check if the function body references its own name (recursive)
+                // If so, wrap it with automatic memoization
+                if self.contains_symbol(body, name)? {
+                    // Create memoized version with empty cache
+                    let nil = self.lisp.nil()?;
+                    let memo = self.lisp.memo(lambda, nil)?;
+                    self.define(name, memo)
+                } else {
+                    self.define(name, lambda)
+                }
             }
             _ => Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
         }
@@ -1995,6 +2010,65 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 _ => return Ok(count), // Rest parameter
             }
+        }
+    }
+    
+    /// Limit cache size with LRU eviction
+    /// Takes the first N entries from the cache (most recently used)
+    fn limit_cache_size(&self, cache: ArenaIndex, max_size: usize) -> Result<ArenaIndex, EvalError> {
+        let count = self.count_list(cache)?;
+        
+        if count <= max_size {
+            // Cache is within limits
+            return Ok(cache);
+        }
+        
+        // Need to evict - keep only the first max_size entries (LRU: newest first)
+        let mut result = self.lisp.nil()?;
+        let mut current = cache;
+        let mut taken = 0;
+        
+        while taken < max_size {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    result = self.lisp.cons(car, result)?;
+                    current = cdr;
+                    taken += 1;
+                }
+                _ => break,
+            }
+        }
+        
+        // Reverse to maintain order (newest first)
+        self.reverse_list(result)
+    }
+    
+    /// Check if an expression contains a reference to a given symbol
+    /// Used to detect recursive function definitions
+    fn contains_symbol(&self, expr: ArenaIndex, symbol: ArenaIndex) -> Result<bool, EvalError> {
+        self.contains_symbol_impl(expr, symbol, 0)
+    }
+    
+    /// Implementation with depth limit to prevent infinite loops
+    fn contains_symbol_impl(&self, expr: ArenaIndex, symbol: ArenaIndex, depth: usize) -> Result<bool, EvalError> {
+        // Limit depth to prevent stack overflow on deeply nested expressions
+        if depth > 100 {
+            return Ok(false);
+        }
+        
+        match self.lisp.get(expr)? {
+            Value::Symbol { .. } => {
+                // Check if this symbol matches the one we're looking for
+                Ok(self.lisp.symbol_eq(expr, symbol)?)
+            }
+            Value::Cons { car, cdr } => {
+                // Recursively check both car and cdr
+                Ok(self.contains_symbol_impl(car, symbol, depth + 1)? || 
+                   self.contains_symbol_impl(cdr, symbol, depth + 1)?)
+            }
+            // Other values (numbers, booleans, lambdas, etc.) can't contain the symbol
+            _ => Ok(false),
         }
     }
     
