@@ -384,11 +384,11 @@ impl<const N: usize> Lisp<N> {
         // Pre-allocate reserved slots in order: Nil, True, False
         // These will be slots 0, 1, 2 respectively
         let nil_slot = arena.alloc(Value::Nil)
-            .expect("Failed to allocate Nil slot");
+            .expect("Failed to pre-allocate reserved Nil slot during Lisp initialization");
         let true_slot = arena.alloc(Value::True)
-            .expect("Failed to allocate True slot");
+            .expect("Failed to pre-allocate reserved True slot during Lisp initialization");
         let false_slot = arena.alloc(Value::False)
-            .expect("Failed to allocate False slot");
+            .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
         
         Lisp {
             arena,
