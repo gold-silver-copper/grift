@@ -14,6 +14,10 @@
 //! - **Lexically Scoped Closures**: First-class functions with captured environments
 //! - **Lazy Data Structures**: Infinite streams like Haskell
 //! - **Rich Error Handling**: Error messages with stack traces
+//! - **Pattern Matching**: `case` for value matching
+//! - **Iteration**: `do` loops for imperative-style iteration
+//! - **Macros**: `defmacro` with `quasiquote`/`unquote` and `gensym`
+//! - **Meta-programming**: `eval` for runtime code evaluation
 //!
 //! ## Hybrid Evaluation Strategy
 //!
@@ -57,12 +61,19 @@
 //! - `quote` - Return expression unevaluated
 //! - `if` - Conditional (lazy in branches)
 //! - `cond` - Multi-way conditional
+//! - `case` - Pattern matching on values
 //! - `lambda` - Create closure
 //! - `define` - Define variable/function
 //! - `let` - Local binding
 //! - `let*` - Sequential local binding
 //! - `begin` - Sequence of expressions
 //! - `and` / `or` - Short-circuit boolean operations
+//! - `do` - Iteration with initialization and step expressions
+//! - `quasiquote` - Template with `unquote` and `unquote-splicing`
+//! - `eval` - Evaluate expression at runtime
+//! - `apply` - Apply function to argument list
+//! - `values` - Return multiple values as a list
+//! - `defmacro` - Define a macro
 
 pub use lisp_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
@@ -345,6 +356,12 @@ enum TrampolineState {
 // Evaluator
 // ============================================================================
 
+/// Maximum number of macros that can be defined
+const MAX_MACROS: usize = 32;
+
+/// A gensym counter for generating unique symbols
+static GENSYM_COUNTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 /// The Lisp evaluator with full trampolined TCO
 pub struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
@@ -356,6 +373,9 @@ pub struct Evaluator<'a, const N: usize> {
     /// Continuation stack for full trampolining
     cont_stack: [Cont; MAX_CONT_DEPTH],
     cont_depth: usize,
+    /// Macro definitions: (name, (params, body))
+    macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
+    macro_count: usize,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -368,6 +388,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             call_stack_depth: 0,
             cont_stack: [Cont::Done; MAX_CONT_DEPTH],
             cont_depth: 0,
+            macros: [(ArenaIndex::NULL, ArenaIndex::NULL, ArenaIndex::NULL); MAX_MACROS],
+            macro_count: 0,
         };
         
         // Initialize global environment with builtins
@@ -931,6 +953,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     TcoResult::TailCall { new_expr, new_env } => {
                         return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
                     }
+                }
+            }
+            
+            // case - pattern matching
+            if self.lisp.symbol_matches(car, "case")? {
+                return self.step_eval_case(cdr, env);
+            }
+            
+            // do - iteration construct
+            if self.lisp.symbol_matches(car, "do")? {
+                return self.step_eval_do(cdr, env);
+            }
+            
+            // quasiquote - template with unquote
+            if self.lisp.symbol_matches(car, "quasiquote")? {
+                let val = self.eval_quasiquote(self.lisp.car(cdr)?, env)?;
+                return Ok(TrampolineState::Return { val });
+            }
+            
+            // eval - evaluate expression at runtime
+            if self.lisp.symbol_matches(car, "eval")? {
+                let expr_to_eval = self.lisp.car(cdr)?;
+                let evaluated_expr = self.eval_in_env(expr_to_eval, env)?;
+                // Deep force the expression to get actual code (not thunks)
+                let forced = self.deep_force_for_macro(evaluated_expr)?;
+                return Ok(TrampolineState::Eval { expr: forced, env: self.global_env });
+            }
+            
+            // defmacro - define a macro
+            if self.lisp.symbol_matches(car, "defmacro")? {
+                let val = self.eval_defmacro(cdr)?;
+                return Ok(TrampolineState::Return { val });
+            }
+            
+            // apply - apply function to list of arguments
+            if self.lisp.symbol_matches(car, "apply")? {
+                return self.step_eval_apply(cdr, env);
+            }
+            
+            // values - return multiple values (as a special list)
+            if self.lisp.symbol_matches(car, "values")? {
+                let vals = self.eval_values(cdr, env)?;
+                return Ok(TrampolineState::Return { val: vals });
+            }
+            
+            // Check for macro expansion
+            if let Value::Symbol { .. } = head {
+                if let Some(expanded) = self.try_macro_expand(car, cdr, env)? {
+                    return Ok(TrampolineState::Eval { expr: expanded, env });
                 }
             }
         }
@@ -1555,6 +1626,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let nil = self.lisp.nil()?;
                 self.lisp.memo(func, nil).map_err(Into::into)
             }
+            
+            Builtin::Gensym => {
+                // (gensym) - generate a unique symbol
+                // Note: prefix argument is not supported in no_std (would require string extraction)
+                self.gensym("g")
+            }
         }
     }
     
@@ -1810,6 +1887,462 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Err(self.make_error(ErrorKind::TypeError, current)),
             }
         }
+    }
+    
+    /// Evaluate case - pattern matching
+    /// (case key ((datum1 ...) expr1 ...) ((datum2 ...) expr2 ...) (else exprn ...))
+    fn step_eval_case(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let key_expr = self.lisp.car(args)?;
+        let clauses = self.lisp.cdr(args)?;
+        
+        // Evaluate the key expression
+        let key = self.eval_in_env(key_expr, env)?;
+        
+        // Check each clause
+        let mut current = clauses;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    // No match found, return nil
+                    let nil = self.lisp.nil()?;
+                    return Ok(TrampolineState::Return { val: nil });
+                }
+                Value::Cons { car: clause, cdr: rest } => {
+                    let datums = self.lisp.car(clause)?;
+                    let body = self.lisp.cdr(clause)?;
+                    
+                    // Check for 'else' clause
+                    if self.lisp.symbol_matches(datums, "else").unwrap_or(false) {
+                        return self.eval_case_body(body, env);
+                    }
+                    
+                    // Check if key matches any datum
+                    if self.case_matches(key, datums)? {
+                        return self.eval_case_body(body, env);
+                    }
+                    
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, clauses)),
+            }
+        }
+    }
+    
+    /// Check if key matches any datum in the list
+    fn case_matches(&self, key: ArenaIndex, datums: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = datums;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return Ok(false),
+                Value::Cons { car: datum, cdr: rest } => {
+                    if self.values_equal(key, datum)? {
+                        return Ok(true);
+                    }
+                    current = rest;
+                }
+                _ => {
+                    // Single datum (not a list)
+                    return self.values_equal(key, datums);
+                }
+            }
+        }
+    }
+    
+    /// Evaluate case clause body
+    fn eval_case_body(&mut self, body: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        match self.eval_begin_tco(body, env)? {
+            TcoResult::Return(val) => Ok(TrampolineState::Return { val }),
+            TcoResult::TailCall { new_expr, new_env } => {
+                Ok(TrampolineState::Eval { expr: new_expr, env: new_env })
+            }
+        }
+    }
+    
+    /// Evaluate do - iteration construct
+    /// (do ((var init step) ...) (test result ...) body ...)
+    fn step_eval_do(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let test_clause = self.lisp.car(rest)?;
+        let body = self.lisp.cdr(rest)?;
+        
+        // Initialize variables
+        let mut loop_env = env;
+        let mut var_info: [(ArenaIndex, ArenaIndex); 16] = [(ArenaIndex::NULL, ArenaIndex::NULL); 16]; // (var, step)
+        let mut var_count = 0;
+        
+        let mut current = bindings;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: binding, cdr: rest } => {
+                    let var = self.lisp.car(binding)?;
+                    let init_rest = self.lisp.cdr(binding)?;
+                    let init = self.lisp.car(init_rest)?;
+                    let step_rest = self.lisp.cdr(init_rest)?;
+                    let step = if self.lisp.get(step_rest)?.is_nil() {
+                        var // No step, use variable itself
+                    } else {
+                        self.lisp.car(step_rest)?
+                    };
+                    
+                    let init_val = self.eval_in_env(init, env)?;
+                    loop_env = self.env_extend(loop_env, var, init_val)?;
+                    
+                    if var_count >= 16 {
+                        return Err(self.make_error(ErrorKind::StackOverflow, bindings)
+                            .with_message("do: too many variables (max 16)"));
+                    }
+                    var_info[var_count] = (var, step);
+                    var_count += 1;
+                    
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
+            }
+        }
+        
+        // Iteration loop
+        loop {
+            // Evaluate test
+            let test = self.lisp.car(test_clause)?;
+            let test_result = self.eval_in_env(test, loop_env)?;
+            
+            if !self.is_false(test_result)? {
+                // Test passed - evaluate result expressions
+                let result_exprs = self.lisp.cdr(test_clause)?;
+                if self.lisp.get(result_exprs)?.is_nil() {
+                    return Ok(TrampolineState::Return { val: test_result });
+                } else {
+                    return self.eval_case_body(result_exprs, loop_env);
+                }
+            }
+            
+            // Evaluate body (for side effects in non-pure case)
+            let mut body_cur = body;
+            loop {
+                match self.lisp.get(body_cur)? {
+                    Value::Nil => break,
+                    Value::Cons { car: expr, cdr: rest } => {
+                        self.eval_in_env(expr, loop_env)?;
+                        body_cur = rest;
+                    }
+                    _ => break,
+                }
+            }
+            
+            // Evaluate step expressions and update variables
+            let mut new_vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
+            for i in 0..var_count {
+                new_vals[i] = self.eval_in_env(var_info[i].1, loop_env)?;
+            }
+            
+            // Update environment with new values
+            for i in 0..var_count {
+                loop_env = self.env_extend(loop_env, var_info[i].0, new_vals[i])?;
+            }
+        }
+    }
+    
+    /// Evaluate quasiquote - template with unquote
+    fn eval_quasiquote(&mut self, template: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        self.eval_quasiquote_impl(template, env, 1)
+    }
+    
+    fn eval_quasiquote_impl(&mut self, template: ArenaIndex, env: ArenaIndex, depth: usize) -> EvalResult {
+        match self.lisp.get(template)? {
+            Value::Cons { car, cdr } => {
+                // Check for unquote
+                if self.lisp.symbol_matches(car, "unquote").unwrap_or(false) {
+                    if depth == 1 {
+                        // Evaluate the unquoted expression
+                        return self.eval_in_env(self.lisp.car(cdr)?, env);
+                    } else {
+                        // Nested quasiquote - decrease depth
+                        let unquote_sym = self.lisp.symbol("unquote")?;
+                        let inner = self.eval_quasiquote_impl(self.lisp.car(cdr)?, env, depth - 1)?;
+                        let nil = self.lisp.nil()?;
+                        let inner_list = self.lisp.cons(inner, nil)?;
+                        return self.lisp.cons(unquote_sym, inner_list).map_err(Into::into);
+                    }
+                }
+                
+                // Check for unquote-splicing
+                if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false) {
+                    if depth == 1 {
+                        // Return the evaluated list (caller handles splicing)
+                        return self.eval_in_env(self.lisp.car(cdr)?, env);
+                    }
+                }
+                
+                // Check for nested quasiquote
+                if self.lisp.symbol_matches(car, "quasiquote").unwrap_or(false) {
+                    let inner = self.eval_quasiquote_impl(self.lisp.car(cdr)?, env, depth + 1)?;
+                    let qq_sym = self.lisp.symbol("quasiquote")?;
+                    let nil = self.lisp.nil()?;
+                    let inner_list = self.lisp.cons(inner, nil)?;
+                    return self.lisp.cons(qq_sym, inner_list).map_err(Into::into);
+                }
+                
+                // Check for unquote-splicing in car position (special handling)
+                if let Value::Cons { car: inner_car, cdr: inner_cdr } = self.lisp.get(car)? {
+                    if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
+                        // Splice the result into the list
+                        let splice_val = self.eval_in_env(self.lisp.car(inner_cdr)?, env)?;
+                        let rest = self.eval_quasiquote_impl(cdr, env, depth)?;
+                        return self.append_lists(splice_val, rest);
+                    }
+                }
+                
+                // Recursively process car and cdr
+                let new_car = self.eval_quasiquote_impl(car, env, depth)?;
+                let new_cdr = self.eval_quasiquote_impl(cdr, env, depth)?;
+                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+            }
+            _ => {
+                // Atoms are returned as-is
+                Ok(template)
+            }
+        }
+    }
+    
+    /// Append two lists
+    fn append_lists(&self, a: ArenaIndex, b: ArenaIndex) -> EvalResult {
+        match self.lisp.get(a)? {
+            Value::Nil => Ok(b),
+            Value::Cons { car, cdr } => {
+                let rest = self.append_lists(cdr, b)?;
+                self.lisp.cons(car, rest).map_err(Into::into)
+            }
+            _ => Err(self.make_error(ErrorKind::TypeError, a)),
+        }
+    }
+    
+    /// Define a macro
+    /// (defmacro name (params...) body)
+    fn eval_defmacro(&mut self, args: ArenaIndex) -> EvalResult {
+        let first = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        let (name, params) = match self.lisp.get(first)? {
+            Value::Symbol { .. } => {
+                // (defmacro name (params) body)
+                let params = self.lisp.car(rest)?;
+                (first, params)
+            }
+            Value::Cons { car: n, cdr: p } => {
+                // (defmacro (name params...) body) - shorthand
+                (n, p)
+            }
+            _ => return Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
+        };
+        
+        let body_list = if matches!(self.lisp.get(first)?, Value::Symbol { .. }) {
+            self.lisp.cdr(rest)?
+        } else {
+            rest
+        };
+        
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+        
+        // Store macro
+        if self.macro_count >= MAX_MACROS {
+            return Err(self.make_error(ErrorKind::OutOfMemory, name).with_message("too many macros"));
+        }
+        
+        self.macros[self.macro_count] = (name, params, body);
+        self.macro_count += 1;
+        
+        Ok(name)
+    }
+    
+    /// Try to expand a macro call
+    fn try_macro_expand(&mut self, name: ArenaIndex, args: ArenaIndex, _env: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
+        // Look up macro by name
+        for i in 0..self.macro_count {
+            let (macro_name, params, body) = self.macros[i];
+            if self.lisp.symbol_eq(macro_name, name)? {
+                // Found macro - bind params to unevaluated args and evaluate body
+                let expansion_env = self.bind_macro_params(params, args)?;
+                let expanded = self.eval_in_env(body, expansion_env)?;
+                // Deep force the expansion to get actual code (not thunks)
+                let forced = self.deep_force_for_macro(expanded)?;
+                return Ok(Some(forced));
+            }
+        }
+        Ok(None)
+    }
+    
+    /// Deep force a value for macro expansion (forces all thunks)
+    fn deep_force_for_macro(&mut self, idx: ArenaIndex) -> EvalResult {
+        self.deep_force_impl(idx, 50)
+    }
+    
+    fn deep_force_impl(&mut self, idx: ArenaIndex, depth: usize) -> EvalResult {
+        if depth == 0 {
+            return Ok(idx);
+        }
+        
+        // Force to WHNF
+        let forced = self.force_value(idx)?;
+        
+        match self.lisp.get(forced)? {
+            Value::Cons { car, cdr } => {
+                let new_car = self.deep_force_impl(car, depth - 1)?;
+                let new_cdr = self.deep_force_impl(cdr, depth - 1)?;
+                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+            }
+            _ => Ok(forced),
+        }
+    }
+    
+    /// Force a value to WHNF (synchronous, for macro expansion)
+    fn force_value(&mut self, mut idx: ArenaIndex) -> EvalResult {
+        loop {
+            match self.lisp.get(idx)? {
+                Value::Thunk { expr, env, cached } => {
+                    if !cached.is_null() {
+                        idx = cached;
+                        continue;
+                    }
+                    // Evaluate the thunk
+                    let result = self.eval_in_env(expr, env)?;
+                    self.lisp.set(idx, Value::Thunk { expr, env, cached: result })?;
+                    idx = result;
+                }
+                _ => return Ok(idx),
+            }
+        }
+    }
+    
+    /// Bind macro parameters to unevaluated arguments
+    fn bind_macro_params(&self, params: ArenaIndex, args: ArenaIndex) -> EvalResult {
+        let mut env = self.lisp.nil()?;
+        let mut params_cur = params;
+        let mut args_cur = args;
+        
+        loop {
+            let p = self.lisp.get(params_cur)?;
+            let a = self.lisp.get(args_cur)?;
+            
+            match (p, a) {
+                (Value::Nil, _) => break,
+                (Value::Cons { car: param, cdr: prest }, Value::Cons { car: arg, cdr: arest }) => {
+                    // Quote the argument to prevent evaluation
+                    env = self.env_extend(env, param, arg)?;
+                    params_cur = prest;
+                    args_cur = arest;
+                }
+                (Value::Cons { .. }, Value::Nil) => {
+                    // Not enough arguments - bind remaining to nil
+                    break;
+                }
+                (Value::Symbol { .. }, _) => {
+                    // Rest parameter - bind remaining args
+                    env = self.env_extend(env, params_cur, args_cur)?;
+                    break;
+                }
+                _ => break,
+            }
+        }
+        
+        Ok(env)
+    }
+    
+    /// Evaluate apply - apply function to list of arguments
+    fn step_eval_apply(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let func_expr = self.lisp.car(args)?;
+        let args_list_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+        
+        // Evaluate function and arguments list
+        let func = self.eval_in_env(func_expr, env)?;
+        let args_list = self.eval_in_env(args_list_expr, env)?;
+        // Force the args list to get actual values
+        let forced_args = self.deep_force_for_macro(args_list)?;
+        
+        // Evaluate the application using forced arguments
+        let call_expr = self.lisp.cons(func, forced_args)?;
+        self.push_frame(call_expr, func)?;
+        self.push_cont(Cont::ApplyForced { args_expr: forced_args, env, call_expr })?;
+        self.push_cont(Cont::Force)?;
+        Ok(TrampolineState::Return { val: func })
+    }
+    
+    /// Evaluate values - create a multi-value return
+    fn eval_values(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        // Evaluate all arguments and return as a list
+        // Note: Limited to 16 values due to no_std constraints
+        let mut result = self.lisp.nil()?;
+        let mut current = args;
+        let mut vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
+        let mut count = 0;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    if count >= 16 {
+                        return Err(self.make_error(ErrorKind::StackOverflow, args)
+                            .with_message("values: too many values (max 16)"));
+                    }
+                    vals[count] = self.eval_in_env(car, env)?;
+                    count += 1;
+                    current = cdr;
+                }
+                _ => break,
+            }
+        }
+        
+        // Build result list in reverse
+        for i in (0..count).rev() {
+            result = self.lisp.cons(vals[i], result)?;
+        }
+        
+        Ok(result)
+    }
+    
+    /// Generate a unique symbol (gensym)
+    pub fn gensym(&self, prefix: &str) -> EvalResult {
+        use core::sync::atomic::Ordering;
+        let n = GENSYM_COUNTER.fetch_add(1, Ordering::SeqCst);
+        
+        // Build symbol name: prefix + n
+        // Since we're in no_std, we need to format manually
+        let mut buf = [0u8; 32];
+        let prefix_bytes = prefix.as_bytes();
+        let prefix_len = prefix_bytes.len().min(20);
+        buf[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
+        
+        // Format number into num_buf (right-aligned)
+        let mut num_buf = [0u8; 10];
+        let mut num_len;
+        
+        if n == 0 {
+            num_buf[9] = b'0';
+            num_len = 1;
+        } else {
+            num_len = 0;
+            let mut tmp = n;
+            while tmp > 0 && num_len < 10 {
+                num_buf[9 - num_len] = b'0' + (tmp % 10) as u8;
+                tmp /= 10;
+                num_len += 1;
+            }
+        }
+        
+        // Copy number to output buffer
+        let total_len = prefix_len + num_len;
+        buf[prefix_len..total_len].copy_from_slice(&num_buf[10 - num_len..]);
+        
+        // Convert to str - this can't fail since we only use ASCII bytes
+        // The unwrap_or is defensive but should never trigger
+        let name = core::str::from_utf8(&buf[..total_len]).unwrap_or("g0");
+        self.lisp.symbol(name).map_err(Into::into)
     }
     
     /// Evaluate let with TCO in body
@@ -2924,5 +3457,726 @@ mod tests {
         
         // Third access
         assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 12321);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NEW FEATURES TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // CASE - Pattern Matching
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_case_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, 
+            "(case 2 ((1) 10) ((2) 20) ((3) 30))"), 20);
+    }
+    
+    #[test]
+    fn test_case_multiple_datums() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval,
+            "(case 'b ((a) 1) ((b c) 2) ((d) 3))"), 2);
+    }
+    
+    #[test]
+    fn test_case_else() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval,
+            "(case 99 ((1) 10) ((2) 20) (else 0))"), 0);
+    }
+    
+    #[test]
+    fn test_case_no_match() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        let result = eval.eval_str("(case 5 ((1) 10) ((2) 20))").unwrap();
+        assert!(lisp.get(result).unwrap().is_nil());
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // DO - Iteration Construct
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_do_basic() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Simple countdown
+        assert_eq!(eval_to_num(&lisp, &mut eval,
+            "(do ((i 5 (- i 1))) ((= i 0) 42))"), 42);
+    }
+    
+    #[test]
+    fn test_do_accumulator() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Sum 1 to 5 using do loop
+        assert_eq!(eval_to_num(&lisp, &mut eval,
+            "(do ((i 1 (+ i 1)) (sum 0 (+ sum i))) ((> i 5) sum))"), 15);
+    }
+    
+    #[test]
+    fn test_do_factorial() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Factorial using do loop
+        assert_eq!(eval_to_num(&lisp, &mut eval,
+            "(do ((n 5 (- n 1)) (result 1 (* result n))) ((= n 0) result))"), 120);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // QUASIQUOTE - Template with Unquote
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_quasiquote_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define x 42)").unwrap();
+        
+        // `(a b ,x) should give (a b 42)
+        let result = eval.eval_str("(quasiquote (a b (unquote x)))").unwrap();
+        // Check structure: (a b 42)
+        let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+        assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 42);
+    }
+    
+    #[test]
+    fn test_quasiquote_nested() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define y 10)").unwrap();
+        
+        // Template with multiple unquotes
+        let result = eval.eval_str("(quasiquote ((unquote y) 2 (unquote (+ y 1))))").unwrap();
+        let first = lisp.car(result).unwrap();
+        let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+        
+        assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 10);
+        assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 11);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // EVAL - Meta-circular Evaluator
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_eval_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Evaluate a quoted expression
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(eval '(+ 1 2))"), 3);
+    }
+    
+    #[test]
+    fn test_eval_symbol() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define x 99)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(eval 'x)"), 99);
+    }
+    
+    #[test]
+    fn test_eval_computed() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Build expression dynamically and evaluate it
+        eval.eval_str("(define expr (list '+ 10 20))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(eval expr)"), 30);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // DEFMACRO - Macro Definition
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_defmacro_basic() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Define a simple macro that adds 10 to its argument
+        eval.eval_str("(defmacro add10 (x) (list '+ x 10))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add10 5)"), 15);
+    }
+    
+    #[test]
+    fn test_defmacro_unless() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Define 'unless' macro (opposite of 'if')
+        eval.eval_str("(defmacro unless (cond then else) (list 'if cond else then))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(unless #f 42 0)"), 42);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(unless #t 42 0)"), 0);
+    }
+    
+    #[test]
+    fn test_defmacro_when() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Define 'when' macro (if without else)
+        eval.eval_str("(defmacro when (cond body) (list 'if cond body nil))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(when #t 100)"), 100);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // GENSYM - Generate Unique Symbols
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_gensym_uniqueness() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        let sym1 = eval.eval_str("(gensym)").unwrap();
+        let sym2 = eval.eval_str("(gensym)").unwrap();
+        
+        // Each gensym should be unique
+        assert!(lisp.get(sym1).unwrap().is_symbol());
+        assert!(lisp.get(sym2).unwrap().is_symbol());
+        assert!(!lisp.symbol_eq(sym1, sym2).unwrap());
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // APPLY - Apply Function to List
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_apply_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(apply + '(1 2 3))"), 6);
+    }
+    
+    #[test]
+    fn test_apply_lambda() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define (sum3 a b c) (+ a b c))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(apply sum3 '(10 20 30))"), 60);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // VALUES - Multiple Return Values
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_values_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // values returns a list of its arguments
+        let result = eval.eval_str("(values 1 2 3)").unwrap();
+        assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 1);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COMPREHENSIVE BUILTIN TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // List Operations
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_car_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car '(1 2 3))"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cons 42 99))"), 42);
+        
+        // car of nil
+        let result = eval.eval_str("(car '())").unwrap();
+        assert!(lisp.get(result).unwrap().is_nil());
+    }
+    
+    #[test]
+    fn test_cdr_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // cdr of list
+        let result = eval.eval_str("(cdr '(1 2 3))").unwrap();
+        assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 2);
+        
+        // cdr of pair
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr (cons 1 2))"), 2);
+        
+        // cdr of nil
+        let result = eval.eval_str("(cdr '())").unwrap();
+        assert!(lisp.get(result).unwrap().is_nil());
+    }
+    
+    #[test]
+    fn test_cons_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Basic cons
+        let result = eval.eval_str("(cons 1 2)").unwrap();
+        assert!(lisp.get(result).unwrap().is_cons());
+        
+        // Cons to nil creates proper list - use car to force
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cons 1 '()))"), 1);
+    }
+    
+    #[test]
+    fn test_list_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Empty list
+        let result = eval.eval_str("(list)").unwrap();
+        assert!(lisp.get(result).unwrap().is_nil());
+        
+        // Single element - use car to force
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (list 42))"), 42);
+        
+        // Multiple elements
+        eval.eval_str("(define my-list (list 1 2 3 4 5))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car my-list)"), 1);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Predicates
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_atom_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(atom 42)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(atom 'x)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(atom #t)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(atom '())"));
+        assert!(eval_is_false(&lisp, &mut eval, "(atom '(1 2))"));
+        assert!(eval_is_false(&lisp, &mut eval, "(atom (cons 1 2))"));
+    }
+    
+    #[test]
+    fn test_eq_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(eq 1 1)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(eq 1 2)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(eq 'a 'a)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(eq 'a 'b)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(eq '() '())"));
+        assert!(eval_is_true(&lisp, &mut eval, "(eq #t #t)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(eq #f #f)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(eq #t #f)"));
+    }
+    
+    #[test]
+    fn test_null_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(null? '())"));
+        assert!(eval_is_true(&lisp, &mut eval, "(null? nil)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(null? 0)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(null? #f)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(null? '(1))"));
+    }
+    
+    #[test]
+    fn test_pair_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(pair? '(1 2))"));
+        assert!(eval_is_true(&lisp, &mut eval, "(pair? (cons 1 2))"));
+        assert!(eval_is_false(&lisp, &mut eval, "(pair? '())"));
+        assert!(eval_is_false(&lisp, &mut eval, "(pair? 42)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(pair? 'x)"));
+    }
+    
+    #[test]
+    fn test_number_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(number? 42)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(number? -10)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(number? 0)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(number? 'x)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(number? #t)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(number? '())"));
+    }
+    
+    #[test]
+    fn test_boolean_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(boolean? #t)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(boolean? #f)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(boolean? 1)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(boolean? '())"));
+        assert!(eval_is_false(&lisp, &mut eval, "(boolean? 'true)"));
+    }
+    
+    #[test]
+    fn test_symbol_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(symbol? 'x)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(symbol? 'hello-world)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(symbol? 42)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(symbol? #t)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(symbol? '(a b))"));
+    }
+    
+    #[test]
+    fn test_procedure_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(procedure? +)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(procedure? car)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(procedure? (lambda (x) x))"));
+        assert!(eval_is_false(&lisp, &mut eval, "(procedure? 42)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(procedure? 'lambda)"));
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Arithmetic Operations
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_add_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(+)"), 0);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 5)"), 5);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2)"), 3);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2 3 4 5)"), 15);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(+ -5 10)"), 5);
+    }
+    
+    #[test]
+    fn test_sub_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(- 10)"), -10);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(- 10 3)"), 7);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(- 100 20 30)"), 50);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(- 5 10)"), -5);
+    }
+    
+    #[test]
+    fn test_mul_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(*)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(* 5)"), 5);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(* 2 3)"), 6);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(* 2 3 4)"), 24);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(* -2 3)"), -6);
+    }
+    
+    #[test]
+    fn test_div_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(/ 10 2)"), 5);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(/ 100 2 5)"), 10);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(/ -10 2)"), -5);
+    }
+    
+    #[test]
+    fn test_mod_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 10 3)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 15 5)"), 0);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 7 2)"), 1);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Comparison Operators
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_comparisons_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Less than
+        assert!(eval_is_true(&lisp, &mut eval, "(< 1 2)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(< 2 1)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(< 2 2)"));
+        
+        // Greater than
+        assert!(eval_is_true(&lisp, &mut eval, "(> 2 1)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(> 1 2)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(> 2 2)"));
+        
+        // Less than or equal
+        assert!(eval_is_true(&lisp, &mut eval, "(<= 1 2)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(<= 2 2)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(<= 3 2)"));
+        
+        // Greater than or equal
+        assert!(eval_is_true(&lisp, &mut eval, "(>= 2 1)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(>= 2 2)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(>= 1 2)"));
+        
+        // Numeric equality
+        assert!(eval_is_true(&lisp, &mut eval, "(= 5 5)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(= 5 6)"));
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Boolean Operations
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_not_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(not #f)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(not #t)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(not 0)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(not '())"));
+        assert!(eval_is_false(&lisp, &mut eval, "(not 'x)"));
+    }
+    
+    #[test]
+    fn test_and_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(and)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(and #t)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(and #f)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(and #t #t #t)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(and #t #f #t)"));
+        
+        // Short-circuit
+        assert!(eval_is_false(&lisp, &mut eval, "(and #f undefined-var)"));
+    }
+    
+    #[test]
+    fn test_or_comprehensive() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_false(&lisp, &mut eval, "(or)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(or #t)"));
+        assert!(eval_is_false(&lisp, &mut eval, "(or #f)"));
+        assert!(eval_is_true(&lisp, &mut eval, "(or #f #t #f)"));
+        
+        // Short-circuit
+        assert!(eval_is_true(&lisp, &mut eval, "(or #t undefined-var)"));
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // I/O and Error Handling
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_print_display() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // print and display return their argument
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(print 42)"), 42);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(display 99)"), 99);
+    }
+    
+    #[test]
+    fn test_newline() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        let result = eval.eval_str("(newline)").unwrap();
+        assert!(lisp.get(result).unwrap().is_nil());
+    }
+    
+    #[test]
+    fn test_error() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        let result = eval.eval_str("(error 'test-error)");
+        assert!(result.is_err());
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Memoization
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_memoize_explicit() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Explicitly memoize a function
+        eval.eval_str("(define slow-fib (lambda (n) (if (< n 2) n (+ (slow-fib (- n 1)) (slow-fib (- n 2))))))").unwrap();
+        eval.eval_str("(define fast-fib (memoize slow-fib))").unwrap();
+        
+        // Should work (memoization helps with repeated calls)
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(fast-fib 10)"), 55);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Lexical Closures - Additional Tests
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_closure_counter() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Counter using closure (pure functional - returns new state)
+        eval.eval_str("(define (make-counter init) (lambda (delta) (+ init delta)))").unwrap();
+        eval.eval_str("(define counter (make-counter 10))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter 5)"), 15);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter 10)"), 20);
+    }
+    
+    #[test]
+    fn test_closure_nested() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Triple-nested closures
+        eval.eval_str("(define (f a) (lambda (b) (lambda (c) (+ a b c))))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(((f 1) 2) 3)"), 6);
+    }
+    
+    #[test]
+    fn test_closure_captures_correct_env() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Verify lexical scoping (not dynamic)
+        eval.eval_str("(define x 1)").unwrap();
+        eval.eval_str("(define (get-x) x)").unwrap();
+        eval.eval_str("(define (call-with-x val f) (let ((x val)) (f)))").unwrap();
+        
+        // Should use lexical binding (x=1), not dynamic binding (x=100)
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(call-with-x 100 get-x)"), 1);
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Lazy Evaluation - Additional Tests
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_lazy_primes_sieve() {
+        let lisp: Lisp<5000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Sieve helper: filter out multiples
+        eval.eval_str("(define (filter-multiples n stream) (cond ((null? stream) '()) ((= (mod (car stream) n) 0) (filter-multiples n (cdr stream))) (else (cons (car stream) (filter-multiples n (cdr stream))))))").unwrap();
+        
+        // Test filter-multiples on a finite list
+        eval.eval_str("(define nums '(2 3 4 5 6 7 8 9 10))").unwrap();
+        eval.eval_str("(define filtered (filter-multiples 2 nums))").unwrap();
+        
+        // Check first element
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car filtered)"), 3);
+    }
+    
+    #[test]
+    fn test_lazy_iterate() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Iterate: generate infinite stream by repeatedly applying f
+        eval.eval_str("(define (iterate f x) (cons x (iterate f (f x))))").unwrap();
+        eval.eval_str("(define (add1 x) (+ x 1))").unwrap();
+        eval.eval_str("(define nats (iterate add1 0))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car nats)"), 0);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr nats))"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr nats)))"), 2);
+    }
+    
+    #[test]
+    fn test_lazy_cycle() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Create a simple repeating pattern
+        eval.eval_str("(define (repeat-ab) (cons 'a (cons 'b (repeat-ab))))").unwrap();
+        eval.eval_str("(define cycle (repeat-ab))").unwrap();
+        
+        let first = eval.eval_str("(car cycle)").unwrap();
+        assert!(lisp.symbol_matches(first, "a").unwrap());
+        
+        let second = eval.eval_str("(car (cdr cycle))").unwrap();
+        assert!(lisp.symbol_matches(second, "b").unwrap());
+        
+        let third = eval.eval_str("(car (cdr (cdr cycle)))").unwrap();
+        assert!(lisp.symbol_matches(third, "a").unwrap());
+    }
+    
+    // ───────────────────────────────────────────────────────────────────────────
+    // Infinite Streams - Additional Tests
+    // ───────────────────────────────────────────────────────────────────────────
+    
+    #[test]
+    fn test_infinite_powers_of_two() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Powers of 2: 1, 2, 4, 8, 16, ...
+        eval.eval_str("(define (powers-of-2-from n) (cons n (powers-of-2-from (* n 2))))").unwrap();
+        eval.eval_str("(define powers (powers-of-2-from 1))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car powers)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr powers))"), 2);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr powers)))"), 4);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr powers))))"), 8);
+    }
+    
+    #[test]
+    fn test_infinite_triangular_numbers() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Triangular numbers: 1, 3, 6, 10, 15, ...
+        eval.eval_str("(define (triangular n sum) (cons sum (triangular (+ n 1) (+ sum n 1))))").unwrap();
+        eval.eval_str("(define tris (triangular 1 1))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car tris)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr tris))"), 3);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr tris)))"), 6);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr tris))))"), 10);
     }
 }

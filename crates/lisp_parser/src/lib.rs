@@ -78,6 +78,9 @@ pub enum Builtin {
     
     // Memoization
     Memoize,
+    
+    // Symbol generation for hygiene
+    Gensym,
 }
 
 impl Builtin {
@@ -112,6 +115,7 @@ impl Builtin {
             Builtin::Display => "display",
             Builtin::Error => "error",
             Builtin::Memoize => "memoize",
+            Builtin::Gensym => "gensym",
         }
     }
     
@@ -126,6 +130,7 @@ impl Builtin {
         Builtin::Print, Builtin::Newline, Builtin::Display,
         Builtin::Error,
         Builtin::Memoize,
+        Builtin::Gensym,
     ];
 }
 
