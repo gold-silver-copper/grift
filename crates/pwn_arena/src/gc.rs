@@ -1,0 +1,452 @@
+//! Garbage collection implementation.
+//!
+//! This module contains the mark-and-sweep garbage collection logic
+//! for the arena allocator.
+
+use crate::{Arena, ArenaIndex, ArenaError, GcStats};
+use crate::types::Slot;
+use crate::traits::Trace;
+
+impl<T: Copy, const N: usize> Arena<T, N> {
+    /// Perform mark-and-sweep garbage collection.
+    ///
+    /// Starting from the given `roots`, marks all reachable objects by
+    /// following `ArenaIndex` references (via the `Trace` trait), then
+    /// frees all unmarked (unreachable) objects.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. **Mark phase**: Starting from roots, recursively mark all reachable
+    ///    objects. Handles cycles correctly by checking if already marked.
+    /// 2. **Sweep phase**: Iterate through all slots and free any that are
+    ///    allocated but not marked.
+    ///
+    /// # Returns
+    ///
+    /// Returns `GcStats` with information about what was collected.
+    ///
+    /// # Complexity
+    ///
+    /// - Time: O(reachable + N) where N is arena capacity
+    /// - Space: O(N) for the mark bitmap
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use pwn_arena::{Arena, ArenaIndex, Trace};
+    ///
+    /// #[derive(Clone, Copy)]
+    /// struct Node {
+    ///     value: i32,
+    ///     next: Option<ArenaIndex>,
+    /// }
+    ///
+    /// impl<const N: usize> Trace<Node, N> for Node {
+    ///     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
+    ///         if let Some(next) = self.next {
+    ///             tracer(next);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let arena: Arena<Node, 10> = Arena::new(Node { value: 0, next: None });
+    ///
+    /// // Create a linked list: root -> n1 -> n2
+    /// let n2 = arena.alloc(Node { value: 3, next: None }).unwrap();
+    /// let n1 = arena.alloc(Node { value: 2, next: Some(n2) }).unwrap();
+    /// let root = arena.alloc(Node { value: 1, next: Some(n1) }).unwrap();
+    ///
+    /// // Create some garbage
+    /// let _garbage = arena.alloc(Node { value: -1, next: None }).unwrap();
+    ///
+    /// // Collect with root as the only GC root
+    /// let stats = arena.collect_garbage(&[root]);
+    ///
+    /// assert_eq!(stats.collected, 1);
+    /// assert_eq!(arena.len(), 3);
+    /// ```
+    pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats
+    where
+        T: Trace<T, N>,
+    {
+        let total_before = self.len();
+
+        // If GC is disabled, return immediately without collecting
+        if !self.is_gc_enabled() {
+            return GcStats {
+                marked: 0,
+                collected: 0,
+                total_before,
+            };
+        }
+
+        // Mark phase: track which slots are reachable
+        // Using fixed-size arrays instead of Vec for no-alloc compatibility
+        let mut marked = [false; N];
+
+        // Fixed-size mark stack (worst case: all N slots could be on stack)
+        let mut mark_stack = [0usize; N];
+        let mut stack_len = 0usize;
+
+        // Initialize stack with valid roots
+        for &root in roots {
+            if self.is_allocated(root) {
+                let idx = root.raw();
+                if idx < N && !marked[idx] {
+                    marked[idx] = true;
+                    if stack_len < N {
+                        mark_stack[stack_len] = idx;
+                        stack_len += 1;
+                    }
+                }
+            }
+        }
+
+        // Process mark stack (depth-first traversal)
+        while stack_len > 0 {
+            stack_len -= 1;
+            let current_idx = mark_stack[stack_len];
+
+            let slots = self.slots.borrow();
+
+            if let Slot::Occupied { value } = slots[current_idx] {
+                drop(slots);
+
+                // Collect ALL children by processing in batches of 16
+                // This ensures we never silently drop children
+                let mut batch = [0usize; 16];
+                let mut batch_count = 0usize;
+                let mut overflow_detected = false;
+
+                value.trace(|child_index| {
+                    let idx = child_index.raw();
+                    if idx < N && !marked[idx] {
+                        if batch_count < 16 {
+                            batch[batch_count] = idx;
+                            batch_count += 1;
+                        } else {
+                            overflow_detected = true;
+                        }
+                    }
+                });
+
+                // Process the batch
+                for i in 0..batch_count {
+                    let idx = batch[i];
+                    if !marked[idx] && self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
+                        marked[idx] = true;
+                        if stack_len < N {
+                            mark_stack[stack_len] = idx;
+                            stack_len += 1;
+                        }
+                    }
+                }
+
+                // If there were more than 16 children, re-trace to get the rest
+                // This is rare but ensures correctness
+                if overflow_detected {
+                    let slots = self.slots.borrow();
+                    if let Slot::Occupied { value } = slots[current_idx] {
+                        drop(slots);
+
+                        value.trace(|child_index| {
+                            let idx = child_index.raw();
+                            if idx < N && !marked[idx] {
+                                if self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
+                                    marked[idx] = true;
+                                    if stack_len < N {
+                                        mark_stack[stack_len] = idx;
+                                        stack_len += 1;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        let marked_count = marked.iter().filter(|&&m| m).count();
+
+        // Sweep phase: free all unmarked but allocated slots
+        // Collect indices to free into fixed-size array
+        let mut to_free = [0usize; N];
+        let mut to_free_len = 0usize;
+
+        {
+            let slots = self.slots.borrow();
+
+            for idx in 0..N {
+                if let Slot::Occupied { .. } = slots[idx] {
+                    if !marked[idx] {
+                        // This slot is allocated but not reachable - garbage!
+                        to_free[to_free_len] = idx;
+                        to_free_len += 1;
+                    }
+                }
+            }
+        }
+
+        // Free the garbage
+        let mut collected = 0;
+        for i in 0..to_free_len {
+            let idx = to_free[i];
+            let generation = self.generations.borrow()[idx];
+            if self.free(ArenaIndex::new(idx, generation)).is_ok() {
+                collected += 1;
+            }
+        }
+
+        GcStats {
+            marked: marked_count,
+            collected,
+            total_before,
+        }
+    }
+
+    /// Force garbage collection even if GC is disabled.
+    ///
+    /// This ignores the `gc_enabled` flag and always performs collection.
+    /// Useful when you need to collect garbage regardless of the current
+    /// GC state.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use pwn_arena::{Arena, ArenaIndex, Trace};
+    ///
+    /// #[derive(Clone, Copy)]
+    /// struct Leaf(i32);
+    ///
+    /// impl<const N: usize> Trace<Leaf, N> for Leaf {
+    ///     fn trace<F: FnMut(ArenaIndex)>(&self, _tracer: F) {}
+    /// }
+    ///
+    /// let arena: Arena<Leaf, 10> = Arena::new(Leaf(0));
+    /// arena.set_gc_enabled(false);
+    ///
+    /// arena.alloc(Leaf(1)).unwrap();
+    /// arena.alloc(Leaf(2)).unwrap(); // garbage
+    ///
+    /// let root = arena.alloc(Leaf(3)).unwrap();
+    ///
+    /// // This will NOT collect (GC disabled)
+    /// let stats = arena.collect_garbage(&[root]);
+    /// assert_eq!(stats.collected, 0);
+    ///
+    /// // This WILL collect (forced)
+    /// let stats = arena.collect_garbage_forced(&[root]);
+    /// assert_eq!(stats.collected, 2);
+    /// ```
+    pub fn collect_garbage_forced(&self, roots: &[ArenaIndex]) -> GcStats
+    where
+        T: Trace<T, N>,
+    {
+        let was_enabled = self.is_gc_enabled();
+        self.set_gc_enabled(true);
+        let result = self.collect_garbage(roots);
+        self.set_gc_enabled(was_enabled);
+        result
+    }
+
+    /// Perform garbage collection with multiple root sets.
+    ///
+    /// This iterates through all provided root sets and marks objects
+    /// reachable from any of them.
+    ///
+    /// Respects the `gc_enabled` flag - use [`Arena::collect_garbage_multi_forced`]
+    /// to ignore the flag.
+    ///
+    /// # Note
+    ///
+    /// For no-alloc compatibility, this method iterates through root sets
+    /// sequentially rather than flattening them. This has the same effect
+    /// but uses constant stack space.
+    pub fn collect_garbage_multi(&self, root_sets: &[&[ArenaIndex]]) -> GcStats
+    where
+        T: Trace<T, N>,
+    {
+        let total_before = self.len();
+
+        // If GC is disabled, return immediately without collecting
+        if !self.is_gc_enabled() {
+            return GcStats {
+                marked: 0,
+                collected: 0,
+                total_before,
+            };
+        }
+
+        // Mark phase with multiple root sets
+        let mut marked = [false; N];
+        let mut mark_stack = [0usize; N];
+        let mut stack_len = 0usize;
+
+        // Initialize stack with valid roots from all root sets
+        for root_set in root_sets {
+            for &root in *root_set {
+                if self.is_allocated(root) {
+                    let idx = root.raw();
+                    if idx < N && !marked[idx] {
+                        marked[idx] = true;
+                        if stack_len < N {
+                            mark_stack[stack_len] = idx;
+                            stack_len += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process mark stack (same logic as collect_garbage with overflow handling)
+        while stack_len > 0 {
+            stack_len -= 1;
+            let current_idx = mark_stack[stack_len];
+
+            let slots = self.slots.borrow();
+
+            if let Slot::Occupied { value } = slots[current_idx] {
+                drop(slots);
+
+                let mut batch = [0usize; 16];
+                let mut batch_count = 0usize;
+                let mut overflow_detected = false;
+
+                value.trace(|child_index| {
+                    let idx = child_index.raw();
+                    if idx < N && !marked[idx] {
+                        if batch_count < 16 {
+                            batch[batch_count] = idx;
+                            batch_count += 1;
+                        } else {
+                            overflow_detected = true;
+                        }
+                    }
+                });
+
+                for i in 0..batch_count {
+                    let idx = batch[i];
+                    if !marked[idx] && self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
+                        marked[idx] = true;
+                        if stack_len < N {
+                            mark_stack[stack_len] = idx;
+                            stack_len += 1;
+                        }
+                    }
+                }
+
+                // Handle overflow case
+                if overflow_detected {
+                    let slots = self.slots.borrow();
+                    if let Slot::Occupied { value } = slots[current_idx] {
+                        drop(slots);
+
+                        value.trace(|child_index| {
+                            let idx = child_index.raw();
+                            if idx < N && !marked[idx] {
+                                if self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
+                                    marked[idx] = true;
+                                    if stack_len < N {
+                                        mark_stack[stack_len] = idx;
+                                        stack_len += 1;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        let marked_count = marked.iter().filter(|&&m| m).count();
+
+        // Sweep phase
+        let mut to_free = [0usize; N];
+        let mut to_free_len = 0usize;
+
+        {
+            let slots = self.slots.borrow();
+            for idx in 0..N {
+                if let Slot::Occupied { .. } = slots[idx] {
+                    if !marked[idx] {
+                        to_free[to_free_len] = idx;
+                        to_free_len += 1;
+                    }
+                }
+            }
+        }
+
+        let mut collected = 0;
+        for i in 0..to_free_len {
+            let idx = to_free[i];
+            let generation = self.generations.borrow()[idx];
+            if self.free(ArenaIndex::new(idx, generation)).is_ok() {
+                collected += 1;
+            }
+        }
+
+        GcStats {
+            marked: marked_count,
+            collected,
+            total_before,
+        }
+    }
+
+    /// Force garbage collection with multiple root sets, ignoring the `gc_enabled` flag.
+    pub fn collect_garbage_multi_forced(&self, root_sets: &[&[ArenaIndex]]) -> GcStats
+    where
+        T: Trace<T, N>,
+    {
+        let was_enabled = self.is_gc_enabled();
+        self.set_gc_enabled(true);
+        let result = self.collect_garbage_multi(root_sets);
+        self.set_gc_enabled(was_enabled);
+        result
+    }
+
+    /// Allocate a value, running GC first if the arena is full.
+    ///
+    /// If allocation fails due to `OutOfMemory`, this method runs garbage
+    /// collection with the provided roots and retries the allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OutOfMemory` if allocation still fails after GC.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use pwn_arena::{Arena, ArenaIndex, Trace};
+    ///
+    /// #[derive(Clone, Copy)]
+    /// struct Node(i32);
+    ///
+    /// impl<const N: usize> Trace<Node, N> for Node {
+    ///     fn trace<F: FnMut(ArenaIndex)>(&self, _: F) {}
+    /// }
+    ///
+    /// let arena: Arena<Node, 3> = Arena::new(Node(0));
+    ///
+    /// let root = arena.alloc(Node(1)).unwrap();
+    /// arena.alloc(Node(2)).unwrap(); // garbage
+    /// arena.alloc(Node(3)).unwrap(); // garbage
+    ///
+    /// // Arena is full, but alloc_or_gc will collect garbage first
+    /// let new_idx = arena.alloc_or_gc(Node(4), &[root]).unwrap();
+    /// assert_eq!(arena.len(), 2); // root + new_idx
+    /// ```
+    pub fn alloc_or_gc(&self, value: T, roots: &[ArenaIndex]) -> Result<ArenaIndex, ArenaError>
+    where
+        T: Trace<T, N>,
+    {
+        match self.alloc(value) {
+            Ok(idx) => Ok(idx),
+            Err(ArenaError::OutOfMemory) => {
+                // Run GC and retry
+                self.collect_garbage_forced(roots);
+                self.alloc(value)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}

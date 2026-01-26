@@ -3290,3 +3290,261 @@ fn test_gc_handles_many_children() {
     assert_eq!(stats.collected, 30);
     assert_eq!(arena.len(), 21);
 }
+
+// ============================================================================
+// Additional Edge Case Tests for GC Boundary Conditions
+// ============================================================================
+
+/// Test that collecting garbage with NULL indices in roots is handled safely
+#[test]
+fn test_gc_with_null_roots() {
+    let arena: Arena<Tree, 50> = Arena::new(Tree::Leaf(0));
+    
+    // Allocate some values
+    let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
+    let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
+    
+    // Use NULL indices in roots - they should be safely ignored
+    let stats = arena.collect_garbage(&[ArenaIndex::NULL, idx1, ArenaIndex::NULL]);
+    
+    // idx1 was preserved, idx2 was garbage
+    assert_eq!(stats.marked, 1);
+    assert_eq!(stats.collected, 1);
+    assert_eq!(arena.len(), 1);
+}
+
+/// Test GC with out-of-bounds roots
+#[test]
+fn test_gc_with_out_of_bounds_roots() {
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
+    
+    let idx = arena.alloc(Tree::Leaf(42)).unwrap();
+    
+    // Create an invalid index that's out of bounds
+    let invalid_idx = ArenaIndex::new(1000, 0);
+    
+    // GC should safely ignore invalid indices
+    let stats = arena.collect_garbage(&[invalid_idx, idx]);
+    
+    assert_eq!(stats.marked, 1);
+    assert_eq!(stats.collected, 0);
+    assert_eq!(arena.len(), 1);
+}
+
+/// Test GC with stale generation roots
+#[test]
+fn test_gc_with_stale_roots() {
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
+    
+    let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
+    let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
+    
+    // Free and reallocate idx1 to make the old index stale
+    arena.free(idx1).unwrap();
+    let idx3 = arena.alloc(Tree::Leaf(3)).unwrap();
+    
+    // Use the stale idx1 as root - it should be ignored
+    // idx2 should be collected since it's not in roots
+    let stats = arena.collect_garbage(&[idx1, idx3]); // idx1 is stale
+    
+    // Only idx3 should be marked (idx1 is stale and ignored)
+    assert_eq!(stats.marked, 1);
+    assert_eq!(stats.collected, 1); // idx2 is garbage
+    assert_eq!(arena.len(), 1);
+}
+
+/// Test error kind methods
+#[test]
+fn test_arena_error_kind_methods() {
+    let out_of_memory = ArenaError::OutOfMemory;
+    assert!(out_of_memory.is_out_of_memory());
+    assert!(!out_of_memory.is_invalid_index());
+    assert!(!out_of_memory.is_trace_error());
+    
+    let invalid_index = ArenaError::InvalidIndex;
+    assert!(!invalid_index.is_out_of_memory());
+    assert!(invalid_index.is_invalid_index());
+    assert!(!invalid_index.is_trace_error());
+    
+    let gen_mismatch = ArenaError::GenerationMismatch;
+    assert!(!gen_mismatch.is_out_of_memory());
+    assert!(gen_mismatch.is_invalid_index()); // GenerationMismatch is also "invalid index"
+    assert!(!gen_mismatch.is_trace_error());
+    
+    let trace_error = ArenaError::TraceError;
+    assert!(!trace_error.is_out_of_memory());
+    assert!(!trace_error.is_invalid_index());
+    assert!(trace_error.is_trace_error());
+    
+    // Test as_str
+    assert_eq!(out_of_memory.as_str(), "arena is full");
+    assert_eq!(invalid_index.as_str(), "invalid index");
+    assert_eq!(gen_mismatch.as_str(), "stale index (generation mismatch)");
+    assert_eq!(trace_error.as_str(), "error during GC tracing");
+}
+
+/// Test GC with completely empty roots array
+#[test]
+fn test_gc_with_empty_roots() {
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
+    
+    arena.alloc(Tree::Leaf(1)).unwrap();
+    arena.alloc(Tree::Leaf(2)).unwrap();
+    arena.alloc(Tree::Leaf(3)).unwrap();
+    
+    // All should be garbage since no roots
+    let stats = arena.collect_garbage(&[]);
+    
+    assert_eq!(stats.marked, 0);
+    assert_eq!(stats.collected, 3);
+    assert_eq!(arena.len(), 0);
+}
+
+/// Test GC multi with empty root sets
+#[test]
+fn test_gc_multi_with_empty_root_sets() {
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
+    
+    let idx = arena.alloc(Tree::Leaf(1)).unwrap();
+    arena.alloc(Tree::Leaf(2)).unwrap();
+    
+    // Some empty, some with values
+    let empty: &[ArenaIndex] = &[];
+    let has_root: &[ArenaIndex] = &[idx];
+    
+    let stats = arena.collect_garbage_multi(&[empty, has_root, empty]);
+    
+    assert_eq!(stats.marked, 1);
+    assert_eq!(stats.collected, 1);
+}
+
+/// Test GC stats methods
+#[test] 
+fn test_gc_stats_methods_comprehensive() {
+    // Test with zero objects
+    let empty_stats = GcStats {
+        marked: 0,
+        collected: 0,
+        total_before: 0,
+    };
+    assert!(!empty_stats.did_collect());
+    assert_eq!(empty_stats.remaining(), 0);
+    assert_eq!(empty_stats.collection_ratio(), 0.0);
+    assert_eq!(empty_stats.survival_ratio(), 1.0);
+    
+    // Test with some collection
+    let some_stats = GcStats {
+        marked: 7,
+        collected: 3,
+        total_before: 10,
+    };
+    assert!(some_stats.did_collect());
+    assert_eq!(some_stats.remaining(), 7);
+    assert!((some_stats.collection_ratio() - 0.3).abs() < 0.001);
+    assert!((some_stats.survival_ratio() - 0.7).abs() < 0.001);
+    
+    // Test with 100% collection
+    let full_collect = GcStats {
+        marked: 0,
+        collected: 5,
+        total_before: 5,
+    };
+    assert!(full_collect.did_collect());
+    assert_eq!(full_collect.remaining(), 0);
+    assert_eq!(full_collect.collection_ratio(), 1.0);
+    assert_eq!(full_collect.survival_ratio(), 0.0);
+}
+
+/// Test ArenaStats methods comprehensively
+#[test]
+fn test_arena_stats_methods_comprehensive() {
+    // Empty arena
+    let empty_stats = ArenaStats {
+        capacity: 100,
+        allocated: 0,
+        free: 100,
+        fragmentation: 0.0,
+    };
+    assert!(empty_stats.is_empty());
+    assert!(!empty_stats.is_full());
+    assert_eq!(empty_stats.usage_percent(), 0.0);
+    assert_eq!(empty_stats.free_percent(), 100.0);
+    assert!(!empty_stats.is_fragmented(0.1));
+    
+    // Full arena
+    let full_stats = ArenaStats {
+        capacity: 100,
+        allocated: 100,
+        free: 0,
+        fragmentation: 0.0,
+    };
+    assert!(!full_stats.is_empty());
+    assert!(full_stats.is_full());
+    assert_eq!(full_stats.usage_percent(), 100.0);
+    assert_eq!(full_stats.free_percent(), 0.0);
+    
+    // Fragmented arena
+    let fragmented = ArenaStats {
+        capacity: 100,
+        allocated: 50,
+        free: 50,
+        fragmentation: 0.5,
+    };
+    assert!(fragmented.is_fragmented(0.4));
+    assert!(!fragmented.is_fragmented(0.6));
+    
+    // Zero capacity arena (edge case)
+    let zero_cap = ArenaStats {
+        capacity: 0,
+        allocated: 0,
+        free: 0,
+        fragmentation: 0.0,
+    };
+    assert_eq!(zero_cap.usage_percent(), 0.0);
+}
+
+/// Test that GC handles arena at maximum capacity correctly
+#[test]
+fn test_gc_at_max_capacity_boundary() {
+    let arena: Arena<Tree, 5> = Arena::new(Tree::Leaf(0));
+    
+    // Fill arena completely
+    let idx0 = arena.alloc(Tree::Leaf(0)).unwrap();
+    let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
+    let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
+    let idx3 = arena.alloc(Tree::Leaf(3)).unwrap();
+    let idx4 = arena.alloc(Tree::Leaf(4)).unwrap();
+    
+    assert!(arena.is_full());
+    assert!(arena.alloc(Tree::Leaf(5)).is_err());
+    
+    // Collect keeping only some roots
+    let stats = arena.collect_garbage(&[idx0, idx2, idx4]);
+    
+    assert_eq!(stats.marked, 3);
+    assert_eq!(stats.collected, 2);
+    assert_eq!(arena.len(), 3);
+    assert!(!arena.is_full());
+    
+    // Now we can allocate again
+    let _new_idx = arena.alloc(Tree::Leaf(100)).unwrap();
+    assert_eq!(arena.len(), 4);
+}
+
+/// Test alloc_or_gc boundary: GC doesn't help (all reachable)
+#[test]
+fn test_alloc_or_gc_when_gc_cannot_help() {
+    let arena: Arena<Tree, 3> = Arena::new(Tree::Leaf(0));
+    
+    // Fill arena with all reachable values
+    let idx0 = arena.alloc(Tree::Leaf(0)).unwrap();
+    let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
+    let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
+    
+    // All roots, so nothing can be collected
+    let result = arena.alloc_or_gc(Tree::Leaf(3), &[idx0, idx1, idx2]);
+    
+    // Should still fail since GC couldn't free anything
+    assert_eq!(result, Err(ArenaError::OutOfMemory));
+    assert_eq!(arena.len(), 3);
+}
