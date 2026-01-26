@@ -1,0 +1,7 @@
+# Cargo configuration for pwn_arena
+
+# Increase stack size for tests to handle deep recursion
+# The default Rust stack size is 2MB (8MB on main thread)
+# This sets RUST_MIN_STACK to 8MB for all test threads
+[env]
+RUST_MIN_STACK = "8388608"

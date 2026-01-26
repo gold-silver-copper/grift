@@ -772,15 +772,40 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             state = match state {
                 TrampolineState::Eval { expr, env } => {
-                    self.step_eval(expr, env)?
+                    match self.step_eval(expr, env) {
+                        Ok(s) => s,
+                        Err(e) if e.kind == ErrorKind::OutOfMemory => {
+                            // Auto-GC: Run GC and retry on out of memory
+                            self.gc_with_state(&state);
+                            self.step_eval(expr, env)?
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 TrampolineState::Force { idx } => {
-                    self.step_force(idx)?
+                    match self.step_force(idx) {
+                        Ok(s) => s,
+                        Err(e) if e.kind == ErrorKind::OutOfMemory => {
+                            // Auto-GC: Run GC and retry on out of memory
+                            self.gc_with_state(&state);
+                            self.step_force(idx)?
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 TrampolineState::Return { val } => {
-                    match self.step_return(val)? {
-                        Some(new_state) => new_state,
-                        None => return Ok(val), // Done!
+                    match self.step_return(val) {
+                        Ok(Some(new_state)) => new_state,
+                        Ok(None) => return Ok(val), // Done!
+                        Err(e) if e.kind == ErrorKind::OutOfMemory => {
+                            // Auto-GC: Run GC and retry on out of memory
+                            self.gc_with_state(&state);
+                            match self.step_return(val)? {
+                                Some(new_state) => new_state,
+                                None => return Ok(val),
+                            }
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
             };
@@ -2104,7 +2129,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate a string
     pub fn eval_str(&mut self, input: &str) -> EvalResult {
-        let expr = parse(self.lisp, input)?;
+        // Try to parse, with auto-GC retry on out of memory
+        let expr = match parse(self.lisp, input) {
+            Ok(e) => e,
+            Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => {
+                // Auto-GC: Run GC and retry parsing
+                self.gc();
+                parse(self.lisp, input)?
+            }
+            Err(e) => return Err(e.into()),
+        };
         self.eval(expr)
     }
 }
