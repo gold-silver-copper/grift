@@ -435,7 +435,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let new_idx = arena.alloc_or_gc(Node(4), &[root]).unwrap();
     /// assert_eq!(arena.len(), 2); // root + new_idx
     /// ```
-    pub fn alloc_or_gc(&self, value: T, roots: &[ArenaIndex]) -> Result<ArenaIndex, ArenaError>
+    pub fn alloc_or_gc(&self, value: T, roots: &[ArenaIndex]) -> crate::ArenaResult<ArenaIndex>
     where
         T: Trace<T, N>,
     {
