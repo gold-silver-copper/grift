@@ -415,12 +415,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         Ok(ArenaIndex::new(idx, generation))
     }
 
-    /// Validate an index and return the value if valid.
-    /// 
-    /// This combines bounds check, generation check, and slot occupancy check
-    /// in a single borrow, avoiding redundant RefCell borrows.
+    /// Check that an index is valid (in bounds and generation matches).
+    /// Returns the slot index if valid.
+    /// Note: Does NOT check if the slot is occupied - caller must verify.
     #[inline]
-    fn validate_and_get(&self, index: ArenaIndex) -> ArenaResult<T> {
+    fn check_bounds_and_generation(&self, index: ArenaIndex) -> ArenaResult<usize> {
         let idx = index.raw();
 
         if idx >= N {
@@ -433,27 +432,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             return Err(ArenaError::GenerationMismatch);
         }
 
-        // Check if slot is occupied and get value in one borrow
-        match self.slots.borrow()[idx] {
-            Slot::Occupied { value } => Ok(value),
-            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
-        }
+        Ok(idx)
     }
 
     /// Validate an index and return the slot index if valid.
     #[inline]
     fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
-        let idx = index.raw();
-
-        if idx >= N {
-            return Err(ArenaError::InvalidIndex);
-        }
-
-        // Check generation
-        let current_gen = self.generations.borrow()[idx];
-        if index.generation() != current_gen {
-            return Err(ArenaError::GenerationMismatch);
-        }
+        let idx = self.check_bounds_and_generation(index)?;
 
         // Check if slot is occupied
         match self.slots.borrow()[idx] {
@@ -471,7 +456,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     #[inline]
     #[must_use]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
-        self.validate_and_get(index)
+        let idx = self.check_bounds_and_generation(index)?;
+
+        // Check if slot is occupied and get value in one borrow
+        match self.slots.borrow()[idx] {
+            Slot::Occupied { value } => Ok(value),
+            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
+        }
     }
 
     /// Set the value at the given index.
