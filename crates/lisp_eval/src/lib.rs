@@ -280,6 +280,16 @@ impl From<ParseError> for EvalError {
     }
 }
 
+impl EvalError {
+    /// Create an EvalError from a ParseError with expression context
+    pub fn from_parse_error(e: ParseError, expr: ArenaIndex) -> Self {
+        let mut err = EvalError::new(ErrorKind::Parse);
+        err.parse_error = Some(e);
+        err.expr = expr;
+        err
+    }
+}
+
 /// Result type for evaluation
 pub type EvalResult = Result<ArenaIndex, EvalError>;
 
@@ -909,7 +919,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
-            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } | Value::Thunk { .. } |
+            Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } | Value::Thunk { .. } |
             Value::Memo { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
@@ -1233,17 +1243,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
-                    Value::StdLib(s) => {
-                        // StdLib: Parse body from static string, create lambda, apply
-                        // This is like Lambda but we create the lambda on-demand
+                    Value::StdLib { func: s, cached_body, cached_params } => {
+                        // StdLib: Use cached body/params if available, otherwise parse and cache
                         self.pop_frame();
                         
-                        // Parse the body from the static source string
-                        let body = parse(self.lisp, s.body())
-                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
-                        
-                        // Create parameter list from static param names
-                        let params = self.make_stdlib_param_list(s.params())?;
+                        // Check if we have cached values, otherwise parse and cache
+                        let (body, params) = if !cached_body.is_null() && !cached_params.is_null() {
+                            // Use cached values (fast path)
+                            (cached_body, cached_params)
+                        } else {
+                            // First call - parse body and create param list, then cache
+                            let parsed_body = parse(self.lisp, s.body())
+                                .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                            let parsed_params = self.make_stdlib_param_list(s.params())?;
+                            
+                            // Update the StdLib value in the arena with cached values
+                            // This mutates the value in-place so future calls use the cache
+                            self.lisp.set(val, Value::StdLib { 
+                                func: s, 
+                                cached_body: parsed_body, 
+                                cached_params: parsed_params 
+                            })?;
+                            
+                            (parsed_body, parsed_params)
+                        };
                         
                         // Use the global env for stdlib functions (they're defined at top level)
                         let closure_env = self.global_env;

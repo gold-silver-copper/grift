@@ -332,55 +332,13 @@ macro_rules! define_stdlib {
     };
 }
 
-// Define all standard library functions using the macro.
-// To add a new function, simply add a new entry here.
+// Define all standard library functions using the include_stdlib! macro.
+// This macro reads the stdlib.lisp file and generates the StdLib enum.
+// To add a new function, simply add a new entry in stdlib.lisp.
 // Note: member/assoc use eq for comparison (like Scheme's memq/assq).
 // This works for symbols and identical objects. For value comparison,
 // define a custom function or use fold with a predicate.
-define_stdlib! {
-    /// (map f lst) - Apply f to each element of lst
-    Map("map", ["f", "lst"], "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))"),
-    /// (filter pred lst) - Return elements where pred is true
-    Filter("filter", ["pred", "lst"], "(if (null? lst) '() (if (pred (car lst)) (cons (car lst) (filter pred (cdr lst))) (filter pred (cdr lst))))"),
-    /// (fold f acc lst) - Left fold over lst
-    Fold("fold", ["f", "acc", "lst"], "(if (null? lst) acc (fold f (f acc (car lst)) (cdr lst)))"),
-    /// (length lst) - Return length of lst
-    Length("length", ["lst"], "(if (null? lst) 0 (+ 1 (length (cdr lst))))"),
-    /// (append a b) - Concatenate two lists
-    Append("append", ["a", "b"], "(if (null? a) b (cons (car a) (append (cdr a) b)))"),
-    /// (reverse lst) - Reverse a list
-    Reverse("reverse", ["lst"], "(fold (lambda (acc x) (cons x acc)) '() lst)"),
-    /// (nth n lst) - Get nth element (0-indexed)
-    Nth("nth", ["n", "lst"], "(if (= n 0) (car lst) (nth (- n 1) (cdr lst)))"),
-    /// (take n lst) - Take first n elements
-    Take("take", ["n", "lst"], "(if (= n 0) '() (if (null? lst) '() (cons (car lst) (take (- n 1) (cdr lst)))))"),
-    /// (drop n lst) - Drop first n elements
-    Drop("drop", ["n", "lst"], "(if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst))))"),
-    /// (zip a b) - Zip two lists into list of pairs
-    Zip("zip", ["a", "b"], "(if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b)))))"),
-    /// (member x lst) - Check if x is in lst
-    Member("member", ["x", "lst"], "(if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst))))"),
-    /// (assoc key alist) - Look up key in association list
-    Assoc("assoc", ["key", "alist"], "(if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist))))"),
-    /// (range start end) - Generate list of integers [start, end)
-    Range("range", ["start", "end"], "(if (>= start end) '() (cons start (range (+ start 1) end)))"),
-    /// (compose f g) - Return function that applies g then f
-    Compose("compose", ["f", "g"], "(lambda (x) (f (g x)))"),
-    /// (identity x) - Return x unchanged
-    Identity("identity", ["x"], "x"),
-    /// (constantly x) - Return function that always returns x
-    Constantly("constantly", ["x"], "(lambda (y) x)"),
-    /// (flip f) - Flip argument order of binary function
-    Flip("flip", ["f"], "(lambda (a b) (f b a))"),
-    /// (curry f x) - Partial application
-    Curry("curry", ["f", "x"], "(lambda (y) (f x y))"),
-    /// (cadr lst) - (car (cdr lst))
-    Cadr("cadr", ["lst"], "(car (cdr lst))"),
-    /// (caddr lst) - (car (cdr (cdr lst)))
-    Caddr("caddr", ["lst"], "(car (cdr (cdr lst)))"),
-    /// (cddr lst) - (cdr (cdr lst))
-    Cddr("cddr", ["lst"], "(cdr (cdr lst))"),
-}
+lisp_macros::include_stdlib!("src/stdlib.lisp");
 
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -439,24 +397,27 @@ pub enum Value {
     /// Built-in function (optimized)
     Builtin(Builtin),
     
-    /// Standard library function (stored in static memory)
+    /// Standard library function (stored in static memory with lazy caching)
     /// 
     /// Unlike Lambda which stores code in the arena, StdLib references static
-    /// function definitions. The function body is parsed on-demand when called,
-    /// providing zero arena cost for function code storage.
+    /// function definitions. The function body is parsed on first call and cached,
+    /// providing good performance while minimizing initial arena cost.
     /// 
     /// # Memory Efficiency
     /// 
     /// - Function definitions are in static memory (const strings)
-    /// - Only runtime values (arguments, return values) use arena space
-    /// - Parsed AST is temporary and GC'd after each call
+    /// - Parsed body and params are cached on first call (lazy initialization)
+    /// - Subsequent calls reuse the cached parsed AST
     /// 
-    /// # Pitfalls
+    /// # Cache Fields
     /// 
-    /// - Each call incurs parsing overhead (mitigated by simple parser)
-    /// - Errors in static source strings are only caught at runtime
-    /// - StdLib functions should be tested thoroughly at compile time
-    StdLib(StdLib),
+    /// - `cached_body`: NULL until first call, then points to parsed body AST
+    /// - `cached_params`: NULL until first call, then points to param list
+    StdLib {
+        func: StdLib,
+        cached_body: ArenaIndex,    // NULL = not yet parsed
+        cached_params: ArenaIndex,  // NULL = not yet created
+    },
 }
 
 impl Value {
@@ -524,13 +485,13 @@ impl Value {
     /// Check if this value is a stdlib function
     #[inline]
     pub const fn is_stdlib(&self) -> bool {
-        matches!(self, Value::StdLib(_))
+        matches!(self, Value::StdLib { .. })
     }
     
     /// Check if this value is a procedure (lambda, builtin, stdlib, or memoized function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Memo { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Memo { .. })
     }
     
     /// Check if this value is a thunk (promise)
@@ -576,7 +537,7 @@ impl Value {
             Value::Thunk { .. } => "promise",
             Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
-            Value::StdLib(_) => "procedure",
+            Value::StdLib { .. } => "procedure",
         }
     }
 }
@@ -586,8 +547,17 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) | Value::StdLib(_) => {
-                // No references - StdLib references static data, not arena
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) => {
+                // No references
+            }
+            Value::StdLib { cached_body, cached_params, .. } => {
+                // Trace cached parsed body and params if they exist
+                if !cached_body.is_null() {
+                    tracer(*cached_body);
+                }
+                if !cached_params.is_null() {
+                    tracer(*cached_params);
+                }
             }
             Value::Cons { car, cdr } => {
                 tracer(*car);
@@ -964,12 +934,15 @@ impl<const N: usize> Lisp<N> {
     
     /// Allocate a stdlib function
     /// 
-    /// StdLib functions are stored in static memory, so this only allocates
-    /// a single cell containing the StdLib enum variant. The function code
-    /// is parsed on-demand from the static source string.
+    /// StdLib functions are stored in static memory with lazy caching.
+    /// The function body is parsed on first call and cached for reuse.
     #[inline]
     pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::StdLib(s))
+        self.alloc(Value::StdLib { 
+            func: s, 
+            cached_body: ArenaIndex::NULL, 
+            cached_params: ArenaIndex::NULL 
+        })
     }
     
     /// Allocate a lambda
