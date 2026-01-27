@@ -50,6 +50,7 @@ pub enum Value {
     Memo { func: ArenaIndex, cache: ArenaIndex },
     Builtin(Builtin),                      // Optimized primitives
     StdLib { func: StdLib, cached_body: ArenaIndex, cached_params: ArenaIndex },
+    Array { data: ArenaIndex, len: usize }, // Contiguous value storage
 }
 ```
 
@@ -80,6 +81,23 @@ Symbols use contiguous string storage for efficiency:
 - The `chars` field points to a length slot followed by character slots
 - Each character is stored as `Value::Char(c)`
 - This uses less memory than a linked list of characters
+
+### Arrays
+
+Arrays provide O(1) indexed access to values stored contiguously in the arena:
+
+```lisp
+(define arr (make-array 5 0))  ; Array of 5 zeros
+(array-set! arr 2 42)          ; Set element at index 2
+(array-ref arr 2)              ; => 42
+(array-length arr)             ; => 5
+```
+
+Arrays use contiguous storage similar to symbols:
+- The `data` field points to the first element
+- Elements are stored at consecutive arena slots
+- O(1) read and write operations via direct index calculation
+- Efficient memory layout for cache-friendly access
 
 ## Evaluation Strategy
 
@@ -213,6 +231,7 @@ pub enum Builtin {
     Lt, Gt, Le, Ge, NumEq,
     Not, Print, Display, Newline, Error,
     Memoize, Gensym, SetCar, SetCdr,
+    MakeArray, ArrayRef, ArraySet, ArrayLength, Arrayp,
     Gc, GcEnable, GcDisable, GcEnabledP, ArenaStats,
 }
 ```

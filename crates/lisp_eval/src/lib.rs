@@ -1061,7 +1061,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } | Value::Thunk { .. } |
-            Value::Memo { .. } => {
+            Value::Memo { .. } | Value::Array { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -1912,6 +1912,72 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
                 }
+            }
+            
+            Builtin::MakeArray => {
+                // (make-array len default) - create an array of given length
+                extract_args!(self, args, len_val, default);
+                
+                let len = match self.lisp.get(len_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                self.lisp.make_array(len, default).map_err(Into::into)
+            }
+            
+            Builtin::ArrayRef => {
+                // (array-ref arr index) - get element at index
+                extract_args!(self, args, arr, index_val);
+                
+                let index = match self.lisp.get(index_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                match self.lisp.get(arr)? {
+                    Value::Array { .. } => {
+                        self.lisp.array_get(arr, index).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::ArraySet => {
+                // (array-set! arr index value) - set element at index
+                extract_args!(self, args, arr, index_val, value);
+                
+                let index = match self.lisp.get(index_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                match self.lisp.get(arr)? {
+                    Value::Array { .. } => {
+                        self.lisp.array_set(arr, index, value)?;
+                        Ok(arr) // Return the array
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::ArrayLength => {
+                // (array-length arr) - get length of array
+                let arr = self.lisp.car(args)?;
+                
+                match self.lisp.get(arr)? {
+                    Value::Array { len, .. } => {
+                        self.lisp.number(len as i64).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::Arrayp => {
+                // (array? x) - check if x is an array
+                let val = self.lisp.car(args)?;
+                let is_array = matches!(self.lisp.get(val)?, Value::Array { .. });
+                self.lisp.boolean(is_array).map_err(Into::into)
             }
             
             Builtin::Gc => {

@@ -82,12 +82,19 @@ cargo test --workspace
 (= 5 5)                ; => #t
 (eq 'a 'a)             ; => #t
 
-; Memory management (NEW!)
+; Memory management
 (gc)                   ; => (marked collected before)
 (gc-enable)            ; Enable automatic GC
 (gc-disable)           ; Disable automatic GC
 (gc-enabled?)          ; => #t or #f
 (arena-stats)          ; => (capacity allocated free usage%)
+
+; Arrays (O(1) indexed access)
+(define arr (make-array 5 0))  ; Create array of 5 zeros
+(array-ref arr 2)              ; => 0 (get element at index 2)
+(array-set! arr 2 42)          ; Set element at index 2
+(array-length arr)             ; => 5
+(array? arr)                   ; => #t
 ```
 
 ### Special Forms
