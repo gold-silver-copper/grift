@@ -12,8 +12,10 @@
 //! The type system supports:
 //! - Base types: `isize`, `bool`, `nil`, `char`
 //! - Function types: `(fn t1 t2)` - function from t1 to t2
+//! - Multi-param functions: `(fn (t1 t2 ...) result)` - curried automatically
 //! - List types: `(list t)` - homogeneous list of type t
 //! - Pair types: `(pair t1 t2)` - pair of t1 and t2
+//! - Polymorphic types: `(forall (a b ...) type)` - universal quantification
 //!
 //! ## Bidirectional Typing
 //!
@@ -28,26 +30,36 @@
 //!
 //! All type syntax uses pure Lisp S-expressions:
 //!
-//! ```lisp
-//! ; Base types
-//! isize                    ; integer type (like Rust's isize)
-//! bool                     ; boolean type
-//! nil                      ; unit/nil type
-//! char                     ; character type
+//! ```text
+//! ;; Base types
+//! isize                    ;; integer type (like Rust's isize)
+//! bool                     ;; boolean type
+//! nil                      ;; unit/nil type
+//! char                     ;; character type
 //!
-//! ; Compound types
-//! (fn isize isize)         ; function from isize to isize
-//! (fn isize (fn isize isize))  ; curried binary function
-//! (list isize)             ; list of isize
-//! (pair isize bool)        ; pair of isize and bool
+//! ;; Function types
+//! (fn isize isize)         ;; function from isize to isize
+//! (fn isize (fn isize isize))  ;; curried binary function
+//! (fn (isize isize) isize)     ;; multi-param function (curried)
 //!
-//! ; Type annotations using (the type expr)
-//! (the isize 42)           ; annotate 42 as isize
-//! (the (fn isize isize) (lambda (x) x))  ; annotate identity function
+//! ;; Collection types
+//! (list isize)             ;; list of isize
+//! (pair isize bool)        ;; pair of isize and bool
 //!
-//! ; Typed definitions with declare
-//! (declare add (fn isize (fn isize isize)))
+//! ;; Polymorphic types
+//! (forall (a) (fn a a))    ;; polymorphic identity
+//! (forall (a b) (fn ((fn a b) (list a)) (list b)))  ;; map type
+//!
+//! ;; Type annotations using (the type expr)
+//! (the isize 42)           ;; annotate 42 as isize
+//! (the (fn isize isize) (lambda (x) x))  ;; annotate identity function
+//!
+//! ;; Type declarations with declare
+//! (declare add (fn (isize isize) isize))
 //! (define (add x y) (+ x y))
+//!
+//! ;; Typed lambdas
+//! (lambda-typed ((x isize) (y isize)) (+ x y))
 //! ```
 //!
 //! ## Implementation Notes
@@ -99,9 +111,17 @@ pub enum Type {
         second: ArenaIndex,  // Points to Type
     },
     
-    /// Type variable (for future polymorphism support)
+    /// Type variable (for polymorphism support)
     /// Represented as a unique identifier
     Var(u32),
+    
+    /// Universal quantification `(forall (a b ...) type)`
+    /// type_vars is a list of type variable names in the Lisp arena
+    /// body is the quantified type
+    ForAll {
+        type_vars: ArenaIndex,  // List of type variable symbols in Lisp arena
+        body: ArenaIndex,       // Points to Type
+    },
 }
 
 impl Type {
@@ -109,6 +129,12 @@ impl Type {
     #[inline]
     pub const fn is_base(&self) -> bool {
         matches!(self, Type::Isize | Type::Bool | Type::Nil | Type::Char)
+    }
+    
+    /// Check if this is a forall type
+    #[inline]
+    pub const fn is_forall(&self) -> bool {
+        matches!(self, Type::ForAll { .. })
     }
     
     /// Check if this is a function type
@@ -140,6 +166,7 @@ impl Type {
             Type::List { .. } => "list",
             Type::Pair { .. } => "pair",
             Type::Var(_) => "type variable",
+            Type::ForAll { .. } => "forall",
         }
     }
 }
@@ -161,6 +188,10 @@ impl<const N: usize> Trace<Type, N> for Type {
             Type::Pair { first, second } => {
                 tracer(*first);
                 tracer(*second);
+            }
+            Type::ForAll { body, .. } => {
+                // type_vars is in the Lisp arena, not type arena
+                tracer(*body);
             }
         }
     }
@@ -396,6 +427,18 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
             .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, ArenaIndex::NULL))
     }
     
+    /// Allocate a forall type
+    pub fn forall_type(&self, type_vars: ArenaIndex, body: ArenaIndex) -> TypeResult<ArenaIndex> {
+        self.types.alloc(Type::ForAll { type_vars, body })
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, ArenaIndex::NULL))
+    }
+    
+    /// Allocate a type variable
+    pub fn var_type(&self, id: u32) -> TypeResult<ArenaIndex> {
+        self.types.alloc(Type::Var(id))
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, ArenaIndex::NULL))
+    }
+    
     /// Get a type from the type arena
     pub fn get_type(&self, idx: ArenaIndex) -> TypeResult<Type> {
         self.types.get(idx)
@@ -413,15 +456,23 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
     /// - `bool` - boolean type  
     /// - `nil` - nil/unit type
     /// - `char` - character type
-    /// - `(fn t1 t2)` - function type
+    /// - `(fn param_type result_type)` - single-param function type
+    /// - `(fn (t1 t2 ...) result)` - multi-param function type (curried)
     /// - `(list t)` - list type
     /// - `(pair t1 t2)` - pair type
+    /// - `(forall (a b ...) type)` - polymorphic type
+    /// - `a` - type variable (lowercase single letter or any symbol in forall scope)
     pub fn parse_type(&self, expr: ArenaIndex) -> TypeResult<ArenaIndex> {
+        self.parse_type_with_vars(expr, ArenaIndex::NULL)
+    }
+    
+    /// Parse a type with known type variables in scope
+    fn parse_type_with_vars(&self, expr: ArenaIndex, type_vars: ArenaIndex) -> TypeResult<ArenaIndex> {
         let val = self.lisp.get(expr)
             .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
         
         match val {
-            // Base type symbols
+            // Base type symbols or type variables
             Value::Symbol { .. } => {
                 if self.lisp.symbol_matches(expr, "isize")
                     .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))? 
@@ -443,33 +494,29 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
                 {
                     return self.char_type();
                 }
+                
+                // Check if it's a type variable in scope
+                if !type_vars.is_null() {
+                    if let Some(idx) = self.find_type_var_index(expr, type_vars)? {
+                        return self.var_type(idx);
+                    }
+                }
+                
                 // Unknown type symbol
                 Err(TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))
             }
             
-            // Compound types (fn t1 t2), (list t), (pair t1 t2)
+            // Compound types
             Value::Cons { car, cdr: _ } => {
                 let head = self.lisp.get(car)
                     .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
                 
                 if let Value::Symbol { .. } = head {
-                    // Function type: (fn param_type result_type)
+                    // Function type: (fn param result) or (fn (t1 t2 ...) result)
                     if self.lisp.symbol_matches(car, "fn")
                         .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))? 
                     {
-                        let args = self.lisp.cdr(expr)
-                            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
-                        let param_expr = self.lisp.car(args)
-                            .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
-                        let rest = self.lisp.cdr(args)
-                            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
-                        let result_expr = self.lisp.car(rest)
-                            .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
-                        
-                        let param = self.parse_type(param_expr)?;
-                        let result = self.parse_type(result_expr)?;
-                        
-                        return self.arrow_type(param, result);
+                        return self.parse_fn_type(expr, type_vars);
                     }
                     
                     // List type: (list element_type)
@@ -481,7 +528,7 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
                         let elem_expr = self.lisp.car(args)
                             .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
                         
-                        let element = self.parse_type(elem_expr)?;
+                        let element = self.parse_type_with_vars(elem_expr, type_vars)?;
                         
                         return self.list_type(element);
                     }
@@ -499,10 +546,17 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
                         let second_expr = self.lisp.car(rest)
                             .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
                         
-                        let first = self.parse_type(first_expr)?;
-                        let second = self.parse_type(second_expr)?;
+                        let first = self.parse_type_with_vars(first_expr, type_vars)?;
+                        let second = self.parse_type_with_vars(second_expr, type_vars)?;
                         
                         return self.pair_type(first, second);
+                    }
+                    
+                    // Forall type: (forall (a b ...) type)
+                    if self.lisp.symbol_matches(car, "forall")
+                        .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?
+                    {
+                        return self.parse_forall_type(expr);
                     }
                 }
                 
@@ -510,6 +564,100 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
             }
             
             _ => Err(TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))
+        }
+    }
+    
+    /// Parse a function type: (fn param result) or (fn (t1 t2 ...) result)
+    fn parse_fn_type(&self, expr: ArenaIndex, type_vars: ArenaIndex) -> TypeResult<ArenaIndex> {
+        let args = self.lisp.cdr(expr)
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
+        let param_expr = self.lisp.car(args)
+            .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
+        let rest = self.lisp.cdr(args)
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
+        let result_expr = self.lisp.car(rest)
+            .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
+        
+        // Check if param_expr is a list (multi-param function)
+        let param_val = self.lisp.get(param_expr)
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
+        
+        match param_val {
+            Value::Cons { .. } => {
+                // Multi-param: (fn (t1 t2 ...) result) -> curried function
+                self.parse_multi_param_fn(param_expr, result_expr, type_vars)
+            }
+            _ => {
+                // Single-param: (fn t1 t2)
+                let param = self.parse_type_with_vars(param_expr, type_vars)?;
+                let result = self.parse_type_with_vars(result_expr, type_vars)?;
+                self.arrow_type(param, result)
+            }
+        }
+    }
+    
+    /// Parse a multi-param function type: (fn (t1 t2 ...) result)
+    /// Converts to curried form: t1 -> t2 -> ... -> result
+    fn parse_multi_param_fn(&self, params: ArenaIndex, result_expr: ArenaIndex, type_vars: ArenaIndex) -> TypeResult<ArenaIndex> {
+        let result_type = self.parse_type_with_vars(result_expr, type_vars)?;
+        self.parse_param_list_to_arrow(params, result_type, type_vars)
+    }
+    
+    /// Convert a list of param types to a curried arrow type
+    fn parse_param_list_to_arrow(&self, params: ArenaIndex, result: ArenaIndex, type_vars: ArenaIndex) -> TypeResult<ArenaIndex> {
+        let val = self.lisp.get(params)
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, params))?;
+        
+        match val {
+            Value::Nil => Ok(result),
+            Value::Cons { car: first, cdr: rest } => {
+                // Parse remaining params first (right-to-left construction)
+                let rest_type = self.parse_param_list_to_arrow(rest, result, type_vars)?;
+                let first_type = self.parse_type_with_vars(first, type_vars)?;
+                self.arrow_type(first_type, rest_type)
+            }
+            _ => Err(TypeError::new(TypeErrorKind::InvalidTypeSyntax, params))
+        }
+    }
+    
+    /// Parse a forall type: (forall (a b ...) type)
+    fn parse_forall_type(&self, expr: ArenaIndex) -> TypeResult<ArenaIndex> {
+        let args = self.lisp.cdr(expr)
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
+        let vars_expr = self.lisp.car(args)
+            .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
+        let rest = self.lisp.cdr(args)
+            .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
+        let body_expr = self.lisp.car(rest)
+            .map_err(|_| TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))?;
+        
+        // Parse body with vars in scope
+        let body = self.parse_type_with_vars(body_expr, vars_expr)?;
+        
+        self.forall_type(vars_expr, body)
+    }
+    
+    /// Find index of a type variable in the type variables list
+    fn find_type_var_index(&self, var: ArenaIndex, type_vars: ArenaIndex) -> TypeResult<Option<u32>> {
+        let mut current = type_vars;
+        let mut idx = 0u32;
+        
+        loop {
+            let val = self.lisp.get(current)
+                .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, current))?;
+            
+            match val {
+                Value::Nil => return Ok(None),
+                Value::Cons { car, cdr } => {
+                    // Symbols are interned, so ArenaIndex comparison is sufficient
+                    if car == var {
+                        return Ok(Some(idx));
+                    }
+                    current = cdr;
+                    idx += 1;
+                }
+                _ => return Err(TypeError::new(TypeErrorKind::InvalidTypeSyntax, type_vars))
+            }
         }
     }
     
@@ -544,6 +692,11 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
             
             (Type::Pair { first: f1, second: s1 }, Type::Pair { first: f2, second: s2 }) => {
                 Ok(self.types_equal(f1, f2)? && self.types_equal(s1, s2)?)
+            }
+            
+            (Type::ForAll { type_vars: _, body: b1 }, Type::ForAll { type_vars: _, body: b2 }) => {
+                // For now, just check body equality (assumes same variable ordering)
+                self.types_equal(b1, b2)
             }
             
             _ => Ok(false),
@@ -1279,5 +1432,112 @@ mod tests {
         let arrow1 = checker.arrow_type(isize1, bool_t).unwrap();
         let arrow2 = checker.arrow_type(isize2, bool_t).unwrap();
         assert!(checker.types_equal(arrow1, arrow2).unwrap());
+    }
+    
+    #[test]
+    fn test_parse_multi_param_fn_type() {
+        let (lisp, types) = setup();
+        let checker = TypeChecker::new(&lisp, &types);
+        
+        // Parse (fn (isize isize) isize) - binary function type
+        let fn_sym = lisp.symbol("fn").unwrap();
+        let isize_sym1 = lisp.symbol("isize").unwrap();
+        let isize_sym2 = lisp.symbol("isize").unwrap();
+        let isize_sym3 = lisp.symbol("isize").unwrap();
+        let params = lisp.list([isize_sym1, isize_sym2]).unwrap();
+        let fn_type_expr = lisp.list([fn_sym, params, isize_sym3]).unwrap();
+        
+        let fn_type = checker.parse_type(fn_type_expr).unwrap();
+        let ty = types.get(fn_type).unwrap();
+        
+        // Should be isize -> (isize -> isize)
+        match ty {
+            Type::Arrow { param, result } => {
+                assert_eq!(types.get(param).unwrap(), Type::Isize);
+                // result should be another arrow
+                let result_ty = types.get(result).unwrap();
+                match result_ty {
+                    Type::Arrow { param: p2, result: r2 } => {
+                        assert_eq!(types.get(p2).unwrap(), Type::Isize);
+                        assert_eq!(types.get(r2).unwrap(), Type::Isize);
+                    }
+                    _ => panic!("Expected nested Arrow type"),
+                }
+            }
+            _ => panic!("Expected Arrow type"),
+        }
+    }
+    
+    #[test]
+    fn test_parse_forall_type() {
+        let (lisp, types) = setup();
+        let checker = TypeChecker::new(&lisp, &types);
+        
+        // Parse (forall (a) (fn a a)) - polymorphic identity type
+        let forall_sym = lisp.symbol("forall").unwrap();
+        let a_sym = lisp.symbol("a").unwrap();
+        let fn_sym = lisp.symbol("fn").unwrap();
+        let a_sym2 = lisp.symbol("a").unwrap();
+        let a_sym3 = lisp.symbol("a").unwrap();
+        
+        let vars = lisp.list([a_sym]).unwrap();
+        let body = lisp.list([fn_sym, a_sym2, a_sym3]).unwrap();
+        let forall_expr = lisp.list([forall_sym, vars, body]).unwrap();
+        
+        let forall_type = checker.parse_type(forall_expr).unwrap();
+        let ty = types.get(forall_type).unwrap();
+        
+        match ty {
+            Type::ForAll { type_vars, body } => {
+                // type_vars should be (a)
+                assert!(!type_vars.is_null());
+                // body should be Arrow { Var(0), Var(0) }
+                let body_ty = types.get(body).unwrap();
+                match body_ty {
+                    Type::Arrow { param, result } => {
+                        assert_eq!(types.get(param).unwrap(), Type::Var(0));
+                        assert_eq!(types.get(result).unwrap(), Type::Var(0));
+                    }
+                    _ => panic!("Expected Arrow type in forall body"),
+                }
+            }
+            _ => panic!("Expected ForAll type"),
+        }
+    }
+    
+    #[test]
+    fn test_parse_forall_multi_vars() {
+        let (lisp, types) = setup();
+        let checker = TypeChecker::new(&lisp, &types);
+        
+        // Parse (forall (a b) (fn a b)) - function from a to b
+        let forall_sym = lisp.symbol("forall").unwrap();
+        let a_sym = lisp.symbol("a").unwrap();
+        let b_sym = lisp.symbol("b").unwrap();
+        let fn_sym = lisp.symbol("fn").unwrap();
+        let a_sym2 = lisp.symbol("a").unwrap();
+        let b_sym2 = lisp.symbol("b").unwrap();
+        
+        let vars = lisp.list([a_sym, b_sym]).unwrap();
+        let body = lisp.list([fn_sym, a_sym2, b_sym2]).unwrap();
+        let forall_expr = lisp.list([forall_sym, vars, body]).unwrap();
+        
+        let forall_type = checker.parse_type(forall_expr).unwrap();
+        let ty = types.get(forall_type).unwrap();
+        
+        match ty {
+            Type::ForAll { body, .. } => {
+                let body_ty = types.get(body).unwrap();
+                match body_ty {
+                    Type::Arrow { param, result } => {
+                        // a is first (Var(0)), b is second (Var(1))
+                        assert_eq!(types.get(param).unwrap(), Type::Var(0));
+                        assert_eq!(types.get(result).unwrap(), Type::Var(1));
+                    }
+                    _ => panic!("Expected Arrow type in forall body"),
+                }
+            }
+            _ => panic!("Expected ForAll type"),
+        }
     }
 }

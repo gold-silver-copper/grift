@@ -203,7 +203,9 @@ Special forms are handled directly by the evaluator, not as functions:
 | `eval` | Runtime evaluation |
 | `apply` | Apply function to argument list |
 | `defmacro` | Define macro |
-| `:` | Type annotation (see Type System) |
+| `declare` | Type declaration (see Type System) |
+| `the` | Type annotation (see Type System) |
+| `lambda-typed` | Typed lambda (see Type System) |
 
 ## Type System
 
@@ -216,19 +218,49 @@ by Dunfield and Krishnaswami.
 All types use pure Lisp S-expression syntax:
 
 ```lisp
-; Base types
-isize                        ; integer type (like Rust's isize)
-bool                         ; boolean type
-nil                          ; nil/unit type
-char                         ; character type
+;; Base types
+isize                        ;; integer type (like Rust's isize)
+bool                         ;; boolean type
+nil                          ;; nil/unit type
+char                         ;; character type
 
-; Function types
-(fn isize isize)             ; function from isize to isize
-(fn isize (fn isize isize))  ; curried binary function
+;; Function types
+(fn isize isize)             ;; function from isize to isize
+(fn isize (fn isize isize))  ;; curried binary function
+(fn (isize isize) isize)     ;; multi-param function (sugar for curried)
 
-; Collection types
-(list isize)                 ; list of isize
-(pair isize bool)            ; pair of isize and bool
+;; Collection types
+(list isize)                 ;; list of isize
+(pair isize bool)            ;; pair of isize and bool
+
+;; Polymorphic types
+(forall (a) (fn a a))        ;; polymorphic identity
+(forall (a b) (fn ((fn a b) (list a)) (list b)))  ;; map type
+```
+
+### Type Declarations
+
+Use `(declare name type)` to declare the type of a name before definition:
+
+```lisp
+;; Declare a function type
+(declare factorial (fn isize isize))
+(define (factorial n)
+  (if (= n 0)
+      1
+      (* n (factorial (- n 1)))))
+
+;; Multiple declarations
+(declare add (fn (isize isize) isize))
+(declare sub (fn (isize isize) isize))
+(declare mul (fn (isize isize) isize))
+
+;; Polymorphic declarations
+(declare map (forall (a b) (fn ((fn a b) (list a)) (list b))))
+(define (map f lst)
+  (if (null? lst)
+      '()
+      (cons (f (car lst)) (map f (cdr lst)))))
 ```
 
 ### Type Annotations
@@ -236,8 +268,29 @@ char                         ; character type
 Use `(the type expr)` to annotate expressions with types:
 
 ```lisp
-(the isize 42)                 ; annotate 42 as isize
-(the (fn isize isize) (lambda (x) x))  ; annotate identity function
+(the isize 42)                 ;; annotate 42 as isize
+(the bool #t)                  ;; annotate #t as bool
+(the (list isize) (quote (1 2 3)))  ;; annotate list type
+(the (fn isize isize) (lambda (x) x))  ;; annotate identity function
+
+;; Force synthesis to checking mode (for ambiguous expressions)
+(define (ambiguous-example)
+  (the (fn isize isize) (lambda (x) x)))
+```
+
+### Typed Lambdas
+
+Use `(lambda-typed ((param type) ...) body)` for explicit parameter types:
+
+```lisp
+(lambda-typed ((x isize) (y isize)) 
+  (+ x y))
+
+(lambda-typed ((x isize) (y bool))
+  (if y x 0))
+
+;; Use with define
+(define inc (lambda-typed ((x isize)) (+ x 1)))
 ```
 
 ### Bidirectional Typing Modes
@@ -270,7 +323,8 @@ pub enum Type {
     Arrow { param, result },         // Function type
     List { element },                // List type
     Pair { first, second },          // Pair type
-    Var(u32),                        // Type variable (for future polymorphism)
+    Var(u32),                        // Type variable
+    ForAll { type_vars, body },      // Polymorphic type
 }
 ```
 

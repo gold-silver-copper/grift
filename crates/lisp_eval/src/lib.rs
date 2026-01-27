@@ -516,6 +516,9 @@ enum TrampolineState {
 /// Maximum number of macros that can be defined
 const MAX_MACROS: usize = 32;
 
+/// Maximum number of type declarations that can be stored
+const MAX_TYPE_DECLARATIONS: usize = 128;
+
 /// A gensym counter for generating unique symbols
 static GENSYM_COUNTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -533,6 +536,10 @@ pub struct Evaluator<'a, const N: usize> {
     /// Macro definitions: (name, (params, body))
     macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
     macro_count: usize,
+    /// Type declarations: (name, type_expr) pairs
+    /// The type_expr is stored as a Lisp S-expression for lazy type parsing
+    type_declarations: [(ArenaIndex, ArenaIndex); MAX_TYPE_DECLARATIONS],
+    type_declaration_count: usize,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -547,6 +554,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             cont_depth: 0,
             macros: [(ArenaIndex::NULL, ArenaIndex::NULL, ArenaIndex::NULL); MAX_MACROS],
             macro_count: 0,
+            type_declarations: [(ArenaIndex::NULL, ArenaIndex::NULL); MAX_TYPE_DECLARATIONS],
+            type_declaration_count: 0,
         };
         
         // Initialize global environment with builtins
@@ -1205,6 +1214,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // defmacro - define a macro
             if self.lisp.symbol_matches(car, "defmacro")? {
                 let val = self.eval_defmacro(cdr)?;
+                return Ok(TrampolineState::Return { val });
+            }
+            
+            // declare - type declaration (stores for later type checking)
+            if self.lisp.symbol_matches(car, "declare")? {
+                let val = self.eval_declare(cdr)?;
+                return Ok(TrampolineState::Return { val });
+            }
+            
+            // the - type annotation (evaluates the expression, annotation for type checker)
+            if self.lisp.symbol_matches(car, "the")? {
+                return self.step_eval_the(cdr, env);
+            }
+            
+            // lambda-typed - typed lambda with parameter type annotations
+            if self.lisp.symbol_matches(car, "lambda-typed")? {
+                let val = self.eval_lambda_typed(cdr, env)?;
                 return Ok(TrampolineState::Return { val });
             }
             
@@ -2759,6 +2785,94 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.lambda(params, body, env).map_err(Into::into)
     }
     
+    /// Evaluate lambda-typed: (lambda-typed ((x isize) (y bool)) body...)
+    /// Typed lambda with parameter type annotations
+    fn eval_lambda_typed(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        let typed_params = self.lisp.car(args)?;
+        let body_list = self.lisp.cdr(args)?;
+        
+        // Extract just the parameter names from ((x type) (y type) ...)
+        let params = self.extract_typed_param_names(typed_params)?;
+        
+        // Wrap body in begin if multiple expressions
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+        
+        // Store the typed params on the lambda for type checking
+        // For now, we create a regular lambda - type info is available in the source
+        self.lisp.lambda(params, body, env).map_err(Into::into)
+    }
+    
+    /// Extract parameter names from typed parameter list: ((x type) (y type)) -> (x y)
+    fn extract_typed_param_names(&self, typed_params: ArenaIndex) -> EvalResult {
+        let val = self.lisp.get(typed_params)?;
+        
+        match val {
+            Value::Nil => self.lisp.nil().map_err(Into::into),
+            Value::Cons { car: first_pair, cdr: rest } => {
+                // First pair is (name type)
+                let name = self.lisp.car(first_pair)?;
+                let rest_names = self.extract_typed_param_names(rest)?;
+                self.lisp.cons(name, rest_names).map_err(Into::into)
+            }
+            _ => Err(self.type_error(typed_params, "list", val.type_name())),
+        }
+    }
+    
+    /// Evaluate (declare name type) - store a type declaration
+    fn eval_declare(&mut self, args: ArenaIndex) -> EvalResult {
+        let name = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let type_expr = self.lisp.car(rest)?;
+        
+        // Verify name is a symbol
+        match self.lisp.get(name)? {
+            Value::Symbol { .. } => {}
+            _ => return Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
+        }
+        
+        // Store the declaration
+        if self.type_declaration_count >= MAX_TYPE_DECLARATIONS {
+            return Err(EvalError::new(ErrorKind::OutOfMemory)
+                .with_message("too many type declarations"));
+        }
+        
+        self.type_declarations[self.type_declaration_count] = (name, type_expr);
+        self.type_declaration_count += 1;
+        
+        // Return the name as confirmation
+        Ok(name)
+    }
+    
+    /// Look up a type declaration for a given name
+    pub fn get_type_declaration(&self, name: ArenaIndex) -> Option<ArenaIndex> {
+        for i in 0..self.type_declaration_count {
+            if self.type_declarations[i].0 == name {
+                return Some(self.type_declarations[i].1);
+            }
+        }
+        None
+    }
+    
+    /// Get all type declarations as (name . type-expr) pairs
+    pub fn type_declarations(&self) -> &[(ArenaIndex, ArenaIndex)] {
+        &self.type_declarations[..self.type_declaration_count]
+    }
+    
+    /// Evaluate (the type expr) - type annotation, just evaluates expr
+    fn step_eval_the(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        // (the type expr) - skip the type, evaluate the expr
+        let rest = self.lisp.cdr(args)?;
+        let expr = self.lisp.car(rest)?;
+        
+        // Type checking happens separately; here we just evaluate
+        Ok(TrampolineState::Eval { expr, env })
+    }
+
     /// Evaluate define
     fn eval_define(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
         let first = self.lisp.car(args)?;
@@ -5008,5 +5122,131 @@ mod tests {
         
         // Re-enable GC
         eval.eval_str("(gc-enable)").unwrap();
+    }
+    
+    // ========================================================================
+    // Type System Tests
+    // ========================================================================
+    
+    #[test]
+    fn test_declare_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Simple type declaration
+        let result = eval.eval_str("(declare factorial (fn isize isize))").unwrap();
+        
+        // Result should be the name symbol
+        assert!(lisp.symbol_matches(result, "factorial").unwrap());
+        
+        // Should be able to look up the declaration
+        let name = lisp.symbol("factorial").unwrap();
+        let decl = eval.get_type_declaration(name);
+        assert!(decl.is_some());
+    }
+    
+    #[test]
+    fn test_declare_multiple() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Multiple declarations
+        eval.eval_str("(declare add (fn (isize isize) isize))").unwrap();
+        eval.eval_str("(declare sub (fn (isize isize) isize))").unwrap();
+        eval.eval_str("(declare mul (fn (isize isize) isize))").unwrap();
+        
+        // All should be stored
+        let add = lisp.symbol("add").unwrap();
+        let sub = lisp.symbol("sub").unwrap();
+        let mul = lisp.symbol("mul").unwrap();
+        
+        assert!(eval.get_type_declaration(add).is_some());
+        assert!(eval.get_type_declaration(sub).is_some());
+        assert!(eval.get_type_declaration(mul).is_some());
+    }
+    
+    #[test]
+    fn test_the_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // (the isize 42) should evaluate to 42
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(the isize 42)"), 42);
+        
+        // (the bool #t) should evaluate to #t
+        assert!(eval_is_true(&lisp, &mut eval, "(the bool #t)"));
+        
+        // Nested the
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(the isize (the isize (+ 1 2)))"), 3);
+    }
+    
+    #[test]
+    fn test_the_with_expression() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // (the isize (+ 1 2)) should evaluate to 3
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(the isize (+ 1 2))"), 3);
+        
+        // Can use with lambda
+        eval.eval_str("(define id (the (fn isize isize) (lambda (x) x)))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(id 42)"), 42);
+    }
+    
+    #[test]
+    fn test_lambda_typed_basic() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Typed lambda with single param
+        eval.eval_str("(define inc (lambda-typed ((x isize)) (+ x 1)))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(inc 5)"), 6);
+    }
+    
+    #[test]
+    fn test_lambda_typed_multi_param() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Typed lambda with multiple params
+        eval.eval_str("(define add (lambda-typed ((x isize) (y isize)) (+ x y)))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add 3 4)"), 7);
+    }
+    
+    #[test]
+    fn test_lambda_typed_with_conditional() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Typed lambda with bool param
+        eval.eval_str("(define choose (lambda-typed ((x isize) (y bool)) (if y x 0)))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(choose 42 #t)"), 42);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(choose 42 #f)"), 0);
+    }
+    
+    #[test]
+    fn test_declare_with_forall() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Polymorphic type declaration
+        eval.eval_str("(declare map (forall (a b) (fn ((fn a b) (list a)) (list b))))").unwrap();
+        
+        let map_name = lisp.symbol("map").unwrap();
+        let decl = eval.get_type_declaration(map_name);
+        assert!(decl.is_some());
+    }
+    
+    #[test]
+    fn test_declare_then_define() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Declaration followed by definition
+        eval.eval_str("(declare factorial (fn isize isize))").unwrap();
+        eval.eval_str("(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))").unwrap();
+        
+        // Should work correctly
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(factorial 5)"), 120);
     }
 }
