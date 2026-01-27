@@ -29,8 +29,8 @@ pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
 /// Built-in functions (optimization to avoid symbol lookup)
 /// 
-/// NOTE: This is a PURE, LAZY Lisp (like Haskell)!
-/// - No mutation operations
+/// NOTE: This Lisp supports mutation via set!, set-car!, and set-cdr!
+/// - Mutation operations break referential transparency
 /// - All evaluation is call-by-need (lazy by default)
 /// - Values are forced automatically in strict positions
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,10 @@ pub enum Builtin {
     
     // Symbol generation for hygiene
     Gensym,
+    
+    // Mutation operations (strict - force pair argument)
+    SetCar,   // (set-car! pair value)
+    SetCdr,   // (set-cdr! pair value)
 }
 
 impl Builtin {
@@ -116,6 +120,8 @@ impl Builtin {
             Builtin::Error => "error",
             Builtin::Memoize => "memoize",
             Builtin::Gensym => "gensym",
+            Builtin::SetCar => "set-car!",
+            Builtin::SetCdr => "set-cdr!",
         }
     }
     
@@ -131,6 +137,7 @@ impl Builtin {
         Builtin::Error,
         Builtin::Memoize,
         Builtin::Gensym,
+        Builtin::SetCar, Builtin::SetCdr,
     ];
 }
 
@@ -492,8 +499,31 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    // NOTE: set_car and set_cdr removed - this is a PURE Lisp!
-    // Mutation breaks referential transparency and call-by-need semantics.
+    /// Set car of a cons cell (mutation operation)
+    /// Returns the new value on success
+    #[inline]
+    pub fn set_car(&self, index: ArenaIndex, new_car: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(index)? {
+            Value::Cons { cdr, .. } => {
+                self.set(index, Value::Cons { car: new_car, cdr })?;
+                Ok(new_car)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Set cdr of a cons cell (mutation operation)
+    /// Returns the new value on success
+    #[inline]
+    pub fn set_cdr(&self, index: ArenaIndex, new_cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(index)? {
+            Value::Cons { car, .. } => {
+                self.set(index, Value::Cons { car, cdr: new_cdr })?;
+                Ok(new_cdr)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
     
     /// Create a symbol from a string slice (builds char list)
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {

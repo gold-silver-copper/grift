@@ -2,7 +2,7 @@
 
 //! # Lisp Evaluator
 //!
-//! A PURE Lisp evaluator with **fully trampolined evaluation** - no Rust stack
+//! A Lisp evaluator with **fully trampolined evaluation** - no Rust stack
 //! recursion, enabling unlimited recursion depth (bounded only by heap/arena size).
 //!
 //! ## Key Features
@@ -18,6 +18,7 @@
 //! - **Iteration**: `do` loops for imperative-style iteration
 //! - **Macros**: `defmacro` with `quasiquote`/`unquote` and `gensym`
 //! - **Meta-programming**: `eval` for runtime code evaluation
+//! - **Mutation**: `set!`, `set-car!`, `set-cdr!` for imperative programming
 //!
 //! ## Hybrid Evaluation Strategy
 //!
@@ -47,10 +48,14 @@
 //! - Predicates (null?, pair?, etc.)
 //! - Print/display arguments
 //!
-//! ## Purity
+//! ## Mutation
 //!
-//! This is a pure functional language - NO MUTATION!
-//! This makes lazy evaluation semantically sound (referential transparency).
+//! This Lisp supports mutation operations for imperative programming:
+//! - `set!` - Mutate a variable binding
+//! - `set-car!` - Mutate the car of a cons cell
+//! - `set-cdr!` - Mutate the cdr of a cons cell
+//!
+//! Note: Mutation breaks referential transparency but enables imperative patterns.
 //!
 //! ## Truthiness
 //!
@@ -64,6 +69,7 @@
 //! - `case` - Pattern matching on values
 //! - `lambda` - Create closure
 //! - `define` - Define variable/function
+//! - `set!` - Mutate variable binding
 //! - `let` - Local binding
 //! - `let*` - Sequential local binding
 //! - `begin` - Sequence of expressions
@@ -698,8 +704,58 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    // NOTE: env_set removed - this is a PURE Lisp!
-    // Mutation breaks referential transparency and call-by-need semantics.
+    /// Set a variable in an environment (mutation operation)
+    /// Searches both local and global environments
+    /// Returns the new value on success
+    fn env_set(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
+        // First search local environment
+        let mut current = env;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    // Not found in local env, try global
+                    return self.env_set_global(name, value);
+                }
+                Value::Cons { car, cdr } => {
+                    let binding = self.lisp.get(car)?;
+                    if let Value::Cons { car: bound_name, cdr: _ } = binding {
+                        if self.lisp.symbol_eq(bound_name, name)? {
+                            // Found it - mutate the binding
+                            self.lisp.set(car, Value::Cons { car: bound_name, cdr: value })?;
+                            return Ok(value);
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+            }
+        }
+    }
+    
+    /// Set a variable in global environment only
+    fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
+        let mut current = self.global_env;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    // Not found anywhere - error
+                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
+                }
+                Value::Cons { car, cdr } => {
+                    let binding = self.lisp.get(car)?;
+                    if let Value::Cons { car: bound_name, cdr: _ } = binding {
+                        if self.lisp.symbol_eq(bound_name, name)? {
+                            // Found it - mutate the binding
+                            self.lisp.set(car, Value::Cons { car: bound_name, cdr: value })?;
+                            return Ok(value);
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+            }
+        }
+    }
     
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
@@ -911,6 +967,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // define
             if self.lisp.symbol_matches(car, "define")? {
                 let val = self.eval_define(cdr, env)?;
+                return Ok(TrampolineState::Return { val });
+            }
+            
+            // set! - mutate variable binding
+            if self.lisp.symbol_matches(car, "set!")? {
+                let val = self.eval_set(cdr, env)?;
                 return Ok(TrampolineState::Return { val });
             }
             
@@ -1631,6 +1693,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (gensym) - generate a unique symbol
                 // Note: prefix argument is not supported in no_std (would require string extraction)
                 self.gensym("g")
+            }
+            
+            Builtin::SetCar => {
+                // (set-car! pair value) - mutate the car of a cons cell
+                let pair = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let value = self.lisp.car(rest)?;
+                
+                // Verify it's a pair
+                match self.lisp.get(pair)? {
+                    Value::Cons { .. } => {
+                        self.lisp.set_car(pair, value).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
+                }
+            }
+            
+            Builtin::SetCdr => {
+                // (set-cdr! pair value) - mutate the cdr of a cons cell
+                let pair = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let value = self.lisp.car(rest)?;
+                
+                // Verify it's a pair
+                match self.lisp.get(pair)? {
+                    Value::Cons { .. } => {
+                        self.lisp.set_cdr(pair, value).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
+                }
             }
         }
     }
@@ -2467,7 +2559,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    // NOTE: eval_set removed - this is a PURE Lisp!
+    /// Evaluate (set! name value) - mutate an existing variable binding
+    fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        let name = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let value_expr = self.lisp.car(rest)?;
+        
+        // Verify name is a symbol
+        match self.lisp.get(name)? {
+            Value::Symbol { .. } => {
+                // Evaluate the value expression
+                let value = self.eval_in_env(value_expr, env)?;
+                // Find and mutate the binding
+                self.env_set(env, name, value)
+            }
+            _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
+        }
+    }
     
     // ========================================================================
     // Helpers
