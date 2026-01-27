@@ -223,6 +223,18 @@ define_builtins! {
     SetCar => "set-car!",
     /// set-cdr! - Mutate cdr of pair
     SetCdr => "set-cdr!",
+    
+    // Garbage collection and arena control
+    /// gc - Manually trigger garbage collection
+    Gc => "gc",
+    /// gc-enable - Enable automatic garbage collection
+    GcEnable => "gc-enable",
+    /// gc-disable - Disable automatic garbage collection
+    GcDisable => "gc-disable",
+    /// gc-enabled? - Check if GC is enabled
+    GcEnabledP => "gc-enabled?",
+    /// arena-stats - Get arena statistics as a list
+    ArenaStats => "arena-stats",
 }
 
 /// Macro for defining standard library functions.

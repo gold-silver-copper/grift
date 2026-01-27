@@ -109,8 +109,8 @@ fn run_bench<const N: usize>(
     eval.gc();
     
     let final_allocated = lisp.stats().allocated;
-    let peak_delta = peak_allocated.saturating_sub(initial_allocated);
-    let final_delta = final_allocated.saturating_sub(initial_allocated);
+    let _peak_delta = peak_allocated.saturating_sub(initial_allocated);
+    let _final_delta = final_allocated.saturating_sub(initial_allocated);
 
     if let Some(e) = error {
         return BenchResult {

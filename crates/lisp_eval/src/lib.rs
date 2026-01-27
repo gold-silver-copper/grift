@@ -1913,6 +1913,54 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
                 }
             }
+            
+            Builtin::Gc => {
+                // (gc) - Manually trigger garbage collection
+                // Returns a list: (marked collected total-before)
+                let stats = self.gc();
+                let marked = self.lisp.number(stats.marked as i64)?;
+                let collected = self.lisp.number(stats.collected as i64)?;
+                let total_before = self.lisp.number(stats.total_before as i64)?;
+                let nil = self.lisp.nil()?;
+                let list = self.lisp.cons(total_before, nil)?;
+                let list = self.lisp.cons(collected, list)?;
+                let list = self.lisp.cons(marked, list)?;
+                Ok(list)
+            }
+            
+            Builtin::GcEnable => {
+                // (gc-enable) - Enable automatic garbage collection
+                self.lisp.arena().set_gc_enabled(true);
+                self.lisp.true_val().map_err(Into::into)
+            }
+            
+            Builtin::GcDisable => {
+                // (gc-disable) - Disable automatic garbage collection
+                self.lisp.arena().set_gc_enabled(false);
+                self.lisp.false_val().map_err(Into::into)
+            }
+            
+            Builtin::GcEnabledP => {
+                // (gc-enabled?) - Check if GC is enabled
+                let enabled = self.lisp.arena().is_gc_enabled();
+                self.lisp.boolean(enabled).map_err(Into::into)
+            }
+            
+            Builtin::ArenaStats => {
+                // (arena-stats) - Get arena statistics
+                // Returns a list: (capacity allocated free usage-percent)
+                let stats = self.lisp.stats();
+                let capacity = self.lisp.number(stats.capacity as i64)?;
+                let allocated = self.lisp.number(stats.allocated as i64)?;
+                let free = self.lisp.number(stats.free as i64)?;
+                let usage = self.lisp.number(stats.usage_percent() as i64)?;
+                let nil = self.lisp.nil()?;
+                let list = self.lisp.cons(usage, nil)?;
+                let list = self.lisp.cons(free, list)?;
+                let list = self.lisp.cons(allocated, list)?;
+                let list = self.lisp.cons(capacity, list)?;
+                Ok(list)
+            }
         }
     }
     
@@ -3575,7 +3623,7 @@ mod tests {
         
         // Tail-recursive reverse
         eval.eval_str("(define (rev-tail lst acc) (if (null? lst) acc (rev-tail (cdr lst) (cons (car lst) acc))))").unwrap();
-        let result = eval.eval_str("(rev-tail '(1 2 3) '())").unwrap();
+        let _result = eval.eval_str("(rev-tail '(1 2 3) '())").unwrap();
         assert_eq!(eval_to_num(&lisp, &mut eval, "(car (rev-tail '(1 2 3) '()))"), 3);
     }
     
@@ -4860,5 +4908,104 @@ mod tests {
         
         // fold is tail-recursive - more efficient
         assert_eq!(eval_to_num(&lisp, &mut eval, "(fold + 0 '(1 2 3 4 5 6 7 8 9 10))"), 55);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GC BUILTIN TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    #[test]
+    fn test_gc_builtin() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Create some garbage
+        eval.eval_str("(cons 1 2)").unwrap();
+        eval.eval_str("(cons 3 4)").unwrap();
+        
+        // Run GC via builtin
+        let result = eval.eval_str("(gc)").unwrap();
+        
+        // Result should be a list (marked collected total-before)
+        assert!(lisp.get(result).unwrap().is_cons());
+        
+        // Extract values
+        let marked = lisp.car(result).unwrap();
+        assert!(lisp.get(marked).unwrap().is_number());
+    }
+    
+    #[test]
+    fn test_gc_enable_disable() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // GC should be enabled by default
+        assert!(eval_is_true(&lisp, &mut eval, "(gc-enabled?)"));
+        
+        // Disable GC
+        let result = eval.eval_str("(gc-disable)").unwrap();
+        assert!(lisp.get(result).unwrap().is_false());
+        
+        // Verify disabled
+        assert!(eval_is_false(&lisp, &mut eval, "(gc-enabled?)"));
+        
+        // Enable GC
+        let result = eval.eval_str("(gc-enable)").unwrap();
+        assert!(lisp.get(result).unwrap().is_true());
+        
+        // Verify enabled
+        assert!(eval_is_true(&lisp, &mut eval, "(gc-enabled?)"));
+    }
+    
+    #[test]
+    fn test_arena_stats_builtin() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Get arena stats
+        let result = eval.eval_str("(arena-stats)").unwrap();
+        
+        // Result should be a list (capacity allocated free usage-percent)
+        assert!(lisp.get(result).unwrap().is_cons());
+        
+        // First element should be capacity = 2000
+        let capacity = lisp.car(result).unwrap();
+        assert_eq!(lisp.get(capacity).unwrap().as_number(), Some(2000));
+        
+        // Second element (allocated) should be a number
+        let rest = lisp.cdr(result).unwrap();
+        let allocated = lisp.car(rest).unwrap();
+        assert!(lisp.get(allocated).unwrap().is_number());
+        assert!(lisp.get(allocated).unwrap().as_number().unwrap() > 0);
+    }
+    
+    #[test]
+    fn test_gc_disabled_no_collect() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Disable GC
+        eval.eval_str("(gc-disable)").unwrap();
+        
+        // Create some garbage
+        let before = eval.eval_str("(arena-stats)").unwrap();
+        let _before_allocated = lisp.get(lisp.car(lisp.cdr(before).unwrap()).unwrap())
+            .unwrap().as_number().unwrap();
+        
+        eval.eval_str("(cons 1 2)").unwrap();
+        eval.eval_str("(cons 3 4)").unwrap();
+        
+        // GC with disabled - should not collect
+        let gc_result = eval.eval_str("(gc)").unwrap();
+        let marked = lisp.get(lisp.car(gc_result).unwrap()).unwrap().as_number().unwrap();
+        let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+            .unwrap().as_number().unwrap();
+        
+        // When disabled, marked and collected should be 0
+        assert_eq!(marked, 0);
+        assert_eq!(collected, 0);
+        
+        // Re-enable GC
+        eval.eval_str("(gc-enable)").unwrap();
     }
 }
