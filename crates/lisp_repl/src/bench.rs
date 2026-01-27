@@ -355,58 +355,19 @@ fn main() {
     // SECTION 3: Higher-Order Functions
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 3: Higher-Order Functions");
+    println!("Section 3: Higher-Order Functions (using stdlib)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Define HOF utilities (tail-recursive versions)
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (map-helper f lst acc) (if (null? lst) (reverse acc) (map-helper f (cdr lst) (cons (f (car lst)) acc))))",
-    );
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (map f lst) (map-helper f lst '()))",
-    );
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (filter-helper p lst acc) (if (null? lst) (reverse acc) (if (p (car lst)) (filter-helper p (cdr lst) (cons (car lst) acc)) (filter-helper p (cdr lst) acc))))",
-    );
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (filter p lst) (filter-helper p lst '()))",
-    );
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (fold f acc lst) (if (null? lst) acc (fold f (f acc (car lst)) (cdr lst))))",
-    );
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (range-helper n acc) (if (= n 0) acc (range-helper (- n 1) (cons n acc))))",
-    );
-    let _ = eval_str(&lisp, &mut eval, "(define (range n) (range-helper n '()))");
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (reverse-helper lst acc) (if (null? lst) acc (reverse-helper (cdr lst) (cons (car lst) acc))))",
-    );
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(define (reverse lst) (reverse-helper lst '()))",
-    );
+    // Note: map, filter, fold, range, and reverse are now part of the stdlib
+    // (defined via the define_stdlib! macro in lisp_parser).
+    // The stdlib range function takes (start end) and produces [start, end).
 
     results.push(run_bench(
         "Map square over 20 elements x 20",
         &lisp,
         &mut eval,
         20,
-        "(map (lambda (x) (* x x)) (range 20))",
+        "(map (lambda (x) (* x x)) (range 1 21))",
         None,
     ));
 
@@ -415,7 +376,7 @@ fn main() {
         &lisp,
         &mut eval,
         20,
-        "(filter (lambda (x) (= (mod x 2) 0)) (range 20))",
+        "(filter (lambda (x) (= (mod x 2) 0)) (range 1 21))",
         None,
     ));
 
@@ -424,7 +385,7 @@ fn main() {
         &lisp,
         &mut eval,
         20,
-        "(fold + 0 (range 20))",
+        "(fold + 0 (range 1 21))",
         Some("210"),
     ));
 
@@ -433,7 +394,7 @@ fn main() {
         &lisp,
         &mut eval,
         20,
-        "(fold + 0 (filter (lambda (x) (> x 50)) (map (lambda (x) (* x x)) (range 15))))",
+        "(fold + 0 (filter (lambda (x) (> x 50)) (map (lambda (x) (* x x)) (range 1 16))))",
         None,
     ));
 
