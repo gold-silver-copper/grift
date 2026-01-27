@@ -85,6 +85,42 @@ pub use stats::{ArenaStats, GcStats};
 pub use iter::ArenaIterator;
 
 // ============================================================================
+// Helper Macros
+// ============================================================================
+
+/// Macro for collecting garbage with a list of roots.
+///
+/// This macro provides a cleaner syntax for calling `collect_garbage`
+/// by allowing roots to be specified as a list.
+///
+/// # Example
+/// ```rust
+/// use pwn_arena::{Arena, ArenaIndex, Trace, collect_gc};
+///
+/// #[derive(Clone, Copy)]
+/// struct Node(i32);
+///
+/// impl<const N: usize> Trace<Node, N> for Node {
+///     fn trace<F: FnMut(ArenaIndex)>(&self, _: F) {}
+/// }
+///
+/// let arena: Arena<Node, 10> = Arena::new(Node(0));
+/// let root1 = arena.alloc(Node(1)).unwrap();
+/// let root2 = arena.alloc(Node(2)).unwrap();
+/// let _garbage = arena.alloc(Node(3)).unwrap();
+///
+/// let stats = collect_gc!(arena, [root1, root2]);
+/// assert_eq!(stats.collected, 1);
+/// ```
+#[macro_export]
+macro_rules! collect_gc {
+    ($arena:expr, [ $($root:expr),* $(,)? ]) => {{
+        let roots = [$($root),*];
+        $arena.collect_garbage(&roots)
+    }};
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

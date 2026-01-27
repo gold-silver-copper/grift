@@ -88,6 +88,146 @@ pub use lisp_parser::{
 };
 
 // ============================================================================
+// Helper Macros for Code Deduplication
+// ============================================================================
+
+/// Macro to dispatch special forms based on symbol matching.
+///
+/// This macro checks if the car of an expression matches any of the given
+/// special form names and executes the corresponding handler.
+///
+/// # Example
+/// ```ignore
+/// dispatch_special_form!(self, car, cdr, env,
+///     "quote" => {
+///         let val = self.lisp.car(cdr)?;
+///         Ok(TrampolineState::Return { val })
+///     },
+///     "lambda" => {
+///         let val = self.eval_lambda(cdr, env)?;
+///         Ok(TrampolineState::Return { val })
+///     },
+/// );
+/// ```
+#[allow(unused_macros)]
+macro_rules! dispatch_special_form {
+    (
+        $self:expr, $car:expr, $cdr:expr, $env:expr,
+        $(
+            $name:literal => $handler:expr
+        ),* $(,)?
+    ) => {
+        $(
+            if $self.lisp.symbol_matches($car, $name)? {
+                return $handler;
+            }
+        )*
+    };
+}
+
+/// Macro to extract arguments from a Lisp list using car/cdr.
+///
+/// This macro extracts multiple arguments from a list, shadowing the `args`
+/// variable after each extraction.
+///
+/// # Example
+/// ```ignore
+/// extract_args!(self, args, a, b, c);
+/// // Expands to:
+/// // let a = self.lisp.car(args)?;
+/// // let args = self.lisp.cdr(args)?;
+/// // let b = self.lisp.car(args)?;
+/// // let args = self.lisp.cdr(args)?;
+/// // let c = self.lisp.car(args)?;
+/// ```
+macro_rules! extract_args {
+    ($self:expr, $args:ident, $var:ident) => {
+        let $var = $self.lisp.car($args)?;
+    };
+    ($self:expr, $args:ident, $var:ident, $($rest:ident),+) => {
+        let $var = $self.lisp.car($args)?;
+        #[allow(unused_variables)]
+        let $args = $self.lisp.cdr($args)?;
+        extract_args!($self, $args, $($rest),+)
+    };
+}
+
+/// Macro for unary predicate builtins.
+///
+/// Many builtins follow the pattern of extracting one argument and returning
+/// a boolean based on some predicate on the value.
+///
+/// # Example
+/// ```ignore
+/// builtin_unary_pred!(self, args, |v| v.is_nil())
+/// ```
+macro_rules! builtin_unary_pred {
+    ($self:expr, $args:expr, $check:expr) => {{
+        let arg = $self.lisp.car($args)?;
+        let val = $self.lisp.get(arg)?;
+        $self.lisp.boolean($check(val)).map_err(Into::into)
+    }};
+}
+
+/// Macro for iterating over a Lisp list.
+///
+/// This macro provides a for-each style iteration over a Lisp list,
+/// handling the common pattern of traversing cons cells.
+///
+/// # Example
+/// ```ignore
+/// for_each_in_list!(self, list, item, {
+///     // process item
+/// });
+/// ```
+#[allow(unused_macros)]
+macro_rules! for_each_in_list {
+    ($self:expr, $list:expr, $item:ident, $body:expr) => {{
+        let mut current = $list;
+        loop {
+            match $self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: $item, cdr } => {
+                    $body;
+                    current = cdr;
+                }
+                _ => return Err($self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }};
+}
+
+/// Macro for matching on Value types with common patterns.
+///
+/// This macro simplifies the common pattern of matching on `self.lisp.get(idx)?`
+/// with handlers for Nil, Cons, and other variants.
+///
+/// # Example
+/// ```ignore
+/// match_value!(self, idx,
+///     Nil => return Ok(result),
+///     Cons { car, cdr } => {
+///         // process car and cdr
+///     },
+///     _ => return Err(error),
+/// )
+/// ```
+#[allow(unused_macros)]
+macro_rules! match_value {
+    ($self:expr, $idx:expr,
+        Nil => $nil_body:expr,
+        Cons { $car:ident, $cdr:ident } => $cons_body:expr,
+        _ => $default:expr $(,)?
+    ) => {
+        match $self.lisp.get($idx)? {
+            Value::Nil => $nil_body,
+            Value::Cons { car: $car, cdr: $cdr } => $cons_body,
+            _ => $default,
+        }
+    };
+}
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -1558,9 +1698,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match builtin {
             // NON-STRICT builtins - return immediately
             Builtin::Cons => {
-                let a = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let b = self.lisp.car(rest)?;
+                extract_args!(self, args, a, b);
                 let result = self.lisp.cons(a, b)?;
                 Ok(TrampolineState::Return { val: result })
             }
@@ -1639,23 +1777,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Cons => {
-                let a = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let b = self.lisp.car(rest)?;
+                extract_args!(self, args, a, b);
                 self.lisp.cons(a, b).map_err(Into::into)
             }
             
             Builtin::List => Ok(args),
             
-            Builtin::Atom => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_atom()).map_err(Into::into)
-            }
+            Builtin::Atom => builtin_unary_pred!(self, args, |v: Value| v.is_atom()),
             
             Builtin::Eq => {
-                let a = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let b = self.lisp.car(rest)?;
+                extract_args!(self, args, a, b);
                 
                 let val_a = self.lisp.get(a)?;
                 let val_b = self.lisp.get(b)?;
@@ -1673,40 +1804,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.boolean(eq).map_err(Into::into)
             }
             
-            Builtin::Null => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_nil()).map_err(Into::into)
-            }
+            Builtin::Null => builtin_unary_pred!(self, args, |v: Value| v.is_nil()),
             
-            Builtin::Pairp => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_cons()).map_err(Into::into)
-            }
+            Builtin::Pairp => builtin_unary_pred!(self, args, |v: Value| v.is_cons()),
             
-            Builtin::Numberp => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_number()).map_err(Into::into)
-            }
+            Builtin::Numberp => builtin_unary_pred!(self, args, |v: Value| v.is_number()),
             
-            Builtin::Booleanp => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_boolean()).map_err(Into::into)
-            }
+            Builtin::Booleanp => builtin_unary_pred!(self, args, |v: Value| v.is_boolean()),
             
-            Builtin::Procedurep => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_procedure()).map_err(Into::into)
-            }
+            Builtin::Procedurep => builtin_unary_pred!(self, args, |v: Value| v.is_procedure()),
             
-            Builtin::Symbolp => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_symbol()).map_err(Into::into)
-            }
+            Builtin::Symbolp => builtin_unary_pred!(self, args, |v: Value| v.is_symbol()),
             
-            Builtin::Not => {
-                let arg = self.lisp.car(args)?;
-                self.lisp.boolean(self.lisp.get(arg)?.is_false()).map_err(Into::into)
-            }
+            Builtin::Not => builtin_unary_pred!(self, args, |v: Value| v.is_false()),
             
             Builtin::Add => self.numeric_fold_forced(args, 0, |a, b| a.checked_add(b), call_expr),
             
@@ -1780,9 +1890,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::SetCar => {
                 // (set-car! pair value) - mutate the car of a cons cell
-                let pair = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let value = self.lisp.car(rest)?;
+                extract_args!(self, args, pair, value);
                 
                 // Verify it's a pair
                 match self.lisp.get(pair)? {
@@ -1795,9 +1903,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::SetCdr => {
                 // (set-cdr! pair value) - mutate the cdr of a cons cell
-                let pair = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let value = self.lisp.car(rest)?;
+                extract_args!(self, args, pair, value);
                 
                 // Verify it's a pair
                 match self.lisp.get(pair)? {
@@ -2644,9 +2750,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate (set! name value) - mutate an existing variable binding
     fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        let name = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        let value_expr = self.lisp.car(rest)?;
+        extract_args!(self, args, name, value_expr);
         
         // Verify name is a symbol
         match self.lisp.get(name)? {
