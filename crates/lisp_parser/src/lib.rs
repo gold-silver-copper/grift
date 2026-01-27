@@ -25,6 +25,38 @@
 //! - `Lambda { params, body, env }` - Closure
 //! - `Thunk { expr, env, cached }` - Lazy computation (internal, auto-managed)
 //! - `Builtin(Builtin)` - Optimized built-in function
+//! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
+//!
+//! ## Reserved Slots
+//!
+//! The first 4 slots of the arena are reserved:
+//! - Slot 0: `Value::Nil` - the empty list singleton
+//! - Slot 1: `Value::True` - boolean true singleton
+//! - Slot 2: `Value::False` - boolean false singleton
+//! - Slot 3: `Value::Cons` - intern table reference cell
+//!
+//! ## Pitfalls and Gotchas
+//!
+//! ### Truthiness
+//! - **Only `#f` is false!** Everything else is truthy, including:
+//!   - `nil` / `'()` (the empty list)
+//!   - `0` (the number zero)
+//!   - Empty strings
+//!
+//! ### Lazy Evaluation
+//! - Side effects in lazy contexts may not happen when expected
+//! - `cons` is lazy - car and cdr are wrapped in thunks
+//! - Values are forced automatically in strict positions (arithmetic, predicates, etc.)
+//!
+//! ### Garbage Collection
+//! - The intern table is always a GC root - interned symbols are never collected
+//! - Reserved slots (nil, true, false) are implicitly preserved
+//! - Run `gc()` with appropriate roots to reclaim memory
+//!
+//! ### StdLib Functions
+//! - Body is parsed on each call (minor overhead, but keeps code out of arena)
+//! - Recursive stdlib functions work via the global environment
+//! - Errors in static source strings are only caught at runtime
 
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
