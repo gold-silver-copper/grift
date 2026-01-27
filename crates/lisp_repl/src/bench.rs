@@ -503,10 +503,483 @@ fn main() {
     eval.gc();
     println!();
 
-    // NOTE: Mutation section removed - this is a PURE Lisp!
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 6: Arrays (O(1) indexed access)
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 6: Arrays (O(1) indexed access)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Create array for reuse
+    let _ = eval_str(&lisp, &mut eval, "(define bench-arr (make-array 100 0))");
+
+    results.push(run_bench(
+        "Create array[50] x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(make-array 50 0)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Create large array[500] x 20",
+        &lisp,
+        &mut eval,
+        20,
+        "(make-array 500 42)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Array-ref (O(1) access) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(array-ref bench-arr 50)",
+        Some("0"),
+    ));
+
+    results.push(run_bench(
+        "Array-set! (O(1) mutation) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(array-set! bench-arr 50 999)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Array-length x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(array-length bench-arr)",
+        Some("100"),
+    ));
+
+    results.push(run_bench(
+        "Array? predicate x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(array? bench-arr)",
+        Some("#t"),
+    ));
+
+    // Array iteration pattern
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(define (array-sum arr len) (if (= len 0) 0 (+ (array-ref arr (- len 1)) (array-sum arr (- len 1)))))",
+    );
+    results.push(run_bench(
+        "Array sum recursive (10 elements) x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(let ((arr (make-array 10 1))) (array-sum arr 10))",
+        Some("10"),
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
 
     // ═══════════════════════════════════════════════════════════════════════
-    // SECTION 6: Garbage Collection
+    // SECTION 7: Mutation Operations
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 7: Mutation Operations");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Create a pair for mutation tests
+    let _ = eval_str(&lisp, &mut eval, "(define bench-pair (cons 1 2))");
+
+    results.push(run_bench(
+        "set-car! mutation x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(set-car! bench-pair 42)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "set-cdr! mutation x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(set-cdr! bench-pair 99)",
+        None,
+    ));
+
+    // Variable mutation
+    let _ = eval_str(&lisp, &mut eval, "(define mut-var 10)");
+    results.push(run_bench(
+        "set! variable mutation x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(set! mut-var 20)",
+        None,
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 8: Pattern Matching (case/cond)
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 8: Pattern Matching (case/cond)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    results.push(run_bench(
+        "cond multi-way x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(cond ((= 1 2) 'no) ((= 2 2) 'yes) (else 'default))",
+        Some("yes"),
+    ));
+
+    results.push(run_bench(
+        "case pattern matching x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(case 2 ((1) 'one) ((2 3) 'two-or-three) (else 'other))",
+        Some("two-or-three"),
+    ));
+
+    results.push(run_bench(
+        "case with else fallback x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(case 99 ((1) 'one) ((2) 'two) (else 'other))",
+        Some("other"),
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 9: More Arithmetic & Comparison
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 9: More Arithmetic & Comparison");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    results.push(run_bench(
+        "Subtraction (- 100 50) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(- 100 50)",
+        Some("50"),
+    ));
+
+    results.push(run_bench(
+        "Multiplication (* 6 7) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(* 6 7)",
+        Some("42"),
+    ));
+
+    results.push(run_bench(
+        "Division (/ 100 5) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(/ 100 5)",
+        Some("20"),
+    ));
+
+    results.push(run_bench(
+        "Modulo (mod 17 5) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(mod 17 5)",
+        Some("2"),
+    ));
+
+    results.push(run_bench(
+        "Comparison (< 1 2) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(< 1 2)",
+        Some("#t"),
+    ));
+
+    results.push(run_bench(
+        "Comparison (> 5 3) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(> 5 3)",
+        Some("#t"),
+    ));
+
+    results.push(run_bench(
+        "Numeric equality (= 5 5) x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(= 5 5)",
+        Some("#t"),
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 10: More Standard Library Functions
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 10: More Standard Library Functions");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    results.push(run_bench(
+        "Length of list x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(length '(1 2 3 4 5 6 7 8 9 10))",
+        Some("10"),
+    ));
+
+    results.push(run_bench(
+        "Append two lists x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(append '(1 2 3) '(4 5 6))",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Reverse list x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(reverse '(1 2 3 4 5))",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Nth element (0-indexed) x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(nth 3 '(a b c d e))",
+        Some("d"),
+    ));
+
+    results.push(run_bench(
+        "Take first 5 elements x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(take 5 '(1 2 3 4 5 6 7 8 9 10))",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Drop first 3 elements x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(drop 3 '(1 2 3 4 5 6 7 8 9 10))",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Zip two lists x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(zip '(1 2 3) '(a b c))",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Member check x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(member 5 '(1 2 3 4 5 6))",
+        Some("#t"),
+    ));
+
+    results.push(run_bench(
+        "Assoc lookup x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(assoc 'b '((a . 1) (b . 2) (c . 3)))",
+        None,
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 11: Macros & Metaprogramming
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 11: Macros & Metaprogramming");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Define a simple macro
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(defmacro unless (cond then else) (list 'if cond else then))",
+    );
+
+    results.push(run_bench(
+        "Macro expansion (unless) x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(unless #f 'yes 'no)",
+        Some("yes"),
+    ));
+
+    // Gensym for macro hygiene
+    results.push(run_bench(
+        "Gensym generation x 200",
+        &lisp,
+        &mut eval,
+        200,
+        "(gensym)",
+        None,
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 12: Runtime Evaluation (eval/apply)
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 12: Runtime Evaluation (eval/apply)");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    results.push(run_bench(
+        "eval quoted expression x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(eval '(+ 1 2 3))",
+        Some("6"),
+    ));
+
+    results.push(run_bench(
+        "apply function to list x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(apply + '(1 2 3 4 5))",
+        Some("15"),
+    ));
+
+    results.push(run_bench(
+        "apply with lambda x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(apply (lambda (x y) (* x y)) '(6 7))",
+        Some("42"),
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 13: Complex Scenarios
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 13: Complex Scenarios");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Nested higher-order functions
+    // range 1 11 = (1 2 3 4 5 6 7 8 9 10)
+    // map square = (1 4 9 16 25 36 49 64 81 100)
+    // filter (> x 5) = (9 16 25 36 49 64 81 100)
+    // fold + 0 = 9+16+25+36+49+64+81+100 = 380
+    results.push(run_bench(
+        "Nested map/filter/fold x 20",
+        &lisp,
+        &mut eval,
+        20,
+        "(fold + 0 (filter (lambda (x) (> x 5)) (map (lambda (x) (* x x)) (range 1 11))))",
+        Some("380"),
+    ));
+
+    // Array operations in functional style
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(define (array-to-list arr len) (if (= len 0) '() (cons (array-ref arr (- len 1)) (array-to-list arr (- len 1)))))",
+    );
+    results.push(run_bench(
+        "Array to list conversion (10 elements) x 30",
+        &lisp,
+        &mut eval,
+        30,
+        "(let ((arr (make-array 10 1))) (array-to-list arr 10))",
+        None,
+    ));
+
+    // Quasiquote/unquote - use (quasiquote ...) and (unquote ...) syntax
+    results.push(run_bench(
+        "Quasiquote with unquote x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(let ((x 42)) (quasiquote (list (unquote x) (unquote (+ x 1)))))",
+        None,
+    ));
+
+    // Multiple return values
+    results.push(run_bench(
+        "Multiple values x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(values 1 2 3)",
+        None,
+    ));
+
+    // Do loop
+    results.push(run_bench(
+        "Do loop iteration x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 10) sum))",
+        Some("45"),
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 14: Garbage Collection
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Section 6: Garbage Collection");
@@ -544,10 +1017,10 @@ fn main() {
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
-    // SECTION 8: Parsing Stress
+    // SECTION 15: Parsing Stress
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 7: Parsing");
+    println!("Section 15: Parsing");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     results.push(run_bench(
