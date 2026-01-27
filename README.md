@@ -4,321 +4,278 @@
 [![Documentation](https://docs.rs/pwn_arena/badge.svg)](https://docs.rs/pwn_arena)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-A minimal, high-performance arena allocator for `no_std` environments with compile-time fixed capacity.
+A minimal Lisp implementation built on a custom `no_std` arena allocator. This project demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
 
-## Features
+## 🎯 Project Overview
 
-- 🚀 **Zero-cost abstractions**: Minimal runtime overhead
-- 🔒 **No-std, no-alloc**: Perfect for embedded systems and kernels
-- 📦 **Fixed-size**: All memory pre-allocated at compile time
-- 🔄 **Generic**: Works with any `Copy` type
-- 🛡️ **Type-safe**: Strongly-typed indices prevent mixing arenas
-- 🔧 **Interior mutability**: Safe concurrent access via `RefCell`
-- 📊 **Statistics**: Built-in fragmentation and usage tracking
-- 🌲 **Tree support**: Recursive deletion and deep copying for tree-like structures
-- ⚡ **Zero dependencies**: Only uses core library primitives
+This repository contains:
 
-## Quick Start
+- **`pwn_arena`** — A fixed-size arena allocator with mark-and-sweep garbage collection
+- **`lisp_parser`** — A Lisp parser with symbol interning and lazy evaluation support
+- **`lisp_eval`** — A fully trampolined evaluator with proper tail-call optimization
+- **`lisp_repl`** — An interactive Read-Eval-Print-Loop
 
-Add to your `Cargo.toml`:
+## 🚀 Quick Start
 
-```toml
-[dependencies]
-pwn_arena = "0.1.0"
+```bash
+# Run the REPL
+cargo run -p lisp_repl
+
+# Run tests
+cargo test --workspace
 ```
 
-## Basic Usage
+```lisp
+> (define (factorial n) 
+    (if (= n 0) 1 
+        (* n (factorial (- n 1)))))
+> (factorial 10)
+3628800
 
-```rust
-use pwn_arena::{Arena, ArenaIndex};
+> (define (ones) (cons 1 (ones)))  ; Infinite stream!
+> (car (cdr (cdr (ones))))
+1
 
-// Create an arena with capacity for 1024 i32 values
-let arena: Arena<i32, 1024> = Arena::new(0);
-
-// Allocate some values
-let idx1 = arena.alloc(42).unwrap();
-let idx2 = arena.alloc(100).unwrap();
-
-// Access values
-assert_eq!(arena.get(idx1).unwrap(), 42);
-assert_eq!(arena.get(idx2).unwrap(), 100);
-
-// Modify values
-arena.set(idx1, 99).unwrap();
-
-// Free when done
-arena.free(idx1).unwrap();
-arena.free(idx2).unwrap();
+> (arena-stats)
+(50000 127 49873 0)  ; (capacity allocated free usage%)
 ```
 
-## Advanced Usage
+## ✨ Lisp Features
 
-### Custom Types
+### Core Language
 
-```rust
-use pwn_arena::Arena;
+| Feature | Description |
+|---------|-------------|
+| **Proper Tail Calls** | Full TCO via trampolining — no stack overflow on deep recursion |
+| **Lazy Evaluation** | Call-by-need semantics like Haskell; infinite data structures work |
+| **Lexical Closures** | First-class functions with captured environments |
+| **Macros** | `defmacro` with `quasiquote`/`unquote` for metaprogramming |
+| **Pattern Matching** | `case` for value matching, `cond` for conditionals |
+| **Mutation** | `set!`, `set-car!`, `set-cdr!` for imperative programming |
+| **Garbage Collection** | Mark-and-sweep GC controllable from Lisp code |
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Vector3 {
-    x: f32,
-    y: f32,
-    z: f32,
-}
+### Built-in Functions
 
-let arena: Arena<Vector3, 100> = Arena::new(Vector3 { x: 0.0, y: 0.0, z: 0.0 });
+```lisp
+; List operations
+(car '(1 2 3))         ; => 1
+(cdr '(1 2 3))         ; => (2 3)
+(cons 1 '(2 3))        ; => (1 2 3)
+(list 1 2 3)           ; => (1 2 3)
 
-let pos = arena.alloc(Vector3 { x: 1.0, y: 2.0, z: 3.0 }).unwrap();
+; Predicates
+(null? '())            ; => #t
+(pair? '(1 . 2))       ; => #t
+(number? 42)           ; => #t
+(symbol? 'foo)         ; => #t
+(procedure? car)       ; => #t
+
+; Arithmetic
+(+ 1 2 3 4)            ; => 10
+(- 10 3)               ; => 7
+(* 2 3 4)              ; => 24
+(/ 100 5)              ; => 20
+(mod 17 5)             ; => 2
+
+; Comparison
+(< 1 2)                ; => #t
+(= 5 5)                ; => #t
+(eq 'a 'a)             ; => #t
+
+; Memory management (NEW!)
+(gc)                   ; => (marked collected before)
+(gc-enable)            ; Enable automatic GC
+(gc-disable)           ; Disable automatic GC
+(gc-enabled?)          ; => #t or #f
+(arena-stats)          ; => (capacity allocated free usage%)
 ```
 
-### Tree Structures
+### Special Forms
 
-Build and manage tree-like data structures with recursive operations:
+```lisp
+; Conditionals
+(if condition then-expr else-expr)
+(cond (test1 result1) (test2 result2) (else default))
+(case key ((datum1) result1) ((datum2 datum3) result2) (else default))
 
-```rust
-use pwn_arena::{Arena, ArenaIndex, ArenaDelete, ArenaCopy, ArenaResult};
+; Definitions
+(define x 42)
+(define (square x) (* x x))
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Tree {
-    Leaf(i32),
-    Branch(ArenaIndex, ArenaIndex),
-}
+; Local bindings
+(let ((x 1) (y 2)) (+ x y))
+(let* ((x 1) (y (+ x 1))) y)
 
-// Implement recursive deletion
-impl ArenaDelete<Tree, 1024> for Tree {
-    fn delete_recursive(&self, arena: &Arena<Tree, 1024>) -> ArenaResult<()> {
-        match *self {
-            Tree::Leaf(_) => Ok(()),
-            Tree::Branch(left, right) => {
-                arena.delete_recursive(left)?;
-                arena.delete_recursive(right)?;
-                Ok(())
-            }
-        }
-    }
-}
+; Sequences
+(begin expr1 expr2 ... exprN)
 
-// Implement deep copying
-impl ArenaCopy<Tree, 1024> for Tree {
-    fn copy_deep(&self, arena: &Arena<Tree, 1024>) -> ArenaResult<Tree> {
-        match *self {
-            Tree::Leaf(n) => Ok(Tree::Leaf(n)),
-            Tree::Branch(left, right) => {
-                let new_left = arena.copy_deep(left)?;
-                let new_right = arena.copy_deep(right)?;
-                Ok(Tree::Branch(new_left, new_right))
-            }
-        }
-    }
-}
+; Short-circuit boolean
+(and expr1 expr2 ...)
+(or expr1 expr2 ...)
 
-// Usage
-let arena: Arena<Tree, 1024> = Arena::new(Tree::Leaf(0));
+; Iteration
+(do ((i 0 (+ i 1)) (sum 0 (+ sum i)))
+    ((= i 10) sum))
 
-let left = arena.alloc(Tree::Leaf(1)).unwrap();
-let right = arena.alloc(Tree::Leaf(2)).unwrap();
-let root = arena.alloc(Tree::Branch(left, right)).unwrap();
+; Macros
+(defmacro unless (cond then else)
+  (list 'if cond else then))
 
-// Recursively delete entire tree
-arena.delete_recursive(root).unwrap();
-
-// Or create a deep copy
-let copied_tree = arena.copy_deep(root).unwrap();
+; Runtime evaluation
+(eval '(+ 1 2))        ; => 3
+(apply + '(1 2 3))     ; => 6
 ```
 
-### Iteration
+## 🔥 Design Philosophy
 
-```rust
-use pwn_arena::Arena;
+### 1. No Heap, No Problem
 
-let arena: Arena<i32, 10> = Arena::new(0);
+The entire Lisp runs on a fixed-size arena allocated at compile time. No `malloc`, no `Box`, no `Vec` in the core. This makes it:
 
-arena.alloc(10).unwrap();
-arena.alloc(20).unwrap();
-arena.alloc(30).unwrap();
+- **Predictable** — Memory usage is bounded and known upfront
+- **Portable** — Works on bare metal, WASM, or any `no_std` target
+- **Safe** — No undefined behavior from memory allocation failures
 
-for (index, value) in arena.iter() {
-    println!("Index: {:?}, Value: {}", index, value);
-}
+### 2. Hybrid Evaluation Strategy
+
+We combine the best of strict and lazy evaluation:
+
+```lisp
+; LAZY: cons doesn't evaluate its arguments
+(define (ones) (cons 1 (ones)))  ; Works! Infinite stream
+(car (ones))                      ; => 1
+
+; STRICT: Tail calls evaluate arguments for proper TCO
+(define (sum n acc)
+  (if (= n 0) acc
+      (sum (- n 1) (+ acc n))))  ; Args evaluated before call
+(sum 10000 0)                    ; => 50005000 (no stack overflow)
 ```
 
-### Statistics
+### 3. Only `#f` is False
 
-```rust
-use pwn_arena::Arena;
+Unlike many Lisps, we follow Scheme's truthiness model:
 
-let arena: Arena<i32, 100> = Arena::new(0);
-
-for i in 0..25 {
-    arena.alloc(i).unwrap();
-}
-
-let stats = arena.stats();
-println!("Capacity: {}", stats.capacity);
-println!("Allocated: {}", stats.allocated);
-println!("Free: {}", stats.free);
-println!("Usage: {:.2}%", stats.usage_percent());
-println!("Fragmentation: {:.2}", stats.fragmentation);
+```lisp
+(if nil 'yes 'no)     ; => yes (nil is truthy!)
+(if '() 'yes 'no)     ; => yes (empty list is truthy!)
+(if 0 'yes 'no)       ; => yes (zero is truthy!)
+(if #f 'yes 'no)      ; => no  (only #f is false)
 ```
 
-## API Overview
+### 4. Generational Indices Prevent Bugs
 
-### Core Methods
+Arena slots use generational indices that prevent use-after-free bugs:
 
-| Method | Description |
-|--------|-------------|
-| `new(default_value)` | Create a new arena |
-| `alloc(value)` | Allocate a cell and return its index |
-| `get(index)` | Get a copy of the value at an index |
-| `set(index, value)` | Update the value at an index |
-| `free(index)` | Free a cell for reuse |
-| `clear()` | Free all cells at once |
-| `is_allocated(index)` | Check if an index is currently allocated |
-
-### Query Methods
-
-| Method | Description |
-|--------|-------------|
-| `capacity()` | Get maximum capacity |
-| `len()` | Get number of allocated cells |
-| `is_empty()` | Check if no cells are allocated |
-| `is_full()` | Check if all cells are allocated |
-| `available()` | Get number of free cells |
-| `iter()` | Iterate over allocated cells |
-| `stats()` | Get detailed usage statistics |
-
-### Advanced Methods
-
-| Method | Description |
-|--------|-------------|
-| `delete_recursive(index)` | Recursively delete a tree structure |
-| `copy_deep(index)` | Create a deep copy of a tree structure |
-
-## Error Handling
-
-All fallible operations return `ArenaResult<T>`:
-
-```rust
-use pwn_arena::{Arena, ArenaError};
-
-let arena: Arena<i32, 3> = Arena::new(0);
-
-// Fill the arena
-arena.alloc(1).unwrap();
-arena.alloc(2).unwrap();
-arena.alloc(3).unwrap();
-
-// This will fail
-match arena.alloc(4) {
-    Ok(_) => println!("Allocated successfully"),
-    Err(ArenaError::OutOfMemory) => println!("Arena is full!"),
-    Err(ArenaError::InvalidIndex) => println!("Invalid index"),
-}
+```lisp
+; If you somehow kept a stale reference to freed memory,
+; the generation mismatch would cause an error, not silent corruption.
 ```
 
-### Error Types
+## 📊 Memory Management from Lisp
 
-- `ArenaError::OutOfMemory` - Arena is full, cannot allocate
-- `ArenaError::InvalidIndex` - Index is out of bounds or not allocated
+Control the garbage collector directly from your Lisp code:
 
-## Memory Layout
+```lisp
+; Check arena status
+(arena-stats)          ; => (50000 234 49766 0)
+                       ;     ^ capacity
+                       ;           ^ allocated
+                       ;               ^ free
+                       ;                     ^ usage%
 
-For an `Arena<T, N>`:
-- **Size**: `N * sizeof(T) + N * 1 + 8` bytes
-- **Cells**: Fixed array of `T` values
-- **Bitmap**: Boolean array tracking allocation status
-- **Hint**: Single `usize` for allocation optimization
-
-Example: `Arena<i32, 1000>` uses approximately **5,008 bytes** (4000 + 1000 + 8).
-
-## Performance Characteristics
-
-| Operation | Time Complexity | Notes |
-|-----------|----------------|-------|
-| `alloc()` | O(n) worst-case | O(1) amortized with hint |
-| `get()` | O(1) | Direct array access |
-| `set()` | O(1) | Direct array access |
-| `free()` | O(1) | Direct bitmap update |
-| `clear()` | O(1) | Memset operations |
-| `len()` | O(n) | Counts allocated cells |
-| `iter()` | O(n) | Linear scan |
-
-## Use Cases
-
-### Embedded Systems
-Perfect for memory-constrained environments where dynamic allocation is unavailable or undesirable:
-
-```rust
-#![no_std]
-use pwn_arena::Arena;
-
-static NODES: Arena<Node, 256> = Arena::new(Node::default());
+; Manual GC control
+(gc-disable)           ; Pause GC for performance-critical section
+; ... allocate many objects ...
+(gc-enable)
+(gc)                   ; Force collection now
+                       ; => (marked collected before)
 ```
 
-### Game Development
-Manage game entities with predictable memory usage:
+## 🏗️ Architecture
 
-```rust
-struct Entity {
-    position: [f32; 3],
-    velocity: [f32; 3],
-    health: i32,
-}
+See the detailed architecture documents:
 
-let entities: Arena<Entity, 10000> = Arena::new(Entity::default());
+- **[ARENA_ARCHITECTURE.md](./docs/ARENA_ARCHITECTURE.md)** — How the arena allocator works
+- **[LISP_ARCHITECTURE.md](./docs/LISP_ARCHITECTURE.md)** — How the Lisp interpreter works
+
+## 📚 Standard Library
+
+The standard library is defined as static Lisp code, parsed on-demand:
+
+```lisp
+; List manipulation
+(length '(a b c))      ; => 3
+(append '(1 2) '(3 4)) ; => (1 2 3 4)
+(reverse '(1 2 3))     ; => (3 2 1)
+(nth 2 '(a b c d))     ; => c
+
+; Higher-order functions
+(map (lambda (x) (* x x)) '(1 2 3 4))  ; => (1 4 9 16)
+(filter (lambda (x) (> x 0)) '(-1 2 -3 4))  ; => (2 4)
+(fold + 0 '(1 2 3 4 5))  ; => 15
+
+; List generation
+(range 0 5)            ; => (0 1 2 3 4)
+(take 3 '(a b c d e))  ; => (a b c)
+
+; Utilities
+(identity 42)          ; => 42
+(constantly 5)         ; Returns a function that always returns 5
 ```
 
-### Parsers and Compilers
-Build AST nodes without heap allocation:
+## ⚠️ Gotchas and Pitfalls
 
-```rust
-enum AstNode {
-    Literal(i32),
-    BinaryOp { op: char, left: ArenaIndex, right: ArenaIndex },
-}
+### Nil is NOT False!
 
-let ast: Arena<AstNode, 4096> = Arena::new(AstNode::Literal(0));
+```lisp
+; WRONG: Don't use nil as a false value
+(if (member 'x '(a b c)) 'found 'not-found)
+; If x not found, member returns nil, which is TRUTHY!
+
+; RIGHT: Explicitly check for #f or use null?
+(if (null? (filter ...)) 'empty 'has-items)
 ```
 
-### Data Structures
-Implement linked lists, trees, graphs:
+### Lazy Evaluation Side Effects
 
-```rust
-struct ListNode {
-    value: i32,
-    next: Option<ArenaIndex>,
-}
-
-let list: Arena<ListNode, 100> = Arena::new(ListNode { value: 0, next: None });
+```lisp
+; Side effects may not happen when you expect!
+(define count 0)
+(define lst (cons (begin (set! count 1) 'a) '()))
+count  ; => 0 (not 1! cons is lazy)
+(car lst)  ; Now count becomes 1
 ```
 
-## Limitations
+### Arena Capacity is Fixed
 
-- **Fixed capacity**: Size must be known at compile time
-- **Copy types only**: `T` must implement `Copy` trait
-- **No destructors**: Freed cells don't run drop logic
-- **Interior mutability overhead**: Uses `RefCell` for safe access
-- **Linear search**: Allocation may be O(n) in fragmented state
+```lisp
+; If you run out of arena space, you get an error
+; Solution: Use a larger arena or trigger GC more often
+(gc)  ; Reclaim unreachable objects
+```
 
-## Comparison with Alternatives
+## 🔧 Project Structure
 
-| Feature | pwn_arena | typed-arena | bumpalo |
-|---------|-----------|-------------|---------|
-| no_std support | ✅ | ❌ | ❌ |
-| Fixed size | ✅ | ❌ | ❌ |
-| Free individual items | ✅ | ❌ | ❌ |
-| Zero dependencies | ✅ | ❌ | ❌ |
-| Type-safe indices | ✅ | ❌ | ❌ |
-| Recursive operations | ✅ | ❌ | ❌ |
+```
+pwn_arena/
+├── crates/
+│   ├── pwn_arena/     # Core arena allocator (no_std, no_alloc)
+│   ├── lisp_parser/   # Lisp parser and value types (no_std)
+│   ├── lisp_eval/     # Trampolined evaluator (no_std)
+│   ├── lisp_repl/     # Interactive REPL (uses std for I/O)
+│   └── lisp_macros/   # Proc macros for stdlib generation
+├── docs/
+│   ├── ARENA_ARCHITECTURE.md
+│   └── LISP_ARCHITECTURE.md
+└── README.md
+```
 
-## Safety
-
-pwn_arena is safe Rust with no `unsafe` blocks. All operations are bounds-checked and type-safe. The `RefCell` ensures interior mutability safety at runtime.
-
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
+## 📄 License
 
 Licensed under either of:
 
@@ -326,11 +283,3 @@ Licensed under either of:
 - MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
-
-## Acknowledgments
-
-Inspired by arena allocation patterns in game engines and compiler implementations.
-
----
-
-**Note**: This is a specialized allocator designed for specific use cases. For general-purpose heap allocation, use the standard `Vec`, `Box`, or other allocators from the Rust standard library.
