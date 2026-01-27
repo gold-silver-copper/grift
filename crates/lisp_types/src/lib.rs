@@ -43,7 +43,7 @@
 //!
 //! ; Type annotations using (the type expr)
 //! (the isize 42)           ; annotate 42 as isize
-//! (the (fn isize isize) (lambda (x) x))  ; annotate identity as isize -> isize
+//! (the (fn isize isize) (lambda (x) x))  ; annotate identity function
 //!
 //! ; Typed definitions with declare
 //! (declare add (fn isize (fn isize isize)))
@@ -1003,14 +1003,14 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
     /// Get the type of a builtin function
     fn builtin_type(&self, builtin: Builtin) -> TypeResult<ArenaIndex> {
         match builtin {
-            // Arithmetic: isize -> isize -> isize
+            // Arithmetic: (fn isize (fn isize isize))
             Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod => {
                 let isize_t = self.isize_type()?;
                 let binary = self.arrow_type(isize_t, isize_t)?;
                 self.arrow_type(isize_t, binary)
             }
             
-            // Comparison: isize -> isize -> bool
+            // Comparison: (fn isize (fn isize bool))
             Builtin::Lt | Builtin::Gt | Builtin::Le | Builtin::Ge | Builtin::NumEq => {
                 let isize_t = self.isize_type()?;
                 let bool_t = self.bool_type()?;
@@ -1018,7 +1018,7 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
                 self.arrow_type(isize_t, result)
             }
             
-            // Boolean: bool -> bool
+            // Boolean: (fn bool bool)
             Builtin::Not => {
                 let bool_t = self.bool_type()?;
                 self.arrow_type(bool_t, bool_t)
@@ -1045,7 +1045,7 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
             
             // IO operations
             Builtin::Print | Builtin::Display | Builtin::Newline => {
-                // print : any -> nil (roughly)
+                // print : (fn any nil) (roughly)
                 Err(TypeError::new(TypeErrorKind::CannotSynthesize, ArenaIndex::NULL))
             }
             
