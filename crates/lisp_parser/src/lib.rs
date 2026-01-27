@@ -60,283 +60,326 @@
 
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
-/// Built-in functions (optimization to avoid symbol lookup)
+/// Macro for defining built-in functions.
 /// 
-/// NOTE: This Lisp supports mutation via set!, set-car!, and set-cdr!
-/// - Mutation operations break referential transparency
-/// - All evaluation is call-by-need (lazy by default)
-/// - Values are forced automatically in strict positions
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Builtin {
+/// This macro generates the `Builtin` enum, its `name()` method, and the `ALL` constant
+/// from a single declarative definition. To add a new builtin, simply add a new entry
+/// to the macro invocation (and implement its evaluation in lisp_eval).
+/// 
+/// # Syntax
+/// 
+/// ```ignore
+/// define_builtins! {
+///     /// Documentation comment
+///     VariantName => "lisp-name",
+///     // ... more builtins
+/// }
+/// ```
+/// 
+/// # Example
+/// 
+/// To add a new builtin `my-builtin`:
+/// 
+/// ```ignore
+/// define_builtins! {
+///     // ... existing builtins ...
+///     /// (my-builtin x) - Does something with x
+///     MyBuiltin => "my-builtin",
+/// }
+/// ```
+/// 
+/// Note: After adding a builtin here, you must also implement its evaluation
+/// logic in the `lisp_eval` crate.
+#[macro_export]
+macro_rules! define_builtins {
+    (
+        $(
+            $(#[$attr:meta])*
+            $variant:ident => $name:literal
+        ),* $(,)?
+    ) => {
+        /// Built-in functions (optimization to avoid symbol lookup)
+        /// 
+        /// NOTE: This Lisp supports mutation via set!, set-car!, and set-cdr!
+        /// - Mutation operations break referential transparency
+        /// - All evaluation is call-by-need (lazy by default)
+        /// - Values are forced automatically in strict positions
+        /// 
+        /// # Adding New Builtins
+        /// 
+        /// To add a new builtin:
+        /// 1. Add an entry to the `define_builtins!` macro invocation
+        /// 2. Implement its evaluation logic in `lisp_eval`
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Builtin {
+            $(
+                $(#[$attr])*
+                $variant,
+            )*
+        }
+
+        impl Builtin {
+            /// Get the symbol name for this builtin
+            pub const fn name(&self) -> &'static str {
+                match self {
+                    $(
+                        Builtin::$variant => $name,
+                    )*
+                }
+            }
+            
+            /// All builtins for initialization
+            pub const ALL: &'static [Builtin] = &[
+                $(
+                    Builtin::$variant,
+                )*
+            ];
+        }
+    };
+}
+
+// Define all built-in functions using the macro.
+// To add a new builtin, add an entry here and implement its evaluation in lisp_eval.
+define_builtins! {
     // List operations (non-strict - don't force arguments)
-    Car,
-    Cdr,
-    Cons,
-    List,
+    /// car - Get first element of pair
+    Car => "car",
+    /// cdr - Get second element of pair
+    Cdr => "cdr",
+    /// cons - Create a pair
+    Cons => "cons",
+    /// list - Create a list from arguments
+    List => "list",
     
     // Predicates (force their argument to check type)
-    Atom,
-    Eq,
-    Null,
-    Pairp,
-    Numberp,
-    Booleanp,
-    Procedurep,
-    Symbolp,
+    /// atom - Check if value is an atom
+    Atom => "atom",
+    /// eq - Check equality
+    Eq => "eq",
+    /// null? - Check if value is nil
+    Null => "null?",
+    /// pair? - Check if value is a pair
+    Pairp => "pair?",
+    /// number? - Check if value is a number
+    Numberp => "number?",
+    /// boolean? - Check if value is a boolean
+    Booleanp => "boolean?",
+    /// procedure? - Check if value is a procedure
+    Procedurep => "procedure?",
+    /// symbol? - Check if value is a symbol
+    Symbolp => "symbol?",
     
     // Arithmetic (strict - force arguments)
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
+    /// + - Addition
+    Add => "+",
+    /// - - Subtraction
+    Sub => "-",
+    /// * - Multiplication
+    Mul => "*",
+    /// / - Division
+    Div => "/",
+    /// mod - Modulo
+    Mod => "mod",
     
     // Comparison (strict - force arguments)
-    Lt,
-    Gt,
-    Le,
-    Ge,
-    NumEq,
+    /// < - Less than
+    Lt => "<",
+    /// > - Greater than
+    Gt => ">",
+    /// <= - Less than or equal
+    Le => "<=",
+    /// >= - Greater than or equal
+    Ge => ">=",
+    /// = - Numeric equality
+    NumEq => "=",
     
     // Boolean operations
-    Not,
+    /// not - Boolean negation
+    Not => "not",
     
     // I/O (strict - force arguments for printing)
-    Print,
-    Newline,
-    Display,
+    /// print - Print value with newline
+    Print => "print",
+    /// newline - Print a newline
+    Newline => "newline",
+    /// display - Print value without quotes
+    Display => "display",
     
     // Error handling
-    Error,
+    /// error - Raise an error
+    Error => "error",
     
     // Memoization
-    Memoize,
+    /// memoize - Wrap function with memoization
+    Memoize => "memoize",
     
     // Symbol generation for hygiene
-    Gensym,
+    /// gensym - Generate unique symbol
+    Gensym => "gensym",
     
     // Mutation operations (strict - force pair argument)
-    SetCar,   // (set-car! pair value)
-    SetCdr,   // (set-cdr! pair value)
+    /// set-car! - Mutate car of pair
+    SetCar => "set-car!",
+    /// set-cdr! - Mutate cdr of pair
+    SetCdr => "set-cdr!",
 }
 
-impl Builtin {
-    /// Get the symbol name for this builtin
-    pub const fn name(&self) -> &'static str {
-        match self {
-            Builtin::Car => "car",
-            Builtin::Cdr => "cdr",
-            Builtin::Cons => "cons",
-            Builtin::List => "list",
-            Builtin::Atom => "atom",
-            Builtin::Eq => "eq",
-            Builtin::Null => "null?",
-            Builtin::Pairp => "pair?",
-            Builtin::Numberp => "number?",
-            Builtin::Booleanp => "boolean?",
-            Builtin::Procedurep => "procedure?",
-            Builtin::Symbolp => "symbol?",
-            Builtin::Add => "+",
-            Builtin::Sub => "-",
-            Builtin::Mul => "*",
-            Builtin::Div => "/",
-            Builtin::Mod => "mod",
-            Builtin::Lt => "<",
-            Builtin::Gt => ">",
-            Builtin::Le => "<=",
-            Builtin::Ge => ">=",
-            Builtin::NumEq => "=",
-            Builtin::Not => "not",
-            Builtin::Print => "print",
-            Builtin::Newline => "newline",
-            Builtin::Display => "display",
-            Builtin::Error => "error",
-            Builtin::Memoize => "memoize",
-            Builtin::Gensym => "gensym",
-            Builtin::SetCar => "set-car!",
-            Builtin::SetCdr => "set-cdr!",
+/// Macro for defining standard library functions.
+/// 
+/// This macro generates the `StdLib` enum, its implementation, and the `ALL` constant
+/// from a single declarative definition. To add a new stdlib function, simply add
+/// a new entry to the macro invocation.
+/// 
+/// # Syntax
+/// 
+/// ```ignore
+/// define_stdlib! {
+///     /// Documentation comment
+///     VariantName("function-name", ["param1", "param2"], "lisp-body-code"),
+///     // ... more functions
+/// }
+/// ```
+/// 
+/// # Example
+/// 
+/// To add a new function `(my-func x y)` that returns `(+ x y)`:
+/// 
+/// ```ignore
+/// define_stdlib! {
+///     // ... existing functions ...
+///     /// (my-func x y) - Add two numbers
+///     MyFunc("my-func", ["x", "y"], "(+ x y)"),
+/// }
+/// ```
+#[macro_export]
+macro_rules! define_stdlib {
+    (
+        $(
+            $(#[$attr:meta])*
+            $variant:ident($name:literal, [$($param:literal),* $(,)?], $body:literal)
+        ),* $(,)?
+    ) => {
+        /// Standard library functions (stored in static memory, not arena)
+        /// 
+        /// These functions are defined as Lisp code in static strings and are parsed
+        /// on-demand when called. This provides:
+        /// - Zero arena cost for function definitions (static strings)
+        /// - Easy maintenance (just add entries to the `define_stdlib!` macro)
+        /// - Simple implementation (no build scripts needed)
+        /// 
+        /// The parsing overhead is minimal since:
+        /// 1. Standard library functions are typically called frequently (can optimize)
+        /// 2. Parsing is fast (simple recursive descent)
+        /// 3. Parsed AST is temporary and GC'd after evaluation
+        /// 
+        /// # Memory Layout
+        /// 
+        /// Each StdLib variant stores references to static data:
+        /// - Function name (for lookup and debugging)
+        /// - Parameter names (static slice)
+        /// - Body source code (static string, parsed on each call)
+        /// 
+        /// # Adding New Functions
+        /// 
+        /// To add a new stdlib function, add an entry to the `define_stdlib!` macro
+        /// invocation. No other code changes are needed.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum StdLib {
+            $(
+                $(#[$attr])*
+                $variant,
+            )*
         }
-    }
-    
-    /// All builtins for initialization
-    pub const ALL: &'static [Builtin] = &[
-        Builtin::Car, Builtin::Cdr, Builtin::Cons, Builtin::List,
-        Builtin::Atom, Builtin::Eq, Builtin::Null, Builtin::Pairp,
-        Builtin::Numberp, Builtin::Booleanp, Builtin::Procedurep, Builtin::Symbolp,
-        Builtin::Add, Builtin::Sub, Builtin::Mul, Builtin::Div, Builtin::Mod,
-        Builtin::Lt, Builtin::Gt, Builtin::Le, Builtin::Ge, Builtin::NumEq,
-        Builtin::Not,
-        Builtin::Print, Builtin::Newline, Builtin::Display,
-        Builtin::Error,
-        Builtin::Memoize,
-        Builtin::Gensym,
-        Builtin::SetCar, Builtin::SetCdr,
-    ];
+
+        impl StdLib {
+            /// Get the function name
+            pub const fn name(&self) -> &'static str {
+                match self {
+                    $(
+                        StdLib::$variant => $name,
+                    )*
+                }
+            }
+            
+            /// Get the parameter names for this function
+            pub const fn params(&self) -> &'static [&'static str] {
+                match self {
+                    $(
+                        StdLib::$variant => &[$($param),*],
+                    )*
+                }
+            }
+            
+            /// Get the body source code (Lisp expression as static string)
+            /// 
+            /// This string is parsed on each call to the function.
+            /// The parsed AST is temporary and GC'd after evaluation.
+            pub const fn body(&self) -> &'static str {
+                match self {
+                    $(
+                        StdLib::$variant => $body,
+                    )*
+                }
+            }
+            
+            /// All standard library functions for initialization
+            pub const ALL: &'static [StdLib] = &[
+                $(
+                    StdLib::$variant,
+                )*
+            ];
+        }
+    };
 }
 
-/// Standard library functions (stored in static memory, not arena)
-/// 
-/// These functions are defined as Lisp code in static strings and are parsed
-/// on-demand when called. This provides:
-/// - Zero arena cost for function definitions (static strings)
-/// - Easy maintenance (just edit the source strings)
-/// - Simple implementation (no build scripts needed)
-/// 
-/// The parsing overhead is minimal since:
-/// 1. Standard library functions are typically called frequently (can optimize)
-/// 2. Parsing is fast (simple recursive descent)
-/// 3. Parsed AST is temporary and GC'd after evaluation
-/// 
-/// # Memory Layout
-/// 
-/// Each StdLib variant stores references to static data:
-/// - Function name (for lookup and debugging)
-/// - Parameter names (static slice)
-/// - Body source code (static string, parsed on each call)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StdLib {
+// Define all standard library functions using the macro.
+// To add a new function, simply add a new entry here.
+// Note: member/assoc use eq for comparison (like Scheme's memq/assq).
+// This works for symbols and identical objects. For value comparison,
+// define a custom function or use fold with a predicate.
+define_stdlib! {
     /// (map f lst) - Apply f to each element of lst
-    Map,
+    Map("map", ["f", "lst"], "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))"),
     /// (filter pred lst) - Return elements where pred is true
-    Filter,
+    Filter("filter", ["pred", "lst"], "(if (null? lst) '() (if (pred (car lst)) (cons (car lst) (filter pred (cdr lst))) (filter pred (cdr lst))))"),
     /// (fold f acc lst) - Left fold over lst
-    Fold,
+    Fold("fold", ["f", "acc", "lst"], "(if (null? lst) acc (fold f (f acc (car lst)) (cdr lst)))"),
     /// (length lst) - Return length of lst
-    Length,
+    Length("length", ["lst"], "(if (null? lst) 0 (+ 1 (length (cdr lst))))"),
     /// (append a b) - Concatenate two lists
-    Append,
+    Append("append", ["a", "b"], "(if (null? a) b (cons (car a) (append (cdr a) b)))"),
     /// (reverse lst) - Reverse a list
-    Reverse,
+    Reverse("reverse", ["lst"], "(fold (lambda (acc x) (cons x acc)) '() lst)"),
     /// (nth n lst) - Get nth element (0-indexed)
-    Nth,
+    Nth("nth", ["n", "lst"], "(if (= n 0) (car lst) (nth (- n 1) (cdr lst)))"),
     /// (take n lst) - Take first n elements
-    Take,
+    Take("take", ["n", "lst"], "(if (= n 0) '() (if (null? lst) '() (cons (car lst) (take (- n 1) (cdr lst)))))"),
     /// (drop n lst) - Drop first n elements
-    Drop,
+    Drop("drop", ["n", "lst"], "(if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst))))"),
     /// (zip a b) - Zip two lists into list of pairs
-    Zip,
+    Zip("zip", ["a", "b"], "(if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b)))))"),
     /// (member x lst) - Check if x is in lst
-    Member,
+    Member("member", ["x", "lst"], "(if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst))))"),
     /// (assoc key alist) - Look up key in association list
-    Assoc,
+    Assoc("assoc", ["key", "alist"], "(if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist))))"),
     /// (range start end) - Generate list of integers [start, end)
-    Range,
+    Range("range", ["start", "end"], "(if (>= start end) '() (cons start (range (+ start 1) end)))"),
     /// (compose f g) - Return function that applies g then f
-    Compose,
+    Compose("compose", ["f", "g"], "(lambda (x) (f (g x)))"),
     /// (identity x) - Return x unchanged
-    Identity,
+    Identity("identity", ["x"], "x"),
     /// (constantly x) - Return function that always returns x
-    Constantly,
+    Constantly("constantly", ["x"], "(lambda (y) x)"),
     /// (flip f) - Flip argument order of binary function
-    Flip,
+    Flip("flip", ["f"], "(lambda (a b) (f b a))"),
     /// (curry f x) - Partial application
-    Curry,
+    Curry("curry", ["f", "x"], "(lambda (y) (f x y))"),
     /// (cadr lst) - (car (cdr lst))
-    Cadr,
+    Cadr("cadr", ["lst"], "(car (cdr lst))"),
     /// (caddr lst) - (car (cdr (cdr lst)))
-    Caddr,
+    Caddr("caddr", ["lst"], "(car (cdr (cdr lst)))"),
     /// (cddr lst) - (cdr (cdr lst))
-    Cddr,
-}
-
-impl StdLib {
-    /// Get the function name
-    pub const fn name(&self) -> &'static str {
-        match self {
-            StdLib::Map => "map",
-            StdLib::Filter => "filter",
-            StdLib::Fold => "fold",
-            StdLib::Length => "length",
-            StdLib::Append => "append",
-            StdLib::Reverse => "reverse",
-            StdLib::Nth => "nth",
-            StdLib::Take => "take",
-            StdLib::Drop => "drop",
-            StdLib::Zip => "zip",
-            StdLib::Member => "member",
-            StdLib::Assoc => "assoc",
-            StdLib::Range => "range",
-            StdLib::Compose => "compose",
-            StdLib::Identity => "identity",
-            StdLib::Constantly => "constantly",
-            StdLib::Flip => "flip",
-            StdLib::Curry => "curry",
-            StdLib::Cadr => "cadr",
-            StdLib::Caddr => "caddr",
-            StdLib::Cddr => "cddr",
-        }
-    }
-    
-    /// Get the parameter names for this function
-    pub const fn params(&self) -> &'static [&'static str] {
-        match self {
-            StdLib::Map => &["f", "lst"],
-            StdLib::Filter => &["pred", "lst"],
-            StdLib::Fold => &["f", "acc", "lst"],
-            StdLib::Length => &["lst"],
-            StdLib::Append => &["a", "b"],
-            StdLib::Reverse => &["lst"],
-            StdLib::Nth => &["n", "lst"],
-            StdLib::Take => &["n", "lst"],
-            StdLib::Drop => &["n", "lst"],
-            StdLib::Zip => &["a", "b"],
-            StdLib::Member => &["x", "lst"],
-            StdLib::Assoc => &["key", "alist"],
-            StdLib::Range => &["start", "end"],
-            StdLib::Compose => &["f", "g"],
-            StdLib::Identity => &["x"],
-            StdLib::Constantly => &["x"],
-            StdLib::Flip => &["f"],
-            StdLib::Curry => &["f", "x"],
-            StdLib::Cadr => &["lst"],
-            StdLib::Caddr => &["lst"],
-            StdLib::Cddr => &["lst"],
-        }
-    }
-    
-    /// Get the body source code (Lisp expression as static string)
-    /// 
-    /// This string is parsed on each call to the function.
-    /// The parsed AST is temporary and GC'd after evaluation.
-    pub const fn body(&self) -> &'static str {
-        match self {
-            StdLib::Map => "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))",
-            StdLib::Filter => "(if (null? lst) '() (if (pred (car lst)) (cons (car lst) (filter pred (cdr lst))) (filter pred (cdr lst))))",
-            StdLib::Fold => "(if (null? lst) acc (fold f (f acc (car lst)) (cdr lst)))",
-            StdLib::Length => "(if (null? lst) 0 (+ 1 (length (cdr lst))))",
-            StdLib::Append => "(if (null? a) b (cons (car a) (append (cdr a) b)))",
-            StdLib::Reverse => "(fold (lambda (acc x) (cons x acc)) '() lst)",
-            StdLib::Nth => "(if (= n 0) (car lst) (nth (- n 1) (cdr lst)))",
-            StdLib::Take => "(if (= n 0) '() (if (null? lst) '() (cons (car lst) (take (- n 1) (cdr lst)))))",
-            StdLib::Drop => "(if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst))))",
-            StdLib::Zip => "(if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b)))))",
-            StdLib::Member => "(if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst))))",
-            // Note: member/assoc use eq for comparison (like Scheme's memq/assq)
-            // This works for symbols and identical objects. For value comparison,
-            // define a custom function or use fold with a predicate.
-            StdLib::Assoc => "(if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist))))",
-            StdLib::Range => "(if (>= start end) '() (cons start (range (+ start 1) end)))",
-            StdLib::Compose => "(lambda (x) (f (g x)))",
-            StdLib::Identity => "x",
-            StdLib::Constantly => "(lambda (y) x)",
-            StdLib::Flip => "(lambda (a b) (f b a))",
-            StdLib::Curry => "(lambda (y) (f x y))",
-            StdLib::Cadr => "(car (cdr lst))",
-            StdLib::Caddr => "(car (cdr (cdr lst)))",
-            StdLib::Cddr => "(cdr (cdr lst))",
-        }
-    }
-    
-    /// All standard library functions for initialization
-    pub const ALL: &'static [StdLib] = &[
-        StdLib::Map, StdLib::Filter, StdLib::Fold,
-        StdLib::Length, StdLib::Append, StdLib::Reverse,
-        StdLib::Nth, StdLib::Take, StdLib::Drop,
-        StdLib::Zip, StdLib::Member, StdLib::Assoc,
-        StdLib::Range,
-        StdLib::Compose, StdLib::Identity, StdLib::Constantly, StdLib::Flip, StdLib::Curry,
-        StdLib::Cadr, StdLib::Caddr, StdLib::Cddr,
-    ];
+    Cddr("cddr", ["lst"], "(cdr (cdr lst))"),
 }
 
 /// A Lisp value
