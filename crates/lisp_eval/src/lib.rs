@@ -164,7 +164,8 @@ macro_rules! extract_args {
 macro_rules! builtin_unary_pred {
     ($self:expr, $args:expr, $check:expr) => {{
         let arg = $self.lisp.car($args)?;
-        $self.lisp.boolean($check($self.lisp.get(arg)?)).map_err(Into::into)
+        let val = $self.lisp.get(arg)?;
+        $self.lisp.boolean($check(val)).map_err(Into::into)
     }};
 }
 
