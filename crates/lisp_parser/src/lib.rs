@@ -311,6 +311,9 @@ impl StdLib {
             StdLib::Drop => "(if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst))))",
             StdLib::Zip => "(if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b)))))",
             StdLib::Member => "(if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst))))",
+            // Note: member/assoc use eq for comparison (like Scheme's memq/assq)
+            // This works for symbols and identical objects. For value comparison,
+            // define a custom function or use fold with a predicate.
             StdLib::Assoc => "(if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist))))",
             StdLib::Range => "(if (>= start end) '() (cons start (range (+ start 1) end)))",
             StdLib::Compose => "(lambda (x) (f (g x)))",
@@ -621,6 +624,9 @@ pub struct Lisp<const N: usize> {
     intern_table_slot: ArenaIndex,
 }
 
+/// Number of reserved slots in the arena (nil, true, false, intern_table_ref)
+pub const RESERVED_SLOTS: usize = 4;
+
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
@@ -632,10 +638,10 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// # Panics
     /// 
-    /// Panics if the arena capacity N < 4, as we need at least 4 slots
+    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 4 slots
     /// for the reserved singleton values and intern table reference cell.
     pub fn new() -> Self {
-        const { assert!(N >= 4, "Lisp arena must have capacity >= 4 for reserved slots") };
+        const { assert!(N >= RESERVED_SLOTS, "Lisp arena must have capacity >= RESERVED_SLOTS for reserved slots") };
         
         let arena = Arena::new(Value::Nil);
         

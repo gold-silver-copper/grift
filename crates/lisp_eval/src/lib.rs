@@ -1240,7 +1240,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         
                         // Parse the body from the static source string
                         let body = parse(self.lisp, s.body())
-                            .map_err(|e| self.parse_error_to_eval(e, call_expr))?;
+                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
                         
                         // Create parameter list from static param names
                         let params = self.make_stdlib_param_list(s.params())?;
@@ -2751,11 +2751,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
     
-    /// Convert a ParseError to EvalError
-    fn parse_error_to_eval(&self, err: ParseError, expr: ArenaIndex) -> EvalError {
+    /// Convert a ParseError to EvalError with stdlib function name context
+    fn parse_error_to_eval(&self, err: ParseError, expr: ArenaIndex, func_name: &str) -> EvalError {
+        // Build a more descriptive message including the function name
+        // We build it manually since we're in no_std
+        let mut msg = ErrorMessage::empty();
+        let prefix = "stdlib ";
+        let suffix = " parse error";
+        
+        // Copy prefix
+        let prefix_bytes = prefix.as_bytes();
+        let prefix_len = prefix_bytes.len().min(64);
+        msg.buf[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
+        let mut pos = prefix_len;
+        
+        // Copy function name
+        let name_bytes = func_name.as_bytes();
+        let name_len = name_bytes.len().min(64 - pos);
+        msg.buf[pos..pos + name_len].copy_from_slice(&name_bytes[..name_len]);
+        pos += name_len;
+        
+        // Copy suffix
+        let suffix_bytes = suffix.as_bytes();
+        let suffix_len = suffix_bytes.len().min(64 - pos);
+        msg.buf[pos..pos + suffix_len].copy_from_slice(&suffix_bytes[..suffix_len]);
+        pos += suffix_len;
+        
+        msg.len = pos;
+        
         EvalError {
             kind: ErrorKind::Parse,
-            message: ErrorMessage::from_str("parse error in stdlib"),
+            message: msg,
             expr,
             expected: None,
             got: None,
