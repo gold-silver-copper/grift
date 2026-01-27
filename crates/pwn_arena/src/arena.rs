@@ -937,13 +937,21 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let start_idx = start.raw();
 
         // Validate all slots are allocated and in bounds
+        // 
+        // Generation check: We only verify the first slot's generation because:
+        // 1. Contiguous blocks are allocated together with the start slot's generation
+        //    used as the handle for the entire block
+        // 2. If individual slots were freed (not via free_contiguous), they become
+        //    Slot::Free which we detect below
+        // 3. If the whole block was freed and slots reused, the first slot's
+        //    generation would have changed
         for i in 0..count {
             let idx = start_idx + i;
             if idx >= N {
                 return Err(ArenaError::InvalidIndex);
             }
             
-            // Check generation only for the first slot (contiguous blocks share the start's generation)
+            // Check generation for the first slot (the handle for the contiguous block)
             if i == 0 {
                 let current_gen = self.generations.borrow()[idx];
                 if start.generation() != current_gen {
@@ -951,6 +959,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
                 }
             }
             
+            // Check that slot is occupied (catches individual slot frees)
             match self.slots.borrow()[idx] {
                 Slot::Occupied { .. } => {}
                 Slot::Free { .. } => return Err(ArenaError::InvalidIndex),

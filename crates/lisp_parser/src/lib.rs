@@ -848,22 +848,36 @@ impl<const N: usize> Lisp<N> {
     
     /// Copy a contiguous string's contents to a byte buffer.
     /// 
-    /// Returns the number of bytes written. Only ASCII-safe characters
-    /// (those that fit in a u8) are copied.
+    /// Returns the number of bytes written. Only ASCII characters (0-127)
+    /// are copied; non-ASCII characters are skipped.
+    /// 
+    /// # Warning
+    /// 
+    /// This method is designed for ASCII strings. For strings containing
+    /// non-ASCII Unicode characters, some characters will be skipped and
+    /// the byte count may not match the character count.
     /// 
     /// # Errors
     /// 
     /// Returns an error if the string index is invalid.
     pub fn string_to_bytes(&self, str_idx: ArenaIndex, buf: &mut [u8]) -> ArenaResult<usize> {
         let len = self.string_len(str_idx)?;
-        let copy_len = core::cmp::min(len, buf.len());
+        let mut buf_idx = 0;
         
-        for i in 0..copy_len {
+        for i in 0..len {
+            if buf_idx >= buf.len() {
+                break;
+            }
             let c = self.string_char_at(str_idx, i)?;
-            buf[i] = c as u8;
+            // Only copy ASCII characters (0-127)
+            if c.is_ascii() {
+                buf[buf_idx] = c as u8;
+                buf_idx += 1;
+            }
+            // Non-ASCII characters are skipped
         }
         
-        Ok(copy_len)
+        Ok(buf_idx)
     }
     
     /// Free a contiguous string and all its character slots.
@@ -1770,6 +1784,21 @@ mod tests {
         
         assert_eq!(len, 3);
         assert_eq!(&buf[..3], b"hel");
+    }
+    
+    #[test]
+    fn test_string_to_bytes_skips_non_ascii() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        // "hé" has 2 chars: 'h' (ASCII) and 'é' (non-ASCII)
+        let mixed = lisp.string("héllo").unwrap();
+        let mut buf = [0u8; 10];
+        
+        let len = lisp.string_to_bytes(mixed, &mut buf).unwrap();
+        
+        // Only ASCII chars are copied, 'é' is skipped
+        assert_eq!(len, 4); // h, l, l, o
+        assert_eq!(&buf[..4], b"hllo");
     }
     
     #[test]
