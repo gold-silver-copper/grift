@@ -649,12 +649,14 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*cache);
             }
             Value::Array { data, len } => {
-                // Trace all elements in the contiguous array block
-                // Elements are at data+0, data+1, ..., data+(len-1)
-                let base_idx = data.raw();
-                for i in 0..*len {
-                    let elem_idx = ArenaIndex::new(base_idx + i, data.generation());
-                    tracer(elem_idx);
+                // For non-empty arrays, trace all elements in the contiguous block
+                // Empty arrays (len == 0) have data == NULL, so skip tracing
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        let elem_idx = ArenaIndex::new(base_idx + i, data.generation());
+                        tracer(elem_idx);
+                    }
                 }
             }
         }
