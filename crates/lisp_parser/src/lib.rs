@@ -333,11 +333,11 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*chars);
                 // For contiguous strings (len > 0), trace all character slots
                 // They are at chars+1, chars+2, ..., chars+len
+                // The GC only uses the raw index from the ArenaIndex, not the generation,
+                // so we can safely use chars.generation() for all slots in the contiguous block.
                 if *len > 0 {
                     let base_idx = chars.raw();
                     for i in 1..=*len {
-                        // Create an index at offset i from chars
-                        // Note: generation might not match, but GC will validate
                         let char_idx = ArenaIndex::new(base_idx + i, chars.generation());
                         tracer(char_idx);
                     }
@@ -907,10 +907,23 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// The intern table is always included as a GC root to prevent interned
     /// symbols from being collected.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the number of roots exceeds the internal limit (512 roots).
+    /// This limit is chosen to balance stack usage in no_std environments
+    /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
         // Create a new roots array with intern table included
         // Using const-sized array to avoid alloc in no_std
+        // 512 roots should be sufficient for most programs while keeping
+        // stack usage reasonable (~8KB on 64-bit systems)
         const MAX_ROOTS: usize = 512;
+        
+        // Panic if too many roots - this indicates a programming error
+        assert!(roots.len() < MAX_ROOTS, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 1);
+        
         let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
         
         // Add intern table as first root
@@ -918,7 +931,7 @@ impl<const N: usize> Lisp<N> {
         let mut root_count = 1;
         
         // Copy provided roots
-        for &root in roots.iter().take(MAX_ROOTS - 1) {
+        for &root in roots {
             all_roots[root_count] = root;
             root_count += 1;
         }
