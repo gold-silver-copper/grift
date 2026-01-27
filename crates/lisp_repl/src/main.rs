@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! # Lisp REPL Binary
 //!
 //! Run with: `cargo run -p lisp_repl`

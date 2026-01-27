@@ -1,4 +1,5 @@
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! # Lisp Evaluator
 //!
@@ -206,8 +207,8 @@ impl ErrorMessage {
     }
     
     pub fn as_str(&self) -> &str {
-        // Safety: we only store valid UTF-8
-        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
+        // We only store UTF-8 bytes; fall back to empty on error
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }
 

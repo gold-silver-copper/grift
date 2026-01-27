@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! # Lisp Stress Test / Benchmark Suite
 //!
 //! Run with: `cargo run -p lisp_repl --bin lisp-bench --release`

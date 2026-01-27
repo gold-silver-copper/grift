@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! # Lisp REPL
 //!
 //! A Read-Eval-Print-Loop for the classic Lisp interpreter.
