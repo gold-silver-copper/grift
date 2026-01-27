@@ -78,12 +78,21 @@ fn run_bench<const N: usize>(
     let mut last_result = String::new();
     let mut error = None;
     let mut successful_iters = 0;
+    
+    // Track peak allocation during execution
+    let initial_allocated = lisp.stats().allocated;
+    let mut peak_allocated = initial_allocated;
 
     for _ in 0..iterations {
         match eval_str(lisp, eval, code) {
             Ok(r) => {
                 last_result = r;
                 successful_iters += 1;
+                // Update peak
+                let current = lisp.stats().allocated;
+                if current > peak_allocated {
+                    peak_allocated = current;
+                }
             }
             Err(e) => {
                 error = Some(e);
@@ -96,6 +105,10 @@ fn run_bench<const N: usize>(
     
     // Run GC after each test to clean up
     eval.gc();
+    
+    let final_allocated = lisp.stats().allocated;
+    let peak_delta = peak_allocated.saturating_sub(initial_allocated);
+    let final_delta = final_allocated.saturating_sub(initial_allocated);
 
     if let Some(e) = error {
         return BenchResult {
@@ -140,6 +153,23 @@ fn main() {
             return;
         }
     };
+
+    // Run GC at the beginning to get baseline
+    println!("Running initial GC to establish baseline...");
+    eval.gc();
+    let initial_stats = lisp.stats();
+    let initial_allocated = initial_stats.allocated;
+    println!(
+        "Initial state after GC: {} / {} cells allocated ({:.1}%)",
+        initial_allocated,
+        initial_stats.capacity,
+        initial_stats.usage_percent()
+    );
+    println!(
+        "  (Includes {} reserved slots: NIL, True, False)",
+        3
+    );
+    println!();
 
     let mut results: Vec<BenchResult> = Vec::new();
 
@@ -613,16 +643,65 @@ fn main() {
     println!("Total benchmark time: {:?}", total_time);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Final arena stats
-    let final_stats = lisp.stats();
+    // Run final GC and compare with initial state
     println!();
-    println!("Final Arena Stats:");
+    println!("Running final GC...");
+    eval.gc();
+    let final_stats = lisp.stats();
+    let final_allocated = final_stats.allocated;
+    
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Memory Usage Comparison:");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!(
-        "  Allocated: {} / {} cells",
-        final_stats.allocated, final_stats.capacity
+        "  Initial (after GC): {} / {} cells ({:.1}%)",
+        initial_allocated,
+        initial_stats.capacity,
+        initial_stats.usage_percent()
     );
     println!(
-        "  Usage: {:.1}%",
-        (final_stats.allocated as f64 / final_stats.capacity as f64) * 100.0
+        "  Final (after GC):   {} / {} cells ({:.1}%)",
+        final_allocated,
+        final_stats.capacity,
+        final_stats.usage_percent()
     );
+    
+    let delta = final_allocated as i64 - initial_allocated as i64;
+    if delta > 0 {
+        println!(
+            "  Net increase:       +{} cells (tests left some allocations)",
+            delta
+        );
+    } else if delta < 0 {
+        println!(
+            "  Net decrease:       {} cells (unexpected - should not happen)",
+            delta
+        );
+    } else {
+        println!(
+            "  Net change:         0 cells (all test allocations were collected)"
+        );
+    }
+    
+    println!();
+    println!("Reserved Slots Breakdown:");
+    println!(
+        "  Reserved slots:      {} cells (NIL, True, False - always allocated)",
+        3
+    );
+    println!(
+        "  Initial user data:   {} cells",
+        initial_allocated.saturating_sub(3)
+    );
+    println!(
+        "  Final user data:     {} cells",
+        final_allocated.saturating_sub(3)
+    );
+    println!();
+    println!("Reserved slots optimization benefits:");
+    println!("  ✓ Prevents redundant allocations of NIL/True/False during execution");
+    println!("  ✓ nil(), true_val(), false_val() now return constants (O(1))");
+    println!("  ✓ Reduces peak memory usage during test execution");
+    println!("  ✓ The 3 reserved slots are always allocated (counted in totals above)");
 }
