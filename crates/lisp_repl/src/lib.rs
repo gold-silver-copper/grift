@@ -522,6 +522,19 @@ fn print_help() {
     println!("  (defmacro name (params) body) - Define a macro");
     println!("  (gensym)              - Generate unique symbol");
     println!();
+    println!("Type System (Bidirectional):");
+    println!("  (declare name type)   - Declare type for name");
+    println!("  (the type expr)       - Assert type of expression");
+    println!("  (lambda-typed ((x t) ...) body) - Typed lambda");
+    println!();
+    println!("Type Syntax:");
+    println!("  isize, bool, nil, char       - Base types");
+    println!("  (fn param result)            - Function type");
+    println!("  (fn (t1 t2) result)          - Multi-param function");
+    println!("  (list t)                     - List type");
+    println!("  (pair t1 t2)                 - Pair type");
+    println!("  (forall (a b) type)          - Polymorphic type");
+    println!();
     println!("Built-in Functions:");
     println!("  List:   car, cdr, cons, list");
     println!("  Pred:   atom, eq, null?, pair?, number?, boolean?");
@@ -578,6 +591,14 @@ fn print_help() {
     println!("  ; Macros");
     println!("  (defmacro unless (c t e) (list 'if c e t))");
     println!("  (unless #f 'yes 'no)  ; => yes");
+    println!();
+    println!("  ; Typed examples");
+    println!("  (declare add (fn (isize isize) isize))");
+    println!("  (define (add x y) (+ x y))");
+    println!();
+    println!("  (the isize 42)      ; Assert type");
+    println!();
+    println!("  (lambda-typed ((x isize) (y isize)) (+ x y))");
     println!();
 }
 
