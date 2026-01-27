@@ -8,6 +8,126 @@ use crate::types::Slot;
 use crate::traits::Trace;
 
 impl<T: Copy, const N: usize> Arena<T, N> {
+    /// Initialize roots into the mark stack.
+    ///
+    /// For each valid root, mark it and push to the stack.
+    /// This is used internally by garbage collection methods.
+    fn initialize_roots(
+        &self,
+        roots: &[ArenaIndex],
+        marked: &mut [bool; N],
+        mark_stack: &mut [usize; N],
+        stack_len: &mut usize,
+    ) {
+        for &root in roots {
+            if self.is_allocated(root) {
+                let idx = root.raw();
+                if idx < N && !marked[idx] {
+                    marked[idx] = true;
+                    if *stack_len < N {
+                        mark_stack[*stack_len] = idx;
+                        *stack_len += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process the mark stack using depth-first traversal.
+    ///
+    /// This iteratively processes children in batches to avoid stack overflow
+    /// when objects have many children. Uses iterative batching to ensure all
+    /// children are processed even when there are more than 16 per object.
+    fn process_mark_stack(
+        &self,
+        marked: &mut [bool; N],
+        mark_stack: &mut [usize; N],
+        stack_len: &mut usize,
+    ) where
+        T: Trace<T, N>,
+    {
+        while *stack_len > 0 {
+            *stack_len -= 1;
+            let current_idx = mark_stack[*stack_len];
+
+            let slots = self.slots.borrow();
+
+            if let Slot::Occupied { value } = slots[current_idx] {
+                drop(slots);
+
+                // Use iterative batching to process all children
+                // This fixes the overflow bug by continuing to batch until all children are processed
+                loop {
+                    let mut batch = [0usize; 16];
+                    let mut batch_count = 0usize;
+                    let mut has_more = false;
+
+                    value.trace(|child_index| {
+                        let idx = child_index.raw();
+                        // Only bounds check needed - we trust trace implementations
+                        if idx < N && !marked[idx] {
+                            if batch_count < 16 {
+                                batch[batch_count] = idx;
+                                batch_count += 1;
+                            } else {
+                                has_more = true;
+                            }
+                        }
+                    });
+
+                    // If no unmarked children found, we're done with this object
+                    if batch_count == 0 {
+                        break;
+                    }
+
+                    // Process the batch - mark and push to stack
+                    for i in 0..batch_count {
+                        let idx = batch[i];
+                        // Check marked again: trace could yield duplicates, or another
+                        // batch entry could have already marked this index
+                        if !marked[idx] {
+                            marked[idx] = true;
+                            if *stack_len < N {
+                                mark_stack[*stack_len] = idx;
+                                *stack_len += 1;
+                            }
+                        }
+                    }
+
+                    // If no more unmarked children beyond this batch, we're done
+                    if !has_more {
+                        break;
+                    }
+                    // Otherwise, continue to next iteration to get remaining children
+                }
+            }
+        }
+    }
+
+    /// Sweep phase: free all unmarked but allocated slots in a single pass.
+    ///
+    /// Returns the number of objects collected.
+    fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
+        let mut collected = 0;
+
+        // Single-pass sweep: iterate once and free immediately
+        for idx in 0..N {
+            let should_free = {
+                let slots = self.slots.borrow();
+                matches!(slots[idx], Slot::Occupied { .. }) && !marked[idx]
+            };
+
+            if should_free {
+                let generation = self.generations.borrow()[idx];
+                if self.free(ArenaIndex::new(idx, generation)).is_ok() {
+                    collected += 1;
+                }
+            }
+        }
+
+        collected
+    }
+
     /// Perform mark-and-sweep garbage collection.
     ///
     /// Starting from the given `roots`, marks all reachable objects by
@@ -89,113 +209,15 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let mut stack_len = 0usize;
 
         // Initialize stack with valid roots
-        for &root in roots {
-            if self.is_allocated(root) {
-                let idx = root.raw();
-                if idx < N && !marked[idx] {
-                    marked[idx] = true;
-                    if stack_len < N {
-                        mark_stack[stack_len] = idx;
-                        stack_len += 1;
-                    }
-                }
-            }
-        }
+        self.initialize_roots(roots, &mut marked, &mut mark_stack, &mut stack_len);
 
         // Process mark stack (depth-first traversal)
-        while stack_len > 0 {
-            stack_len -= 1;
-            let current_idx = mark_stack[stack_len];
-
-            let slots = self.slots.borrow();
-
-            if let Slot::Occupied { value } = slots[current_idx] {
-                drop(slots);
-
-                // Collect ALL children by processing in batches of 16
-                // This ensures we never silently drop children
-                let mut batch = [0usize; 16];
-                let mut batch_count = 0usize;
-                let mut overflow_detected = false;
-
-                value.trace(|child_index| {
-                    let idx = child_index.raw();
-                    if idx < N && !marked[idx] {
-                        if batch_count < 16 {
-                            batch[batch_count] = idx;
-                            batch_count += 1;
-                        } else {
-                            overflow_detected = true;
-                        }
-                    }
-                });
-
-                // Process the batch
-                for i in 0..batch_count {
-                    let idx = batch[i];
-                    if !marked[idx] && self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
-                        marked[idx] = true;
-                        if stack_len < N {
-                            mark_stack[stack_len] = idx;
-                            stack_len += 1;
-                        }
-                    }
-                }
-
-                // If there were more than 16 children, re-trace to get the rest
-                // This is rare but ensures correctness
-                if overflow_detected {
-                    let slots = self.slots.borrow();
-                    if let Slot::Occupied { value } = slots[current_idx] {
-                        drop(slots);
-
-                        value.trace(|child_index| {
-                            let idx = child_index.raw();
-                            if idx < N && !marked[idx] {
-                                if self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
-                                    marked[idx] = true;
-                                    if stack_len < N {
-                                        mark_stack[stack_len] = idx;
-                                        stack_len += 1;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        }
+        self.process_mark_stack(&mut marked, &mut mark_stack, &mut stack_len);
 
         let marked_count = marked.iter().filter(|&&m| m).count();
 
         // Sweep phase: free all unmarked but allocated slots
-        // Collect indices to free into fixed-size array
-        let mut to_free = [0usize; N];
-        let mut to_free_len = 0usize;
-
-        {
-            let slots = self.slots.borrow();
-
-            for idx in 0..N {
-                if let Slot::Occupied { .. } = slots[idx] {
-                    if !marked[idx] {
-                        // This slot is allocated but not reachable - garbage!
-                        to_free[to_free_len] = idx;
-                        to_free_len += 1;
-                    }
-                }
-            }
-        }
-
-        // Free the garbage
-        let mut collected = 0;
-        for i in 0..to_free_len {
-            let idx = to_free[i];
-            let generation = self.generations.borrow()[idx];
-            if self.free(ArenaIndex::new(idx, generation)).is_ok() {
-                collected += 1;
-            }
-        }
+        let collected = self.sweep_unmarked(&marked);
 
         GcStats {
             marked: marked_count,
@@ -284,106 +306,16 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         // Initialize stack with valid roots from all root sets
         for root_set in root_sets {
-            for &root in *root_set {
-                if self.is_allocated(root) {
-                    let idx = root.raw();
-                    if idx < N && !marked[idx] {
-                        marked[idx] = true;
-                        if stack_len < N {
-                            mark_stack[stack_len] = idx;
-                            stack_len += 1;
-                        }
-                    }
-                }
-            }
+            self.initialize_roots(root_set, &mut marked, &mut mark_stack, &mut stack_len);
         }
 
-        // Process mark stack (same logic as collect_garbage with overflow handling)
-        while stack_len > 0 {
-            stack_len -= 1;
-            let current_idx = mark_stack[stack_len];
-
-            let slots = self.slots.borrow();
-
-            if let Slot::Occupied { value } = slots[current_idx] {
-                drop(slots);
-
-                let mut batch = [0usize; 16];
-                let mut batch_count = 0usize;
-                let mut overflow_detected = false;
-
-                value.trace(|child_index| {
-                    let idx = child_index.raw();
-                    if idx < N && !marked[idx] {
-                        if batch_count < 16 {
-                            batch[batch_count] = idx;
-                            batch_count += 1;
-                        } else {
-                            overflow_detected = true;
-                        }
-                    }
-                });
-
-                for i in 0..batch_count {
-                    let idx = batch[i];
-                    if !marked[idx] && self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
-                        marked[idx] = true;
-                        if stack_len < N {
-                            mark_stack[stack_len] = idx;
-                            stack_len += 1;
-                        }
-                    }
-                }
-
-                // Handle overflow case
-                if overflow_detected {
-                    let slots = self.slots.borrow();
-                    if let Slot::Occupied { value } = slots[current_idx] {
-                        drop(slots);
-
-                        value.trace(|child_index| {
-                            let idx = child_index.raw();
-                            if idx < N && !marked[idx] {
-                                if self.is_allocated(ArenaIndex::new(idx, self.generations.borrow()[idx])) {
-                                    marked[idx] = true;
-                                    if stack_len < N {
-                                        mark_stack[stack_len] = idx;
-                                        stack_len += 1;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-        }
+        // Process mark stack (depth-first traversal)
+        self.process_mark_stack(&mut marked, &mut mark_stack, &mut stack_len);
 
         let marked_count = marked.iter().filter(|&&m| m).count();
 
-        // Sweep phase
-        let mut to_free = [0usize; N];
-        let mut to_free_len = 0usize;
-
-        {
-            let slots = self.slots.borrow();
-            for idx in 0..N {
-                if let Slot::Occupied { .. } = slots[idx] {
-                    if !marked[idx] {
-                        to_free[to_free_len] = idx;
-                        to_free_len += 1;
-                    }
-                }
-            }
-        }
-
-        let mut collected = 0;
-        for i in 0..to_free_len {
-            let idx = to_free[i];
-            let generation = self.generations.borrow()[idx];
-            if self.free(ArenaIndex::new(idx, generation)).is_ok() {
-                collected += 1;
-            }
-        }
+        // Sweep phase: free all unmarked but allocated slots
+        let collected = self.sweep_unmarked(&marked);
 
         GcStats {
             marked: marked_count,
