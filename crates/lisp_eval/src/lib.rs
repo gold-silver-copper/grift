@@ -83,7 +83,7 @@
 
 pub use lisp_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
 };
 
 // ============================================================================
@@ -404,6 +404,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         for &builtin in Builtin::ALL {
             let name = lisp.symbol(builtin.name())?;
             let val = lisp.builtin(builtin)?;
+            eval.global_env = eval.env_extend(eval.global_env, name, val)?;
+        }
+        
+        // Register standard library functions
+        // These are stored in static memory and parsed on-demand
+        for &stdlib in StdLib::ALL {
+            let name = lisp.symbol(stdlib.name())?;
+            let val = lisp.stdlib(stdlib)?;
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
         }
         
@@ -901,7 +909,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
-            Value::Builtin(_) | Value::Lambda { .. } | Value::Thunk { .. } |
+            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } | Value::Thunk { .. } |
             Value::Memo { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
@@ -1220,6 +1228,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 remaining_exprs: rest_exprs, eval_env: env,
                                 collected: nil, memo_idx: val, func, cache, call_expr
                             })?;
+                            self.push_cont(Cont::Force)?;
+                            
+                            Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
+                        }
+                    }
+                    Value::StdLib(s) => {
+                        // StdLib: Parse body from static string, create lambda, apply
+                        // This is like Lambda but we create the lambda on-demand
+                        self.pop_frame();
+                        
+                        // Parse the body from the static source string
+                        let body = parse(self.lisp, s.body())
+                            .map_err(|e| self.parse_error_to_eval(e, call_expr))?;
+                        
+                        // Create parameter list from static param names
+                        let params = self.make_stdlib_param_list(s.params())?;
+                        
+                        // Use the global env for stdlib functions (they're defined at top level)
+                        let closure_env = self.global_env;
+                        
+                        if self.lisp.get(args_expr)?.is_nil() {
+                            // No args - check params are also empty
+                            if !self.lisp.get(params)?.is_nil() {
+                                let expected = self.count_list(params)?;
+                                return Err(self.arg_error(call_expr, expected, 0));
+                            }
+                            Ok(Some(TrampolineState::Eval { expr: body, env: closure_env }))
+                        } else {
+                            // Start evaluating first arg and binding
+                            let first_expr = self.lisp.car(args_expr)?;
+                            let rest_exprs = self.lisp.cdr(args_expr)?;
+                            
+                            // Check we have params to bind
+                            if self.lisp.get(params)?.is_nil() {
+                                let got = self.count_list(args_expr)?;
+                                return Err(self.arg_error(call_expr, 0, got));
+                            }
+                            
+                            let first_param = self.lisp.car(params)?;
+                            let rest_params = self.lisp.cdr(params)?;
+                            
+                            // Start with closure_env, we'll extend as we bind
+                            self.push_cont(Cont::LambdaBindArg {
+                                remaining_exprs: rest_exprs, eval_env: env,
+                                remaining_params: rest_params, body, 
+                                new_env: closure_env, call_expr
+                            })?;
+                            // Push binding continuation for first param
+                            self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
                             self.push_cont(Cont::Force)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
@@ -2678,6 +2735,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 _ => return Ok(count), // Rest parameter
             }
+        }
+    }
+    
+    /// Create a parameter list from static parameter names
+    /// 
+    /// This is used by StdLib functions to create their parameter list
+    /// from the static &[&str] param names.
+    fn make_stdlib_param_list(&self, params: &[&str]) -> Result<ArenaIndex, EvalError> {
+        let mut result = self.lisp.nil()?;
+        for name in params.iter().rev() {
+            let sym = self.lisp.symbol(name)?;
+            result = self.lisp.cons(sym, result)?;
+        }
+        Ok(result)
+    }
+    
+    /// Convert a ParseError to EvalError
+    fn parse_error_to_eval(&self, err: ParseError, expr: ArenaIndex) -> EvalError {
+        EvalError {
+            kind: ErrorKind::Parse,
+            message: ErrorMessage::from_str("parse error in stdlib"),
+            expr,
+            expected: None,
+            got: None,
+            expected_args: None,
+            got_args: None,
+            backtrace: [StackFrame::default(); MAX_BACKTRACE],
+            backtrace_len: 0,
+            parse_error: Some(err),
         }
     }
     

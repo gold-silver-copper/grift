@@ -142,6 +142,168 @@ impl Builtin {
     ];
 }
 
+/// Standard library functions (stored in static memory, not arena)
+/// 
+/// These functions are defined as Lisp code in static strings and are parsed
+/// on-demand when called. This provides:
+/// - Zero arena cost for function definitions (static strings)
+/// - Easy maintenance (just edit the source strings)
+/// - Simple implementation (no build scripts needed)
+/// 
+/// The parsing overhead is minimal since:
+/// 1. Standard library functions are typically called frequently (can optimize)
+/// 2. Parsing is fast (simple recursive descent)
+/// 3. Parsed AST is temporary and GC'd after evaluation
+/// 
+/// # Memory Layout
+/// 
+/// Each StdLib variant stores references to static data:
+/// - Function name (for lookup and debugging)
+/// - Parameter names (static slice)
+/// - Body source code (static string, parsed on each call)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdLib {
+    /// (map f lst) - Apply f to each element of lst
+    Map,
+    /// (filter pred lst) - Return elements where pred is true
+    Filter,
+    /// (fold f acc lst) - Left fold over lst
+    Fold,
+    /// (length lst) - Return length of lst
+    Length,
+    /// (append a b) - Concatenate two lists
+    Append,
+    /// (reverse lst) - Reverse a list
+    Reverse,
+    /// (nth n lst) - Get nth element (0-indexed)
+    Nth,
+    /// (take n lst) - Take first n elements
+    Take,
+    /// (drop n lst) - Drop first n elements
+    Drop,
+    /// (zip a b) - Zip two lists into list of pairs
+    Zip,
+    /// (member x lst) - Check if x is in lst
+    Member,
+    /// (assoc key alist) - Look up key in association list
+    Assoc,
+    /// (range start end) - Generate list of integers [start, end)
+    Range,
+    /// (compose f g) - Return function that applies g then f
+    Compose,
+    /// (identity x) - Return x unchanged
+    Identity,
+    /// (constantly x) - Return function that always returns x
+    Constantly,
+    /// (flip f) - Flip argument order of binary function
+    Flip,
+    /// (curry f x) - Partial application
+    Curry,
+    /// (cadr lst) - (car (cdr lst))
+    Cadr,
+    /// (caddr lst) - (car (cdr (cdr lst)))
+    Caddr,
+    /// (cddr lst) - (cdr (cdr lst))
+    Cddr,
+}
+
+impl StdLib {
+    /// Get the function name
+    pub const fn name(&self) -> &'static str {
+        match self {
+            StdLib::Map => "map",
+            StdLib::Filter => "filter",
+            StdLib::Fold => "fold",
+            StdLib::Length => "length",
+            StdLib::Append => "append",
+            StdLib::Reverse => "reverse",
+            StdLib::Nth => "nth",
+            StdLib::Take => "take",
+            StdLib::Drop => "drop",
+            StdLib::Zip => "zip",
+            StdLib::Member => "member",
+            StdLib::Assoc => "assoc",
+            StdLib::Range => "range",
+            StdLib::Compose => "compose",
+            StdLib::Identity => "identity",
+            StdLib::Constantly => "constantly",
+            StdLib::Flip => "flip",
+            StdLib::Curry => "curry",
+            StdLib::Cadr => "cadr",
+            StdLib::Caddr => "caddr",
+            StdLib::Cddr => "cddr",
+        }
+    }
+    
+    /// Get the parameter names for this function
+    pub const fn params(&self) -> &'static [&'static str] {
+        match self {
+            StdLib::Map => &["f", "lst"],
+            StdLib::Filter => &["pred", "lst"],
+            StdLib::Fold => &["f", "acc", "lst"],
+            StdLib::Length => &["lst"],
+            StdLib::Append => &["a", "b"],
+            StdLib::Reverse => &["lst"],
+            StdLib::Nth => &["n", "lst"],
+            StdLib::Take => &["n", "lst"],
+            StdLib::Drop => &["n", "lst"],
+            StdLib::Zip => &["a", "b"],
+            StdLib::Member => &["x", "lst"],
+            StdLib::Assoc => &["key", "alist"],
+            StdLib::Range => &["start", "end"],
+            StdLib::Compose => &["f", "g"],
+            StdLib::Identity => &["x"],
+            StdLib::Constantly => &["x"],
+            StdLib::Flip => &["f"],
+            StdLib::Curry => &["f", "x"],
+            StdLib::Cadr => &["lst"],
+            StdLib::Caddr => &["lst"],
+            StdLib::Cddr => &["lst"],
+        }
+    }
+    
+    /// Get the body source code (Lisp expression as static string)
+    /// 
+    /// This string is parsed on each call to the function.
+    /// The parsed AST is temporary and GC'd after evaluation.
+    pub const fn body(&self) -> &'static str {
+        match self {
+            StdLib::Map => "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))",
+            StdLib::Filter => "(if (null? lst) '() (if (pred (car lst)) (cons (car lst) (filter pred (cdr lst))) (filter pred (cdr lst))))",
+            StdLib::Fold => "(if (null? lst) acc (fold f (f acc (car lst)) (cdr lst)))",
+            StdLib::Length => "(if (null? lst) 0 (+ 1 (length (cdr lst))))",
+            StdLib::Append => "(if (null? a) b (cons (car a) (append (cdr a) b)))",
+            StdLib::Reverse => "(fold (lambda (acc x) (cons x acc)) '() lst)",
+            StdLib::Nth => "(if (= n 0) (car lst) (nth (- n 1) (cdr lst)))",
+            StdLib::Take => "(if (= n 0) '() (if (null? lst) '() (cons (car lst) (take (- n 1) (cdr lst)))))",
+            StdLib::Drop => "(if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst))))",
+            StdLib::Zip => "(if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b)))))",
+            StdLib::Member => "(if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst))))",
+            StdLib::Assoc => "(if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist))))",
+            StdLib::Range => "(if (>= start end) '() (cons start (range (+ start 1) end)))",
+            StdLib::Compose => "(lambda (x) (f (g x)))",
+            StdLib::Identity => "x",
+            StdLib::Constantly => "(lambda (y) x)",
+            StdLib::Flip => "(lambda (a b) (f b a))",
+            StdLib::Curry => "(lambda (y) (f x y))",
+            StdLib::Cadr => "(car (cdr lst))",
+            StdLib::Caddr => "(car (cdr (cdr lst)))",
+            StdLib::Cddr => "(cdr (cdr lst))",
+        }
+    }
+    
+    /// All standard library functions for initialization
+    pub const ALL: &'static [StdLib] = &[
+        StdLib::Map, StdLib::Filter, StdLib::Fold,
+        StdLib::Length, StdLib::Append, StdLib::Reverse,
+        StdLib::Nth, StdLib::Take, StdLib::Drop,
+        StdLib::Zip, StdLib::Member, StdLib::Assoc,
+        StdLib::Range,
+        StdLib::Compose, StdLib::Identity, StdLib::Constantly, StdLib::Flip, StdLib::Curry,
+        StdLib::Cadr, StdLib::Caddr, StdLib::Cddr,
+    ];
+}
+
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
@@ -198,6 +360,25 @@ pub enum Value {
     
     /// Built-in function (optimized)
     Builtin(Builtin),
+    
+    /// Standard library function (stored in static memory)
+    /// 
+    /// Unlike Lambda which stores code in the arena, StdLib references static
+    /// function definitions. The function body is parsed on-demand when called,
+    /// providing zero arena cost for function code storage.
+    /// 
+    /// # Memory Efficiency
+    /// 
+    /// - Function definitions are in static memory (const strings)
+    /// - Only runtime values (arguments, return values) use arena space
+    /// - Parsed AST is temporary and GC'd after each call
+    /// 
+    /// # Pitfalls
+    /// 
+    /// - Each call incurs parsing overhead (mitigated by simple parser)
+    /// - Errors in static source strings are only caught at runtime
+    /// - StdLib functions should be tested thoroughly at compile time
+    StdLib(StdLib),
 }
 
 impl Value {
@@ -262,10 +443,16 @@ impl Value {
         matches!(self, Value::Builtin(_))
     }
     
-    /// Check if this value is a procedure (lambda, builtin, or memoized function)
+    /// Check if this value is a stdlib function
+    #[inline]
+    pub const fn is_stdlib(&self) -> bool {
+        matches!(self, Value::StdLib(_))
+    }
+    
+    /// Check if this value is a procedure (lambda, builtin, stdlib, or memoized function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::Memo { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Memo { .. })
     }
     
     /// Check if this value is a thunk (promise)
@@ -311,6 +498,7 @@ impl Value {
             Value::Thunk { .. } => "promise",
             Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
+            Value::StdLib(_) => "procedure",
         }
     }
 }
@@ -320,8 +508,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) => {
-                // No references
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) | Value::StdLib(_) => {
+                // No references - StdLib references static data, not arena
             }
             Value::Cons { car, cdr } => {
                 tracer(*car);
@@ -691,6 +879,16 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn builtin(&self, b: Builtin) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Builtin(b))
+    }
+    
+    /// Allocate a stdlib function
+    /// 
+    /// StdLib functions are stored in static memory, so this only allocates
+    /// a single cell containing the StdLib enum variant. The function code
+    /// is parsed on-demand from the static source string.
+    #[inline]
+    pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::StdLib(s))
     }
     
     /// Allocate a lambda
