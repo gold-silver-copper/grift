@@ -1,0 +1,10 @@
+[package]
+name = "lisp_types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bidirectional type checker for the pwn_arena Lisp"
+
+[dependencies]
+pwn_arena = { path = "../pwn_arena" }
+lisp_parser = { path = "../lisp_parser" }
