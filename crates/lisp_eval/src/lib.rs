@@ -91,39 +91,6 @@ pub use lisp_parser::{
 // Helper Macros for Code Deduplication
 // ============================================================================
 
-/// Macro to dispatch special forms based on symbol matching.
-///
-/// This macro checks if the car of an expression matches any of the given
-/// special form names and executes the corresponding handler.
-///
-/// # Example
-/// ```ignore
-/// dispatch_special_form!(self, car, cdr, env,
-///     "quote" => {
-///         let val = self.lisp.car(cdr)?;
-///         Ok(TrampolineState::Return { val })
-///     },
-///     "lambda" => {
-///         let val = self.eval_lambda(cdr, env)?;
-///         Ok(TrampolineState::Return { val })
-///     },
-/// );
-/// ```
-#[allow(unused_macros)]
-macro_rules! dispatch_special_form {
-    (
-        $self:expr, $car:expr, $cdr:expr, $env:expr,
-        $(
-            $name:literal => $handler:expr
-        ),* $(,)?
-    ) => {
-        $(
-            if $self.lisp.symbol_matches($car, $name)? {
-                return $handler;
-            }
-        )*
-    };
-}
 
 /// Macro to extract arguments from a Lisp list using car/cdr.
 ///
@@ -169,63 +136,7 @@ macro_rules! builtin_unary_pred {
     }};
 }
 
-/// Macro for iterating over a Lisp list.
-///
-/// This macro provides a for-each style iteration over a Lisp list,
-/// handling the common pattern of traversing cons cells.
-///
-/// # Example
-/// ```ignore
-/// for_each_in_list!(self, list, item, {
-///     // process item
-/// });
-/// ```
-#[allow(unused_macros)]
-macro_rules! for_each_in_list {
-    ($self:expr, $list:expr, $item:ident, $body:expr) => {{
-        let mut current = $list;
-        loop {
-            match $self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car: $item, cdr } => {
-                    $body;
-                    current = cdr;
-                }
-                _ => return Err($self.make_error(ErrorKind::TypeError, current)),
-            }
-        }
-    }};
-}
 
-/// Macro for matching on Value types with common patterns.
-///
-/// This macro simplifies the common pattern of matching on `self.lisp.get(idx)?`
-/// with handlers for Nil, Cons, and other variants.
-///
-/// # Example
-/// ```ignore
-/// match_value!(self, idx,
-///     Nil => return Ok(result),
-///     Cons { car, cdr } => {
-///         // process car and cdr
-///     },
-///     _ => return Err(error),
-/// )
-/// ```
-#[allow(unused_macros)]
-macro_rules! match_value {
-    ($self:expr, $idx:expr,
-        Nil => $nil_body:expr,
-        Cons { $car:ident, $cdr:ident } => $cons_body:expr,
-        _ => $default:expr $(,)?
-    ) => {
-        match $self.lisp.get($idx)? {
-            Value::Nil => $nil_body,
-            Value::Cons { car: $car, cdr: $cdr } => $cons_body,
-            _ => $default,
-        }
-    };
-}
 
 // ============================================================================
 // Error Handling
@@ -451,7 +362,6 @@ const MAX_CONT_DEPTH: usize = 1024;
 
 /// Continuation - what to do after a computation completes
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // Some variants may be unused in certain code paths
 enum Cont {
     /// We're done - return the value
     Done,
@@ -588,7 +498,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.global_env
     }
     
-    /// Run GC with current roots (global env only - use gc_with_continuations during evaluation)
+    /// Run GC with current roots (global env only)
     pub fn gc(&self) -> GcStats {
         self.lisp.gc(&[self.global_env])
     }
@@ -617,88 +527,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 roots[root_count] = *val; root_count += 1;
             }
         }
-        
-        // Collect roots from all continuations
-        for i in 0..self.cont_depth {
-            if root_count >= MAX_ROOTS - 20 {
-                break; // Leave some room
-            }
-            
-            match self.cont_stack[i] {
-                Cont::Done | Cont::Force => {}
-                Cont::CacheThunk { thunk_idx, expr, env } => {
-                    roots[root_count] = thunk_idx; root_count += 1;
-                    roots[root_count] = expr; root_count += 1;
-                    roots[root_count] = env; root_count += 1;
-                }
-                Cont::ApplyForced { args_expr, env, call_expr } => {
-                    roots[root_count] = args_expr; root_count += 1;
-                    roots[root_count] = env; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::IfBranch { then_expr, else_expr, env } => {
-                    roots[root_count] = then_expr; root_count += 1;
-                    roots[root_count] = else_expr; root_count += 1;
-                    roots[root_count] = env; root_count += 1;
-                }
-                Cont::BuiltinForceArg { remaining_args, collected, call_expr, .. } => {
-                    roots[root_count] = remaining_args; root_count += 1;
-                    roots[root_count] = collected; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::BuiltinCarCdr { call_expr, .. } => {
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::BinaryBuiltinFirst { second_arg, call_expr, .. } => {
-                    roots[root_count] = second_arg; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::BinaryBuiltinSecond { first_val, call_expr, .. } => {
-                    roots[root_count] = first_val; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::LambdaFirstBind { param } => {
-                    roots[root_count] = param; root_count += 1;
-                }
-                Cont::LambdaBindArg { remaining_exprs, eval_env, remaining_params, body, new_env, call_expr } => {
-                    roots[root_count] = remaining_exprs; root_count += 1;
-                    roots[root_count] = eval_env; root_count += 1;
-                    roots[root_count] = remaining_params; root_count += 1;
-                    roots[root_count] = body; root_count += 1;
-                    roots[root_count] = new_env; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::MemoCollectArg { remaining_exprs, eval_env, collected, memo_idx, func, cache, call_expr } => {
-                    roots[root_count] = remaining_exprs; root_count += 1;
-                    roots[root_count] = eval_env; root_count += 1;
-                    roots[root_count] = collected; root_count += 1;
-                    roots[root_count] = memo_idx; root_count += 1;
-                    roots[root_count] = func; root_count += 1;
-                    roots[root_count] = cache; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::MemoCacheResult { memo_idx, args, cache } => {
-                    roots[root_count] = memo_idx; root_count += 1;
-                    roots[root_count] = args; root_count += 1;
-                    roots[root_count] = cache; root_count += 1;
-                }
-            }
-        }
-        
-        self.lisp.gc(&roots[..root_count])
-    }
-    
-    /// Run GC during evaluation - marks continuation stack items as roots (deprecated, use gc_with_state)
-    #[allow(dead_code)]
-    fn gc_with_continuations(&self) -> GcStats {
-        // Collect all roots: global env + all ArenaIndex values in continuations
-        const MAX_ROOTS: usize = 512;
-        let mut roots = [ArenaIndex::NULL; MAX_ROOTS];
-        let mut root_count = 0;
-        
-        // Always include global env
-        roots[root_count] = self.global_env;
-        root_count += 1;
         
         // Collect roots from all continuations
         for i in 0..self.cont_depth {
@@ -2924,8 +2752,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     // NOTE: eval_list_strict and force_list removed - handled by trampoline continuations
     
-    /// Bind parameters to arguments (kept for potential future use with rest parameters)
-    #[allow(dead_code)]
+    /// Bind parameters to arguments
     fn bind_params(&self, params: ArenaIndex, args: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
         let mut new_env = env;
         let mut params_cur = params;
