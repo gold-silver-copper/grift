@@ -737,6 +737,250 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         true
     }
+
+    // ========================================================================
+    // Contiguous Allocation
+    // ========================================================================
+
+    /// Find a contiguous block of `count` free slots.
+    /// 
+    /// Returns the starting index if found, `None` otherwise.
+    /// 
+    /// # Algorithm
+    /// 
+    /// Linear scan through the slots array looking for consecutive free slots.
+    /// Uses first-fit strategy for simplicity.
+    fn find_contiguous_free_slots(&self, count: usize) -> Option<usize> {
+        if count == 0 || count > N {
+            return None;
+        }
+
+        let slots = self.slots.borrow();
+        let mut consecutive = 0;
+        let mut start = 0;
+
+        for i in 0..N {
+            match slots[i] {
+                Slot::Free { .. } => {
+                    if consecutive == 0 {
+                        start = i;
+                    }
+                    consecutive += 1;
+                    if consecutive >= count {
+                        return Some(start);
+                    }
+                }
+                Slot::Occupied { .. } => {
+                    consecutive = 0;
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Remove a slot from the free list.
+    /// 
+    /// This is a helper for contiguous allocation that removes a specific
+    /// slot index from the free list by updating the linked list.
+    fn remove_from_free_list(&self, slot_idx: usize) {
+        let mut free_head = self.free_head.borrow_mut();
+        let mut slots = self.slots.borrow_mut();
+
+        // If the slot to remove is the head of the free list
+        if *free_head == slot_idx {
+            if let Slot::Free { next_free } = slots[slot_idx] {
+                *free_head = next_free;
+            }
+            return;
+        }
+
+        // Otherwise, search for the slot in the free list
+        let mut current = *free_head;
+        while current != FREE_LIST_END {
+            if let Slot::Free { next_free } = slots[current] {
+                if next_free == slot_idx {
+                    // Found it! Update the previous slot to skip this one
+                    if let Slot::Free { next_free: removed_next } = slots[slot_idx] {
+                        slots[current] = Slot::Free { next_free: removed_next };
+                    }
+                    return;
+                }
+                current = next_free;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Allocate a contiguous block of `count` slots.
+    /// 
+    /// Returns the starting `ArenaIndex` if successful. The allocated slots
+    /// are consecutive in memory, starting from the returned index.
+    /// 
+    /// # Use Case
+    /// 
+    /// This is primarily used for string storage where characters need to be
+    /// stored in contiguous memory for efficient access. The first slot
+    /// typically stores length metadata, followed by character data.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if `count` is 0.
+    /// Returns `ArenaError::OutOfMemory` if no contiguous block is available.
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use pwn_arena::Arena;
+    /// 
+    /// let arena: Arena<i64, 100> = Arena::new(0);
+    /// 
+    /// // Allocate 5 contiguous slots
+    /// let start = arena.alloc_contiguous(5, 0).unwrap();
+    /// 
+    /// // All slots are consecutive
+    /// for i in 0..5 {
+    ///     let idx = arena.index_at_offset(start, i).unwrap();
+    ///     arena.set(idx, i as i64).unwrap();
+    /// }
+    /// ```
+    pub fn alloc_contiguous(&self, count: usize, default: T) -> ArenaResult<ArenaIndex> {
+        if count == 0 {
+            return Err(ArenaError::InvalidIndex);
+        }
+
+        let start_idx = self.find_contiguous_free_slots(count)
+            .ok_or(ArenaError::OutOfMemory)?;
+
+        // Remove all slots from free list and mark as occupied
+        for i in 0..count {
+            let idx = start_idx + i;
+            self.remove_from_free_list(idx);
+            self.slots.borrow_mut()[idx] = Slot::Occupied { value: default };
+        }
+
+        // Update length
+        *self.len.borrow_mut() += count;
+
+        let generation = self.generations.borrow()[start_idx];
+        Ok(ArenaIndex::new(start_idx, generation))
+    }
+
+    /// Get an ArenaIndex at a given offset from a starting index.
+    /// 
+    /// This is used to access slots within a contiguous allocation.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if the offset goes out of bounds
+    /// or the slot is not allocated.
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use pwn_arena::Arena;
+    /// 
+    /// let arena: Arena<i64, 100> = Arena::new(0);
+    /// let start = arena.alloc_contiguous(3, 0).unwrap();
+    /// 
+    /// // Access slot at offset 1
+    /// let idx1 = arena.index_at_offset(start, 1).unwrap();
+    /// arena.set(idx1, 42).unwrap();
+    /// assert_eq!(arena.get(idx1).unwrap(), 42);
+    /// ```
+    pub fn index_at_offset(&self, start: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
+        let new_idx = start.raw() + offset;
+        if new_idx >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        
+        let generation = self.generations.borrow()[new_idx];
+        let index = ArenaIndex::new(new_idx, generation);
+        
+        // Verify the slot is actually occupied
+        match self.slots.borrow()[new_idx] {
+            Slot::Occupied { .. } => Ok(index),
+            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Free a contiguous block starting at `start` with `count` slots.
+    /// 
+    /// All slots must be allocated. This increments the generation of each
+    /// slot to invalidate any existing indices.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if any slot is out of bounds,
+    /// not allocated, or has a mismatched generation.
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use pwn_arena::Arena;
+    /// 
+    /// let arena: Arena<i64, 100> = Arena::new(0);
+    /// let start = arena.alloc_contiguous(5, 0).unwrap();
+    /// 
+    /// assert_eq!(arena.len(), 5);
+    /// 
+    /// arena.free_contiguous(start, 5).unwrap();
+    /// 
+    /// assert_eq!(arena.len(), 0);
+    /// ```
+    pub fn free_contiguous(&self, start: ArenaIndex, count: usize) -> ArenaResult<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let start_idx = start.raw();
+
+        // Validate all slots are allocated and in bounds
+        for i in 0..count {
+            let idx = start_idx + i;
+            if idx >= N {
+                return Err(ArenaError::InvalidIndex);
+            }
+            
+            // Check generation only for the first slot (contiguous blocks share the start's generation)
+            if i == 0 {
+                let current_gen = self.generations.borrow()[idx];
+                if start.generation() != current_gen {
+                    return Err(ArenaError::GenerationMismatch);
+                }
+            }
+            
+            match self.slots.borrow()[idx] {
+                Slot::Occupied { .. } => {}
+                Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+            }
+        }
+
+        // Free all slots and add to free list
+        let mut free_head = self.free_head.borrow_mut();
+        let mut slots = self.slots.borrow_mut();
+        let mut generations = self.generations.borrow_mut();
+
+        // Link freed slots together, then link to free_head
+        // Process in reverse so the slots end up in order in the free list
+        for i in (0..count).rev() {
+            let idx = start_idx + i;
+            generations[idx] = generations[idx].wrapping_add(1);
+            slots[idx] = Slot::Free {
+                next_free: if i == count - 1 {
+                    *free_head
+                } else {
+                    start_idx + i + 1
+                },
+            };
+        }
+
+        *free_head = start_idx;
+        *self.len.borrow_mut() -= count;
+
+        Ok(())
+    }
 }
 
 // ============================================================================
