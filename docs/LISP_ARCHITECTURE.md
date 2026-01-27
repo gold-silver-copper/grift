@@ -223,8 +223,8 @@ nil                          ; nil/unit type
 char                         ; character type
 
 ; Function types
-(-> isize isize)             ; function from isize to isize
-(-> isize (-> isize isize))  ; curried binary function
+(fn isize isize)             ; function from isize to isize
+(fn isize (fn isize isize))  ; curried binary function
 
 ; Collection types
 (list isize)                 ; list of isize
@@ -233,11 +233,11 @@ char                         ; character type
 
 ### Type Annotations
 
-Use `(:)` to annotate expressions with types:
+Use `(the type expr)` to annotate expressions with types:
 
 ```lisp
-(: 42 isize)                 ; annotate 42 as isize
-(: (lambda (x) x) (-> isize isize))  ; annotate identity function
+(the isize 42)                 ; annotate 42 as isize
+(the (fn isize isize) (lambda (x) x))  ; annotate identity function
 ```
 
 ### Bidirectional Typing Modes
