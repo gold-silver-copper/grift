@@ -137,13 +137,13 @@ The `lisp_types` crate provides bidirectional type checking:
 isize                    ; integer type
 bool                     ; boolean type  
 nil                      ; nil/unit type
-(-> isize isize)         ; function type
+(fn isize isize)         ; function type
 (list isize)             ; list type
 (pair isize bool)        ; pair type
 
-; Type annotations with (:)
-(: 42 isize)             ; annotate literal
-(: (lambda (x) x) (-> isize isize))  ; annotate function
+; Type annotations with (the type expr)
+(the isize 42)           ; annotate literal
+(the (fn isize isize) (lambda (x) x))  ; annotate function
 ```
 
 ## 🔥 Design Philosophy

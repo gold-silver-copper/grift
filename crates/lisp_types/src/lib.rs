@@ -11,7 +11,7 @@
 //!
 //! The type system supports:
 //! - Base types: `isize`, `bool`, `nil`, `char`
-//! - Function types: `(-> t1 t2)` - function from t1 to t2
+//! - Function types: `(fn t1 t2)` - function from t1 to t2
 //! - List types: `(list t)` - homogeneous list of type t
 //! - Pair types: `(pair t1 t2)` - pair of t1 and t2
 //!
@@ -36,18 +36,18 @@
 //! char                     ; character type
 //!
 //! ; Compound types
-//! (-> isize isize)         ; function from isize to isize
-//! (-> isize (-> isize isize))  ; curried binary function
+//! (fn isize isize)         ; function from isize to isize
+//! (fn isize (fn isize isize))  ; curried binary function
 //! (list isize)             ; list of isize
 //! (pair isize bool)        ; pair of isize and bool
 //!
-//! ; Type annotations using (: expr type)
-//! (: 42 isize)             ; annotate 42 as isize
-//! (: (lambda (x) x) (-> isize isize))  ; annotate identity as isize -> isize
+//! ; Type annotations using (the type expr)
+//! (the isize 42)           ; annotate 42 as isize
+//! (the (fn isize isize) (lambda (x) x))  ; annotate identity as isize -> isize
 //!
-//! ; Typed definitions
-//! (define (add : (-> isize (-> isize isize)))
-//!   (lambda (x) (lambda (y) (+ x y))))
+//! ; Typed definitions with declare
+//! (declare add (fn isize (fn isize isize)))
+//! (define (add x y) (+ x y))
 //! ```
 //!
 //! ## Implementation Notes
@@ -82,7 +82,7 @@ pub enum Type {
     /// Character type `char`
     Char,
     
-    /// Function type `(-> param_type return_type)`
+    /// Function type `(fn param_type return_type)`
     Arrow {
         param: ArenaIndex,   // Points to Type
         result: ArenaIndex,  // Points to Type
@@ -413,7 +413,7 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
     /// - `bool` - boolean type  
     /// - `nil` - nil/unit type
     /// - `char` - character type
-    /// - `(-> t1 t2)` - function type
+    /// - `(fn t1 t2)` - function type
     /// - `(list t)` - list type
     /// - `(pair t1 t2)` - pair type
     pub fn parse_type(&self, expr: ArenaIndex) -> TypeResult<ArenaIndex> {
@@ -447,14 +447,14 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
                 Err(TypeError::new(TypeErrorKind::InvalidTypeSyntax, expr))
             }
             
-            // Compound types (-> t1 t2), (list t), (pair t1 t2)
+            // Compound types (fn t1 t2), (list t), (pair t1 t2)
             Value::Cons { car, cdr: _ } => {
                 let head = self.lisp.get(car)
                     .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))?;
                 
                 if let Value::Symbol { .. } = head {
-                    // Function type: (-> param_type result_type)
-                    if self.lisp.symbol_matches(car, "->")
+                    // Function type: (fn param_type result_type)
+                    if self.lisp.symbol_matches(car, "fn")
                         .map_err(|_| TypeError::new(TypeErrorKind::ArenaError, expr))? 
                     {
                         let args = self.lisp.cdr(expr)
@@ -1108,8 +1108,8 @@ mod tests {
         let (lisp, types) = setup();
         let checker = TypeChecker::new(&lisp, &types);
         
-        // Parse (-> isize isize)
-        let arrow_sym = lisp.symbol("->").unwrap();
+        // Parse (fn isize isize)
+        let arrow_sym = lisp.symbol("fn").unwrap();
         let isize_sym = lisp.symbol("isize").unwrap();
         let isize_sym2 = lisp.symbol("isize").unwrap();
         let list = lisp.list([arrow_sym, isize_sym, isize_sym2]).unwrap();
@@ -1223,7 +1223,7 @@ mod tests {
         let nil = lisp.nil().unwrap();
         let lambda = lisp.lambda(params, x, nil).unwrap();
         
-        // Create type (-> isize isize)
+        // Create type (fn isize isize)
         let isize_type = checker.isize_type().unwrap();
         let arrow_type = checker.arrow_type(isize_type, isize_type).unwrap();
         
