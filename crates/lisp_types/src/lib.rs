@@ -329,9 +329,6 @@ pub struct TypeChecker<'a, const N: usize, const M: usize> {
     lisp: &'a Lisp<N>,
     /// Type arena for type representations
     types: &'a Arena<Type, M>,
-    /// Next type variable ID (for future polymorphism support)
-    #[allow(dead_code)]
-    next_var: u32,
 }
 
 impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
@@ -340,7 +337,6 @@ impl<'a, const N: usize, const M: usize> TypeChecker<'a, N, M> {
         TypeChecker {
             lisp,
             types,
-            next_var: 0,
         }
     }
     
@@ -1269,11 +1265,8 @@ mod tests {
     
     #[test]
     fn test_types_equal() {
-        let (lisp, types) = setup();
-        let checker = TypeChecker::new(&lisp, &types);
-        
-        // Use _ to suppress unused variable warning
-        let _ = &lisp;
+        let (_lisp, types) = setup();
+        let checker = TypeChecker::new(&_lisp, &types);
         
         let isize1 = checker.isize_type().unwrap();
         let isize2 = checker.isize_type().unwrap();
