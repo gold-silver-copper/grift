@@ -10,16 +10,15 @@
 //!
 //! - **Full Trampolining**: All evaluation uses continuation-passing style with
 //!   an explicit continuation stack. No Rust recursion means no stack overflow.
+//! - **Pure Functional**: All values are immutable, referential transparency guaranteed
 //! - **Hybrid Evaluation Strategy**: Strict in tail position, lazy elsewhere
 //! - **Proper TCO**: Tail calls reuse the same continuation frame
 //! - **Lexically Scoped Closures**: First-class functions with captured environments
 //! - **Lazy Data Structures**: Infinite streams like Haskell
 //! - **Rich Error Handling**: Error messages with stack traces
 //! - **Pattern Matching**: `case` for value matching
-//! - **Iteration**: `do` loops for imperative-style iteration
 //! - **Macros**: `defmacro` with `quasiquote`/`unquote` and `gensym`
 //! - **Meta-programming**: `eval` for runtime code evaluation
-//! - **Mutation**: `set!`, `set-car!`, `set-cdr!` for imperative programming
 //!
 //! ## Hybrid Evaluation Strategy
 //!
@@ -49,14 +48,13 @@
 //! - Predicates (null?, pair?, etc.)
 //! - Print/display arguments
 //!
-//! ## Mutation
+//! ## Pure Functional Design
 //!
-//! This Lisp supports mutation operations for imperative programming:
-//! - `set!` - Mutate a variable binding
-//! - `set-car!` - Mutate the car of a cons cell
-//! - `set-cdr!` - Mutate the cdr of a cons cell
-//!
-//! Note: Mutation breaks referential transparency but enables imperative patterns.
+//! This Lisp is purely functional:
+//! - All values are immutable
+//! - No mutation primitives (no set!, set-car!, set-cdr!)
+//! - Referential transparency guaranteed
+//! - Use recursion and higher-order functions for state
 //!
 //! ## Truthiness
 //!
@@ -70,12 +68,10 @@
 //! - `case` - Pattern matching on values
 //! - `lambda` - Create closure
 //! - `define` - Define variable/function
-//! - `set!` - Mutate variable binding
 //! - `let` - Local binding
 //! - `let*` - Sequential local binding
 //! - `begin` - Sequence of expressions
 //! - `and` / `or` - Short-circuit boolean operations
-//! - `do` - Iteration with initialization and step expressions
 //! - `quasiquote` - Template with `unquote` and `unquote-splicing`
 //! - `eval` - Evaluate expression at runtime
 //! - `apply` - Apply function to argument list
@@ -863,59 +859,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Set a variable in an environment (mutation operation)
-    /// Searches both local and global environments
-    /// Returns the new value on success
-    fn env_set(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // First search local environment
-        let mut current = env;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found in local env, try global
-                    return self.env_set_global(name, value);
-                }
-                Value::Cons { car, cdr } => {
-                    let binding = self.lisp.get(car)?;
-                    if let Value::Cons { car: bound_name, cdr: _ } = binding {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            // Found it - mutate the binding
-                            self.lisp.set(car, Value::Cons { car: bound_name, cdr: value })?;
-                            return Ok(value);
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
-    /// Set a variable in global environment only
-    fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found anywhere - error
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
-                Value::Cons { car, cdr } => {
-                    let binding = self.lisp.get(car)?;
-                    if let Value::Cons { car: bound_name, cdr: _ } = binding {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            // Found it - mutate the binding
-                            self.lisp.set(car, Value::Cons { car: bound_name, cdr: value })?;
-                            return Ok(value);
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         // Check if already defined and update
@@ -1129,12 +1072,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Return { val });
             }
             
-            // set! - mutate variable binding
-            if self.lisp.symbol_matches(car, "set!")? {
-                let val = self.eval_set(cdr, env)?;
-                return Ok(TrampolineState::Return { val });
-            }
-            
             // let - TCO in body
             if self.lisp.symbol_matches(car, "let")? {
                 let (new_expr, new_env) = self.eval_let_tco(cdr, env)?;
@@ -1180,11 +1117,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // case - pattern matching
             if self.lisp.symbol_matches(car, "case")? {
                 return self.step_eval_case(cdr, env);
-            }
-            
-            // do - iteration construct
-            if self.lisp.symbol_matches(car, "do")? {
-                return self.step_eval_do(cdr, env);
             }
             
             // quasiquote - template with unquote
@@ -1888,32 +1820,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.gensym("g")
             }
             
-            Builtin::SetCar => {
-                // (set-car! pair value) - mutate the car of a cons cell
-                extract_args!(self, args, pair, value);
-                
-                // Verify it's a pair
-                match self.lisp.get(pair)? {
-                    Value::Cons { .. } => {
-                        self.lisp.set_car(pair, value).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
-                }
-            }
-            
-            Builtin::SetCdr => {
-                // (set-cdr! pair value) - mutate the cdr of a cons cell
-                extract_args!(self, args, pair, value);
-                
-                // Verify it's a pair
-                match self.lisp.get(pair)? {
-                    Value::Cons { .. } => {
-                        self.lisp.set_cdr(pair, value).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
-                }
-            }
-            
             Builtin::Gc => {
                 // (gc) - Manually trigger garbage collection
                 // Returns a list: (marked collected total-before)
@@ -2284,92 +2190,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             TcoResult::Return(val) => Ok(TrampolineState::Return { val }),
             TcoResult::TailCall { new_expr, new_env } => {
                 Ok(TrampolineState::Eval { expr: new_expr, env: new_env })
-            }
-        }
-    }
-    
-    /// Evaluate do - iteration construct
-    /// (do ((var init step) ...) (test result ...) body ...)
-    fn step_eval_do(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let bindings = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        let test_clause = self.lisp.car(rest)?;
-        let body = self.lisp.cdr(rest)?;
-        
-        // Initialize variables
-        let mut loop_env = env;
-        let mut var_info: [(ArenaIndex, ArenaIndex); 16] = [(ArenaIndex::NULL, ArenaIndex::NULL); 16]; // (var, step)
-        let mut var_count = 0;
-        
-        let mut current = bindings;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car: binding, cdr: rest } => {
-                    let var = self.lisp.car(binding)?;
-                    let init_rest = self.lisp.cdr(binding)?;
-                    let init = self.lisp.car(init_rest)?;
-                    let step_rest = self.lisp.cdr(init_rest)?;
-                    let step = if self.lisp.get(step_rest)?.is_nil() {
-                        var // No step, use variable itself
-                    } else {
-                        self.lisp.car(step_rest)?
-                    };
-                    
-                    let init_val = self.eval_in_env(init, env)?;
-                    loop_env = self.env_extend(loop_env, var, init_val)?;
-                    
-                    if var_count >= 16 {
-                        return Err(self.make_error(ErrorKind::StackOverflow, bindings)
-                            .with_message("do: too many variables (max 16)"));
-                    }
-                    var_info[var_count] = (var, step);
-                    var_count += 1;
-                    
-                    current = rest;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
-            }
-        }
-        
-        // Iteration loop
-        loop {
-            // Evaluate test
-            let test = self.lisp.car(test_clause)?;
-            let test_result = self.eval_in_env(test, loop_env)?;
-            
-            if !self.is_false(test_result)? {
-                // Test passed - evaluate result expressions
-                let result_exprs = self.lisp.cdr(test_clause)?;
-                if self.lisp.get(result_exprs)?.is_nil() {
-                    return Ok(TrampolineState::Return { val: test_result });
-                } else {
-                    return self.eval_case_body(result_exprs, loop_env);
-                }
-            }
-            
-            // Evaluate body (for side effects in non-pure case)
-            let mut body_cur = body;
-            loop {
-                match self.lisp.get(body_cur)? {
-                    Value::Nil => break,
-                    Value::Cons { car: expr, cdr: rest } => {
-                        self.eval_in_env(expr, loop_env)?;
-                        body_cur = rest;
-                    }
-                    _ => break,
-                }
-            }
-            
-            // Evaluate step expressions and update variables
-            let mut new_vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
-            for i in 0..var_count {
-                new_vals[i] = self.eval_in_env(var_info[i].1, loop_env)?;
-            }
-            
-            // Update environment with new values
-            for i in 0..var_count {
-                loop_env = self.env_extend(loop_env, var_info[i].0, new_vals[i])?;
             }
         }
     }
@@ -2794,22 +2614,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             _ => Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
-        }
-    }
-    
-    /// Evaluate (set! name value) - mutate an existing variable binding
-    fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        extract_args!(self, args, name, value_expr);
-        
-        // Verify name is a symbol
-        match self.lisp.get(name)? {
-            Value::Symbol { .. } => {
-                // Evaluate the value expression
-                let value = self.eval_in_env(value_expr, env)?;
-                // Find and mutate the binding
-                self.env_set(env, name, value)
-            }
-            _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
         }
     }
     
@@ -3903,40 +3707,6 @@ mod tests {
     }
     
     // ───────────────────────────────────────────────────────────────────────────
-    // DO - Iteration Construct
-    // ───────────────────────────────────────────────────────────────────────────
-    
-    #[test]
-    fn test_do_basic() {
-        let lisp: Lisp<3000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Simple countdown
-        assert_eq!(eval_to_num(&lisp, &mut eval,
-            "(do ((i 5 (- i 1))) ((= i 0) 42))"), 42);
-    }
-    
-    #[test]
-    fn test_do_accumulator() {
-        let lisp: Lisp<3000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Sum 1 to 5 using do loop
-        assert_eq!(eval_to_num(&lisp, &mut eval,
-            "(do ((i 1 (+ i 1)) (sum 0 (+ sum i))) ((> i 5) sum))"), 15);
-    }
-    
-    #[test]
-    fn test_do_factorial() {
-        let lisp: Lisp<3000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Factorial using do loop
-        assert_eq!(eval_to_num(&lisp, &mut eval,
-            "(do ((n 5 (- n 1)) (result 1 (* result n))) ((= n 0) result))"), 120);
-    }
-    
-    // ───────────────────────────────────────────────────────────────────────────
     // QUASIQUOTE - Template with Unquote
     // ───────────────────────────────────────────────────────────────────────────
     
@@ -4580,100 +4350,6 @@ mod tests {
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // MUTATION TESTS
-    // Tests for set!, set-car!, set-cdr! operations
-    // ═══════════════════════════════════════════════════════════════════════════
-    
-    #[test]
-    fn test_mutation_set() {
-        let lisp: Lisp<1000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Basic set! mutation
-        eval.eval_str("(define x 10)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 10);
-        
-        eval.eval_str("(set! x 20)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 20);
-        
-        // Multiple mutations
-        eval.eval_str("(set! x 30)").unwrap();
-        eval.eval_str("(set! x 40)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 40);
-    }
-    
-    #[test]
-    fn test_mutation_set_in_closure() {
-        let lisp: Lisp<2000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Counter using set!
-        eval.eval_str("(define counter 0)").unwrap();
-        eval.eval_str("(define (inc!) (set! counter (+ counter 1)))").unwrap();
-        
-        assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 0);
-        eval.eval_str("(inc!)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 1);
-        eval.eval_str("(inc!)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 2);
-    }
-    
-    #[test]
-    fn test_mutation_set_car_basic() {
-        let lisp: Lisp<1000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        eval.eval_str("(define p (cons 1 2))").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 1);
-        
-        eval.eval_str("(set-car! p 10)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 10);
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 2);  // cdr unchanged
-    }
-    
-    #[test]
-    fn test_mutation_set_cdr_basic() {
-        let lisp: Lisp<1000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        eval.eval_str("(define p (cons 1 2))").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 2);
-        
-        eval.eval_str("(set-cdr! p 20)").unwrap();
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 20);
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 1);  // car unchanged
-    }
-    
-    #[test]
-    fn test_mutation_build_list() {
-        let lisp: Lisp<2000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Build a list by mutation
-        eval.eval_str("(define lst (cons 1 '()))").unwrap();
-        eval.eval_str("(set-cdr! lst (cons 2 '()))").unwrap();
-        
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 1);
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr lst))"), 2);
-    }
-    
-    #[test]
-    fn test_mutation_with_gc() {
-        let lisp: Lisp<2000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Mutation should survive GC
-        eval.eval_str("(define x (cons 1 2))").unwrap();
-        eval.eval_str("(set-car! x 100)").unwrap();
-        
-        // Run GC
-        let _stats = eval.gc();
-        
-        // Value should persist after GC
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car x)"), 100);
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════════════
     // STDLIB FUNCTION TESTS  
     // Tests for the new static standard library functions
     // ═══════════════════════════════════════════════════════════════════════════
@@ -4782,16 +4458,17 @@ mod tests {
         let lisp: Lisp<2000> = Lisp::new();
         let mut eval = Evaluator::new(&lisp).unwrap();
         
-        eval.eval_str("(define (make-counter) (define n 0) (lambda () (set! n (+ n 1)) n))").unwrap();
-        eval.eval_str("(define counter (make-counter))").unwrap();
+        // Pure functional closure - captures value without mutation
+        eval.eval_str("(define (make-adder x) (lambda (y) (+ x y)))").unwrap();
+        eval.eval_str("(define add5 (make-adder 5))").unwrap();
         
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add5 10)"), 15);
         
         // GC should preserve the closure and its environment
         let _stats = eval.gc();
         
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter)"), 2);
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter)"), 3);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add5 20)"), 25);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add5 30)"), 35);
     }
     
     #[test]
@@ -4858,27 +4535,6 @@ mod tests {
         
         // 0 is truthy (unlike C/Python)
         assert_eq!(eval_to_num(&lisp, &mut eval, "(if 0 1 2)"), 1);  // Takes then branch
-    }
-    
-    /// PITFALL: Lazy evaluation means side effects may not happen when expected
-    #[test]
-    fn test_pitfall_lazy_side_effects() {
-        let lisp: Lisp<2000> = Lisp::new();
-        let mut eval = Evaluator::new(&lisp).unwrap();
-        
-        // Define a counter to track side effects
-        eval.eval_str("(define count 0)").unwrap();
-        eval.eval_str("(define (side-effect! x) (set! count (+ count 1)) x)").unwrap();
-        
-        // Build a lazy list - side effects don't happen yet!
-        eval.eval_str("(define lst (cons (side-effect! 1) (cons (side-effect! 2) '())))").unwrap();
-        
-        // Count is still 0 - cons is lazy!
-        assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 0);
-        
-        // Only when we force the elements do side effects happen
-        assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 1);
-        assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 1);  // Now side effect happened
     }
     
     /// PITFALL: StdLib functions parse their body on each call (minor overhead)
