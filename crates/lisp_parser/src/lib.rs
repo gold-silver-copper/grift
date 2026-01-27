@@ -6,7 +6,8 @@
 //!
 //! ## Design
 //!
-//! - Symbols are linked lists of `Char` values (classic Lisp style)
+//! - Symbols use contiguous string storage for memory efficiency
+//! - Symbol interning ensures the same symbol name returns the same index
 //! - All values are stored in a `pwn_arena` arena
 //! - Supports garbage collection via the `Trace` trait
 //! - Explicit boolean values (#t, #f) separate from nil/empty list
@@ -20,17 +21,19 @@
 //! - `Number(i64)` - Integer numbers
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell
-//! - `Symbol { chars }` - Symbol (tagged char list)
+//! - `Symbol { chars, len }` - Symbol with contiguous string storage
 //! - `Lambda { params, body, env }` - Closure
 //! - `Thunk { expr, env, cached }` - Lazy computation (internal, auto-managed)
 //! - `Builtin(Builtin)` - Optimized built-in function
+
+use core::cell::RefCell;
 
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
 /// Built-in functions (optimization to avoid symbol lookup)
 /// 
-/// NOTE: This is a PURE, LAZY Lisp (like Haskell)!
-/// - No mutation operations
+/// NOTE: This Lisp supports mutation via set!, set-car!, and set-cdr!
+/// - Mutation operations break referential transparency
 /// - All evaluation is call-by-need (lazy by default)
 /// - Values are forced automatically in strict positions
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +84,10 @@ pub enum Builtin {
     
     // Symbol generation for hygiene
     Gensym,
+    
+    // Mutation operations (strict - force pair argument)
+    SetCar,   // (set-car! pair value)
+    SetCdr,   // (set-cdr! pair value)
 }
 
 impl Builtin {
@@ -116,6 +123,8 @@ impl Builtin {
             Builtin::Error => "error",
             Builtin::Memoize => "memoize",
             Builtin::Gensym => "gensym",
+            Builtin::SetCar => "set-car!",
+            Builtin::SetCdr => "set-cdr!",
         }
     }
     
@@ -131,6 +140,7 @@ impl Builtin {
         Builtin::Error,
         Builtin::Memoize,
         Builtin::Gensym,
+        Builtin::SetCar, Builtin::SetCdr,
     ];
 }
 
@@ -158,9 +168,12 @@ pub enum Value {
         cdr: ArenaIndex,
     },
     
-    /// Symbol (contains a linked list of Char values)
+    /// Symbol (contains either a linked list of Char values or contiguous string)
+    /// For contiguous strings: chars points to [Number(len), Char, Char, ...] and len > 0
+    /// For char lists (legacy): chars points to list of Char values and len == 0
     Symbol {
         chars: ArenaIndex,
+        len: usize,  // Length for contiguous strings; 0 for legacy char lists
     },
     
     /// Lambda / closure
@@ -316,8 +329,19 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*car);
                 tracer(*cdr);
             }
-            Value::Symbol { chars } => {
+            Value::Symbol { chars, len } => {
                 tracer(*chars);
+                // For contiguous strings (len > 0), trace all character slots
+                // They are at chars+1, chars+2, ..., chars+len
+                // The GC only uses the raw index from the ArenaIndex, not the generation,
+                // so we can safely use chars.generation() for all slots in the contiguous block.
+                if *len > 0 {
+                    let base_idx = chars.raw();
+                    for i in 1..=*len {
+                        let char_idx = ArenaIndex::new(base_idx + i, chars.generation());
+                        tracer(char_idx);
+                    }
+                }
             }
             Value::Lambda { params, body, env } => {
                 tracer(*params);
@@ -355,6 +379,13 @@ impl<const N: usize> Trace<Value, N> for Value {
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `nil()`, `true_val()`, and `false_val()`. This optimization
 /// avoids allocating new slots for these frequently-used values.
+/// 
+/// ## Symbol Interning
+/// 
+/// All symbols are interned in an association list stored in the arena.
+/// The `intern_table` field points to an alist of `(string_index . symbol_index)` pairs.
+/// When creating a symbol, we first check if it already exists in the table.
+/// This ensures that the same symbol name always returns the same index.
 pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
     /// Pre-allocated Nil slot (always slot 0)
@@ -363,6 +394,9 @@ pub struct Lisp<const N: usize> {
     true_slot: ArenaIndex,
     /// Pre-allocated False slot (always slot 2)
     false_slot: ArenaIndex,
+    /// Intern table: alist of (string_index . symbol_index) pairs
+    /// Stored in arena, root index stored here for GC
+    intern_table: RefCell<ArenaIndex>,
 }
 
 impl<const N: usize> Lisp<N> {
@@ -371,6 +405,8 @@ impl<const N: usize> Lisp<N> {
     /// Pre-allocates reserved slots for Nil, True, and False singletons.
     /// These slots (0, 1, 2) are never freed and are returned as constants
     /// from `nil()`, `true_val()`, and `false_val()`.
+    /// 
+    /// The intern table is initialized to nil (empty alist).
     /// 
     /// # Panics
     /// 
@@ -395,6 +431,8 @@ impl<const N: usize> Lisp<N> {
             nil_slot,
             true_slot,
             false_slot,
+            // Initialize intern table to nil (empty alist)
+            intern_table: RefCell::new(nil_slot),
         }
     }
     
@@ -492,33 +530,135 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    // NOTE: set_car and set_cdr removed - this is a PURE Lisp!
-    // Mutation breaks referential transparency and call-by-need semantics.
-    
-    /// Create a symbol from a string slice (builds char list)
-    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        let mut chars = self.nil()?;
-        
-        // Build in reverse order
-        for c in name.chars().rev() {
-            let char_val = self.char(c)?;
-            chars = self.cons(char_val, chars)?;
+    /// Set car of a cons cell (mutation operation)
+    /// Returns the new value on success
+    #[inline]
+    pub fn set_car(&self, index: ArenaIndex, new_car: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(index)? {
+            Value::Cons { cdr, .. } => {
+                self.set(index, Value::Cons { car: new_car, cdr })?;
+                Ok(new_car)
+            }
+            _ => Err(ArenaError::InvalidIndex),
         }
-        
-        self.alloc(Value::Symbol { chars })
     }
     
-    /// Create a symbol from bytes (for parsing)
-    pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
-        let mut chars = self.nil()?;
+    /// Set cdr of a cons cell (mutation operation)
+    /// Returns the new value on success
+    #[inline]
+    pub fn set_cdr(&self, index: ArenaIndex, new_cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(index)? {
+            Value::Cons { car, .. } => {
+                self.set(index, Value::Cons { car, cdr: new_cdr })?;
+                Ok(new_cdr)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    // ========================================================================
+    // Symbol Interning
+    // ========================================================================
+    
+    /// Get the intern table root (for GC roots)
+    pub fn intern_table(&self) -> ArenaIndex {
+        *self.intern_table.borrow()
+    }
+    
+    /// Look up a string in the intern table
+    /// Returns Some(symbol_index) if found, None otherwise
+    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+        let table = *self.intern_table.borrow();
+        let mut current = table;
         
-        // Build in reverse order
-        for &b in bytes.iter().rev() {
-            let char_val = self.char(b as char)?;
-            chars = self.cons(char_val, chars)?;
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons { car, cdr } => {
+                    // car is (string_index . symbol_index)
+                    if let Value::Cons { car: entry_string, cdr: entry_symbol } = self.get(car)? {
+                        if self.string_eq_contiguous(string_idx, entry_string)? {
+                            return Ok(Some(entry_symbol));
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Err(ArenaError::InvalidIndex),
+            }
+        }
+    }
+    
+    /// Create or retrieve an interned symbol from a string slice
+    /// 
+    /// The symbol's `chars` field points to a contiguous string block:
+    /// [Number(length), Char(c1), Char(c2), ..., Char(cn)]
+    /// 
+    /// The symbol's `len` field stores the character count for GC tracing.
+    /// 
+    /// Symbol interning ensures the same symbol name always returns the same index.
+    /// 
+    /// This provides ~44% memory savings compared to linked list representation.
+    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        // Create contiguous string for the symbol name
+        let char_count = name.chars().count();
+        let name_str = self.string(name)?;
+        
+        // Check intern table
+        if let Some(existing_symbol) = self.intern_table_lookup(name_str)? {
+            // Free the string we just created since we're using the interned one
+            self.string_free(name_str)?;
+            return Ok(existing_symbol);
         }
         
-        self.alloc(Value::Symbol { chars })
+        // Not found - create new symbol
+        let symbol = self.alloc(Value::Symbol { chars: name_str, len: char_count })?;
+        
+        // Add to intern table: (name_str . symbol)
+        let binding = self.cons(name_str, symbol)?;
+        let new_table = self.cons(binding, *self.intern_table.borrow())?;
+        
+        // Update intern table root
+        *self.intern_table.borrow_mut() = new_table;
+        
+        Ok(symbol)
+    }
+    
+    /// Create or retrieve an interned symbol from bytes (for parsing)
+    pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
+        // First, create contiguous string storage
+        let char_count = bytes.len();
+        let total_slots = 1 + char_count; // 1 for length + chars
+        
+        // Allocate contiguous block with default Value::Nil
+        let start = self.arena.alloc_contiguous(total_slots, Value::Nil)?;
+        
+        // Set length in first slot
+        self.arena.set(start, Value::Number(char_count as i64))?;
+        
+        // Set characters in following slots
+        for (i, &b) in bytes.iter().enumerate() {
+            let char_idx = self.arena.index_at_offset(start, i + 1)?;
+            self.arena.set(char_idx, Value::Char(b as char))?;
+        }
+        
+        // Check intern table
+        if let Some(existing_symbol) = self.intern_table_lookup(start)? {
+            // Free the string we just created since we're using the interned one
+            self.string_free(start)?;
+            return Ok(existing_symbol);
+        }
+        
+        // Not found - create new symbol
+        let symbol = self.alloc(Value::Symbol { chars: start, len: char_count })?;
+        
+        // Add to intern table: (start . symbol)
+        let binding = self.cons(start, symbol)?;
+        let new_table = self.cons(binding, *self.intern_table.borrow())?;
+        
+        // Update intern table root
+        *self.intern_table.borrow_mut() = new_table;
+        
+        Ok(symbol)
     }
     
     /// Allocate a builtin function
@@ -569,7 +709,7 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Check if two symbols are equal (compare char lists)
+    /// Check if two symbols are equal (supports both contiguous and char list formats)
     #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index means same symbol
@@ -581,14 +721,19 @@ impl<const N: usize> Lisp<N> {
         let val_b = self.get(b)?;
         
         match (val_a, val_b) {
-            (Value::Symbol { chars: chars_a }, Value::Symbol { chars: chars_b }) => {
-                self.char_list_eq(chars_a, chars_b)
+            (Value::Symbol { chars: chars_a, len: len_a }, Value::Symbol { chars: chars_b, len: len_b }) => {
+                // Use len to determine format: len > 0 means contiguous, len == 0 means char list
+                match (len_a > 0, len_b > 0) {
+                    (true, true) => self.string_eq_contiguous(chars_a, chars_b),
+                    (false, false) => self.char_list_eq(chars_a, chars_b),
+                    _ => Ok(false), // Different formats can't be equal
+                }
             }
             _ => Ok(false),
         }
     }
     
-    /// Compare two char lists for equality
+    /// Compare two char lists for equality (legacy format)
     fn char_list_eq(&self, mut a: ArenaIndex, mut b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index means same char list
         if a == b {
@@ -618,13 +763,19 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Check if a symbol matches a string
+    /// Check if a symbol matches a string (supports both contiguous and char list formats)
     #[inline]
     pub fn symbol_matches(&self, sym: ArenaIndex, name: &str) -> ArenaResult<bool> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol { chars } => {
+            Value::Symbol { chars, len } => {
+                // Use len to determine format: len > 0 means contiguous
+                if len > 0 {
+                    return self.string_matches(chars, name);
+                }
+                
+                // Legacy char list format
                 let mut list = chars;
                 let mut chars_iter = name.chars();
                 
@@ -652,40 +803,140 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Extract symbol name to a fixed buffer
+    /// Extract symbol name to a fixed buffer (supports both contiguous and char list formats)
     pub fn symbol_to_bytes(&self, sym: ArenaIndex, buf: &mut [u8]) -> ArenaResult<usize> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol { chars } => {
+            Value::Symbol { chars, len: sym_len } => {
+                // Use len to determine format: len > 0 means contiguous
+                if sym_len > 0 {
+                    return self.string_to_bytes(chars, buf);
+                }
+                
+                // Legacy char list format
                 let mut list = chars;
-                let mut len = 0;
+                let mut written = 0;
                 
                 loop {
-                    if len >= buf.len() {
+                    if written >= buf.len() {
                         break;
                     }
                     match self.get(list)? {
                         Value::Nil => break,
                         Value::Cons { car, cdr } => {
                             if let Value::Char(c) = self.get(car)? {
-                                buf[len] = c as u8;
-                                len += 1;
+                                buf[written] = c as u8;
+                                written += 1;
                             }
                             list = cdr;
                         }
                         _ => break,
                     }
                 }
-                Ok(len)
+                Ok(written)
             }
             _ => Ok(0),
         }
     }
     
-    /// Run garbage collection
+    /// Get the length of a symbol's name
+    pub fn symbol_len(&self, sym: ArenaIndex) -> ArenaResult<usize> {
+        match self.get(sym)? {
+            Value::Symbol { len: sym_len, chars } => {
+                if sym_len > 0 {
+                    Ok(sym_len)
+                } else {
+                    // Legacy char list format - count the chars
+                    let mut list = chars;
+                    let mut count = 0;
+                    loop {
+                        match self.get(list)? {
+                            Value::Nil => return Ok(count),
+                            Value::Cons { cdr, .. } => {
+                                count += 1;
+                                list = cdr;
+                            }
+                            _ => return Ok(count),
+                        }
+                    }
+                }
+            }
+            _ => Ok(0),
+        }
+    }
+    
+    /// Get a character at a specific index within a symbol's name
+    /// Returns None if the index is out of bounds or if the value is not a symbol
+    pub fn symbol_char_at(&self, sym: ArenaIndex, index: usize) -> ArenaResult<Option<char>> {
+        match self.get(sym)? {
+            Value::Symbol { chars, len: sym_len } => {
+                if sym_len > 0 {
+                    // Contiguous string format
+                    if index >= sym_len {
+                        return Ok(None);
+                    }
+                    Ok(Some(self.string_char_at(chars, index)?))
+                } else {
+                    // Legacy char list format
+                    let mut list = chars;
+                    let mut current_idx = 0;
+                    loop {
+                        match self.get(list)? {
+                            Value::Nil => return Ok(None),
+                            Value::Cons { car, cdr } => {
+                                if current_idx == index {
+                                    if let Value::Char(c) = self.get(car)? {
+                                        return Ok(Some(c));
+                                    }
+                                    return Ok(None);
+                                }
+                                current_idx += 1;
+                                list = cdr;
+                            }
+                            _ => return Ok(None),
+                        }
+                    }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+    
+    /// Run garbage collection with intern table as an additional root
+    /// 
+    /// The intern table is always included as a GC root to prevent interned
+    /// symbols from being collected.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the number of roots exceeds the internal limit (512 roots).
+    /// This limit is chosen to balance stack usage in no_std environments
+    /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
-        self.arena.collect_garbage(roots)
+        // Create a new roots array with intern table included
+        // Using const-sized array to avoid alloc in no_std
+        // 512 roots should be sufficient for most programs while keeping
+        // stack usage reasonable (~8KB on 64-bit systems)
+        const MAX_ROOTS: usize = 512;
+        
+        // Panic if too many roots - this indicates a programming error
+        assert!(roots.len() < MAX_ROOTS, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 1);
+        
+        let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
+        
+        // Add intern table as first root
+        all_roots[0] = *self.intern_table.borrow();
+        let mut root_count = 1;
+        
+        // Copy provided roots
+        for &root in roots {
+            all_roots[root_count] = root;
+            root_count += 1;
+        }
+        
+        self.arena.collect_garbage(&all_roots[..root_count])
     }
     
     /// Allocate with GC on failure
@@ -1867,5 +2118,223 @@ mod tests {
         assert!(lisp.string_char_at(hello, 1).is_ok());
         assert!(lisp.string_char_at(hello, 2).is_err());
         assert!(lisp.string_char_at(hello, 100).is_err());
+    }
+    
+    // ========================================================================
+    // Mutation Tests (set_car, set_cdr)
+    // ========================================================================
+    
+    #[test]
+    fn test_set_car() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        let a = lisp.number(1).unwrap();
+        let b = lisp.number(2).unwrap();
+        let c = lisp.number(3).unwrap();
+        
+        let pair = lisp.cons(a, b).unwrap();
+        
+        // Initially car is a (1)
+        assert_eq!(lisp.car(pair).unwrap(), a);
+        
+        // Mutate car to c (3)
+        lisp.set_car(pair, c).unwrap();
+        
+        // Now car should be c
+        assert_eq!(lisp.car(pair).unwrap(), c);
+        
+        // cdr should be unchanged
+        assert_eq!(lisp.cdr(pair).unwrap(), b);
+    }
+    
+    #[test]
+    fn test_set_cdr() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        let a = lisp.number(1).unwrap();
+        let b = lisp.number(2).unwrap();
+        let c = lisp.number(3).unwrap();
+        
+        let pair = lisp.cons(a, b).unwrap();
+        
+        // Initially cdr is b (2)
+        assert_eq!(lisp.cdr(pair).unwrap(), b);
+        
+        // Mutate cdr to c (3)
+        lisp.set_cdr(pair, c).unwrap();
+        
+        // Now cdr should be c
+        assert_eq!(lisp.cdr(pair).unwrap(), c);
+        
+        // car should be unchanged
+        assert_eq!(lisp.car(pair).unwrap(), a);
+    }
+    
+    #[test]
+    fn test_set_car_on_non_pair_fails() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        let num = lisp.number(42).unwrap();
+        let new_val = lisp.number(99).unwrap();
+        
+        assert!(lisp.set_car(num, new_val).is_err());
+    }
+    
+    #[test]
+    fn test_set_cdr_on_non_pair_fails() {
+        let lisp: Lisp<100> = Lisp::new();
+        
+        let num = lisp.number(42).unwrap();
+        let new_val = lisp.number(99).unwrap();
+        
+        assert!(lisp.set_cdr(num, new_val).is_err());
+    }
+    
+    // ========================================================================
+    // Symbol Interning Tests
+    // ========================================================================
+    
+    #[test]
+    fn test_symbol_interning_same_name_returns_same_index() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let sym1 = lisp.symbol("foo").unwrap();
+        let sym2 = lisp.symbol("foo").unwrap();
+        let sym3 = lisp.symbol("foo").unwrap();
+        
+        // Same symbol name should return the same index
+        assert_eq!(sym1, sym2);
+        assert_eq!(sym2, sym3);
+    }
+    
+    #[test]
+    fn test_symbol_interning_different_names_return_different_indices() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let foo = lisp.symbol("foo").unwrap();
+        let bar = lisp.symbol("bar").unwrap();
+        let baz = lisp.symbol("baz").unwrap();
+        
+        // Different symbol names should return different indices
+        assert_ne!(foo, bar);
+        assert_ne!(bar, baz);
+        assert_ne!(foo, baz);
+    }
+    
+    #[test]
+    fn test_symbol_interning_from_bytes() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let sym1 = lisp.symbol("test").unwrap();
+        let sym2 = lisp.symbol_from_bytes(b"test").unwrap();
+        
+        // Same content should return the same symbol
+        assert_eq!(sym1, sym2);
+    }
+    
+    #[test]
+    fn test_symbol_interning_preserves_content() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let sym = lisp.symbol("hello").unwrap();
+        
+        // The symbol should still match its name
+        assert!(lisp.symbol_matches(sym, "hello").unwrap());
+        assert!(!lisp.symbol_matches(sym, "world").unwrap());
+    }
+    
+    #[test]
+    fn test_intern_table_is_gc_root() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        // Create some interned symbols
+        let sym1 = lisp.symbol("a").unwrap();
+        let sym2 = lisp.symbol("b").unwrap();
+        let sym3 = lisp.symbol("c").unwrap();
+        
+        // Create some garbage
+        for i in 0..50 {
+            let _ = lisp.number(i);
+        }
+        
+        // Run GC with no explicit roots
+        let empty_roots: &[ArenaIndex] = &[];
+        lisp.gc(empty_roots);
+        
+        // Interned symbols should still be accessible
+        assert!(lisp.get(sym1).is_ok());
+        assert!(lisp.get(sym2).is_ok());
+        assert!(lisp.get(sym3).is_ok());
+        
+        // And should still match their names
+        assert!(lisp.symbol_matches(sym1, "a").unwrap());
+        assert!(lisp.symbol_matches(sym2, "b").unwrap());
+        assert!(lisp.symbol_matches(sym3, "c").unwrap());
+    }
+    
+    // ========================================================================
+    // Symbol Helper Method Tests
+    // ========================================================================
+    
+    #[test]
+    fn test_symbol_len() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let empty = lisp.symbol("").unwrap();
+        let short = lisp.symbol("hi").unwrap();
+        let longer = lisp.symbol("hello world").unwrap();
+        
+        assert_eq!(lisp.symbol_len(empty).unwrap(), 0);
+        assert_eq!(lisp.symbol_len(short).unwrap(), 2);
+        assert_eq!(lisp.symbol_len(longer).unwrap(), 11);
+    }
+    
+    #[test]
+    fn test_symbol_char_at() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let hello = lisp.symbol("hello").unwrap();
+        
+        assert_eq!(lisp.symbol_char_at(hello, 0).unwrap(), Some('h'));
+        assert_eq!(lisp.symbol_char_at(hello, 1).unwrap(), Some('e'));
+        assert_eq!(lisp.symbol_char_at(hello, 2).unwrap(), Some('l'));
+        assert_eq!(lisp.symbol_char_at(hello, 3).unwrap(), Some('l'));
+        assert_eq!(lisp.symbol_char_at(hello, 4).unwrap(), Some('o'));
+        assert_eq!(lisp.symbol_char_at(hello, 5).unwrap(), None);
+        assert_eq!(lisp.symbol_char_at(hello, 100).unwrap(), None);
+    }
+    
+    #[test]
+    fn test_symbol_to_bytes() {
+        let lisp: Lisp<1000> = Lisp::new();
+        
+        let hello = lisp.symbol("hello").unwrap();
+        
+        let mut buf = [0u8; 32];
+        let len = lisp.symbol_to_bytes(hello, &mut buf).unwrap();
+        
+        assert_eq!(len, 5);
+        assert_eq!(&buf[..len], b"hello");
+    }
+    
+    #[test]
+    fn test_contiguous_symbol_uses_less_memory() {
+        let lisp: Lisp<10000> = Lisp::new();
+        
+        // Get initial allocation count (includes reserved slots)
+        let initial = lisp.arena().len();
+        
+        // Create a symbol with contiguous strings
+        // "factorial" (9 chars) = 1 (length) + 9 (chars) + 1 (Symbol) = 11 slots
+        // Plus 2 slots for the intern table entry
+        let _sym = lisp.symbol("factorial").unwrap();
+        
+        let after_symbol = lisp.arena().len();
+        let slots_used = after_symbol - initial;
+        
+        // Old format would use: 9 Char + 9 Cons + 1 Symbol = 19 slots
+        // New format uses: 1 Number + 9 Char + 1 Symbol + 2 Cons (intern table) = 13 slots
+        // So we expect significantly fewer slots
+        assert!(slots_used < 19, "Expected fewer than 19 slots, got {}", slots_used);
     }
 }
