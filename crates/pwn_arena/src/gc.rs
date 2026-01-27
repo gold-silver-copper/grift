@@ -75,10 +75,16 @@ impl<T: Copy, const N: usize> Arena<T, N> {
                         }
                     });
 
+                    // If no unmarked children found, we're done with this object
+                    if batch_count == 0 {
+                        break;
+                    }
+
                     // Process the batch - mark and push to stack
                     for i in 0..batch_count {
                         let idx = batch[i];
-                        // Mark immediately to avoid duplicate processing
+                        // Check marked again: trace could yield duplicates, or another
+                        // batch entry could have already marked this index
                         if !marked[idx] {
                             marked[idx] = true;
                             if *stack_len < N {
@@ -88,12 +94,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
                         }
                     }
 
-                    // If no more unmarked children, we're done with this object
-                    if !has_more || batch_count == 0 {
+                    // If no more unmarked children beyond this batch, we're done
+                    if !has_more {
                         break;
                     }
-                    // Otherwise, the marked children are now marked, so the next iteration
-                    // will find the remaining unmarked children
+                    // Otherwise, continue to next iteration to get remaining children
                 }
             }
         }
