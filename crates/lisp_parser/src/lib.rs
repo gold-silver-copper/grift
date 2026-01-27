@@ -69,7 +69,8 @@ pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 /// 
 /// # Syntax
 /// 
-/// ```ignore
+/// ```rust
+/// use lisp_parser::define_builtins;
 /// define_builtins! {
 ///     /// Documentation comment
 ///     VariantName => "lisp-name",
@@ -81,7 +82,8 @@ pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 /// 
 /// To add a new builtin `my-builtin`:
 /// 
-/// ```ignore
+/// ```rust
+/// use lisp_parser::define_builtins;
 /// define_builtins! {
 ///     // ... existing builtins ...
 ///     /// (my-builtin x) - Does something with x
@@ -257,7 +259,8 @@ define_builtins! {
 /// 
 /// # Syntax
 /// 
-/// ```ignore
+/// ```rust
+/// use lisp_parser::define_stdlib;
 /// define_stdlib! {
 ///     /// Documentation comment
 ///     VariantName("function-name", ["param1", "param2"], "lisp-body-code"),
@@ -269,7 +272,8 @@ define_builtins! {
 /// 
 /// To add a new function `(my-func x y)` that returns `(+ x y)`:
 /// 
-/// ```ignore
+/// ```rust
+/// use lisp_parser::define_stdlib;
 /// define_stdlib! {
 ///     // ... existing functions ...
 ///     /// (my-func x y) - Add two numbers
@@ -1330,7 +1334,8 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// # Example
     /// 
-    /// ```ignore
+    /// ```rust
+    /// use lisp_parser::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let hello = lisp.string("hello").unwrap();
     /// 
@@ -1512,9 +1517,10 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// # Example
     /// 
-    /// ```ignore
+    /// ```rust
+    /// use lisp_parser::Lisp;
     /// let lisp = Lisp::<1000>::new();
-    /// let arr = lisp.make_array(3, lisp.nil()).unwrap();
+    /// let arr = lisp.make_array(3, lisp.nil().unwrap()).unwrap();
     /// 
     /// assert_eq!(lisp.array_len(arr).unwrap(), 3);
     /// ```

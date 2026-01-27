@@ -12,7 +12,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
+//! ```rust
 //! use lisp_repl::run_repl;
 //!
 //! run_repl::<10000>();

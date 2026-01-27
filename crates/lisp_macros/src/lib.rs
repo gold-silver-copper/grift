@@ -13,12 +13,12 @@
 //! ```
 //!
 //! The macro:
-//! ```ignore
+//! ```text
 //! include_stdlib!("stdlib.lisp");
 //! ```
 //!
 //! Expands to:
-//! ```ignore
+//! ```text
 //! define_stdlib! {
 //!     /// (map f lst) - Apply f to each element of lst
 //!     Map("map", ["f", "lst"], "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))"),

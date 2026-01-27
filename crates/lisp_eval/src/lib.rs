@@ -98,14 +98,20 @@ pub use lisp_parser::{
 /// variable after each extraction.
 ///
 /// # Example
-/// ```ignore
-/// extract_args!(self, args, a, b, c);
-/// // Expands to:
-/// // let a = self.lisp.car(args)?;
-/// // let args = self.lisp.cdr(args)?;
-/// // let b = self.lisp.car(args)?;
-/// // let args = self.lisp.cdr(args)?;
-/// // let c = self.lisp.car(args)?;
+/// 
+/// The macro `extract_args!(self, args, a, b, c)` expands to:
+/// ```rust
+/// # fn example() -> lisp_eval::ArenaResult<()> {
+/// #     use lisp_eval::*;
+/// #     let lisp = Lisp::<1000>::new();
+/// #     let args = lisp.nil()?;
+/// #     let a = lisp.car(args)?;
+/// #     let args = lisp.cdr(args)?;
+/// #     let b = lisp.car(args)?;
+/// #     let args = lisp.cdr(args)?;
+/// #     let c = lisp.car(args)?;
+/// #     Ok(())
+/// # }
 /// ```
 macro_rules! extract_args {
     ($self:expr, $args:ident, $var:ident) => {
@@ -125,8 +131,19 @@ macro_rules! extract_args {
 /// a boolean based on some predicate on the value.
 ///
 /// # Example
-/// ```ignore
-/// builtin_unary_pred!(self, args, |v| v.is_nil())
+/// 
+/// The macro `builtin_unary_pred!(self, args, |v| v.is_nil())` expands to:
+/// ```rust
+/// # fn example() -> lisp_eval::ArenaResult<()> {
+/// #     use lisp_eval::*;
+/// #     let lisp = Lisp::<1000>::new();
+/// #     let args = lisp.nil()?;
+/// #     let arg = lisp.car(args)?;
+/// #     let val = lisp.get(arg)?;
+/// #     let check = |v: Value| v.is_nil();
+/// #     lisp.boolean(check(val))?;
+/// #     Ok(())
+/// # }
 /// ```
 macro_rules! builtin_unary_pred {
     ($self:expr, $args:expr, $check:expr) => {{
