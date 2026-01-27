@@ -1248,6 +1248,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.pop_frame();
                         
                         // Check if we have cached values, otherwise parse and cache
+                        // Note: cached_body and cached_params are always set together atomically,
+                        // so if one is valid (non-NULL), both are valid. We check both for safety.
                         let (body, params) = if !cached_body.is_null() && !cached_params.is_null() {
                             // Use cached values (fast path)
                             (cached_body, cached_params)

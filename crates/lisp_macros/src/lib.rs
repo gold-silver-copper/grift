@@ -155,7 +155,8 @@ fn parse_lisp_file(content: &str) -> Vec<StdlibEntry> {
         
         // Check for documentation comment (;;; ...)
         let doc = if trimmed.starts_with(";;;") {
-            Some(trimmed[3..].trim().to_string())
+            // Use strip_prefix for safe string manipulation
+            Some(trimmed.strip_prefix(";;;").unwrap_or("").trim().to_string())
         } else {
             None
         };
@@ -236,7 +237,7 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
     
     // Find the function signature: (name param1 param2 ...)
     // Skip "(define " and find the opening paren of the signature
-    let after_define = &content[7..].trim_start();
+    let after_define = content.strip_prefix("(define").unwrap_or("").trim_start();
     if !after_define.starts_with('(') {
         // Not a function definition (might be (define name value))
         return None;
@@ -280,11 +281,8 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
     let body_trimmed = after_sig.trim();
     
     // Remove the trailing ')' that closes the define
-    let body = if body_trimmed.ends_with(')') {
-        body_trimmed[..body_trimmed.len()-1].trim().to_string()
-    } else {
-        body_trimmed.to_string()
-    };
+    // Use strip_suffix for safe string manipulation
+    let body = body_trimmed.strip_suffix(')').unwrap_or(body_trimmed).trim().to_string();
     
     // Generate variant name from function name
     let variant_name = to_pascal_case(&name);
