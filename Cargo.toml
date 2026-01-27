@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/pwn_arena",
+    "crates/lisp_macros",
     "crates/lisp_parser",
     "crates/lisp_eval",
     "crates/lisp_repl",

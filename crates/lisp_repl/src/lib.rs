@@ -85,7 +85,7 @@ fn format_value_impl<const N: usize>(
             buf.push_str(b.name());
             buf.push('>');
         }
-        Ok(Value::StdLib(s)) => {
+        Ok(Value::StdLib { func: s, .. }) => {
             buf.push_str("#<stdlib:");
             buf.push_str(s.name());
             buf.push('>');
