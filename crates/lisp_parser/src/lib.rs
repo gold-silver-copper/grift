@@ -25,8 +25,38 @@
 //! - `Lambda { params, body, env }` - Closure
 //! - `Thunk { expr, env, cached }` - Lazy computation (internal, auto-managed)
 //! - `Builtin(Builtin)` - Optimized built-in function
-
-use core::cell::RefCell;
+//! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
+//!
+//! ## Reserved Slots
+//!
+//! The first 4 slots of the arena are reserved:
+//! - Slot 0: `Value::Nil` - the empty list singleton
+//! - Slot 1: `Value::True` - boolean true singleton
+//! - Slot 2: `Value::False` - boolean false singleton
+//! - Slot 3: `Value::Cons` - intern table reference cell
+//!
+//! ## Pitfalls and Gotchas
+//!
+//! ### Truthiness
+//! - **Only `#f` is false!** Everything else is truthy, including:
+//!   - `nil` / `'()` (the empty list)
+//!   - `0` (the number zero)
+//!   - Empty strings
+//!
+//! ### Lazy Evaluation
+//! - Side effects in lazy contexts may not happen when expected
+//! - `cons` is lazy - car and cdr are wrapped in thunks
+//! - Values are forced automatically in strict positions (arithmetic, predicates, etc.)
+//!
+//! ### Garbage Collection
+//! - The intern table is always a GC root - interned symbols are never collected
+//! - Reserved slots (nil, true, false) are implicitly preserved
+//! - Run `gc()` with appropriate roots to reclaim memory
+//!
+//! ### StdLib Functions
+//! - Body is parsed on each call (minor overhead, but keeps code out of arena)
+//! - Recursive stdlib functions work via the global environment
+//! - Errors in static source strings are only caught at runtime
 
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
@@ -144,6 +174,171 @@ impl Builtin {
     ];
 }
 
+/// Standard library functions (stored in static memory, not arena)
+/// 
+/// These functions are defined as Lisp code in static strings and are parsed
+/// on-demand when called. This provides:
+/// - Zero arena cost for function definitions (static strings)
+/// - Easy maintenance (just edit the source strings)
+/// - Simple implementation (no build scripts needed)
+/// 
+/// The parsing overhead is minimal since:
+/// 1. Standard library functions are typically called frequently (can optimize)
+/// 2. Parsing is fast (simple recursive descent)
+/// 3. Parsed AST is temporary and GC'd after evaluation
+/// 
+/// # Memory Layout
+/// 
+/// Each StdLib variant stores references to static data:
+/// - Function name (for lookup and debugging)
+/// - Parameter names (static slice)
+/// - Body source code (static string, parsed on each call)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdLib {
+    /// (map f lst) - Apply f to each element of lst
+    Map,
+    /// (filter pred lst) - Return elements where pred is true
+    Filter,
+    /// (fold f acc lst) - Left fold over lst
+    Fold,
+    /// (length lst) - Return length of lst
+    Length,
+    /// (append a b) - Concatenate two lists
+    Append,
+    /// (reverse lst) - Reverse a list
+    Reverse,
+    /// (nth n lst) - Get nth element (0-indexed)
+    Nth,
+    /// (take n lst) - Take first n elements
+    Take,
+    /// (drop n lst) - Drop first n elements
+    Drop,
+    /// (zip a b) - Zip two lists into list of pairs
+    Zip,
+    /// (member x lst) - Check if x is in lst
+    Member,
+    /// (assoc key alist) - Look up key in association list
+    Assoc,
+    /// (range start end) - Generate list of integers [start, end)
+    Range,
+    /// (compose f g) - Return function that applies g then f
+    Compose,
+    /// (identity x) - Return x unchanged
+    Identity,
+    /// (constantly x) - Return function that always returns x
+    Constantly,
+    /// (flip f) - Flip argument order of binary function
+    Flip,
+    /// (curry f x) - Partial application
+    Curry,
+    /// (cadr lst) - (car (cdr lst))
+    Cadr,
+    /// (caddr lst) - (car (cdr (cdr lst)))
+    Caddr,
+    /// (cddr lst) - (cdr (cdr lst))
+    Cddr,
+}
+
+impl StdLib {
+    /// Get the function name
+    pub const fn name(&self) -> &'static str {
+        match self {
+            StdLib::Map => "map",
+            StdLib::Filter => "filter",
+            StdLib::Fold => "fold",
+            StdLib::Length => "length",
+            StdLib::Append => "append",
+            StdLib::Reverse => "reverse",
+            StdLib::Nth => "nth",
+            StdLib::Take => "take",
+            StdLib::Drop => "drop",
+            StdLib::Zip => "zip",
+            StdLib::Member => "member",
+            StdLib::Assoc => "assoc",
+            StdLib::Range => "range",
+            StdLib::Compose => "compose",
+            StdLib::Identity => "identity",
+            StdLib::Constantly => "constantly",
+            StdLib::Flip => "flip",
+            StdLib::Curry => "curry",
+            StdLib::Cadr => "cadr",
+            StdLib::Caddr => "caddr",
+            StdLib::Cddr => "cddr",
+        }
+    }
+    
+    /// Get the parameter names for this function
+    pub const fn params(&self) -> &'static [&'static str] {
+        match self {
+            StdLib::Map => &["f", "lst"],
+            StdLib::Filter => &["pred", "lst"],
+            StdLib::Fold => &["f", "acc", "lst"],
+            StdLib::Length => &["lst"],
+            StdLib::Append => &["a", "b"],
+            StdLib::Reverse => &["lst"],
+            StdLib::Nth => &["n", "lst"],
+            StdLib::Take => &["n", "lst"],
+            StdLib::Drop => &["n", "lst"],
+            StdLib::Zip => &["a", "b"],
+            StdLib::Member => &["x", "lst"],
+            StdLib::Assoc => &["key", "alist"],
+            StdLib::Range => &["start", "end"],
+            StdLib::Compose => &["f", "g"],
+            StdLib::Identity => &["x"],
+            StdLib::Constantly => &["x"],
+            StdLib::Flip => &["f"],
+            StdLib::Curry => &["f", "x"],
+            StdLib::Cadr => &["lst"],
+            StdLib::Caddr => &["lst"],
+            StdLib::Cddr => &["lst"],
+        }
+    }
+    
+    /// Get the body source code (Lisp expression as static string)
+    /// 
+    /// This string is parsed on each call to the function.
+    /// The parsed AST is temporary and GC'd after evaluation.
+    pub const fn body(&self) -> &'static str {
+        match self {
+            StdLib::Map => "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))",
+            StdLib::Filter => "(if (null? lst) '() (if (pred (car lst)) (cons (car lst) (filter pred (cdr lst))) (filter pred (cdr lst))))",
+            StdLib::Fold => "(if (null? lst) acc (fold f (f acc (car lst)) (cdr lst)))",
+            StdLib::Length => "(if (null? lst) 0 (+ 1 (length (cdr lst))))",
+            StdLib::Append => "(if (null? a) b (cons (car a) (append (cdr a) b)))",
+            StdLib::Reverse => "(fold (lambda (acc x) (cons x acc)) '() lst)",
+            StdLib::Nth => "(if (= n 0) (car lst) (nth (- n 1) (cdr lst)))",
+            StdLib::Take => "(if (= n 0) '() (if (null? lst) '() (cons (car lst) (take (- n 1) (cdr lst)))))",
+            StdLib::Drop => "(if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst))))",
+            StdLib::Zip => "(if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b)))))",
+            StdLib::Member => "(if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst))))",
+            // Note: member/assoc use eq for comparison (like Scheme's memq/assq)
+            // This works for symbols and identical objects. For value comparison,
+            // define a custom function or use fold with a predicate.
+            StdLib::Assoc => "(if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist))))",
+            StdLib::Range => "(if (>= start end) '() (cons start (range (+ start 1) end)))",
+            StdLib::Compose => "(lambda (x) (f (g x)))",
+            StdLib::Identity => "x",
+            StdLib::Constantly => "(lambda (y) x)",
+            StdLib::Flip => "(lambda (a b) (f b a))",
+            StdLib::Curry => "(lambda (y) (f x y))",
+            StdLib::Cadr => "(car (cdr lst))",
+            StdLib::Caddr => "(car (cdr (cdr lst)))",
+            StdLib::Cddr => "(cdr (cdr lst))",
+        }
+    }
+    
+    /// All standard library functions for initialization
+    pub const ALL: &'static [StdLib] = &[
+        StdLib::Map, StdLib::Filter, StdLib::Fold,
+        StdLib::Length, StdLib::Append, StdLib::Reverse,
+        StdLib::Nth, StdLib::Take, StdLib::Drop,
+        StdLib::Zip, StdLib::Member, StdLib::Assoc,
+        StdLib::Range,
+        StdLib::Compose, StdLib::Identity, StdLib::Constantly, StdLib::Flip, StdLib::Curry,
+        StdLib::Cadr, StdLib::Caddr, StdLib::Cddr,
+    ];
+}
+
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
@@ -200,6 +395,25 @@ pub enum Value {
     
     /// Built-in function (optimized)
     Builtin(Builtin),
+    
+    /// Standard library function (stored in static memory)
+    /// 
+    /// Unlike Lambda which stores code in the arena, StdLib references static
+    /// function definitions. The function body is parsed on-demand when called,
+    /// providing zero arena cost for function code storage.
+    /// 
+    /// # Memory Efficiency
+    /// 
+    /// - Function definitions are in static memory (const strings)
+    /// - Only runtime values (arguments, return values) use arena space
+    /// - Parsed AST is temporary and GC'd after each call
+    /// 
+    /// # Pitfalls
+    /// 
+    /// - Each call incurs parsing overhead (mitigated by simple parser)
+    /// - Errors in static source strings are only caught at runtime
+    /// - StdLib functions should be tested thoroughly at compile time
+    StdLib(StdLib),
 }
 
 impl Value {
@@ -264,10 +478,16 @@ impl Value {
         matches!(self, Value::Builtin(_))
     }
     
-    /// Check if this value is a procedure (lambda, builtin, or memoized function)
+    /// Check if this value is a stdlib function
+    #[inline]
+    pub const fn is_stdlib(&self) -> bool {
+        matches!(self, Value::StdLib(_))
+    }
+    
+    /// Check if this value is a procedure (lambda, builtin, stdlib, or memoized function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::Memo { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Memo { .. })
     }
     
     /// Check if this value is a thunk (promise)
@@ -313,6 +533,7 @@ impl Value {
             Value::Thunk { .. } => "promise",
             Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
+            Value::StdLib(_) => "procedure",
         }
     }
 }
@@ -322,8 +543,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) => {
-                // No references
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) | Value::StdLib(_) => {
+                // No references - StdLib references static data, not arena
             }
             Value::Cons { car, cdr } => {
                 tracer(*car);
@@ -371,10 +592,11 @@ impl<const N: usize> Trace<Value, N> for Value {
 /// 
 /// ## Reserved Slots
 /// 
-/// The first 3 slots of the arena are reserved for singleton values:
+/// The first 4 slots of the arena are reserved for singleton values:
 /// - Slot 0: `Value::Nil` - the empty list
 /// - Slot 1: `Value::True` - boolean true (#t)
 /// - Slot 2: `Value::False` - boolean false (#f)
+/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `nil()`, `true_val()`, and `false_val()`. This optimization
@@ -383,7 +605,9 @@ impl<const N: usize> Trace<Value, N> for Value {
 /// ## Symbol Interning
 /// 
 /// All symbols are interned in an association list stored in the arena.
-/// The `intern_table` field points to an alist of `(string_index . symbol_index)` pairs.
+/// The `intern_table_slot` field points to a cons cell whose car is the alist 
+/// of `(string_index . symbol_index)` pairs. The cons cell is used as a 
+/// "reference cell" to allow updating the intern table without RefCell.
 /// When creating a symbol, we first check if it already exists in the table.
 /// This ensures that the same symbol name always returns the same index.
 pub struct Lisp<const N: usize> {
@@ -394,31 +618,35 @@ pub struct Lisp<const N: usize> {
     true_slot: ArenaIndex,
     /// Pre-allocated False slot (always slot 2)
     false_slot: ArenaIndex,
-    /// Intern table: alist of (string_index . symbol_index) pairs
-    /// Stored in arena, root index stored here for GC
-    intern_table: RefCell<ArenaIndex>,
+    /// Intern table reference cell (always slot 3)
+    /// This is a cons cell where car = intern table root (alist)
+    /// Using a cons cell avoids needing RefCell for interior mutability
+    intern_table_slot: ArenaIndex,
 }
+
+/// Number of reserved slots in the arena (nil, true, false, intern_table_ref)
+pub const RESERVED_SLOTS: usize = 4;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
-    /// Pre-allocates reserved slots for Nil, True, and False singletons.
-    /// These slots (0, 1, 2) are never freed and are returned as constants
+    /// Pre-allocates reserved slots for Nil, True, False, and intern table ref cell.
+    /// These slots (0, 1, 2, 3) are never freed and are returned as constants
     /// from `nil()`, `true_val()`, and `false_val()`.
     /// 
     /// The intern table is initialized to nil (empty alist).
     /// 
     /// # Panics
     /// 
-    /// Panics if the arena capacity N < 3, as we need at least 3 slots
-    /// for the reserved singleton values.
+    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 4 slots
+    /// for the reserved singleton values and intern table reference cell.
     pub fn new() -> Self {
-        const { assert!(N >= 3, "Lisp arena must have capacity >= 3 for reserved slots") };
+        const { assert!(N >= RESERVED_SLOTS, "Lisp arena must have capacity >= RESERVED_SLOTS for reserved slots") };
         
         let arena = Arena::new(Value::Nil);
         
-        // Pre-allocate reserved slots in order: Nil, True, False
-        // These will be slots 0, 1, 2 respectively
+        // Pre-allocate reserved slots in order: Nil, True, False, InternTableRef
+        // These will be slots 0, 1, 2, 3 respectively
         let nil_slot = arena.alloc(Value::Nil)
             .expect("Failed to pre-allocate reserved Nil slot during Lisp initialization");
         let true_slot = arena.alloc(Value::True)
@@ -426,13 +654,19 @@ impl<const N: usize> Lisp<N> {
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
         
+        // Pre-allocate intern table reference cell (slot 3)
+        // This is a cons cell where car = intern table root (initially nil)
+        // Using a cons cell as a "reference cell" allows updating via set()
+        // instead of requiring RefCell for interior mutability
+        let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
+            .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
+        
         Lisp {
             arena,
             nil_slot,
             true_slot,
             false_slot,
-            // Initialize intern table to nil (empty alist)
-            intern_table: RefCell::new(nil_slot),
+            intern_table_slot,
         }
     }
     
@@ -561,15 +795,31 @@ impl<const N: usize> Lisp<N> {
     // ========================================================================
     
     /// Get the intern table root (for GC roots)
+    /// 
+    /// The intern table is stored in the car of the intern_table_slot cons cell.
     pub fn intern_table(&self) -> ArenaIndex {
-        *self.intern_table.borrow()
+        // intern_table_slot always exists and is slot 3
+        // Its car contains the actual intern table root
+        self.intern_table_slot
+    }
+    
+    /// Get the current intern table root (the actual alist)
+    fn get_intern_table_root(&self) -> ArenaResult<ArenaIndex> {
+        match self.get(self.intern_table_slot)? {
+            Value::Cons { car, .. } => Ok(car),
+            _ => unreachable!("intern_table_slot should always be a Cons cell"),
+        }
+    }
+    
+    /// Set the intern table root (update the car of the reference cell)
+    fn set_intern_table_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
+        self.set(self.intern_table_slot, Value::Cons { car: new_root, cdr: self.nil_slot })
     }
     
     /// Look up a string in the intern table
     /// Returns Some(symbol_index) if found, None otherwise
     fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
-        let table = *self.intern_table.borrow();
-        let mut current = table;
+        let mut current = self.get_intern_table_root()?;
         
         loop {
             match self.get(current)? {
@@ -615,10 +865,11 @@ impl<const N: usize> Lisp<N> {
         
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
-        let new_table = self.cons(binding, *self.intern_table.borrow())?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
         
         // Update intern table root
-        *self.intern_table.borrow_mut() = new_table;
+        self.set_intern_table_root(new_table)?;
         
         Ok(symbol)
     }
@@ -653,10 +904,11 @@ impl<const N: usize> Lisp<N> {
         
         // Add to intern table: (start . symbol)
         let binding = self.cons(start, symbol)?;
-        let new_table = self.cons(binding, *self.intern_table.borrow())?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
         
         // Update intern table root
-        *self.intern_table.borrow_mut() = new_table;
+        self.set_intern_table_root(new_table)?;
         
         Ok(symbol)
     }
@@ -665,6 +917,16 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn builtin(&self, b: Builtin) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Builtin(b))
+    }
+    
+    /// Allocate a stdlib function
+    /// 
+    /// StdLib functions are stored in static memory, so this only allocates
+    /// a single cell containing the StdLib enum variant. The function code
+    /// is parsed on-demand from the static source string.
+    #[inline]
+    pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::StdLib(s))
     }
     
     /// Allocate a lambda
@@ -905,8 +1167,9 @@ impl<const N: usize> Lisp<N> {
     
     /// Run garbage collection with intern table as an additional root
     /// 
-    /// The intern table is always included as a GC root to prevent interned
-    /// symbols from being collected.
+    /// The intern table reference cell (slot 3) is always included as a GC root
+    /// to prevent interned symbols from being collected. The intern table is
+    /// stored as a cons cell whose car points to the alist of interned symbols.
     /// 
     /// # Panics
     /// 
@@ -926,8 +1189,10 @@ impl<const N: usize> Lisp<N> {
         
         let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
         
-        // Add intern table as first root
-        all_roots[0] = *self.intern_table.borrow();
+        // Add intern table reference cell as first root
+        // This is a cons cell whose car is the intern table alist
+        // Tracing from this cell will reach all interned symbols
+        all_roots[0] = self.intern_table_slot;
         let mut root_count = 1;
         
         // Copy provided roots
@@ -1558,7 +1823,7 @@ mod tests {
     fn test_reserved_slots_occupy_first_three_slots() {
         let lisp: Lisp<100> = Lisp::new();
         
-        // Reserved slots should be the first 3 slots
+        // Reserved slots should be the first 4 slots (nil, true, false, intern_table_ref)
         assert_eq!(lisp.nil().unwrap().raw(), 0);
         assert_eq!(lisp.true_val().unwrap().raw(), 1);
         assert_eq!(lisp.false_val().unwrap().raw(), 2);
@@ -1568,14 +1833,15 @@ mod tests {
     fn test_reserved_slots_not_reallocated() {
         let lisp: Lisp<100> = Lisp::new();
         
-        // After creating the Lisp context, 3 slots should be used
-        assert_eq!(lisp.arena().len(), 3);
+        // After creating the Lisp context, 4 slots should be used
+        // (nil, true, false, intern_table_ref)
+        assert_eq!(lisp.arena().len(), 4);
         
         // Calling nil/true_val/false_val should NOT increase allocation count
         let _ = lisp.nil();
         let _ = lisp.true_val();
         let _ = lisp.false_val();
-        assert_eq!(lisp.arena().len(), 3);
+        assert_eq!(lisp.arena().len(), 4);
         
         // Calling many times should not increase count
         for _ in 0..100 {
@@ -1583,7 +1849,7 @@ mod tests {
             let _ = lisp.true_val();
             let _ = lisp.false_val();
         }
-        assert_eq!(lisp.arena().len(), 3);
+        assert_eq!(lisp.arena().len(), 4);
     }
     
     #[test]
@@ -1628,13 +1894,14 @@ mod tests {
     fn test_regular_allocation_starts_after_reserved_slots() {
         let lisp: Lisp<100> = Lisp::new();
         
-        // First regular allocation should be at slot 3 (after reserved 0, 1, 2)
+        // First regular allocation should be at slot 4 (after reserved 0, 1, 2, 3)
+        // Slots: 0=nil, 1=true, 2=false, 3=intern_table_ref
         let num = lisp.number(42).unwrap();
-        assert_eq!(num.raw(), 3);
+        assert_eq!(num.raw(), 4);
         
         // Next allocations continue from there
         let num2 = lisp.number(43).unwrap();
-        assert_eq!(num2.raw(), 4);
+        assert_eq!(num2.raw(), 5);
     }
     
     // ========================================================================

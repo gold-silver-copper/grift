@@ -83,7 +83,7 @@
 
 pub use lisp_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
 };
 
 // ============================================================================
@@ -404,6 +404,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         for &builtin in Builtin::ALL {
             let name = lisp.symbol(builtin.name())?;
             let val = lisp.builtin(builtin)?;
+            eval.global_env = eval.env_extend(eval.global_env, name, val)?;
+        }
+        
+        // Register standard library functions
+        // These are stored in static memory and parsed on-demand
+        for &stdlib in StdLib::ALL {
+            let name = lisp.symbol(stdlib.name())?;
+            let val = lisp.stdlib(stdlib)?;
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
         }
         
@@ -901,7 +909,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
-            Value::Builtin(_) | Value::Lambda { .. } | Value::Thunk { .. } |
+            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } | Value::Thunk { .. } |
             Value::Memo { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
@@ -1220,6 +1228,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 remaining_exprs: rest_exprs, eval_env: env,
                                 collected: nil, memo_idx: val, func, cache, call_expr
                             })?;
+                            self.push_cont(Cont::Force)?;
+                            
+                            Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
+                        }
+                    }
+                    Value::StdLib(s) => {
+                        // StdLib: Parse body from static string, create lambda, apply
+                        // This is like Lambda but we create the lambda on-demand
+                        self.pop_frame();
+                        
+                        // Parse the body from the static source string
+                        let body = parse(self.lisp, s.body())
+                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        
+                        // Create parameter list from static param names
+                        let params = self.make_stdlib_param_list(s.params())?;
+                        
+                        // Use the global env for stdlib functions (they're defined at top level)
+                        let closure_env = self.global_env;
+                        
+                        if self.lisp.get(args_expr)?.is_nil() {
+                            // No args - check params are also empty
+                            if !self.lisp.get(params)?.is_nil() {
+                                let expected = self.count_list(params)?;
+                                return Err(self.arg_error(call_expr, expected, 0));
+                            }
+                            Ok(Some(TrampolineState::Eval { expr: body, env: closure_env }))
+                        } else {
+                            // Start evaluating first arg and binding
+                            let first_expr = self.lisp.car(args_expr)?;
+                            let rest_exprs = self.lisp.cdr(args_expr)?;
+                            
+                            // Check we have params to bind
+                            if self.lisp.get(params)?.is_nil() {
+                                let got = self.count_list(args_expr)?;
+                                return Err(self.arg_error(call_expr, 0, got));
+                            }
+                            
+                            let first_param = self.lisp.car(params)?;
+                            let rest_params = self.lisp.cdr(params)?;
+                            
+                            // Start with closure_env, we'll extend as we bind
+                            self.push_cont(Cont::LambdaBindArg {
+                                remaining_exprs: rest_exprs, eval_env: env,
+                                remaining_params: rest_params, body, 
+                                new_env: closure_env, call_expr
+                            })?;
+                            // Push binding continuation for first param
+                            self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
                             self.push_cont(Cont::Force)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
@@ -2678,6 +2735,61 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 _ => return Ok(count), // Rest parameter
             }
+        }
+    }
+    
+    /// Create a parameter list from static parameter names
+    /// 
+    /// This is used by StdLib functions to create their parameter list
+    /// from the static &[&str] param names.
+    fn make_stdlib_param_list(&self, params: &[&str]) -> Result<ArenaIndex, EvalError> {
+        let mut result = self.lisp.nil()?;
+        for name in params.iter().rev() {
+            let sym = self.lisp.symbol(name)?;
+            result = self.lisp.cons(sym, result)?;
+        }
+        Ok(result)
+    }
+    
+    /// Convert a ParseError to EvalError with stdlib function name context
+    fn parse_error_to_eval(&self, err: ParseError, expr: ArenaIndex, func_name: &str) -> EvalError {
+        // Build a more descriptive message including the function name
+        // We build it manually since we're in no_std
+        let mut msg = ErrorMessage::empty();
+        let prefix = "stdlib ";
+        let suffix = " parse error";
+        
+        // Copy prefix
+        let prefix_bytes = prefix.as_bytes();
+        let prefix_len = prefix_bytes.len().min(64);
+        msg.buf[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
+        let mut pos = prefix_len;
+        
+        // Copy function name
+        let name_bytes = func_name.as_bytes();
+        let name_len = name_bytes.len().min(64 - pos);
+        msg.buf[pos..pos + name_len].copy_from_slice(&name_bytes[..name_len]);
+        pos += name_len;
+        
+        // Copy suffix
+        let suffix_bytes = suffix.as_bytes();
+        let suffix_len = suffix_bytes.len().min(64 - pos);
+        msg.buf[pos..pos + suffix_len].copy_from_slice(&suffix_bytes[..suffix_len]);
+        pos += suffix_len;
+        
+        msg.len = pos;
+        
+        EvalError {
+            kind: ErrorKind::Parse,
+            message: msg,
+            expr,
+            expected: None,
+            got: None,
+            expected_args: None,
+            got_args: None,
+            backtrace: [StackFrame::default(); MAX_BACKTRACE],
+            backtrace_len: 0,
+            parse_error: Some(err),
         }
     }
     
@@ -4286,5 +4398,337 @@ mod tests {
         assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr tris))"), 3);
         assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr tris)))"), 6);
         assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr tris))))"), 10);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MUTATION TESTS
+    // Tests for set!, set-car!, set-cdr! operations
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    #[test]
+    fn test_mutation_set() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Basic set! mutation
+        eval.eval_str("(define x 10)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 10);
+        
+        eval.eval_str("(set! x 20)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 20);
+        
+        // Multiple mutations
+        eval.eval_str("(set! x 30)").unwrap();
+        eval.eval_str("(set! x 40)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 40);
+    }
+    
+    #[test]
+    fn test_mutation_set_in_closure() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Counter using set!
+        eval.eval_str("(define counter 0)").unwrap();
+        eval.eval_str("(define (inc!) (set! counter (+ counter 1)))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 0);
+        eval.eval_str("(inc!)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 1);
+        eval.eval_str("(inc!)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 2);
+    }
+    
+    #[test]
+    fn test_mutation_set_car_basic() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define p (cons 1 2))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 1);
+        
+        eval.eval_str("(set-car! p 10)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 10);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 2);  // cdr unchanged
+    }
+    
+    #[test]
+    fn test_mutation_set_cdr_basic() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define p (cons 1 2))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 2);
+        
+        eval.eval_str("(set-cdr! p 20)").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 20);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 1);  // car unchanged
+    }
+    
+    #[test]
+    fn test_mutation_build_list() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Build a list by mutation
+        eval.eval_str("(define lst (cons 1 '()))").unwrap();
+        eval.eval_str("(set-cdr! lst (cons 2 '()))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr lst))"), 2);
+    }
+    
+    #[test]
+    fn test_mutation_with_gc() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Mutation should survive GC
+        eval.eval_str("(define x (cons 1 2))").unwrap();
+        eval.eval_str("(set-car! x 100)").unwrap();
+        
+        // Run GC
+        let _stats = eval.gc();
+        
+        // Value should persist after GC
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car x)"), 100);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STDLIB FUNCTION TESTS  
+    // Tests for the new static standard library functions
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    #[test]
+    fn test_stdlib_length() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '())"), 0);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(1))"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(1 2 3))"), 3);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(a b c d e))"), 5);
+    }
+    
+    #[test]
+    fn test_stdlib_fold() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Sum of a list
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(fold + 0 '(1 2 3 4 5))"), 15);
+        
+        // Product of a list
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(fold * 1 '(1 2 3 4 5))"), 120);
+        
+        // Empty list returns accumulator
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(fold + 42 '())"), 42);
+    }
+    
+    #[test]
+    fn test_stdlib_nth() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(nth 0 '(10 20 30))"), 10);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(nth 1 '(10 20 30))"), 20);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(nth 2 '(10 20 30))"), 30);
+    }
+    
+    #[test]
+    fn test_stdlib_range() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Force range to test - it's lazy
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length (range 0 5))"), 5);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (range 0 5))"), 0);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (range 0 5)))"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length (range 0 0))"), 0);
+    }
+    
+    #[test]
+    fn test_stdlib_identity_and_constantly() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(identity 42)"), 42);
+        
+        eval.eval_str("(define always-5 (constantly 5))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(always-5 1)"), 5);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(always-5 100)"), 5);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(always-5 'foo)"), 5);
+    }
+    
+    #[test]
+    fn test_stdlib_curry() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Curry + 5 to create add5
+        eval.eval_str("(define add5 (curry + 5))").unwrap();
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add5 10)"), 15);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(add5 20)"), 25);
+    }
+    
+    #[test]
+    fn test_stdlib_cadr_caddr_cddr() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr '(1 2 3))"), 2);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(caddr '(1 2 3))"), 3);
+        
+        // cddr returns the list after first two elements
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cddr '(1 2 3 4)))"), 3);
+    }
+    
+    #[test]
+    fn test_stdlib_member() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        assert!(eval_is_true(&lisp, &mut eval, "(member 2 '(1 2 3))"));
+        assert!(eval_is_false(&lisp, &mut eval, "(member 5 '(1 2 3))"));
+        assert!(eval_is_false(&lisp, &mut eval, "(member 1 '())"));
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GC INTEGRATION TESTS
+    // Tests that verify GC works correctly with various scenarios
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    #[test]
+    fn test_gc_preserves_closures() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        eval.eval_str("(define (make-counter) (define n 0) (lambda () (set! n (+ n 1)) n))").unwrap();
+        eval.eval_str("(define counter (make-counter))").unwrap();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter)"), 1);
+        
+        // GC should preserve the closure and its environment
+        let _stats = eval.gc();
+        
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter)"), 2);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(counter)"), 3);
+    }
+    
+    #[test]
+    fn test_gc_collects_unreachable() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Create some garbage
+        eval.eval_str("(cons 1 2)").unwrap();
+        eval.eval_str("(cons 3 4)").unwrap();
+        eval.eval_str("(cons 5 6)").unwrap();
+        
+        let stats_before = lisp.stats();
+        let gc_stats = eval.gc();
+        let stats_after = lisp.stats();
+        
+        // Some garbage should have been collected
+        assert!(gc_stats.collected > 0);
+        assert!(stats_after.allocated <= stats_before.allocated);
+    }
+    
+    #[test]
+    fn test_gc_intern_table_survives() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Create some symbols
+        eval.eval_str("(define a 1)").unwrap();
+        eval.eval_str("(define b 2)").unwrap();
+        eval.eval_str("(define c 3)").unwrap();
+        
+        // GC
+        eval.gc();
+        
+        // Symbols should still be usable
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(+ a b c)"), 6);
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PITFALL / GOTCHA DOCUMENTATION TESTS
+    // These tests document expected behavior that might be surprising
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    /// PITFALL: nil is NOT false!
+    /// In this Lisp, only #f is false. nil/() is the empty list and is truthy.
+    #[test]
+    fn test_pitfall_nil_is_truthy() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // nil is truthy!
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(if nil 1 2)"), 1);  // Takes then branch
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(if '() 1 2)"), 1);  // Takes then branch
+        
+        // Only #f is false
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(if #f 1 2)"), 2);  // Takes else branch
+    }
+    
+    /// PITFALL: 0 is also truthy!
+    #[test]
+    fn test_pitfall_zero_is_truthy() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // 0 is truthy (unlike C/Python)
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(if 0 1 2)"), 1);  // Takes then branch
+    }
+    
+    /// PITFALL: Lazy evaluation means side effects may not happen when expected
+    #[test]
+    fn test_pitfall_lazy_side_effects() {
+        let lisp: Lisp<2000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Define a counter to track side effects
+        eval.eval_str("(define count 0)").unwrap();
+        eval.eval_str("(define (side-effect! x) (set! count (+ count 1)) x)").unwrap();
+        
+        // Build a lazy list - side effects don't happen yet!
+        eval.eval_str("(define lst (cons (side-effect! 1) (cons (side-effect! 2) '())))").unwrap();
+        
+        // Count is still 0 - cons is lazy!
+        assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 0);
+        
+        // Only when we force the elements do side effects happen
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 1);  // Now side effect happened
+    }
+    
+    /// PITFALL: StdLib functions parse their body on each call (minor overhead)
+    /// This is intentional - it keeps function code out of the arena.
+    #[test]
+    fn test_stdlib_parses_on_each_call() {
+        let lisp: Lisp<3000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // Multiple calls to stdlib function work correctly
+        // (this verifies parsing works repeatedly)
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(1))"), 1);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(1 2))"), 2);
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(1 2 3))"), 3);
+        
+        // Complex usage
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(fold + 0 (range 0 10))"), 45);
+    }
+    
+    /// PITFALL: Recursive stdlib functions work via the global environment
+    #[test]
+    fn test_stdlib_recursion_works() {
+        let lisp: Lisp<4000> = Lisp::new();
+        let mut eval = Evaluator::new(&lisp).unwrap();
+        
+        // length is recursive - should work for small lists
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(a b c d e f g h i j))"), 10);
+        
+        // fold is tail-recursive - more efficient
+        assert_eq!(eval_to_num(&lisp, &mut eval, "(fold + 0 '(1 2 3 4 5 6 7 8 9 10))"), 55);
     }
 }

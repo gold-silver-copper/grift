@@ -20,7 +20,7 @@ use std::io::{self, BufRead, Write};
 
 pub use lisp_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
     EvalError, EvalResult, Evaluator, ErrorKind, StackFrame,
 };
 
@@ -83,6 +83,11 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Builtin(b)) => {
             buf.push_str("#<builtin:");
             buf.push_str(b.name());
+            buf.push('>');
+        }
+        Ok(Value::StdLib(s)) => {
+            buf.push_str("#<stdlib:");
+            buf.push_str(s.name());
             buf.push('>');
         }
         Ok(Value::Memo { .. }) => {
