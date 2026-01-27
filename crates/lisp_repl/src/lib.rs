@@ -95,6 +95,10 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Memo { .. }) => {
             buf.push_str("#<memoized>");
         }
+        Ok(Value::Array { len, .. }) => {
+            use std::fmt::Write;
+            write!(buf, "#<array:{}>", len).unwrap();
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

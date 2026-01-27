@@ -224,6 +224,18 @@ define_builtins! {
     /// set-cdr! - Mutate cdr of pair
     SetCdr => "set-cdr!",
     
+    // Array operations (O(1) indexed access and mutation)
+    /// make-array - Create an array with given length and initial value
+    MakeArray => "make-array",
+    /// array-ref - Get element at index (O(1))
+    ArrayRef => "array-ref",
+    /// array-set! - Set element at index (O(1))
+    ArraySet => "array-set!",
+    /// array-length - Get array length (O(1))
+    ArrayLength => "array-length",
+    /// array? - Check if value is an array
+    Arrayp => "array?",
+    
     // Garbage collection and arena control
     /// gc - Manually trigger garbage collection
     Gc => "gc",
@@ -431,6 +443,29 @@ pub enum Value {
         cached_body: ArenaIndex,    // NULL = not yet parsed
         cached_params: ArenaIndex,  // NULL = not yet created
     },
+    
+    /// Array (contiguous storage of values in the arena)
+    /// 
+    /// Arrays store values contiguously in the arena, similar to how symbols
+    /// store characters. This provides O(1) indexed access and mutation.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `data` points to the first element in contiguous storage
+    /// - Elements are stored at data+0, data+1, ..., data+(len-1)
+    /// 
+    /// # Example
+    /// 
+    /// ```lisp
+    /// (define arr (make-array 3 0))  ; Create array of 3 zeros
+    /// (array-set! arr 1 42)          ; Set index 1 to 42
+    /// (array-ref arr 1)              ; => 42
+    /// (array-length arr)             ; => 3
+    /// ```
+    Array {
+        data: ArenaIndex,  // Points to first element in contiguous block
+        len: usize,        // Number of elements
+    },
 }
 
 impl Value {
@@ -519,6 +554,12 @@ impl Value {
         matches!(self, Value::Memo { .. })
     }
     
+    /// Check if this value is an array
+    #[inline]
+    pub const fn is_array(&self) -> bool {
+        matches!(self, Value::Array { .. })
+    }
+    
     /// Get the number value if this is a number
     #[inline]
     pub const fn as_number(&self) -> Option<i64> {
@@ -551,6 +592,7 @@ impl Value {
             Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
             Value::StdLib { .. } => "procedure",
+            Value::Array { .. } => "array",
         }
     }
 }
@@ -605,6 +647,17 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Memo { func, cache } => {
                 tracer(*func);
                 tracer(*cache);
+            }
+            Value::Array { data, len } => {
+                // For non-empty arrays, trace all elements in the contiguous block
+                // Empty arrays (len == 0) have data == NULL, so skip tracing
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        let elem_idx = ArenaIndex::new(base_idx + i, data.generation());
+                        tracer(elem_idx);
+                    }
+                }
             }
         }
     }
@@ -1433,6 +1486,130 @@ impl<const N: usize> Lisp<N> {
     pub fn string_free(&self, str_idx: ArenaIndex) -> ArenaResult<()> {
         let len = self.string_len(str_idx)?;
         self.arena.free_contiguous(str_idx, 1 + len)
+    }
+    
+    // ========================================================================
+    // Contiguous Array Storage
+    // ========================================================================
+    // 
+    // Arrays are stored as contiguous sequences of Value in the arena.
+    // Unlike strings which have a length slot, arrays store the length in
+    // the Value::Array variant itself.
+    // 
+    // This provides:
+    // - O(1) indexed access and mutation
+    // - Cache-friendly sequential access
+    // - Efficient memory layout
+    // ========================================================================
+    
+    /// Create an array with the given length, initialized with a default value.
+    /// 
+    /// The array stores `len` values contiguously in the arena.
+    /// 
+    /// # Memory Usage
+    /// 
+    /// Allocates `len` slots for element storage, plus 1 slot for the Array value itself.
+    /// 
+    /// # Example
+    /// 
+    /// ```ignore
+    /// let lisp = Lisp::<1000>::new();
+    /// let arr = lisp.make_array(3, lisp.nil()).unwrap();
+    /// 
+    /// assert_eq!(lisp.array_len(arr).unwrap(), 3);
+    /// ```
+    pub fn make_array(&self, len: usize, default: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        if len == 0 {
+            // Empty array - no data slots needed
+            return self.alloc(Value::Array { 
+                data: ArenaIndex::NULL, 
+                len: 0 
+            });
+        }
+        
+        // Allocate contiguous block for elements
+        let default_val = self.arena.get(default)?;
+        let data = self.arena.alloc_contiguous(len, default_val)?;
+        
+        // Create the Array value pointing to the data
+        self.alloc(Value::Array { data, len })
+    }
+    
+    /// Get the length of an array.
+    /// 
+    /// Returns O(1) since length is stored in the Array value.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if the index doesn't point to an array.
+    pub fn array_len(&self, arr_idx: ArenaIndex) -> ArenaResult<usize> {
+        match self.arena.get(arr_idx)? {
+            Value::Array { len, .. } => Ok(len),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get the element at the given index within an array.
+    /// 
+    /// Returns O(1) access via direct index calculation.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if:
+    /// - The array index is invalid
+    /// - The element index is out of bounds
+    pub fn array_get(&self, arr_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(arr_idx)? {
+            Value::Array { data, len } => {
+                if index >= len {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                self.arena.index_at_offset(data, index)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Set the element at the given index within an array.
+    /// 
+    /// Returns O(1) mutation via direct index calculation.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if:
+    /// - The array index is invalid
+    /// - The element index is out of bounds
+    pub fn array_set(&self, arr_idx: ArenaIndex, index: usize, value: ArenaIndex) -> ArenaResult<()> {
+        match self.arena.get(arr_idx)? {
+            Value::Array { data, len } => {
+                if index >= len {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                let elem_slot = self.arena.index_at_offset(data, index)?;
+                let val = self.arena.get(value)?;
+                self.arena.set(elem_slot, val)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Free an array and all its element slots.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the array index is invalid.
+    pub fn array_free(&self, arr_idx: ArenaIndex) -> ArenaResult<()> {
+        match self.arena.get(arr_idx)? {
+            Value::Array { data, len } => {
+                // Free the data slots
+                if len > 0 {
+                    self.arena.free_contiguous(data, len)?;
+                }
+                // Free the Array value itself
+                self.arena.free(arr_idx)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
 }
 
@@ -2632,5 +2809,181 @@ mod tests {
         // New format uses: 1 Number + 9 Char + 1 Symbol + 2 Cons (intern table) = 13 slots
         // So we expect significantly fewer slots
         assert!(slots_used < 19, "Expected fewer than 19 slots, got {}", slots_used);
+    }
+    
+    // ========================================================================
+    // Array Tests
+    // ========================================================================
+    
+    #[test]
+    fn test_array_basic() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        // Create an array of 5 elements initialized to nil
+        let arr = lisp.make_array(5, nil).unwrap();
+        
+        // Check length
+        assert_eq!(lisp.array_len(arr).unwrap(), 5);
+        
+        // Check all elements are nil
+        for i in 0..5 {
+            let elem = lisp.array_get(arr, i).unwrap();
+            assert_eq!(lisp.get(elem).unwrap(), Value::Nil);
+        }
+    }
+    
+    #[test]
+    fn test_array_empty() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        // Create an empty array
+        let arr = lisp.make_array(0, nil).unwrap();
+        
+        // Check length is 0
+        assert_eq!(lisp.array_len(arr).unwrap(), 0);
+        
+        // Check it's actually an array
+        assert!(lisp.get(arr).unwrap().is_array());
+    }
+    
+    #[test]
+    fn test_array_get_set() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        // Create array
+        let arr = lisp.make_array(3, nil).unwrap();
+        
+        // Set values
+        let val1 = lisp.number(42).unwrap();
+        let val2 = lisp.number(100).unwrap();
+        lisp.array_set(arr, 0, val1).unwrap();
+        lisp.array_set(arr, 2, val2).unwrap();
+        
+        // Get values back
+        let elem0 = lisp.array_get(arr, 0).unwrap();
+        let elem1 = lisp.array_get(arr, 1).unwrap();
+        let elem2 = lisp.array_get(arr, 2).unwrap();
+        
+        assert_eq!(lisp.get(elem0).unwrap(), Value::Number(42));
+        assert_eq!(lisp.get(elem1).unwrap(), Value::Nil);  // Unchanged
+        assert_eq!(lisp.get(elem2).unwrap(), Value::Number(100));
+    }
+    
+    #[test]
+    fn test_array_out_of_bounds() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        let arr = lisp.make_array(3, nil).unwrap();
+        
+        // Valid index
+        assert!(lisp.array_get(arr, 2).is_ok());
+        
+        // Out of bounds
+        assert!(lisp.array_get(arr, 3).is_err());
+        assert!(lisp.array_get(arr, 100).is_err());
+        
+        // Out of bounds set
+        assert!(lisp.array_set(arr, 3, nil).is_err());
+    }
+    
+    #[test]
+    fn test_array_with_different_value_types() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        let arr = lisp.make_array(4, nil).unwrap();
+        
+        // Set different value types
+        let num = lisp.number(123).unwrap();
+        let b = lisp.true_val().unwrap();
+        let sym = lisp.symbol("foo").unwrap();
+        let pair = lisp.cons(lisp.number(1).unwrap(), lisp.number(2).unwrap()).unwrap();
+        
+        lisp.array_set(arr, 0, num).unwrap();
+        lisp.array_set(arr, 1, b).unwrap();
+        lisp.array_set(arr, 2, sym).unwrap();
+        lisp.array_set(arr, 3, pair).unwrap();
+        
+        // Verify
+        let elem0 = lisp.array_get(arr, 0).unwrap();
+        let elem1 = lisp.array_get(arr, 1).unwrap();
+        let elem2 = lisp.array_get(arr, 2).unwrap();
+        let elem3 = lisp.array_get(arr, 3).unwrap();
+        
+        assert!(lisp.get(elem0).unwrap().is_number());
+        assert!(lisp.get(elem1).unwrap().is_true());
+        assert!(lisp.get(elem2).unwrap().is_symbol());
+        assert!(lisp.get(elem3).unwrap().is_cons());
+    }
+    
+    #[test]
+    fn test_array_is_array_predicate() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        let arr = lisp.make_array(3, nil).unwrap();
+        let num = lisp.number(42).unwrap();
+        let pair = lisp.cons(nil, nil).unwrap();
+        
+        assert!(lisp.get(arr).unwrap().is_array());
+        assert!(!lisp.get(num).unwrap().is_array());
+        assert!(!lisp.get(pair).unwrap().is_array());
+        assert!(!lisp.get(nil).unwrap().is_array());
+    }
+    
+    #[test]
+    fn test_array_len_on_non_array() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        assert!(lisp.array_len(nil).is_err());
+    }
+    
+    #[test]
+    fn test_array_free() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        let initial = lisp.arena().len();
+        
+        let arr = lisp.make_array(5, nil).unwrap();
+        let after_alloc = lisp.arena().len();
+        
+        // Array should have allocated: 5 data slots + 1 Array value = 6 slots
+        assert_eq!(after_alloc - initial, 6);
+        
+        lisp.array_free(arr).unwrap();
+        let after_free = lisp.arena().len();
+        
+        // All slots should be freed
+        assert_eq!(after_free, initial);
+    }
+    
+    #[test]
+    fn test_array_memory_layout() {
+        let lisp: Lisp<1000> = Lisp::new();
+        let nil = lisp.nil().unwrap();
+        
+        let initial = lisp.arena().len();
+        
+        // Create array of 10 elements
+        let arr = lisp.make_array(10, nil).unwrap();
+        
+        // Should use: 10 data slots + 1 Array value = 11 slots
+        let after = lisp.arena().len();
+        assert_eq!(after - initial, 11);
+    }
+    
+    #[test]
+    fn test_array_type_name() {
+        let arr = Value::Array { 
+            data: ArenaIndex::NULL, 
+            len: 0 
+        };
+        assert_eq!(arr.type_name(), "array");
     }
 }
