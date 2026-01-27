@@ -12,6 +12,7 @@ This repository contains:
 
 - **`pwn_arena`** — A fixed-size arena allocator with mark-and-sweep garbage collection
 - **`lisp_parser`** — A Lisp parser with symbol interning and lazy evaluation support
+- **`lisp_types`** — A bidirectional type checker with inference
 - **`lisp_eval`** — A fully trampolined evaluator with proper tail-call optimization
 - **`lisp_repl`** — An interactive Read-Eval-Print-Loop
 
@@ -53,6 +54,7 @@ cargo test --workspace
 | **Pattern Matching** | `case` for value matching, `cond` for conditionals |
 | **Mutation** | `set!`, `set-car!`, `set-cdr!` for imperative programming |
 | **Garbage Collection** | Mark-and-sweep GC controllable from Lisp code |
+| **Type Checking** | Optional bidirectional type system with inference |
 
 ### Built-in Functions
 
@@ -124,6 +126,24 @@ cargo test --workspace
 ; Runtime evaluation
 (eval '(+ 1 2))        ; => 3
 (apply + '(1 2 3))     ; => 6
+```
+
+### Type Annotations (Optional)
+
+The `lisp_types` crate provides bidirectional type checking:
+
+```lisp
+; Type syntax (pure S-expressions, lowercase)
+isize                    ; integer type
+bool                     ; boolean type  
+nil                      ; nil/unit type
+(-> isize isize)         ; function type
+(list isize)             ; list type
+(pair isize bool)        ; pair type
+
+; Type annotations with (:)
+(: 42 isize)             ; annotate literal
+(: (lambda (x) x) (-> isize isize))  ; annotate function
 ```
 
 ## 🔥 Design Philosophy
@@ -262,6 +282,7 @@ pwn_arena/
 ├── crates/
 │   ├── pwn_arena/     # Core arena allocator (no_std, no_alloc)
 │   ├── lisp_parser/   # Lisp parser and value types (no_std)
+│   ├── lisp_types/    # Bidirectional type checker (no_std)
 │   ├── lisp_eval/     # Trampolined evaluator (no_std)
 │   ├── lisp_repl/     # Interactive REPL (uses std for I/O)
 │   └── lisp_macros/   # Proc macros for stdlib generation
