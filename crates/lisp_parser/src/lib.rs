@@ -26,8 +26,6 @@
 //! - `Thunk { expr, env, cached }` - Lazy computation (internal, auto-managed)
 //! - `Builtin(Builtin)` - Optimized built-in function
 
-use core::cell::RefCell;
-
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
 /// Built-in functions (optimization to avoid symbol lookup)
@@ -371,10 +369,11 @@ impl<const N: usize> Trace<Value, N> for Value {
 /// 
 /// ## Reserved Slots
 /// 
-/// The first 3 slots of the arena are reserved for singleton values:
+/// The first 4 slots of the arena are reserved for singleton values:
 /// - Slot 0: `Value::Nil` - the empty list
 /// - Slot 1: `Value::True` - boolean true (#t)
 /// - Slot 2: `Value::False` - boolean false (#f)
+/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `nil()`, `true_val()`, and `false_val()`. This optimization
@@ -383,7 +382,9 @@ impl<const N: usize> Trace<Value, N> for Value {
 /// ## Symbol Interning
 /// 
 /// All symbols are interned in an association list stored in the arena.
-/// The `intern_table` field points to an alist of `(string_index . symbol_index)` pairs.
+/// The `intern_table_slot` field points to a cons cell whose car is the alist 
+/// of `(string_index . symbol_index)` pairs. The cons cell is used as a 
+/// "reference cell" to allow updating the intern table without RefCell.
 /// When creating a symbol, we first check if it already exists in the table.
 /// This ensures that the same symbol name always returns the same index.
 pub struct Lisp<const N: usize> {
@@ -394,31 +395,32 @@ pub struct Lisp<const N: usize> {
     true_slot: ArenaIndex,
     /// Pre-allocated False slot (always slot 2)
     false_slot: ArenaIndex,
-    /// Intern table: alist of (string_index . symbol_index) pairs
-    /// Stored in arena, root index stored here for GC
-    intern_table: RefCell<ArenaIndex>,
+    /// Intern table reference cell (always slot 3)
+    /// This is a cons cell where car = intern table root (alist)
+    /// Using a cons cell avoids needing RefCell for interior mutability
+    intern_table_slot: ArenaIndex,
 }
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
-    /// Pre-allocates reserved slots for Nil, True, and False singletons.
-    /// These slots (0, 1, 2) are never freed and are returned as constants
+    /// Pre-allocates reserved slots for Nil, True, False, and intern table ref cell.
+    /// These slots (0, 1, 2, 3) are never freed and are returned as constants
     /// from `nil()`, `true_val()`, and `false_val()`.
     /// 
     /// The intern table is initialized to nil (empty alist).
     /// 
     /// # Panics
     /// 
-    /// Panics if the arena capacity N < 3, as we need at least 3 slots
-    /// for the reserved singleton values.
+    /// Panics if the arena capacity N < 4, as we need at least 4 slots
+    /// for the reserved singleton values and intern table reference cell.
     pub fn new() -> Self {
-        const { assert!(N >= 3, "Lisp arena must have capacity >= 3 for reserved slots") };
+        const { assert!(N >= 4, "Lisp arena must have capacity >= 4 for reserved slots") };
         
         let arena = Arena::new(Value::Nil);
         
-        // Pre-allocate reserved slots in order: Nil, True, False
-        // These will be slots 0, 1, 2 respectively
+        // Pre-allocate reserved slots in order: Nil, True, False, InternTableRef
+        // These will be slots 0, 1, 2, 3 respectively
         let nil_slot = arena.alloc(Value::Nil)
             .expect("Failed to pre-allocate reserved Nil slot during Lisp initialization");
         let true_slot = arena.alloc(Value::True)
@@ -426,13 +428,19 @@ impl<const N: usize> Lisp<N> {
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
         
+        // Pre-allocate intern table reference cell (slot 3)
+        // This is a cons cell where car = intern table root (initially nil)
+        // Using a cons cell as a "reference cell" allows updating via set()
+        // instead of requiring RefCell for interior mutability
+        let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
+            .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
+        
         Lisp {
             arena,
             nil_slot,
             true_slot,
             false_slot,
-            // Initialize intern table to nil (empty alist)
-            intern_table: RefCell::new(nil_slot),
+            intern_table_slot,
         }
     }
     
@@ -561,15 +569,31 @@ impl<const N: usize> Lisp<N> {
     // ========================================================================
     
     /// Get the intern table root (for GC roots)
+    /// 
+    /// The intern table is stored in the car of the intern_table_slot cons cell.
     pub fn intern_table(&self) -> ArenaIndex {
-        *self.intern_table.borrow()
+        // intern_table_slot always exists and is slot 3
+        // Its car contains the actual intern table root
+        self.intern_table_slot
+    }
+    
+    /// Get the current intern table root (the actual alist)
+    fn get_intern_table_root(&self) -> ArenaResult<ArenaIndex> {
+        match self.get(self.intern_table_slot)? {
+            Value::Cons { car, .. } => Ok(car),
+            _ => unreachable!("intern_table_slot should always be a Cons cell"),
+        }
+    }
+    
+    /// Set the intern table root (update the car of the reference cell)
+    fn set_intern_table_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
+        self.set(self.intern_table_slot, Value::Cons { car: new_root, cdr: self.nil_slot })
     }
     
     /// Look up a string in the intern table
     /// Returns Some(symbol_index) if found, None otherwise
     fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
-        let table = *self.intern_table.borrow();
-        let mut current = table;
+        let mut current = self.get_intern_table_root()?;
         
         loop {
             match self.get(current)? {
@@ -615,10 +639,11 @@ impl<const N: usize> Lisp<N> {
         
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
-        let new_table = self.cons(binding, *self.intern_table.borrow())?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
         
         // Update intern table root
-        *self.intern_table.borrow_mut() = new_table;
+        self.set_intern_table_root(new_table)?;
         
         Ok(symbol)
     }
@@ -653,10 +678,11 @@ impl<const N: usize> Lisp<N> {
         
         // Add to intern table: (start . symbol)
         let binding = self.cons(start, symbol)?;
-        let new_table = self.cons(binding, *self.intern_table.borrow())?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
         
         // Update intern table root
-        *self.intern_table.borrow_mut() = new_table;
+        self.set_intern_table_root(new_table)?;
         
         Ok(symbol)
     }
@@ -905,8 +931,9 @@ impl<const N: usize> Lisp<N> {
     
     /// Run garbage collection with intern table as an additional root
     /// 
-    /// The intern table is always included as a GC root to prevent interned
-    /// symbols from being collected.
+    /// The intern table reference cell (slot 3) is always included as a GC root
+    /// to prevent interned symbols from being collected. The intern table is
+    /// stored as a cons cell whose car points to the alist of interned symbols.
     /// 
     /// # Panics
     /// 
@@ -926,8 +953,10 @@ impl<const N: usize> Lisp<N> {
         
         let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
         
-        // Add intern table as first root
-        all_roots[0] = *self.intern_table.borrow();
+        // Add intern table reference cell as first root
+        // This is a cons cell whose car is the intern table alist
+        // Tracing from this cell will reach all interned symbols
+        all_roots[0] = self.intern_table_slot;
         let mut root_count = 1;
         
         // Copy provided roots
@@ -1558,7 +1587,7 @@ mod tests {
     fn test_reserved_slots_occupy_first_three_slots() {
         let lisp: Lisp<100> = Lisp::new();
         
-        // Reserved slots should be the first 3 slots
+        // Reserved slots should be the first 4 slots (nil, true, false, intern_table_ref)
         assert_eq!(lisp.nil().unwrap().raw(), 0);
         assert_eq!(lisp.true_val().unwrap().raw(), 1);
         assert_eq!(lisp.false_val().unwrap().raw(), 2);
@@ -1568,14 +1597,15 @@ mod tests {
     fn test_reserved_slots_not_reallocated() {
         let lisp: Lisp<100> = Lisp::new();
         
-        // After creating the Lisp context, 3 slots should be used
-        assert_eq!(lisp.arena().len(), 3);
+        // After creating the Lisp context, 4 slots should be used
+        // (nil, true, false, intern_table_ref)
+        assert_eq!(lisp.arena().len(), 4);
         
         // Calling nil/true_val/false_val should NOT increase allocation count
         let _ = lisp.nil();
         let _ = lisp.true_val();
         let _ = lisp.false_val();
-        assert_eq!(lisp.arena().len(), 3);
+        assert_eq!(lisp.arena().len(), 4);
         
         // Calling many times should not increase count
         for _ in 0..100 {
@@ -1583,7 +1613,7 @@ mod tests {
             let _ = lisp.true_val();
             let _ = lisp.false_val();
         }
-        assert_eq!(lisp.arena().len(), 3);
+        assert_eq!(lisp.arena().len(), 4);
     }
     
     #[test]
@@ -1628,13 +1658,14 @@ mod tests {
     fn test_regular_allocation_starts_after_reserved_slots() {
         let lisp: Lisp<100> = Lisp::new();
         
-        // First regular allocation should be at slot 3 (after reserved 0, 1, 2)
+        // First regular allocation should be at slot 4 (after reserved 0, 1, 2, 3)
+        // Slots: 0=nil, 1=true, 2=false, 3=intern_table_ref
         let num = lisp.number(42).unwrap();
-        assert_eq!(num.raw(), 3);
+        assert_eq!(num.raw(), 4);
         
         // Next allocations continue from there
         let num2 = lisp.number(43).unwrap();
-        assert_eq!(num2.raw(), 4);
+        assert_eq!(num2.raw(), 5);
     }
     
     // ========================================================================
