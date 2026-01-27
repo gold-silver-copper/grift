@@ -11,6 +11,7 @@ This is a classic Lisp implementation with modern features:
 - **Full tail-call optimization** via trampolining
 - **Mark-and-sweep garbage collection** controllable from Lisp
 - **Macros** with quasiquote/unquote
+- **Bidirectional type checking** - optional static type system
 - **no_std compatible** - only the REPL requires `std`
 
 ## Crate Organization
@@ -19,6 +20,7 @@ This is a classic Lisp implementation with modern features:
 crates/
 ├── pwn_arena/     # Arena allocator (no_std, no_alloc)
 ├── lisp_parser/   # Parser, Value type, builtins (no_std)
+├── lisp_types/    # Bidirectional type checker (no_std)
 ├── lisp_eval/     # Evaluator with trampolined TCO (no_std)
 ├── lisp_repl/     # REPL with I/O (uses std)
 └── lisp_macros/   # Proc macros for stdlib generation
@@ -27,7 +29,8 @@ crates/
 ### Dependency Graph
 
 ```
-pwn_arena ← lisp_parser ← lisp_eval ← lisp_repl
+pwn_arena ← lisp_parser ← lisp_types
+                       ↖ lisp_eval ← lisp_repl
                 ↑
            lisp_macros
 ```
@@ -200,6 +203,98 @@ Special forms are handled directly by the evaluator, not as functions:
 | `eval` | Runtime evaluation |
 | `apply` | Apply function to argument list |
 | `defmacro` | Define macro |
+| `:` | Type annotation (see Type System) |
+
+## Type System
+
+The `lisp_types` crate provides optional bidirectional type checking based on 
+"Complete and Easy Bidirectional Typechecking for Higher-Rank Polymorphism" 
+by Dunfield and Krishnaswami.
+
+### Type Syntax (Pure S-expressions, lowercase)
+
+All types use pure Lisp S-expression syntax:
+
+```lisp
+; Base types
+isize                        ; integer type (like Rust's isize)
+bool                         ; boolean type
+nil                          ; nil/unit type
+char                         ; character type
+
+; Function types
+(-> isize isize)             ; function from isize to isize
+(-> isize (-> isize isize))  ; curried binary function
+
+; Collection types
+(list isize)                 ; list of isize
+(pair isize bool)            ; pair of isize and bool
+```
+
+### Type Annotations
+
+Use `(:)` to annotate expressions with types:
+
+```lisp
+(: 42 isize)                 ; annotate 42 as isize
+(: (lambda (x) x) (-> isize isize))  ; annotate identity function
+```
+
+### Bidirectional Typing Modes
+
+The type checker operates in two modes:
+
+1. **Synthesize (⇒)**: Infer the type of an expression without hints
+   - Literals synthesize their natural types (`42` → `isize`)
+   - Variables use their type from the context
+   - Applications synthesize by checking arguments against function parameter types
+
+2. **Check (⇐)**: Verify an expression has an expected type
+   - Lambdas check against function types (parameter type annotates body)
+   - `if` expressions check both branches against expected type
+   - Falls back to subsumption when synthesis is possible
+
+3. **Subsumption**: Connects synthesis and checking
+   - If we can synthesize type A for expression e, and A <: B, then e checks against B
+
+### Type Representation
+
+Types are stored in a separate arena:
+
+```rust
+pub enum Type {
+    Isize,                           // Integer type
+    Bool,                            // Boolean type
+    Nil,                             // Nil/unit type
+    Char,                            // Character type
+    Arrow { param, result },         // Function type
+    List { element },                // List type
+    Pair { first, second },          // Pair type
+    Var(u32),                        // Type variable (for future polymorphism)
+}
+```
+
+### Usage Example
+
+```rust
+use lisp_types::{TypeChecker, TypeContext, Type};
+
+let lisp = Lisp::new();
+let types = Arena::new(Type::Nil);
+let mut checker = TypeChecker::new(&lisp, &types);
+let ctx = TypeContext::new();
+
+// Synthesize type of number literal
+let num = lisp.number(42).unwrap();
+let num_type = checker.synthesize(&ctx, num).unwrap();
+// num_type is Type::Isize
+
+// Check lambda against function type
+let isize_t = checker.isize_type().unwrap();
+let arrow_t = checker.arrow_type(isize_t, isize_t).unwrap();
+let lambda = lisp.parse("(lambda (x) x)").unwrap();
+checker.check(&ctx, lambda, arrow_t).unwrap(); // OK
+```
 
 ## Built-in Functions
 
