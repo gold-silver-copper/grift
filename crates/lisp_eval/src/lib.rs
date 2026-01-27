@@ -1917,6 +1917,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Gc => {
                 // (gc) - Manually trigger garbage collection
                 // Returns a list: (marked collected total-before)
+                // Built right-to-left since cons prepends
                 let stats = self.gc();
                 let marked = self.lisp.number(stats.marked as i64)?;
                 let collected = self.lisp.number(stats.collected as i64)?;

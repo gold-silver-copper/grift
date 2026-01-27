@@ -299,13 +299,13 @@ During evaluation, the following are GC roots:
 
 ## Design Trade-offs
 
-### No Tail-Recursive Memoization
+### Thunk Evaluation Stack Limits
 
-Thunk forcing uses Rust recursion, limiting deep lazy chains:
+Thunk forcing uses Rust stack recursion, limiting deep lazy chains:
 
-**Trade-off**: Deep chains of thunks can overflow the Rust stack.
+**Trade-off**: Deeply nested thunks (e.g., long chains of lazy `cons` calls) can overflow the Rust stack.
 
-**Mitigation**: Use tail-recursive patterns for deep recursion; avoid deeply nested lazy structures.
+**Mitigation**: Use tail-recursive patterns for deep recursion; avoid deeply nested lazy structures. Consider forcing intermediate values to break up long thunk chains.
 
 ### Fixed Continuation Stack
 
