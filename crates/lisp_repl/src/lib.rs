@@ -532,13 +532,7 @@ fn print_help() {
     println!("  I/O:    print, display, newline");
     println!("  Err:    error");
     println!("  Memo:   memoize");
-    println!("  Mut:    set-car!, set-cdr!");
     println!("  GC:     gc, gc-enable, gc-disable, gc-enabled?, arena-stats");
-    println!();
-    println!("Mutation:");
-    println!("  (set! name value)    - Mutate variable binding");
-    println!("  (set-car! pair val)  - Mutate car of a pair");
-    println!("  (set-cdr! pair val)  - Mutate cdr of a pair");
     println!();
     println!("Memory Management:");
     println!("  (gc)             - Trigger GC, returns (marked collected before)");
@@ -547,10 +541,10 @@ fn print_help() {
     println!("  (gc-enabled?)    - Check if GC is enabled");
     println!("  (arena-stats)    - Returns (capacity allocated free usage%)");
     println!();
-    println!("NOTE: This is a Lisp with HYBRID EVALUATION and MUTATION!");
+    println!("NOTE: This is a PURE FUNCTIONAL Lisp with LAZY EVALUATION!");
+    println!("      - All values are immutable (no mutation primitives)");
     println!("      - Tail calls: STRICT (enables proper TCO)");
     println!("      - Builtins: LAZY (infinite data structures work)");
-    println!("      - Mutation: set!, set-car!, set-cdr! available");
     println!();
     println!("REPL Commands:");
     println!("  :help, :h, :?  - Show this help");

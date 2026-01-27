@@ -4,8 +4,9 @@ This document describes the architecture, design decisions, and implementation d
 
 ## Overview
 
-This is a classic Lisp implementation with modern features:
+This is a **pure functional** Lisp implementation with modern features:
 
+- **Pure functional** - All values are immutable, referential transparency guaranteed
 - **Lexically scoped closures** with proper environments
 - **Hybrid lazy/strict evaluation** - lazy by default, strict in tail position
 - **Full tail-call optimization** via trampolining
@@ -190,12 +191,10 @@ Special forms are handled directly by the evaluator, not as functions:
 | `case` | Pattern matching on values |
 | `lambda` | Create closure |
 | `define` | Define variable or function |
-| `set!` | Mutate variable binding |
 | `let` | Parallel local bindings |
 | `let*` | Sequential local bindings |
 | `begin` | Sequence of expressions |
 | `and`/`or` | Short-circuit boolean operations |
-| `do` | Iteration loop |
 | `quasiquote` | Template with unquote |
 | `eval` | Runtime evaluation |
 | `apply` | Apply function to argument list |
@@ -212,7 +211,7 @@ pub enum Builtin {
     Add, Sub, Mul, Div, Mod,
     Lt, Gt, Le, Ge, NumEq,
     Not, Print, Display, Newline, Error,
-    Memoize, Gensym, SetCar, SetCdr,
+    Memoize, Gensym,
     Gc, GcEnable, GcDisable, GcEnabledP, ArenaStats,
 }
 ```
@@ -331,16 +330,13 @@ Thunk forcing uses Rust stack recursion, limiting deep lazy chains:
 
 ## Gotchas
 
-### 1. Lazy Side Effects
+### 1. Lazy Evaluation
 
-Side effects in lazy positions may not execute when expected:
+Arguments to `cons` are wrapped in thunks and only evaluated when accessed:
 
 ```lisp
-(define count 0)
-(define x (cons (begin (set! count 1) 'a) '()))
-count  ; => 0 (cons is lazy!)
-(car x)
-count  ; => 1 (now the side effect ran)
+(define (ones) (cons 1 (ones)))  ; Infinite stream - works because cons is lazy
+(car (ones))                      ; => 1 (only forces the car)
 ```
 
 ### 2. Macro Hygiene
@@ -348,11 +344,11 @@ count  ; => 1 (now the side effect ran)
 `gensym` should be used to avoid variable capture:
 
 ```lisp
-(defmacro swap (a b)
+(defmacro my-let1 (name val body)
   (let ((temp (gensym)))
-    `(let ((,temp ,a))
-       (set! ,a ,b)
-       (set! ,b ,temp))))
+    `(let ((,temp ,val))
+       (let ((,name ,temp))
+         ,body))))
 ```
 
 ### 3. Intern Table is Always Reachable

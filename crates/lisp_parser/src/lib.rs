@@ -101,8 +101,8 @@ macro_rules! define_builtins {
     ) => {
         /// Built-in functions (optimization to avoid symbol lookup)
         /// 
-        /// NOTE: This Lisp supports mutation via set!, set-car!, and set-cdr!
-        /// - Mutation operations break referential transparency
+        /// NOTE: This is a **pure functional** Lisp (no mutation)
+        /// - All values are immutable (referential transparency guaranteed)
         /// - All evaluation is call-by-need (lazy by default)
         /// - Values are forced automatically in strict positions
         /// 
@@ -217,12 +217,6 @@ define_builtins! {
     // Symbol generation for hygiene
     /// gensym - Generate unique symbol
     Gensym => "gensym",
-    
-    // Mutation operations (strict - force pair argument)
-    /// set-car! - Mutate car of pair
-    SetCar => "set-car!",
-    /// set-cdr! - Mutate cdr of pair
-    SetCdr => "set-cdr!",
     
     // Garbage collection and arena control
     /// gc - Manually trigger garbage collection
