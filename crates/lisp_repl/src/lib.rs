@@ -24,6 +24,7 @@ pub use lisp_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
     EvalError, EvalResult, Evaluator, ErrorKind, StackFrame,
+    ThunkData, LambdaData,
 };
 
 // ============================================================================
@@ -75,12 +76,23 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Lambda { .. }) => {
             buf.push_str("#<lambda>");
         }
-        Ok(Value::Thunk { cached, .. }) => {
-            if cached.is_null() {
-                buf.push_str("#<promise>");
+        Ok(Value::LambdaDataVal(_)) => {
+            buf.push_str("#<lambda-data>");
+        }
+        Ok(Value::Thunk { data }) => {
+            // Check if thunk has been forced by looking at cached field
+            if let Ok(Value::ThunkDataVal(thunk_data)) = lisp.get(data) {
+                if thunk_data.cached.is_null() {
+                    buf.push_str("#<promise>");
+                } else {
+                    buf.push_str("#<promise:forced>");
+                }
             } else {
-                buf.push_str("#<promise:forced>");
+                buf.push_str("#<promise>");
             }
+        }
+        Ok(Value::ThunkDataVal(_)) => {
+            buf.push_str("#<thunk-data>");
         }
         Ok(Value::Builtin(b)) => {
             buf.push_str("#<builtin:");
@@ -102,7 +114,7 @@ fn format_value_impl<const N: usize>(
         Ok(Value::String { len, .. }) => {
             // Format string like in many Lisps: "..."
             buf.push('"');
-            for i in 0..len {
+            for i in 0..(len as usize) {
                 if let Ok(c) = lisp.string_char_at(idx, i) {
                     match c {
                         '"' => buf.push_str("\\\""),
@@ -617,14 +629,22 @@ fn deep_force_impl<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, idx:
 fn force_whnf<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, mut idx: ArenaIndex) -> Result<ArenaIndex, EvalError> {
     loop {
         match lisp.get(idx)? {
-            Value::Thunk { expr, env, cached } => {
-                if !cached.is_null() {
-                    idx = cached;
+            Value::Thunk { data } => {
+                let thunk_data = match lisp.get(data)? {
+                    Value::ThunkDataVal(td) => td,
+                    _ => return Ok(idx), // Corrupted thunk, just return as-is
+                };
+                if !thunk_data.cached.is_null() {
+                    idx = thunk_data.cached;
                     continue;
                 }
                 // Force the thunk using the evaluator
-                let result = eval.eval_in_env(expr, env)?;
-                lisp.set(idx, Value::Thunk { expr, env, cached: result })?;
+                let result = eval.eval_in_env(thunk_data.expr, thunk_data.env)?;
+                lisp.set(data, Value::ThunkDataVal(ThunkData { 
+                    expr: thunk_data.expr, 
+                    env: thunk_data.env, 
+                    cached: result 
+                }))?;
                 idx = result;
                 continue;
             }
