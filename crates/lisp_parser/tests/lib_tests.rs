@@ -973,8 +973,8 @@ fn test_array_free() {
     let arr = lisp.make_array(5, nil).unwrap();
     let after_alloc = lisp.arena().len();
     
-    // Array should have allocated: 5 data slots + 1 Array value = 6 slots
-    assert_eq!(after_alloc - initial, 6);
+    // Array should have allocated: 1 length slot + 5 element slots + 1 Array value = 7 slots
+    assert_eq!(after_alloc - initial, 7);
     
     lisp.array_free(arr).unwrap();
     let after_free = lisp.arena().len();
@@ -991,11 +991,11 @@ fn test_array_memory_layout() {
     let initial = lisp.arena().len();
     
     // Create array of 10 elements
-    let arr = lisp.make_array(10, nil).unwrap();
+    let _arr = lisp.make_array(10, nil).unwrap();
     
-    // Should use: 10 data slots + 1 Array value = 11 slots
+    // Should use: 1 length slot + 10 element slots + 1 Array value = 12 slots
     let after = lisp.arena().len();
-    assert_eq!(after - initial, 11);
+    assert_eq!(after - initial, 12);
 }
 
 #[test]
