@@ -232,12 +232,17 @@ The standard library is defined as static Lisp code, parsed on-demand:
 ### Nil is NOT False!
 
 ```lisp
-; WRONG: Don't use nil as a false value
-(if (member 'x '(a b c)) 'found 'not-found)
-; If x not found, member returns nil, which is TRUTHY!
+; WRONG: Don't use nil/empty list as a false value
+(if (filter (lambda (x) (> x 10)) '(1 2 3)) 'has-items 'empty)
+; If filter finds nothing, it returns '() (nil), which is TRUTHY!
+; This will always print 'has-items even when the list is empty!
 
 ; RIGHT: Explicitly check for #f or use null?
-(if (null? (filter ...)) 'empty 'has-items)
+(if (null? (filter (lambda (x) (> x 10)) '(1 2 3))) 'empty 'has-items)
+; Now it correctly checks if the result is empty
+
+; Note: member returns #f (not nil) when not found, so this works:
+(if (member 'x '(a b c)) 'found 'not-found)  ; This is correct!
 ```
 
 ### Arena Capacity is Fixed
