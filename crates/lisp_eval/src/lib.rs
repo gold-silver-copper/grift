@@ -824,7 +824,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate an expression in a given environment
     /// Uses full trampolining - no Rust recursion
     /// 
-    /// This is public so the REPL can force thunks for display
+    /// This is public so the REPL can evaluate expressions for display
     pub fn eval_in_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
         // Reset continuation stack and run
         self.cont_depth = 0;
@@ -964,7 +964,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Return { val });
             }
             
-            // if - condition is strict, branches are lazy
+            // if - condition evaluated, then one branch selected
             if self.lisp.symbol_matches(car, "if")? {
                 let cond_expr = self.lisp.car(cdr)?;
                 let rest = self.lisp.cdr(cdr)?;
@@ -1068,9 +1068,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
                 let evaluated_expr = self.eval_in_env(expr_to_eval, env)?;
-                // Deep force the expression to get actual code (not thunks)
-                let forced = self.deep_force_for_macro(evaluated_expr)?;
-                return Ok(TrampolineState::Eval { expr: forced, env: self.global_env });
+                // Recursively process the expression for evaluation
+                let processed = self.deep_process_for_macro(evaluated_expr)?;
+                return Ok(TrampolineState::Eval { expr: processed, env: self.global_env });
             }
             
             // defmacro - define a macro
@@ -1789,7 +1789,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Get number from already-forced value
+    /// Get number from already-evaluated value
     fn get_number_from_forced(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<i64, EvalError> {
         match self.lisp.get(idx)? {
             Value::Number(n) => Ok(n),
@@ -1797,7 +1797,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Numeric fold with already-forced args
+    /// Numeric fold with already-evaluated args
     fn numeric_fold_forced<F>(&self, args: ArenaIndex, init: i64, f: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(i64, i64) -> Option<i64>
     {
@@ -1821,6 +1821,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Compare two numbers with already-evaluated args
     fn compare_forced<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(i64, i64) -> bool
     {
@@ -2256,43 +2257,44 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Found macro - bind params to unevaluated args and evaluate body
                 let expansion_env = self.bind_macro_params(params, args)?;
                 let expanded = self.eval_in_env(body, expansion_env)?;
-                // Deep force the expansion to get actual code (not thunks)
-                let forced = self.deep_force_for_macro(expanded)?;
-                return Ok(Some(forced));
+                // Recursively process the expansion
+                let processed = self.deep_process_for_macro(expanded)?;
+                return Ok(Some(processed));
             }
         }
         Ok(None)
     }
     
-    /// Deep force a value for macro expansion (forces all thunks)
-    fn deep_force_for_macro(&mut self, idx: ArenaIndex) -> EvalResult {
-        self.deep_force_impl(idx, 50)
+    /// Recursively process a value for macro expansion
+    /// This ensures nested cons cells are properly handled
+    fn deep_process_for_macro(&mut self, idx: ArenaIndex) -> EvalResult {
+        self.deep_process_impl(idx, 50)
     }
     
-    fn deep_force_impl(&mut self, idx: ArenaIndex, depth: usize) -> EvalResult {
+    fn deep_process_impl(&mut self, idx: ArenaIndex, depth: usize) -> EvalResult {
         if depth == 0 {
             return Ok(idx);
         }
         
-        // Force to WHNF
-        let forced = self.force_value(idx)?;
+        // Get the value (identity in strict mode)
+        let val = self.get_value(idx)?;
         
-        match self.lisp.get(forced)? {
+        match self.lisp.get(val)? {
             Value::Cons { car, cdr } => {
-                let new_car = self.deep_force_impl(car, depth - 1)?;
-                let new_cdr = self.deep_force_impl(cdr, depth - 1)?;
+                let new_car = self.deep_process_impl(car, depth - 1)?;
+                let new_cdr = self.deep_process_impl(cdr, depth - 1)?;
                 self.lisp.cons(new_car, new_cdr).map_err(Into::into)
             }
-            _ => Ok(forced),
+            _ => Ok(val),
         }
     }
     
-    /// Get a value (identity function, kept for compatibility)
+    /// Get a value (identity function in strict evaluation)
     ///
     /// In strict evaluation, values are already fully evaluated, so this
     /// just returns the value unchanged.
     #[inline]
-    fn force_value(&mut self, idx: ArenaIndex) -> EvalResult {
+    fn get_value(&mut self, idx: ArenaIndex) -> EvalResult {
         Ok(idx)
     }
     
@@ -2591,8 +2593,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
     
-    // NOTE: eval_list_strict and force_list removed - handled by trampoline continuations
-    
     /// Count elements in a list
     fn count_list(&self, mut list: ArenaIndex) -> Result<usize, EvalError> {
         let mut count = 0;
@@ -2668,9 +2668,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn is_false(&self, val: ArenaIndex) -> Result<bool, EvalError> {
         Ok(self.lisp.get(val)?.is_false())
     }
-    
-    // NOTE: Old recursive force() and apply_builtin() removed
-    // All evaluation now goes through the trampoline
     
     // ========================================================================
     // Convenience

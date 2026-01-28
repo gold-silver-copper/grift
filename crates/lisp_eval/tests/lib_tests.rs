@@ -123,8 +123,8 @@ fn test_eval_let_star() {
 
 #[test]
 fn test_tco_recursion() {
-    // Hybrid evaluation: tail calls are STRICT, so TCO works properly!
-    // No thunk accumulation - deep recursion is safe.
+    // Strict evaluation with proper TCO
+    // Deep recursion is safe with tail call optimization
     let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -282,120 +282,138 @@ fn test_lru_cache_eviction() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LAZY EVALUATION TESTS
-// Everything is lazy by default - no delay/force needed!
+// STRICT EVALUATION TESTS
+// Arguments are evaluated before function application (call-by-value)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_lazy_basic() {
-    // Basic lazy evaluation - arguments computed only when needed
+fn test_strict_basic() {
+    // Basic strict evaluation - arguments are evaluated immediately
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Simple computation works
     assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2 3)"), 6);
     
-    // Functions work
+    // Functions work - arguments evaluated before application
     eval.eval_str("(define (add x y) (+ x y))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(add 10 20)"), 30);
 }
 
 #[test]
-fn test_lazy_cons_is_nonstrict() {
-    // cons doesn't force its arguments - can build structures with unevaluated parts
+fn test_strict_cons_evaluates_args() {
+    // cons evaluates its arguments in strict mode
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Create a pair
-    eval.eval_str("(define p (cons 1 2))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 2);
+    // Create a pair - arguments are evaluated immediately
+    eval.eval_str("(define p (cons (+ 1 2) (+ 3 4)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 7);
     
-    // List creation works
-    eval.eval_str("(define lst (list 1 2 3))").unwrap();
+    // List creation works - all elements evaluated
+    eval.eval_str("(define lst (list (* 2 3) (* 4 5) (* 6 7)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 6);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr lst))"), 20);
+}
+
+#[test]
+fn test_strict_side_effects_immediate() {
+    // Side effects happen immediately in strict evaluation
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a counter to track side effects
+    eval.eval_str("(define count 0)").unwrap();
+    eval.eval_str("(define (side-effect! x) (set! count (+ count 1)) x)").unwrap();
+    
+    // Build a list - side effects happen immediately in strict mode!
+    eval.eval_str("(define lst (cons (side-effect! 1) (cons (side-effect! 2) '())))").unwrap();
+    
+    // Count is 2 - both side effects happened during cons evaluation
+    assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 2);
+    
+    // Accessing elements doesn't trigger additional side effects
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 2);
 }
 
 #[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_infinite_stream() {
-    // THE KEY TEST: Infinite structures work!
-    // (define ones (cons 1 ones)) - this would loop forever in eager evaluation
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Create an infinite stream of 1s using self-reference
-    // This works because cons is non-strict and ones is wrapped in a thunk
-    eval.eval_str("(define (make-ones) (cons 1 (make-ones)))").unwrap();
-    eval.eval_str("(define ones (make-ones))").unwrap();
-    
-    // We can access elements without infinite loop
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car ones)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr ones))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr ones)))"), 1);
-}
-
-#[test]
-fn test_lazy_if_branches() {
-    // Only the selected branch of 'if' is evaluated
+fn test_strict_if_branches() {
+    // Only the selected branch of 'if' is evaluated (short-circuit)
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // This would error in an eager language (div by zero in else branch)
-    // But we select the then branch, so else is never evaluated
+    // The non-selected branch is never evaluated
     eval.eval_str("(define (safe-div x y) (if (= y 0) 0 (/ x y)))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(safe-div 10 0)"), 0);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(safe-div 10 2)"), 5);
 }
 
 #[test]
-fn test_hybrid_builtin_lazy() {
-    // HYBRID EVALUATION: Builtin args are lazy (builtins force what they need)
+fn test_strict_if_unevaluated_branch() {
+    // 'if' is a special form - only one branch is evaluated
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // 'if' is a special form with lazy branches - only one is evaluated
-    // The undefined branch is never forced
+    // The undefined branch is never evaluated
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if #t 42 undefined-var)"), 42);
     
-    // cons is non-strict - elements stay as thunks
-    eval.eval_str("(define p (cons 1 2))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 1);
+    // Verify with side effects
+    eval.eval_str("(define count 0)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(if #t 1 (begin (set! count 99) 2))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 0);  // else branch not evaluated
 }
 
 #[test]
-fn test_hybrid_lambda_strict() {
-    // HYBRID EVALUATION: Lambda args in tail position are strict (for TCO)
+fn test_strict_lambda_args_evaluated() {
+    // Lambda arguments are evaluated before function application
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Lambda args are evaluated, so this is strict
+    // Lambda args are evaluated strictly
     eval.eval_str("(define (first x y) x)").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(first 42 100)"), 42);  // Works
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(first (+ 1 1) (+ 2 2))"), 2);
     
-    // The benefit: TCO works for deep recursion
+    // Side effects in arguments happen before function body
+    eval.eval_str("(define effect-count 0)").unwrap();
+    eval.eval_str("(define (with-effect x) (set! effect-count (+ effect-count 1)) x)").unwrap();
+    eval.eval_str("(define (ignore-second a b) a)").unwrap();
+    
+    // Both arguments are evaluated even though b is ignored
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(ignore-second (with-effect 1) (with-effect 2))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "effect-count"), 2);
+}
+
+#[test]
+fn test_strict_tco_works() {
+    // TCO works properly with strict evaluation
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Deep recursion with TCO
     eval.eval_str("(define (count n) (if (= n 0) 0 (count (- n 1))))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(count 50)"), 0);  // No stack overflow
 }
 
 #[test]
-fn test_lazy_memoization() {
-    // Values are memoized - same result every time
+fn test_strict_variable_binding() {
+    // Variables are bound to evaluated values
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (square x) (* x x))").unwrap();
     eval.eval_str("(define val (square 5))").unwrap();
     
-    // Multiple accesses return same value
+    // val is bound to 25, not to the expression (square 5)
     assert_eq!(eval_to_num(&lisp, &mut eval, "val"), 25);
     assert_eq!(eval_to_num(&lisp, &mut eval, "val"), 25);
     assert_eq!(eval_to_num(&lisp, &mut eval, "val"), 25);
 }
 
 #[test]
-fn test_lazy_closure() {
-    // Closures capture their environment lazily
+fn test_strict_closure() {
+    // Closures capture their environment correctly
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -485,13 +503,7 @@ fn test_gc_during_eval() {
 
 #[test]
 fn test_tco_deep_recursion() {
-    // Test TCO with recursion
-    // 
-    // NOTE: Depth is limited by Rust stack during force() calls.
-    // The Lisp-level TCO (trampoline) works, but forcing thunks uses
-    // Rust recursion. A full fix requires converting force() to iterative.
-    // 
-    // Current practical limit: ~100-200 recursive calls in debug mode
+    // Test TCO with deep recursion
     let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -508,7 +520,6 @@ fn test_tco_deep_recursion() {
 #[test]
 fn test_tco_mutual_recursion() {
     // Mutual recursion with TCO - even/odd predicates
-    // NOTE: Limited depth due to Rust stack in force()
     let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -565,44 +576,12 @@ fn test_tco_in_cond() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// COMPREHENSIVE LAZY EVALUATION TESTS
+// SHORT-CIRCUIT EVALUATION TESTS
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_stream_operations() {
-    // Stream operations on infinite data
-    let lisp: Lisp<5000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Infinite stream of natural numbers
-    eval.eval_str("(define (nats-from n) (cons n (nats-from (+ n 1))))").unwrap();
-    eval.eval_str("(define nats (nats-from 0))").unwrap();
-    
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car nats)"), 0);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr nats))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr nats)))"), 2);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr nats))))"), 3);
-}
-
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_stream_take() {
-    // Take n elements from a stream
-    let lisp: Lisp<5000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    eval.eval_str("(define (take n s) (if (= n 0) '() (cons (car s) (take (- n 1) (cdr s)))))").unwrap();
-    eval.eval_str("(define (ones) (cons 1 (ones)))").unwrap();
-    
-    // Take 3 ones
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (take 3 (ones)))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (take 3 (ones))))"), 1);
-}
-
-#[test]
-fn test_lazy_and_or_short_circuit() {
-    // and/or should short-circuit with lazy evaluation
+fn test_and_or_short_circuit() {
+    // and/or short-circuit evaluation (only evaluates until result is known)
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -616,8 +595,8 @@ fn test_lazy_and_or_short_circuit() {
 }
 
 #[test]
-fn test_lazy_let_bindings() {
-    // let bindings in hybrid model
+fn test_let_bindings() {
+    // let bindings evaluate values strictly
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -633,22 +612,22 @@ fn test_lazy_let_bindings() {
 }
 
 #[test]
-fn test_lazy_cons_preserves_thunks() {
-    // cons should not force its arguments
+fn test_cons_with_expressions() {
+    // cons evaluates expressions in strict mode
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Build a list with computations
+    // Build a list with computations - all evaluated immediately
     eval.eval_str("(define p (cons (+ 1 2) (+ 3 4)))").unwrap();
     
-    // Access should force and return correct values
+    // Values are already computed
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 3);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr p)"), 7);
 }
 
 #[test]
-fn test_lazy_nested_structures() {
-    // Deeply nested lazy structures
+fn test_nested_structures() {
+    // Deeply nested structures work with strict evaluation
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -661,65 +640,12 @@ fn test_lazy_nested_structures() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (car (car deep)))"), 1);
 }
 
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_with_gc_pressure() {
-    // Test lazy evaluation under GC pressure
-    let lisp: Lisp<2000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Create an infinite stream
-    eval.eval_str("(define (ones) (cons 1 (ones)))").unwrap();
-    eval.eval_str("(define stream (ones))").unwrap();
-    
-    // Access some elements
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car stream)"), 1);
-    
-    // Run GC
-    eval.gc();
-    
-    // Stream should still work after GC
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr stream))"), 1);
-    
-    // More allocations and GC
-    for _ in 0..10 {
-        eval.eval_str("(+ 1 2 3 4 5)").unwrap();
-    }
-    eval.gc();
-    
-    // Stream still works
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr stream)))"), 1);
-}
-
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_fibonacci_stream() {
-    // Classic lazy Fibonacci stream
-    let lisp: Lisp<5000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // zipWith for streams
-    eval.eval_str("(define (zipwith f s1 s2) (cons (f (car s1) (car s2)) (zipwith f (cdr s1) (cdr s2))))").unwrap();
-    
-    // Fibonacci stream: fibs = 0 : 1 : zipWith (+) fibs (tail fibs)
-    // We use a simpler approach with explicit recursion
-    eval.eval_str("(define (fib-pair a b) (cons a (fib-pair b (+ a b))))").unwrap();
-    eval.eval_str("(define fibs (fib-pair 0 1))").unwrap();
-    
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car fibs)"), 0);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr fibs))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr fibs)))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr fibs))))"), 2);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr (cdr fibs)))))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr (cdr (cdr fibs))))))"), 5);
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
-// HYBRID EVALUATION EDGE CASES
+// FUNCTION COMPOSITION TESTS
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_hybrid_nested_calls() {
+fn test_nested_calls() {
     // Test behavior with nested function calls
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -732,8 +658,8 @@ fn test_hybrid_nested_calls() {
 }
 
 #[test]
-fn test_hybrid_higher_order() {
-    // Higher-order functions with hybrid evaluation
+fn test_higher_order() {
+    // Higher-order functions
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -745,7 +671,7 @@ fn test_hybrid_higher_order() {
 }
 
 #[test]
-fn test_hybrid_currying() {
+fn test_currying() {
     // Curried functions
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -759,21 +685,17 @@ fn test_hybrid_currying() {
 }
 
 #[test]
-fn test_force_chain_memoization() {
-    // Verify that forcing a thunk memoizes the result
+fn test_repeated_access() {
+    // Verify repeated access returns same value
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create a computation stored in a cons
     eval.eval_str("(define p (cons (* 111 111) 0))").unwrap();
     
-    // First access forces and memoizes
+    // All accesses return the same pre-computed value
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 12321);
-    
-    // Second access should return memoized value
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 12321);
-    
-    // Third access
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car p)"), 12321);
 }
 
@@ -1056,7 +978,7 @@ fn test_cons_comprehensive() {
     let result = eval.eval_str("(cons 1 2)").unwrap();
     assert!(lisp.get(result).unwrap().is_cons());
     
-    // Cons to nil creates proper list - use car to force
+    // Cons to nil creates proper list
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cons 1 '()))"), 1);
 }
 
@@ -1069,7 +991,7 @@ fn test_list_comprehensive() {
     let result = eval.eval_str("(list)").unwrap();
     assert!(lisp.get(result).unwrap().is_nil());
     
-    // Single element - use car to force
+    // Single element
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (list 42))"), 42);
     
     // Multiple elements
@@ -1353,23 +1275,6 @@ fn test_error() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Memoization
-// ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-#[ignore = "requires memoization (removed in strict mode)"]
-fn test_memoize_explicit() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Explicitly memoize a function
-    eval.eval_str("(define slow-fib (lambda (n) (if (< n 2) n (+ (slow-fib (- n 1)) (slow-fib (- n 2))))))").unwrap();
-    eval.eval_str("(define fast-fib (memoize slow-fib))").unwrap();
-    
-    // Should work (memoization helps with repeated calls)
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(fast-fib 10)"), 55);
-}
-
 // ───────────────────────────────────────────────────────────────────────────
 // Lexical Closures - Additional Tests
 // ───────────────────────────────────────────────────────────────────────────
@@ -1412,95 +1317,23 @@ fn test_closure_captures_correct_env() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Lazy Evaluation - Additional Tests
+// List Processing Tests
 // ───────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_lazy_primes_sieve() {
+fn test_filter_multiples() {
     let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Sieve helper: filter out multiples
+    // Filter helper: filter out multiples
     eval.eval_str("(define (filter-multiples n stream) (cond ((null? stream) '()) ((= (mod (car stream) n) 0) (filter-multiples n (cdr stream))) (else (cons (car stream) (filter-multiples n (cdr stream))))))").unwrap();
     
     // Test filter-multiples on a finite list
     eval.eval_str("(define nums '(2 3 4 5 6 7 8 9 10))").unwrap();
     eval.eval_str("(define filtered (filter-multiples 2 nums))").unwrap();
     
-    // Check first element
+    // Check first element (filters out even numbers)
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car filtered)"), 3);
-}
-
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_iterate() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Iterate: generate infinite stream by repeatedly applying f
-    eval.eval_str("(define (iterate f x) (cons x (iterate f (f x))))").unwrap();
-    eval.eval_str("(define (add1 x) (+ x 1))").unwrap();
-    eval.eval_str("(define nats (iterate add1 0))").unwrap();
-    
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car nats)"), 0);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr nats))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr nats)))"), 2);
-}
-
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_lazy_cycle() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Create a simple repeating pattern
-    eval.eval_str("(define (repeat-ab) (cons 'a (cons 'b (repeat-ab))))").unwrap();
-    eval.eval_str("(define cycle (repeat-ab))").unwrap();
-    
-    let first = eval.eval_str("(car cycle)").unwrap();
-    assert!(lisp.symbol_matches(first, "a").unwrap());
-    
-    let second = eval.eval_str("(car (cdr cycle))").unwrap();
-    assert!(lisp.symbol_matches(second, "b").unwrap());
-    
-    let third = eval.eval_str("(car (cdr (cdr cycle)))").unwrap();
-    assert!(lisp.symbol_matches(third, "a").unwrap());
-}
-
-// ───────────────────────────────────────────────────────────────────────────
-// Infinite Streams - Additional Tests
-// ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_infinite_powers_of_two() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Powers of 2: 1, 2, 4, 8, 16, ...
-    eval.eval_str("(define (powers-of-2-from n) (cons n (powers-of-2-from (* n 2))))").unwrap();
-    eval.eval_str("(define powers (powers-of-2-from 1))").unwrap();
-    
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car powers)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr powers))"), 2);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr powers)))"), 4);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr powers))))"), 8);
-}
-
-#[test]
-#[ignore = "requires lazy evaluation (removed in strict mode)"]
-fn test_infinite_triangular_numbers() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Triangular numbers: 1, 3, 6, 10, 15, ...
-    eval.eval_str("(define (triangular n sum) (cons sum (triangular (+ n 1) (+ sum n 1))))").unwrap();
-    eval.eval_str("(define tris (triangular 1 1))").unwrap();
-    
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car tris)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr tris))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr tris)))"), 6);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (cdr tris))))"), 10);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1643,7 +1476,7 @@ fn test_stdlib_range() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Force range to test - it's lazy
+    // Test range function
     assert_eq!(eval_to_num(&lisp, &mut eval, "(length (range 0 5))"), 5);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (range 0 5))"), 0);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (range 0 5)))"), 1);
@@ -1782,28 +1615,6 @@ fn test_pitfall_zero_is_truthy() {
     
     // 0 is truthy (unlike C/Python)
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if 0 1 2)"), 1);  // Takes then branch
-}
-
-/// PITFALL: Lazy evaluation means side effects may not happen when expected
-#[test]
-#[ignore = "tests lazy side effects behavior (changed in strict mode)"]
-fn test_pitfall_lazy_side_effects() {
-    let lisp: Lisp<2000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define a counter to track side effects
-    eval.eval_str("(define count 0)").unwrap();
-    eval.eval_str("(define (side-effect! x) (set! count (+ count 1)) x)").unwrap();
-    
-    // Build a lazy list - side effects don't happen yet!
-    eval.eval_str("(define lst (cons (side-effect! 1) (cons (side-effect! 2) '())))").unwrap();
-    
-    // Count is still 0 - cons is lazy!
-    assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 0);
-    
-    // Only when we force the elements do side effects happen
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(car lst)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "count"), 1);  // Now side effect happened
 }
 
 /// PITFALL: StdLib functions parse their body on each call (minor overhead)

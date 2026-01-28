@@ -7,7 +7,7 @@ This document describes the architecture, design decisions, and implementation d
 This is a classic Lisp implementation with modern features:
 
 - **Lexically scoped closures** with proper environments
-- **Hybrid lazy/strict evaluation** - lazy by default, strict in tail position
+- **Strict evaluation** - all arguments are evaluated before function application (call-by-value)
 - **Full tail-call optimization** via trampolining
 - **Mark-and-sweep garbage collection** controllable from Lisp
 - **Macros** with quasiquote/unquote
@@ -46,8 +46,6 @@ pub enum Value {
     Cons { car: ArenaIndex, cdr: ArenaIndex },
     Symbol { chars: ArenaIndex, len: usize },
     Lambda { params: ArenaIndex, body: ArenaIndex, env: ArenaIndex },
-    Thunk { expr: ArenaIndex, env: ArenaIndex, cached: ArenaIndex },
-    Memo { func: ArenaIndex, cache: ArenaIndex },
     Builtin(Builtin),                      // Optimized primitives
     StdLib { func: StdLib, cached_body: ArenaIndex, cached_params: ArenaIndex },
     Array { data: ArenaIndex, len: usize }, // Contiguous value storage
@@ -102,49 +100,47 @@ Arrays use contiguous storage for efficient access:
 
 ## Evaluation Strategy
 
-### Hybrid Lazy/Strict
+### Strict Evaluation (Call-by-Value)
 
-We use a hybrid approach that combines the benefits of lazy and strict evaluation:
+This Lisp uses **strict evaluation**: all arguments are evaluated before a function is applied. This is the standard evaluation strategy used by most programming languages.
 
-**Lazy (call-by-need)**:
-- `cons` is lazy - arguments become thunks
-- Enables infinite data structures
-- Values are memoized after first evaluation
-
-**Strict (call-by-value)**:
-- Tail calls evaluate arguments strictly
-- Enables proper tail-call optimization
-- Builtins force arguments in strict positions (arithmetic, comparisons, etc.)
+**Key characteristics**:
+- All function arguments are evaluated before the function body executes
+- `cons` evaluates both car and cdr before constructing the pair
+- Side effects in arguments happen immediately
+- Enables efficient tail-call optimization
 
 ```lisp
-; LAZY: cons wraps arguments in thunks
-(define (ones) (cons 1 (ones)))  ; Works! Infinite stream
-(car (ones))                      ; Forces only the car
+; Arguments are evaluated before function application
+(define (add x y) (+ x y))
+(add (+ 1 2) (+ 3 4))  ; Both args evaluated first, then add is called
 
-; STRICT: Tail calls evaluate strictly
+; Side effects happen immediately
+(define count 0)
+(define lst (cons (begin (set! count 1) 'a) '()))
+count  ; => 1 (side effect happened during cons)
+
+; Tail-call optimization works properly
 (define (sum n acc)
   (if (= n 0) acc
       (sum (- n 1) (+ acc n))))  ; Args evaluated before recursive call
+(sum 10000 0)  ; => 50005000 (no stack overflow)
 ```
 
-### Thunk Representation
+### Short-Circuit Evaluation
 
-Thunks represent delayed computations:
+Special forms like `if`, `and`, and `or` use short-circuit evaluation:
 
-```rust
-Thunk {
-    expr: ArenaIndex,    // Unevaluated expression
-    env: ArenaIndex,     // Environment for evaluation
-    cached: ArenaIndex,  // NULL until forced, then cached result
-}
+```lisp
+; 'if' only evaluates the selected branch
+(if #t 'yes (error "never reached"))  ; => yes
+
+; 'and' stops at first false
+(and #f (error "never reached"))  ; => #f
+
+; 'or' stops at first true  
+(or #t (error "never reached"))  ; => #t
 ```
-
-When forced:
-1. Evaluate `expr` in `env`
-2. Store result in `cached`
-3. Return the cached value
-
-Subsequent accesses return `cached` directly (memoization).
 
 ## Trampolined Evaluation
 
@@ -153,15 +149,13 @@ The evaluator uses continuation-passing style with an explicit stack, avoiding R
 ```rust
 enum TrampolineState {
     Eval { expr: ArenaIndex, env: ArenaIndex },
-    Force { idx: ArenaIndex },
     Return { val: ArenaIndex },
 }
 
 enum Cont {
     Done,
-    Force,
     IfBranch { then_expr, else_expr, env },
-    ApplyForced { args_expr, env, call_expr },
+    ApplyArgs { args_expr, env, call_expr },
     // ... many more continuations
 }
 ```
@@ -173,10 +167,6 @@ loop {
     match state {
         Eval { expr, env } => {
             // Analyze expr, push continuations, set new state
-        }
-        Force { idx } => {
-            // If thunk, push CacheThunk continuation and eval
-            // Otherwise, return the value
         }
         Return { val } => {
             // Pop continuation and process
@@ -204,7 +194,7 @@ Special forms are handled directly by the evaluator, not as functions:
 | Form | Description |
 |------|-------------|
 | `quote` | Return expression unevaluated |
-| `if` | Conditional (lazy in branches) |
+| `if` | Conditional (only selected branch evaluated) |
 | `cond` | Multi-way conditional |
 | `case` | Pattern matching on values |
 | `lambda` | Create closure |
@@ -319,14 +309,6 @@ During evaluation, the following are GC roots:
 
 ## Design Trade-offs
 
-### Thunk Evaluation Stack Limits
-
-Thunk forcing uses Rust stack recursion, limiting deep lazy chains:
-
-**Trade-off**: Deeply nested thunks (e.g., long chains of lazy `cons` calls) can overflow the Rust stack.
-
-**Mitigation**: Use tail-recursive patterns for deep recursion; avoid deeply nested lazy structures. Consider forcing intermediate values to break up long thunk chains.
-
 ### Fixed Continuation Stack
 
 **Trade-off**: Continuation stack has fixed size (`MAX_CONT_DEPTH = 1024`).
@@ -351,16 +333,14 @@ Thunk forcing uses Rust stack recursion, limiting deep lazy chains:
 
 ## Gotchas
 
-### 1. Lazy Side Effects
+### 1. Nil is Truthy
 
-Side effects in lazy positions may not execute when expected:
+In this Lisp, only `#f` is false. `nil`/`()` is the empty list and is truthy:
 
 ```lisp
-(define count 0)
-(define x (cons (begin (set! count 1) 'a) '()))
-count  ; => 0 (cons is lazy!)
-(car x)
-count  ; => 1 (now the side effect ran)
+(if nil 'yes 'no)   ; => yes
+(if '() 'yes 'no)   ; => yes
+(if #f 'yes 'no)    ; => no (only #f is false)
 ```
 
 ### 2. Macro Hygiene
@@ -389,4 +369,3 @@ StdLib functions cache their parsed body after first call. The initial parse hap
 2. **Batch allocations** - GC runs when explicitly triggered or when `alloc_or_gc` is used
 3. **Disable GC for batch ops** - `(gc-disable)` during many allocations, then `(gc-enable)` and `(gc)`
 4. **Prefer builtins** - Builtins are faster than equivalent lambdas
-5. **Memoize expensive functions** - Use `(memoize fn)` for functions with repeated calls

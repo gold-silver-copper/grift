@@ -1006,7 +1006,7 @@ impl<const N: usize> Lisp<N> {
     
     /// Allocate a stdlib function
     /// 
-    /// StdLib functions are stored in static memory with lazy caching.
+    /// StdLib functions are stored in static memory with on-demand parsing.
     /// The function body is parsed on first call and cached for reuse.
     #[inline]
     pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {

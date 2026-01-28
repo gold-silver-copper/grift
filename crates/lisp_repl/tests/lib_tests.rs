@@ -125,15 +125,14 @@ fn test_closures() {
 
 #[test]
 fn test_list_operations() {
-    // NOTE: Lazy evaluation limits recursion depth
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Define length - works on small lists
+    // Define length
     eval.eval_str("(define (length lst) (if (null? lst) 0 (+ 1 (length (cdr lst)))))").unwrap();
     assert_eq!(eval_to_string(&lisp, &mut eval, "(length '(1 2 3))").unwrap(), "3");
     
-    // Define append - small lists
+    // Define append
     eval.eval_str("(define (append a b) (if (null? a) b (cons (car a) (append (cdr a) b))))").unwrap();
     assert_eq!(eval_to_string(&lisp, &mut eval, "(append '(1 2) '(3))").unwrap(), "(1 2 3)");
 }
@@ -145,7 +144,6 @@ fn test_map() {
     
     eval.eval_str("(define (map f lst) (if (null? lst) '() (cons (f (car lst)) (map f (cdr lst)))))").unwrap();
     eval.eval_str("(define (square x) (* x x))").unwrap();
-    // Small list to avoid thunk accumulation
     assert_eq!(eval_to_string(&lisp, &mut eval, "(map square '(1 2 3))").unwrap(), "(1 4 9)");
 }
 
