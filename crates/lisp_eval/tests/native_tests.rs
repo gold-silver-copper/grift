@@ -1,5 +1,5 @@
 use lisp_eval::native::*;
-use lisp_eval::{Lisp, define_native};
+use lisp_eval::{Lisp, register_native};
 use pwn_arena::{ArenaIndex, ArenaResult};
 
 #[test]
@@ -96,13 +96,13 @@ fn test_count_args() {
     assert_eq!(count_args(&lisp, l1).unwrap(), 3);
 }
 
-// Test the define_native! macro
-define_native!(native_add_one, (x: isize) -> isize, { x + 1 });
-define_native!(native_add, (a: isize, b: isize) -> isize, { a + b });
-define_native!(native_const, () -> isize, { 42 });
+// Test the register_native! macro
+register_native!(native_add_one, (x: isize) -> isize, { x + 1 });
+register_native!(native_add, (a: isize, b: isize) -> isize, { a + b });
+register_native!(native_const, () -> isize, { 42 });
 
 // Test the @with_lisp variant - the body can access lisp and remaining args
-define_native!(native_bit_check @with_lisp, (value: isize, bit: isize) -> bool, {
+register_native!(native_bit_check @with_lisp, (value: isize, bit: isize) -> bool, {
     if bit >= 0 && bit < 64 {
         (value & (1isize << bit)) != 0
     } else {
@@ -111,12 +111,12 @@ define_native!(native_bit_check @with_lisp, (value: isize, bit: isize) -> bool, 
 });
 
 // Test three-arg @with_lisp variant
-define_native!(native_clamp @with_lisp, (value: isize, min: isize, max: isize) -> isize, {
+register_native!(native_clamp @with_lisp, (value: isize, min: isize, max: isize) -> isize, {
     if value < min { min } else if value > max { max } else { value }
 });
 
 #[test]
-fn test_define_native_macro() {
+fn test_register_native_macro() {
     let lisp: Lisp<100> = Lisp::new();
     
     // Test no-arg function
@@ -140,7 +140,7 @@ fn test_define_native_macro() {
 }
 
 #[test]
-fn test_define_native_with_lisp() {
+fn test_register_native_with_lisp() {
     let lisp: Lisp<100> = Lisp::new();
     let nil = lisp.nil().unwrap();
     
@@ -170,7 +170,7 @@ fn test_define_native_with_lisp() {
 }
 
 #[test]
-fn test_define_native_with_lisp_three_args() {
+fn test_register_native_with_lisp_three_args() {
     let lisp: Lisp<100> = Lisp::new();
     let nil = lisp.nil().unwrap();
     
@@ -204,11 +204,10 @@ fn test_define_native_with_lisp_three_args() {
 }
 
 // ============================================================================
-// Tests for define_native_stateful! macro
+// Tests for register_native! macro with stateful functions
 // ============================================================================
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use lisp_eval::define_native_stateful;
 
 // Separate static variables for each test to avoid race conditions
 static COUNTER_NO_ARGS: AtomicUsize = AtomicUsize::new(0);
@@ -217,7 +216,7 @@ static COUNTER_TWO_ARGS: AtomicUsize = AtomicUsize::new(0);
 static COUNTER_EVALUATOR: AtomicUsize = AtomicUsize::new(0);
 
 // Test zero-argument stateful function
-define_native_stateful!(
+register_native!(
     native_increment_counter,
     () -> isize,
     {
@@ -226,7 +225,7 @@ define_native_stateful!(
 );
 
 // Test single-argument stateful function
-define_native_stateful!(
+register_native!(
     native_add_to_counter,
     (n: isize) -> isize,
     {
@@ -235,7 +234,7 @@ define_native_stateful!(
 );
 
 // Test two-argument stateful function
-define_native_stateful!(
+register_native!(
     native_set_counter_if_less,
     (threshold: isize, new_val: isize) -> isize,
     {
@@ -250,7 +249,7 @@ define_native_stateful!(
 );
 
 // Functions for evaluator test
-define_native_stateful!(
+register_native!(
     native_eval_inc,
     () -> isize,
     {
@@ -258,7 +257,7 @@ define_native_stateful!(
     }
 );
 
-define_native_stateful!(
+register_native!(
     native_eval_add,
     (n: isize) -> isize,
     {
@@ -267,7 +266,7 @@ define_native_stateful!(
 );
 
 #[test]
-fn test_define_native_stateful_no_args() {
+fn test_register_native_stateful_no_args() {
     // Reset counter for this test
     COUNTER_NO_ARGS.store(0, Ordering::Relaxed);
     
@@ -288,7 +287,7 @@ fn test_define_native_stateful_no_args() {
 }
 
 #[test]
-fn test_define_native_stateful_one_arg() {
+fn test_register_native_stateful_one_arg() {
     // Reset counter for this test
     COUNTER_ONE_ARG.store(0, Ordering::Relaxed);
     
@@ -312,7 +311,7 @@ fn test_define_native_stateful_one_arg() {
 }
 
 #[test]
-fn test_define_native_stateful_two_args() {
+fn test_register_native_stateful_two_args() {
     // Reset counter for this test
     COUNTER_TWO_ARGS.store(5, Ordering::Relaxed);
     
@@ -338,7 +337,7 @@ fn test_define_native_stateful_two_args() {
 }
 
 #[test]
-fn test_define_native_stateful_with_evaluator() {
+fn test_register_native_stateful_with_evaluator() {
     // Reset counter for this test
     COUNTER_EVALUATOR.store(0, Ordering::Relaxed);
     
@@ -366,7 +365,7 @@ fn test_define_native_stateful_with_evaluator() {
 }
 
 // ============================================================================
-// Tests for simplified define_native_stateful!
+// Tests for simplified register_native!
 // ============================================================================
 
 // Static variables for simplified tests
@@ -374,7 +373,7 @@ static SIMPLE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static SECONDARY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // Test simplified syntax
-define_native_stateful!(
+register_native!(
     native_simple_inc,
     () -> isize,
     {
@@ -383,7 +382,7 @@ define_native_stateful!(
 );
 
 // Test accessing multiple statics in one function
-define_native_stateful!(
+register_native!(
     native_multi_static,
     () -> isize,
     {
@@ -394,7 +393,7 @@ define_native_stateful!(
 );
 
 // Test simplified syntax with one argument
-define_native_stateful!(
+register_native!(
     native_simple_add,
     (n: isize) -> isize,
     {
@@ -403,7 +402,7 @@ define_native_stateful!(
 );
 
 // Test simplified syntax with two arguments
-define_native_stateful!(
+register_native!(
     native_simple_set_if_greater,
     (threshold: isize, new_val: isize) -> isize,
     {

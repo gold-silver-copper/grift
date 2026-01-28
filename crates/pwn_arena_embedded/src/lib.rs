@@ -43,7 +43,7 @@
 #![forbid(unsafe_code)]
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use lisp_eval::{Evaluator, EvalError, define_native_stateful};
+use lisp_eval::{Evaluator, EvalError, register_native};
 
 // ============================================================================
 // Mock Memory/Register Storage using Atomics
@@ -78,7 +78,7 @@ static MOCK_GPIO: [AtomicUsize; MOCK_GPIO_COUNT] = {
 
 // In the mock implementation, addresses are mapped to a 1KB buffer.
 // Negative addresses are treated as unsigned values (wrapped).
-define_native_stateful!(
+register_native!(
     native_peek,
     (addr: isize) -> isize,
     {
@@ -96,7 +96,7 @@ define_native_stateful!(
 
 // In the mock implementation, addresses are mapped to a 1KB buffer.
 // Negative addresses are treated as unsigned values (wrapped).
-define_native_stateful!(
+register_native!(
     native_poke,
     (addr: isize, value: isize) -> isize,
     {
@@ -120,7 +120,7 @@ define_native_stateful!(
 // Lisp signature: `(peek32 address) -> value`
 
 // Negative addresses are treated as unsigned values (wrapped).
-define_native_stateful!(
+register_native!(
     native_peek32,
     (addr: isize) -> isize,
     {
@@ -134,7 +134,7 @@ define_native_stateful!(
 // Lisp signature: `(poke32 address value) -> value`
 
 // Negative addresses are treated as unsigned values (wrapped).
-define_native_stateful!(
+register_native!(
     native_poke32,
     (addr: isize, value: isize) -> isize,
     {
@@ -153,7 +153,7 @@ define_native_stateful!(
 // Lisp signature: `(gpio-read register) -> value`
 
 // Register is an index (0-15) into the GPIO register array.
-define_native_stateful!(
+register_native!(
     native_gpio_read,
     (reg: isize) -> isize,
     {
@@ -168,7 +168,7 @@ define_native_stateful!(
 // GPIO Write: Write to a GPIO register.
 
 // Lisp signature: `(gpio-write register value) -> value`
-define_native_stateful!(
+register_native!(
     native_gpio_write,
     (reg: isize, value: isize) -> isize,
     {
@@ -182,7 +182,7 @@ define_native_stateful!(
 // GPIO Set Bit: Set a specific bit in a GPIO register.
 
 // Lisp signature: `(gpio-set register bit) -> new-value`
-define_native_stateful!(
+register_native!(
     native_gpio_set,
     (reg: isize, bit: isize) -> isize,
     {
@@ -199,7 +199,7 @@ define_native_stateful!(
 // GPIO Clear Bit: Clear a specific bit in a GPIO register.
 
 // Lisp signature: `(gpio-clear register bit) -> new-value`
-define_native_stateful!(
+register_native!(
     native_gpio_clear,
     (reg: isize, bit: isize) -> isize,
     {
@@ -216,7 +216,7 @@ define_native_stateful!(
 // GPIO Toggle Bit: Toggle a specific bit in a GPIO register.
 
 // Lisp signature: `(gpio-toggle register bit) -> new-value`
-define_native_stateful!(
+register_native!(
     native_gpio_toggle,
     (reg: isize, bit: isize) -> isize,
     {
@@ -234,11 +234,9 @@ define_native_stateful!(
 // Utility Functions
 // ============================================================================
 
-use lisp_eval::define_native;
-
 // Bit Set: Check if a bit is set in a value.
 // Lisp signature: `(bit-set? value bit) -> #t/#f`
-define_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
+register_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
     if bit >= 0 && bit < 64 {
         (value & (1isize << bit)) != 0
     } else {
@@ -248,7 +246,7 @@ define_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
 
 // Bit Extract: Extract bits from a value.
 // Lisp signature: `(bit-extract value start width) -> extracted-bits`
-define_native!(native_bit_extract, (value: isize, start: isize, width: isize) -> isize, {
+register_native!(native_bit_extract, (value: isize, start: isize, width: isize) -> isize, {
     // Validate that start and width are in valid ranges and don't cause overflow
     if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
@@ -260,7 +258,7 @@ define_native!(native_bit_extract, (value: isize, start: isize, width: isize) ->
 
 // Bit Insert: Insert bits into a value.
 // Lisp signature: `(bit-insert value insert start width) -> new-value`
-define_native!(native_bit_insert, (value: isize, insert: isize, start: isize, width: isize) -> isize, {
+register_native!(native_bit_insert, (value: isize, insert: isize, start: isize, width: isize) -> isize, {
     // Validate that start and width are in valid ranges and don't cause overflow
     if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
