@@ -1,13 +1,14 @@
-use pwn_arena_embedded::*;
+//! Tests for embedded hardware functions
+//!
+//! Note: These functions are now built into lisp_eval as core builtins.
+//! No registration is needed - they're available immediately.
+
 use lisp_eval::{Lisp, Evaluator};
 
 #[test]
 fn test_peek_poke() {
-    reset_mock_hardware();
-    
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
     // Write a value
     let result = eval.eval_str("(poke 0 42)").unwrap();
@@ -20,11 +21,8 @@ fn test_peek_poke() {
 
 #[test]
 fn test_peek_poke_32() {
-    reset_mock_hardware();
-    
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
     // Write a 32-bit value (305419896 = 0x12345678)
     let result = eval.eval_str("(poke32 100 305419896)").unwrap();
@@ -37,11 +35,8 @@ fn test_peek_poke_32() {
 
 #[test]
 fn test_gpio_read_write() {
-    reset_mock_hardware();
-    
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
     // Write to GPIO register 0
     let result = eval.eval_str("(gpio-write 0 255)").unwrap();
@@ -54,15 +49,11 @@ fn test_gpio_read_write() {
 
 #[test]
 fn test_gpio_bit_operations() {
-    reset_mock_hardware();
-    
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
-    // Use GPIO register 1 instead of 0 to avoid conflicts with test_gpio_read_write
-    // which uses register 0. This prevents race conditions when tests run in parallel.
-    let gpio_reg = 1;
+    // Use GPIO register 2 to avoid conflicts with other tests
+    let gpio_reg = 2;
     
     // Explicitly clear GPIO register to ensure clean state
     let _ = eval.eval_str(&format!("(gpio-write {} 0)", gpio_reg)).unwrap();
@@ -92,7 +83,6 @@ fn test_gpio_bit_operations() {
 fn test_bit_set() {
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
     // Check bit 0 of 1
     let result = eval.eval_str("(bit-set? 1 0)").unwrap();
@@ -111,7 +101,6 @@ fn test_bit_set() {
 fn test_bit_extract() {
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
     // Extract 4 bits from position 4 of 43981 (0xABCD)
     // 0xABCD = 0b1010101111001101
@@ -124,7 +113,6 @@ fn test_bit_extract() {
 fn test_bit_insert() {
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
-    register_embedded_natives(&mut eval).unwrap();
     
     // Insert 15 (0xF) into bits 4-7 of 0
     // Result should be 0xF0 = 240

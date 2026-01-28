@@ -1,116 +1,96 @@
-//! # Native Function Interop Example
+//! # Lisp-Rust Interop Example
 //!
-//! This example demonstrates how to register Rust functions that can be
-//! called from Lisp code using the native function interop system.
+//! This example demonstrates how the Lisp evaluator works with built-in 
+//! functions, including the embedded hardware functions like peek/poke.
+//!
+//! Note: Native functions are now compiled into the evaluator at build time.
+//! All functions (including peek, poke, GPIO operations, and bit manipulation)
+//! are available as built-in functions without runtime registration.
 //!
 //! Run with: `cargo run --example native_interop`
 
-use lisp_eval::{
-    Lisp, Evaluator, ArenaIndex, ArenaResult, ToLisp, extract_arg,
-};
-
-/// A simple native function that doubles a number.
-///
-/// This demonstrates the basic pattern for native functions:
-/// 1. Extract arguments from the args list
-/// 2. Perform computation
-/// 3. Return result via ToLisp
-fn native_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (isize, _) = extract_arg(lisp, args)?;
-    (x * 2).to_lisp(lisp)
-}
-
-/// A native function that computes the maximum of two numbers.
-fn native_max<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (a, rest): (isize, _) = extract_arg(lisp, args)?;
-    let (b, _rest): (isize, _) = extract_arg(lisp, rest)?;
-    (if a > b { a } else { b }).to_lisp(lisp)
-}
-
-/// A native function that returns whether a number is even.
-fn native_evenp<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (isize, _) = extract_arg(lisp, args)?;
-    (x % 2 == 0).to_lisp(lisp)
-}
-
-/// A native function that squares a number.
-fn native_square<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (isize, _) = extract_arg(lisp, args)?;
-    (x * x).to_lisp(lisp)
-}
-
-/// A native function that clamps a value to a range.
-fn native_clamp<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (value, rest): (isize, _) = extract_arg(lisp, args)?;
-    let (min_val, rest): (isize, _) = extract_arg(lisp, rest)?;
-    let (max_val, _rest): (isize, _) = extract_arg(lisp, rest)?;
-    
-    let clamped = if value < min_val {
-        min_val
-    } else if value > max_val {
-        max_val
-    } else {
-        value
-    };
-    
-    clamped.to_lisp(lisp)
-}
+use lisp_eval::{Lisp, Evaluator};
 
 fn main() {
-    println!("=== Native Function Interop Example ===\n");
+    println!("=== Lisp-Rust Interop Example ===\n");
     
     // Create a Lisp context with a 10,000 cell arena
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Register native functions
-    eval.register_native("double", native_double).unwrap();
-    eval.register_native("my-max", native_max).unwrap();
-    eval.register_native("even?", native_evenp).unwrap();
-    eval.register_native("square", native_square).unwrap();
-    eval.register_native("clamp", native_clamp).unwrap();
+    println!("All functions are available as built-ins - no registration needed!\n");
     
-    println!("Registered native functions: double, my-max, even?, square, clamp\n");
-    
-    // Test the native functions
-    let tests = [
-        ("(double 21)", "Doubling 21"),
-        ("(my-max 5 10)", "Max of 5 and 10"),
-        ("(my-max 100 50)", "Max of 100 and 50"),
-        ("(even? 4)", "Is 4 even?"),
-        ("(even? 7)", "Is 7 even?"),
-        ("(square 8)", "Square of 8"),
-        ("(clamp 50 0 100)", "Clamp 50 to [0, 100]"),
-        ("(clamp -10 0 100)", "Clamp -10 to [0, 100]"),
-        ("(clamp 150 0 100)", "Clamp 150 to [0, 100]"),
-        ("(+ 10 9)", "Simple addition"),
-        ("(double 5)", "Double 5"),
-        ("(square 3)", "Square 3"),
+    // Test basic arithmetic (core builtins)
+    let basic_tests = [
+        ("(+ 10 20 30)", "Addition"),
+        ("(* 5 6)", "Multiplication"),
+        ("(- 100 42)", "Subtraction"),
+        ("(/ 42 6)", "Division"),
+        ("(mod 17 5)", "Modulo"),
     ];
     
-    for (expr, desc) in tests {
-        match eval.eval_str(expr) {
-            Ok(result) => {
-                let value = lisp.get(result).unwrap();
-                println!("{}: {} => {:?}", desc, expr, value);
-            }
-            Err(e) => {
-                println!("{}: {} => ERROR: {:?}", desc, expr, e.kind);
-            }
-        }
+    println!("--- Basic Arithmetic ---\n");
+    for (expr, desc) in basic_tests {
+        run_test(&mut eval, &lisp, expr, desc);
     }
     
-    println!("\n--- Using native functions in Lisp expressions ---\n");
-    
-    // More complex expressions using native functions
-    let complex_tests = [
-        "(+ (double 5) (square 3))", // 10 + 9 = 19
-        "(if (even? 10) 'yes 'no)",  // yes
-        "(my-max (square 5) (double 12))", // max(25, 24) = 25
-        "(define (double-then-square x) (square (double x)))",
-        "(double-then-square 3)", // square(6) = 36
+    // Test predicates
+    let predicate_tests = [
+        ("(null? '())", "Is empty list null?"),
+        ("(pair? '(1 2))", "Is (1 2) a pair?"),
+        ("(number? 42)", "Is 42 a number?"),
+        ("(symbol? 'hello)", "Is 'hello a symbol?"),
     ];
     
+    println!("\n--- Predicates ---\n");
+    for (expr, desc) in predicate_tests {
+        run_test(&mut eval, &lisp, expr, desc);
+    }
+    
+    // Test embedded hardware functions (mock implementation)
+    let embedded_tests = [
+        ("(poke 0 42)", "Write 42 to address 0"),
+        ("(peek 0)", "Read from address 0"),
+        ("(poke32 4 0x12345678)", "Write 32-bit word"),
+        ("(peek32 4)", "Read 32-bit word"),
+        ("(gpio-write 0 255)", "Write 255 to GPIO register 0"),
+        ("(gpio-read 0)", "Read GPIO register 0"),
+        ("(gpio-set 1 0)", "Set bit 0 in GPIO register 1"),
+        ("(gpio-read 1)", "Read GPIO register 1"),
+    ];
+    
+    println!("\n--- Embedded Hardware Functions (Mock) ---\n");
+    for (expr, desc) in embedded_tests {
+        run_test(&mut eval, &lisp, expr, desc);
+    }
+    
+    // Test bit manipulation functions
+    let bit_tests = [
+        ("(bit-set? 5 0)", "Is bit 0 set in 5? (5 = 0b101)"),
+        ("(bit-set? 5 1)", "Is bit 1 set in 5?"),
+        ("(bit-set? 5 2)", "Is bit 2 set in 5?"),
+        ("(bit-extract 0xFF 4 4)", "Extract high nibble from 0xFF"),
+        ("(bit-insert 0 0xF 4 4)", "Insert 0xF at bit position 4"),
+    ];
+    
+    println!("\n--- Bit Manipulation ---\n");
+    for (expr, desc) in bit_tests {
+        run_test(&mut eval, &lisp, expr, desc);
+    }
+    
+    // Test using builtins in more complex expressions
+    let complex_tests = [
+        "(define (double x) (* x 2))",
+        "(double 21)",
+        "(define (square x) (* x x))",
+        "(square 8)",
+        "(define (clamp val lo hi) (if (< val lo) lo (if (> val hi) hi val)))",
+        "(clamp 50 0 100)",
+        "(clamp -10 0 100)",
+        "(clamp 150 0 100)",
+    ];
+    
+    println!("\n--- User-Defined Functions ---\n");
     for expr in complex_tests {
         match eval.eval_str(expr) {
             Ok(result) => {
@@ -124,4 +104,16 @@ fn main() {
     }
     
     println!("\n=== Example Complete ===");
+}
+
+fn run_test<const N: usize>(eval: &mut Evaluator<N>, lisp: &Lisp<N>, expr: &str, desc: &str) {
+    match eval.eval_str(expr) {
+        Ok(result) => {
+            let value = lisp.get(result).unwrap();
+            println!("{}: {} => {:?}", desc, expr, value);
+        }
+        Err(e) => {
+            println!("{}: {} => ERROR: {:?}", desc, expr, e.kind);
+        }
+    }
 }

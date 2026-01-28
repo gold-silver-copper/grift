@@ -1,27 +1,22 @@
 //! # Embedded Hardware Access Example
 //!
-//! This example demonstrates how to use the pwn_arena_embedded crate
-//! to access simulated hardware registers and memory from Lisp code.
+//! This example demonstrates how to access simulated hardware registers
+//! and memory from Lisp code using the built-in embedded functions.
+//!
+//! Note: These functions are now built into lisp_eval - no registration needed!
 //!
 //! Run with: `cargo run --example embedded_hardware`
 
 use lisp_eval::{Lisp, Evaluator};
-use pwn_arena_embedded::{register_embedded_natives, reset_mock_hardware};
 
 fn main() {
     println!("=== Embedded Hardware Access Example ===\n");
-    
-    // Reset mock hardware to a known state
-    reset_mock_hardware();
     
     // Create a Lisp context with a 10,000 cell arena
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Register all embedded native functions
-    register_embedded_natives(&mut eval).unwrap();
-    
-    println!("Registered embedded functions:");
+    println!("All embedded functions are built-in - no registration needed!");
     println!("  Memory: peek, poke, peek32, poke32");
     println!("  GPIO: gpio-read, gpio-write, gpio-set, gpio-clear, gpio-toggle");
     println!("  Bits: bit-set?, bit-extract, bit-insert\n");
@@ -114,6 +109,9 @@ fn main() {
     
     println!("\n--- Practical Example: LED Control ---\n");
     
+    // Reset GPIO 1 for LED demo (using register 1 to not conflict with earlier tests)
+    let _ = eval.eval_str("(gpio-write 1 0)");
+    
     // Define some helper functions in Lisp
     let setup = r#"
         ; Define LED pins
@@ -121,11 +119,11 @@ fn main() {
         (define LED-GREEN 1)
         (define LED-BLUE 2)
         
-        ; LED control functions
-        (define (led-on led) (gpio-set 0 led))
-        (define (led-off led) (gpio-clear 0 led))
-        (define (led-toggle led) (gpio-toggle 0 led))
-        (define (leds-state) (gpio-read 0))
+        ; LED control functions (using GPIO register 1)
+        (define (led-on led) (gpio-set 1 led))
+        (define (led-off led) (gpio-clear 1 led))
+        (define (led-toggle led) (gpio-toggle 1 led))
+        (define (leds-state) (gpio-read 1))
     "#;
     
     // Execute setup
@@ -138,9 +136,6 @@ fn main() {
     
     println!("  Defined LED pins: RED=0, GREEN=1, BLUE=2");
     println!("  Defined functions: led-on, led-off, led-toggle, leds-state\n");
-    
-    // Reset GPIO before LED demo
-    reset_mock_hardware();
     
     let led_tests = [
         ("(leds-state)", "Initial state"),
