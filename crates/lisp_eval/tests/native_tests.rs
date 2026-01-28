@@ -514,6 +514,8 @@ fn native_make_pair<const N: usize>(
 }
 
 // Regular function that processes remaining args (variadic-like)
+// Note: This is a simplified implementation that silently skips non-numbers.
+// A production implementation should use isize::from_lisp() to error on type mismatch.
 fn native_sum_all<const N: usize>(
     lisp: &Lisp<N>,
     args: ArenaIndex,
@@ -775,6 +777,7 @@ fn native_not<const N: usize>(
 }
 
 // Native implementation of + (variadic addition)
+// Note: Simplified - silently skips non-numbers. Use isize::from_lisp() for strict typing.
 fn native_add_variadic<const N: usize>(
     lisp: &Lisp<N>,
     args: ArenaIndex,
@@ -792,6 +795,7 @@ fn native_add_variadic<const N: usize>(
 }
 
 // Native implementation of * (variadic multiplication)
+// Note: Simplified - silently skips non-numbers. Use isize::from_lisp() for strict typing.
 fn native_mul<const N: usize>(
     lisp: &Lisp<N>,
     args: ArenaIndex,

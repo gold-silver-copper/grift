@@ -497,8 +497,11 @@ macro_rules! define_native {
     };
 
     // ========================================================================
-    // @with_lisp variants (body can access lisp context and args directly)
-    // These provide access to 'lisp' and 'args' for complex operations
+    // @with_lisp variants - Note: Due to Rust macro hygiene, the 'lisp' and 
+    // 'args' identifiers are NOT accessible in the macro body. These variants
+    // primarily allow extracted arguments to shadow 'args' for the remaining 
+    // argument list pattern, but for full lisp context access, use regular
+    // function definitions instead.
     // ========================================================================
 
     // No arguments, with lisp access
@@ -633,7 +636,7 @@ macro_rules! define_native_stateful {
     // ========================================================================
 
     // No arguments
-    ($name:ident, () -> $ret:ty, $body:tt) => {
+    ($name:ident, () -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             _args: $crate::ArenaIndex,
@@ -645,7 +648,7 @@ macro_rules! define_native_stateful {
     };
 
     // Single argument
-    ($name:ident, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -657,7 +660,7 @@ macro_rules! define_native_stateful {
     };
 
     // Two arguments
-    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -670,7 +673,7 @@ macro_rules! define_native_stateful {
     };
 
     // Three arguments
-    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -684,7 +687,7 @@ macro_rules! define_native_stateful {
     };
 
     // Four arguments
-    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -704,7 +707,7 @@ macro_rules! define_native_stateful {
     // ========================================================================
 
     // No arguments (legacy)
-    ($name:ident, static: $static_name:ident, () -> $ret:ty, $body:tt) => {
+    ($name:ident, static: $static_name:ident, () -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             _args: $crate::ArenaIndex,
@@ -716,7 +719,7 @@ macro_rules! define_native_stateful {
     };
 
     // Single argument (legacy)
-    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -729,7 +732,7 @@ macro_rules! define_native_stateful {
     };
 
     // Two arguments (legacy)
-    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -743,7 +746,7 @@ macro_rules! define_native_stateful {
     };
 
     // Three arguments (legacy)
-    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -758,7 +761,7 @@ macro_rules! define_native_stateful {
     };
 
     // Four arguments (legacy)
-    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
@@ -778,7 +781,7 @@ macro_rules! define_native_stateful {
     // ========================================================================
 
     // No arguments, with lisp access
-    ($name:ident @with_lisp, () -> $ret:ty, $body:tt) => {
+    ($name:ident @with_lisp, () -> $ret:ty, $body:block) => {
         #[allow(unused_variables)]
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
@@ -790,7 +793,7 @@ macro_rules! define_native_stateful {
     };
 
     // Single argument, with lisp access
-    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:block) => {
         #[allow(unused_variables)]
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
@@ -803,7 +806,7 @@ macro_rules! define_native_stateful {
     };
 
     // Two arguments, with lisp access
-    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:block) => {
         #[allow(unused_variables)]
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
@@ -817,7 +820,7 @@ macro_rules! define_native_stateful {
     };
 
     // Three arguments, with lisp access
-    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:block) => {
         #[allow(unused_variables)]
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
@@ -832,7 +835,7 @@ macro_rules! define_native_stateful {
     };
 
     // Four arguments, with lisp access
-    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:tt) => {
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:block) => {
         #[allow(unused_variables)]
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
