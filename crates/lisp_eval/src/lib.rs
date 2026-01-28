@@ -85,6 +85,7 @@
 pub use lisp_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    LambdaData, ThunkData,
 };
 
 // Native function interop
@@ -394,7 +395,8 @@ enum Cont {
     Force,
     
     /// Cache thunk result, then force the cached value
-    CacheThunk { thunk_idx: ArenaIndex, expr: ArenaIndex, env: ArenaIndex },
+    /// `data` is the ArenaIndex to the ThunkDataVal in the arena
+    CacheThunk { thunk_idx: ArenaIndex, data: ArenaIndex, expr: ArenaIndex, env: ArenaIndex },
     
     /// After forcing function, decide builtin vs lambda
     ApplyForced { args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex },
@@ -608,8 +610,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             match self.cont_stack[i] {
                 Cont::Done | Cont::Force => {}
-                Cont::CacheThunk { thunk_idx, expr, env } => {
+                Cont::CacheThunk { thunk_idx, data, expr, env } => {
                     roots[root_count] = thunk_idx; root_count += 1;
+                    roots[root_count] = data; root_count += 1;
                     roots[root_count] = expr; root_count += 1;
                     roots[root_count] = env; root_count += 1;
                 }
@@ -1003,7 +1006,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } | Value::Thunk { .. } |
-            Value::Memo { .. } | Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
+            Value::Memo { .. } | Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
+            Value::LambdaDataVal(_) | Value::ThunkDataVal(_) => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -1195,14 +1199,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let val = self.lisp.get(idx)?;
         
         match val {
-            Value::Thunk { expr, env, cached } => {
-                if !cached.is_null() {
+            Value::Thunk { data } => {
+                let thunk_data = match self.lisp.get(data)? {
+                    Value::ThunkDataVal(td) => td,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, idx).with_message("corrupted thunk data")),
+                };
+                if !thunk_data.cached.is_null() {
                     // Already cached - but might be a thunk, so force again
-                    Ok(TrampolineState::Force { idx: cached })
+                    Ok(TrampolineState::Force { idx: thunk_data.cached })
                 } else {
                     // Need to evaluate - push continuation to cache result
-                    self.push_cont(Cont::CacheThunk { thunk_idx: idx, expr, env })?;
-                    Ok(TrampolineState::Eval { expr, env })
+                    self.push_cont(Cont::CacheThunk { thunk_idx: idx, data, expr: thunk_data.expr, env: thunk_data.env })?;
+                    Ok(TrampolineState::Eval { expr: thunk_data.expr, env: thunk_data.env })
                 }
             }
             _ => {
@@ -1227,9 +1235,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Force { idx: val }))
             }
             
-            Cont::CacheThunk { thunk_idx, expr, env } => {
-                // Cache the result in the thunk
-                self.lisp.set(thunk_idx, Value::Thunk { expr, env, cached: val })?;
+            Cont::CacheThunk { thunk_idx: _, data, expr, env } => {
+                // Cache the result in the thunk by updating the ThunkDataVal
+                self.lisp.set(data, Value::ThunkDataVal(ThunkData { expr, env, cached: val }))?;
                 // Now force the result (it might be a thunk too)
                 Ok(Some(TrampolineState::Force { idx: val }))
             }
@@ -1255,9 +1263,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.pop_frame();
                         Ok(Some(result))
                     }
-                    Value::Lambda { params, body, env: closure_env } => {
+                    Value::Lambda { data } => {
                         // Lambda: STRICT - evaluate args and bind directly to params
                         // OPTIMIZED: No intermediate list building - binds params as we go
+                        let lambda_data = match self.lisp.get(data)? {
+                            Value::LambdaDataVal(ld) => ld,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, val).with_message("corrupted lambda data")),
+                        };
+                        let params = lambda_data.params;
+                        let body = lambda_data.body;
+                        let closure_env = lambda_data.env;
+                        
                         self.pop_frame();
                         
                         if self.lisp.get(args_expr)?.is_nil() {
@@ -1399,7 +1415,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let args = self.make_thunk_list(args_expr, env)?;
                         
                         // Look up the native function and call it
-                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
+                        if let Some(native_fn) = self.native_registry.lookup_by_id(id as usize) {
                             // Force all arguments before calling native function
                             let forced_args = self.force_args_list(args)?;
                             let result = native_fn(self.lisp, forced_args)?;
@@ -1484,9 +1500,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Apply the wrapped function with the collected args
                         // We need to call it like a normal function application
                         match self.lisp.get(func)? {
-                            Value::Lambda { params, body, env: closure_env } => {
-                                let new_env = self.bind_params(params, args, closure_env, call_expr)?;
-                                Ok(Some(TrampolineState::Eval { expr: body, env: new_env }))
+                            Value::Lambda { data } => {
+                                let lambda_data = match self.lisp.get(data)? {
+                                    Value::LambdaDataVal(ld) => ld,
+                                    _ => return Err(self.make_error(ErrorKind::TypeError, func).with_message("corrupted lambda data")),
+                                };
+                                let new_env = self.bind_params(lambda_data.params, args, lambda_data.env, call_expr)?;
+                                Ok(Some(TrampolineState::Eval { expr: lambda_data.body, env: new_env }))
                             }
                             Value::Builtin(b) => {
                                 let result = self.apply_builtin_with_forced_args(b, args, call_expr)?;
@@ -2565,14 +2585,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn force_value(&mut self, mut idx: ArenaIndex) -> EvalResult {
         loop {
             match self.lisp.get(idx)? {
-                Value::Thunk { expr, env, cached } => {
-                    if !cached.is_null() {
-                        idx = cached;
+                Value::Thunk { data } => {
+                    let thunk_data = match self.lisp.get(data)? {
+                        Value::ThunkDataVal(td) => td,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, idx).with_message("corrupted thunk data")),
+                    };
+                    if !thunk_data.cached.is_null() {
+                        idx = thunk_data.cached;
                         continue;
                     }
                     // Evaluate the thunk, preserving the continuation stack
-                    let result = self.eval_preserving_stack(expr, env)?;
-                    self.lisp.set(idx, Value::Thunk { expr, env, cached: result })?;
+                    let result = self.eval_preserving_stack(thunk_data.expr, thunk_data.env)?;
+                    self.lisp.set(data, Value::ThunkDataVal(ThunkData { 
+                        expr: thunk_data.expr, 
+                        env: thunk_data.env, 
+                        cached: result 
+                    }))?;
                     idx = result;
                 }
                 _ => return Ok(idx),

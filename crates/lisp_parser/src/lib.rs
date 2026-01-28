@@ -369,6 +369,36 @@ macro_rules! define_stdlib {
 // define a custom function or use fold with a predicate.
 lisp_macros::include_stdlib!("src/stdlib.lisp");
 
+/// Lambda closure data (stored in arena for size optimization)
+///
+/// This struct stores the three components of a lambda closure.
+/// By storing it as a separate arena entry, the `Value::Lambda` variant
+/// only needs to store a single `ArenaIndex`, reducing enum size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LambdaData {
+    /// List of parameter symbols
+    pub params: ArenaIndex,
+    /// Body expression
+    pub body: ArenaIndex,
+    /// Captured environment (association list)
+    pub env: ArenaIndex,
+}
+
+/// Thunk data (stored in arena for size optimization)
+///
+/// This struct stores the components of a thunk (delayed computation).
+/// By storing it as a separate arena entry, the `Value::Thunk` variant
+/// only needs to store a single `ArenaIndex`, reducing enum size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThunkData {
+    /// Unevaluated expression
+    pub expr: ArenaIndex,
+    /// Environment for evaluation
+    pub env: ArenaIndex,
+    /// Cached result (NULL if not yet evaluated)
+    pub cached: ArenaIndex,
+}
+
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
@@ -400,20 +430,24 @@ pub enum Value {
         chars: ArenaIndex,
     },
     
-    /// Lambda / closure
+    /// Lambda / closure (optimized: stores index to LambdaData)
     Lambda {
-        params: ArenaIndex,  // List of symbols
-        body: ArenaIndex,    // Expression
-        env: ArenaIndex,     // Captured environment (alist)
+        data: ArenaIndex,  // Points to Value::LambdaDataVal in arena
     },
     
-    /// Thunk - delayed computation for call-by-need
+    /// Lambda closure data storage variant
+    /// This is an internal variant used to store LambdaData in the arena.
+    LambdaDataVal(LambdaData),
+    
+    /// Thunk - delayed computation for call-by-need (optimized: stores index to ThunkData)
     /// Created by (delay expr), forced by (force thunk)
     Thunk {
-        expr: ArenaIndex,    // Unevaluated expression
-        env: ArenaIndex,     // Environment for evaluation
-        cached: ArenaIndex,  // Cached result (NULL if not yet evaluated)
+        data: ArenaIndex,  // Points to Value::ThunkDataVal in arena
     },
+    
+    /// Thunk data storage variant
+    /// This is an internal variant used to store ThunkData in the arena.
+    ThunkDataVal(ThunkData),
     
     /// Memoized function - caches results keyed by argument values
     /// Created by (memoize fn), automatically caches return values
@@ -465,9 +499,13 @@ pub enum Value {
     /// (array-ref arr 1)              ; => 42
     /// (array-length arr)             ; => 3
     /// ```
+    /// 
+    /// # Size Optimization
+    /// 
+    /// Uses `u32` for length (max ~4 billion elements) to reduce enum size.
     Array {
         data: ArenaIndex,  // Points to first element in contiguous block
-        len: usize,        // Number of elements
+        len: u32,          // Number of elements (max 4,294,967,295)
     },
     
     /// String (contiguous storage of Char values in the arena)
@@ -486,9 +524,13 @@ pub enum Value {
     /// (string-length "hello")   ; => 5
     /// (string-ref "hello" 0)    ; => #\h
     /// ```
+    /// 
+    /// # Size Optimization
+    /// 
+    /// Uses `u32` for length (max ~4 billion characters) to reduce enum size.
     String {
         data: ArenaIndex,  // Points to first Char in contiguous block
-        len: usize,        // Number of characters
+        len: u32,          // Number of characters (max 4,294,967,295)
     },
     
     /// Native function (Rust function callable from Lisp)
@@ -498,10 +540,10 @@ pub enum Value {
     ///
     /// # Fields
     ///
-    /// - `id`: Index into the NativeRegistry's entries array
+    /// - `id`: Index into the NativeRegistry's entries array (max ~4 billion)
     /// - `name_hash`: Hash of the function name for quick comparison
     Native {
-        id: usize,         // Index in the NativeRegistry
+        id: u32,           // Index in the NativeRegistry (max 4,294,967,295)
         name_hash: u32,    // Hash for debugging/lookup verification
     },
 }
@@ -638,7 +680,9 @@ impl Value {
             Value::Cons { .. } => "pair",
             Value::Symbol { .. } => "symbol",
             Value::Lambda { .. } => "procedure",
+            Value::LambdaDataVal(_) => "lambda-data",
             Value::Thunk { .. } => "promise",
+            Value::ThunkDataVal(_) => "thunk-data",
             Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
             Value::StdLib { .. } => "procedure",
@@ -675,16 +719,24 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // chars points to a Value::String, which handles its own tracing
                 tracer(*chars);
             }
-            Value::Lambda { params, body, env } => {
-                tracer(*params);
-                tracer(*body);
-                tracer(*env);
+            Value::Lambda { data } => {
+                // Lambda now just stores an index to the LambdaDataVal
+                tracer(*data);
             }
-            Value::Thunk { expr, env, cached } => {
-                tracer(*expr);
-                tracer(*env);
-                if !cached.is_null() {
-                    tracer(*cached);
+            Value::LambdaDataVal(lambda_data) => {
+                tracer(lambda_data.params);
+                tracer(lambda_data.body);
+                tracer(lambda_data.env);
+            }
+            Value::Thunk { data } => {
+                // Thunk now just stores an index to the ThunkDataVal
+                tracer(*data);
+            }
+            Value::ThunkDataVal(thunk_data) => {
+                tracer(thunk_data.expr);
+                tracer(thunk_data.env);
+                if !thunk_data.cached.is_null() {
+                    tracer(thunk_data.cached);
                 }
             }
             Value::Memo { func, cache } => {
@@ -696,7 +748,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // Empty arrays (len == 0) have data == NULL, so skip tracing
                 if *len > 0 {
                     let base_idx = data.raw();
-                    for i in 0..*len {
+                    for i in 0..(*len as usize) {
                         let elem_idx = ArenaIndex::new(base_idx + i, data.generation());
                         tracer(elem_idx);
                     }
@@ -707,7 +759,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // Empty strings (len == 0) have data == NULL, so skip tracing
                 if *len > 0 {
                     let base_idx = data.raw();
-                    for i in 0..*len {
+                    for i in 0..(*len as usize) {
                         let char_idx = ArenaIndex::new(base_idx + i, data.generation());
                         tracer(char_idx);
                     }
@@ -1025,7 +1077,7 @@ impl<const N: usize> Lisp<N> {
             }
             
             // Create the String value
-            self.alloc(Value::String { data, len: char_count })?
+            self.alloc(Value::String { data, len: char_count as u32 })?
         };
         
         // Check intern table
@@ -1075,22 +1127,82 @@ impl<const N: usize> Lisp<N> {
     /// a simple hash for verification.
     #[inline]
     pub fn native(&self, id: usize, name_hash: u32) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Native { id, name_hash })
+        self.alloc(Value::Native { id: id as u32, name_hash })
     }
     
-    /// Allocate a lambda
+    /// Allocate a lambda (two-step: allocates LambdaData, then Lambda pointing to it)
     pub fn lambda(&self, params: ArenaIndex, body: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Lambda { params, body, env })
+        // First allocate the LambdaData in the arena
+        let lambda_data = LambdaData { params, body, env };
+        let data = self.alloc(Value::LambdaDataVal(lambda_data))?;
+        // Then allocate the Lambda that points to the data
+        self.alloc(Value::Lambda { data })
     }
     
-    /// Allocate a thunk (delayed computation)
+    /// Allocate a thunk (two-step: allocates ThunkData, then Thunk pointing to it)
     pub fn thunk(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Thunk { expr, env, cached: ArenaIndex::NULL })
+        // First allocate the ThunkData in the arena
+        let thunk_data = ThunkData { expr, env, cached: ArenaIndex::NULL };
+        let data = self.alloc(Value::ThunkDataVal(thunk_data))?;
+        // Then allocate the Thunk that points to the data
+        self.alloc(Value::Thunk { data })
     }
     
     /// Create a memoized function (wraps a function with a cache)
     pub fn memo(&self, func: ArenaIndex, cache: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Memo { func, cache })
+    }
+    
+    /// Get lambda data from a lambda value.
+    /// 
+    /// Returns the LambdaData (params, body, env) for a Lambda variant.
+    /// Returns an error if the value is not a Lambda.
+    #[inline]
+    pub fn get_lambda_data(&self, lambda_idx: ArenaIndex) -> ArenaResult<LambdaData> {
+        match self.get(lambda_idx)? {
+            Value::Lambda { data } => {
+                match self.get(data)? {
+                    Value::LambdaDataVal(lambda_data) => Ok(lambda_data),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get thunk data from a thunk value.
+    /// 
+    /// Returns the ThunkData (expr, env, cached) for a Thunk variant.
+    /// Returns an error if the value is not a Thunk.
+    #[inline]
+    pub fn get_thunk_data(&self, thunk_idx: ArenaIndex) -> ArenaResult<ThunkData> {
+        match self.get(thunk_idx)? {
+            Value::Thunk { data } => {
+                match self.get(data)? {
+                    Value::ThunkDataVal(thunk_data) => Ok(thunk_data),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Update the cached result in a thunk.
+    /// 
+    /// This is used to memoize the result after a thunk is forced.
+    #[inline]
+    pub fn set_thunk_cached(&self, thunk_idx: ArenaIndex, cached: ArenaIndex) -> ArenaResult<()> {
+        match self.get(thunk_idx)? {
+            Value::Thunk { data } => {
+                match self.get(data)? {
+                    Value::ThunkDataVal(ThunkData { expr, env, .. }) => {
+                        self.set(data, Value::ThunkDataVal(ThunkData { expr, env, cached }))
+                    }
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
     
     /// Build a list from an iterator of indices
@@ -1295,7 +1407,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Create the String value pointing to the data
-        self.alloc(Value::String { data, len: char_count })
+        self.alloc(Value::String { data, len: char_count as u32 })
     }
     
     /// Get the length of a string.
@@ -1308,7 +1420,7 @@ impl<const N: usize> Lisp<N> {
     /// a valid string.
     pub fn string_len(&self, str_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(str_idx)? {
-            Value::String { len, .. } => Ok(len),
+            Value::String { len, .. } => Ok(len as usize),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -1326,7 +1438,7 @@ impl<const N: usize> Lisp<N> {
     pub fn string_char_at(&self, str_idx: ArenaIndex, char_index: usize) -> ArenaResult<char> {
         match self.arena.get(str_idx)? {
             Value::String { data, len } => {
-                if char_index >= len {
+                if char_index >= len as usize {
                     return Err(ArenaError::InvalidIndex);
                 }
                 let char_slot = self.arena.index_at_offset(data, char_index)?;
@@ -1435,7 +1547,7 @@ impl<const N: usize> Lisp<N> {
             Value::String { data, len } => {
                 // Free the data slots
                 if len > 0 {
-                    self.arena.free_contiguous(data, len)?;
+                    self.arena.free_contiguous(data, len as usize)?;
                 }
                 // Free the String value itself
                 self.arena.free(str_idx)
@@ -1489,7 +1601,7 @@ impl<const N: usize> Lisp<N> {
         let data = self.arena.alloc_contiguous(len, default_val)?;
         
         // Create the Array value pointing to the data
-        self.alloc(Value::Array { data, len })
+        self.alloc(Value::Array { data, len: len as u32 })
     }
     
     /// Get the length of an array.
@@ -1501,7 +1613,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns `ArenaError::InvalidIndex` if the index doesn't point to an array.
     pub fn array_len(&self, arr_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(arr_idx)? {
-            Value::Array { len, .. } => Ok(len),
+            Value::Array { len, .. } => Ok(len as usize),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -1518,7 +1630,7 @@ impl<const N: usize> Lisp<N> {
     pub fn array_get(&self, arr_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
         match self.arena.get(arr_idx)? {
             Value::Array { data, len } => {
-                if index >= len {
+                if index >= len as usize {
                     return Err(ArenaError::InvalidIndex);
                 }
                 self.arena.index_at_offset(data, index)
@@ -1539,7 +1651,7 @@ impl<const N: usize> Lisp<N> {
     pub fn array_set(&self, arr_idx: ArenaIndex, index: usize, value: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
             Value::Array { data, len } => {
-                if index >= len {
+                if index >= len as usize {
                     return Err(ArenaError::InvalidIndex);
                 }
                 let elem_slot = self.arena.index_at_offset(data, index)?;
@@ -1560,7 +1672,7 @@ impl<const N: usize> Lisp<N> {
             Value::Array { data, len } => {
                 // Free the data slots
                 if len > 0 {
-                    self.arena.free_contiguous(data, len)?;
+                    self.arena.free_contiguous(data, len as usize)?;
                 }
                 // Free the Array value itself
                 self.arena.free(arr_idx)

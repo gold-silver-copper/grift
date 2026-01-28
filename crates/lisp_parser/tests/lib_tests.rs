@@ -263,15 +263,11 @@ fn test_thunk_structure() {
     let env = lisp.nil().unwrap();
     let thunk = lisp.thunk(expr, env).unwrap();
     
-    // Check thunk structure
-    match lisp.get(thunk).unwrap() {
-        Value::Thunk { expr: e, env: en, cached: c } => {
-            assert_eq!(lisp.get(e).unwrap(), Value::Number(42));
-            assert_eq!(lisp.get(en).unwrap(), Value::Nil);
-            assert!(c.is_null()); // Not yet cached
-        }
-        _ => panic!("Expected Thunk"),
-    }
+    // Check thunk structure using helper
+    let thunk_data = lisp.get_thunk_data(thunk).unwrap();
+    assert_eq!(lisp.get(thunk_data.expr).unwrap(), Value::Number(42));
+    assert_eq!(lisp.get(thunk_data.env).unwrap(), Value::Nil);
+    assert!(thunk_data.cached.is_null()); // Not yet cached
 }
 
 #[test]
@@ -288,18 +284,14 @@ fn test_thunk_with_complex_expr() {
     
     assert!(lisp.get(thunk).unwrap().is_thunk());
     
-    // Verify the expr is our pair
-    match lisp.get(thunk).unwrap() {
-        Value::Thunk { expr, .. } => {
-            match lisp.get(expr).unwrap() {
-                Value::Cons { car, cdr } => {
-                    assert_eq!(lisp.get(car).unwrap(), Value::Number(1));
-                    assert_eq!(lisp.get(cdr).unwrap(), Value::Number(2));
-                }
-                _ => panic!("Expected Cons in thunk"),
-            }
+    // Verify the expr is our pair using helper
+    let thunk_data = lisp.get_thunk_data(thunk).unwrap();
+    match lisp.get(thunk_data.expr).unwrap() {
+        Value::Cons { car, cdr } => {
+            assert_eq!(lisp.get(car).unwrap(), Value::Number(1));
+            assert_eq!(lisp.get(cdr).unwrap(), Value::Number(2));
         }
-        _ => panic!("Expected Thunk"),
+        _ => panic!("Expected Cons in thunk"),
     }
 }
 
@@ -316,19 +308,16 @@ fn test_thunk_with_environment() {
     let expr = lisp.number(42).unwrap();
     let thunk = lisp.thunk(expr, env).unwrap();
     
-    // Verify environment is captured
-    match lisp.get(thunk).unwrap() {
-        Value::Thunk { env: e, .. } => {
-            // First binding
-            let first = lisp.car(e).unwrap();
-            let bound_name = lisp.car(first).unwrap();
-            let bound_val = lisp.cdr(first).unwrap();
-            
-            assert!(lisp.symbol_matches(bound_name, "x").unwrap());
-            assert_eq!(lisp.get(bound_val).unwrap(), Value::Number(100));
-        }
-        _ => panic!("Expected Thunk"),
-    }
+    // Verify environment is captured using helper
+    let thunk_data = lisp.get_thunk_data(thunk).unwrap();
+    let e = thunk_data.env;
+    // First binding
+    let first = lisp.car(e).unwrap();
+    let bound_name = lisp.car(first).unwrap();
+    let bound_val = lisp.cdr(first).unwrap();
+    
+    assert!(lisp.symbol_matches(bound_name, "x").unwrap());
+    assert_eq!(lisp.get(bound_val).unwrap(), Value::Number(100));
 }
 
 #[test]
@@ -356,15 +345,11 @@ fn test_thunk_gc_trace() {
     
     // Thunk and its referenced data should still be accessible
     assert!(lisp.get(thunk).unwrap().is_thunk());
-    match lisp.get(thunk).unwrap() {
-        Value::Thunk { expr, env, .. } => {
-            // inner_data should still be valid
-            assert!(lisp.get(expr).unwrap().is_cons());
-            // environment should still be valid
-            assert!(lisp.get(env).unwrap().is_cons());
-        }
-        _ => panic!("Expected Thunk"),
-    }
+    let thunk_data = lisp.get_thunk_data(thunk).unwrap();
+    // inner_data should still be valid
+    assert!(lisp.get(thunk_data.expr).unwrap().is_cons());
+    // environment should still be valid
+    assert!(lisp.get(thunk_data.env).unwrap().is_cons());
 }
 
 #[test]
