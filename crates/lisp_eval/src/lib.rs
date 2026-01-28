@@ -87,6 +87,13 @@ pub use lisp_parser::{
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
 };
 
+// Native function interop
+pub mod native;
+pub use native::{
+    FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
+    extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+};
+
 // ============================================================================
 // Helper Macros for Code Deduplication
 // ============================================================================
@@ -460,6 +467,8 @@ pub struct Evaluator<'a, const N: usize> {
     /// Macro definitions: (name, (params, body))
     macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
     macro_count: usize,
+    /// Native function registry
+    native_registry: NativeRegistry<N>,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -474,6 +483,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             cont_depth: 0,
             macros: [(ArenaIndex::NULL, ArenaIndex::NULL, ArenaIndex::NULL); MAX_MACROS],
             macro_count: 0,
+            native_registry: NativeRegistry::new(),
         };
         
         // Initialize global environment with builtins
@@ -513,6 +523,51 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get the global environment
     pub fn global_env(&self) -> ArenaIndex {
         self.global_env
+    }
+    
+    /// Register a native Rust function that can be called from Lisp.
+    ///
+    /// The function will be bound to the given name in the global environment.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use lisp_eval::{Lisp, Evaluator, ArenaIndex, ArenaResult, FromLisp, ToLisp};
+    ///
+    /// fn my_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    ///     let n = i64::from_lisp(lisp, lisp.car(args)?)?;
+    ///     (n * 2).to_lisp(lisp)
+    /// }
+    ///
+    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let mut eval = Evaluator::new(&lisp).unwrap();
+    /// eval.register_native("my-double", my_double).unwrap();
+    ///
+    /// // Now you can call (my-double 5) from Lisp to get 10
+    /// let result = eval.eval_str("(my-double 5)").unwrap();
+    /// assert_eq!(lisp.get(result).unwrap().as_number(), Some(10));
+    /// ```
+    pub fn register_native(&mut self, name: &'static str, func: NativeFn<N>) -> Result<(), EvalError> {
+        // Get the ID before registering (it's the current count)
+        let id = self.native_registry.len();
+        
+        // Compute a simple hash of the name for verification
+        let name_hash = simple_hash(name);
+        
+        // Register in the native registry
+        self.native_registry.register(name, func);
+        
+        // Create a symbol and a Native value, then bind in global env
+        let name_sym = self.lisp.symbol(name)?;
+        let native_val = self.lisp.native(id, name_hash)?;
+        self.global_env = self.env_extend(self.global_env, name_sym, native_val)?;
+        
+        Ok(())
+    }
+    
+    /// Get a reference to the native function registry.
+    pub fn native_registry(&self) -> &NativeRegistry<N> {
+        &self.native_registry
     }
     
     /// Run GC with current roots (global env only)
@@ -835,6 +890,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.trampoline(TrampolineState::Eval { expr, env })
     }
     
+    /// Evaluate an expression while preserving the current continuation stack.
+    ///
+    /// This is used for synchronous evaluation during native function calls,
+    /// where we need to evaluate arguments without disturbing the main
+    /// continuation stack that will process the result.
+    fn eval_preserving_stack(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        // Save current continuation stack state
+        let saved_depth = self.cont_depth;
+        
+        // We need to save the actual continuations because the nested evaluation
+        // will overwrite them. We save them to a temporary buffer.
+        // MAX_CONT_DEPTH is a reasonable bound for nested native calls.
+        const MAX_SAVE: usize = 64;
+        let mut saved_conts: [Cont; MAX_SAVE] = [Cont::Done; MAX_SAVE];
+        let save_count = saved_depth.min(MAX_SAVE);
+        for i in 0..save_count {
+            saved_conts[i] = self.cont_stack[i];
+        }
+        
+        // Reset for the nested evaluation
+        self.cont_depth = 0;
+        
+        let result = self.trampoline(TrampolineState::Eval { expr, env });
+        
+        // Restore the continuation stack
+        for i in 0..save_count {
+            self.cont_stack[i] = saved_conts[i];
+        }
+        self.cont_depth = saved_depth;
+        
+        result
+    }
+    
     /// The main trampoline loop - processes states and continuations
     /// This is the ONLY place where looping happens - no Rust recursion!
     fn trampoline(&mut self, mut state: TrampolineState) -> EvalResult {
@@ -906,7 +994,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } | Value::Thunk { .. } |
-            Value::Memo { .. } | Value::Array { .. } => {
+            Value::Memo { .. } | Value::Array { .. } | Value::Native { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -1291,6 +1379,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             self.push_cont(Cont::Force)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
+                        }
+                    }
+                    Value::Native { id, .. } => {
+                        // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
+                        // First, we need to force all arguments, then call the native function
+                        self.pop_frame();
+                        
+                        // Build thunk list for lazy evaluation, then force them
+                        let args = self.make_thunk_list(args_expr, env)?;
+                        
+                        // Look up the native function and call it
+                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
+                            // Force all arguments before calling native function
+                            let forced_args = self.force_args_list(args)?;
+                            let result = native_fn(self.lisp, forced_args)?;
+                            Ok(Some(TrampolineState::Return { val: result }))
+                        } else {
+                            Err(self.make_error(ErrorKind::NotAFunction, call_expr)
+                                .with_message("native function not found"))
                         }
                     }
                     _ => {
@@ -2442,7 +2549,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Force a value to WHNF (synchronous, for macro expansion)
+    /// Force a value to WHNF (synchronous, for macro expansion and native calls)
+    ///
+    /// This uses eval_preserving_stack to avoid destroying the continuation stack
+    /// that may be in use by the caller.
     fn force_value(&mut self, mut idx: ArenaIndex) -> EvalResult {
         loop {
             match self.lisp.get(idx)? {
@@ -2451,8 +2561,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         idx = cached;
                         continue;
                     }
-                    // Evaluate the thunk
-                    let result = self.eval_in_env(expr, env)?;
+                    // Evaluate the thunk, preserving the continuation stack
+                    let result = self.eval_preserving_stack(expr, env)?;
                     self.lisp.set(idx, Value::Thunk { expr, env, cached: result })?;
                     idx = result;
                 }
@@ -2762,6 +2872,45 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut result = self.lisp.nil()?;
         for i in (0..count).rev() {
             result = self.lisp.cons(thunks[i], result)?;
+        }
+        
+        Ok(result)
+    }
+    
+    /// Force all arguments in a list to WHNF (synchronously).
+    ///
+    /// This is used for native function calls where we need all arguments
+    /// evaluated before calling the Rust function.
+    ///
+    /// ITERATIVE implementation to avoid Rust stack overflow
+    fn force_args_list(&mut self, list: ArenaIndex) -> EvalResult {
+        const MAX_ARGS: usize = 64;
+        let mut forced: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
+        let mut count = 0;
+        let mut current = list;
+        
+        // First pass: force each argument
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    if count >= MAX_ARGS {
+                        return Err(self.make_error(ErrorKind::StackOverflow, list));
+                    }
+                    // Force the value
+                    let forced_val = self.force_value(car)?;
+                    forced[count] = forced_val;
+                    count += 1;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
+            }
+        }
+        
+        // Second pass: build result list (backwards to preserve order)
+        let mut result = self.lisp.nil()?;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(forced[i], result)?;
         }
         
         Ok(result)

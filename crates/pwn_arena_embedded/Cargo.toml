@@ -1,0 +1,16 @@
+[package]
+name = "pwn_arena_embedded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Embedded-specific features for the pwn_arena Lisp, including hardware register and memory access"
+
+[dependencies]
+pwn_arena = { path = "../pwn_arena" }
+lisp_parser = { path = "../lisp_parser" }
+lisp_eval = { path = "../lisp_eval" }
+
+[features]
+default = []
+# Enable std for testing/simulation on host machines
+std = []

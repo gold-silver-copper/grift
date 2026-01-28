@@ -6,6 +6,7 @@ members = [
     "crates/lisp_parser",
     "crates/lisp_eval",
     "crates/lisp_repl",
+    "crates/pwn_arena_embedded",
 ]
 
 [workspace.package]

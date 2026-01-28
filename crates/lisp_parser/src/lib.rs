@@ -470,6 +470,20 @@ pub enum Value {
         data: ArenaIndex,  // Points to first element in contiguous block
         len: usize,        // Number of elements
     },
+    
+    /// Native function (Rust function callable from Lisp)
+    ///
+    /// Native functions are registered at runtime and identified by their ID.
+    /// The actual function pointer is stored in the evaluator's NativeRegistry.
+    ///
+    /// # Fields
+    ///
+    /// - `id`: Index into the NativeRegistry's entries array
+    /// - `name_hash`: Hash of the function name for quick comparison
+    Native {
+        id: usize,         // Index in the NativeRegistry
+        name_hash: u32,    // Hash for debugging/lookup verification
+    },
 }
 
 impl Value {
@@ -540,10 +554,16 @@ impl Value {
         matches!(self, Value::StdLib { .. })
     }
     
-    /// Check if this value is a procedure (lambda, builtin, stdlib, or memoized function)
+    /// Check if this value is a native (Rust) function
+    #[inline]
+    pub const fn is_native(&self) -> bool {
+        matches!(self, Value::Native { .. })
+    }
+    
+    /// Check if this value is a procedure (lambda, builtin, stdlib, native, or memoized function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Memo { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Memo { .. } | Value::Native { .. })
     }
     
     /// Check if this value is a thunk (promise)
@@ -596,6 +616,7 @@ impl Value {
             Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
             Value::StdLib { .. } => "procedure",
+            Value::Native { .. } => "native",
             Value::Array { .. } => "array",
         }
     }
@@ -606,7 +627,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) => {
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Native { .. } => {
                 // No references
             }
             Value::StdLib { cached_body, cached_params, .. } => {
@@ -1013,6 +1035,16 @@ impl<const N: usize> Lisp<N> {
             cached_body: ArenaIndex::NULL, 
             cached_params: ArenaIndex::NULL 
         })
+    }
+    
+    /// Allocate a native function reference.
+    ///
+    /// Native functions are Rust functions registered with the evaluator.
+    /// The `id` is the index in the NativeRegistry, and `name_hash` is
+    /// a simple hash for verification.
+    #[inline]
+    pub fn native(&self, id: usize, name_hash: u32) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Native { id, name_hash })
     }
     
     /// Allocate a lambda
