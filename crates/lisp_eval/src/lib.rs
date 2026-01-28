@@ -1835,9 +1835,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Number(n) => n,
                     _ => return Err(self.type_error(call_expr, "number", self.lisp.get(width_idx)?.type_name())),
                 };
-                let result = if start >= 0 && width > 0 && start + width <= 64 {
+                let result = if start >= 0 && width > 0 && width < 64 && start + width <= 64 {
                     let mask = (1isize << width) - 1;
                     (value >> start) & mask
+                } else if start >= 0 && width == 64 && start == 0 {
+                    // Special case: extracting all 64 bits
+                    value
                 } else {
                     0
                 };
@@ -1863,10 +1866,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Number(n) => n,
                     _ => return Err(self.type_error(call_expr, "number", self.lisp.get(width_idx)?.type_name())),
                 };
-                let result = if start >= 0 && width > 0 && start + width <= 64 {
+                let result = if start >= 0 && width > 0 && width < 64 && start + width <= 64 {
                     let mask = ((1isize << width) - 1) << start;
                     let insert_masked = (insert & ((1isize << width) - 1)) << start;
                     (value & !mask) | insert_masked
+                } else if start == 0 && width == 64 {
+                    // Special case: replacing all 64 bits
+                    insert
                 } else {
                     value
                 };
