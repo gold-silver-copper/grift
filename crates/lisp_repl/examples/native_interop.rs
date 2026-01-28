@@ -21,33 +21,11 @@ fn main() {
     
     // Define custom functions in Lisp (equivalent to what native functions did)
     // These use the pure Lisp approach instead of Rust native functions
-    let definitions = r#"
-        ; Double a number
-        (define (double x) (* x 2))
-        
-        ; Maximum of two numbers
-        (define (my-max a b) (if (> a b) a b))
-        
-        ; Check if a number is even
-        (define (even? x) (= (mod x 2) 0))
-        
-        ; Square a number
-        (define (square x) (* x x))
-        
-        ; Clamp a value to a range
-        (define (clamp value min-val max-val)
-            (cond ((< value min-val) min-val)
-                  ((> value max-val) max-val)
-                  (else value)))
-    "#;
-    
-    // Execute the definitions
-    for line in definitions.lines() {
-        let line = line.trim();
-        if !line.is_empty() && !line.starts_with(';') {
-            let _ = eval.eval_str(line);
-        }
-    }
+    let _ = eval.eval_str("(define (double x) (* x 2))");
+    let _ = eval.eval_str("(define (my-max a b) (if (> a b) a b))");
+    let _ = eval.eval_str("(define (even? x) (= (mod x 2) 0))");
+    let _ = eval.eval_str("(define (square x) (* x x))");
+    let _ = eval.eval_str("(define (clamp value min-val max-val) (cond ((< value min-val) min-val) ((> value max-val) max-val) (else value)))");
     
     println!("Defined functions: double, my-max, even?, square, clamp\n");
     
