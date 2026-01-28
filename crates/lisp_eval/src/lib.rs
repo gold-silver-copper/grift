@@ -895,17 +895,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// This is used for synchronous evaluation during native function calls,
     /// where we need to evaluate arguments without disturbing the main
     /// continuation stack that will process the result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the continuation stack depth exceeds MAX_SAVE (64).
+    /// This limit is sufficient for typical native function call chains.
     fn eval_preserving_stack(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
         // Save current continuation stack state
         let saved_depth = self.cont_depth;
         
         // We need to save the actual continuations because the nested evaluation
         // will overwrite them. We save them to a temporary buffer.
-        // MAX_CONT_DEPTH is a reasonable bound for nested native calls.
         const MAX_SAVE: usize = 64;
+        assert!(
+            saved_depth <= MAX_SAVE,
+            "Continuation stack too deep for native function call (depth={}, max={})",
+            saved_depth, MAX_SAVE
+        );
+        
         let mut saved_conts: [Cont; MAX_SAVE] = [Cont::Done; MAX_SAVE];
-        let save_count = saved_depth.min(MAX_SAVE);
-        for i in 0..save_count {
+        for i in 0..saved_depth {
             saved_conts[i] = self.cont_stack[i];
         }
         
@@ -915,7 +924,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let result = self.trampoline(TrampolineState::Eval { expr, env });
         
         // Restore the continuation stack
-        for i in 0..save_count {
+        for i in 0..saved_depth {
             self.cont_stack[i] = saved_conts[i];
         }
         self.cont_depth = saved_depth;

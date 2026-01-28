@@ -81,11 +81,13 @@ static MOCK_GPIO: [AtomicU32; MOCK_GPIO_COUNT] = {
 /// Lisp signature: `(peek address) -> value`
 ///
 /// In the mock implementation, addresses are mapped to a 1KB buffer.
+/// Negative addresses are treated as unsigned values (wrapped).
 pub fn native_peek<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (addr, _rest): (i64, _) = extract_arg(lisp, args)?;
     
     // Map address to word index and byte offset
-    let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
+    // Use wrapping conversion for negative addresses (they wrap to positive)
+    let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
     let word_idx = byte_addr / 4;
     let byte_offset = byte_addr % 4;
     
@@ -100,12 +102,14 @@ pub fn native_peek<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaRes
 /// Lisp signature: `(poke address value) -> value`
 ///
 /// In the mock implementation, addresses are mapped to a 1KB buffer.
+/// Negative addresses are treated as unsigned values (wrapped).
 pub fn native_poke<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (addr, rest): (i64, _) = extract_arg(lisp, args)?;
     let (value, _rest): (i64, _) = extract_arg(lisp, rest)?;
     
     // Map address to word index and byte offset
-    let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
+    // Use wrapping conversion for negative addresses
+    let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
     let word_idx = byte_addr / 4;
     let byte_offset = byte_addr % 4;
     
@@ -124,11 +128,13 @@ pub fn native_poke<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaRes
 /// Peek32: Read a 32-bit word from memory at the given address.
 ///
 /// Lisp signature: `(peek32 address) -> value`
+///
+/// Negative addresses are treated as unsigned values (wrapped).
 pub fn native_peek32<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (addr, _rest): (i64, _) = extract_arg(lisp, args)?;
     
-    // Word-aligned access
-    let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
+    // Word-aligned access with wrapping conversion for negative addresses
+    let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
     let value = MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as i64;
     
     value.to_lisp(lisp)
@@ -137,12 +143,14 @@ pub fn native_peek32<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaR
 /// Poke32: Write a 32-bit word to memory at the given address.
 ///
 /// Lisp signature: `(poke32 address value) -> value`
+///
+/// Negative addresses are treated as unsigned values (wrapped).
 pub fn native_poke32<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (addr, rest): (i64, _) = extract_arg(lisp, args)?;
     let (value, _rest): (i64, _) = extract_arg(lisp, rest)?;
     
-    // Word-aligned access
-    let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
+    // Word-aligned access with wrapping conversion for negative addresses
+    let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
     MOCK_MEMORY[word_idx].store(value as u32, Ordering::Relaxed);
     
     value.to_lisp(lisp)
@@ -257,7 +265,8 @@ pub fn native_bit_extract<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> A
     let (start, rest): (i64, _) = extract_arg(lisp, rest)?;
     let (width, _rest): (i64, _) = extract_arg(lisp, rest)?;
     
-    if start >= 0 && start < 64 && width > 0 && width <= 64 {
+    // Validate that start and width are in valid ranges and don't cause overflow
+    if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0i64 } else { (1i64 << width) - 1 };
         let extracted = (value >> start) & mask;
         return extracted.to_lisp(lisp);
@@ -275,7 +284,8 @@ pub fn native_bit_insert<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> Ar
     let (start, rest): (i64, _) = extract_arg(lisp, rest)?;
     let (width, _rest): (i64, _) = extract_arg(lisp, rest)?;
     
-    if start >= 0 && start < 64 && width > 0 && width <= 64 {
+    // Validate that start and width are in valid ranges and don't cause overflow
+    if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0i64 } else { (1i64 << width) - 1 };
         let cleared = value & !(mask << start);
         let inserted = cleared | ((insert & mask) << start);

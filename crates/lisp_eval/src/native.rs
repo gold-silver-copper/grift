@@ -89,7 +89,10 @@ impl<const N: usize> FromLisp<N> for i64 {
     fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
         match lisp.get(idx)? {
             Value::Number(n) => Ok(n),
-            _ => Err(ArenaError::InvalidIndex), // Type error
+            // Note: Using InvalidIndex for type errors is semantically imprecise,
+            // but ArenaError doesn't have a TypeError variant and adding one
+            // would require changes to the core no_std crate.
+            _ => Err(ArenaError::InvalidIndex),
         }
     }
 }
@@ -137,6 +140,7 @@ impl<const N: usize> FromLisp<N> for char {
     fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
         match lisp.get(idx)? {
             Value::Char(c) => Ok(c),
+            // Note: Using InvalidIndex for type errors (see i64 impl for rationale)
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -339,6 +343,9 @@ pub fn args_empty<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResu
 }
 
 /// Count the number of arguments in a list.
+///
+/// Returns an error if the argument is not a proper list.
+/// Note: Uses InvalidIndex for type errors (see FromLisp impls for rationale).
 pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> ArenaResult<usize> {
     let mut count = 0;
     loop {
@@ -348,6 +355,7 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
                 count += 1;
                 args = cdr;
             }
+            // Not a proper list
             _ => return Err(ArenaError::InvalidIndex),
         }
     }
