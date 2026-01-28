@@ -452,15 +452,15 @@ fn main() {
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
-    // SECTION 5: Lazy Evaluation (automatic)
+    // SECTION 5: Special Forms
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 5: Lazy Evaluation (everything is lazy by default!)");
+    println!("Section 5: Special Forms");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // cons is non-strict - builds pairs with unevaluated elements
+    // cons - evaluated strictly in call-by-value
     results.push(run_bench(
-        "Non-strict cons x 200",
+        "cons x 200",
         &lisp,
         &mut eval,
         200,
@@ -468,9 +468,9 @@ fn main() {
         None,
     ));
 
-    // Accessing element forces it
+    // car access
     results.push(run_bench(
-        "car (forces elem) x 200",
+        "car x 200",
         &lisp,
         &mut eval,
         200,
@@ -478,7 +478,7 @@ fn main() {
         Some("999"),
     ));
 
-    // Conditional only evaluates selected branch (lazy branches)
+    // Conditional only evaluates selected branch (if is a special form)
     results.push(run_bench(
         "if branch selection x 100",
         &lisp,

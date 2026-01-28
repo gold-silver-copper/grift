@@ -75,13 +75,6 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Lambda { .. }) => {
             buf.push_str("#<lambda>");
         }
-        Ok(Value::Thunk { cached, .. }) => {
-            if cached.is_null() {
-                buf.push_str("#<promise>");
-            } else {
-                buf.push_str("#<promise:forced>");
-            }
-        }
         Ok(Value::Builtin(b)) => {
             buf.push_str("#<builtin:");
             buf.push_str(b.name());
@@ -91,9 +84,6 @@ fn format_value_impl<const N: usize>(
             buf.push_str("#<stdlib:");
             buf.push_str(s.name());
             buf.push('>');
-        }
-        Ok(Value::Memo { .. }) => {
-            buf.push_str("#<memoized>");
         }
         Ok(Value::Array { len, .. }) => {
             use std::fmt::Write;
@@ -345,7 +335,7 @@ pub fn run_repl<const N: usize>() {
     
     println!("Classic Lisp (pwn_arena)");
     println!("========================");
-    println!("Features: TCO, call-by-need, full mutation, rich errors");
+    println!("Features: TCO, strict (call-by-value), full mutation, rich errors");
     println!("Truthiness: only #f is false (nil/'() are truthy!)");
     println!("Type :help for commands, Ctrl+D to exit.");
     println!("Arena capacity: {} cells", N);
@@ -579,58 +569,10 @@ fn print_help() {
 }
 
 /// Evaluate a string and return the result as a string
-/// This deeply forces the result for display (lazy values are evaluated)
 pub fn eval_to_string<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> Result<String, EvalError> {
     let result = eval.eval_str(input)?;
-    // Deep force for display
-    let forced = deep_force(lisp, eval, result)?;
-    Ok(value_to_string(lisp, forced))
-}
-
-/// Deeply force a value for display
-/// Forces all nested thunks in cons cells (up to a depth limit)
-fn deep_force<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, idx: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-    deep_force_impl(lisp, eval, idx, 100) // Limit depth to prevent infinite loops
-}
-
-fn deep_force_impl<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, idx: ArenaIndex, depth: usize) -> Result<ArenaIndex, EvalError> {
-    if depth == 0 {
-        return Ok(idx); // Stop at depth limit
-    }
-    
-    // First, force this value to WHNF
-    let forced = force_whnf(lisp, eval, idx)?;
-    
-    // Then recursively force cons cells
-    match lisp.get(forced)? {
-        Value::Cons { car, cdr } => {
-            let forced_car = deep_force_impl(lisp, eval, car, depth - 1)?;
-            let forced_cdr = deep_force_impl(lisp, eval, cdr, depth - 1)?;
-            // Return a new cons with forced values
-            lisp.cons(forced_car, forced_cdr).map_err(Into::into)
-        }
-        _ => Ok(forced),
-    }
-}
-
-/// Force a value to WHNF (similar to evaluator's force)
-fn force_whnf<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, mut idx: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-    loop {
-        match lisp.get(idx)? {
-            Value::Thunk { expr, env, cached } => {
-                if !cached.is_null() {
-                    idx = cached;
-                    continue;
-                }
-                // Force the thunk using the evaluator
-                let result = eval.eval_in_env(expr, env)?;
-                lisp.set(idx, Value::Thunk { expr, env, cached: result })?;
-                idx = result;
-                continue;
-            }
-            _ => return Ok(idx),
-        }
-    }
+    // In strict evaluation, values are already fully evaluated
+    Ok(value_to_string(lisp, result))
 }
 
 // ============================================================================
