@@ -220,12 +220,12 @@ fn test_strict_evaluation() {
 }
 
 #[test]
-fn test_nil_is_truthy() {
+fn test_empty_list_is_truthy() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // nil is truthy
-    assert_eq!(eval_to_string(&lisp, &mut eval, "(if nil 'yes 'no)").unwrap(), "yes");
+    // The empty list '() is truthy (in Scheme, only #f is false)
+    // Note: 'nil' is just a regular symbol, not the empty list
     assert_eq!(eval_to_string(&lisp, &mut eval, "(if '() 'yes 'no)").unwrap(), "yes");
     
     // Only #f is false

@@ -469,14 +469,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
         }
         
-        // Add 'true' and 'false' as aliases for #t and #f
-        let true_sym = lisp.symbol("true")?;
-        let true_val = lisp.true_val()?;
-        eval.global_env = eval.env_extend(eval.global_env, true_sym, true_val)?;
-        
-        let false_sym = lisp.symbol("false")?;
-        let false_val = lisp.false_val()?;
-        eval.global_env = eval.env_extend(eval.global_env, false_sym, false_val)?;
+        // Note: In Scheme, only #t and #f are the booleans. 
+        // 'true' and 'false' are NOT predefined aliases.
         
         Ok(eval)
     }

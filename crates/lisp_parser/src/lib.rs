@@ -351,12 +351,12 @@ macro_rules! define_stdlib {
 }
 
 // Define all standard library functions using the include_stdlib! macro.
-// This macro reads the stdlib.lisp file and generates the StdLib enum.
-// To add a new function, simply add a new entry in stdlib.lisp.
-// Note: member/assoc use eq for comparison (like Scheme's memq/assq).
+// This macro reads the stdlib.scm file and generates the StdLib enum.
+// To add a new function, simply add a new entry in stdlib.scm.
+// Note: member/assoc use eq? for comparison (like Scheme's memq/assq).
 // This works for symbols and identical objects. For value comparison,
 // define a custom function or use fold with a predicate.
-lisp_macros::include_stdlib!("src/stdlib.lisp");
+lisp_macros::include_stdlib!("src/stdlib.scm");
 
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1881,13 +1881,9 @@ impl<'a> Parser<'a> {
         
         let name = &buffer[..len];
         
-        // Check for special symbols
-        if name == b"nil" {
-            return lisp.nil().map_err(Into::into);
-        }
-        // Note: #t and #f are now the canonical booleans
-        // but we can still allow 'true' and 'false' as symbols that 
-        // the evaluator can bind to #t and #f
+        // Note: In Scheme, nil is just a regular symbol.
+        // The empty list is written as () or '() only.
+        // No special handling for 'nil' - it's parsed as a regular symbol.
         
         lisp.symbol_from_bytes(name).map_err(Into::into)
     }

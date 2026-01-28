@@ -1,12 +1,12 @@
 //! Procedural macros for lisp_parser standard library
 //!
-//! This crate provides the `include_stdlib!` macro which parses a `.lisp` file
+//! This crate provides the `include_stdlib!` macro which parses a `.scm` file
 //! containing function definitions and transforms them into the format expected
 //! by the `define_stdlib!` macro.
 //!
 //! # Example
 //!
-//! Given a file `stdlib.lisp`:
+//! Given a file `stdlib.scm`:
 //! ```lisp
 //! ;;; (map f lst) - Apply f to each element of lst
 //! (define (map f lst) (if (null? lst) '() (cons (f (car lst)) (map f (cdr lst)))))
@@ -14,7 +14,7 @@
 //!
 //! The macro:
 //! ```text
-//! include_stdlib!("stdlib.lisp");
+//! include_stdlib!("stdlib.scm");
 //! ```
 //!
 //! Expands to:
@@ -27,9 +27,9 @@
 
 use proc_macro::{TokenStream, TokenTree, Literal, Punct, Spacing, Ident, Span, Group, Delimiter};
 
-/// Include a `.lisp` file and transform it into `define_stdlib!` format.
+/// Include a `.scm` file and transform it into `define_stdlib!` format.
 ///
-/// The lisp file should contain function definitions in the form:
+/// The Scheme file should contain function definitions in the form:
 /// ```lisp
 /// ;;; Documentation comment (optional)
 /// (define (function-name param1 param2 ...) body)

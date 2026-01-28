@@ -29,19 +29,18 @@ fn test_eval_booleans() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // In Scheme, only #t and #f are booleans (no true/false aliases)
     assert!(eval_is_true(&lisp, &mut eval, "#t"));
     assert!(eval_is_false(&lisp, &mut eval, "#f"));
-    assert!(eval_is_true(&lisp, &mut eval, "true"));
-    assert!(eval_is_false(&lisp, &mut eval, "false"));
 }
 
 #[test]
-fn test_nil_is_truthy() {
+fn test_empty_list_is_truthy() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // nil/'() is NOT false - only #f is false
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(if nil 1 2)"), 1);
+    // '() (the empty list) is NOT false - only #f is false
+    // Note: In Scheme, 'nil' is just a regular symbol, not the empty list
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if '() 1 2)"), 1);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if 0 1 2)"), 1);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if #f 1 2)"), 2);
@@ -430,8 +429,8 @@ fn test_predicates() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // null? tests for empty list
     assert!(eval_is_true(&lisp, &mut eval, "(null? '())"));
-    assert!(eval_is_true(&lisp, &mut eval, "(null? nil)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? '(1))"));
     
     assert!(eval_is_true(&lisp, &mut eval, "(pair? '(1 . 2))"));
@@ -459,7 +458,7 @@ fn test_not() {
     
     assert!(eval_is_true(&lisp, &mut eval, "(not #f)"));
     assert!(eval_is_false(&lisp, &mut eval, "(not #t)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(not nil)")); // nil is truthy!
+    assert!(eval_is_false(&lisp, &mut eval, "(not '())")); // empty list is truthy!
     assert!(eval_is_false(&lisp, &mut eval, "(not 0)"));   // 0 is truthy!
 }
 
@@ -873,8 +872,8 @@ fn test_defmacro_when() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Define 'when' macro (if without else)
-    eval.eval_str("(defmacro when (cond body) (list 'if cond body nil))").unwrap();
+    // Define 'when' macro (if without else) - use '() for empty list instead of nil
+    eval.eval_str("(defmacro when (cond body) (list 'if cond body '()))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(when #t 100)"), 100);
 }
 
@@ -1036,8 +1035,9 @@ fn test_null_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // null? tests for the empty list '()
+    // Note: 'nil' is just a regular symbol in Scheme, not the empty list
     assert!(eval_is_true(&lisp, &mut eval, "(null? '())"));
-    assert!(eval_is_true(&lisp, &mut eval, "(null? nil)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? 0)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? #f)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? '(1))"));
@@ -1592,15 +1592,15 @@ fn test_gc_intern_table_survives() {
 // These tests document expected behavior that might be surprising
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// PITFALL: nil is NOT false!
-/// In this Lisp, only #f is false. nil/() is the empty list and is truthy.
+/// PITFALL: The empty list '() is NOT false!
+/// In this Lisp, only #f is false. The empty list is truthy.
+/// Note: 'nil' is just a regular symbol in Scheme, not the empty list.
 #[test]
-fn test_pitfall_nil_is_truthy() {
+fn test_pitfall_empty_list_is_truthy() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // nil is truthy!
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(if nil 1 2)"), 1);  // Takes then branch
+    // The empty list is truthy!
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if '() 1 2)"), 1);  // Takes then branch
     
     // Only #f is false
