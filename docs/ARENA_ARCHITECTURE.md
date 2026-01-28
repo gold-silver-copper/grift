@@ -17,25 +17,15 @@ The arena is entirely stack-allocated or static. All memory is pre-allocated at 
 let arena: Arena<Value, 1024> = Arena::new(default_value);
 ```
 
-### 2. Generational Indices (ABA Problem Prevention)
+### 2. Simple Index Model
 
-Every slot has a generation counter that increments when freed. An `ArenaIndex` stores both the slot index and the generation at allocation time:
+An `ArenaIndex` is a lightweight wrapper around a `usize` that directly indexes the arena array:
 
 ```rust
-pub struct ArenaIndex {
-    index: u32,       // Which slot
-    generation: u32,  // Generation when allocated
-}
+pub struct ArenaIndex(usize);
 ```
 
-When accessing a slot, we verify the stored generation matches the current slot generation. This prevents the ABA problem:
-
-```
-1. Allocate slot 5, generation 0 → returns ArenaIndex(5, 0)
-2. Free slot 5 → generation becomes 1
-3. Allocate slot 5 again → returns ArenaIndex(5, 1)
-4. Old ArenaIndex(5, 0) is now invalid (generation mismatch)
-```
+This provides O(1) access to any slot without indirection. Invalid indices (out of bounds or pointing to freed slots) return `InvalidIndex` errors.
 
 ### 3. O(1) Allocation via Free List
 
@@ -57,7 +47,6 @@ The arena uses `RefCell` for interior mutability, allowing it to be used from sh
 ```rust
 pub struct Arena<T: Copy, const N: usize> {
     slots: RefCell<[Slot<T>; N]>,
-    generations: RefCell<[u32; N]>,
     free_head: RefCell<usize>,
     len: RefCell<usize>,
     gc_enabled: RefCell<bool>,
@@ -73,15 +62,13 @@ For an `Arena<T, N>`:
 | Component | Size | Purpose |
 |-----------|------|---------|
 | `slots` | `N × sizeof(Slot<T>)` | Value storage |
-| `generations` | `N × 4` bytes | Generation counters |
 | `free_head` | 8 bytes | Free list head |
 | `len` | 8 bytes | Allocated count |
 | `gc_enabled` | 1 byte | GC control flag |
 
 Example: `Arena<Value, 50000>` where `sizeof(Value) = 24`:
 - Slots: 50,000 × 24 = 1.2 MB
-- Generations: 50,000 × 4 = 200 KB
-- Total: ~1.4 MB
+- Total: ~1.2 MB
 
 ## Garbage Collection
 
@@ -182,28 +169,17 @@ All fallible operations return `ArenaResult<T>`:
 pub enum ArenaError {
     OutOfMemory,         // Arena is full
     InvalidIndex,        // Index out of bounds or not allocated
-    GenerationMismatch,  // Stale index (use-after-free attempt)
     TraceError,          // GC tracing failed
 }
 ```
 
-Generation mismatches are particularly useful for debugging: they catch use-after-free bugs that would otherwise cause silent corruption.
-
 ## Gotchas
 
-### 1. Generations Wrap Around
-
-After 2^32 allocate/free cycles on the same slot, the generation wraps. This is extremely unlikely in practice but theoretically possible.
-
-### 2. Free List Can Fragment
+### 1. Free List Can Fragment
 
 While allocation is O(1), after many alloc/free cycles, the slots may be interleaved (allocated, free, allocated, free...). This doesn't affect performance but can affect cache locality.
 
-### 3. Clear Increments All Generations
-
-Calling `arena.clear()` invalidates ALL existing indices by incrementing every slot's generation. This is intentional but can be surprising.
-
-### 4. GC Can Move Nothing
+### 2. GC Can Move Nothing
 
 If all objects are reachable from roots, GC returns without collecting anything. Call `arena_stats` first to check if GC is necessary.
 

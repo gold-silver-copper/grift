@@ -14,15 +14,13 @@ impl<'a, T: Copy, const N: usize> Iterator for ArenaIterator<'a, T, N> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let slots = self.arena.slots.borrow();
-        let generations = self.arena.generations.borrow();
 
         while self.current < N {
             let idx = self.current;
             self.current += 1;
 
             if let Slot::Occupied { value } = slots[idx] {
-                let generation = generations[idx];
-                return Some((ArenaIndex::new(idx, generation), value));
+                return Some((ArenaIndex::new(idx), value));
             }
         }
 

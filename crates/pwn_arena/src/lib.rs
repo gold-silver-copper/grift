@@ -11,7 +11,6 @@
 //! - **No-std, no-alloc**: Works in embedded environments with no heap
 //! - **Generic**: Works with any `Copy` type
 //! - **Interior mutability**: Safe concurrent access via `RefCell`
-//! - **Generational indices**: Detects use-after-free (ABA problem)
 //! - **O(1) allocation**: Free-list based allocation and deallocation
 //! - **Mark-and-sweep GC**: Trait-based garbage collection via [`Trace`]
 //! - **Zero dependencies**: Only uses `core::cell::RefCell`

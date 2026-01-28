@@ -118,8 +118,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             };
 
             if should_free {
-                let generation = self.generations.borrow()[idx];
-                if self.free(ArenaIndex::new(idx, generation)).is_ok() {
+                if self.free(ArenaIndex::new(idx)).is_ok() {
                     collected += 1;
                 }
             }

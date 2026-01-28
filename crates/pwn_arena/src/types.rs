@@ -1,7 +1,7 @@
 //! Core types for the arena allocator.
 //!
 //! This module contains the fundamental types used throughout the arena:
-//! - [`ArenaIndex`] - Generational index into the arena
+//! - [`ArenaIndex`] - Index into the arena
 //! - [`ArenaError`] - Error types for arena operations
 //! - [`ArenaResult`] - Result type alias
 //! - [`Slot`] - Internal slot representation
@@ -10,68 +10,49 @@
 // ArenaIndex
 // ============================================================================
 
-/// Index into the arena with generational tracking.
+/// Index into the arena.
 ///
-/// This is a type-safe wrapper that stores both the slot index and the
-/// generation at which it was allocated. This prevents the ABA problem
-/// where a freed and reallocated slot could be accessed by a stale index.
+/// This is a lightweight wrapper around `usize` that directly indexes
+/// the arena's internal array.
 ///
 /// # Safety Note
 ///
 /// Indices should only be obtained from arena operations (`alloc`, `iter`).
-/// Manually constructing indices with [`ArenaIndex::new`] bypasses the type
-/// system's protection and should only be used for serialization/deserialization.
+/// Manually constructing indices bypasses the type system's protection
+/// and should only be used for serialization/deserialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ArenaIndex {
-    /// Slot index (limited to 2^32 - 1 = ~4 billion cells).
-    index: u32,
-    generation: u32,
-}
+pub struct ArenaIndex(usize);
 
 impl ArenaIndex {
     /// A sentinel "null" index that is never valid.
     ///
     /// This can be used as a placeholder when an optional index is needed
     /// but `Option<ArenaIndex>` is not desired.
-    pub const NULL: ArenaIndex = ArenaIndex {
-        index: u32::MAX,
-        generation: u32::MAX,
-    };
+    pub const NULL: ArenaIndex = ArenaIndex(usize::MAX);
 
-    /// Create a new arena index with the given slot index and generation.
+    /// Create a new arena index with the given slot index.
     ///
     /// # Warning
     ///
     /// This is a low-level constructor intended for serialization/deserialization.
     /// For normal use, obtain indices from [`Arena::alloc`] or [`Arena::iter`].
     /// Fabricating indices manually may lead to undefined behavior if the
-    /// index/generation pair doesn't correspond to a valid allocation.
-    ///
-    /// # Note
-    ///
-    /// The index is stored as `u32` internally. Values larger than `u32::MAX`
-    /// will be truncated. Arena capacity is limited to 2^32 cells.
+    /// index doesn't correspond to a valid allocation.
     #[inline]
-    pub const fn new(index: usize, generation: u32) -> Self {
-        ArenaIndex { index: index as u32, generation }
+    pub const fn new(index: usize) -> Self {
+        ArenaIndex(index)
     }
 
     /// Get the raw slot index value.
     #[inline]
     pub const fn raw(self) -> usize {
-        self.index as usize
-    }
-
-    /// Get the generation this index was created with.
-    #[inline]
-    pub const fn generation(self) -> u32 {
-        self.generation
+        self.0
     }
 
     /// Check if this is the null index.
     #[inline]
     pub const fn is_null(self) -> bool {
-        self.index == u32::MAX && self.generation == u32::MAX
+        self.0 == usize::MAX
     }
 }
 
@@ -92,12 +73,8 @@ pub enum ArenaError {
     /// Arena is full, cannot allocate more cells.
     OutOfMemory,
 
-    /// Invalid index (out of bounds, not allocated, or stale generation).
+    /// Invalid index (out of bounds or not allocated).
     InvalidIndex,
-
-    /// The index's generation doesn't match the slot's current generation.
-    /// This indicates a use-after-free attempt (ABA problem).
-    GenerationMismatch,
 
     /// An error occurred during garbage collection tracing.
     /// This can happen if the mark stack overflows or roots are invalid.
@@ -110,7 +87,6 @@ impl ArenaError {
         match self {
             ArenaError::OutOfMemory => "arena is full",
             ArenaError::InvalidIndex => "invalid index",
-            ArenaError::GenerationMismatch => "stale index (generation mismatch)",
             ArenaError::TraceError => "error during GC tracing",
         }
     }
@@ -120,9 +96,9 @@ impl ArenaError {
         matches!(self, ArenaError::OutOfMemory)
     }
 
-    /// Check if this error indicates an invalid or stale index.
+    /// Check if this error indicates an invalid index.
     pub const fn is_invalid_index(&self) -> bool {
-        matches!(self, ArenaError::InvalidIndex | ArenaError::GenerationMismatch)
+        matches!(self, ArenaError::InvalidIndex)
     }
 
     /// Check if this error is related to garbage collection.
