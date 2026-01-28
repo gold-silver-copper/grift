@@ -242,58 +242,42 @@ pub fn native_gpio_toggle<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> A
 // Utility Functions
 // ============================================================================
 
-/// Bit Set: Check if a bit is set in a value.
-///
-/// Lisp signature: `(bit-set? value bit) -> #t/#f`
-pub fn native_bit_set<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (value, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (bit, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    if bit >= 0 && bit < 64 {
-        let is_set = (value & (1i64 << bit)) != 0;
-        return is_set.to_lisp(lisp);
-    }
-    
-    false.to_lisp(lisp)
-}
+use lisp_eval::define_native;
 
-/// Bit Extract: Extract bits from a value.
-///
-/// Lisp signature: `(bit-extract value start width) -> extracted-bits`
-pub fn native_bit_extract<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (value, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (start, rest): (i64, _) = extract_arg(lisp, rest)?;
-    let (width, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
+// Bit Set: Check if a bit is set in a value.
+// Lisp signature: `(bit-set? value bit) -> #t/#f`
+define_native!(native_bit_set, (value: i64, bit: i64) -> bool, {
+    if bit >= 0 && bit < 64 {
+        (value & (1i64 << bit)) != 0
+    } else {
+        false
+    }
+});
+
+// Bit Extract: Extract bits from a value.
+// Lisp signature: `(bit-extract value start width) -> extracted-bits`
+define_native!(native_bit_extract, (value: i64, start: i64, width: i64) -> i64, {
     // Validate that start and width are in valid ranges and don't cause overflow
     if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0i64 } else { (1i64 << width) - 1 };
-        let extracted = (value >> start) & mask;
-        return extracted.to_lisp(lisp);
+        (value >> start) & mask
+    } else {
+        0i64
     }
-    
-    0i64.to_lisp(lisp)
-}
+});
 
-/// Bit Insert: Insert bits into a value.
-///
-/// Lisp signature: `(bit-insert value insert start width) -> new-value`
-pub fn native_bit_insert<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (value, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (insert, rest): (i64, _) = extract_arg(lisp, rest)?;
-    let (start, rest): (i64, _) = extract_arg(lisp, rest)?;
-    let (width, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
+// Bit Insert: Insert bits into a value.
+// Lisp signature: `(bit-insert value insert start width) -> new-value`
+define_native!(native_bit_insert, (value: i64, insert: i64, start: i64, width: i64) -> i64, {
     // Validate that start and width are in valid ranges and don't cause overflow
     if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0i64 } else { (1i64 << width) - 1 };
         let cleared = value & !(mask << start);
-        let inserted = cleared | ((insert & mask) << start);
-        return inserted.to_lisp(lisp);
+        cleared | ((insert & mask) << start)
+    } else {
+        value
     }
-    
-    value.to_lisp(lisp)
-}
+});
 
 // ============================================================================
 // Registration

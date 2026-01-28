@@ -590,15 +590,20 @@ fn test_string_memory_layout() {
     
     let hello = lisp.string("hello").unwrap();
     
-    // First slot should be Number(5)
-    assert_eq!(lisp.get(hello).unwrap(), Value::Number(5));
-    
-    // Following slots should be Char values
-    let idx1 = lisp.arena().index_at_offset(hello, 1).unwrap();
-    let idx2 = lisp.arena().index_at_offset(hello, 2).unwrap();
-    
-    assert_eq!(lisp.get(idx1).unwrap(), Value::Char('h'));
-    assert_eq!(lisp.get(idx2).unwrap(), Value::Char('e'));
+    // String value should be Value::String { data, len }
+    match lisp.get(hello).unwrap() {
+        Value::String { data, len } => {
+            assert_eq!(len, 5);
+            
+            // Data slots should contain Char values
+            let idx0 = lisp.arena().index_at_offset(data, 0).unwrap();
+            let idx1 = lisp.arena().index_at_offset(data, 1).unwrap();
+            
+            assert_eq!(lisp.get(idx0).unwrap(), Value::Char('h'));
+            assert_eq!(lisp.get(idx1).unwrap(), Value::Char('e'));
+        }
+        other => panic!("Expected Value::String, got {:?}", other),
+    }
 }
 
 #[test]
@@ -1005,4 +1010,89 @@ fn test_array_type_name() {
         len: 0 
     };
     assert_eq!(arr.type_name(), "array");
+}
+
+// ========================================================================
+// String/Array Unification Tests
+// ========================================================================
+
+#[test]
+fn test_string_type_name() {
+    let s = Value::String { 
+        data: ArenaIndex::NULL, 
+        len: 0 
+    };
+    assert_eq!(s.type_name(), "string");
+}
+
+#[test]
+fn test_string_is_string_predicate() {
+    let lisp: Lisp<1000> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    let s = lisp.string("hello").unwrap();
+    let arr = lisp.make_array(3, nil).unwrap();
+    let num = lisp.number(42).unwrap();
+    
+    assert!(lisp.get(s).unwrap().is_string());
+    assert!(!lisp.get(arr).unwrap().is_string());
+    assert!(!lisp.get(num).unwrap().is_string());
+    assert!(!lisp.get(nil).unwrap().is_string());
+}
+
+#[test]
+fn test_string_and_array_consistent_layout() {
+    // This test verifies that strings and arrays have consistent memory layouts:
+    // Both use Value::Type { data, len } with data pointing to contiguous storage
+    let lisp: Lisp<1000> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    let initial = lisp.arena().len();
+    
+    // Create a string with 5 characters
+    let s = lisp.string("hello").unwrap();
+    let after_string = lisp.arena().len();
+    
+    // String should use: 5 data slots + 1 String value = 6 slots
+    assert_eq!(after_string - initial, 6);
+    
+    // Create an array with 5 elements
+    let arr = lisp.make_array(5, nil).unwrap();
+    let after_array = lisp.arena().len();
+    
+    // Array should use: 5 data slots + 1 Array value = 6 slots
+    assert_eq!(after_array - after_string, 6);
+    
+    // Verify consistent structure
+    match lisp.get(s).unwrap() {
+        Value::String { len, .. } => assert_eq!(len, 5),
+        _ => panic!("Expected String"),
+    }
+    
+    match lisp.get(arr).unwrap() {
+        Value::Array { len, .. } => assert_eq!(len, 5),
+        _ => panic!("Expected Array"),
+    }
+}
+
+#[test]
+fn test_string_gc_trace() {
+    // Verify that GC properly traces strings (they should survive collection)
+    let lisp: Lisp<200> = Lisp::new();
+    
+    let s = lisp.string("hello world").unwrap();
+    
+    // Create some garbage
+    for i in 0..50 {
+        lisp.number(i * 1000).unwrap();
+    }
+    
+    // Run GC with the string as a root
+    let stats = lisp.gc(&[s]);
+    assert!(stats.collected > 0);
+    
+    // String should still be valid
+    assert!(lisp.get(s).unwrap().is_string());
+    assert_eq!(lisp.string_len(s).unwrap(), 11);
+    assert!(lisp.string_matches(s, "hello world").unwrap());
 }

@@ -471,6 +471,27 @@ pub enum Value {
         len: usize,        // Number of elements
     },
     
+    /// String (contiguous storage of Char values in the arena)
+    /// 
+    /// Strings store characters contiguously in the arena, similar to arrays.
+    /// This provides O(1) indexed access and O(1) length lookup.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `data` points to the first character in contiguous storage
+    /// - Characters are stored at data+0, data+1, ..., data+(len-1)
+    /// 
+    /// # Example
+    /// 
+    /// ```lisp
+    /// (string-length "hello")   ; => 5
+    /// (string-ref "hello" 0)    ; => #\h
+    /// ```
+    String {
+        data: ArenaIndex,  // Points to first Char in contiguous block
+        len: usize,        // Number of characters
+    },
+    
     /// Native function (Rust function callable from Lisp)
     ///
     /// Native functions are registered at runtime and identified by their ID.
@@ -584,6 +605,12 @@ impl Value {
         matches!(self, Value::Array { .. })
     }
     
+    /// Check if this value is a string
+    #[inline]
+    pub const fn is_string(&self) -> bool {
+        matches!(self, Value::String { .. })
+    }
+    
     /// Get the number value if this is a number
     #[inline]
     pub const fn as_number(&self) -> Option<i64> {
@@ -618,6 +645,7 @@ impl Value {
             Value::StdLib { .. } => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
+            Value::String { .. } => "string",
         }
     }
 }
@@ -644,19 +672,9 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*car);
                 tracer(*cdr);
             }
-            Value::Symbol { chars, len } => {
+            Value::Symbol { chars, .. } => {
+                // chars now points to a Value::String, which handles its own tracing
                 tracer(*chars);
-                // For contiguous strings (len > 0), trace all character slots
-                // They are at chars+1, chars+2, ..., chars+len
-                // The GC only uses the raw index from the ArenaIndex, not the generation,
-                // so we can safely use chars.generation() for all slots in the contiguous block.
-                if *len > 0 {
-                    let base_idx = chars.raw();
-                    for i in 1..=*len {
-                        let char_idx = ArenaIndex::new(base_idx + i, chars.generation());
-                        tracer(char_idx);
-                    }
-                }
             }
             Value::Lambda { params, body, env } => {
                 tracer(*params);
@@ -682,6 +700,17 @@ impl<const N: usize> Trace<Value, N> for Value {
                     for i in 0..*len {
                         let elem_idx = ArenaIndex::new(base_idx + i, data.generation());
                         tracer(elem_idx);
+                    }
+                }
+            }
+            Value::String { data, len } => {
+                // For non-empty strings, trace all Char slots in the contiguous block
+                // Empty strings (len == 0) have data == NULL, so skip tracing
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        let char_idx = ArenaIndex::new(base_idx + i, data.generation());
+                        tracer(char_idx);
                     }
                 }
             }
@@ -945,16 +974,13 @@ impl<const N: usize> Lisp<N> {
     
     /// Create or retrieve an interned symbol from a string slice
     /// 
-    /// The symbol's `chars` field points to a contiguous string block:
-    /// [Number(length), Char(c1), Char(c2), ..., Char(cn)]
-    /// 
-    /// The symbol's `len` field stores the character count for GC tracing.
+    /// The symbol's `chars` field points to a Value::String with the symbol name.
     /// 
     /// Symbol interning ensures the same symbol name always returns the same index.
     /// 
     /// This provides ~44% memory savings compared to linked list representation.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        // Create contiguous string for the symbol name
+        // Create string for the symbol name
         let char_count = name.chars().count();
         let name_str = self.string(name)?;
         
@@ -981,34 +1007,41 @@ impl<const N: usize> Lisp<N> {
     
     /// Create or retrieve an interned symbol from bytes (for parsing)
     pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
-        // First, create contiguous string storage
         let char_count = bytes.len();
-        let total_slots = 1 + char_count; // 1 for length + chars
         
-        // Allocate contiguous block with default Value::Nil
-        let start = self.arena.alloc_contiguous(total_slots, Value::Nil)?;
-        
-        // Set length in first slot
-        self.arena.set(start, Value::Number(char_count as i64))?;
-        
-        // Set characters in following slots
-        for (i, &b) in bytes.iter().enumerate() {
-            let char_idx = self.arena.index_at_offset(start, i + 1)?;
-            self.arena.set(char_idx, Value::Char(b as char))?;
-        }
+        // Create a Value::String for the symbol name
+        let name_str = if char_count == 0 {
+            // Empty string
+            self.alloc(Value::String { 
+                data: ArenaIndex::NULL, 
+                len: 0 
+            })?
+        } else {
+            // Allocate contiguous block for characters
+            let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+            
+            // Set characters in slots
+            for (i, &b) in bytes.iter().enumerate() {
+                let char_idx = self.arena.index_at_offset(data, i)?;
+                self.arena.set(char_idx, Value::Char(b as char))?;
+            }
+            
+            // Create the String value
+            self.alloc(Value::String { data, len: char_count })?
+        };
         
         // Check intern table
-        if let Some(existing_symbol) = self.intern_table_lookup(start)? {
+        if let Some(existing_symbol) = self.intern_table_lookup(name_str)? {
             // Free the string we just created since we're using the interned one
-            self.string_free(start)?;
+            self.string_free(name_str)?;
             return Ok(existing_symbol);
         }
         
         // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol { chars: start, len: char_count })?;
+        let symbol = self.alloc(Value::Symbol { chars: name_str, len: char_count })?;
         
-        // Add to intern table: (start . symbol)
-        let binding = self.cons(start, symbol)?;
+        // Add to intern table: (name_str . symbol)
+        let binding = self.cons(name_str, symbol)?;
         let current_table = self.get_intern_table_root()?;
         let new_table = self.cons(binding, current_table)?;
         
@@ -1336,33 +1369,30 @@ impl<const N: usize> Lisp<N> {
     // Contiguous String Storage
     // ========================================================================
     // 
-    // Strings are stored as contiguous sequences of Value::Char in the arena:
-    // [Number(length), Char(c1), Char(c2), ..., Char(cn)]
+    // Strings are stored as Value::String { data, len } pointing to
+    // contiguous sequences of Value::Char in the arena:
+    // [Char(c1), Char(c2), ..., Char(cn)]
     // 
     // This provides:
-    // - O(1) length lookup
+    // - O(1) length lookup (stored in the Value::String variant)
     // - Cache-friendly sequential access
-    // - ~40% memory savings vs linked list representation
+    // - Consistent design with arrays (single source of truth for length)
     // ========================================================================
     
     /// Allocate a string as contiguous Char values.
     /// 
-    /// Format: [Number(length), Char, Char, ..., Char]
-    /// 
-    /// The returned index points to the length slot. Character slots follow
-    /// immediately after in contiguous memory.
+    /// Returns a Value::String that stores the length, with data pointing to
+    /// the first character slot. Empty strings have data == NULL and len == 0.
     /// 
     /// # Memory Usage
     /// 
-    /// Allocates `1 + s.chars().count()` slots:
-    /// - 1 slot for the length (stored as Number)
-    /// - 1 slot per character (stored as Char)
+    /// Allocates `s.chars().count()` slots for characters, plus 1 slot for
+    /// the String value itself.
     /// 
     /// # Errors
     /// 
     /// Returns `ArenaError::OutOfMemory` if:
     /// - No contiguous block is available
-    /// - String length exceeds i64 (unlikely)
     /// 
     /// # Example
     /// 
@@ -1376,39 +1406,46 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         let char_count = s.chars().count();
-        let total_slots = 1 + char_count; // 1 for length + chars
         
-        // Allocate contiguous block with default Value::Nil
-        let start = self.arena.alloc_contiguous(total_slots, Value::Nil)?;
+        if char_count == 0 {
+            // Empty string - no data slots needed
+            return self.alloc(Value::String { 
+                data: ArenaIndex::NULL, 
+                len: 0 
+            });
+        }
         
-        // Set length in first slot
-        self.arena.set(start, Value::Number(char_count as i64))?;
+        // Allocate contiguous block for characters
+        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
         
-        // Set characters in following slots
+        // Set characters in slots
         for (i, c) in s.chars().enumerate() {
-            let char_idx = self.arena.index_at_offset(start, i + 1)?;
+            let char_idx = self.arena.index_at_offset(data, i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
         
-        Ok(start)
+        // Create the String value pointing to the data
+        self.alloc(Value::String { data, len: char_count })
     }
     
-    /// Get the length of a contiguous string.
+    /// Get the length of a string.
+    /// 
+    /// Returns O(1) since length is stored in the String value.
     /// 
     /// # Errors
     /// 
     /// Returns `ArenaError::InvalidIndex` if the index doesn't point to
-    /// a valid string (i.e., a Number value representing length).
+    /// a valid string.
     pub fn string_len(&self, str_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(str_idx)? {
-            Value::Number(len) if len >= 0 => Ok(len as usize),
+            Value::String { len, .. } => Ok(len),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
     
-    /// Get a character at the given index within a contiguous string.
+    /// Get a character at the given index within a string.
     /// 
-    /// Character indices are 0-based.
+    /// Character indices are 0-based. Returns O(1) access.
     /// 
     /// # Errors
     /// 
@@ -1417,19 +1454,22 @@ impl<const N: usize> Lisp<N> {
     /// - The character index is out of bounds
     /// - The slot doesn't contain a Char value
     pub fn string_char_at(&self, str_idx: ArenaIndex, char_index: usize) -> ArenaResult<char> {
-        let len = self.string_len(str_idx)?;
-        if char_index >= len {
-            return Err(ArenaError::InvalidIndex);
-        }
-        
-        let char_slot = self.arena.index_at_offset(str_idx, char_index + 1)?;
-        match self.arena.get(char_slot)? {
-            Value::Char(c) => Ok(c),
+        match self.arena.get(str_idx)? {
+            Value::String { data, len } => {
+                if char_index >= len {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                let char_slot = self.arena.index_at_offset(data, char_index)?;
+                match self.arena.get(char_slot)? {
+                    Value::Char(c) => Ok(c),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
             _ => Err(ArenaError::InvalidIndex),
         }
     }
     
-    /// Compare two contiguous strings for equality.
+    /// Compare two strings for equality.
     /// 
     /// # Errors
     /// 
@@ -1458,7 +1498,7 @@ impl<const N: usize> Lisp<N> {
         Ok(true)
     }
     
-    /// Check if a contiguous string matches a Rust string slice.
+    /// Check if a string matches a Rust string slice.
     /// 
     /// # Errors
     /// 
@@ -1481,7 +1521,7 @@ impl<const N: usize> Lisp<N> {
         Ok(true)
     }
     
-    /// Copy a contiguous string's contents to a byte buffer.
+    /// Copy a string's contents to a byte buffer.
     /// 
     /// Returns the number of bytes written. Only ASCII characters (0-127)
     /// are copied; non-ASCII characters are skipped.
@@ -1515,14 +1555,23 @@ impl<const N: usize> Lisp<N> {
         Ok(buf_idx)
     }
     
-    /// Free a contiguous string and all its character slots.
+    /// Free a string and all its character slots.
     /// 
     /// # Errors
     /// 
     /// Returns an error if the string index is invalid.
     pub fn string_free(&self, str_idx: ArenaIndex) -> ArenaResult<()> {
-        let len = self.string_len(str_idx)?;
-        self.arena.free_contiguous(str_idx, 1 + len)
+        match self.arena.get(str_idx)? {
+            Value::String { data, len } => {
+                // Free the data slots
+                if len > 0 {
+                    self.arena.free_contiguous(data, len)?;
+                }
+                // Free the String value itself
+                self.arena.free(str_idx)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
     
     // ========================================================================
