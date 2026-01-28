@@ -843,57 +843,9 @@ fn test_eval_computed() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// DEFMACRO - Macro Definition
+// Note: defmacro and gensym have been removed for Scheme R7RS conformance.
+// Hygienic macros via syntax-rules will be implemented in a future phase.
 // ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_defmacro_basic() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define a simple macro that adds 10 to its argument
-    eval.eval_str("(defmacro add10 (x) (list '+ x 10))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(add10 5)"), 15);
-}
-
-#[test]
-fn test_defmacro_unless() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define 'unless' macro (opposite of 'if')
-    eval.eval_str("(defmacro unless (cond then else) (list 'if cond else then))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(unless #f 42 0)"), 42);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(unless #t 42 0)"), 0);
-}
-
-#[test]
-fn test_defmacro_when() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define 'when' macro (if without else) - use '() for empty list instead of nil
-    eval.eval_str("(defmacro when (cond body) (list 'if cond body '()))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(when #t 100)"), 100);
-}
-
-// ───────────────────────────────────────────────────────────────────────────
-// GENSYM - Generate Unique Symbols
-// ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_gensym_uniqueness() {
-    let lisp: Lisp<2000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    let sym1 = eval.eval_str("(gensym)").unwrap();
-    let sym2 = eval.eval_str("(gensym)").unwrap();
-    
-    // Each gensym should be unique
-    assert!(lisp.get(sym1).unwrap().is_symbol());
-    assert!(lisp.get(sym2).unwrap().is_symbol());
-    assert!(!lisp.symbol_eq(sym1, sym2).unwrap());
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // APPLY - Apply Function to List
@@ -946,9 +898,9 @@ fn test_car_comprehensive() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car '(1 2 3))"), 1);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cons 42 99))"), 42);
     
-    // car of nil
-    let result = eval.eval_str("(car '())").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    // Scheme R7RS: car of empty list is an error
+    let result = eval.eval_str("(car '())");
+    assert!(result.is_err());
 }
 
 #[test]
@@ -963,9 +915,9 @@ fn test_cdr_comprehensive() {
     // cdr of pair
     assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr (cons 1 2))"), 2);
     
-    // cdr of nil
-    let result = eval.eval_str("(cdr '())").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    // Scheme R7RS: cdr of empty list is an error
+    let result = eval.eval_str("(cdr '())");
+    assert!(result.is_err());
 }
 
 #[test]

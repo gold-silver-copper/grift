@@ -813,34 +813,12 @@ fn main() {
     // SECTION 11: Macros & Metaprogramming
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 11: Macros & Metaprogramming");
+    println!("Section 11: Reserved for Future Hygienic Macros");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Define a simple macro
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(defmacro unless (cond then else) (list 'if cond else then))",
-    );
-
-    results.push(run_bench(
-        "Macro expansion (unless) x 200",
-        &lisp,
-        &mut eval,
-        200,
-        "(unless #f 'yes 'no)",
-        Some("yes"),
-    ));
-
-    // Gensym for macro hygiene
-    results.push(run_bench(
-        "Gensym generation x 200",
-        &lisp,
-        &mut eval,
-        200,
-        "(gensym)",
-        None,
-    ));
+    // Note: defmacro and gensym have been removed for Scheme R7RS conformance.
+    // Hygienic macros via syntax-rules will be implemented in a future phase.
+    println!("  (Skipped - defmacro/gensym removed for Scheme conformance)");
 
     // Clean up before next section
     eval.gc();

@@ -209,10 +209,6 @@ define_builtins! {
     /// error - Raise an error
     Error => "error",
     
-    // Symbol generation for hygiene
-    /// gensym - Generate unique symbol
-    Gensym => "gensym",
-    
     // Mutation operations
     /// set-car! - Mutate car of pair
     SetCar => "set-car!",
@@ -833,21 +829,27 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Get car of a cons cell
+    /// 
+    /// In Scheme R7RS, car of an empty list is an error.
     #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { car, .. } => Ok(car),
-            Value::Nil => self.nil(), // car of nil is nil in classic Lisp
+            // Scheme R7RS: car of empty list is an error
+            Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
     
     /// Get cdr of a cons cell
+    /// 
+    /// In Scheme R7RS, cdr of an empty list is an error.
     #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { cdr, .. } => Ok(cdr),
-            Value::Nil => self.nil(), // cdr of nil is nil in classic Lisp
+            // Scheme R7RS: cdr of empty list is an error
+            Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
