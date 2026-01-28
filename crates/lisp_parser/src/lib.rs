@@ -697,7 +697,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 if *len > 0 {
                     let base_idx = data.raw();
                     for i in 0..*len {
-                        let elem_idx = ArenaIndex::new(base_idx + i, data.generation());
+                        let elem_idx = ArenaIndex::new(base_idx + i);
                         tracer(elem_idx);
                     }
                 }
@@ -708,7 +708,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 if *len > 0 {
                     let base_idx = data.raw();
                     for i in 0..*len {
-                        let char_idx = ArenaIndex::new(base_idx + i, data.generation());
+                        let char_idx = ArenaIndex::new(base_idx + i);
                         tracer(char_idx);
                     }
                 }

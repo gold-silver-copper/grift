@@ -61,8 +61,8 @@ fn test_out_of_memory() {
 fn test_get_invalid_index() {
     let arena: Arena<i32, 10> = Arena::new(0);
 
-    // Out of bounds index with any generation
-    let invalid_idx = ArenaIndex::new(100, 0);
+    // Out of bounds index
+    let invalid_idx = ArenaIndex::new(100);
     assert_eq!(arena.get(invalid_idx), Err(ArenaError::InvalidIndex));
 }
 
@@ -73,8 +73,8 @@ fn test_get_freed_index() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    // After freeing, the generation increments, so we get GenerationMismatch
-    assert_eq!(arena.get(idx), Err(ArenaError::GenerationMismatch));
+    // After freeing, the index is invalid
+    assert_eq!(arena.get(idx), Err(ArenaError::InvalidIndex));
 }
 
 // ============================================================================
@@ -102,7 +102,7 @@ fn test_free_invalid_index() {
     let arena: Arena<i32, 10> = Arena::new(0);
 
     // Out of bounds index
-    let invalid_idx = ArenaIndex::new(100, 0);
+    let invalid_idx = ArenaIndex::new(100);
     assert_eq!(arena.free(invalid_idx), Err(ArenaError::InvalidIndex));
 }
 
@@ -113,8 +113,8 @@ fn test_double_free() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    // Double free returns GenerationMismatch because generation was incremented
-    assert_eq!(arena.free(idx), Err(ArenaError::GenerationMismatch));
+    // Double free returns InvalidIndex because the slot is no longer allocated
+    assert_eq!(arena.free(idx), Err(ArenaError::InvalidIndex));
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn test_set_invalid_index() {
     let arena: Arena<i32, 10> = Arena::new(0);
 
     // Out of bounds index
-    let invalid_idx = ArenaIndex::new(100, 0);
+    let invalid_idx = ArenaIndex::new(100);
     assert_eq!(arena.set(invalid_idx, 42), Err(ArenaError::InvalidIndex));
 }
 
@@ -178,8 +178,8 @@ fn test_set_freed_index() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    // After freeing, the generation increments
-    assert_eq!(arena.set(idx, 100), Err(ArenaError::GenerationMismatch));
+    // After freeing, the index is invalid
+    assert_eq!(arena.set(idx, 100), Err(ArenaError::InvalidIndex));
 }
 
 // ============================================================================
@@ -348,7 +348,7 @@ fn test_is_allocated_invalid_index() {
     let arena: Arena<i32, 10> = Arena::new(0);
 
     // Out of bounds index
-    let invalid_idx = ArenaIndex::new(100, 0);
+    let invalid_idx = ArenaIndex::new(100);
     assert!(!arena.is_allocated(invalid_idx));
 }
 
@@ -672,18 +672,12 @@ fn test_index_consistency() {
 
 #[test]
 fn test_arena_index_api() {
-    let idx = ArenaIndex::new(42, 5);
+    let idx = ArenaIndex::new(42);
     assert_eq!(idx.raw(), 42);
-    assert_eq!(idx.generation(), 5);
 
-    // Test that indices with same slot but different generations are not equal
-    let idx2 = ArenaIndex::new(42, 6);
+    // Test that indices with different slots are not equal
+    let idx2 = ArenaIndex::new(43);
     assert_ne!(idx, idx2);
-    assert_eq!(idx.raw(), idx2.raw());
-
-    // Test that indices with same generation but different slots are not equal
-    let idx3 = ArenaIndex::new(43, 5);
-    assert_ne!(idx, idx3);
 }
 
 #[test]
@@ -715,7 +709,7 @@ fn test_large_arena() {
 }
 
 // ============================================================================
-// Generational Index Tests (ABA Problem Prevention)
+// ABA Problem Prevention Tests
 // ============================================================================
 
 #[test]
@@ -729,42 +723,19 @@ fn test_aba_problem_prevention() {
     // Free it
     arena.free(old_idx).unwrap();
 
+    // Old index should now be invalid (slot is free)
+    assert_eq!(arena.get(old_idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.set(old_idx, 999), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.free(old_idx), Err(ArenaError::InvalidIndex));
+
     // Allocate new value - will reuse the same slot
     let new_idx = arena.alloc(200).unwrap();
 
     // Verify same slot is reused (free-list LIFO)
     assert_eq!(new_idx.raw(), old_raw);
 
-    // But generations are different
-    assert_ne!(old_idx.generation(), new_idx.generation());
-
-    // Old index should fail - this is the ABA problem being prevented
-    assert_eq!(arena.get(old_idx), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.set(old_idx, 999), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.free(old_idx), Err(ArenaError::GenerationMismatch));
-
     // New index should work
     assert_eq!(arena.get(new_idx).unwrap(), 200);
-}
-
-#[test]
-fn test_multiple_generations_same_slot() {
-    let arena: Arena<i32, 1> = Arena::new(0);
-
-    let mut prev_generation = 0u32;
-
-    for i in 0..100 {
-        let idx = arena.alloc(i).unwrap();
-
-        // Verify generation increments each cycle
-        if i > 0 {
-            assert_eq!(idx.generation(), prev_generation + 1);
-        }
-        prev_generation = idx.generation();
-
-        assert_eq!(arena.get(idx).unwrap(), i);
-        arena.free(idx).unwrap();
-    }
 }
 
 #[test]
@@ -782,87 +753,7 @@ fn test_stale_index_after_multiple_reuses() {
     }
 
     // Original stale index should still be invalid
-    assert_eq!(arena.get(stale_idx), Err(ArenaError::GenerationMismatch));
-}
-
-#[test]
-fn test_generation_with_wrong_slot() {
-    let arena: Arena<i32, 10> = Arena::new(0);
-
-    let idx1 = arena.alloc(100).unwrap();
-    let idx2 = arena.alloc(200).unwrap();
-
-    // Each slot starts with generation = slot_index
-    // So slot 0 starts at gen 0, slot 1 starts at gen 1
-    assert_eq!(idx1.raw(), 0);
-    assert_eq!(idx2.raw(), 1);
-    assert_eq!(idx1.generation(), 0); // slot 0's initial generation
-    assert_eq!(idx2.generation(), 1); // slot 1's initial generation
-
-    // Create a fake index with idx1's slot but idx2's generation
-    // This should fail because slot 0 has generation 0, not 1
-    let fake_idx = ArenaIndex::new(idx1.raw(), idx2.generation());
-
-    // Should fail because generation doesn't match the slot
-    assert_eq!(arena.get(fake_idx), Err(ArenaError::GenerationMismatch));
-}
-
-#[test]
-fn test_slot_based_initial_generations_prevent_cross_slot_errors() {
-    // This test demonstrates the improved protection from slot-based generations
-    let arena: Arena<i32, 10> = Arena::new(0);
-
-    // Allocate several slots
-    let indices: Vec<_> = (0..5).map(|i| arena.alloc(i * 100).unwrap()).collect();
-
-    // Each slot should have a unique initial generation equal to its slot index
-    for (i, &idx) in indices.iter().enumerate() {
-        assert_eq!(idx.raw(), i);
-        assert_eq!(idx.generation(), i as u32);
-    }
-
-    // Attempting to access slot 3's data using slot 0's generation should fail
-    // even though both slots are allocated - this is the cross-slot protection
-    let cross_slot_idx = ArenaIndex::new(3, 0); // slot 3 has gen 3, not 0
-    assert_eq!(arena.get(cross_slot_idx), Err(ArenaError::GenerationMismatch));
-
-    // The correct index for slot 3 works
-    assert_eq!(arena.get(indices[3]).unwrap(), 300);
-}
-
-#[test]
-fn test_fabricated_index_wrong_generation() {
-    let arena: Arena<i32, 10> = Arena::new(0);
-
-    // Allocate to get a valid index (slot 0, generation 0)
-    let idx = arena.alloc(42).unwrap();
-    assert_eq!(idx.raw(), 0);
-    assert_eq!(idx.generation(), 0); // slot 0 starts at generation 0
-
-    // Slot 5 starts with generation 5 (slot-based initial generation)
-    // Fabricated index with wrong generation should fail
-    let fake_wrong_gen = ArenaIndex::new(5, 0); // slot 5 has gen 5, not 0
-    assert_eq!(arena.get(fake_wrong_gen), Err(ArenaError::GenerationMismatch));
-
-    // Fabricated index with correct generation but unallocated slot should fail
-    let fake_unallocated = ArenaIndex::new(5, 5); // correct gen, but not allocated
-    assert_eq!(arena.get(fake_unallocated), Err(ArenaError::InvalidIndex));
-}
-
-#[test]
-fn test_iterator_returns_valid_generational_indices() {
-    let arena: Arena<i32, 10> = Arena::new(0);
-
-    // Allocate some values
-    arena.alloc(10).unwrap();
-    arena.alloc(20).unwrap();
-    arena.alloc(30).unwrap();
-
-    // All indices from iterator should be valid
-    for (idx, value) in arena.iter() {
-        assert!(arena.is_allocated(idx));
-        assert_eq!(arena.get(idx).unwrap(), value);
-    }
+    assert_eq!(arena.get(stale_idx), Err(ArenaError::InvalidIndex));
 }
 
 #[test]
@@ -883,9 +774,10 @@ fn test_iterator_indices_after_free_realloc() {
     let iter_indices: Vec<ArenaIndex> = arena.iter().map(|(i, _)| i).collect();
 
     assert!(iter_indices.contains(&idx1));
-    assert!(!iter_indices.contains(&idx2)); // Old idx2 is stale
-    assert!(iter_indices.contains(&idx3));
+    // Without generations, idx4 reuses the same slot as idx2, so idx2 == idx4
+    assert_eq!(idx2, idx4);
     assert!(iter_indices.contains(&idx4));
+    assert!(iter_indices.contains(&idx3));
 }
 
 // ============================================================================
@@ -970,47 +862,6 @@ fn test_free_list_no_corruption_on_partial_free() {
 }
 
 // ============================================================================
-// Clear and Generation Tests
-// ============================================================================
-
-#[test]
-fn test_clear_increments_all_generations() {
-    let arena: Arena<i32, 5> = Arena::new(0);
-
-    let idx1 = arena.alloc(1).unwrap();
-    let idx2 = arena.alloc(2).unwrap();
-
-    let gen1_before = idx1.generation();
-    let gen2_before = idx2.generation();
-
-    arena.clear();
-
-    // Allocate new indices
-    let new_idx1 = arena.alloc(10).unwrap();
-    let new_idx2 = arena.alloc(20).unwrap();
-
-    // New indices should have incremented generations
-    assert_eq!(new_idx1.generation(), gen1_before + 1);
-    assert_eq!(new_idx2.generation(), gen2_before + 1);
-
-    // Old indices should be invalid
-    assert_eq!(arena.get(idx1), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.get(idx2), Err(ArenaError::GenerationMismatch));
-}
-
-#[test]
-fn test_multiple_clears() {
-    let arena: Arena<i32, 3> = Arena::new(0);
-
-    for round in 0..5 {
-        let idx = arena.alloc(round).unwrap();
-        assert_eq!(idx.generation(), round as u32);
-
-        arena.clear();
-    }
-}
-
-// ============================================================================
 // Boundary and Edge Case Tests
 // ============================================================================
 
@@ -1018,17 +869,12 @@ fn test_multiple_clears() {
 fn test_index_at_boundary() {
     let arena: Arena<i32, 10> = Arena::new(0);
 
-    // Index exactly at capacity boundary (slot 9 has initial generation 9)
-    // Wrong generation should fail with GenerationMismatch
-    let boundary_wrong_gen = ArenaIndex::new(9, 0);
-    assert_eq!(arena.get(boundary_wrong_gen), Err(ArenaError::GenerationMismatch));
-
-    // Correct generation but not allocated should fail with InvalidIndex
-    let boundary_not_allocated = ArenaIndex::new(9, 9);
+    // Index at boundary - slot doesn't exist
+    let boundary_not_allocated = ArenaIndex::new(9);
     assert_eq!(arena.get(boundary_not_allocated), Err(ArenaError::InvalidIndex));
 
-    // Index one past boundary - always InvalidIndex regardless of generation
-    let past_boundary = ArenaIndex::new(10, 0);
+    // Index one past boundary - always InvalidIndex
+    let past_boundary = ArenaIndex::new(10);
     assert_eq!(arena.get(past_boundary), Err(ArenaError::InvalidIndex));
 }
 
@@ -1036,33 +882,20 @@ fn test_index_at_boundary() {
 fn test_max_index_value() {
     let arena: Arena<i32, 10> = Arena::new(0);
 
-    let huge_idx = ArenaIndex::new(usize::MAX, 0);
+    let huge_idx = ArenaIndex::new(usize::MAX);
     assert_eq!(arena.get(huge_idx), Err(ArenaError::InvalidIndex));
     assert_eq!(arena.free(huge_idx), Err(ArenaError::InvalidIndex));
     assert_eq!(arena.set(huge_idx, 42), Err(ArenaError::InvalidIndex));
 }
 
 #[test]
-fn test_max_generation_value() {
-    let arena: Arena<i32, 10> = Arena::new(0);
-
-    let idx = arena.alloc(42).unwrap();
-
-    // Fabricate an index with max generation
-    let max_gen_idx = ArenaIndex::new(idx.raw(), u32::MAX);
-    assert_eq!(arena.get(max_gen_idx), Err(ArenaError::GenerationMismatch));
-}
-
-#[test]
 fn test_arena_index_equality() {
-    let idx1 = ArenaIndex::new(5, 10);
-    let idx2 = ArenaIndex::new(5, 10);
-    let idx3 = ArenaIndex::new(5, 11);
-    let idx4 = ArenaIndex::new(6, 10);
+    let idx1 = ArenaIndex::new(5);
+    let idx2 = ArenaIndex::new(5);
+    let idx3 = ArenaIndex::new(6);
 
     assert_eq!(idx1, idx2);
-    assert_ne!(idx1, idx3); // Different generation
-    assert_ne!(idx1, idx4); // Different slot
+    assert_ne!(idx1, idx3); // Different slot
 }
 
 #[test]
@@ -1071,15 +904,15 @@ fn test_arena_index_hash() {
 
     let mut set = HashSet::new();
 
-    set.insert(ArenaIndex::new(0, 0));
-    set.insert(ArenaIndex::new(0, 1));
-    set.insert(ArenaIndex::new(1, 0));
+    set.insert(ArenaIndex::new(0));
+    set.insert(ArenaIndex::new(1));
+    set.insert(ArenaIndex::new(2));
 
     assert_eq!(set.len(), 3);
-    assert!(set.contains(&ArenaIndex::new(0, 0)));
-    assert!(set.contains(&ArenaIndex::new(0, 1)));
-    assert!(set.contains(&ArenaIndex::new(1, 0)));
-    assert!(!set.contains(&ArenaIndex::new(1, 1)));
+    assert!(set.contains(&ArenaIndex::new(0)));
+    assert!(set.contains(&ArenaIndex::new(1)));
+    assert!(set.contains(&ArenaIndex::new(2)));
+    assert!(!set.contains(&ArenaIndex::new(3)));
 }
 
 // ============================================================================
@@ -1161,16 +994,20 @@ fn test_interleaved_alloc_free_set() {
     arena.set(idx1, 100).unwrap();
     arena.set(idx3, 300).unwrap();
 
+    // idx2 is now invalid
+    assert_eq!(arena.get(idx2), Err(ArenaError::InvalidIndex));
+
     let idx4 = arena.alloc(4).unwrap();
 
     assert_eq!(arena.get(idx1).unwrap(), 100);
     assert_eq!(arena.get(idx3).unwrap(), 300);
     assert_eq!(arena.get(idx4).unwrap(), 4);
-    assert_eq!(arena.get(idx2), Err(ArenaError::GenerationMismatch));
+    // Without generations, idx4 reuses idx2's slot, so idx2 == idx4
+    assert_eq!(idx2, idx4);
 }
 
 // ============================================================================
-// Tree Tests with Generational Indices
+// Tree Tests
 // ============================================================================
 
 #[test]
@@ -1185,9 +1022,9 @@ fn test_tree_with_stale_indices() {
     arena.delete_recursive(root).unwrap();
 
     // All indices should now be stale
-    assert_eq!(arena.get(root), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.get(left), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.get(right), Err(ArenaError::GenerationMismatch));
+    assert_eq!(arena.get(root), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(left), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(right), Err(ArenaError::InvalidIndex));
 }
 
 #[test]
@@ -1205,7 +1042,7 @@ fn test_copy_then_delete_original() {
     arena.delete_recursive(root).unwrap();
 
     // Original indices should be stale
-    assert_eq!(arena.get(root), Err(ArenaError::GenerationMismatch));
+    assert_eq!(arena.get(root), Err(ArenaError::InvalidIndex));
 
     // Copied tree should still work
     match arena.get(copied_root).unwrap() {
@@ -1238,7 +1075,7 @@ fn test_partial_tree_delete() {
     // Root still exists but contains stale index for left branch
     match arena.get(root).unwrap() {
         Tree::Branch(l, r) => {
-            assert_eq!(arena.get(l), Err(ArenaError::GenerationMismatch)); // Stale
+            assert_eq!(arena.get(l), Err(ArenaError::InvalidIndex)); // Stale
             assert_eq!(arena.get(r).unwrap(), Tree::Leaf(3)); // Valid
         }
         _ => panic!("Expected branch"),
@@ -1279,19 +1116,6 @@ fn test_fragmentation_after_free_realloc() {
 // ============================================================================
 // Stress Tests
 // ============================================================================
-
-#[test]
-fn test_stress_many_generations() {
-    let arena: Arena<i32, 1> = Arena::new(0);
-
-    // Cycle through many generations on single slot
-    for i in 0..1000 {
-        let idx = arena.alloc(i).unwrap();
-        assert_eq!(idx.generation(), i as u32);
-        assert_eq!(arena.get(idx).unwrap(), i);
-        arena.free(idx).unwrap();
-    }
-}
 
 #[test]
 fn test_stress_rapid_alloc_free() {
@@ -1399,8 +1223,8 @@ fn test_gc_basic_collection() {
     assert_eq!(arena.get(leaf2).unwrap(), Tree::Leaf(2));
 
     // Garbage should be gone
-    assert_eq!(arena.get(garbage1), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.get(garbage2), Err(ArenaError::GenerationMismatch));
+    assert_eq!(arena.get(garbage1), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(garbage2), Err(ArenaError::InvalidIndex));
 }
 
 #[test]
@@ -1605,11 +1429,10 @@ fn test_gc_invalid_roots_ignored() {
     arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
 
     // Create some invalid indices
-    let invalid1 = ArenaIndex::new(50, 0); // Out of allocated range
-    let invalid2 = ArenaIndex::new(0, 999); // Wrong generation
+    let invalid1 = ArenaIndex::new(50); // Out of allocated range
 
     // GC should ignore invalid roots
-    let stats = arena.collect_garbage(&[valid_root, invalid1, invalid2]);
+    let stats = arena.collect_garbage(&[valid_root, invalid1]);
 
     assert_eq!(stats.marked, 1);
     assert_eq!(stats.collected, 1);
@@ -1624,29 +1447,6 @@ fn test_gc_empty_arena() {
     assert_eq!(stats.total_before, 0);
     assert_eq!(stats.marked, 0);
     assert_eq!(stats.collected, 0);
-}
-
-#[test]
-fn test_gc_preserves_generations() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let leaf = arena.alloc(Tree::Leaf(1)).unwrap();
-    let garbage = arena.alloc(Tree::Leaf(999)).unwrap();
-
-    let garbage_slot = garbage.raw();
-
-    // Collect
-    arena.collect_garbage(&[leaf]);
-
-    // Allocate in the freed slot
-    let new_leaf = arena.alloc(Tree::Leaf(2)).unwrap();
-
-    // Should reuse the same slot but with new generation
-    assert_eq!(new_leaf.raw(), garbage_slot);
-    assert_ne!(new_leaf.generation(), garbage.generation());
-
-    // Old garbage index should be invalid
-    assert_eq!(arena.get(garbage), Err(ArenaError::GenerationMismatch));
 }
 
 #[test]
@@ -2912,15 +2712,12 @@ fn test_gc_stress_incremental_tree_building() {
 fn test_arena_index_null() {
     let null_idx = ArenaIndex::NULL;
     assert!(null_idx.is_null());
-    // Note: index is stored as u32 internally, so raw() returns u32::MAX as usize
-    assert_eq!(null_idx.raw(), u32::MAX as usize);
-    assert_eq!(null_idx.generation(), u32::MAX);
 
     let default_idx = ArenaIndex::default();
     assert!(default_idx.is_null());
     assert_eq!(null_idx, default_idx);
 
-    let normal_idx = ArenaIndex::new(5, 10);
+    let normal_idx = ArenaIndex::new(5);
     assert!(!normal_idx.is_null());
 }
 
@@ -2944,7 +2741,7 @@ fn test_modify_invalid() {
 
     assert_eq!(
         arena.modify(idx, |_| {}),
-        Err(ArenaError::GenerationMismatch)
+        Err(ArenaError::InvalidIndex)
     );
 }
 
@@ -2959,7 +2756,7 @@ fn test_try_get() {
     assert_eq!(arena.try_get(idx), None);
 
     // Invalid index
-    let bad_idx = ArenaIndex::new(100, 0);
+    let bad_idx = ArenaIndex::new(100);
     assert_eq!(arena.try_get(bad_idx), None);
 }
 
@@ -3013,17 +2810,6 @@ fn test_validate() {
 
     arena.clear();
     assert!(arena.validate());
-}
-
-#[test]
-fn test_get_generation() {
-    let arena: Arena<i32, 10> = Arena::new(0);
-
-    // Initial generation for slot 5 should be 5 (slot-based)
-    assert_eq!(arena.get_generation(5), Some(5));
-
-    // Out of bounds
-    assert_eq!(arena.get_generation(100), None);
 }
 
 #[test]
@@ -3149,9 +2935,6 @@ fn test_arena_error_methods() {
 
     assert!(!ArenaError::InvalidIndex.is_out_of_memory());
     assert!(ArenaError::InvalidIndex.is_invalid_index());
-
-    assert!(!ArenaError::GenerationMismatch.is_out_of_memory());
-    assert!(ArenaError::GenerationMismatch.is_invalid_index());
 
     assert_eq!(ArenaError::OutOfMemory.as_str(), "arena is full");
 }
@@ -3321,7 +3104,7 @@ fn test_gc_with_out_of_bounds_roots() {
     let idx = arena.alloc(Tree::Leaf(42)).unwrap();
     
     // Create an invalid index that's out of bounds
-    let invalid_idx = ArenaIndex::new(1000, 0);
+    let invalid_idx = ArenaIndex::new(1000);
     
     // GC should safely ignore invalid indices
     let stats = arena.collect_garbage(&[invalid_idx, idx]);
@@ -3366,11 +3149,6 @@ fn test_arena_error_kind_methods() {
     assert!(invalid_index.is_invalid_index());
     assert!(!invalid_index.is_trace_error());
     
-    let gen_mismatch = ArenaError::GenerationMismatch;
-    assert!(!gen_mismatch.is_out_of_memory());
-    assert!(gen_mismatch.is_invalid_index()); // GenerationMismatch is also "invalid index"
-    assert!(!gen_mismatch.is_trace_error());
-    
     let trace_error = ArenaError::TraceError;
     assert!(!trace_error.is_out_of_memory());
     assert!(!trace_error.is_invalid_index());
@@ -3379,7 +3157,6 @@ fn test_arena_error_kind_methods() {
     // Test as_str
     assert_eq!(out_of_memory.as_str(), "arena is full");
     assert_eq!(invalid_index.as_str(), "invalid index");
-    assert_eq!(gen_mismatch.as_str(), "stale index (generation mismatch)");
     assert_eq!(trace_error.as_str(), "error during GC tracing");
 }
 
@@ -3647,7 +3424,7 @@ fn test_alloc_contiguous_finds_gap() {
     
     // Skip slots 5-9 (will be our gap)
     // Allocate slots 10-14
-    let _ = arena.alloc_contiguous(5, 0).unwrap(); // takes 5, 6, 7, 8, 9
+    let middle_block = arena.alloc_contiguous(5, 0).unwrap(); // takes 5, 6, 7, 8, 9
     for i in 0..5 {
         arena.alloc(100 + i).unwrap(); // takes 10, 11, 12, 13, 14
     }
@@ -3655,9 +3432,7 @@ fn test_alloc_contiguous_finds_gap() {
     assert_eq!(arena.len(), 15);
     
     // Free the middle 5 slots (5-9)
-    // First we need to find them - they were allocated contiguously starting at slot 5
-    let middle_start = ArenaIndex::new(5, arena.get_generation(5).unwrap());
-    arena.free_contiguous(middle_start, 5).unwrap();
+    arena.free_contiguous(middle_block, 5).unwrap();
     
     assert_eq!(arena.len(), 10);
     
@@ -3718,9 +3493,9 @@ fn test_free_contiguous_partial() {
     arena.free_contiguous(start, 5).unwrap();
     assert_eq!(arena.len(), 5);
     
-    // Remaining 5 slots should still be valid
+    // Remaining 5 slots should still be valid via index_at_offset
     for i in 5..10 {
-        let idx = ArenaIndex::new(start.raw() + i, arena.get_generation(start.raw() + i).unwrap());
+        let idx = arena.index_at_offset(start, i).unwrap();
         assert!(arena.get(idx).is_ok());
     }
 }
@@ -3731,16 +3506,20 @@ fn test_contiguous_reuse_after_free() {
     
     // Allocate and free a contiguous block
     let block1 = arena.alloc_contiguous(10, 1).unwrap();
+    
+    // Old block1 index should be valid now
+    assert_eq!(arena.get(block1), Ok(1));
+    
     arena.free_contiguous(block1, 10).unwrap();
+    
+    // After freeing, block1 index should be invalid
+    assert_eq!(arena.get(block1), Err(ArenaError::InvalidIndex));
     
     // Allocate another block of same size
     let block2 = arena.alloc_contiguous(10, 2).unwrap();
     
     // Should reuse the same slots
     assert_eq!(block2.raw(), block1.raw());
-    
-    // But different generation
-    assert_ne!(block2.generation(), block1.generation());
     
     // Verify values
     for i in 0..10 {

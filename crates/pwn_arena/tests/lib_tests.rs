@@ -44,32 +44,11 @@ fn test_invalid_index() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    // After freeing, the generation increments, so we get GenerationMismatch
-    assert_eq!(arena.get(idx), Err(ArenaError::GenerationMismatch));
+    // After freeing, the index is invalid
+    assert_eq!(arena.get(idx), Err(ArenaError::InvalidIndex));
 }
 
-#[test]
-fn test_generational_indices_aba_protection() {
-    let arena: Arena<i32, 10> = Arena::new(0);
 
-    // Allocate and free a slot
-    let old_idx = arena.alloc(42).unwrap();
-    arena.free(old_idx).unwrap();
-
-    // Allocate a new value in the same slot
-    let new_idx = arena.alloc(999).unwrap();
-
-    // The old index should now be invalid (ABA problem prevented)
-    assert_eq!(arena.get(old_idx), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.free(old_idx), Err(ArenaError::GenerationMismatch));
-
-    // The new index should work fine
-    assert_eq!(arena.get(new_idx).unwrap(), 999);
-
-    // Verify they point to the same raw slot but different generations
-    assert_eq!(old_idx.raw(), new_idx.raw());
-    assert_ne!(old_idx.generation(), new_idx.generation());
-}
 
 #[test]
 fn test_free_list_o1_allocation() {
@@ -120,9 +99,9 @@ fn test_clear_invalidates_all_indices() {
     arena.clear();
 
     // All old indices should be invalid
-    assert_eq!(arena.get(idx1), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.get(idx2), Err(ArenaError::GenerationMismatch));
-    assert_eq!(arena.get(idx3), Err(ArenaError::GenerationMismatch));
+    assert_eq!(arena.get(idx1), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx2), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx3), Err(ArenaError::InvalidIndex));
 
     // New allocations should work
     let new_idx = arena.alloc(42).unwrap();
