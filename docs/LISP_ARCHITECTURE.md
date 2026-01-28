@@ -138,7 +138,7 @@ Special forms like `if`, `and`, and `or` use short-circuit evaluation:
 ; 'and' stops at first false
 (and #f (error "never reached"))  ; => #f
 
-; 'or' stops at first true  
+; 'or' stops at first true
 (or #t (error "never reached"))  ; => #t
 ```
 
