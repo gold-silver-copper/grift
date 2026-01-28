@@ -170,15 +170,6 @@ Unlike many Lisps, we follow Scheme's truthiness model:
 (if #f 'yes 'no)      ; => no  (only #f is false)
 ```
 
-### 4. Generational Indices Prevent Bugs
-
-Arena slots use generational indices that prevent use-after-free bugs:
-
-```lisp
-; If you somehow kept a stale reference to freed memory,
-; the generation mismatch would cause an error, not silent corruption.
-```
-
 ## 📊 Memory Management from Lisp
 
 Control the garbage collector directly from your Lisp code:
