@@ -16,8 +16,7 @@
 //! - **Rich Error Handling**: Error messages with stack traces
 //! - **Pattern Matching**: `case` for value matching
 //! - **Iteration**: `do` loops for imperative-style iteration
-//! - **Macros**: `defmacro` with `quasiquote`/`unquote` and `gensym`
-//! - **Meta-programming**: `eval` for runtime code evaluation
+//! - **Meta-programming**: `eval` for runtime code evaluation, `quasiquote`/`unquote`
 //! - **Mutation**: `set!`, `set-car!`, `set-cdr!` for imperative programming
 //!
 //! ## Evaluation Strategy
@@ -38,7 +37,7 @@
 //!
 //! ## Truthiness
 //!
-//! Only `#f` is false. Everything else (including `nil`/`'()`) is truthy.
+//! Only `#f` is false. Everything else (including the empty list `'()`) is truthy.
 //!
 //! ## Special Forms
 //!
@@ -58,7 +57,6 @@
 //! - `eval` - Evaluate expression at runtime
 //! - `apply` - Apply function to argument list
 //! - `values` - Return multiple values as a list
-//! - `defmacro` - Define a macro
 
 pub use lisp_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
@@ -403,9 +401,9 @@ enum TrampolineState {
 /// Check if a builtin is a binary operation (exactly 2 args, optimized path)
 fn is_binary_builtin(builtin: Builtin) -> bool {
     matches!(builtin, 
-        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod |
+        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Modulo | Builtin::Remainder |
         Builtin::Lt | Builtin::Gt | Builtin::Le | Builtin::Ge | Builtin::NumEq |
-        Builtin::Eq | Builtin::Cons
+        Builtin::EqP | Builtin::EqvP | Builtin::Cons
     )
 }
 
@@ -414,11 +412,6 @@ fn is_binary_builtin(builtin: Builtin) -> bool {
 // ============================================================================
 
 /// Maximum number of macros that can be defined
-const MAX_MACROS: usize = 32;
-
-/// A gensym counter for generating unique symbols
-static GENSYM_COUNTER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
 /// The Lisp evaluator with full trampolined TCO
 pub struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
@@ -430,9 +423,6 @@ pub struct Evaluator<'a, const N: usize> {
     /// Continuation stack for full trampolining
     cont_stack: [Cont; MAX_CONT_DEPTH],
     cont_depth: usize,
-    /// Macro definitions: (name, (params, body))
-    macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
-    macro_count: usize,
     /// Native function registry
     native_registry: NativeRegistry<N>,
 }
@@ -447,8 +437,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             call_stack_depth: 0,
             cont_stack: [Cont::Done; MAX_CONT_DEPTH],
             cont_depth: 0,
-            macros: [(ArenaIndex::NULL, ArenaIndex::NULL, ArenaIndex::NULL); MAX_MACROS],
-            macro_count: 0,
             native_registry: NativeRegistry::new(),
         };
         
@@ -469,14 +457,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
         }
         
-        // Add 'true' and 'false' as aliases for #t and #f
-        let true_sym = lisp.symbol("true")?;
-        let true_val = lisp.true_val()?;
-        eval.global_env = eval.env_extend(eval.global_env, true_sym, true_val)?;
-        
-        let false_sym = lisp.symbol("false")?;
-        let false_val = lisp.false_val()?;
-        eval.global_env = eval.env_extend(eval.global_env, false_sym, false_val)?;
+        // Note: In Scheme, only #t and #f are the booleans. 
+        // 'true' and 'false' are NOT predefined aliases.
         
         Ok(eval)
     }
@@ -1068,15 +1050,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
                 let evaluated_expr = self.eval_in_env(expr_to_eval, env)?;
-                // Recursively process the expression for evaluation
-                let processed = self.deep_process_for_macro(evaluated_expr)?;
-                return Ok(TrampolineState::Eval { expr: processed, env: self.global_env });
-            }
-            
-            // defmacro - define a macro
-            if self.lisp.symbol_matches(car, "defmacro")? {
-                let val = self.eval_defmacro(cdr)?;
-                return Ok(TrampolineState::Return { val });
+                // Evaluate the result in the global environment
+                return Ok(TrampolineState::Eval { expr: evaluated_expr, env: self.global_env });
             }
             
             // apply - apply function to list of arguments
@@ -1088,13 +1063,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "values")? {
                 let vals = self.eval_values(cdr, env)?;
                 return Ok(TrampolineState::Return { val: vals });
-            }
-            
-            // Check for macro expansion
-            if let Value::Symbol { .. } = head {
-                if let Some(expanded) = self.try_macro_expand(car, cdr, env)? {
-                    return Ok(TrampolineState::Eval { expr: expanded, env });
-                }
             }
         }
         
@@ -1437,7 +1405,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::Cons { car, .. } => Ok(car),
-                    Value::Nil => self.lisp.nil().map_err(Into::into),
+                    // Scheme R7RS: car of empty list is an error
+                    Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
                     _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
                 }
             }
@@ -1446,7 +1415,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::Cons { cdr, .. } => Ok(cdr),
-                    Value::Nil => self.lisp.nil().map_err(Into::into),
+                    // Scheme R7RS: cdr of empty list is an error
+                    Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
                     _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
                 }
             }
@@ -1458,9 +1428,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::List => Ok(args),
             
-            Builtin::Atom => builtin_unary_pred!(self, args, |v: Value| v.is_atom()),
-            
-            Builtin::Eq => {
+            // Scheme-compliant equality predicates
+            Builtin::EqP => {
+                // eq? - tests whether two objects are the same object
                 extract_args!(self, args, a, b);
                 
                 let val_a = self.lisp.get(a)?;
@@ -1477,6 +1447,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 
                 self.lisp.boolean(eq).map_err(Into::into)
+            }
+            
+            Builtin::EqvP => {
+                // eqv? - tests value equivalence (same as eq? for most types in our impl)
+                extract_args!(self, args, a, b);
+                
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                
+                let eqv = match (val_a, val_b) {
+                    (Value::Nil, Value::Nil) => true,
+                    (Value::True, Value::True) => true,
+                    (Value::False, Value::False) => true,
+                    (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Char(x), Value::Char(y)) => x == y,
+                    (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
+                    _ => a == b,
+                };
+                
+                self.lisp.boolean(eqv).map_err(Into::into)
+            }
+            
+            Builtin::EqualP => {
+                // equal? - tests structural equality recursively
+                let result = self.equal_recursive(self.lisp.car(args)?, self.lisp.car(self.lisp.cdr(args)?)?)?;
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::Null => builtin_unary_pred!(self, args, |v: Value| v.is_nil()),
@@ -1515,12 +1511,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }, call_expr)
             }
             
-            Builtin::Mod => {
+            Builtin::Modulo => {
+                // Scheme modulo: result has the sign of the divisor
                 let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
                 let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
+                // Scheme modulo: ((a % b) + b) % b
+                let result = ((a % b) + b) % b;
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::Remainder => {
+                // Scheme remainder: result has the sign of the dividend
+                let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if b == 0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                // Rust's % operator already gives remainder with sign of dividend
                 self.lisp.number(a % b).map_err(Into::into)
             }
             
@@ -1541,12 +1551,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Error => {
                 let msg = self.lisp.car(args)?;
                 Err(self.make_error(ErrorKind::UserError, msg))
-            }
-            
-            Builtin::Gensym => {
-                // (gensym) - generate a unique symbol
-                // Note: prefix argument is not supported in no_std (would require string extraction)
-                self.gensym("g")
             }
             
             Builtin::SetCar => {
@@ -1729,7 +1733,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 self.lisp.number(x / y).map_err(Into::into)
             }
-            Builtin::Mod => {
+            Builtin::Modulo => {
+                // Scheme modulo: result has the sign of the divisor
+                let x = self.get_number_from_forced(a, call_expr)?;
+                let y = self.get_number_from_forced(b, call_expr)?;
+                if y == 0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let result = ((x % y) + y) % y;
+                self.lisp.number(result).map_err(Into::into)
+            }
+            Builtin::Remainder => {
+                // Scheme remainder: result has the sign of the dividend
                 let x = self.get_number_from_forced(a, call_expr)?;
                 let y = self.get_number_from_forced(b, call_expr)?;
                 if y == 0 {
@@ -1762,7 +1777,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let y = self.get_number_from_forced(b, call_expr)?;
                 self.lisp.boolean(x == y).map_err(Into::into)
             }
-            Builtin::Eq => {
+            Builtin::EqP | Builtin::EqvP => {
                 let val_a = self.lisp.get(a)?;
                 let val_b = self.lisp.get(b)?;
                 
@@ -1829,6 +1844,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
         let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
         self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+    }
+    
+    /// Recursive structural equality for equal? predicate
+    fn equal_recursive(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+        // Check if they're the same index first
+        if a == b {
+            return Ok(true);
+        }
+        
+        let val_a = self.lisp.get(a)?;
+        let val_b = self.lisp.get(b)?;
+        
+        match (val_a, val_b) {
+            (Value::Nil, Value::Nil) => Ok(true),
+            (Value::True, Value::True) => Ok(true),
+            (Value::False, Value::False) => Ok(true),
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Char(x), Value::Char(y)) => Ok(x == y),
+            (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b).map_err(Into::into),
+            (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
+                // Recursively check car and cdr
+                if !self.equal_recursive(car_a, car_b)? {
+                    return Ok(false);
+                }
+                self.equal_recursive(cdr_a, cdr_b)
+            }
+            _ => Ok(false),
+        }
     }
     
     // ========================================================================
@@ -2206,133 +2249,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Define a macro
-    /// (defmacro name (params...) body)
-    fn eval_defmacro(&mut self, args: ArenaIndex) -> EvalResult {
-        let first = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        
-        let (name, params) = match self.lisp.get(first)? {
-            Value::Symbol { .. } => {
-                // (defmacro name (params) body)
-                let params = self.lisp.car(rest)?;
-                (first, params)
-            }
-            Value::Cons { car: n, cdr: p } => {
-                // (defmacro (name params...) body) - shorthand
-                (n, p)
-            }
-            _ => return Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
-        };
-        
-        let body_list = if matches!(self.lisp.get(first)?, Value::Symbol { .. }) {
-            self.lisp.cdr(rest)?
-        } else {
-            rest
-        };
-        
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
-        
-        // Store macro
-        if self.macro_count >= MAX_MACROS {
-            return Err(self.make_error(ErrorKind::OutOfMemory, name).with_message("too many macros"));
-        }
-        
-        self.macros[self.macro_count] = (name, params, body);
-        self.macro_count += 1;
-        
-        Ok(name)
-    }
-    
-    /// Try to expand a macro call
-    fn try_macro_expand(&mut self, name: ArenaIndex, args: ArenaIndex, _env: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
-        // Look up macro by name
-        for i in 0..self.macro_count {
-            let (macro_name, params, body) = self.macros[i];
-            if self.lisp.symbol_eq(macro_name, name)? {
-                // Found macro - bind params to unevaluated args and evaluate body
-                let expansion_env = self.bind_macro_params(params, args)?;
-                let expanded = self.eval_in_env(body, expansion_env)?;
-                // Recursively process the expansion
-                let processed = self.deep_process_for_macro(expanded)?;
-                return Ok(Some(processed));
-            }
-        }
-        Ok(None)
-    }
-    
-    /// Recursively process a value for macro expansion
-    /// This ensures nested cons cells are properly handled
-    fn deep_process_for_macro(&mut self, idx: ArenaIndex) -> EvalResult {
-        self.deep_process_impl(idx, 50)
-    }
-    
-    fn deep_process_impl(&mut self, idx: ArenaIndex, depth: usize) -> EvalResult {
-        if depth == 0 {
-            return Ok(idx);
-        }
-        
-        // Get the value (identity in strict mode)
-        let val = self.get_value(idx)?;
-        
-        match self.lisp.get(val)? {
-            Value::Cons { car, cdr } => {
-                let new_car = self.deep_process_impl(car, depth - 1)?;
-                let new_cdr = self.deep_process_impl(cdr, depth - 1)?;
-                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
-            }
-            _ => Ok(val),
-        }
-    }
-    
-    /// Get a value (identity function in strict evaluation)
-    ///
-    /// In strict evaluation, values are already fully evaluated, so this
-    /// just returns the value unchanged.
-    #[inline]
-    fn get_value(&mut self, idx: ArenaIndex) -> EvalResult {
-        Ok(idx)
-    }
-    
-    /// Bind macro parameters to unevaluated arguments
-    fn bind_macro_params(&self, params: ArenaIndex, args: ArenaIndex) -> EvalResult {
-        let mut env = self.lisp.nil()?;
-        let mut params_cur = params;
-        let mut args_cur = args;
-        
-        loop {
-            let p = self.lisp.get(params_cur)?;
-            let a = self.lisp.get(args_cur)?;
-            
-            match (p, a) {
-                (Value::Nil, _) => break,
-                (Value::Cons { car: param, cdr: prest }, Value::Cons { car: arg, cdr: arest }) => {
-                    // Quote the argument to prevent evaluation
-                    env = self.env_extend(env, param, arg)?;
-                    params_cur = prest;
-                    args_cur = arest;
-                }
-                (Value::Cons { .. }, Value::Nil) => {
-                    // Not enough arguments - bind remaining to nil
-                    break;
-                }
-                (Value::Symbol { .. }, _) => {
-                    // Rest parameter - bind remaining args
-                    env = self.env_extend(env, params_cur, args_cur)?;
-                    break;
-                }
-                _ => break,
-            }
-        }
-        
-        Ok(env)
-    }
-    
     /// Evaluate apply - apply function to list of arguments
     fn step_eval_apply(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let func_expr = self.lisp.car(args)?;
@@ -2380,45 +2296,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         Ok(result)
-    }
-    
-    /// Generate a unique symbol (gensym)
-    pub fn gensym(&self, prefix: &str) -> EvalResult {
-        use core::sync::atomic::Ordering;
-        let n = GENSYM_COUNTER.fetch_add(1, Ordering::SeqCst);
-        
-        // Build symbol name: prefix + n
-        // Since we're in no_std, we need to format manually
-        let mut buf = [0u8; 32];
-        let prefix_bytes = prefix.as_bytes();
-        let prefix_len = prefix_bytes.len().min(20);
-        buf[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
-        
-        // Format number into num_buf (right-aligned)
-        let mut num_buf = [0u8; 10];
-        let mut num_len;
-        
-        if n == 0 {
-            num_buf[9] = b'0';
-            num_len = 1;
-        } else {
-            num_len = 0;
-            let mut tmp = n;
-            while tmp > 0 && num_len < 10 {
-                num_buf[9 - num_len] = b'0' + (tmp % 10) as u8;
-                tmp /= 10;
-                num_len += 1;
-            }
-        }
-        
-        // Copy number to output buffer
-        let total_len = prefix_len + num_len;
-        buf[prefix_len..total_len].copy_from_slice(&num_buf[10 - num_len..]);
-        
-        // Convert to str - this can't fail since we only use ASCII bytes
-        // The unwrap_or is defensive but should never trigger
-        let name = core::str::from_utf8(&buf[..total_len]).unwrap_or("g0");
-        self.lisp.symbol(name).map_err(Into::into)
     }
     
     /// Evaluate let with TCO in body

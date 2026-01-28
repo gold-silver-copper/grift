@@ -154,14 +154,16 @@ fn test_parse_symbol() {
 }
 
 #[test]
-fn test_parse_nil() {
+fn test_parse_empty_list() {
     let lisp: Lisp<100> = Lisp::new();
     
-    let idx = parse(&lisp, "nil").unwrap();
-    assert_eq!(lisp.get(idx).unwrap(), Value::Nil);
-    
+    // () is the empty list
     let idx = parse(&lisp, "()").unwrap();
     assert_eq!(lisp.get(idx).unwrap(), Value::Nil);
+    
+    // 'nil' is now just a regular symbol in Scheme, not the empty list
+    let idx = parse(&lisp, "nil").unwrap();
+    assert!(lisp.get(idx).unwrap().is_symbol());
 }
 
 #[test]

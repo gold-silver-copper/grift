@@ -354,7 +354,7 @@ fn main() {
         &lisp,
         &mut eval,
         20,
-        "(filter (lambda (x) (= (mod x 2) 0)) (range 1 21))",
+        "(filter (lambda (x) (= (modulo x 2) 0)) (range 1 21))",
         None,
     ));
 
@@ -678,11 +678,11 @@ fn main() {
     ));
 
     results.push(run_bench(
-        "Modulo (mod 17 5) x 500",
+        "Modulo (modulo 17 5) x 500",
         &lisp,
         &mut eval,
         500,
-        "(mod 17 5)",
+        "(modulo 17 5)",
         Some("2"),
     ));
 
@@ -813,34 +813,12 @@ fn main() {
     // SECTION 11: Macros & Metaprogramming
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 11: Macros & Metaprogramming");
+    println!("Section 11: Reserved for Future Hygienic Macros");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Define a simple macro
-    let _ = eval_str(
-        &lisp,
-        &mut eval,
-        "(defmacro unless (cond then else) (list 'if cond else then))",
-    );
-
-    results.push(run_bench(
-        "Macro expansion (unless) x 200",
-        &lisp,
-        &mut eval,
-        200,
-        "(unless #f 'yes 'no)",
-        Some("yes"),
-    ));
-
-    // Gensym for macro hygiene
-    results.push(run_bench(
-        "Gensym generation x 200",
-        &lisp,
-        &mut eval,
-        200,
-        "(gensym)",
-        None,
-    ));
+    // Note: defmacro and gensym have been removed for Scheme R7RS conformance.
+    // Hygienic macros via syntax-rules will be implemented in a future phase.
+    println!("  (Skipped - defmacro/gensym removed for Scheme conformance)");
 
     // Clean up before next section
     eval.gc();

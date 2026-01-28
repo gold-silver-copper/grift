@@ -147,12 +147,8 @@ define_builtins! {
     /// list - Create a list from arguments
     List => "list",
     
-    // Predicates
-    /// atom - Check if value is an atom
-    Atom => "atom",
-    /// eq - Check equality
-    Eq => "eq",
-    /// null? - Check if value is nil
+    // Predicates (Scheme R7RS compliant)
+    /// null? - Check if value is the empty list
     Null => "null?",
     /// pair? - Check if value is a pair
     Pairp => "pair?",
@@ -164,6 +160,12 @@ define_builtins! {
     Procedurep => "procedure?",
     /// symbol? - Check if value is a symbol
     Symbolp => "symbol?",
+    /// eq? - Scheme-compliant identity equality
+    EqP => "eq?",
+    /// eqv? - Scheme-compliant value equality
+    EqvP => "eqv?",
+    /// equal? - Scheme-compliant recursive structural equality
+    EqualP => "equal?",
     
     // Arithmetic
     /// + - Addition
@@ -174,8 +176,10 @@ define_builtins! {
     Mul => "*",
     /// / - Division
     Div => "/",
-    /// mod - Modulo
-    Mod => "mod",
+    /// modulo - Scheme modulo (result has sign of divisor)
+    Modulo => "modulo",
+    /// remainder - Scheme remainder (result has sign of dividend)
+    Remainder => "remainder",
     
     // Comparison
     /// < - Less than
@@ -204,10 +208,6 @@ define_builtins! {
     // Error handling
     /// error - Raise an error
     Error => "error",
-    
-    // Symbol generation for hygiene
-    /// gensym - Generate unique symbol
-    Gensym => "gensym",
     
     // Mutation operations
     /// set-car! - Mutate car of pair
@@ -351,12 +351,12 @@ macro_rules! define_stdlib {
 }
 
 // Define all standard library functions using the include_stdlib! macro.
-// This macro reads the stdlib.lisp file and generates the StdLib enum.
-// To add a new function, simply add a new entry in stdlib.lisp.
-// Note: member/assoc use eq for comparison (like Scheme's memq/assq).
+// This macro reads the stdlib.scm file and generates the StdLib enum.
+// To add a new function, simply add a new entry in stdlib.scm.
+// Note: member/assoc use eq? for comparison (like Scheme's memq/assq).
 // This works for symbols and identical objects. For value comparison,
 // define a custom function or use fold with a predicate.
-lisp_macros::include_stdlib!("src/stdlib.lisp");
+lisp_macros::include_stdlib!("src/stdlib.scm");
 
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -829,21 +829,27 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Get car of a cons cell
+    /// 
+    /// In Scheme R7RS, car of an empty list is an error.
     #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { car, .. } => Ok(car),
-            Value::Nil => self.nil(), // car of nil is nil in classic Lisp
+            // Scheme R7RS: car of empty list is an error
+            Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
     
     /// Get cdr of a cons cell
+    /// 
+    /// In Scheme R7RS, cdr of an empty list is an error.
     #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { cdr, .. } => Ok(cdr),
-            Value::Nil => self.nil(), // cdr of nil is nil in classic Lisp
+            // Scheme R7RS: cdr of empty list is an error
+            Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -1881,13 +1887,9 @@ impl<'a> Parser<'a> {
         
         let name = &buffer[..len];
         
-        // Check for special symbols
-        if name == b"nil" {
-            return lisp.nil().map_err(Into::into);
-        }
-        // Note: #t and #f are now the canonical booleans
-        // but we can still allow 'true' and 'false' as symbols that 
-        // the evaluator can bind to #t and #f
+        // Note: In Scheme, nil is just a regular symbol.
+        // The empty list is written as () or '() only.
+        // No special handling for 'nil' - it's parsed as a regular symbol.
         
         lisp.symbol_from_bytes(name).map_err(Into::into)
     }

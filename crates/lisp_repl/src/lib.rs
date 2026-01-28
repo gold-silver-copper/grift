@@ -505,22 +505,23 @@ fn print_help() {
     println!("  (apply f args)        - Apply function to list");
     println!("  (values v1 v2...)     - Multiple return values");
     println!();
-    println!("Macros:");
-    println!("  (defmacro name (params) body) - Define a macro");
-    println!("  (gensym)              - Generate unique symbol");
-    println!();
     println!("Built-in Functions:");
     println!("  List:   car, cdr, cons, list");
-    println!("  Pred:   atom, eq, null?, pair?, number?, boolean?");
+    println!("  Pred:   eq?, eqv?, equal?, null?, pair?, number?, boolean?");
     println!("          symbol?, procedure?");
     println!("  Bool:   not");
-    println!("  Math:   +, -, *, /, mod");
+    println!("  Math:   +, -, *, /, modulo, remainder");
     println!("  Cmp:    <, >, <=, >=, =");
     println!("  I/O:    print, display, newline");
     println!("  Err:    error");
-    println!("  Memo:   memoize");
     println!("  Mut:    set-car!, set-cdr!");
     println!("  GC:     gc, gc-enable, gc-disable, gc-enabled?, arena-stats");
+    println!();
+    println!("Standard Library Functions:");
+    println!("  atom, map, filter, fold, length, append, reverse");
+    println!("  nth, take, drop, zip, member, assoc, range");
+    println!("  compose, identity, constantly, flip, curry");
+    println!("  cadr, caddr, cddr");
     println!();
     println!("Mutation:");
     println!("  (set! name value)    - Mutate variable binding");
@@ -534,7 +535,7 @@ fn print_help() {
     println!("  (gc-enabled?)    - Check if GC is enabled");
     println!("  (arena-stats)    - Returns (capacity allocated free usage%)");
     println!();
-    println!("NOTE: This is a Lisp with STRICT EVALUATION and MUTATION!");
+    println!("NOTE: This is Scheme-like with STRICT EVALUATION and MUTATION!");
     println!("      - All arguments are evaluated before function application");
     println!("      - Full tail-call optimization (TCO) for deep recursion");
     println!("      - Mutation: set!, set-car!, set-cdr! available");
@@ -560,10 +561,6 @@ fn print_help() {
     println!("  ; Iteration with do");
     println!("  (do ((i 1 (+ i 1)) (sum 0 (+ sum i)))");
     println!("      ((> i 5) sum))  ; => 15");
-    println!();
-    println!("  ; Macros");
-    println!("  (defmacro unless (c t e) (list 'if c e t))");
-    println!("  (unless #f 'yes 'no)  ; => yes");
     println!();
 }
 

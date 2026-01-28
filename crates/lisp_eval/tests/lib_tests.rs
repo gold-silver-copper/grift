@@ -29,19 +29,18 @@ fn test_eval_booleans() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // In Scheme, only #t and #f are booleans (no true/false aliases)
     assert!(eval_is_true(&lisp, &mut eval, "#t"));
     assert!(eval_is_false(&lisp, &mut eval, "#f"));
-    assert!(eval_is_true(&lisp, &mut eval, "true"));
-    assert!(eval_is_false(&lisp, &mut eval, "false"));
 }
 
 #[test]
-fn test_nil_is_truthy() {
+fn test_empty_list_is_truthy() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // nil/'() is NOT false - only #f is false
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(if nil 1 2)"), 1);
+    // '() (the empty list) is NOT false - only #f is false
+    // Note: In Scheme, 'nil' is just a regular symbol, not the empty list
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if '() 1 2)"), 1);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if 0 1 2)"), 1);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if #f 1 2)"), 2);
@@ -430,8 +429,8 @@ fn test_predicates() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // null? tests for empty list
     assert!(eval_is_true(&lisp, &mut eval, "(null? '())"));
-    assert!(eval_is_true(&lisp, &mut eval, "(null? nil)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? '(1))"));
     
     assert!(eval_is_true(&lisp, &mut eval, "(pair? '(1 . 2))"));
@@ -459,7 +458,7 @@ fn test_not() {
     
     assert!(eval_is_true(&lisp, &mut eval, "(not #f)"));
     assert!(eval_is_false(&lisp, &mut eval, "(not #t)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(not nil)")); // nil is truthy!
+    assert!(eval_is_false(&lisp, &mut eval, "(not '())")); // empty list is truthy!
     assert!(eval_is_false(&lisp, &mut eval, "(not 0)"));   // 0 is truthy!
 }
 
@@ -844,57 +843,9 @@ fn test_eval_computed() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// DEFMACRO - Macro Definition
+// Note: defmacro and gensym have been removed for Scheme R7RS conformance.
+// Hygienic macros via syntax-rules will be implemented in a future phase.
 // ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_defmacro_basic() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define a simple macro that adds 10 to its argument
-    eval.eval_str("(defmacro add10 (x) (list '+ x 10))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(add10 5)"), 15);
-}
-
-#[test]
-fn test_defmacro_unless() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define 'unless' macro (opposite of 'if')
-    eval.eval_str("(defmacro unless (cond then else) (list 'if cond else then))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(unless #f 42 0)"), 42);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(unless #t 42 0)"), 0);
-}
-
-#[test]
-fn test_defmacro_when() {
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Define 'when' macro (if without else)
-    eval.eval_str("(defmacro when (cond body) (list 'if cond body nil))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(when #t 100)"), 100);
-}
-
-// ───────────────────────────────────────────────────────────────────────────
-// GENSYM - Generate Unique Symbols
-// ───────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_gensym_uniqueness() {
-    let lisp: Lisp<2000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    let sym1 = eval.eval_str("(gensym)").unwrap();
-    let sym2 = eval.eval_str("(gensym)").unwrap();
-    
-    // Each gensym should be unique
-    assert!(lisp.get(sym1).unwrap().is_symbol());
-    assert!(lisp.get(sym2).unwrap().is_symbol());
-    assert!(!lisp.symbol_eq(sym1, sym2).unwrap());
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // APPLY - Apply Function to List
@@ -947,9 +898,9 @@ fn test_car_comprehensive() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car '(1 2 3))"), 1);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cons 42 99))"), 42);
     
-    // car of nil
-    let result = eval.eval_str("(car '())").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    // Scheme R7RS: car of empty list is an error
+    let result = eval.eval_str("(car '())");
+    assert!(result.is_err());
 }
 
 #[test]
@@ -964,9 +915,9 @@ fn test_cdr_comprehensive() {
     // cdr of pair
     assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr (cons 1 2))"), 2);
     
-    // cdr of nil
-    let result = eval.eval_str("(cdr '())").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    // Scheme R7RS: cdr of empty list is an error
+    let result = eval.eval_str("(cdr '())");
+    assert!(result.is_err());
 }
 
 #[test]
@@ -1008,6 +959,7 @@ fn test_atom_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // atom is now a stdlib function: (define (atom x) (not (pair? x)))
     assert!(eval_is_true(&lisp, &mut eval, "(atom 42)"));
     assert!(eval_is_true(&lisp, &mut eval, "(atom 'x)"));
     assert!(eval_is_true(&lisp, &mut eval, "(atom #t)"));
@@ -1021,14 +973,23 @@ fn test_eq_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    assert!(eval_is_true(&lisp, &mut eval, "(eq 1 1)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(eq 1 2)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq 'a 'a)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(eq 'a 'b)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq '() '())"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq #t #t)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq #f #f)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(eq #t #f)"));
+    // Scheme uses eq? for identity comparison
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? 1 1)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eq? 1 2)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? 'a 'a)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eq? 'a 'b)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? '() '())"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? #t #t)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? #f #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eq? #t #f)"));
+    
+    // eqv? has same semantics for basic types
+    assert!(eval_is_true(&lisp, &mut eval, "(eqv? 1 1)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eqv? 1 2)"));
+    
+    // equal? provides structural equality
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? '(1 2 3) '(1 2 3))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(equal? '(1 2 3) '(1 2 4))"));
 }
 
 #[test]
@@ -1036,8 +997,9 @@ fn test_null_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // null? tests for the empty list '()
+    // Note: 'nil' is just a regular symbol in Scheme, not the empty list
     assert!(eval_is_true(&lisp, &mut eval, "(null? '())"));
-    assert!(eval_is_true(&lisp, &mut eval, "(null? nil)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? 0)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? #f)"));
     assert!(eval_is_false(&lisp, &mut eval, "(null? '(1))"));
@@ -1154,13 +1116,28 @@ fn test_div_comprehensive() {
 }
 
 #[test]
-fn test_mod_comprehensive() {
+fn test_modulo_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 10 3)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 15 5)"), 0);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 7 2)"), 1);
+    // Scheme modulo: result has sign of divisor
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 10 3)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 15 5)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 7 2)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo -13 4)"), 3);  // Scheme: result has sign of divisor
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 13 -4)"), -3); // Scheme: result has sign of divisor
+}
+
+#[test]
+fn test_remainder_comprehensive() {
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Scheme remainder: result has sign of dividend
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder 10 3)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder 15 5)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder -13 4)"), -1); // Scheme: result has sign of dividend
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder 13 -4)"), 1);  // Scheme: result has sign of dividend
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1325,8 +1302,8 @@ fn test_filter_multiples() {
     let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Filter helper: filter out multiples
-    eval.eval_str("(define (filter-multiples n stream) (cond ((null? stream) '()) ((= (mod (car stream) n) 0) (filter-multiples n (cdr stream))) (else (cons (car stream) (filter-multiples n (cdr stream))))))").unwrap();
+    // Filter helper: filter out multiples (using modulo instead of mod)
+    eval.eval_str("(define (filter-multiples n stream) (cond ((null? stream) '()) ((= (modulo (car stream) n) 0) (filter-multiples n (cdr stream))) (else (cons (car stream) (filter-multiples n (cdr stream))))))").unwrap();
     
     // Test filter-multiples on a finite list
     eval.eval_str("(define nums '(2 3 4 5 6 7 8 9 10))").unwrap();
@@ -1592,15 +1569,15 @@ fn test_gc_intern_table_survives() {
 // These tests document expected behavior that might be surprising
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// PITFALL: nil is NOT false!
-/// In this Lisp, only #f is false. nil/() is the empty list and is truthy.
+/// PITFALL: The empty list '() is NOT false!
+/// In this Lisp, only #f is false. The empty list is truthy.
+/// Note: 'nil' is just a regular symbol in Scheme, not the empty list.
 #[test]
-fn test_pitfall_nil_is_truthy() {
+fn test_pitfall_empty_list_is_truthy() {
     let lisp: Lisp<1000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // nil is truthy!
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(if nil 1 2)"), 1);  // Takes then branch
+    // The empty list is truthy!
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if '() 1 2)"), 1);  // Takes then branch
     
     // Only #f is false
