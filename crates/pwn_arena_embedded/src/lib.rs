@@ -80,7 +80,6 @@ static MOCK_GPIO: [AtomicUsize; MOCK_GPIO_COUNT] = {
 // Negative addresses are treated as unsigned values (wrapped).
 define_native_stateful!(
     native_peek,
-    static: MOCK_MEMORY,
     (addr: isize) -> isize,
     {
         let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
@@ -99,7 +98,6 @@ define_native_stateful!(
 // Negative addresses are treated as unsigned values (wrapped).
 define_native_stateful!(
     native_poke,
-    static: MOCK_MEMORY,
     (addr: isize, value: isize) -> isize,
     {
         let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
@@ -124,7 +122,6 @@ define_native_stateful!(
 // Negative addresses are treated as unsigned values (wrapped).
 define_native_stateful!(
     native_peek32,
-    static: MOCK_MEMORY,
     (addr: isize) -> isize,
     {
         let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
@@ -139,7 +136,6 @@ define_native_stateful!(
 // Negative addresses are treated as unsigned values (wrapped).
 define_native_stateful!(
     native_poke32,
-    static: MOCK_MEMORY,
     (addr: isize, value: isize) -> isize,
     {
         let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
@@ -159,7 +155,6 @@ define_native_stateful!(
 // Register is an index (0-15) into the GPIO register array.
 define_native_stateful!(
     native_gpio_read,
-    static: MOCK_GPIO,
     (reg: isize) -> isize,
     {
         if reg < 0 || reg >= MOCK_GPIO_COUNT as isize {
@@ -175,7 +170,6 @@ define_native_stateful!(
 // Lisp signature: `(gpio-write register value) -> value`
 define_native_stateful!(
     native_gpio_write,
-    static: MOCK_GPIO,
     (reg: isize, value: isize) -> isize,
     {
         if reg >= 0 && reg < MOCK_GPIO_COUNT as isize {
@@ -190,7 +184,6 @@ define_native_stateful!(
 // Lisp signature: `(gpio-set register bit) -> new-value`
 define_native_stateful!(
     native_gpio_set,
-    static: MOCK_GPIO,
     (reg: isize, bit: isize) -> isize,
     {
         if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
@@ -208,7 +201,6 @@ define_native_stateful!(
 // Lisp signature: `(gpio-clear register bit) -> new-value`
 define_native_stateful!(
     native_gpio_clear,
-    static: MOCK_GPIO,
     (reg: isize, bit: isize) -> isize,
     {
         if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
@@ -226,7 +218,6 @@ define_native_stateful!(
 // Lisp signature: `(gpio-toggle register bit) -> new-value`
 define_native_stateful!(
     native_gpio_toggle,
-    static: MOCK_GPIO,
     (reg: isize, bit: isize) -> isize,
     {
         if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {

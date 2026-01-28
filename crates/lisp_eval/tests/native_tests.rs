@@ -219,7 +219,6 @@ static COUNTER_EVALUATOR: AtomicUsize = AtomicUsize::new(0);
 // Test zero-argument stateful function
 define_native_stateful!(
     native_increment_counter,
-    static: COUNTER_NO_ARGS,
     () -> isize,
     {
         COUNTER_NO_ARGS.fetch_add(1, Ordering::Relaxed) as isize
@@ -229,7 +228,6 @@ define_native_stateful!(
 // Test single-argument stateful function
 define_native_stateful!(
     native_add_to_counter,
-    static: COUNTER_ONE_ARG,
     (n: isize) -> isize,
     {
         COUNTER_ONE_ARG.fetch_add(n as usize, Ordering::Relaxed) as isize
@@ -239,7 +237,6 @@ define_native_stateful!(
 // Test two-argument stateful function
 define_native_stateful!(
     native_set_counter_if_less,
-    static: COUNTER_TWO_ARGS,
     (threshold: isize, new_val: isize) -> isize,
     {
         let current = COUNTER_TWO_ARGS.load(Ordering::Relaxed) as isize;
@@ -255,7 +252,6 @@ define_native_stateful!(
 // Functions for evaluator test
 define_native_stateful!(
     native_eval_inc,
-    static: COUNTER_EVALUATOR,
     () -> isize,
     {
         COUNTER_EVALUATOR.fetch_add(1, Ordering::Relaxed) as isize
@@ -264,7 +260,6 @@ define_native_stateful!(
 
 define_native_stateful!(
     native_eval_add,
-    static: COUNTER_EVALUATOR,
     (n: isize) -> isize,
     {
         COUNTER_EVALUATOR.fetch_add(n as usize, Ordering::Relaxed) as isize
@@ -371,14 +366,14 @@ fn test_define_native_stateful_with_evaluator() {
 }
 
 // ============================================================================
-// Tests for simplified define_native_stateful! (without static: declaration)
+// Tests for simplified define_native_stateful!
 // ============================================================================
 
 // Static variables for simplified tests
 static SIMPLE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static SECONDARY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-// Test simplified syntax without static: declaration
+// Test simplified syntax
 define_native_stateful!(
     native_simple_inc,
     () -> isize,
@@ -692,259 +687,4 @@ fn test_stateful_with_lisp_context() {
     let result = eval.eval_str("(stateful-cons)").unwrap();
     let first = lisp.car(result).unwrap();
     assert_eq!(lisp.get(first).unwrap().as_number(), Some(2));
-}
-
-// ============================================================================
-// Tests demonstrating builtins can be implemented as native functions
-// ============================================================================
-
-// Native implementation of car (equivalent to Builtin::Car)
-fn native_car<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let pair = lisp.car(args)?;
-    lisp.car(pair)
-}
-
-// Native implementation of cdr (equivalent to Builtin::Cdr)
-fn native_cdr<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let pair = lisp.car(args)?;
-    lisp.cdr(pair)
-}
-
-// Native implementation of cons (equivalent to Builtin::Cons)
-fn native_cons<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let car = lisp.car(args)?;
-    let rest = lisp.cdr(args)?;
-    let cdr = lisp.car(rest)?;
-    lisp.cons(car, cdr)
-}
-
-// Native implementation of list (equivalent to Builtin::List)
-fn native_list<const N: usize>(
-    _lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    // List just returns its arguments as-is
-    Ok(args)
-}
-
-// Native implementation of null? (equivalent to Builtin::Null)
-fn native_null_p<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let val = lisp.car(args)?;
-    let is_nil = lisp.get(val)?.is_nil();
-    lisp.boolean(is_nil)
-}
-
-// Native implementation of pair? (equivalent to Builtin::Pairp)
-fn native_pair_p<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let val = lisp.car(args)?;
-    let is_cons = lisp.get(val)?.is_cons();
-    lisp.boolean(is_cons)
-}
-
-// Native implementation of number? (equivalent to Builtin::Numberp)
-fn native_number_p<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let val = lisp.car(args)?;
-    let is_number = lisp.get(val)?.is_number();
-    lisp.boolean(is_number)
-}
-
-// Native implementation of not (equivalent to Builtin::Not)
-fn native_not<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let val = lisp.car(args)?;
-    let is_false = lisp.get(val)?.is_false();
-    lisp.boolean(is_false)
-}
-
-// Native implementation of + (variadic addition)
-// Note: Simplified - silently skips non-numbers. Use isize::from_lisp() for strict typing.
-fn native_add_variadic<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let mut sum: isize = 0;
-    let mut current = args;
-    while !lisp.get(current)?.is_nil() {
-        let val = lisp.car(current)?;
-        if let Some(n) = lisp.get(val)?.as_number() {
-            sum += n;
-        }
-        current = lisp.cdr(current)?;
-    }
-    lisp.number(sum)
-}
-
-// Native implementation of * (variadic multiplication)
-// Note: Simplified - silently skips non-numbers. Use isize::from_lisp() for strict typing.
-fn native_mul<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let mut product: isize = 1;
-    let mut current = args;
-    while !lisp.get(current)?.is_nil() {
-        let val = lisp.car(current)?;
-        if let Some(n) = lisp.get(val)?.as_number() {
-            product *= n;
-        }
-        current = lisp.cdr(current)?;
-    }
-    lisp.number(product)
-}
-
-// Native implementation of < (binary comparison)
-fn native_lt<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let a_idx = lisp.car(args)?;
-    let rest = lisp.cdr(args)?;
-    let b_idx = lisp.car(rest)?;
-    
-    let a = isize::from_lisp(lisp, a_idx)?;
-    let b = isize::from_lisp(lisp, b_idx)?;
-    
-    lisp.boolean(a < b)
-}
-
-// Native implementation of = (numeric equality)
-fn native_num_eq<const N: usize>(
-    lisp: &Lisp<N>,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    let a_idx = lisp.car(args)?;
-    let rest = lisp.cdr(args)?;
-    let b_idx = lisp.car(rest)?;
-    
-    let a = isize::from_lisp(lisp, a_idx)?;
-    let b = isize::from_lisp(lisp, b_idx)?;
-    
-    lisp.boolean(a == b)
-}
-
-#[test]
-fn test_builtins_as_native_functions() {
-    use lisp_eval::Evaluator;
-    
-    let lisp: Lisp<10000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Register our native implementations as alternatives
-    eval.register_native("my-car", native_car).unwrap();
-    eval.register_native("my-cdr", native_cdr).unwrap();
-    eval.register_native("my-cons", native_cons).unwrap();
-    eval.register_native("my-list", native_list).unwrap();
-    eval.register_native("my-null?", native_null_p).unwrap();
-    eval.register_native("my-pair?", native_pair_p).unwrap();
-    eval.register_native("my-number?", native_number_p).unwrap();
-    eval.register_native("my-not", native_not).unwrap();
-    eval.register_native("my-+", native_add_variadic).unwrap();
-    eval.register_native("my-*", native_mul).unwrap();
-    eval.register_native("my-<", native_lt).unwrap();
-    eval.register_native("my-=", native_num_eq).unwrap();
-    
-    // Test list operations
-    let result = eval.eval_str("(my-car '(1 2 3))").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
-    
-    let result = eval.eval_str("(my-car (my-cdr '(1 2 3)))").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(2));
-    
-    let result = eval.eval_str("(my-car (my-cons 'a '(b c)))").unwrap();
-    assert!(lisp.symbol_matches(result, "a").unwrap());
-    
-    // Test predicates
-    let result = eval.eval_str("(my-null? '())").unwrap();
-    assert!(lisp.get(result).unwrap().is_true());
-    
-    let result = eval.eval_str("(my-null? '(a))").unwrap();
-    assert!(lisp.get(result).unwrap().is_false());
-    
-    let result = eval.eval_str("(my-pair? '(1 . 2))").unwrap();
-    assert!(lisp.get(result).unwrap().is_true());
-    
-    let result = eval.eval_str("(my-number? 42)").unwrap();
-    assert!(lisp.get(result).unwrap().is_true());
-    
-    let result = eval.eval_str("(my-not #f)").unwrap();
-    assert!(lisp.get(result).unwrap().is_true());
-    
-    let result = eval.eval_str("(my-not #t)").unwrap();
-    assert!(lisp.get(result).unwrap().is_false());
-    
-    // Test arithmetic
-    let result = eval.eval_str("(my-+ 1 2 3 4 5)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(15));
-    
-    let result = eval.eval_str("(my-* 2 3 4)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(24));
-    
-    // Test comparison
-    let result = eval.eval_str("(my-< 1 2)").unwrap();
-    assert!(lisp.get(result).unwrap().is_true());
-    
-    let result = eval.eval_str("(my-< 2 1)").unwrap();
-    assert!(lisp.get(result).unwrap().is_false());
-    
-    let result = eval.eval_str("(my-= 5 5)").unwrap();
-    assert!(lisp.get(result).unwrap().is_true());
-    
-    // Test complex expressions using our native functions
-    let result = eval.eval_str("(my-+ (my-* 2 3) (my-* 4 5))").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(26)); // 6 + 20
-}
-
-#[test]
-fn test_native_functions_work_with_stdlib() {
-    use lisp_eval::Evaluator;
-    
-    let lisp: Lisp<10000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Register native functions
-    eval.register_native("my-+", native_add_variadic).unwrap();
-    eval.register_native("my-*", native_mul).unwrap();
-    
-    // Verify our native add works correctly
-    let result = eval.eval_str("(my-+ 0 1)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1), "my-+ 0 1 should be 1");
-    
-    let result = eval.eval_str("(my-+ 1 2)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(3), "my-+ 1 2 should be 3");
-    
-    // Test with multiple args
-    let result = eval.eval_str("(my-+ 1 2 3)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(6), "my-+ 1 2 3 should be 6");
-    
-    // Test with lambda wrapper to verify function passing works
-    eval.eval_str("(define (wrapped-add a b) (my-+ a b))").unwrap();
-    let result = eval.eval_str("(wrapped-add 0 1)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1), "wrapped-add 0 1 should be 1");
-    
-    let result = eval.eval_str("(wrapped-add 3 4)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(7), "wrapped-add 3 4 should be 7");
-    
-    // Test native multiplication
-    let result = eval.eval_str("(my-* 2 3 4)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(24), "my-* 2 3 4 should be 24");
 }
