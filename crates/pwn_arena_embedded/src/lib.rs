@@ -43,30 +43,27 @@
 #![forbid(unsafe_code)]
 
 use core::sync::atomic::{AtomicU32, Ordering};
-use lisp_eval::{
-    Lisp, Evaluator, EvalError, ArenaIndex, ArenaResult,
-    ToLisp, extract_arg,
-};
+use lisp_eval::{Evaluator, EvalError, define_native_stateful};
 
 // ============================================================================
 // Mock Memory/Register Storage using Atomics
 // ============================================================================
 
-/// Number of 32-bit words in mock memory (256 words = 1KB)
+// Number of 32-bit words in mock memory (256 words = 1KB)
 const MOCK_MEMORY_WORDS: usize = 256;
 
-/// Number of GPIO registers
+// Number of GPIO registers
 const MOCK_GPIO_COUNT: usize = 16;
 
-/// Simulated memory for testing (256 x 32-bit words = 1KB)
-/// Using AtomicU32 for thread-safe access without unsafe code
+// Simulated memory for testing (256 x 32-bit words = 1KB)
+// Using AtomicU32 for thread-safe access without unsafe code
 static MOCK_MEMORY: [AtomicU32; MOCK_MEMORY_WORDS] = {
     // Use a const block to initialize the array
     const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; MOCK_MEMORY_WORDS]
 };
 
-/// Simulated GPIO registers (16 registers, 32 bits each)
+// Simulated GPIO registers (16 registers, 32 bits each)
 static MOCK_GPIO: [AtomicU32; MOCK_GPIO_COUNT] = {
     const INIT: AtomicU32 = AtomicU32::new(0);
     [INIT; MOCK_GPIO_COUNT]
@@ -76,167 +73,172 @@ static MOCK_GPIO: [AtomicU32; MOCK_GPIO_COUNT] = {
 // Native Functions for Memory Access
 // ============================================================================
 
-/// Peek: Read a byte from memory at the given address.
-///
-/// Lisp signature: `(peek address) -> value`
-///
-/// In the mock implementation, addresses are mapped to a 1KB buffer.
-/// Negative addresses are treated as unsigned values (wrapped).
-pub fn native_peek<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (addr, _rest): (i64, _) = extract_arg(lisp, args)?;
-    
-    // Map address to word index and byte offset
-    // Use wrapping conversion for negative addresses (they wrap to positive)
-    let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
-    let word_idx = byte_addr / 4;
-    let byte_offset = byte_addr % 4;
-    
-    let word = MOCK_MEMORY[word_idx].load(Ordering::Relaxed);
-    let value = ((word >> (byte_offset * 8)) & 0xFF) as i64;
-    
-    value.to_lisp(lisp)
-}
+// Peek: Read a byte from memory at the given address.
 
-/// Poke: Write a byte to memory at the given address.
-///
-/// Lisp signature: `(poke address value) -> value`
-///
-/// In the mock implementation, addresses are mapped to a 1KB buffer.
-/// Negative addresses are treated as unsigned values (wrapped).
-pub fn native_poke<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (addr, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (value, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    // Map address to word index and byte offset
-    // Use wrapping conversion for negative addresses
-    let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
-    let word_idx = byte_addr / 4;
-    let byte_offset = byte_addr % 4;
-    
-    // Read-modify-write the word
-    let mask = 0xFFu32 << (byte_offset * 8);
-    let new_byte = ((value as u32) & 0xFF) << (byte_offset * 8);
-    
-    // Use fetch_update for atomic RMW
-    let _ = MOCK_MEMORY[word_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
-        Some((old & !mask) | new_byte)
-    });
-    
-    value.to_lisp(lisp)
-}
+// Lisp signature: `(peek address) -> value`
 
-/// Peek32: Read a 32-bit word from memory at the given address.
-///
-/// Lisp signature: `(peek32 address) -> value`
-///
-/// Negative addresses are treated as unsigned values (wrapped).
-pub fn native_peek32<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (addr, _rest): (i64, _) = extract_arg(lisp, args)?;
-    
-    // Word-aligned access with wrapping conversion for negative addresses
-    let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
-    let value = MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as i64;
-    
-    value.to_lisp(lisp)
-}
+// In the mock implementation, addresses are mapped to a 1KB buffer.
+// Negative addresses are treated as unsigned values (wrapped).
+define_native_stateful!(
+    native_peek,
+    static: MOCK_MEMORY,
+    (addr: i64) -> i64,
+    {
+        let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
+        let word_idx = byte_addr / 4;
+        let byte_offset = byte_addr % 4;
+        let word = MOCK_MEMORY[word_idx].load(Ordering::Relaxed);
+        ((word >> (byte_offset * 8)) & 0xFF) as i64
+    }
+);
 
-/// Poke32: Write a 32-bit word to memory at the given address.
-///
-/// Lisp signature: `(poke32 address value) -> value`
-///
-/// Negative addresses are treated as unsigned values (wrapped).
-pub fn native_poke32<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (addr, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (value, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    // Word-aligned access with wrapping conversion for negative addresses
-    let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
-    MOCK_MEMORY[word_idx].store(value as u32, Ordering::Relaxed);
-    
-    value.to_lisp(lisp)
-}
+// Poke: Write a byte to memory at the given address.
+
+// Lisp signature: `(poke address value) -> value`
+
+// In the mock implementation, addresses are mapped to a 1KB buffer.
+// Negative addresses are treated as unsigned values (wrapped).
+define_native_stateful!(
+    native_poke,
+    static: MOCK_MEMORY,
+    (addr: i64, value: i64) -> i64,
+    {
+        let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
+        let word_idx = byte_addr / 4;
+        let byte_offset = byte_addr % 4;
+        
+        let mask = 0xFFu32 << (byte_offset * 8);
+        let new_byte = ((value as u32) & 0xFF) << (byte_offset * 8);
+        
+        let _ = MOCK_MEMORY[word_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+            Some((old & !mask) | new_byte)
+        });
+        
+        value
+    }
+);
+
+// Peek32: Read a 32-bit word from memory at the given address.
+
+// Lisp signature: `(peek32 address) -> value`
+
+// Negative addresses are treated as unsigned values (wrapped).
+define_native_stateful!(
+    native_peek32,
+    static: MOCK_MEMORY,
+    (addr: i64) -> i64,
+    {
+        let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
+        MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as i64
+    }
+);
+
+// Poke32: Write a 32-bit word to memory at the given address.
+
+// Lisp signature: `(poke32 address value) -> value`
+
+// Negative addresses are treated as unsigned values (wrapped).
+define_native_stateful!(
+    native_poke32,
+    static: MOCK_MEMORY,
+    (addr: i64, value: i64) -> i64,
+    {
+        let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
+        MOCK_MEMORY[word_idx].store(value as u32, Ordering::Relaxed);
+        value
+    }
+);
 
 // ============================================================================
 // Native Functions for GPIO
 // ============================================================================
 
-/// GPIO Read: Read a GPIO register.
-///
-/// Lisp signature: `(gpio-read register) -> value`
-///
-/// Register is an index (0-15) into the GPIO register array.
-pub fn native_gpio_read<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (reg, _rest): (i64, _) = extract_arg(lisp, args)?;
-    
-    if reg < 0 || reg >= MOCK_GPIO_COUNT as i64 {
-        return 0i64.to_lisp(lisp); // Out of range returns 0
-    }
-    
-    let value = MOCK_GPIO[reg as usize].load(Ordering::Relaxed) as i64;
-    value.to_lisp(lisp)
-}
+// GPIO Read: Read a GPIO register.
 
-/// GPIO Write: Write to a GPIO register.
-///
-/// Lisp signature: `(gpio-write register value) -> value`
-pub fn native_gpio_write<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (reg, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (value, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 {
-        MOCK_GPIO[reg as usize].store(value as u32, Ordering::Relaxed);
-    }
-    
-    value.to_lisp(lisp)
-}
+// Lisp signature: `(gpio-read register) -> value`
 
-/// GPIO Set Bit: Set a specific bit in a GPIO register.
-///
-/// Lisp signature: `(gpio-set register bit) -> new-value`
-pub fn native_gpio_set<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (reg, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (bit, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
-        let mask = 1u32 << bit;
-        let old = MOCK_GPIO[reg as usize].fetch_or(mask, Ordering::Relaxed);
-        return ((old | mask) as i64).to_lisp(lisp);
+// Register is an index (0-15) into the GPIO register array.
+define_native_stateful!(
+    native_gpio_read,
+    static: MOCK_GPIO,
+    (reg: i64) -> i64,
+    {
+        if reg < 0 || reg >= MOCK_GPIO_COUNT as i64 {
+            0
+        } else {
+            MOCK_GPIO[reg as usize].load(Ordering::Relaxed) as i64
+        }
     }
-    
-    0i64.to_lisp(lisp)
-}
+);
 
-/// GPIO Clear Bit: Clear a specific bit in a GPIO register.
-///
-/// Lisp signature: `(gpio-clear register bit) -> new-value`
-pub fn native_gpio_clear<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (reg, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (bit, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
-        let mask = !(1u32 << bit);
-        let old = MOCK_GPIO[reg as usize].fetch_and(mask, Ordering::Relaxed);
-        return ((old & mask) as i64).to_lisp(lisp);
-    }
-    
-    0i64.to_lisp(lisp)
-}
+// GPIO Write: Write to a GPIO register.
 
-/// GPIO Toggle Bit: Toggle a specific bit in a GPIO register.
-///
-/// Lisp signature: `(gpio-toggle register bit) -> new-value`
-pub fn native_gpio_toggle<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (reg, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (bit, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
-        let mask = 1u32 << bit;
-        let old = MOCK_GPIO[reg as usize].fetch_xor(mask, Ordering::Relaxed);
-        return ((old ^ mask) as i64).to_lisp(lisp);
+// Lisp signature: `(gpio-write register value) -> value`
+define_native_stateful!(
+    native_gpio_write,
+    static: MOCK_GPIO,
+    (reg: i64, value: i64) -> i64,
+    {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 {
+            MOCK_GPIO[reg as usize].store(value as u32, Ordering::Relaxed);
+        }
+        value
     }
-    
-    0i64.to_lisp(lisp)
-}
+);
+
+// GPIO Set Bit: Set a specific bit in a GPIO register.
+
+// Lisp signature: `(gpio-set register bit) -> new-value`
+define_native_stateful!(
+    native_gpio_set,
+    static: MOCK_GPIO,
+    (reg: i64, bit: i64) -> i64,
+    {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
+            let mask = 1u32 << bit;
+            let old = MOCK_GPIO[reg as usize].fetch_or(mask, Ordering::Relaxed);
+            (old | mask) as i64
+        } else {
+            0
+        }
+    }
+);
+
+// GPIO Clear Bit: Clear a specific bit in a GPIO register.
+
+// Lisp signature: `(gpio-clear register bit) -> new-value`
+define_native_stateful!(
+    native_gpio_clear,
+    static: MOCK_GPIO,
+    (reg: i64, bit: i64) -> i64,
+    {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
+            let mask = !(1u32 << bit);
+            let old = MOCK_GPIO[reg as usize].fetch_and(mask, Ordering::Relaxed);
+            (old & mask) as i64
+        } else {
+            0
+        }
+    }
+);
+
+// GPIO Toggle Bit: Toggle a specific bit in a GPIO register.
+
+// Lisp signature: `(gpio-toggle register bit) -> new-value`
+define_native_stateful!(
+    native_gpio_toggle,
+    static: MOCK_GPIO,
+    (reg: i64, bit: i64) -> i64,
+    {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
+            let mask = 1u32 << bit;
+            let old = MOCK_GPIO[reg as usize].fetch_xor(mask, Ordering::Relaxed);
+            (old ^ mask) as i64
+        } else {
+            0
+        }
+    }
+);
 
 // ============================================================================
 // Utility Functions
@@ -283,45 +285,45 @@ define_native!(native_bit_insert, (value: i64, insert: i64, start: i64, width: i
 // Registration
 // ============================================================================
 
-/// Register all embedded native functions with an evaluator.
-///
-/// This function registers the following native functions:
-///
-/// ## Memory Access
-/// - `(peek addr)` - Read byte from memory
-/// - `(poke addr val)` - Write byte to memory
-/// - `(peek32 addr)` - Read 32-bit word
-/// - `(poke32 addr val)` - Write 32-bit word
-///
-/// ## GPIO
-/// - `(gpio-read reg)` - Read GPIO register
-/// - `(gpio-write reg val)` - Write GPIO register
-/// - `(gpio-set reg bit)` - Set bit in GPIO register
-/// - `(gpio-clear reg bit)` - Clear bit in GPIO register
-/// - `(gpio-toggle reg bit)` - Toggle bit in GPIO register
-///
-/// ## Bit Manipulation
-/// - `(bit-set? val bit)` - Check if bit is set
-/// - `(bit-extract val start width)` - Extract bits
-/// - `(bit-insert val insert start width)` - Insert bits
-///
-/// # Example
-///
-/// ```rust
-/// use lisp_eval::{Lisp, Evaluator};
-/// use pwn_arena_embedded::register_embedded_natives;
-///
-/// let lisp: Lisp<10000> = Lisp::new();
-/// let mut eval = Evaluator::new(&lisp).unwrap();
-/// register_embedded_natives(&mut eval).unwrap();
-///
-/// // Now embedded functions are available in Lisp
-/// let result = eval.eval_str("(poke 0 42)").unwrap();
-/// assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
-///
-/// let result = eval.eval_str("(peek 0)").unwrap();
-/// assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
-/// ```
+// Register all embedded native functions with an evaluator.
+
+// This function registers the following native functions:
+
+// ## Memory Access
+// - `(peek addr)` - Read byte from memory
+// - `(poke addr val)` - Write byte to memory
+// - `(peek32 addr)` - Read 32-bit word
+// - `(poke32 addr val)` - Write 32-bit word
+
+// ## GPIO
+// - `(gpio-read reg)` - Read GPIO register
+// - `(gpio-write reg val)` - Write GPIO register
+// - `(gpio-set reg bit)` - Set bit in GPIO register
+// - `(gpio-clear reg bit)` - Clear bit in GPIO register
+// - `(gpio-toggle reg bit)` - Toggle bit in GPIO register
+
+// ## Bit Manipulation
+// - `(bit-set? val bit)` - Check if bit is set
+// - `(bit-extract val start width)` - Extract bits
+// - `(bit-insert val insert start width)` - Insert bits
+
+// # Example
+
+// ```rust
+// use lisp_eval::{Lisp, Evaluator};
+// use pwn_arena_embedded::register_embedded_natives;
+
+// let lisp: Lisp<10000> = Lisp::new();
+// let mut eval = Evaluator::new(&lisp).unwrap();
+// register_embedded_natives(&mut eval).unwrap();
+
+// // Now embedded functions are available in Lisp
+// let result = eval.eval_str("(poke 0 42)").unwrap();
+// assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+
+// let result = eval.eval_str("(peek 0)").unwrap();
+// assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+// ```
 pub fn register_embedded_natives<const N: usize>(eval: &mut Evaluator<N>) -> Result<(), EvalError> {
     // Memory access
     eval.register_native("peek", native_peek)?;
@@ -344,10 +346,10 @@ pub fn register_embedded_natives<const N: usize>(eval: &mut Evaluator<N>) -> Res
     Ok(())
 }
 
-/// Reset mock memory and GPIO registers to zero.
-///
-/// This is useful for testing to ensure a clean state.
-/// Uses SeqCst ordering to ensure all resets are visible across threads.
+// Reset mock memory and GPIO registers to zero.
+
+// This is useful for testing to ensure a clean state.
+// Uses SeqCst ordering to ensure all resets are visible across threads.
 pub fn reset_mock_hardware() {
     for mem in MOCK_MEMORY.iter() {
         mem.store(0, Ordering::SeqCst);

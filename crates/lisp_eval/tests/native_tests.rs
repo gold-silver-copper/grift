@@ -202,3 +202,170 @@ fn test_define_native_with_lisp_three_args() {
     let result = native_clamp(&lisp, args).unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
 }
+
+// ============================================================================
+// Tests for define_native_stateful! macro
+// ============================================================================
+
+use core::sync::atomic::{AtomicU32, Ordering};
+use lisp_eval::define_native_stateful;
+
+// Separate static variables for each test to avoid race conditions
+static COUNTER_NO_ARGS: AtomicU32 = AtomicU32::new(0);
+static COUNTER_ONE_ARG: AtomicU32 = AtomicU32::new(0);
+static COUNTER_TWO_ARGS: AtomicU32 = AtomicU32::new(0);
+static COUNTER_EVALUATOR: AtomicU32 = AtomicU32::new(0);
+
+// Test zero-argument stateful function
+define_native_stateful!(
+    native_increment_counter,
+    static: COUNTER_NO_ARGS,
+    () -> i64,
+    {
+        COUNTER_NO_ARGS.fetch_add(1, Ordering::Relaxed) as i64
+    }
+);
+
+// Test single-argument stateful function
+define_native_stateful!(
+    native_add_to_counter,
+    static: COUNTER_ONE_ARG,
+    (n: i64) -> i64,
+    {
+        COUNTER_ONE_ARG.fetch_add(n as u32, Ordering::Relaxed) as i64
+    }
+);
+
+// Test two-argument stateful function
+define_native_stateful!(
+    native_set_counter_if_less,
+    static: COUNTER_TWO_ARGS,
+    (threshold: i64, new_val: i64) -> i64,
+    {
+        let current = COUNTER_TWO_ARGS.load(Ordering::Relaxed) as i64;
+        if current < threshold {
+            COUNTER_TWO_ARGS.store(new_val as u32, Ordering::Relaxed);
+            new_val
+        } else {
+            current
+        }
+    }
+);
+
+// Functions for evaluator test
+define_native_stateful!(
+    native_eval_inc,
+    static: COUNTER_EVALUATOR,
+    () -> i64,
+    {
+        COUNTER_EVALUATOR.fetch_add(1, Ordering::Relaxed) as i64
+    }
+);
+
+define_native_stateful!(
+    native_eval_add,
+    static: COUNTER_EVALUATOR,
+    (n: i64) -> i64,
+    {
+        COUNTER_EVALUATOR.fetch_add(n as u32, Ordering::Relaxed) as i64
+    }
+);
+
+#[test]
+fn test_define_native_stateful_no_args() {
+    // Reset counter for this test
+    COUNTER_NO_ARGS.store(0, Ordering::Relaxed);
+    
+    let lisp: Lisp<100> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // First increment
+    let result = native_increment_counter(&lisp, nil).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0)); // returns old value
+    
+    // Second increment
+    let result = native_increment_counter(&lisp, nil).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    
+    // Third increment
+    let result = native_increment_counter(&lisp, nil).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(2));
+}
+
+#[test]
+fn test_define_native_stateful_one_arg() {
+    // Reset counter for this test
+    COUNTER_ONE_ARG.store(0, Ordering::Relaxed);
+    
+    let lisp: Lisp<100> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // Add 5 to counter
+    let n5 = lisp.number(5).unwrap();
+    let args = lisp.cons(n5, nil).unwrap();
+    let result = native_add_to_counter(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0)); // returns old value
+    
+    // Counter should now be 5, add 10 more
+    let n10 = lisp.number(10).unwrap();
+    let args = lisp.cons(n10, nil).unwrap();
+    let result = native_add_to_counter(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5)); // returns old value
+    
+    // Verify counter is now 15
+    assert_eq!(COUNTER_ONE_ARG.load(Ordering::Relaxed), 15);
+}
+
+#[test]
+fn test_define_native_stateful_two_args() {
+    // Reset counter for this test
+    COUNTER_TWO_ARGS.store(5, Ordering::Relaxed);
+    
+    let lisp: Lisp<100> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // Set to 100 if counter < 10 (should set)
+    let threshold = lisp.number(10).unwrap();
+    let new_val = lisp.number(100).unwrap();
+    let args = lisp.cons(new_val, nil).unwrap();
+    let args = lisp.cons(threshold, args).unwrap();
+    let result = native_set_counter_if_less(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100));
+    assert_eq!(COUNTER_TWO_ARGS.load(Ordering::Relaxed), 100);
+    
+    // Set to 50 if counter < 10 (should NOT set)
+    let new_val = lisp.number(50).unwrap();
+    let args = lisp.cons(new_val, nil).unwrap();
+    let args = lisp.cons(threshold, args).unwrap();
+    let result = native_set_counter_if_less(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100)); // returns current value
+    assert_eq!(COUNTER_TWO_ARGS.load(Ordering::Relaxed), 100); // unchanged
+}
+
+#[test]
+fn test_define_native_stateful_with_evaluator() {
+    // Reset counter for this test
+    COUNTER_EVALUATOR.store(0, Ordering::Relaxed);
+    
+    use lisp_eval::Evaluator;
+    
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Register the stateful native functions
+    eval.register_native("inc-counter", native_eval_inc).unwrap();
+    eval.register_native("add-counter", native_eval_add).unwrap();
+    
+    // Test calling the functions from Lisp
+    let result = eval.eval_str("(inc-counter)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    
+    let result = eval.eval_str("(inc-counter)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    
+    let result = eval.eval_str("(add-counter 10)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(2));
+    
+    // Verify counter is 12 now
+    assert_eq!(COUNTER_EVALUATOR.load(Ordering::Relaxed), 12);
+}
