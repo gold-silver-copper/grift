@@ -1056,8 +1056,17 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Create or retrieve an interned symbol from bytes (for parsing)
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if the byte count exceeds `u32::MAX`.
     pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
         let char_count = bytes.len();
+        
+        // Check for u32 overflow
+        if char_count > u32::MAX as usize {
+            return Err(ArenaError::InvalidIndex);
+        }
         
         // Create a Value::String for the symbol name
         let name_str = if char_count == 0 {
@@ -1125,8 +1134,15 @@ impl<const N: usize> Lisp<N> {
     /// Native functions are Rust functions registered with the evaluator.
     /// The `id` is the index in the NativeRegistry, and `name_hash` is
     /// a simple hash for verification.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if `id` exceeds `u32::MAX`.
     #[inline]
     pub fn native(&self, id: usize, name_hash: u32) -> ArenaResult<ArenaIndex> {
+        if id > u32::MAX as usize {
+            return Err(ArenaError::InvalidIndex);
+        }
         self.alloc(Value::Native { id: id as u32, name_hash })
     }
     
@@ -1376,6 +1392,9 @@ impl<const N: usize> Lisp<N> {
     /// Returns `ArenaError::OutOfMemory` if:
     /// - No contiguous block is available
     /// 
+    /// Returns `ArenaError::InvalidIndex` if:
+    /// - The string has more than `u32::MAX` characters
+    /// 
     /// # Example
     /// 
     /// ```rust
@@ -1388,6 +1407,11 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         let char_count = s.chars().count();
+        
+        // Check for u32 overflow
+        if char_count > u32::MAX as usize {
+            return Err(ArenaError::InvalidIndex);
+        }
         
         if char_count == 0 {
             // Empty string - no data slots needed
@@ -1578,6 +1602,10 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Allocates `len` slots for element storage, plus 1 slot for the Array value itself.
     /// 
+    /// # Errors
+    /// 
+    /// Returns `ArenaError::InvalidIndex` if `len` exceeds `u32::MAX`.
+    /// 
     /// # Example
     /// 
     /// ```rust
@@ -1588,6 +1616,11 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.array_len(arr).unwrap(), 3);
     /// ```
     pub fn make_array(&self, len: usize, default: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Check for u32 overflow
+        if len > u32::MAX as usize {
+            return Err(ArenaError::InvalidIndex);
+        }
+        
         if len == 0 {
             // Empty array - no data slots needed
             return self.alloc(Value::Array { 
