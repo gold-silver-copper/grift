@@ -55,12 +55,13 @@ fn test_format_dotted_pair() {
 }
 
 #[test]
-fn test_format_thunk() {
+fn test_format_lambda() {
     let lisp: Lisp<100> = Lisp::new();
-    let expr = lisp.number(42).unwrap();
+    let params = lisp.nil().unwrap();
+    let body = lisp.number(42).unwrap();
     let env = lisp.nil().unwrap();
-    let thunk = lisp.thunk(expr, env).unwrap();
-    assert_eq!(value_to_string(&lisp, thunk), "#<promise>");
+    let lambda = lisp.lambda(params, body, env).unwrap();
+    assert_eq!(value_to_string(&lisp, lambda), "#<lambda>");
 }
 
 #[test]
@@ -169,12 +170,12 @@ fn test_fold() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LAZY EVALUATION TESTS
-// Everything is lazy by default - no delay/force needed!
+// STRICT EVALUATION TESTS
+// All arguments are evaluated before function application (call-by-value)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn test_lazy_basic() {
+fn test_strict_basic() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -186,7 +187,7 @@ fn test_lazy_basic() {
 }
 
 #[test]
-fn test_lazy_cons() {
+fn test_strict_cons() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -196,48 +197,28 @@ fn test_lazy_cons() {
 }
 
 #[test]
-fn test_lazy_infinite_stream() {
-    // Infinite structures work automatically in lazy language
-    let lisp: Lisp<3000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Generator for infinite stream of 1s
-    eval.eval_str("(define (make-ones) (cons 1 (make-ones)))").unwrap();
-    eval.eval_str("(define ones (make-ones))").unwrap();
-    
-    // Can access elements without infinite loop
-    assert_eq!(eval_to_string(&lisp, &mut eval, "(car ones)").unwrap(), "1");
-    assert_eq!(eval_to_string(&lisp, &mut eval, "(car (cdr ones))").unwrap(), "1");
-    assert_eq!(eval_to_string(&lisp, &mut eval, "(car (cdr (cdr ones)))").unwrap(), "1");
-}
-
-#[test]
-fn test_lazy_if_branches() {
+fn test_strict_if_branches() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Only selected branch is evaluated
+    // Only selected branch is evaluated (if is still a special form)
     eval.eval_str("(define (safe-div x y) (if (= y 0) 0 (/ x y)))").unwrap();
     assert_eq!(eval_to_string(&lisp, &mut eval, "(safe-div 10 0)").unwrap(), "0");
     assert_eq!(eval_to_string(&lisp, &mut eval, "(safe-div 10 2)").unwrap(), "5");
 }
 
 #[test]
-fn test_hybrid_evaluation() {
-    // HYBRID: Lambda args are strict, but builtin args are lazy
+fn test_strict_evaluation() {
+    // All function arguments are evaluated before application
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Lambda args are strict (for TCO)
+    // Function args are strict
     eval.eval_str("(define (first x y) x)").unwrap();
     assert_eq!(eval_to_string(&lisp, &mut eval, "(first 42 100)").unwrap(), "42");
     
-    // But special forms like 'if' have lazy branches
-    assert_eq!(eval_to_string(&lisp, &mut eval, "(if #t 'yes undefined)").unwrap(), "yes");
-    
-    // cons is non-strict - enables infinite streams
-    eval.eval_str("(define (ones) (cons 1 (ones)))").unwrap();
-    assert_eq!(eval_to_string(&lisp, &mut eval, "(car (ones))").unwrap(), "1");
+    // Special forms like 'if' still only evaluate the selected branch
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(if #t 'yes 'no)").unwrap(), "yes");
 }
 
 #[test]

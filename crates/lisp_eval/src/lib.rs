@@ -10,10 +10,9 @@
 //!
 //! - **Full Trampolining**: All evaluation uses continuation-passing style with
 //!   an explicit continuation stack. No Rust recursion means no stack overflow.
-//! - **Hybrid Evaluation Strategy**: Strict in tail position, lazy elsewhere
+//! - **Strict Evaluation**: Call-by-value semantics - all arguments are evaluated before function application
 //! - **Proper TCO**: Tail calls reuse the same continuation frame
 //! - **Lexically Scoped Closures**: First-class functions with captured environments
-//! - **Lazy Data Structures**: Infinite streams like Haskell
 //! - **Rich Error Handling**: Error messages with stack traces
 //! - **Pattern Matching**: `case` for value matching
 //! - **Iteration**: `do` loops for imperative-style iteration
@@ -21,33 +20,12 @@
 //! - **Meta-programming**: `eval` for runtime code evaluation
 //! - **Mutation**: `set!`, `set-car!`, `set-cdr!` for imperative programming
 //!
-//! ## Hybrid Evaluation Strategy
+//! ## Evaluation Strategy
 //!
-//! This evaluator uses a hybrid approach that combines lazy and strict evaluation:
-//!
-//! **Tail position (strict)**: Lambda arguments in tail calls are evaluated
-//! strictly. This enables proper TCO without thunk accumulation:
-//! ```lisp
-//! (define (countdown n)
-//!   (if (= n 0) 'done
-//!       (countdown (- n 1))))  ; Args evaluated strictly, TCO applies
-//! ```
-//!
-//! **Non-tail position (lazy)**: Builtin arguments are lazy (wrapped in thunks).
-//! Builtins force what they need. This enables infinite data structures:
-//! ```lisp
-//! (define (ones) (cons 1 (ones)))  ; cons is lazy, infinite stream works
-//! (car (ones))  ; => 1
-//! ```
-//!
-//! ## Strict Positions (in builtins)
-//!
-//! Builtins automatically force arguments in strict positions:
-//! - Arithmetic operands (+, -, *, /, mod)
-//! - Comparison operands (<, >, =, etc.)
-//! - `if` condition (but NOT branches)
-//! - Predicates (null?, pair?, etc.)
-//! - Print/display arguments
+//! This evaluator uses strict (call-by-value) evaluation:
+//! - All function arguments are fully evaluated before the function is called
+//! - This provides predictable evaluation order and side-effect timing
+//! - Tail call optimization is supported for constant-space recursion
 //!
 //! ## Mutation
 //!
@@ -65,7 +43,7 @@
 //! ## Special Forms
 //!
 //! - `quote` - Return expression unevaluated
-//! - `if` - Conditional (lazy in branches)
+//! - `if` - Conditional
 //! - `cond` - Multi-way conditional
 //! - `case` - Pattern matching on values
 //! - `lambda` - Create closure
@@ -170,8 +148,6 @@ macro_rules! builtin_unary_pred {
 const MAX_STACK_DEPTH: usize = 64;
 /// Maximum frames to include in error backtrace
 const MAX_BACKTRACE: usize = 16;
-/// Maximum number of entries in memoization cache (LRU eviction after this)
-const MAX_MEMO_CACHE_SIZE: usize = 100;
 
 /// Error kind enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,46 +366,29 @@ enum Cont {
     /// We're done - return the value
     Done,
     
-    /// Force the result to WHNF, then continue
-    Force,
-    
-    /// Cache thunk result, then force the cached value
-    CacheThunk { thunk_idx: ArenaIndex, expr: ArenaIndex, env: ArenaIndex },
-    
-    /// After forcing function, decide builtin vs lambda
+    /// After evaluating function, decide builtin vs lambda
     ApplyForced { args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex },
     
     /// After evaluating condition, choose branch
     IfBranch { then_expr: ArenaIndex, else_expr: ArenaIndex, env: ArenaIndex },
     
-    /// After forcing condition for builtin (variadic ops like +)
+    /// After evaluating argument for builtin (variadic ops like +)
     BuiltinForceArg { builtin: Builtin, remaining_args: ArenaIndex, 
-                      collected: ArenaIndex, call_expr: ArenaIndex },
+                      collected: ArenaIndex, call_expr: ArenaIndex, eval_env: ArenaIndex },
     
-    /// After forcing car/cdr argument - val is the forced pair
-    BuiltinCarCdr { builtin: Builtin, call_expr: ArenaIndex },
+    /// OPTIMIZED: After evaluating first arg of binary builtin, evaluate second arg
+    BinaryBuiltinFirst { builtin: Builtin, second_arg: ArenaIndex, call_expr: ArenaIndex, eval_env: ArenaIndex },
     
-    /// OPTIMIZED: After forcing first arg of binary builtin, force second arg
-    BinaryBuiltinFirst { builtin: Builtin, second_arg: ArenaIndex, call_expr: ArenaIndex },
-    
-    /// OPTIMIZED: After forcing both args of binary builtin, apply
+    /// OPTIMIZED: After evaluating both args of binary builtin, apply
     BinaryBuiltinSecond { builtin: Builtin, first_val: ArenaIndex, call_expr: ArenaIndex },
     
-    /// After forcing first lambda arg, bind it to param
+    /// After evaluating first lambda arg, bind it to param
     LambdaFirstBind { param: ArenaIndex },
     
     /// After binding a lambda arg, continue with remaining args
     LambdaBindArg { remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
                     remaining_params: ArenaIndex, body: ArenaIndex,
                     new_env: ArenaIndex, call_expr: ArenaIndex },
-    
-    /// After forcing memo args, look up cache and maybe call function
-    MemoCollectArg { remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
-                     collected: ArenaIndex, memo_idx: ArenaIndex, 
-                     func: ArenaIndex, cache: ArenaIndex, call_expr: ArenaIndex },
-    
-    /// After calling memoized function, store result in cache
-    MemoCacheResult { memo_idx: ArenaIndex, args: ArenaIndex, cache: ArenaIndex },
 }
 
 /// Trampoline state - what we're currently doing
@@ -437,10 +396,17 @@ enum Cont {
 enum TrampolineState {
     /// Evaluate expression in environment
     Eval { expr: ArenaIndex, env: ArenaIndex },
-    /// Force a value to WHNF
-    Force { idx: ArenaIndex },
     /// Return a value to the continuation
     Return { val: ArenaIndex },
+}
+
+/// Check if a builtin is a binary operation (exactly 2 args, optimized path)
+fn is_binary_builtin(builtin: Builtin) -> bool {
+    matches!(builtin, 
+        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod |
+        Builtin::Lt | Builtin::Gt | Builtin::Le | Builtin::Ge | Builtin::NumEq |
+        Builtin::Eq | Builtin::Cons
+    )
 }
 
 // ============================================================================
@@ -592,9 +558,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 roots[root_count] = *expr; root_count += 1;
                 roots[root_count] = *env; root_count += 1;
             }
-            TrampolineState::Force { idx } => {
-                roots[root_count] = *idx; root_count += 1;
-            }
             TrampolineState::Return { val } => {
                 roots[root_count] = *val; root_count += 1;
             }
@@ -607,12 +570,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             match self.cont_stack[i] {
-                Cont::Done | Cont::Force => {}
-                Cont::CacheThunk { thunk_idx, expr, env } => {
-                    roots[root_count] = thunk_idx; root_count += 1;
-                    roots[root_count] = expr; root_count += 1;
-                    roots[root_count] = env; root_count += 1;
-                }
+                Cont::Done => {}
                 Cont::ApplyForced { args_expr, env, call_expr } => {
                     roots[root_count] = args_expr; root_count += 1;
                     roots[root_count] = env; root_count += 1;
@@ -623,17 +581,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = else_expr; root_count += 1;
                     roots[root_count] = env; root_count += 1;
                 }
-                Cont::BuiltinForceArg { remaining_args, collected, call_expr, .. } => {
+                Cont::BuiltinForceArg { remaining_args, collected, call_expr, eval_env, .. } => {
                     roots[root_count] = remaining_args; root_count += 1;
                     roots[root_count] = collected; root_count += 1;
                     roots[root_count] = call_expr; root_count += 1;
+                    roots[root_count] = eval_env; root_count += 1;
                 }
-                Cont::BuiltinCarCdr { call_expr, .. } => {
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::BinaryBuiltinFirst { second_arg, call_expr, .. } => {
+                Cont::BinaryBuiltinFirst { second_arg, call_expr, eval_env, .. } => {
                     roots[root_count] = second_arg; root_count += 1;
                     roots[root_count] = call_expr; root_count += 1;
+                    roots[root_count] = eval_env; root_count += 1;
                 }
                 Cont::BinaryBuiltinSecond { first_val, call_expr, .. } => {
                     roots[root_count] = first_val; root_count += 1;
@@ -649,20 +606,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = body; root_count += 1;
                     roots[root_count] = new_env; root_count += 1;
                     roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::MemoCollectArg { remaining_exprs, eval_env, collected, memo_idx, func, cache, call_expr } => {
-                    roots[root_count] = remaining_exprs; root_count += 1;
-                    roots[root_count] = eval_env; root_count += 1;
-                    roots[root_count] = collected; root_count += 1;
-                    roots[root_count] = memo_idx; root_count += 1;
-                    roots[root_count] = func; root_count += 1;
-                    roots[root_count] = cache; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
-                }
-                Cont::MemoCacheResult { memo_idx, args, cache } => {
-                    roots[root_count] = memo_idx; root_count += 1;
-                    roots[root_count] = args; root_count += 1;
-                    roots[root_count] = cache; root_count += 1;
                 }
             }
         }
@@ -874,8 +817,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
         // Reset continuation stack
         self.cont_depth = 0;
-        // Push Force continuation to force result at top level
-        self.push_cont(Cont::Force)?;
         // Start evaluation
         self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
@@ -964,17 +905,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Err(e) => return Err(e),
                     }
                 }
-                TrampolineState::Force { idx } => {
-                    match self.step_force(idx) {
-                        Ok(s) => s,
-                        Err(e) if e.kind == ErrorKind::OutOfMemory => {
-                            // Auto-GC: Run GC and retry on out of memory
-                            self.gc_with_state(&state);
-                            self.step_force(idx)?
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
                 TrampolineState::Return { val } => {
                     match self.step_return(val) {
                         Ok(Some(new_state)) => new_state,
@@ -1002,8 +932,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
-            Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } | Value::Thunk { .. } |
-            Value::Memo { .. } | Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
+            Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } |
+            Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -1046,9 +976,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.car(else_rest)?
                 };
                 
-                // Push continuation for after condition is forced
+                // Push continuation for after condition is evaluated
                 self.push_cont(Cont::IfBranch { then_expr, else_expr, env })?;
-                self.push_cont(Cont::Force)?;
                 
                 // Evaluate condition
                 return Ok(TrampolineState::Eval { expr: cond_expr, env });
@@ -1172,9 +1101,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Function application - HYBRID EVALUATION
         self.push_frame(expr, car)?;
         
-        // Push continuation: after evaluating func, force it, then apply
+        // Push continuation: after evaluating func, apply it
         self.push_cont(Cont::ApplyForced { args_expr: cdr, env, call_expr: expr })?;
-        self.push_cont(Cont::Force)?;
         
         // Evaluate the function expression
         Ok(TrampolineState::Eval { expr: car, env })
@@ -1190,28 +1118,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// One step of forcing
-    fn step_force(&mut self, idx: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let val = self.lisp.get(idx)?;
-        
-        match val {
-            Value::Thunk { expr, env, cached } => {
-                if !cached.is_null() {
-                    // Already cached - but might be a thunk, so force again
-                    Ok(TrampolineState::Force { idx: cached })
-                } else {
-                    // Need to evaluate - push continuation to cache result
-                    self.push_cont(Cont::CacheThunk { thunk_idx: idx, expr, env })?;
-                    Ok(TrampolineState::Eval { expr, env })
-                }
-            }
-            _ => {
-                // Not a thunk - return as WHNF
-                Ok(TrampolineState::Return { val: idx })
-            }
-        }
-    }
-    
     /// Process a return value with the current continuation
     fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
         let cont = self.pop_cont();
@@ -1222,20 +1128,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(None)
             }
             
-            Cont::Force { .. } => {
-                // Force the returned value
-                Ok(Some(TrampolineState::Force { idx: val }))
-            }
-            
-            Cont::CacheThunk { thunk_idx, expr, env } => {
-                // Cache the result in the thunk
-                self.lisp.set(thunk_idx, Value::Thunk { expr, env, cached: val })?;
-                // Now force the result (it might be a thunk too)
-                Ok(Some(TrampolineState::Force { idx: val }))
-            }
-            
             Cont::IfBranch { then_expr, else_expr, env } => {
-                // val is the forced condition
+                // val is the evaluated condition
                 let branch = if !self.is_false(val)? { then_expr } else { else_expr };
                 if branch.is_null() {
                     let nil = self.lisp.nil()?;
@@ -1246,18 +1140,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Cont::ApplyForced { args_expr, env, call_expr } => {
-                // val is the forced function
+                // val is the evaluated function
                 match self.lisp.get(val)? {
                     Value::Builtin(b) => {
-                        // Builtins: LAZY - wrap args in thunks
-                        let args = self.make_thunk_list(args_expr, env)?;
-                        let result = self.apply_builtin_trampolined(b, args, call_expr)?;
+                        // Builtins: STRICT - evaluate args and apply
                         self.pop_frame();
-                        Ok(Some(result))
+                        
+                        if self.lisp.get(args_expr)?.is_nil() {
+                            // No args - apply directly
+                            let nil = self.lisp.nil()?;
+                            let result = self.apply_builtin_trampolined(b, nil, call_expr)?;
+                            Ok(Some(result))
+                        } else {
+                            // Evaluate args before applying builtin
+                            self.apply_builtin_with_args(b, args_expr, env, call_expr)
+                        }
                     }
                     Value::Lambda { params, body, env: closure_env } => {
                         // Lambda: STRICT - evaluate args and bind directly to params
-                        // OPTIMIZED: No intermediate list building - binds params as we go
                         self.pop_frame();
                         
                         if self.lisp.get(args_expr)?.is_nil() {
@@ -1289,39 +1189,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             })?;
                             // Push binding continuation for first param
                             self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
-                            self.push_cont(Cont::Force)?;
-                            
-                            Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
-                        }
-                    }
-                    Value::Memo { func, cache } => {
-                        // Memoized function: evaluate args strictly, look up cache
-                        self.pop_frame();
-                        
-                        if self.lisp.get(args_expr)?.is_nil() {
-                            // No args - look up in cache with nil key
-                            let nil = self.lisp.nil()?;
-                            if let Some(cached_result) = self.memo_cache_lookup(cache, nil)? {
-                                Ok(Some(TrampolineState::Return { val: cached_result }))
-                            } else {
-                                // Call underlying function and cache result
-                                self.push_cont(Cont::MemoCacheResult { memo_idx: val, args: nil, cache })?;
-                                // Apply the wrapped function
-                                self.push_cont(Cont::ApplyForced { args_expr, env, call_expr })?;
-                                self.push_cont(Cont::Force)?;
-                                Ok(Some(TrampolineState::Return { val: func }))
-                            }
-                        } else {
-                            // Start collecting forced args for cache key
-                            let first_expr = self.lisp.car(args_expr)?;
-                            let rest_exprs = self.lisp.cdr(args_expr)?;
-                            let nil = self.lisp.nil()?;
-                            
-                            self.push_cont(Cont::MemoCollectArg {
-                                remaining_exprs: rest_exprs, eval_env: env,
-                                collected: nil, memo_idx: val, func, cache, call_expr
-                            })?;
-                            self.push_cont(Cont::Force)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
@@ -1331,8 +1198,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.pop_frame();
                         
                         // Check if we have cached values, otherwise parse and cache
-                        // Note: cached_body and cached_params are always set together atomically,
-                        // so if one is valid (non-NULL), both are valid. We check both for safety.
                         let (body, params) = if !cached_body.is_null() && !cached_params.is_null() {
                             // Use cached values (fast path)
                             (cached_body, cached_params)
@@ -1343,7 +1208,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let parsed_params = self.make_stdlib_param_list(s.params())?;
                             
                             // Update the StdLib value in the arena with cached values
-                            // This mutates the value in-place so future calls use the cache
                             self.lisp.set(val, Value::StdLib { 
                                 func: s, 
                                 cached_body: parsed_body, 
@@ -1385,24 +1249,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             })?;
                             // Push binding continuation for first param
                             self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
-                            self.push_cont(Cont::Force)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
                     Value::Native { id, .. } => {
                         // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
-                        // First, we need to force all arguments, then call the native function
                         self.pop_frame();
                         
-                        // Build thunk list for lazy evaluation, then force them
-                        let args = self.make_thunk_list(args_expr, env)?;
+                        // Evaluate all arguments first
+                        let args = self.eval_args_list(args_expr, env)?;
                         
                         // Look up the native function and call it
                         if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
-                            // Force all arguments before calling native function
-                            let forced_args = self.force_args_list(args)?;
-                            let result = native_fn(self.lisp, forced_args)?;
+                            let result = native_fn(self.lisp, args)?;
                             Ok(Some(TrampolineState::Return { val: result }))
                         } else {
                             Err(self.make_error(ErrorKind::NotAFunction, call_expr)
@@ -1417,7 +1277,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Cont::LambdaFirstBind { param } => {
-                // val is forced first arg - bind to param
+                // val is evaluated first arg - bind to param
                 // Pop LambdaBindArg, extend env, push it back
                 let cont = self.pop_cont();
                 if let Cont::LambdaBindArg { remaining_exprs, eval_env, remaining_params, body, new_env, call_expr } = cont {
@@ -1451,7 +1311,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             new_env: extended_env, call_expr
                         })?;
                         self.push_cont(Cont::LambdaFirstBind { param: next_param })?;
-                        self.push_cont(Cont::Force)?;
                         
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
                     }
@@ -1466,120 +1325,81 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Err(self.make_error(ErrorKind::Generic, val))
             }
             
-            Cont::MemoCollectArg { remaining_exprs, eval_env, collected, memo_idx, func, cache, call_expr } => {
-                // val is a forced argument for memoized function
-                let new_collected = self.lisp.cons(val, collected)?;
-                
-                if self.lisp.get(remaining_exprs)?.is_nil() {
-                    // All args collected - reverse and look up in cache
-                    let args = self.reverse_list(new_collected)?;
-                    
-                    if let Some(cached_result) = self.memo_cache_lookup(cache, args)? {
-                        // Cache hit!
-                        Ok(Some(TrampolineState::Return { val: cached_result }))
-                    } else {
-                        // Cache miss - call underlying function and cache result
-                        self.push_cont(Cont::MemoCacheResult { memo_idx, args, cache })?;
-                        
-                        // Apply the wrapped function with the collected args
-                        // We need to call it like a normal function application
-                        match self.lisp.get(func)? {
-                            Value::Lambda { params, body, env: closure_env } => {
-                                let new_env = self.bind_params(params, args, closure_env, call_expr)?;
-                                Ok(Some(TrampolineState::Eval { expr: body, env: new_env }))
-                            }
-                            Value::Builtin(b) => {
-                                let result = self.apply_builtin_with_forced_args(b, args, call_expr)?;
-                                Ok(Some(TrampolineState::Return { val: result }))
-                            }
-                            _ => Err(self.type_error(call_expr, "procedure", self.lisp.get(func)?.type_name())),
-                        }
-                    }
-                } else {
-                    // More args to force
-                    let next_expr = self.lisp.car(remaining_exprs)?;
-                    let rest_exprs = self.lisp.cdr(remaining_exprs)?;
-                    
-                    self.push_cont(Cont::MemoCollectArg {
-                        remaining_exprs: rest_exprs, eval_env,
-                        collected: new_collected, memo_idx, func, cache, call_expr
-                    })?;
-                    self.push_cont(Cont::Force)?;
-                    
-                    Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
-                }
-            }
-            
-            Cont::MemoCacheResult { memo_idx, args, cache } => {
-                // val is the result of calling the memoized function
-                // Store it in the cache with LRU eviction
-                let new_entry = self.lisp.cons(args, val)?;
-                let new_cache = self.lisp.cons(new_entry, cache)?;
-                
-                // Apply LRU eviction if cache is too large
-                let bounded_cache = self.limit_cache_size(new_cache, MAX_MEMO_CACHE_SIZE)?;
-                
-                // Update the memo value with the bounded cache
-                if let Value::Memo { func, .. } = self.lisp.get(memo_idx)? {
-                    self.lisp.set(memo_idx, Value::Memo { func, cache: bounded_cache })?;
-                }
-                
-                Ok(Some(TrampolineState::Return { val }))
-            }
-            
-            Cont::BuiltinForceArg { builtin, remaining_args, collected, call_expr } => {
-                // val is a forced argument for a strict builtin
+            Cont::BuiltinForceArg { builtin, remaining_args, collected, call_expr, eval_env } => {
+                // val is an evaluated argument for a builtin
                 let new_collected = self.lisp.cons(val, collected)?;
                 
                 if self.lisp.get(remaining_args)?.is_nil() {
-                    // All args forced - apply builtin
+                    // All args evaluated - apply builtin
                     let args = self.reverse_list(new_collected)?;
                     let result = self.apply_builtin_with_forced_args(builtin, args, call_expr)?;
                     Ok(Some(TrampolineState::Return { val: result }))
                 } else {
-                    // More args to force
+                    // More args to evaluate
                     let next_arg = self.lisp.car(remaining_args)?;
                     let rest_args = self.lisp.cdr(remaining_args)?;
                     
                     self.push_cont(Cont::BuiltinForceArg {
-                        builtin, remaining_args: rest_args, collected: new_collected, call_expr
+                        builtin, remaining_args: rest_args, collected: new_collected, call_expr, eval_env
                     })?;
                     
-                    Ok(Some(TrampolineState::Force { idx: next_arg }))
+                    Ok(Some(TrampolineState::Eval { expr: next_arg, env: eval_env }))
                 }
             }
             
-            Cont::BinaryBuiltinFirst { builtin, second_arg, call_expr } => {
-                // val is first forced arg - now force second
+            Cont::BinaryBuiltinFirst { builtin, second_arg, call_expr, eval_env } => {
+                // val is first evaluated arg - now evaluate second
                 self.push_cont(Cont::BinaryBuiltinSecond { builtin, first_val: val, call_expr })?;
-                Ok(Some(TrampolineState::Force { idx: second_arg }))
+                Ok(Some(TrampolineState::Eval { expr: second_arg, env: eval_env }))
             }
             
             Cont::BinaryBuiltinSecond { builtin, first_val, call_expr } => {
-                // val is second forced arg - apply binary operation directly
+                // val is second evaluated arg - apply binary operation directly
                 let result = self.apply_binary_builtin(builtin, first_val, val, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
-            
-            Cont::BuiltinCarCdr { builtin, call_expr } => {
-                // val is the forced pair argument for car/cdr
-                match self.lisp.get(val)? {
-                    Value::Cons { car, cdr } => {
-                        let result = match builtin {
-                            Builtin::Car => car,
-                            Builtin::Cdr => cdr,
-                            _ => unreachable!(),
-                        };
-                        Ok(Some(TrampolineState::Return { val: result }))
-                    }
-                    Value::Nil => {
-                        let nil = self.lisp.nil()?;
-                        Ok(Some(TrampolineState::Return { val: nil }))
-                    }
-                    _ => Err(self.type_error(call_expr, "pair", self.lisp.get(val)?.type_name())),
+        }
+    }
+    
+    /// Apply a builtin with unevaluated args - sets up evaluation continuations
+    fn apply_builtin_with_args(&mut self, builtin: Builtin, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        // Get first arg expression
+        let first_arg = self.lisp.car(args_expr)?;
+        let rest_args = self.lisp.cdr(args_expr)?;
+        
+        // Check for binary builtins optimization
+        if is_binary_builtin(builtin) {
+            // Check if exactly 2 args
+            if !self.lisp.get(rest_args)?.is_nil() {
+                let second_arg_expr = self.lisp.car(rest_args)?;
+                let third_check = self.lisp.cdr(rest_args)?;
+                if self.lisp.get(third_check)?.is_nil() {
+                    // Exactly 2 args - use optimized binary path
+                    // Evaluate second arg expr (store for later), then evaluate first
+                    self.push_cont(Cont::BinaryBuiltinFirst { 
+                        builtin, 
+                        second_arg: second_arg_expr, 
+                        call_expr,
+                        eval_env: env,
+                    })?;
+                    return Ok(Some(TrampolineState::Eval { expr: first_arg, env }));
                 }
             }
         }
+        
+        // General case: collect args and apply
+        let nil = self.lisp.nil()?;
+        self.push_cont(Cont::BuiltinForceArg {
+            builtin,
+            remaining_args: rest_args,
+            collected: nil,
+            call_expr,
+            eval_env: env,
+        })?;
+        
+        Ok(Some(TrampolineState::Eval { expr: first_arg, env }))
     }
     
     /// Reverse a list (used for BuiltinForceArg fallback path)
@@ -1597,124 +1417,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Look up args in memo cache (alist of (args . result) pairs)
-    /// Returns Some(result) if found, None if not found
-    fn memo_cache_lookup(&self, cache: ArenaIndex, args: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
-        let mut current = cache;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => return Ok(None), // Not found
-                Value::Cons { car, cdr } => {
-                    // car should be (cached_args . cached_result)
-                    if let Value::Cons { car: cached_args, cdr: cached_result } = self.lisp.get(car)? {
-                        if self.values_equal(args, cached_args)? {
-                            return Ok(Some(cached_result));
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Ok(None),
-            }
-        }
-    }
-    
-    /// Check if two values are structurally equal (for memo cache lookup)
-    fn values_equal(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
-        if a == b {
-            return Ok(true);
-        }
-        
-        let val_a = self.lisp.get(a)?;
-        let val_b = self.lisp.get(b)?;
-        
-        match (val_a, val_b) {
-            (Value::Nil, Value::Nil) => Ok(true),
-            (Value::True, Value::True) => Ok(true),
-            (Value::False, Value::False) => Ok(true),
-            (Value::Number(x), Value::Number(y)) => Ok(x == y),
-            (Value::Char(x), Value::Char(y)) => Ok(x == y),
-            (Value::Symbol { .. }, Value::Symbol { .. }) => {
-                self.lisp.symbol_eq(a, b).map_err(Into::into)
-            }
-            (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
-                // Recursively compare (limited depth to avoid stack overflow)
-                if self.values_equal(car_a, car_b)? {
-                    self.values_equal(cdr_a, cdr_b)
-                } else {
-                    Ok(false)
-                }
-            }
-            _ => Ok(false),
-        }
-    }
-    
     /// Apply a builtin function (trampolined version)
-    /// Returns next trampoline state instead of final value
+    /// Arguments are already evaluated in strict mode
     fn apply_builtin_trampolined(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> Result<TrampolineState, EvalError> 
     {
-        // For strict builtins, we need to force args using continuations
-        // For non-strict builtins (cons, list, car, cdr), we can return immediately
-        
-        match builtin {
-            // NON-STRICT builtins - return immediately
-            Builtin::Cons => {
-                extract_args!(self, args, a, b);
-                let result = self.lisp.cons(a, b)?;
-                Ok(TrampolineState::Return { val: result })
-            }
-            
-            Builtin::List => {
-                Ok(TrampolineState::Return { val: args })
-            }
-            
-            // car/cdr: force the pair, but return element (may be thunk)
-            Builtin::Car | Builtin::Cdr => {
-                let arg = self.lisp.car(args)?;
-                // Push continuation to handle after forcing - use special CarCdr continuation
-                self.push_cont(Cont::BuiltinCarCdr { builtin, call_expr })?;
-                Ok(TrampolineState::Force { idx: arg })
-            }
-            
-            // STRICT builtins - need to force all args
-            // OPTIMIZATION: Use specialized path for binary operations (most common case)
-            _ => {
-                if self.lisp.get(args)?.is_nil() {
-                    // No args - apply immediately
-                    let result = self.apply_builtin_with_forced_args(builtin, args, call_expr)?;
-                    Ok(TrampolineState::Return { val: result })
-                } else {
-                    let first_arg = self.lisp.car(args)?;
-                    let rest_args = self.lisp.cdr(args)?;
-                    
-                    // Check if this is a binary operation (exactly 2 args)
-                    if !self.lisp.get(rest_args)?.is_nil() {
-                        let second_arg = self.lisp.car(rest_args)?;
-                        let rest_rest = self.lisp.cdr(rest_args)?;
-                        
-                        if self.lisp.get(rest_rest)?.is_nil() {
-                            // OPTIMIZED: Binary operation - no list allocation!
-                            self.push_cont(Cont::BinaryBuiltinFirst { 
-                                builtin, second_arg, call_expr
-                            })?;
-                            return Ok(TrampolineState::Force { idx: first_arg });
-                        }
-                    }
-                    
-                    // General case: multiple args, use list-based approach
-                    let nil = self.lisp.nil()?;
-                    
-                    self.push_cont(Cont::BuiltinForceArg {
-                        builtin, remaining_args: rest_args, collected: nil, call_expr
-                    })?;
-                    
-                    Ok(TrampolineState::Force { idx: first_arg })
-                }
-            }
-        }
+        // In strict evaluation, args are already evaluated values
+        let result = self.apply_builtin_with_forced_args(builtin, args, call_expr)?;
+        Ok(TrampolineState::Return { val: result })
     }
     
-    /// Apply a builtin with already-forced arguments
+    /// Apply a builtin with already-evaluated arguments
     fn apply_builtin_with_forced_args(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> EvalResult 
     {
@@ -1827,20 +1540,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Error => {
                 let msg = self.lisp.car(args)?;
                 Err(self.make_error(ErrorKind::UserError, msg))
-            }
-            
-            Builtin::Memoize => {
-                // (memoize fn) - wrap a function with memoization
-                let func = self.lisp.car(args)?;
-                
-                // Verify it's a procedure
-                if !self.lisp.get(func)?.is_procedure() {
-                    return Err(self.type_error(call_expr, "procedure", self.lisp.get(func)?.type_name()));
-                }
-                
-                // Create memo wrapper with empty cache
-                let nil = self.lisp.nil()?;
-                self.lisp.memo(func, nil).map_err(Into::into)
             }
             
             Builtin::Gensym => {
@@ -2151,7 +1850,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let test_result = if is_else {
                         self.lisp.true_val()?
                     } else {
-                        self.eval_in_env(test, env)?
+                        self.eval_preserving_stack(test, env)?
                     };
                     
                     if !self.is_false(test_result)? {
@@ -2178,8 +1877,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Last expression - tail position
                         return Ok(TcoResult::TailCall { new_expr: expr, new_env: env });
                     } else {
-                        // Not last - evaluate and continue
-                        self.eval_in_env(expr, env)?;
+                        // Not last - evaluate and continue (preserve stack)
+                        self.eval_preserving_stack(expr, env)?;
                         current = rest;
                     }
                 }
@@ -2205,7 +1904,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Last expression - tail position
                         return Ok(TcoResult::TailCall { new_expr: expr, new_env: env });
                     } else {
-                        let result = self.eval_in_env(expr, env)?;
+                        let result = self.eval_preserving_stack(expr, env)?;
                         if self.is_false(result)? {
                             return Ok(TcoResult::Return(self.lisp.false_val()?));
                         }
@@ -2234,7 +1933,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Last expression - tail position
                         return Ok(TcoResult::TailCall { new_expr: expr, new_env: env });
                     } else {
-                        let result = self.eval_in_env(expr, env)?;
+                        let result = self.eval_preserving_stack(expr, env)?;
                         if !self.is_false(result)? {
                             return Ok(TcoResult::Return(result));
                         }
@@ -2282,6 +1981,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 _ => return Err(self.make_error(ErrorKind::TypeError, clauses)),
             }
+        }
+    }
+    
+    /// Check if two values are structurally equal (for case matching)
+    fn values_equal(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+        if a == b {
+            return Ok(true);
+        }
+        
+        let val_a = self.lisp.get(a)?;
+        let val_b = self.lisp.get(b)?;
+        
+        match (val_a, val_b) {
+            (Value::Nil, Value::Nil) => Ok(true),
+            (Value::True, Value::True) => Ok(true),
+            (Value::False, Value::False) => Ok(true),
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Char(x), Value::Char(y)) => Ok(x == y),
+            (Value::Symbol { .. }, Value::Symbol { .. }) => {
+                self.lisp.symbol_eq(a, b).map_err(Into::into)
+            }
+            (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
+                // Recursively compare (limited depth to avoid stack overflow)
+                if self.values_equal(car_a, car_b)? {
+                    self.values_equal(cdr_a, cdr_b)
+                } else {
+                    Ok(false)
+                }
+            }
+            _ => Ok(false),
         }
     }
     
@@ -2558,26 +2287,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Force a value to WHNF (synchronous, for macro expansion and native calls)
+    /// Get a value (identity function, kept for compatibility)
     ///
-    /// This uses eval_preserving_stack to avoid destroying the continuation stack
-    /// that may be in use by the caller.
-    fn force_value(&mut self, mut idx: ArenaIndex) -> EvalResult {
-        loop {
-            match self.lisp.get(idx)? {
-                Value::Thunk { expr, env, cached } => {
-                    if !cached.is_null() {
-                        idx = cached;
-                        continue;
-                    }
-                    // Evaluate the thunk, preserving the continuation stack
-                    let result = self.eval_preserving_stack(expr, env)?;
-                    self.lisp.set(idx, Value::Thunk { expr, env, cached: result })?;
-                    idx = result;
-                }
-                _ => return Ok(idx),
-            }
-        }
+    /// In strict evaluation, values are already fully evaluated, so this
+    /// just returns the value unchanged.
+    #[inline]
+    fn force_value(&mut self, idx: ArenaIndex) -> EvalResult {
+        Ok(idx)
     }
     
     /// Bind macro parameters to unevaluated arguments
@@ -2622,14 +2338,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Evaluate function and arguments list
         let func = self.eval_in_env(func_expr, env)?;
         let args_list = self.eval_in_env(args_list_expr, env)?;
-        // Force the args list to get actual values
-        let forced_args = self.deep_force_for_macro(args_list)?;
         
-        // Evaluate the application using forced arguments
-        let call_expr = self.lisp.cons(func, forced_args)?;
+        // Evaluate the application using the args list directly (already evaluated)
+        let call_expr = self.lisp.cons(func, args_list)?;
         self.push_frame(call_expr, func)?;
-        self.push_cont(Cont::ApplyForced { args_expr: forced_args, env, call_expr })?;
-        self.push_cont(Cont::Force)?;
+        self.push_cont(Cont::ApplyForced { args_expr: args_list, env, call_expr })?;
         Ok(TrampolineState::Return { val: func })
     }
     
@@ -2811,17 +2524,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.cons(begin, body_list)?
                 };
                 let lambda = self.lisp.lambda(params, body, env)?;
-                
-                // AUTO-MEMOIZATION: Check if the function body references its own name (recursive)
-                // If so, wrap it with automatic memoization with bounded LRU cache
-                if self.contains_symbol(body, name)? {
-                    // Create memoized version with empty cache
-                    let nil = self.lisp.nil()?;
-                    let memo = self.lisp.memo(lambda, nil)?;
-                    self.define(name, memo)
-                } else {
-                    self.define(name, lambda)
-                }
+                self.define(name, lambda)
             }
             _ => Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
         }
@@ -2849,56 +2552,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     // NOTE: eval_list removed - trampoline handles evaluation directly
     
-    /// Create a list of thunks from expressions (lazy - wraps each in a thunk)
-    /// Used for builtin arguments (builtins handle their own strictness)
-    /// 
-    /// ITERATIVE implementation to avoid Rust stack overflow
-    fn make_thunk_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        const MAX_ARGS: usize = 64;
-        let mut thunks: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
-        let mut count = 0;
-        let mut current = list;
-        
-        // First pass: collect all thunks (iterative)
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car, cdr } => {
-                    if count >= MAX_ARGS {
-                        return Err(self.make_error(ErrorKind::StackOverflow, list));
-                    }
-                    // Wrap the expression in a thunk (don't evaluate it yet)
-                    let thunk = self.lisp.thunk(car, env)?;
-                    thunks[count] = thunk;
-                    count += 1;
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
-            }
-        }
-        
-        // Second pass: build result list (backwards to preserve order)
-        let mut result = self.lisp.nil()?;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(thunks[i], result)?;
-        }
-        
-        Ok(result)
-    }
-    
-    /// Force all arguments in a list to WHNF (synchronously).
+    /// Evaluate all arguments in a list (synchronously).
     ///
     /// This is used for native function calls where we need all arguments
     /// evaluated before calling the Rust function.
     ///
     /// ITERATIVE implementation to avoid Rust stack overflow
-    fn force_args_list(&mut self, list: ArenaIndex) -> EvalResult {
+    fn eval_args_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> EvalResult {
         const MAX_ARGS: usize = 64;
-        let mut forced: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
+        let mut evaluated: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
         let mut count = 0;
         let mut current = list;
         
-        // First pass: force each argument
+        // First pass: evaluate each argument
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => break,
@@ -2906,9 +2572,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if count >= MAX_ARGS {
                         return Err(self.make_error(ErrorKind::StackOverflow, list));
                     }
-                    // Force the value
-                    let forced_val = self.force_value(car)?;
-                    forced[count] = forced_val;
+                    // Evaluate the expression
+                    let evaled = self.eval_in_env(car, env)?;
+                    evaluated[count] = evaled;
                     count += 1;
                     current = cdr;
                 }
@@ -2919,56 +2585,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Second pass: build result list (backwards to preserve order)
         let mut result = self.lisp.nil()?;
         for i in (0..count).rev() {
-            result = self.lisp.cons(forced[i], result)?;
+            result = self.lisp.cons(evaluated[i], result)?;
         }
         
         Ok(result)
     }
     
     // NOTE: eval_list_strict and force_list removed - handled by trampoline continuations
-    
-    /// Bind parameters to arguments
-    fn bind_params(&self, params: ArenaIndex, args: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
-        let mut new_env = env;
-        let mut params_cur = params;
-        let mut args_cur = args;
-        
-        loop {
-            let p = self.lisp.get(params_cur)?;
-            let a = self.lisp.get(args_cur)?;
-            
-            match (p, a) {
-                (Value::Nil, Value::Nil) => break,
-                (Value::Cons { car: param, cdr: prest }, 
-                 Value::Cons { car: arg, cdr: arest }) => {
-                    new_env = self.env_extend(new_env, param, arg)?;
-                    params_cur = prest;
-                    args_cur = arest;
-                }
-                (Value::Nil, Value::Cons { .. }) => {
-                    // Too many arguments
-                    let expected = self.count_list(params)?;
-                    let got = self.count_list(args)?;
-                    return Err(self.arg_error(call_expr, expected, got));
-                }
-                (Value::Cons { .. }, Value::Nil) => {
-                    // Too few arguments
-                    let expected = self.count_list(params)?;
-                    let got = self.count_list(args)?;
-                    return Err(self.arg_error(call_expr, expected, got));
-                }
-                // Rest parameter (symbol instead of nil at end)
-                (Value::Symbol { .. }, _) => {
-                    // Bind remaining args to rest parameter
-                    new_env = self.env_extend(new_env, params_cur, args_cur)?;
-                    break;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, params_cur)),
-            }
-        }
-        
-        Ok(new_env)
-    }
     
     /// Count elements in a list
     fn count_list(&self, mut list: ArenaIndex) -> Result<usize, EvalError> {
@@ -3038,83 +2661,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             backtrace_len: 0,
             parse_error: Some(err),
         }
-    }
-    
-    /// Limit cache size with LRU eviction
-    /// Takes the first N entries from the cache (most recently used)
-    fn limit_cache_size(&self, cache: ArenaIndex, max_size: usize) -> Result<ArenaIndex, EvalError> {
-        let count = self.count_list(cache)?;
-        
-        if count <= max_size {
-            // Cache is within limits
-            return Ok(cache);
-        }
-        
-        // Need to evict - keep only the first max_size entries (LRU: newest first)
-        let mut result = self.lisp.nil()?;
-        let mut current = cache;
-        let mut taken = 0;
-        
-        while taken < max_size {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car, cdr } => {
-                    result = self.lisp.cons(car, result)?;
-                    current = cdr;
-                    taken += 1;
-                }
-                _ => break,
-            }
-        }
-        
-        // Reverse to maintain order (newest first)
-        self.reverse_list(result)
-    }
-    
-    /// Check if an expression contains a reference to a given symbol
-    /// Used to detect recursive function definitions
-    /// Uses iterative traversal to avoid stack overflow
-    fn contains_symbol(&self, expr: ArenaIndex, symbol: ArenaIndex) -> Result<bool, EvalError> {
-        // Simple depth-limited search without recursion
-        // Use small stack to minimize stack usage during test execution
-        const MAX_NODES: usize = 30;  // Max nodes in traversal stack
-        
-        let mut stack: [ArenaIndex; MAX_NODES] = [ArenaIndex::NULL; MAX_NODES];
-        let mut stack_size = 1;
-        stack[0] = expr;
-        let mut nodes_checked = 0;
-        
-        // Allow checking more nodes than stack size since we pop as we go
-        // MAX_NODES * 2 allows traversing deeper trees by reusing stack space
-        while stack_size > 0 && nodes_checked < MAX_NODES * 2 {
-            stack_size -= 1;
-            let current = stack[stack_size];
-            nodes_checked += 1;
-            
-            match self.lisp.get(current)? {
-                Value::Symbol { .. } => {
-                    if self.lisp.symbol_eq(current, symbol)? {
-                        return Ok(true);
-                    }
-                }
-                Value::Cons { car, cdr } => {
-                    // Add children to stack if there's room
-                    // Need space for both car and cdr, hence -2
-                    if stack_size < MAX_NODES - 2 {
-                        stack[stack_size] = car;
-                        stack_size += 1;
-                        stack[stack_size] = cdr;
-                        stack_size += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        
-        // Note: If we hit the limit, we return false (no recursion detected)
-        // This is safe but conservative - might miss very deeply nested recursion
-        // In practice, most recursive functions have shallow bodies
-        Ok(false)
     }
     
     /// Check if a value is false (ONLY #f is false)

@@ -317,6 +317,7 @@ fn test_lazy_cons_is_nonstrict() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_infinite_stream() {
     // THE KEY TEST: Infinite structures work!
     // (define ones (cons 1 ones)) - this would loop forever in eager evaluation
@@ -568,6 +569,7 @@ fn test_tco_in_cond() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_stream_operations() {
     // Stream operations on infinite data
     let lisp: Lisp<5000> = Lisp::new();
@@ -584,6 +586,7 @@ fn test_lazy_stream_operations() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_stream_take() {
     // Take n elements from a stream
     let lisp: Lisp<5000> = Lisp::new();
@@ -659,6 +662,7 @@ fn test_lazy_nested_structures() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_with_gc_pressure() {
     // Test lazy evaluation under GC pressure
     let lisp: Lisp<2000> = Lisp::new();
@@ -688,6 +692,7 @@ fn test_lazy_with_gc_pressure() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_fibonacci_stream() {
     // Classic lazy Fibonacci stream
     let lisp: Lisp<5000> = Lisp::new();
@@ -1352,6 +1357,7 @@ fn test_error() {
 // ───────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "requires memoization (removed in strict mode)"]
 fn test_memoize_explicit() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -1426,6 +1432,7 @@ fn test_lazy_primes_sieve() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_iterate() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -1441,6 +1448,7 @@ fn test_lazy_iterate() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_lazy_cycle() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -1464,6 +1472,7 @@ fn test_lazy_cycle() {
 // ───────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_infinite_powers_of_two() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -1479,6 +1488,7 @@ fn test_infinite_powers_of_two() {
 }
 
 #[test]
+#[ignore = "requires lazy evaluation (removed in strict mode)"]
 fn test_infinite_triangular_numbers() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -1776,6 +1786,7 @@ fn test_pitfall_zero_is_truthy() {
 
 /// PITFALL: Lazy evaluation means side effects may not happen when expected
 #[test]
+#[ignore = "tests lazy side effects behavior (changed in strict mode)"]
 fn test_pitfall_lazy_side_effects() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();

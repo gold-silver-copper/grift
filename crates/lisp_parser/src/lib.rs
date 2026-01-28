@@ -12,7 +12,7 @@
 //! - All values are stored in a `pwn_arena` arena
 //! - Supports garbage collection via the `Trace` trait
 //! - Explicit boolean values (#t, #f) separate from nil/empty list
-//! - **Lazy by default** - All evaluation is call-by-need (like Haskell)
+//! - **Strict evaluation** - All arguments are evaluated before function application (call-by-value)
 //!
 //! ## Value Representation
 //!
@@ -24,7 +24,6 @@
 //! - `Cons { car, cdr }` - Pair/list cell
 //! - `Symbol { chars }` - Symbol with contiguous string storage
 //! - `Lambda { params, body, env }` - Closure
-//! - `Thunk { expr, env, cached }` - Lazy computation (internal, auto-managed)
 //! - `Builtin(Builtin)` - Optimized built-in function
 //! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
 //!
@@ -43,11 +42,6 @@
 //!   - `nil` / `'()` (the empty list)
 //!   - `0` (the number zero)
 //!   - Empty strings
-//!
-//! ### Lazy Evaluation
-//! - Side effects in lazy contexts may not happen when expected
-//! - `cons` is lazy - car and cdr are wrapped in thunks
-//! - Values are forced automatically in strict positions (arithmetic, predicates, etc.)
 //!
 //! ### Garbage Collection
 //! - The intern table is always a GC root - interned symbols are never collected
@@ -105,8 +99,7 @@ macro_rules! define_builtins {
         /// 
         /// NOTE: This Lisp supports mutation via set!, set-car!, and set-cdr!
         /// - Mutation operations break referential transparency
-        /// - All evaluation is call-by-need (lazy by default)
-        /// - Values are forced automatically in strict positions
+        /// - All evaluation is call-by-value (strict)
         /// 
         /// # Adding New Builtins
         /// 
@@ -144,7 +137,7 @@ macro_rules! define_builtins {
 // Define all built-in functions using the macro.
 // To add a new builtin, add an entry here and implement its evaluation in lisp_eval.
 define_builtins! {
-    // List operations (non-strict - don't force arguments)
+    // List operations
     /// car - Get first element of pair
     Car => "car",
     /// cdr - Get second element of pair
@@ -154,7 +147,7 @@ define_builtins! {
     /// list - Create a list from arguments
     List => "list",
     
-    // Predicates (force their argument to check type)
+    // Predicates
     /// atom - Check if value is an atom
     Atom => "atom",
     /// eq - Check equality
@@ -172,7 +165,7 @@ define_builtins! {
     /// symbol? - Check if value is a symbol
     Symbolp => "symbol?",
     
-    // Arithmetic (strict - force arguments)
+    // Arithmetic
     /// + - Addition
     Add => "+",
     /// - - Subtraction
@@ -184,7 +177,7 @@ define_builtins! {
     /// mod - Modulo
     Mod => "mod",
     
-    // Comparison (strict - force arguments)
+    // Comparison
     /// < - Less than
     Lt => "<",
     /// > - Greater than
@@ -200,7 +193,7 @@ define_builtins! {
     /// not - Boolean negation
     Not => "not",
     
-    // I/O (strict - force arguments for printing)
+    // I/O
     /// print - Print value with newline
     Print => "print",
     /// newline - Print a newline
@@ -212,15 +205,11 @@ define_builtins! {
     /// error - Raise an error
     Error => "error",
     
-    // Memoization
-    /// memoize - Wrap function with memoization
-    Memoize => "memoize",
-    
     // Symbol generation for hygiene
     /// gensym - Generate unique symbol
     Gensym => "gensym",
     
-    // Mutation operations (strict - force pair argument)
+    // Mutation operations
     /// set-car! - Mutate car of pair
     SetCar => "set-car!",
     /// set-cdr! - Mutate cdr of pair
@@ -407,25 +396,10 @@ pub enum Value {
         env: ArenaIndex,     // Captured environment (alist)
     },
     
-    /// Thunk - delayed computation for call-by-need
-    /// Created by (delay expr), forced by (force thunk)
-    Thunk {
-        expr: ArenaIndex,    // Unevaluated expression
-        env: ArenaIndex,     // Environment for evaluation
-        cached: ArenaIndex,  // Cached result (NULL if not yet evaluated)
-    },
-    
-    /// Memoized function - caches results keyed by argument values
-    /// Created by (memoize fn), automatically caches return values
-    Memo {
-        func: ArenaIndex,    // The wrapped function (lambda or builtin)
-        cache: ArenaIndex,   // Cache: alist of (args . result) pairs
-    },
-    
     /// Built-in function (optimized)
     Builtin(Builtin),
     
-    /// Standard library function (stored in static memory with lazy caching)
+    /// Standard library function (stored in static memory with caching)
     /// 
     /// Unlike Lambda which stores code in the arena, StdLib references static
     /// function definitions. The function body is parsed on first call and cached,
@@ -434,7 +408,7 @@ pub enum Value {
     /// # Memory Efficiency
     /// 
     /// - Function definitions are in static memory (const strings)
-    /// - Parsed body and params are cached on first call (lazy initialization)
+    /// - Parsed body and params are cached on first call
     /// - Subsequent calls reuse the cached parsed AST
     /// 
     /// # Cache Fields
@@ -580,22 +554,10 @@ impl Value {
         matches!(self, Value::Native { .. })
     }
     
-    /// Check if this value is a procedure (lambda, builtin, stdlib, native, or memoized function)
+    /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Memo { .. } | Value::Native { .. })
-    }
-    
-    /// Check if this value is a thunk (promise)
-    #[inline]
-    pub const fn is_thunk(&self) -> bool {
-        matches!(self, Value::Thunk { .. })
-    }
-    
-    /// Check if this value is a memoized function
-    #[inline]
-    pub const fn is_memo(&self) -> bool {
-        matches!(self, Value::Memo { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Native { .. })
     }
     
     /// Check if this value is an array
@@ -638,8 +600,6 @@ impl Value {
             Value::Cons { .. } => "pair",
             Value::Symbol { .. } => "symbol",
             Value::Lambda { .. } => "procedure",
-            Value::Thunk { .. } => "promise",
-            Value::Memo { .. } => "memoized",
             Value::Builtin(_) => "procedure",
             Value::StdLib { .. } => "procedure",
             Value::Native { .. } => "native",
@@ -679,17 +639,6 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*params);
                 tracer(*body);
                 tracer(*env);
-            }
-            Value::Thunk { expr, env, cached } => {
-                tracer(*expr);
-                tracer(*env);
-                if !cached.is_null() {
-                    tracer(*cached);
-                }
-            }
-            Value::Memo { func, cache } => {
-                tracer(*func);
-                tracer(*cache);
             }
             Value::Array { data, len } => {
                 // For non-empty arrays, trace all elements in the contiguous block
@@ -1081,16 +1030,6 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a lambda
     pub fn lambda(&self, params: ArenaIndex, body: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Lambda { params, body, env })
-    }
-    
-    /// Allocate a thunk (delayed computation)
-    pub fn thunk(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Thunk { expr, env, cached: ArenaIndex::NULL })
-    }
-    
-    /// Create a memoized function (wraps a function with a cache)
-    pub fn memo(&self, func: ArenaIndex, cache: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Memo { func, cache })
     }
     
     /// Build a list from an iterator of indices
