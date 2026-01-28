@@ -1006,3 +1006,64 @@ fn test_array_type_name() {
     };
     assert_eq!(arr.type_name(), "array");
 }
+
+#[test]
+fn test_array_string_layout_consistency() {
+    // This test verifies that arrays and strings use the same memory layout:
+    // [Number(len), element0, element1, ..., element(len-1)]
+    
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Create a string with 3 characters
+    let s = lisp.string("abc").unwrap();
+    
+    // Create an array with 3 elements
+    let default = lisp.number(0).unwrap();
+    let arr = lisp.make_array(3, default).unwrap();
+    
+    // Both should have the same length via their respective accessors
+    assert_eq!(lisp.string_len(s).unwrap(), 3);
+    assert_eq!(lisp.array_len(arr).unwrap(), 3);
+    
+    // Get the data pointer for the string (s points to the length slot)
+    let str_val = lisp.get(s).unwrap();
+    assert!(matches!(str_val, Value::Number(3)));
+    
+    // Get the data pointer for the array
+    let arr_val = lisp.get(arr).unwrap();
+    if let Value::Array { data, len } = arr_val {
+        assert_eq!(len, 3);
+        
+        // The data should point to a Number(len) slot
+        let len_slot = lisp.arena().get(data).unwrap();
+        assert!(matches!(len_slot, Value::Number(3)), 
+            "Array length slot should contain Number(3), got {:?}", len_slot);
+    } else {
+        panic!("Expected Value::Array");
+    }
+}
+
+#[test]
+fn test_array_length_stored_in_arena() {
+    // Verify that the length is actually stored in the arena as Number(len)
+    let lisp: Lisp<1000> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // Create arrays of different sizes
+    for len in [0, 1, 5, 10, 100] {
+        let arr = lisp.make_array(len, nil).unwrap();
+        
+        // Get the Array value
+        let arr_val = lisp.get(arr).unwrap();
+        if let Value::Array { data, len: stored_len } = arr_val {
+            assert_eq!(stored_len, len, "Stored length should match");
+            
+            // The data slot should contain Number(len)
+            let len_slot_val = lisp.arena().get(data).unwrap();
+            assert_eq!(len_slot_val, Value::Number(len as i64),
+                "Length slot should contain Number({})", len);
+        } else {
+            panic!("Expected Value::Array for len={}", len);
+        }
+    }
+}
