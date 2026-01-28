@@ -534,9 +534,9 @@ fn print_help() {
     println!("  (gc-enabled?)    - Check if GC is enabled");
     println!("  (arena-stats)    - Returns (capacity allocated free usage%)");
     println!();
-    println!("NOTE: This is a Lisp with HYBRID EVALUATION and MUTATION!");
-    println!("      - Tail calls: STRICT (enables proper TCO)");
-    println!("      - Builtins: LAZY (infinite data structures work)");
+    println!("NOTE: This is a Lisp with STRICT EVALUATION and MUTATION!");
+    println!("      - All arguments are evaluated before function application");
+    println!("      - Full tail-call optimization (TCO) for deep recursion");
     println!("      - Mutation: set!, set-car!, set-cdr! available");
     println!();
     println!("REPL Commands:");
@@ -550,10 +550,9 @@ fn print_help() {
     println!("  (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))");
     println!("  (fact 5)");
     println!();
-    println!("  ; Infinite stream of ones");
-    println!("  (define (ones) (cons 1 (ones)))");
-    println!("  (car (ones))       ; => 1");
-    println!("  (car (cdr (ones))) ; => 1");
+    println!("  ; Tail-recursive sum");
+    println!("  (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))");
+    println!("  (sum 1000 0)  ; => 500500 (no stack overflow)");
     println!();
     println!("  ; Pattern matching with case");
     println!("  (case 'b ((a) 1) ((b c) 2) (else 3))  ; => 2");

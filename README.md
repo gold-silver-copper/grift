@@ -11,7 +11,7 @@ A minimal Lisp implementation built on a custom `no_std` arena allocator. This p
 This repository contains:
 
 - **`pwn_arena`** — A fixed-size arena allocator with mark-and-sweep garbage collection
-- **`lisp_parser`** — A Lisp parser with symbol interning and lazy evaluation support
+- **`lisp_parser`** — A Lisp parser with symbol interning
 - **`lisp_eval`** — A fully trampolined evaluator with proper tail-call optimization
 - **`lisp_repl`** — An interactive Read-Eval-Print-Loop
 
@@ -32,9 +32,9 @@ cargo test --workspace
 > (factorial 10)
 3628800
 
-> (define (ones) (cons 1 (ones)))  ; Infinite stream!
-> (car (cdr (cdr (ones))))
-1
+> (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))
+> (sum 1000 0)
+500500
 
 > (arena-stats)
 (50000 127 49873 0)  ; (capacity allocated free usage%)
@@ -47,7 +47,7 @@ cargo test --workspace
 | Feature | Description |
 |---------|-------------|
 | **Proper Tail Calls** | Full TCO via trampolining — no stack overflow on deep recursion |
-| **Lazy Evaluation** | Call-by-need semantics like Haskell; infinite data structures work |
+| **Strict Evaluation** | Call-by-value semantics; arguments evaluated before function application |
 | **Lexical Closures** | First-class functions with captured environments |
 | **Macros** | `defmacro` with `quasiquote`/`unquote` for metaprogramming |
 | **Pattern Matching** | `case` for value matching, `cond` for conditionals |
@@ -143,16 +143,21 @@ The entire Lisp runs on a fixed-size arena allocated at compile time. No `malloc
 - **Portable** — Works on bare metal, WASM, or any `no_std` target
 - **Safe** — No undefined behavior from memory allocation failures
 
-### 2. Hybrid Evaluation Strategy
+### 2. Strict Evaluation with TCO
 
-We combine the best of strict and lazy evaluation:
+All arguments are evaluated before function application (call-by-value), with full tail-call optimization:
 
 ```lisp
-; LAZY: cons doesn't evaluate its arguments
-(define (ones) (cons 1 (ones)))  ; Works! Infinite stream
-(car (ones))                      ; => 1
+; Arguments evaluated before function call
+(define (add x y) (+ x y))
+(add (+ 1 2) (* 3 4))  ; => 15 (both args evaluated first)
 
-; STRICT: Tail calls evaluate arguments for proper TCO
+; Side effects happen immediately
+(define count 0)
+(cons (begin (set! count 1) 'a) '())
+count  ; => 1 (side effect happened during cons)
+
+; Tail-call optimization works for deep recursion
 (define (sum n acc)
   (if (= n 0) acc
       (sum (- n 1) (+ acc n))))  ; Args evaluated before call
@@ -233,16 +238,6 @@ The standard library is defined as static Lisp code, parsed on-demand:
 
 ; RIGHT: Explicitly check for #f or use null?
 (if (null? (filter ...)) 'empty 'has-items)
-```
-
-### Lazy Evaluation Side Effects
-
-```lisp
-; Side effects may not happen when you expect!
-(define count 0)
-(define lst (cons (begin (set! count 1) 'a) '()))
-count  ; => 0 (not 1! cons is lazy)
-(car lst)  ; Now count becomes 1
 ```
 
 ### Arena Capacity is Fixed
