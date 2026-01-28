@@ -1,6 +1,6 @@
 use lisp_eval::*;
 
-fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> i64 {
+fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
     let result = eval.eval_str(input).unwrap();
     lisp.get(result).unwrap().as_number().unwrap()
 }

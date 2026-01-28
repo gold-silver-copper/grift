@@ -19,7 +19,7 @@
 //! - `Nil` - The empty list (NOT false!)
 //! - `True` - Boolean true (#t)
 //! - `False` - Boolean false (#f)
-//! - `Number(i64)` - Integer numbers
+//! - `Number(isize)` - Integer numbers
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell
 //! - `Symbol { chars }` - Symbol with contiguous string storage
@@ -371,7 +371,7 @@ pub enum Value {
     False,
     
     /// Integer number
-    Number(i64),
+    Number(isize),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -475,8 +475,8 @@ pub enum Value {
     /// - `id`: Index into the NativeRegistry's entries array
     /// - `name_hash`: Hash of the function name for quick comparison
     Native {
-        id: usize,         // Index in the NativeRegistry
-        name_hash: u32,    // Hash for debugging/lookup verification
+        id: usize,          // Index in the NativeRegistry
+        name_hash: usize,   // Hash for debugging/lookup verification
     },
 }
 
@@ -574,7 +574,7 @@ impl Value {
     
     /// Get the number value if this is a number
     #[inline]
-    pub const fn as_number(&self) -> Option<i64> {
+    pub const fn as_number(&self) -> Option<isize> {
         match self {
             Value::Number(n) => Some(*n),
             _ => None,
@@ -810,7 +810,7 @@ impl<const N: usize> Lisp<N> {
     
     /// Allocate a number
     #[inline]
-    pub fn number(&self, n: i64) -> ArenaResult<ArenaIndex> {
+    pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Number(n))
     }
     
@@ -1023,7 +1023,7 @@ impl<const N: usize> Lisp<N> {
     /// The `id` is the index in the NativeRegistry, and `name_hash` is
     /// a simple hash for verification.
     #[inline]
-    pub fn native(&self, id: usize, name_hash: u32) -> ArenaResult<ArenaIndex> {
+    pub fn native(&self, id: usize, name_hash: usize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Native { id, name_hash })
     }
     
@@ -1522,8 +1522,8 @@ impl<const N: usize> Default for Lisp<N> {
 /// Source location for error reporting
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SourceLoc {
-    pub line: u32,
-    pub column: u32,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// Parser error with location
@@ -1550,7 +1550,7 @@ pub enum ParseErrorKind {
 }
 
 impl ParseError {
-    pub fn new(kind: ParseErrorKind, line: u32, column: u32) -> Self {
+    pub fn new(kind: ParseErrorKind, line: usize, column: usize) -> Self {
         ParseError { kind, loc: SourceLoc { line, column } }
     }
 }
@@ -1571,8 +1571,8 @@ impl From<ArenaError> for ParseError {
 pub struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
-    line: u32,
-    column: u32,
+    line: usize,
+    column: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -1776,7 +1776,7 @@ impl<'a> Parser<'a> {
     
     /// Parse a number
     fn parse_number<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        let mut value: i64 = 0;
+        let mut value: isize = 0;
         let negative = if self.peek() == Some(b'-') {
             self.advance();
             true
@@ -1788,7 +1788,7 @@ impl<'a> Parser<'a> {
             if c.is_ascii_digit() {
                 self.advance();
                 value = value.checked_mul(10)
-                    .and_then(|v| v.checked_add((c - b'0') as i64))
+                    .and_then(|v| v.checked_add((c - b'0') as isize))
                     .ok_or_else(|| self.error(ParseErrorKind::NumberOverflow))?;
             } else {
                 break;
@@ -1838,7 +1838,7 @@ impl<'a> Parser<'a> {
     }
     
     /// Get current position for error reporting
-    pub fn position(&self) -> (u32, u32) {
+    pub fn position(&self) -> (usize, usize) {
         (self.line, self.column)
     }
 }

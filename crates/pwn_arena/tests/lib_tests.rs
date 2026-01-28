@@ -2,7 +2,7 @@ use pwn_arena::*;
 
 #[test]
 fn test_basic_allocation() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(42).unwrap();
     let idx2 = arena.alloc(43).unwrap();
@@ -14,7 +14,7 @@ fn test_basic_allocation() {
 
 #[test]
 fn test_free_and_reuse() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(42).unwrap();
     assert_eq!(arena.len(), 1);
@@ -29,7 +29,7 @@ fn test_free_and_reuse() {
 
 #[test]
 fn test_out_of_memory() {
-    let arena: Arena<i32, 3> = Arena::new(0);
+    let arena: Arena<isize, 3> = Arena::new(0);
 
     assert!(arena.alloc(1).is_ok());
     assert!(arena.alloc(2).is_ok());
@@ -39,7 +39,7 @@ fn test_out_of_memory() {
 
 #[test]
 fn test_invalid_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
@@ -52,7 +52,7 @@ fn test_invalid_index() {
 
 #[test]
 fn test_free_list_o1_allocation() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Allocate all slots
     let idx0 = arena.alloc(0).unwrap();
@@ -90,7 +90,7 @@ fn test_free_list_o1_allocation() {
 
 #[test]
 fn test_clear_invalidates_all_indices() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(1).unwrap();
     let idx2 = arena.alloc(2).unwrap();
@@ -110,7 +110,7 @@ fn test_clear_invalidates_all_indices() {
 
 #[test]
 fn test_stats() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -124,7 +124,7 @@ fn test_stats() {
 
 #[test]
 fn test_clear() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -141,7 +141,7 @@ fn test_clear() {
 // Example of recursive deletion
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tree {
-    Leaf(i32),
+    Leaf(isize),
     Branch(ArenaIndex, ArenaIndex),
 }
 
@@ -210,7 +210,7 @@ fn test_deep_copy() {
 
 #[test]
 fn test_set() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     assert_eq!(arena.get(idx).unwrap(), 42);

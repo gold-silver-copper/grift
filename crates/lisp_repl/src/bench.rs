@@ -1079,7 +1079,7 @@ fn main() {
         final_stats.usage_percent()
     );
     
-    let delta = final_allocated as i64 - initial_allocated as i64;
+    let delta = final_allocated as isize - initial_allocated as isize;
     if delta > 0 {
         println!(
             "  Net increase:       +{} cells (tests left some allocations)",

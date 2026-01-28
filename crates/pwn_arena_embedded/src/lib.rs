@@ -42,7 +42,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use lisp_eval::{Evaluator, EvalError, define_native_stateful};
 
 // ============================================================================
@@ -55,17 +55,16 @@ const MOCK_MEMORY_WORDS: usize = 256;
 // Number of GPIO registers
 const MOCK_GPIO_COUNT: usize = 16;
 
-// Simulated memory for testing (256 x 32-bit words = 1KB)
-// Using AtomicU32 for thread-safe access without unsafe code
-static MOCK_MEMORY: [AtomicU32; MOCK_MEMORY_WORDS] = {
-    // Use a const block to initialize the array
-    const INIT: AtomicU32 = AtomicU32::new(0);
+// Simulated memory for testing (256 x word-size units = 1KB on 32-bit)
+// Using AtomicUsize for thread-safe access without unsafe code
+static MOCK_MEMORY: [AtomicUsize; MOCK_MEMORY_WORDS] = {
+    const INIT: AtomicUsize = AtomicUsize::new(0);
     [INIT; MOCK_MEMORY_WORDS]
 };
 
-// Simulated GPIO registers (16 registers, 32 bits each)
-static MOCK_GPIO: [AtomicU32; MOCK_GPIO_COUNT] = {
-    const INIT: AtomicU32 = AtomicU32::new(0);
+// Simulated GPIO registers (16 registers, word-size each)
+static MOCK_GPIO: [AtomicUsize; MOCK_GPIO_COUNT] = {
+    const INIT: AtomicUsize = AtomicUsize::new(0);
     [INIT; MOCK_GPIO_COUNT]
 };
 
@@ -82,13 +81,13 @@ static MOCK_GPIO: [AtomicU32; MOCK_GPIO_COUNT] = {
 define_native_stateful!(
     native_peek,
     static: MOCK_MEMORY,
-    (addr: i64) -> i64,
+    (addr: isize) -> isize,
     {
-        let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
+        let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
         let word_idx = byte_addr / 4;
         let byte_offset = byte_addr % 4;
         let word = MOCK_MEMORY[word_idx].load(Ordering::Relaxed);
-        ((word >> (byte_offset * 8)) & 0xFF) as i64
+        ((word >> (byte_offset * 8)) & 0xFF) as isize
     }
 );
 
@@ -101,14 +100,14 @@ define_native_stateful!(
 define_native_stateful!(
     native_poke,
     static: MOCK_MEMORY,
-    (addr: i64, value: i64) -> i64,
+    (addr: isize, value: isize) -> isize,
     {
-        let byte_addr = (addr as u64 as usize) % (MOCK_MEMORY_WORDS * 4);
+        let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
         let word_idx = byte_addr / 4;
         let byte_offset = byte_addr % 4;
         
-        let mask = 0xFFu32 << (byte_offset * 8);
-        let new_byte = ((value as u32) & 0xFF) << (byte_offset * 8);
+        let mask = 0xFFusize << (byte_offset * 8);
+        let new_byte = ((value as usize) & 0xFF) << (byte_offset * 8);
         
         let _ = MOCK_MEMORY[word_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
             Some((old & !mask) | new_byte)
@@ -126,10 +125,10 @@ define_native_stateful!(
 define_native_stateful!(
     native_peek32,
     static: MOCK_MEMORY,
-    (addr: i64) -> i64,
+    (addr: isize) -> isize,
     {
-        let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
-        MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as i64
+        let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
+        MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as isize
     }
 );
 
@@ -141,10 +140,10 @@ define_native_stateful!(
 define_native_stateful!(
     native_poke32,
     static: MOCK_MEMORY,
-    (addr: i64, value: i64) -> i64,
+    (addr: isize, value: isize) -> isize,
     {
-        let word_idx = ((addr as u64 as usize) / 4) % MOCK_MEMORY_WORDS;
-        MOCK_MEMORY[word_idx].store(value as u32, Ordering::Relaxed);
+        let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
+        MOCK_MEMORY[word_idx].store(value as usize, Ordering::Relaxed);
         value
     }
 );
@@ -161,12 +160,12 @@ define_native_stateful!(
 define_native_stateful!(
     native_gpio_read,
     static: MOCK_GPIO,
-    (reg: i64) -> i64,
+    (reg: isize) -> isize,
     {
-        if reg < 0 || reg >= MOCK_GPIO_COUNT as i64 {
+        if reg < 0 || reg >= MOCK_GPIO_COUNT as isize {
             0
         } else {
-            MOCK_GPIO[reg as usize].load(Ordering::Relaxed) as i64
+            MOCK_GPIO[reg as usize].load(Ordering::Relaxed) as isize
         }
     }
 );
@@ -177,10 +176,10 @@ define_native_stateful!(
 define_native_stateful!(
     native_gpio_write,
     static: MOCK_GPIO,
-    (reg: i64, value: i64) -> i64,
+    (reg: isize, value: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 {
-            MOCK_GPIO[reg as usize].store(value as u32, Ordering::Relaxed);
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize {
+            MOCK_GPIO[reg as usize].store(value as usize, Ordering::Relaxed);
         }
         value
     }
@@ -192,12 +191,12 @@ define_native_stateful!(
 define_native_stateful!(
     native_gpio_set,
     static: MOCK_GPIO,
-    (reg: i64, bit: i64) -> i64,
+    (reg: isize, bit: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
-            let mask = 1u32 << bit;
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+            let mask = 1usize << bit;
             let old = MOCK_GPIO[reg as usize].fetch_or(mask, Ordering::Relaxed);
-            (old | mask) as i64
+            (old | mask) as isize
         } else {
             0
         }
@@ -210,12 +209,12 @@ define_native_stateful!(
 define_native_stateful!(
     native_gpio_clear,
     static: MOCK_GPIO,
-    (reg: i64, bit: i64) -> i64,
+    (reg: isize, bit: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
-            let mask = !(1u32 << bit);
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+            let mask = !(1usize << bit);
             let old = MOCK_GPIO[reg as usize].fetch_and(mask, Ordering::Relaxed);
-            (old & mask) as i64
+            (old & mask) as isize
         } else {
             0
         }
@@ -228,12 +227,12 @@ define_native_stateful!(
 define_native_stateful!(
     native_gpio_toggle,
     static: MOCK_GPIO,
-    (reg: i64, bit: i64) -> i64,
+    (reg: isize, bit: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as i64 && bit >= 0 && bit < 32 {
-            let mask = 1u32 << bit;
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+            let mask = 1usize << bit;
             let old = MOCK_GPIO[reg as usize].fetch_xor(mask, Ordering::Relaxed);
-            (old ^ mask) as i64
+            (old ^ mask) as isize
         } else {
             0
         }
@@ -248,9 +247,9 @@ use lisp_eval::define_native;
 
 // Bit Set: Check if a bit is set in a value.
 // Lisp signature: `(bit-set? value bit) -> #t/#f`
-define_native!(native_bit_set, (value: i64, bit: i64) -> bool, {
+define_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
     if bit >= 0 && bit < 64 {
-        (value & (1i64 << bit)) != 0
+        (value & (1isize << bit)) != 0
     } else {
         false
     }
@@ -258,22 +257,22 @@ define_native!(native_bit_set, (value: i64, bit: i64) -> bool, {
 
 // Bit Extract: Extract bits from a value.
 // Lisp signature: `(bit-extract value start width) -> extracted-bits`
-define_native!(native_bit_extract, (value: i64, start: i64, width: i64) -> i64, {
+define_native!(native_bit_extract, (value: isize, start: isize, width: isize) -> isize, {
     // Validate that start and width are in valid ranges and don't cause overflow
     if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
-        let mask = if width >= 64 { !0i64 } else { (1i64 << width) - 1 };
+        let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
         (value >> start) & mask
     } else {
-        0i64
+        0isize
     }
 });
 
 // Bit Insert: Insert bits into a value.
 // Lisp signature: `(bit-insert value insert start width) -> new-value`
-define_native!(native_bit_insert, (value: i64, insert: i64, start: i64, width: i64) -> i64, {
+define_native!(native_bit_insert, (value: isize, insert: isize, start: isize, width: isize) -> isize, {
     // Validate that start and width are in valid ranges and don't cause overflow
     if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
-        let mask = if width >= 64 { !0i64 } else { (1i64 << width) - 1 };
+        let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
         let cleared = value & !(mask << start);
         cleared | ((insert & mask) << start)
     } else {

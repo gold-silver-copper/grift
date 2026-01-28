@@ -8,7 +8,7 @@ use pwn_arena::{Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResu
 
 #[test]
 fn test_new_arena_is_empty() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     assert_eq!(arena.len(), 0);
     assert!(arena.is_empty());
     assert!(!arena.is_full());
@@ -18,7 +18,7 @@ fn test_new_arena_is_empty() {
 
 #[test]
 fn test_basic_allocation() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(42).unwrap();
     let idx2 = arena.alloc(43).unwrap();
@@ -33,7 +33,7 @@ fn test_basic_allocation() {
 
 #[test]
 fn test_alloc_returns_different_indices() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(1).unwrap();
     let idx2 = arena.alloc(2).unwrap();
@@ -46,7 +46,7 @@ fn test_alloc_returns_different_indices() {
 
 #[test]
 fn test_out_of_memory() {
-    let arena: Arena<i32, 3> = Arena::new(0);
+    let arena: Arena<isize, 3> = Arena::new(0);
 
     assert!(arena.alloc(1).is_ok());
     assert!(arena.alloc(2).is_ok());
@@ -59,7 +59,7 @@ fn test_out_of_memory() {
 
 #[test]
 fn test_get_invalid_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -68,7 +68,7 @@ fn test_get_invalid_index() {
 
 #[test]
 fn test_get_freed_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
@@ -83,7 +83,7 @@ fn test_get_freed_index() {
 
 #[test]
 fn test_free_and_reuse() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(42).unwrap();
     assert_eq!(arena.len(), 1);
@@ -99,7 +99,7 @@ fn test_free_and_reuse() {
 
 #[test]
 fn test_free_invalid_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -108,7 +108,7 @@ fn test_free_invalid_index() {
 
 #[test]
 fn test_double_free() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
@@ -119,7 +119,7 @@ fn test_double_free() {
 
 #[test]
 fn test_fragmentation_and_reuse() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate 5 items
     let idx1 = arena.alloc(1).unwrap();
@@ -150,7 +150,7 @@ fn test_fragmentation_and_reuse() {
 
 #[test]
 fn test_set_value() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     assert_eq!(arena.get(idx).unwrap(), 42);
@@ -164,7 +164,7 @@ fn test_set_value() {
 
 #[test]
 fn test_set_invalid_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -173,7 +173,7 @@ fn test_set_invalid_index() {
 
 #[test]
 fn test_set_freed_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
@@ -188,7 +188,7 @@ fn test_set_freed_index() {
 
 #[test]
 fn test_clear() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -205,7 +205,7 @@ fn test_clear() {
 
 #[test]
 fn test_clear_allows_full_reuse() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Fill the arena
     for i in 0..5 {
@@ -228,20 +228,20 @@ fn test_clear_allows_full_reuse() {
 
 #[test]
 fn test_iter_empty() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let count = arena.iter().count();
     assert_eq!(count, 0);
 }
 
 #[test]
 fn test_iter_values() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
     arena.alloc(3).unwrap();
 
-    let values: Vec<i32> = arena.iter().map(|(_, v)| v).collect();
+    let values: Vec<isize> = arena.iter().map(|(_, v)| v).collect();
     assert_eq!(values.len(), 3);
     assert!(values.contains(&1));
     assert!(values.contains(&2));
@@ -250,7 +250,7 @@ fn test_iter_values() {
 
 #[test]
 fn test_iter_indices() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(10).unwrap();
     let idx2 = arena.alloc(20).unwrap();
@@ -265,7 +265,7 @@ fn test_iter_indices() {
 
 #[test]
 fn test_iter_with_gaps() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(1).unwrap();
     let idx2 = arena.alloc(2).unwrap();
@@ -276,7 +276,7 @@ fn test_iter_with_gaps() {
     arena.free(idx2).unwrap();
     arena.free(idx3).unwrap();
 
-    let values: Vec<i32> = arena.iter().map(|(_, v)| v).collect();
+    let values: Vec<isize> = arena.iter().map(|(_, v)| v).collect();
     assert_eq!(values.len(), 2);
     assert!(values.contains(&1));
     assert!(values.contains(&4));
@@ -290,7 +290,7 @@ fn test_iter_with_gaps() {
 
 #[test]
 fn test_stats_empty() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let stats = arena.stats();
 
     assert_eq!(stats.capacity, 10);
@@ -301,7 +301,7 @@ fn test_stats_empty() {
 
 #[test]
 fn test_stats_partial() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -315,7 +315,7 @@ fn test_stats_partial() {
 
 #[test]
 fn test_stats_full() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     for i in 0..5 {
         arena.alloc(i).unwrap();
@@ -334,7 +334,7 @@ fn test_stats_full() {
 
 #[test]
 fn test_is_allocated() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     assert!(arena.is_allocated(idx));
@@ -345,7 +345,7 @@ fn test_is_allocated() {
 
 #[test]
 fn test_is_allocated_invalid_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -369,8 +369,8 @@ fn test_arena_with_floats() {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Point {
-    x: i32,
-    y: i32,
+    x: isize,
+    y: isize,
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn test_arena_with_enum() {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tree {
-    Leaf(i32),
+    Leaf(isize),
     Branch(ArenaIndex, ArenaIndex),
 }
 
@@ -599,7 +599,7 @@ fn test_deep_copy_complex_tree() {
 
 #[test]
 fn test_single_cell_arena() {
-    let arena: Arena<i32, 1> = Arena::new(0);
+    let arena: Arena<isize, 1> = Arena::new(0);
 
     let idx = arena.alloc(42).unwrap();
     assert!(arena.is_full());
@@ -616,7 +616,7 @@ fn test_single_cell_arena() {
 
 #[test]
 fn test_alternating_alloc_free() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     for i in 0..100 {
         let idx = arena.alloc(i).unwrap();
@@ -629,7 +629,7 @@ fn test_alternating_alloc_free() {
 
 #[test]
 fn test_fill_and_empty_repeatedly() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     for round in 0..10 {
         let mut indices = Vec::new();
@@ -651,7 +651,7 @@ fn test_fill_and_empty_repeatedly() {
 
 #[test]
 fn test_index_consistency() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(100).unwrap();
     let idx2 = arena.alloc(200).unwrap();
@@ -682,7 +682,7 @@ fn test_arena_index_api() {
 
 #[test]
 fn test_large_arena() {
-    let arena: Arena<i32, 1000> = Arena::new(0);
+    let arena: Arena<isize, 1000> = Arena::new(0);
 
     // Allocate many items
     let mut indices = Vec::new();
@@ -696,7 +696,7 @@ fn test_large_arena() {
 
     // Verify all values
     for (i, &idx) in indices.iter().enumerate() {
-        assert_eq!(arena.get(idx).unwrap(), i as i32);
+        assert_eq!(arena.get(idx).unwrap(), i as isize);
     }
 
     // Free half
@@ -714,7 +714,7 @@ fn test_large_arena() {
 
 #[test]
 fn test_aba_problem_prevention() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate slot
     let old_idx = arena.alloc(100).unwrap();
@@ -740,7 +740,7 @@ fn test_aba_problem_prevention() {
 
 #[test]
 fn test_stale_index_after_multiple_reuses() {
-    let arena: Arena<i32, 3> = Arena::new(0);
+    let arena: Arena<isize, 3> = Arena::new(0);
 
     // Get initial index
     let stale_idx = arena.alloc(1).unwrap();
@@ -758,7 +758,7 @@ fn test_stale_index_after_multiple_reuses() {
 
 #[test]
 fn test_iterator_indices_after_free_realloc() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     let idx1 = arena.alloc(10).unwrap();
     let idx2 = arena.alloc(20).unwrap();
@@ -786,7 +786,7 @@ fn test_iterator_indices_after_free_realloc() {
 
 #[test]
 fn test_free_list_lifo_order() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Allocate all slots
     let idx0 = arena.alloc(0).unwrap();
@@ -812,7 +812,7 @@ fn test_free_list_lifo_order() {
 
 #[test]
 fn test_free_list_integrity_after_clear() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Allocate some
     arena.alloc(1).unwrap();
@@ -838,7 +838,7 @@ fn test_free_list_integrity_after_clear() {
 
 #[test]
 fn test_free_list_no_corruption_on_partial_free() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let mut indices = Vec::new();
     for i in 0..10 {
@@ -867,7 +867,7 @@ fn test_free_list_no_corruption_on_partial_free() {
 
 #[test]
 fn test_index_at_boundary() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Index at boundary - slot doesn't exist
     let boundary_not_allocated = ArenaIndex::new(9);
@@ -880,7 +880,7 @@ fn test_index_at_boundary() {
 
 #[test]
 fn test_max_index_value() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let huge_idx = ArenaIndex::new(usize::MAX);
     assert_eq!(arena.get(huge_idx), Err(ArenaError::InvalidIndex));
@@ -921,7 +921,7 @@ fn test_arena_index_hash() {
 
 #[test]
 fn test_zigzag_allocation_pattern() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate all
     let mut indices: Vec<ArenaIndex> = (0..10)
@@ -947,13 +947,13 @@ fn test_zigzag_allocation_pattern() {
 
     // Verify all values
     for (i, &idx) in indices.iter().enumerate() {
-        assert_eq!(arena.get(idx).unwrap(), (i * 10) as i32);
+        assert_eq!(arena.get(idx).unwrap(), (i * 10) as isize);
     }
 }
 
 #[test]
 fn test_random_like_access_pattern() {
-    let arena: Arena<i32, 20> = Arena::new(0);
+    let arena: Arena<isize, 20> = Arena::new(0);
 
     let mut active_indices: Vec<ArenaIndex> = Vec::new();
 
@@ -981,7 +981,7 @@ fn test_random_like_access_pattern() {
 
 #[test]
 fn test_interleaved_alloc_free_set() {
-    let arena: Arena<i32, 5> = Arena::new(0);
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     let idx1 = arena.alloc(1).unwrap();
     let idx2 = arena.alloc(2).unwrap();
@@ -1088,7 +1088,7 @@ fn test_partial_tree_delete() {
 
 #[test]
 fn test_fragmentation_after_free_realloc() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Fill arena
     let indices: Vec<_> = (0..10).map(|i| arena.alloc(i).unwrap()).collect();
@@ -1119,7 +1119,7 @@ fn test_fragmentation_after_free_realloc() {
 
 #[test]
 fn test_stress_rapid_alloc_free() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
 
     for _ in 0..1000 {
         let mut indices = Vec::new();
@@ -1141,7 +1141,7 @@ fn test_stress_rapid_alloc_free() {
 
 #[test]
 fn test_stress_mixed_operations() {
-    let arena: Arena<i32, 50> = Arena::new(0);
+    let arena: Arena<isize, 50> = Arena::new(0);
 
     let mut valid_indices: Vec<ArenaIndex> = Vec::new();
 
@@ -1149,7 +1149,7 @@ fn test_stress_mixed_operations() {
         match i % 5 {
             0 | 1 | 2 => {
                 // Allocate
-                if let Ok(idx) = arena.alloc(i as i32) {
+                if let Ok(idx) = arena.alloc(i as isize) {
                     valid_indices.push(idx);
                 }
             }
@@ -1164,7 +1164,7 @@ fn test_stress_mixed_operations() {
                 // Set random valid index
                 if !valid_indices.is_empty() {
                     let idx = valid_indices[i % valid_indices.len()];
-                    arena.set(idx, i as i32 * 10).unwrap();
+                    arena.set(idx, i as isize * 10).unwrap();
                 }
             }
             _ => unreachable!(),
@@ -1291,7 +1291,7 @@ fn test_gc_handles_cycles() {
     // Create a structure that could contain cycles
     #[derive(Clone, Copy)]
     struct Node {
-        value: i32,
+        value: isize,
         left: Option<ArenaIndex>,
         right: Option<ArenaIndex>,
     }
@@ -1518,7 +1518,7 @@ fn test_gc_repeated_collections() {
 // Linked list for GC tests
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ListNode {
-    value: i32,
+    value: isize,
     next: Option<ArenaIndex>,
 }
 
@@ -1862,7 +1862,7 @@ fn test_gc_disabled_preserves_all_objects() {
 
     // All indices should still be valid
     for (i, &idx) in all_indices.iter().enumerate() {
-        assert_eq!(arena.get(idx).unwrap(), Tree::Leaf(i as i32));
+        assert_eq!(arena.get(idx).unwrap(), Tree::Leaf(i as isize));
     }
 }
 
@@ -2165,7 +2165,7 @@ fn test_gc_stress_very_deep_tree() {
     // Add garbage to fill remaining space
     let garbage_to_add = 500usize;
     for i in 0..garbage_to_add {
-        arena.alloc(Tree::Leaf(10000 + i as i32)).unwrap();
+        arena.alloc(Tree::Leaf(10000 + i as isize)).unwrap();
     }
 
     assert_eq!(arena.len(), 999 + garbage_to_add);
@@ -2682,7 +2682,7 @@ fn test_gc_stress_incremental_tree_building() {
     let mut root = arena.alloc(Tree::Leaf(0)).unwrap();
 
     // Build tree incrementally with GC after each step
-    for i in 1..100i32 {
+    for i in 1..100isize {
         // Expand tree
         let new_leaf = arena.alloc(Tree::Leaf(i)).unwrap();
         root = arena.alloc(Tree::Branch(root, new_leaf)).unwrap();
@@ -2723,7 +2723,7 @@ fn test_arena_index_null() {
 
 #[test]
 fn test_modify() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let idx = arena.alloc(42).unwrap();
 
     arena.modify(idx, |v| *v += 10).unwrap();
@@ -2735,7 +2735,7 @@ fn test_modify() {
 
 #[test]
 fn test_modify_invalid() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
@@ -2747,7 +2747,7 @@ fn test_modify_invalid() {
 
 #[test]
 fn test_try_get() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let idx = arena.alloc(42).unwrap();
 
     assert_eq!(arena.try_get(idx), Some(42));
@@ -2762,7 +2762,7 @@ fn test_try_get() {
 
 #[test]
 fn test_swap() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let idx1 = arena.alloc(100).unwrap();
     let idx2 = arena.alloc(200).unwrap();
 
@@ -2777,7 +2777,7 @@ fn test_swap() {
 
 #[test]
 fn test_swap_same_index() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let idx = arena.alloc(42).unwrap();
 
     // Swapping with self should be a no-op
@@ -2787,7 +2787,7 @@ fn test_swap_same_index() {
 
 #[test]
 fn test_replace() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     let idx = arena.alloc(42).unwrap();
 
     let old = arena.replace(idx, 100).unwrap();
@@ -2797,7 +2797,7 @@ fn test_replace() {
 
 #[test]
 fn test_validate() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     assert!(arena.validate());
 
     arena.alloc(1).unwrap();
@@ -2814,7 +2814,7 @@ fn test_validate() {
 
 #[test]
 fn test_is_slot_occupied() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     assert!(!arena.is_slot_occupied(0));
 
@@ -2827,7 +2827,7 @@ fn test_is_slot_occupied() {
 
 #[test]
 fn test_allocated_indices() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(1).unwrap();
     let idx2 = arena.alloc(2).unwrap();
@@ -2848,7 +2848,7 @@ fn test_allocated_indices() {
 
 #[test]
 fn test_for_each() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -2861,7 +2861,7 @@ fn test_for_each() {
 
 #[test]
 fn test_for_each_mut() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -2876,7 +2876,7 @@ fn test_for_each_mut() {
 
 #[test]
 fn test_count_where() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -2891,7 +2891,7 @@ fn test_count_where() {
 
 #[test]
 fn test_find() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let idx1 = arena.alloc(10).unwrap();
     arena.alloc(20).unwrap();
@@ -2908,7 +2908,7 @@ fn test_find() {
 
 #[test]
 fn test_any_all() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     arena.alloc(2).unwrap();
     arena.alloc(4).unwrap();
@@ -2923,7 +2923,7 @@ fn test_any_all() {
 
 #[test]
 fn test_all_empty() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     // all() on empty returns true (vacuously true)
     assert!(arena.all(|_| false));
 }
@@ -3332,7 +3332,7 @@ fn test_alloc_or_gc_when_gc_cannot_help() {
 
 #[test]
 fn test_alloc_contiguous_basic() {
-    let arena: Arena<i64, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     // Allocate 5 contiguous slots
     let start = arena.alloc_contiguous(5, 0).unwrap();
@@ -3343,19 +3343,19 @@ fn test_alloc_contiguous_basic() {
     // All slots should be accessible and consecutive
     for i in 0..5 {
         let idx = arena.index_at_offset(start, i).unwrap();
-        arena.set(idx, (i + 1) as i64).unwrap();
+        arena.set(idx, (i + 1) as isize).unwrap();
     }
     
     // Verify values were set
     for i in 0..5 {
         let idx = arena.index_at_offset(start, i).unwrap();
-        assert_eq!(arena.get(idx).unwrap(), (i + 1) as i64);
+        assert_eq!(arena.get(idx).unwrap(), (i + 1) as isize);
     }
 }
 
 #[test]
 fn test_alloc_contiguous_zero_count() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     // Zero count should fail
     assert_eq!(arena.alloc_contiguous(0, 0), Err(ArenaError::InvalidIndex));
@@ -3363,7 +3363,7 @@ fn test_alloc_contiguous_zero_count() {
 
 #[test]
 fn test_alloc_contiguous_exceeds_capacity() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     
     // Asking for more than capacity should fail
     assert_eq!(arena.alloc_contiguous(11, 0), Err(ArenaError::OutOfMemory));
@@ -3371,7 +3371,7 @@ fn test_alloc_contiguous_exceeds_capacity() {
 
 #[test]
 fn test_alloc_contiguous_fills_arena() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     
     // Fill entire arena with one contiguous block
     let start = arena.alloc_contiguous(10, 42).unwrap();
@@ -3388,12 +3388,12 @@ fn test_alloc_contiguous_fills_arena() {
 
 #[test]
 fn test_alloc_contiguous_fragmentation() {
-    let arena: Arena<i32, 10> = Arena::new(0);
+    let arena: Arena<isize, 10> = Arena::new(0);
     
     // Allocate individual slots: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
     let mut indices = [ArenaIndex::NULL; 10];
     for i in 0..10 {
-        indices[i] = arena.alloc(i as i32).unwrap();
+        indices[i] = arena.alloc(i as isize).unwrap();
     }
     
     // Free alternating slots: now free = 0, 2, 4, 6, 8
@@ -3415,7 +3415,7 @@ fn test_alloc_contiguous_fragmentation() {
 
 #[test]
 fn test_alloc_contiguous_finds_gap() {
-    let arena: Arena<i32, 20> = Arena::new(0);
+    let arena: Arena<isize, 20> = Arena::new(0);
     
     // Allocate first 5 slots
     for i in 0..5 {
@@ -3446,7 +3446,7 @@ fn test_alloc_contiguous_finds_gap() {
 
 #[test]
 fn test_free_contiguous_basic() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     let start = arena.alloc_contiguous(10, 0).unwrap();
     assert_eq!(arena.len(), 10);
@@ -3458,7 +3458,7 @@ fn test_free_contiguous_basic() {
 
 #[test]
 fn test_free_contiguous_zero_count() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     let start = arena.alloc_contiguous(5, 0).unwrap();
     
@@ -3469,7 +3469,7 @@ fn test_free_contiguous_zero_count() {
 
 #[test]
 fn test_free_contiguous_invalidates_indices() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     let start = arena.alloc_contiguous(5, 42).unwrap();
     let idx2 = arena.index_at_offset(start, 2).unwrap();
@@ -3484,7 +3484,7 @@ fn test_free_contiguous_invalidates_indices() {
 
 #[test]
 fn test_free_contiguous_partial() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     let start = arena.alloc_contiguous(10, 0).unwrap();
     assert_eq!(arena.len(), 10);
@@ -3502,7 +3502,7 @@ fn test_free_contiguous_partial() {
 
 #[test]
 fn test_contiguous_reuse_after_free() {
-    let arena: Arena<i32, 20> = Arena::new(0);
+    let arena: Arena<isize, 20> = Arena::new(0);
     
     // Allocate and free a contiguous block
     let block1 = arena.alloc_contiguous(10, 1).unwrap();
@@ -3530,7 +3530,7 @@ fn test_contiguous_reuse_after_free() {
 
 #[test]
 fn test_index_at_offset_out_of_bounds() {
-    let arena: Arena<i32, 100> = Arena::new(0);
+    let arena: Arena<isize, 100> = Arena::new(0);
     
     let start = arena.alloc_contiguous(5, 0).unwrap();
     
@@ -3545,7 +3545,7 @@ fn test_index_at_offset_out_of_bounds() {
 
 #[test]
 fn test_contiguous_mixed_with_regular_alloc() {
-    let arena: Arena<i32, 20> = Arena::new(0);
+    let arena: Arena<isize, 20> = Arena::new(0);
     
     // Mix regular and contiguous allocations
     let reg1 = arena.alloc(1).unwrap();
@@ -3572,7 +3572,7 @@ fn test_contiguous_mixed_with_regular_alloc() {
 
 #[test]
 fn test_contiguous_arena_validate() {
-    let arena: Arena<i32, 50> = Arena::new(0);
+    let arena: Arena<isize, 50> = Arena::new(0);
     
     // Allocate some contiguous blocks
     let _b1 = arena.alloc_contiguous(5, 0).unwrap();

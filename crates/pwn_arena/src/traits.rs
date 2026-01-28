@@ -23,7 +23,7 @@ use crate::{Arena, ArenaIndex, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
-///     Leaf(i32),
+///     Leaf(isize),
 ///     Branch(ArenaIndex, ArenaIndex),
 /// }
 ///
@@ -61,7 +61,7 @@ pub trait ArenaDelete<T: Copy, const N: usize> {
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
-///     Leaf(i32),
+///     Leaf(isize),
 ///     Branch(ArenaIndex, ArenaIndex),
 /// }
 ///
@@ -99,7 +99,7 @@ pub trait ArenaCopy<T: Copy, const N: usize> {
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
-///     Leaf(i32),
+///     Leaf(isize),
 ///     Branch(ArenaIndex, ArenaIndex),
 /// }
 ///

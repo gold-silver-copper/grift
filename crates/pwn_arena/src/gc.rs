@@ -156,7 +156,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// #[derive(Clone, Copy)]
     /// struct Node {
-    ///     value: i32,
+    ///     value: isize,
     ///     next: Option<ArenaIndex>,
     /// }
     ///
@@ -237,7 +237,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// use pwn_arena::{Arena, ArenaIndex, Trace};
     ///
     /// #[derive(Clone, Copy)]
-    /// struct Leaf(i32);
+    /// struct Leaf(isize);
     ///
     /// impl<const N: usize> Trace<Leaf, N> for Leaf {
     ///     fn trace<F: FnMut(ArenaIndex)>(&self, _tracer: F) {}
@@ -350,7 +350,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// use pwn_arena::{Arena, ArenaIndex, Trace};
     ///
     /// #[derive(Clone, Copy)]
-    /// struct Node(i32);
+    /// struct Node(isize);
     ///
     /// impl<const N: usize> Trace<Node, N> for Node {
     ///     fn trace<F: FnMut(ArenaIndex)>(&self, _: F) {}

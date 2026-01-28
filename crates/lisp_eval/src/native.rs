@@ -20,7 +20,7 @@
 //! use lisp_eval::{NativeRegistry, define_native};
 //!
 //! // Define a simple native function
-//! fn add_one(x: i64) -> i64 {
+//! fn add_one(x: isize) -> isize {
 //!     x + 1
 //! }
 //!
@@ -48,9 +48,9 @@ use crate::{ArenaIndex, ArenaResult, ArenaError, Lisp, Value};
 /// ```rust
 /// use lisp_eval::{FromLisp, Lisp, ArenaIndex, ArenaResult, Value};
 ///
-/// // i64 is already implemented
-/// fn example<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<i64> {
-///     i64::from_lisp(lisp, idx)
+/// // isize is already implemented
+/// fn example<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<isize> {
+///     isize::from_lisp(lisp, idx)
 /// }
 /// ```
 pub trait FromLisp<const N: usize>: Sized {
@@ -69,8 +69,8 @@ pub trait FromLisp<const N: usize>: Sized {
 /// ```rust
 /// use lisp_eval::{ToLisp, Lisp, ArenaIndex, ArenaResult};
 ///
-/// // i64 is already implemented
-/// fn example<const N: usize>(lisp: &Lisp<N>, value: i64) -> ArenaResult<ArenaIndex> {
+/// // isize is already implemented
+/// fn example<const N: usize>(lisp: &Lisp<N>, value: isize) -> ArenaResult<ArenaIndex> {
 ///     value.to_lisp(lisp)
 /// }
 /// ```
@@ -85,7 +85,7 @@ pub trait ToLisp<const N: usize> {
 // Implementations for Common Types
 // ============================================================================
 
-impl<const N: usize> FromLisp<N> for i64 {
+impl<const N: usize> FromLisp<N> for isize {
     fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
         match lisp.get(idx)? {
             Value::Number(n) => Ok(n),
@@ -97,7 +97,7 @@ impl<const N: usize> FromLisp<N> for i64 {
     }
 }
 
-impl<const N: usize> ToLisp<N> for i64 {
+impl<const N: usize> ToLisp<N> for isize {
     fn to_lisp(&self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
         lisp.number(*self)
     }
@@ -140,7 +140,7 @@ impl<const N: usize> FromLisp<N> for char {
     fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
         match lisp.get(idx)? {
             Value::Char(c) => Ok(c),
-            // Note: Using InvalidIndex for type errors (see i64 impl for rationale)
+            // Note: Using InvalidIndex for type errors (see isize impl for rationale)
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -202,8 +202,8 @@ pub struct NativeEntry<const N: usize> {
 ///
 /// fn my_add<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
 ///     use lisp_eval::FromLisp;
-///     let a = i64::from_lisp(lisp, lisp.car(args)?)?;
-///     let b = i64::from_lisp(lisp, lisp.car(lisp.cdr(args)?)?)?;
+///     let a = isize::from_lisp(lisp, lisp.car(args)?)?;
+///     let b = isize::from_lisp(lisp, lisp.car(lisp.cdr(args)?)?)?;
 ///     lisp.number(a + b)
 /// }
 ///
@@ -301,12 +301,12 @@ impl<const N: usize> Default for NativeRegistry<N> {
 ///
 /// Uses a simple djb2-like hash that's fast and produces good distribution.
 /// This is used for verification during native function calls.
-pub const fn simple_hash(s: &str) -> u32 {
+pub const fn simple_hash(s: &str) -> usize {
     let bytes = s.as_bytes();
-    let mut hash: u32 = 5381;
+    let mut hash: usize = 5381;
     let mut i = 0;
     while i < bytes.len() {
-        hash = hash.wrapping_mul(33).wrapping_add(bytes[i] as u32);
+        hash = hash.wrapping_mul(33).wrapping_add(bytes[i] as usize);
         i += 1;
     }
     hash
@@ -323,8 +323,8 @@ pub const fn simple_hash(s: &str) -> u32 {
 /// ```rust
 /// use lisp_eval::{extract_arg, Lisp, ArenaIndex, ArenaResult};
 ///
-/// fn example<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<(i64, ArenaIndex)> {
-///     extract_arg::<N, i64>(lisp, args)
+/// fn example<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<(isize, ArenaIndex)> {
+///     extract_arg::<N, isize>(lisp, args)
 /// }
 /// ```
 pub fn extract_arg<const N: usize, T: FromLisp<N>>(
@@ -376,12 +376,12 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// use lisp_eval::define_native;
 ///
 /// // Define a function that adds two numbers
-/// define_native!(add_two, (a: i64, b: i64) -> i64, {
+/// define_native!(add_two, (a: isize, b: isize) -> isize, {
 ///     a + b
 /// });
 ///
 /// // Define a function with no return value
-/// define_native!(print_num, (n: i64) -> (), {
+/// define_native!(print_num, (n: isize) -> (), {
 ///     // In a real impl, you'd print n
 ///     ()
 /// });
@@ -562,18 +562,18 @@ macro_rules! define_native {
 ///
 /// ```rust
 /// use lisp_eval::define_native_stateful;
-/// use core::sync::atomic::{AtomicU32, Ordering};
+/// use core::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// // Define a static variable
-/// static MY_COUNTER: AtomicU32 = AtomicU32::new(0);
+/// static MY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 ///
 /// // Define a function that accesses the static
 /// define_native_stateful!(
 ///     native_increment,
 ///     static: MY_COUNTER,
-///     () -> i64,
+///     () -> isize,
 ///     {
-///         MY_COUNTER.fetch_add(1, Ordering::Relaxed) as i64
+///         MY_COUNTER.fetch_add(1, Ordering::Relaxed) as isize
 ///     }
 /// );
 /// ```

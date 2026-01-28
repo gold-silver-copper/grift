@@ -33,7 +33,7 @@
 //!
 //! #[derive(Clone, Copy, Debug, PartialEq)]
 //! enum Node {
-//!     Leaf(i32),
+//!     Leaf(isize),
 //!     Branch(ArenaIndex, ArenaIndex),
 //! }
 //!

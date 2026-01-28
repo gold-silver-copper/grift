@@ -501,7 +501,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// use lisp_eval::{Lisp, Evaluator, ArenaIndex, ArenaResult, FromLisp, ToLisp};
     ///
     /// fn my_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    ///     let n = i64::from_lisp(lisp, lisp.car(args)?)?;
+    ///     let n = isize::from_lisp(lisp, lisp.car(args)?)?;
     ///     (n * 2).to_lisp(lisp)
     /// }
     ///
@@ -877,8 +877,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// This is the ONLY place where looping happens - no Rust recursion!
     fn trampoline(&mut self, mut state: TrampolineState) -> EvalResult {
         // Counter for periodic GC checks (every 2000 steps)
-        let mut step_count: u32 = 0;
-        const GC_CHECK_INTERVAL: u32 = 2000;
+        let mut step_count: usize = 0;
+        const GC_CHECK_INTERVAL: usize = 2000;
         const GC_THRESHOLD_PERCENT: usize = 85;
         
         loop {
@@ -1627,7 +1627,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 match self.lisp.get(arr)? {
                     Value::Array { len, .. } => {
-                        self.lisp.number(len as i64).map_err(Into::into)
+                        self.lisp.number(len as isize).map_err(Into::into)
                     }
                     _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 }
@@ -1645,9 +1645,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Returns a list: (marked collected total-before)
                 // Built right-to-left since cons prepends
                 let stats = self.gc();
-                let marked = self.lisp.number(stats.marked as i64)?;
-                let collected = self.lisp.number(stats.collected as i64)?;
-                let total_before = self.lisp.number(stats.total_before as i64)?;
+                let marked = self.lisp.number(stats.marked as isize)?;
+                let collected = self.lisp.number(stats.collected as isize)?;
+                let total_before = self.lisp.number(stats.total_before as isize)?;
                 let nil = self.lisp.nil()?;
                 let list = self.lisp.cons(total_before, nil)?;
                 let list = self.lisp.cons(collected, list)?;
@@ -1677,10 +1677,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (arena-stats) - Get arena statistics
                 // Returns a list: (capacity allocated free usage-percent)
                 let stats = self.lisp.stats();
-                let capacity = self.lisp.number(stats.capacity as i64)?;
-                let allocated = self.lisp.number(stats.allocated as i64)?;
-                let free = self.lisp.number(stats.free as i64)?;
-                let usage = self.lisp.number(stats.usage_percent() as i64)?;
+                let capacity = self.lisp.number(stats.capacity as isize)?;
+                let allocated = self.lisp.number(stats.allocated as isize)?;
+                let free = self.lisp.number(stats.free as isize)?;
+                let usage = self.lisp.number(stats.usage_percent() as isize)?;
                 let nil = self.lisp.nil()?;
                 let list = self.lisp.cons(usage, nil)?;
                 let list = self.lisp.cons(free, list)?;
@@ -1790,7 +1790,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Get number from already-evaluated value
-    fn get_number_from_forced(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<i64, EvalError> {
+    fn get_number_from_forced(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<isize, EvalError> {
         match self.lisp.get(idx)? {
             Value::Number(n) => Ok(n),
             v => Err(self.type_error(call_expr, "number", v.type_name())),
@@ -1798,14 +1798,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Numeric fold with already-evaluated args
-    fn numeric_fold_forced<F>(&self, args: ArenaIndex, init: i64, f: F, call_expr: ArenaIndex) -> EvalResult
-    where F: Fn(i64, i64) -> Option<i64>
+    fn numeric_fold_forced<F>(&self, args: ArenaIndex, init: isize, f: F, call_expr: ArenaIndex) -> EvalResult
+    where F: Fn(isize, isize) -> Option<isize>
     {
         self.numeric_fold_start_forced(args, init, f, call_expr)
     }
     
-    fn numeric_fold_start_forced<F>(&self, args: ArenaIndex, mut acc: i64, f: F, call_expr: ArenaIndex) -> EvalResult
-    where F: Fn(i64, i64) -> Option<i64>
+    fn numeric_fold_start_forced<F>(&self, args: ArenaIndex, mut acc: isize, f: F, call_expr: ArenaIndex) -> EvalResult
+    where F: Fn(isize, isize) -> Option<isize>
     {
         let mut current = args;
         loop {
@@ -1823,7 +1823,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Compare two numbers with already-evaluated args
     fn compare_forced<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
-    where F: Fn(i64, i64) -> bool
+    where F: Fn(isize, isize) -> bool
     {
         let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
         let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;

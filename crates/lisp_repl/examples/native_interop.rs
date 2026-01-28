@@ -16,34 +16,34 @@ use lisp_eval::{
 /// 2. Perform computation
 /// 3. Return result via ToLisp
 fn native_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (i64, _) = extract_arg(lisp, args)?;
+    let (x, _rest): (isize, _) = extract_arg(lisp, args)?;
     (x * 2).to_lisp(lisp)
 }
 
 /// A native function that computes the maximum of two numbers.
 fn native_max<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (a, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (b, _rest): (i64, _) = extract_arg(lisp, rest)?;
+    let (a, rest): (isize, _) = extract_arg(lisp, args)?;
+    let (b, _rest): (isize, _) = extract_arg(lisp, rest)?;
     (if a > b { a } else { b }).to_lisp(lisp)
 }
 
 /// A native function that returns whether a number is even.
 fn native_evenp<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (i64, _) = extract_arg(lisp, args)?;
+    let (x, _rest): (isize, _) = extract_arg(lisp, args)?;
     (x % 2 == 0).to_lisp(lisp)
 }
 
 /// A native function that squares a number.
 fn native_square<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (i64, _) = extract_arg(lisp, args)?;
+    let (x, _rest): (isize, _) = extract_arg(lisp, args)?;
     (x * x).to_lisp(lisp)
 }
 
 /// A native function that clamps a value to a range.
 fn native_clamp<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (value, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (min_val, rest): (i64, _) = extract_arg(lisp, rest)?;
-    let (max_val, _rest): (i64, _) = extract_arg(lisp, rest)?;
+    let (value, rest): (isize, _) = extract_arg(lisp, args)?;
+    let (min_val, rest): (isize, _) = extract_arg(lisp, rest)?;
+    let (max_val, _rest): (isize, _) = extract_arg(lisp, rest)?;
     
     let clamped = if value < min_val {
         min_val

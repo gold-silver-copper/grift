@@ -49,7 +49,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 100> = Arena::new(0);
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     /// ```
     pub fn new(_default_value: T) -> Self {
         // Initialize all slots as free, linked together
@@ -91,7 +91,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 100> = Arena::new(0);
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     ///
     /// // Disable GC for a batch operation
     /// arena.set_gc_enabled(false);
@@ -115,7 +115,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 100> = Arena::new(0);
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     ///
     /// let result = arena.without_gc(|| {
     ///     // GC is disabled in here
@@ -192,7 +192,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 10> = Arena::new(0);
+    /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 42);
     /// ```
@@ -294,7 +294,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 10> = Arena::new(0);
+    /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
     ///
     /// arena.modify(idx, |v| *v += 10).unwrap();
@@ -381,7 +381,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 10> = Arena::new(0);
+    /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
     /// arena.free(idx).unwrap();
     /// assert_eq!(arena.len(), 0);
@@ -432,7 +432,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     ///
-    /// let arena: Arena<i32, 10> = Arena::new(0);
+    /// let arena: Arena<isize, 10> = Arena::new(0);
     /// arena.alloc(1).unwrap();
     /// arena.alloc(2).unwrap();
     /// arena.alloc(3).unwrap();
@@ -765,7 +765,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     /// 
-    /// let arena: Arena<i64, 100> = Arena::new(0);
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     /// 
     /// // Allocate 5 contiguous slots
     /// let start = arena.alloc_contiguous(5, 0).unwrap();
@@ -773,7 +773,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// // All slots are consecutive
     /// for i in 0..5 {
     ///     let idx = arena.index_at_offset(start, i).unwrap();
-    ///     arena.set(idx, i as i64).unwrap();
+    ///     arena.set(idx, i as isize).unwrap();
     /// }
     /// ```
     pub fn alloc_contiguous(&self, count: usize, default: T) -> ArenaResult<ArenaIndex> {
@@ -811,7 +811,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     /// 
-    /// let arena: Arena<i64, 100> = Arena::new(0);
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     /// let start = arena.alloc_contiguous(3, 0).unwrap();
     /// 
     /// // Access slot at offset 1
@@ -848,7 +848,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```rust
     /// use pwn_arena::Arena;
     /// 
-    /// let arena: Arena<i64, 100> = Arena::new(0);
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     /// let start = arena.alloc_contiguous(5, 0).unwrap();
     /// 
     /// assert_eq!(arena.len(), 5);

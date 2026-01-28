@@ -3,16 +3,16 @@ use lisp_eval::{Lisp, define_native};
 use pwn_arena::{ArenaIndex, ArenaResult};
 
 #[test]
-fn test_from_lisp_i64() {
+fn test_from_lisp_isize() {
     let lisp: Lisp<100> = Lisp::new();
     let num = lisp.number(42).unwrap();
-    assert_eq!(i64::from_lisp(&lisp, num).unwrap(), 42);
+    assert_eq!(isize::from_lisp(&lisp, num).unwrap(), 42);
 }
 
 #[test]
-fn test_to_lisp_i64() {
+fn test_to_lisp_isize() {
     let lisp: Lisp<100> = Lisp::new();
-    let idx = 42i64.to_lisp(&lisp).unwrap();
+    let idx = 42isize.to_lisp(&lisp).unwrap();
     assert_eq!(lisp.get(idx).unwrap().as_number(), Some(42));
 }
 
@@ -62,13 +62,13 @@ fn test_extract_arg() {
     let n1 = lisp.number(1).unwrap();
     let l1 = lisp.cons(n1, l2).unwrap();
     
-    let (v1, rest1) = extract_arg::<100, i64>(&lisp, l1).unwrap();
+    let (v1, rest1) = extract_arg::<100, isize>(&lisp, l1).unwrap();
     assert_eq!(v1, 1);
     
-    let (v2, rest2) = extract_arg::<100, i64>(&lisp, rest1).unwrap();
+    let (v2, rest2) = extract_arg::<100, isize>(&lisp, rest1).unwrap();
     assert_eq!(v2, 2);
     
-    let (v3, rest3) = extract_arg::<100, i64>(&lisp, rest2).unwrap();
+    let (v3, rest3) = extract_arg::<100, isize>(&lisp, rest2).unwrap();
     assert_eq!(v3, 3);
     
     assert!(args_empty(&lisp, rest3).unwrap());
@@ -97,21 +97,21 @@ fn test_count_args() {
 }
 
 // Test the define_native! macro
-define_native!(native_add_one, (x: i64) -> i64, { x + 1 });
-define_native!(native_add, (a: i64, b: i64) -> i64, { a + b });
-define_native!(native_const, () -> i64, { 42 });
+define_native!(native_add_one, (x: isize) -> isize, { x + 1 });
+define_native!(native_add, (a: isize, b: isize) -> isize, { a + b });
+define_native!(native_const, () -> isize, { 42 });
 
 // Test the @with_lisp variant - the body can access lisp and remaining args
-define_native!(native_bit_check @with_lisp, (value: i64, bit: i64) -> bool, {
+define_native!(native_bit_check @with_lisp, (value: isize, bit: isize) -> bool, {
     if bit >= 0 && bit < 64 {
-        (value & (1i64 << bit)) != 0
+        (value & (1isize << bit)) != 0
     } else {
         false
     }
 });
 
 // Test three-arg @with_lisp variant
-define_native!(native_clamp @with_lisp, (value: i64, min: i64, max: i64) -> i64, {
+define_native!(native_clamp @with_lisp, (value: isize, min: isize, max: isize) -> isize, {
     if value < min { min } else if value > max { max } else { value }
 });
 
@@ -207,22 +207,22 @@ fn test_define_native_with_lisp_three_args() {
 // Tests for define_native_stateful! macro
 // ============================================================================
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use lisp_eval::define_native_stateful;
 
 // Separate static variables for each test to avoid race conditions
-static COUNTER_NO_ARGS: AtomicU32 = AtomicU32::new(0);
-static COUNTER_ONE_ARG: AtomicU32 = AtomicU32::new(0);
-static COUNTER_TWO_ARGS: AtomicU32 = AtomicU32::new(0);
-static COUNTER_EVALUATOR: AtomicU32 = AtomicU32::new(0);
+static COUNTER_NO_ARGS: AtomicUsize = AtomicUsize::new(0);
+static COUNTER_ONE_ARG: AtomicUsize = AtomicUsize::new(0);
+static COUNTER_TWO_ARGS: AtomicUsize = AtomicUsize::new(0);
+static COUNTER_EVALUATOR: AtomicUsize = AtomicUsize::new(0);
 
 // Test zero-argument stateful function
 define_native_stateful!(
     native_increment_counter,
     static: COUNTER_NO_ARGS,
-    () -> i64,
+    () -> isize,
     {
-        COUNTER_NO_ARGS.fetch_add(1, Ordering::Relaxed) as i64
+        COUNTER_NO_ARGS.fetch_add(1, Ordering::Relaxed) as isize
     }
 );
 
@@ -230,9 +230,9 @@ define_native_stateful!(
 define_native_stateful!(
     native_add_to_counter,
     static: COUNTER_ONE_ARG,
-    (n: i64) -> i64,
+    (n: isize) -> isize,
     {
-        COUNTER_ONE_ARG.fetch_add(n as u32, Ordering::Relaxed) as i64
+        COUNTER_ONE_ARG.fetch_add(n as usize, Ordering::Relaxed) as isize
     }
 );
 
@@ -240,11 +240,11 @@ define_native_stateful!(
 define_native_stateful!(
     native_set_counter_if_less,
     static: COUNTER_TWO_ARGS,
-    (threshold: i64, new_val: i64) -> i64,
+    (threshold: isize, new_val: isize) -> isize,
     {
-        let current = COUNTER_TWO_ARGS.load(Ordering::Relaxed) as i64;
+        let current = COUNTER_TWO_ARGS.load(Ordering::Relaxed) as isize;
         if current < threshold {
-            COUNTER_TWO_ARGS.store(new_val as u32, Ordering::Relaxed);
+            COUNTER_TWO_ARGS.store(new_val as usize, Ordering::Relaxed);
             new_val
         } else {
             current
@@ -256,18 +256,18 @@ define_native_stateful!(
 define_native_stateful!(
     native_eval_inc,
     static: COUNTER_EVALUATOR,
-    () -> i64,
+    () -> isize,
     {
-        COUNTER_EVALUATOR.fetch_add(1, Ordering::Relaxed) as i64
+        COUNTER_EVALUATOR.fetch_add(1, Ordering::Relaxed) as isize
     }
 );
 
 define_native_stateful!(
     native_eval_add,
     static: COUNTER_EVALUATOR,
-    (n: i64) -> i64,
+    (n: isize) -> isize,
     {
-        COUNTER_EVALUATOR.fetch_add(n as u32, Ordering::Relaxed) as i64
+        COUNTER_EVALUATOR.fetch_add(n as usize, Ordering::Relaxed) as isize
     }
 );
 
