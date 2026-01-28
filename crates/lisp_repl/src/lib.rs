@@ -64,8 +64,8 @@ fn format_value_impl<const N: usize>(
                 _ => buf.push(c),
             }
         }
-        Ok(Value::Symbol { chars, len }) => {
-            format_symbol(lisp, chars, len, buf);
+        Ok(Value::Symbol { chars }) => {
+            format_symbol(lisp, chars, buf);
         }
         Ok(Value::Cons { .. }) => {
             buf.push('(');
@@ -164,44 +164,17 @@ fn format_list_contents<const N: usize>(
     }
 }
 
-/// Format a symbol name (supports both contiguous and char list formats)
-fn format_symbol<const N: usize>(lisp: &Lisp<N>, chars: ArenaIndex, len: usize, buf: &mut String) {
-    // If len > 0, it's a contiguous string format
-    if len > 0 {
-        for i in 0..len {
-            if i > 64 {
-                buf.push_str("...");
-                break;
-            }
-            if let Ok(c) = lisp.string_char_at(chars, i) {
-                buf.push(c);
-            }
-        }
-        return;
-    }
-    
-    // Legacy char list format
-    format_char_list_legacy(lisp, chars, buf);
-}
-
-/// Format a char list (legacy symbol name format)
-fn format_char_list_legacy<const N: usize>(lisp: &Lisp<N>, mut idx: ArenaIndex, buf: &mut String) {
-    let mut count = 0;
-    loop {
-        if count > 64 {
+/// Format a symbol name.
+fn format_symbol<const N: usize>(lisp: &Lisp<N>, chars: ArenaIndex, buf: &mut String) {
+    // Get the length from the String value
+    let len = lisp.string_len(chars).unwrap_or(0);
+    for i in 0..len {
+        if i > 64 {
             buf.push_str("...");
             break;
         }
-        match lisp.get(idx) {
-            Ok(Value::Nil) => break,
-            Ok(Value::Cons { car, cdr }) => {
-                if let Ok(Value::Char(c)) = lisp.get(car) {
-                    buf.push(c);
-                }
-                idx = cdr;
-                count += 1;
-            }
-            _ => break,
+        if let Ok(c) = lisp.string_char_at(chars, i) {
+            buf.push(c);
         }
     }
 }

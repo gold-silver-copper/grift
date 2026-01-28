@@ -22,7 +22,7 @@
 //! - `Number(i64)` - Integer numbers
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell
-//! - `Symbol { chars, len }` - Symbol with contiguous string storage
+//! - `Symbol { chars }` - Symbol with contiguous string storage
 //! - `Lambda { params, body, env }` - Closure
 //! - `Thunk { expr, env, cached }` - Lazy computation (internal, auto-managed)
 //! - `Builtin(Builtin)` - Optimized built-in function
@@ -384,7 +384,7 @@ pub enum Value {
     /// Integer number
     Number(i64),
     
-    /// Single character (for building symbol char-lists)
+    /// Single character (used in strings and symbol storage)
     Char(char),
     
     /// Cons cell (pair)
@@ -393,12 +393,11 @@ pub enum Value {
         cdr: ArenaIndex,
     },
     
-    /// Symbol (contains either a linked list of Char values or contiguous string)
-    /// For contiguous strings: chars points to [Number(len), Char, Char, ...] and len > 0
-    /// For char lists (legacy): chars points to list of Char values and len == 0
+    /// Symbol (contains a contiguous string)
+    /// The `chars` field points to a Value::String which contains the symbol name.
+    /// The length is obtained from the String value, providing a single source of truth.
     Symbol {
         chars: ArenaIndex,
-        len: usize,  // Length for contiguous strings; 0 for legacy char lists
     },
     
     /// Lambda / closure
@@ -672,8 +671,8 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*car);
                 tracer(*cdr);
             }
-            Value::Symbol { chars, .. } => {
-                // chars now points to a Value::String, which handles its own tracing
+            Value::Symbol { chars } => {
+                // chars points to a Value::String, which handles its own tracing
                 tracer(*chars);
             }
             Value::Lambda { params, body, env } => {
@@ -981,7 +980,6 @@ impl<const N: usize> Lisp<N> {
     /// This provides ~44% memory savings compared to linked list representation.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
         // Create string for the symbol name
-        let char_count = name.chars().count();
         let name_str = self.string(name)?;
         
         // Check intern table
@@ -992,7 +990,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol { chars: name_str, len: char_count })?;
+        let symbol = self.alloc(Value::Symbol { chars: name_str })?;
         
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
@@ -1038,7 +1036,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol { chars: name_str, len: char_count })?;
+        let symbol = self.alloc(Value::Symbol { chars: name_str })?;
         
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
@@ -1122,7 +1120,9 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Check if two symbols are equal (supports both contiguous and char list formats)
+    /// Check if two symbols are equal.
+    /// 
+    /// Symbols are compared by their underlying string content.
     #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index means same symbol
@@ -1134,147 +1134,38 @@ impl<const N: usize> Lisp<N> {
         let val_b = self.get(b)?;
         
         match (val_a, val_b) {
-            (Value::Symbol { chars: chars_a, len: len_a }, Value::Symbol { chars: chars_b, len: len_b }) => {
-                // Use len to determine format: len > 0 means contiguous, len == 0 means char list
-                match (len_a > 0, len_b > 0) {
-                    (true, true) => self.string_eq_contiguous(chars_a, chars_b),
-                    (false, false) => self.char_list_eq(chars_a, chars_b),
-                    _ => Ok(false), // Different formats can't be equal
-                }
+            (Value::Symbol { chars: chars_a }, Value::Symbol { chars: chars_b }) => {
+                self.string_eq_contiguous(chars_a, chars_b)
             }
             _ => Ok(false),
         }
     }
     
-    /// Compare two char lists for equality (legacy format)
-    fn char_list_eq(&self, mut a: ArenaIndex, mut b: ArenaIndex) -> ArenaResult<bool> {
-        // Fast path: same index means same char list
-        if a == b {
-            return Ok(true);
-        }
-        
-        loop {
-            let val_a = self.get(a)?;
-            let val_b = self.get(b)?;
-            
-            match (val_a, val_b) {
-                (Value::Nil, Value::Nil) => return Ok(true),
-                (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
-                    let char_a = self.get(car_a)?;
-                    let char_b = self.get(car_b)?;
-                    
-                    match (char_a, char_b) {
-                        (Value::Char(c1), Value::Char(c2)) if c1 == c2 => {
-                            a = cdr_a;
-                            b = cdr_b;
-                        }
-                        _ => return Ok(false),
-                    }
-                }
-                _ => return Ok(false),
-            }
-        }
-    }
-    
-    /// Check if a symbol matches a string (supports both contiguous and char list formats)
+    /// Check if a symbol matches a string.
     #[inline]
     pub fn symbol_matches(&self, sym: ArenaIndex, name: &str) -> ArenaResult<bool> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol { chars, len } => {
-                // Use len to determine format: len > 0 means contiguous
-                if len > 0 {
-                    return self.string_matches(chars, name);
-                }
-                
-                // Legacy char list format
-                let mut list = chars;
-                let mut chars_iter = name.chars();
-                
-                loop {
-                    let list_val = self.get(list)?;
-                    let next_char = chars_iter.next();
-                    
-                    match (list_val, next_char) {
-                        (Value::Nil, None) => return Ok(true),
-                        (Value::Cons { car, cdr }, Some(expected)) => {
-                            if let Value::Char(c) = self.get(car)? {
-                                if c != expected {
-                                    return Ok(false);
-                                }
-                                list = cdr;
-                            } else {
-                                return Ok(false);
-                            }
-                        }
-                        _ => return Ok(false),
-                    }
-                }
-            }
+            Value::Symbol { chars } => self.string_matches(chars, name),
             _ => Ok(false),
         }
     }
     
-    /// Extract symbol name to a fixed buffer (supports both contiguous and char list formats)
+    /// Extract symbol name to a fixed buffer.
     pub fn symbol_to_bytes(&self, sym: ArenaIndex, buf: &mut [u8]) -> ArenaResult<usize> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol { chars, len: sym_len } => {
-                // Use len to determine format: len > 0 means contiguous
-                if sym_len > 0 {
-                    return self.string_to_bytes(chars, buf);
-                }
-                
-                // Legacy char list format
-                let mut list = chars;
-                let mut written = 0;
-                
-                loop {
-                    if written >= buf.len() {
-                        break;
-                    }
-                    match self.get(list)? {
-                        Value::Nil => break,
-                        Value::Cons { car, cdr } => {
-                            if let Value::Char(c) = self.get(car)? {
-                                buf[written] = c as u8;
-                                written += 1;
-                            }
-                            list = cdr;
-                        }
-                        _ => break,
-                    }
-                }
-                Ok(written)
-            }
+            Value::Symbol { chars } => self.string_to_bytes(chars, buf),
             _ => Ok(0),
         }
     }
     
-    /// Get the length of a symbol's name
+    /// Get the length of a symbol's name.
     pub fn symbol_len(&self, sym: ArenaIndex) -> ArenaResult<usize> {
         match self.get(sym)? {
-            Value::Symbol { len: sym_len, chars } => {
-                if sym_len > 0 {
-                    Ok(sym_len)
-                } else {
-                    // Legacy char list format - count the chars
-                    let mut list = chars;
-                    let mut count = 0;
-                    loop {
-                        match self.get(list)? {
-                            Value::Nil => return Ok(count),
-                            Value::Cons { cdr, .. } => {
-                                count += 1;
-                                list = cdr;
-                            }
-                            _ => return Ok(count),
-                        }
-                    }
-                }
-            }
+            Value::Symbol { chars } => self.string_len(chars),
             _ => Ok(0),
         }
     }
@@ -1283,33 +1174,12 @@ impl<const N: usize> Lisp<N> {
     /// Returns None if the index is out of bounds or if the value is not a symbol
     pub fn symbol_char_at(&self, sym: ArenaIndex, index: usize) -> ArenaResult<Option<char>> {
         match self.get(sym)? {
-            Value::Symbol { chars, len: sym_len } => {
-                if sym_len > 0 {
-                    // Contiguous string format
-                    if index >= sym_len {
-                        return Ok(None);
-                    }
-                    Ok(Some(self.string_char_at(chars, index)?))
+            Value::Symbol { chars } => {
+                let len = self.string_len(chars)?;
+                if index >= len {
+                    Ok(None)
                 } else {
-                    // Legacy char list format
-                    let mut list = chars;
-                    let mut current_idx = 0;
-                    loop {
-                        match self.get(list)? {
-                            Value::Nil => return Ok(None),
-                            Value::Cons { car, cdr } => {
-                                if current_idx == index {
-                                    if let Value::Char(c) = self.get(car)? {
-                                        return Ok(Some(c));
-                                    }
-                                    return Ok(None);
-                                }
-                                current_idx += 1;
-                                list = cdr;
-                            }
-                            _ => return Ok(None),
-                        }
-                    }
+                    Ok(Some(self.string_char_at(chars, index)?))
                 }
             }
             _ => Ok(None),
