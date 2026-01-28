@@ -403,9 +403,9 @@ enum TrampolineState {
 /// Check if a builtin is a binary operation (exactly 2 args, optimized path)
 fn is_binary_builtin(builtin: Builtin) -> bool {
     matches!(builtin, 
-        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod |
+        Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Modulo | Builtin::Remainder |
         Builtin::Lt | Builtin::Gt | Builtin::Le | Builtin::Ge | Builtin::NumEq |
-        Builtin::Eq | Builtin::Cons
+        Builtin::EqP | Builtin::EqvP | Builtin::Cons
     )
 }
 
@@ -1452,9 +1452,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::List => Ok(args),
             
-            Builtin::Atom => builtin_unary_pred!(self, args, |v: Value| v.is_atom()),
-            
-            Builtin::Eq => {
+            // Scheme-compliant equality predicates
+            Builtin::EqP => {
+                // eq? - tests whether two objects are the same object
                 extract_args!(self, args, a, b);
                 
                 let val_a = self.lisp.get(a)?;
@@ -1471,6 +1471,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 
                 self.lisp.boolean(eq).map_err(Into::into)
+            }
+            
+            Builtin::EqvP => {
+                // eqv? - tests value equivalence (same as eq? for most types in our impl)
+                extract_args!(self, args, a, b);
+                
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                
+                let eqv = match (val_a, val_b) {
+                    (Value::Nil, Value::Nil) => true,
+                    (Value::True, Value::True) => true,
+                    (Value::False, Value::False) => true,
+                    (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Char(x), Value::Char(y)) => x == y,
+                    (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
+                    _ => a == b,
+                };
+                
+                self.lisp.boolean(eqv).map_err(Into::into)
+            }
+            
+            Builtin::EqualP => {
+                // equal? - tests structural equality recursively
+                let result = self.equal_recursive(self.lisp.car(args)?, self.lisp.car(self.lisp.cdr(args)?)?)?;
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::Null => builtin_unary_pred!(self, args, |v: Value| v.is_nil()),
@@ -1509,12 +1535,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }, call_expr)
             }
             
-            Builtin::Mod => {
+            Builtin::Modulo => {
+                // Scheme modulo: result has the sign of the divisor
                 let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
                 let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
+                // Scheme modulo: ((a % b) + b) % b
+                let result = ((a % b) + b) % b;
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::Remainder => {
+                // Scheme remainder: result has the sign of the dividend
+                let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if b == 0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                // Rust's % operator already gives remainder with sign of dividend
                 self.lisp.number(a % b).map_err(Into::into)
             }
             
@@ -1723,7 +1763,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 self.lisp.number(x / y).map_err(Into::into)
             }
-            Builtin::Mod => {
+            Builtin::Modulo => {
+                // Scheme modulo: result has the sign of the divisor
+                let x = self.get_number_from_forced(a, call_expr)?;
+                let y = self.get_number_from_forced(b, call_expr)?;
+                if y == 0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let result = ((x % y) + y) % y;
+                self.lisp.number(result).map_err(Into::into)
+            }
+            Builtin::Remainder => {
+                // Scheme remainder: result has the sign of the dividend
                 let x = self.get_number_from_forced(a, call_expr)?;
                 let y = self.get_number_from_forced(b, call_expr)?;
                 if y == 0 {
@@ -1756,7 +1807,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let y = self.get_number_from_forced(b, call_expr)?;
                 self.lisp.boolean(x == y).map_err(Into::into)
             }
-            Builtin::Eq => {
+            Builtin::EqP | Builtin::EqvP => {
                 let val_a = self.lisp.get(a)?;
                 let val_b = self.lisp.get(b)?;
                 
@@ -1823,6 +1874,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
         let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
         self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+    }
+    
+    /// Recursive structural equality for equal? predicate
+    fn equal_recursive(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+        // Check if they're the same index first
+        if a == b {
+            return Ok(true);
+        }
+        
+        let val_a = self.lisp.get(a)?;
+        let val_b = self.lisp.get(b)?;
+        
+        match (val_a, val_b) {
+            (Value::Nil, Value::Nil) => Ok(true),
+            (Value::True, Value::True) => Ok(true),
+            (Value::False, Value::False) => Ok(true),
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Char(x), Value::Char(y)) => Ok(x == y),
+            (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b).map_err(Into::into),
+            (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
+                // Recursively check car and cdr
+                if !self.equal_recursive(car_a, car_b)? {
+                    return Ok(false);
+                }
+                self.equal_recursive(cdr_a, cdr_b)
+            }
+            _ => Ok(false),
+        }
     }
     
     // ========================================================================

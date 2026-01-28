@@ -1007,6 +1007,7 @@ fn test_atom_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // atom is now a stdlib function: (define (atom x) (not (pair? x)))
     assert!(eval_is_true(&lisp, &mut eval, "(atom 42)"));
     assert!(eval_is_true(&lisp, &mut eval, "(atom 'x)"));
     assert!(eval_is_true(&lisp, &mut eval, "(atom #t)"));
@@ -1020,14 +1021,23 @@ fn test_eq_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    assert!(eval_is_true(&lisp, &mut eval, "(eq 1 1)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(eq 1 2)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq 'a 'a)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(eq 'a 'b)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq '() '())"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq #t #t)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(eq #f #f)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(eq #t #f)"));
+    // Scheme uses eq? for identity comparison
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? 1 1)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eq? 1 2)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? 'a 'a)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eq? 'a 'b)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? '() '())"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? #t #t)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? #f #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eq? #t #f)"));
+    
+    // eqv? has same semantics for basic types
+    assert!(eval_is_true(&lisp, &mut eval, "(eqv? 1 1)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eqv? 1 2)"));
+    
+    // equal? provides structural equality
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? '(1 2 3) '(1 2 3))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(equal? '(1 2 3) '(1 2 4))"));
 }
 
 #[test]
@@ -1154,13 +1164,28 @@ fn test_div_comprehensive() {
 }
 
 #[test]
-fn test_mod_comprehensive() {
+fn test_modulo_comprehensive() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 10 3)"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 15 5)"), 0);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(mod 7 2)"), 1);
+    // Scheme modulo: result has sign of divisor
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 10 3)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 15 5)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 7 2)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo -13 4)"), 3);  // Scheme: result has sign of divisor
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 13 -4)"), -3); // Scheme: result has sign of divisor
+}
+
+#[test]
+fn test_remainder_comprehensive() {
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Scheme remainder: result has sign of dividend
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder 10 3)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder 15 5)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder -13 4)"), -1); // Scheme: result has sign of dividend
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(remainder 13 -4)"), 1);  // Scheme: result has sign of dividend
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1325,8 +1350,8 @@ fn test_filter_multiples() {
     let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Filter helper: filter out multiples
-    eval.eval_str("(define (filter-multiples n stream) (cond ((null? stream) '()) ((= (mod (car stream) n) 0) (filter-multiples n (cdr stream))) (else (cons (car stream) (filter-multiples n (cdr stream))))))").unwrap();
+    // Filter helper: filter out multiples (using modulo instead of mod)
+    eval.eval_str("(define (filter-multiples n stream) (cond ((null? stream) '()) ((= (modulo (car stream) n) 0) (filter-multiples n (cdr stream))) (else (cons (car stream) (filter-multiples n (cdr stream))))))").unwrap();
     
     // Test filter-multiples on a finite list
     eval.eval_str("(define nums '(2 3 4 5 6 7 8 9 10))").unwrap();

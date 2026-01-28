@@ -1,4 +1,4 @@
-;;; Lisp Standard Library
+;;; Scheme Standard Library
 ;;; 
 ;;; This file contains standard library function definitions.
 ;;; It is processed by the include_stdlib! macro to generate the StdLib enum.
@@ -6,6 +6,9 @@
 ;;; Format:
 ;;;   ;;; Documentation comment
 ;;;   (define (function-name param1 param2 ...) body)
+
+;;; (atom x) - Check if x is an atom (not a pair)
+(define (atom x) (not (pair? x)))
 
 ;;; (map f lst) - Apply f to each element of lst
 (define (map f lst) (if (null? lst) '() (cons (f (car lst)) (map f (cdr lst)))))
@@ -37,11 +40,11 @@
 ;;; (zip a b) - Zip two lists into list of pairs
 (define (zip a b) (if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b))))))
 
-;;; (member x lst) - Check if x is in lst
-(define (member x lst) (if (null? lst) #f (if (eq (car lst) x) #t (member x (cdr lst)))))
+;;; (member x lst) - Check if x is in lst using eq?
+(define (member x lst) (if (null? lst) #f (if (eq? (car lst) x) #t (member x (cdr lst)))))
 
-;;; (assoc key alist) - Look up key in association list
-(define (assoc key alist) (if (null? alist) #f (if (eq (car (car alist)) key) (car alist) (assoc key (cdr alist)))))
+;;; (assoc key alist) - Look up key in association list using eq?
+(define (assoc key alist) (if (null? alist) #f (if (eq? (car (car alist)) key) (car alist) (assoc key (cdr alist)))))
 
 ;;; (range start end) - Generate list of integers [start, end)
 (define (range start end) (if (>= start end) '() (cons start (range (+ start 1) end))))

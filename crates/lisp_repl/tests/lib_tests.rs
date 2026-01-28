@@ -153,7 +153,8 @@ fn test_filter() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (filter pred lst) (cond ((null? lst) '()) ((pred (car lst)) (cons (car lst) (filter pred (cdr lst)))) (else (filter pred (cdr lst)))))").unwrap();
-    eval.eval_str("(define (even x) (= (mod x 2) 0))").unwrap();
+    // Using modulo instead of mod
+    eval.eval_str("(define (even x) (= (modulo x 2) 0))").unwrap();
     // Small list
     assert_eq!(eval_to_string(&lisp, &mut eval, "(filter even '(1 2 3 4))").unwrap(), "(2 4)");
 }

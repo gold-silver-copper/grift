@@ -147,12 +147,8 @@ define_builtins! {
     /// list - Create a list from arguments
     List => "list",
     
-    // Predicates
-    /// atom - Check if value is an atom
-    Atom => "atom",
-    /// eq - Check equality
-    Eq => "eq",
-    /// null? - Check if value is nil
+    // Predicates (Scheme R7RS compliant)
+    /// null? - Check if value is the empty list
     Null => "null?",
     /// pair? - Check if value is a pair
     Pairp => "pair?",
@@ -164,6 +160,12 @@ define_builtins! {
     Procedurep => "procedure?",
     /// symbol? - Check if value is a symbol
     Symbolp => "symbol?",
+    /// eq? - Scheme-compliant identity equality
+    EqP => "eq?",
+    /// eqv? - Scheme-compliant value equality
+    EqvP => "eqv?",
+    /// equal? - Scheme-compliant recursive structural equality
+    EqualP => "equal?",
     
     // Arithmetic
     /// + - Addition
@@ -174,8 +176,10 @@ define_builtins! {
     Mul => "*",
     /// / - Division
     Div => "/",
-    /// mod - Modulo
-    Mod => "mod",
+    /// modulo - Scheme modulo (result has sign of divisor)
+    Modulo => "modulo",
+    /// remainder - Scheme remainder (result has sign of dividend)
+    Remainder => "remainder",
     
     // Comparison
     /// < - Less than

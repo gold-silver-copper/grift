@@ -354,7 +354,7 @@ fn main() {
         &lisp,
         &mut eval,
         20,
-        "(filter (lambda (x) (= (mod x 2) 0)) (range 1 21))",
+        "(filter (lambda (x) (= (modulo x 2) 0)) (range 1 21))",
         None,
     ));
 
@@ -678,11 +678,11 @@ fn main() {
     ));
 
     results.push(run_bench(
-        "Modulo (mod 17 5) x 500",
+        "Modulo (modulo 17 5) x 500",
         &lisp,
         &mut eval,
         500,
-        "(mod 17 5)",
+        "(modulo 17 5)",
         Some("2"),
     ));
 
