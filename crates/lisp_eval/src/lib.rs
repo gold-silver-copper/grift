@@ -1156,9 +1156,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             self.apply_builtin_with_args(b, args_expr, env, call_expr)
                         }
                     }
-                    Value::Lambda { params, body, env: closure_env } => {
+                    Value::Lambda { .. } => {
                         // Lambda: STRICT - evaluate args and bind directly to params
                         self.pop_frame();
+                        
+                        // Extract lambda parts: (params, body, env)
+                        let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
                         
                         if self.lisp.get(args_expr)?.is_nil() {
                             // No args - check params are also empty
@@ -1193,14 +1196,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
-                    Value::StdLib { func: s, cached_body, cached_params } => {
+                    Value::StdLib { func: s, cache } => {
                         // StdLib: Use cached body/params if available, otherwise parse and cache
                         self.pop_frame();
                         
                         // Check if we have cached values, otherwise parse and cache
-                        let (body, params) = if !cached_body.is_null() && !cached_params.is_null() {
-                            // Use cached values (fast path)
-                            (cached_body, cached_params)
+                        let (body, params) = if !cache.is_null() {
+                            // Use cached values (fast path) - cache is (body . params)
+                            let body = self.lisp.car(cache)?;
+                            let params = self.lisp.cdr(cache)?;
+                            (body, params)
                         } else {
                             // First call - parse body and create param list, then cache
                             let parsed_body = parse(self.lisp, s.body())
@@ -1208,11 +1213,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let parsed_params = self.make_stdlib_param_list(s.params())?;
                             
                             // Update the StdLib value in the arena with cached values
-                            self.lisp.set(val, Value::StdLib { 
-                                func: s, 
-                                cached_body: parsed_body, 
-                                cached_params: parsed_params 
-                            })?;
+                            self.lisp.set_stdlib_cache(val, parsed_body, parsed_params)?;
                             
                             (parsed_body, parsed_params)
                         };
