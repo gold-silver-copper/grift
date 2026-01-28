@@ -1,5 +1,5 @@
 use lisp_eval::native::*;
-use lisp_eval::{Lisp, define_native};
+use lisp_eval::{Lisp, Evaluator, register_native};
 use pwn_arena::{ArenaIndex, ArenaResult};
 
 #[test]
@@ -96,31 +96,95 @@ fn test_count_args() {
     assert_eq!(count_args(&lisp, l1).unwrap(), 3);
 }
 
-// Test the define_native! macro
-define_native!(native_add_one, (x: i64) -> i64, { x + 1 });
-define_native!(native_add, (a: i64, b: i64) -> i64, { a + b });
-define_native!(native_const, () -> i64, { 42 });
-
+// Test the register_native! macro
 #[test]
-fn test_define_native_macro() {
-    let lisp: Lisp<100> = Lisp::new();
+fn test_register_native_macro() {
+    let lisp: Lisp<1000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Register functions using the new macro syntax
+    register_native!(eval, "add-one", (x: i64) -> i64 {
+        x + 1
+    }).unwrap();
+    
+    register_native!(eval, "add", (a: i64, b: i64) -> i64 {
+        a + b
+    }).unwrap();
+    
+    register_native!(eval, "const-42", () -> i64 {
+        42
+    }).unwrap();
     
     // Test no-arg function
-    let nil = lisp.nil().unwrap();
-    let result = native_const(&lisp, nil).unwrap();
+    let result = eval.eval_str("(const-42)").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
     
     // Test single-arg function
-    let n5 = lisp.number(5).unwrap();
-    let args = lisp.cons(n5, nil).unwrap();
-    let result = native_add_one(&lisp, args).unwrap();
+    let result = eval.eval_str("(add-one 5)").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(6));
     
     // Test two-arg function
-    let n3 = lisp.number(3).unwrap();
-    let n4 = lisp.number(4).unwrap();
-    let args = lisp.cons(n4, nil).unwrap();
-    let args = lisp.cons(n3, args).unwrap();
-    let result = native_add(&lisp, args).unwrap();
+    let result = eval.eval_str("(add 3 4)").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(7));
+}
+
+// Test register_native! with three arguments
+#[test]
+fn test_register_native_three_args() {
+    let lisp: Lisp<1000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    register_native!(eval, "clamp", (value: i64, min_val: i64, max_val: i64) -> i64 {
+        if value < min_val {
+            min_val
+        } else if value > max_val {
+            max_val
+        } else {
+            value
+        }
+    }).unwrap();
+    
+    // Test clamping below minimum
+    let result = eval.eval_str("(clamp -10 0 100)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    
+    // Test clamping above maximum
+    let result = eval.eval_str("(clamp 150 0 100)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100));
+    
+    // Test value within range
+    let result = eval.eval_str("(clamp 50 0 100)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(50));
+}
+
+// Test register_native! with boolean return
+#[test]
+fn test_register_native_bool_return() {
+    let lisp: Lisp<1000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    register_native!(eval, "is-even", (x: i64) -> bool {
+        x % 2 == 0
+    }).unwrap();
+    
+    let result = eval.eval_str("(is-even 4)").unwrap();
+    assert!(lisp.get(result).unwrap().is_true());
+    
+    let result = eval.eval_str("(is-even 7)").unwrap();
+    assert!(lisp.get(result).unwrap().is_false());
+}
+
+// Test register_native! with four arguments
+#[test]
+fn test_register_native_four_args() {
+    let lisp: Lisp<1000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    register_native!(eval, "weighted-avg", (a: i64, b: i64, wa: i64, wb: i64) -> i64 {
+        (a * wa + b * wb) / (wa + wb)
+    }).unwrap();
+    
+    // Weighted average of 10 (weight 3) and 20 (weight 1) = (30 + 20) / 4 = 12
+    let result = eval.eval_str("(weighted-avg 10 20 3 1)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(12));
 }

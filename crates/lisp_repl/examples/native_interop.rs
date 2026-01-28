@@ -6,55 +6,8 @@
 //! Run with: `cargo run --example native_interop`
 
 use lisp_eval::{
-    Lisp, Evaluator, ArenaIndex, ArenaResult, ToLisp, extract_arg,
+    Lisp, Evaluator, register_native,
 };
-
-/// A simple native function that doubles a number.
-///
-/// This demonstrates the basic pattern for native functions:
-/// 1. Extract arguments from the args list
-/// 2. Perform computation
-/// 3. Return result via ToLisp
-fn native_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (i64, _) = extract_arg(lisp, args)?;
-    (x * 2).to_lisp(lisp)
-}
-
-/// A native function that computes the maximum of two numbers.
-fn native_max<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (a, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (b, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    (if a > b { a } else { b }).to_lisp(lisp)
-}
-
-/// A native function that returns whether a number is even.
-fn native_evenp<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (i64, _) = extract_arg(lisp, args)?;
-    (x % 2 == 0).to_lisp(lisp)
-}
-
-/// A native function that squares a number.
-fn native_square<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (x, _rest): (i64, _) = extract_arg(lisp, args)?;
-    (x * x).to_lisp(lisp)
-}
-
-/// A native function that clamps a value to a range.
-fn native_clamp<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (value, rest): (i64, _) = extract_arg(lisp, args)?;
-    let (min_val, rest): (i64, _) = extract_arg(lisp, rest)?;
-    let (max_val, _rest): (i64, _) = extract_arg(lisp, rest)?;
-    
-    let clamped = if value < min_val {
-        min_val
-    } else if value > max_val {
-        max_val
-    } else {
-        value
-    };
-    
-    clamped.to_lisp(lisp)
-}
 
 fn main() {
     println!("=== Native Function Interop Example ===\n");
@@ -63,12 +16,32 @@ fn main() {
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Register native functions
-    eval.register_native("double", native_double).unwrap();
-    eval.register_native("my-max", native_max).unwrap();
-    eval.register_native("even?", native_evenp).unwrap();
-    eval.register_native("square", native_square).unwrap();
-    eval.register_native("clamp", native_clamp).unwrap();
+    // Register native functions using the new macro syntax
+    register_native!(eval, "double", (x: i64) -> i64 {
+        x * 2
+    }).unwrap();
+    
+    register_native!(eval, "my-max", (a: i64, b: i64) -> i64 {
+        if a > b { a } else { b }
+    }).unwrap();
+    
+    register_native!(eval, "even?", (x: i64) -> bool {
+        x % 2 == 0
+    }).unwrap();
+    
+    register_native!(eval, "square", (x: i64) -> i64 {
+        x * x
+    }).unwrap();
+    
+    register_native!(eval, "clamp", (value: i64, min_val: i64, max_val: i64) -> i64 {
+        if value < min_val {
+            min_val
+        } else if value > max_val {
+            max_val
+        } else {
+            value
+        }
+    }).unwrap();
     
     println!("Registered native functions: double, my-max, even?, square, clamp\n");
     

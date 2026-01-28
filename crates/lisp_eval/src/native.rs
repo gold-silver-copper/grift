@@ -16,16 +16,19 @@
 //!
 //! ## Usage
 //!
+//! Use the `register_native!` macro for easy registration:
+//!
 //! ```rust
-//! use lisp_eval::{NativeRegistry, define_native};
+//! use lisp_eval::{Lisp, Evaluator, register_native};
 //!
-//! // Define a simple native function
-//! fn add_one(x: i64) -> i64 {
+//! let lisp: Lisp<10000> = Lisp::new();
+//! let mut eval = Evaluator::new(&lisp).unwrap();
+//!
+//! register_native!(eval, "add-one", (x: i64) -> i64 {
 //!     x + 1
-//! }
+//! }).unwrap();
 //!
-//! // Register it (in your evaluator setup)
-//! // registry.register("add-one", |lisp, args| { ... });
+//! // Now (add-one 5) returns 6
 //! ```
 //!
 //! ## Design Notes
@@ -362,51 +365,69 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 }
 
 // ============================================================================
-// Macro for Easy Native Function Definition
+// Macro for Native Function Registration
 // ============================================================================
 
-/// Define a native function with automatic argument extraction.
+/// Register native functions with an evaluator using a clean, readable syntax.
 ///
-/// This macro generates wrapper code that extracts typed arguments from
-/// the Lisp argument list and calls your function.
+/// This macro generates wrapper functions that automatically extract typed
+/// arguments from the Lisp argument list and convert return values back to Lisp.
 ///
 /// # Syntax
 ///
 /// ```rust
-/// use lisp_eval::define_native;
+/// use lisp_eval::{Lisp, Evaluator, register_native};
 ///
-/// // Define a function that adds two numbers
-/// define_native!(add_two, (a: i64, b: i64) -> i64, {
+/// let lisp: Lisp<10000> = Lisp::new();
+/// let mut eval = Evaluator::new(&lisp).unwrap();
+///
+/// register_native!(eval, "add", (a: i64, b: i64) -> i64 {
 ///     a + b
 /// });
 ///
-/// // Define a function with no return value
-/// define_native!(print_num, (n: i64) -> (), {
-///     // In a real impl, you'd print n
-///     ()
+/// register_native!(eval, "square", (x: i64) -> i64 {
+///     x * x
+/// });
+///
+/// register_native!(eval, "const-42", () -> i64 {
+///     42
 /// });
 /// ```
 ///
-/// # Generated Code
+/// # Features
 ///
-/// The macro generates a function with signature:
-/// `fn name<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex>`
+/// - **Type-safe extraction**: Arguments are automatically extracted and converted
+/// - **Clean syntax**: Write functions that look like regular Rust functions
+/// - **Inline definition**: No need for separate function definitions
+/// - **Return value conversion**: Return values are automatically converted to Lisp
+///
+/// # Supported Types
+///
+/// Any type implementing `FromLisp` can be used as an argument type:
+/// - `i64` - Numbers
+/// - `bool` - Booleans (#t/#f)
+/// - `char` - Characters
+/// - `ArenaIndex` - Raw Lisp values (for custom handling)
+///
+/// Any type implementing `ToLisp` can be used as a return type:
+/// - `i64`, `bool`, `char`, `()`, `ArenaIndex`
 #[macro_export]
-macro_rules! define_native {
-    // No arguments, with return type
-    ($name:ident, () -> $ret:ty, $body:block) => {
-        pub fn $name<const N: usize>(
+macro_rules! register_native {
+    // No arguments
+    ($eval:expr, $name:literal, () -> $ret:ty $body:block) => {{
+        fn __native_fn<const N: usize>(
             lisp: &$crate::Lisp<N>,
             _args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
-    };
+        $eval.register_native($name, __native_fn)
+    }};
 
     // Single argument
-    ($name:ident, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:block) => {
-        pub fn $name<const N: usize>(
+    ($eval:expr, $name:literal, ($arg1:ident : $ty1:ty) -> $ret:ty $body:block) => {{
+        fn __native_fn<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
@@ -414,11 +435,12 @@ macro_rules! define_native {
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
-    };
+        $eval.register_native($name, __native_fn)
+    }};
 
     // Two arguments
-    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:block) => {
-        pub fn $name<const N: usize>(
+    ($eval:expr, $name:literal, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty $body:block) => {{
+        fn __native_fn<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
@@ -427,11 +449,12 @@ macro_rules! define_native {
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
-    };
+        $eval.register_native($name, __native_fn)
+    }};
 
     // Three arguments
-    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:block) => {
-        pub fn $name<const N: usize>(
+    ($eval:expr, $name:literal, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty $body:block) => {{
+        fn __native_fn<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
@@ -441,11 +464,12 @@ macro_rules! define_native {
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
-    };
+        $eval.register_native($name, __native_fn)
+    }};
 
     // Four arguments
-    ($name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:block) => {
-        pub fn $name<const N: usize>(
+    ($eval:expr, $name:literal, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty $body:block) => {{
+        fn __native_fn<const N: usize>(
             lisp: &$crate::Lisp<N>,
             args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
@@ -456,5 +480,6 @@ macro_rules! define_native {
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
-    };
+        $eval.register_native($name, __native_fn)
+    }};
 }
