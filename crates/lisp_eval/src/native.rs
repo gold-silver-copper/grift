@@ -596,7 +596,7 @@ macro_rules! define_native_stateful {
             lisp: &$crate::Lisp<N>,
             _args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
-            let _ = (lisp, &$static_name); // suppress unused warning, verify static exists
+            let _ = &$static_name; // verify static exists at compile time
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
