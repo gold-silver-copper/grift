@@ -101,6 +101,20 @@ define_native!(native_add_one, (x: i64) -> i64, { x + 1 });
 define_native!(native_add, (a: i64, b: i64) -> i64, { a + b });
 define_native!(native_const, () -> i64, { 42 });
 
+// Test the @with_lisp variant - the body can access lisp and remaining args
+define_native!(native_bit_check @with_lisp, (value: i64, bit: i64) -> bool, {
+    if bit >= 0 && bit < 64 {
+        (value & (1i64 << bit)) != 0
+    } else {
+        false
+    }
+});
+
+// Test three-arg @with_lisp variant
+define_native!(native_clamp @with_lisp, (value: i64, min: i64, max: i64) -> i64, {
+    if value < min { min } else if value > max { max } else { value }
+});
+
 #[test]
 fn test_define_native_macro() {
     let lisp: Lisp<100> = Lisp::new();
@@ -123,4 +137,68 @@ fn test_define_native_macro() {
     let args = lisp.cons(n3, args).unwrap();
     let result = native_add(&lisp, args).unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(7));
+}
+
+#[test]
+fn test_define_native_with_lisp() {
+    let lisp: Lisp<100> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // Test @with_lisp two-arg function (bit_check)
+    let value = lisp.number(0b1010).unwrap();
+    let bit1 = lisp.number(1).unwrap();
+    let bit3 = lisp.number(3).unwrap();
+    
+    // Check bit 1: 0b1010 has bit 1 set
+    let args = lisp.cons(bit1, nil).unwrap();
+    let args = lisp.cons(value, args).unwrap();
+    let result = native_bit_check(&lisp, args).unwrap();
+    assert!(lisp.get(result).unwrap().is_true());
+    
+    // Check bit 3: 0b1010 has bit 3 set
+    let args = lisp.cons(bit3, nil).unwrap();
+    let args = lisp.cons(value, args).unwrap();
+    let result = native_bit_check(&lisp, args).unwrap();
+    assert!(lisp.get(result).unwrap().is_true());
+    
+    // Check bit 0: 0b1010 does not have bit 0 set
+    let bit0 = lisp.number(0).unwrap();
+    let args = lisp.cons(bit0, nil).unwrap();
+    let args = lisp.cons(value, args).unwrap();
+    let result = native_bit_check(&lisp, args).unwrap();
+    assert!(lisp.get(result).unwrap().is_false());
+}
+
+#[test]
+fn test_define_native_with_lisp_three_args() {
+    let lisp: Lisp<100> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // Test @with_lisp three-arg function (clamp)
+    let value = lisp.number(15).unwrap();
+    let min = lisp.number(0).unwrap();
+    let max = lisp.number(10).unwrap();
+    
+    // 15 clamped to [0, 10] should be 10
+    let args = lisp.cons(max, nil).unwrap();
+    let args = lisp.cons(min, args).unwrap();
+    let args = lisp.cons(value, args).unwrap();
+    let result = native_clamp(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(10));
+    
+    // 5 clamped to [0, 10] should be 5
+    let value = lisp.number(5).unwrap();
+    let args = lisp.cons(max, nil).unwrap();
+    let args = lisp.cons(min, args).unwrap();
+    let args = lisp.cons(value, args).unwrap();
+    let result = native_clamp(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5));
+    
+    // -5 clamped to [0, 10] should be 0
+    let value = lisp.number(-5).unwrap();
+    let args = lisp.cons(max, nil).unwrap();
+    let args = lisp.cons(min, args).unwrap();
+    let args = lisp.cons(value, args).unwrap();
+    let result = native_clamp(&lisp, args).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
 }

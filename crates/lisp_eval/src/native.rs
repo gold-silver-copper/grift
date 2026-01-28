@@ -370,7 +370,7 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// This macro generates wrapper code that extracts typed arguments from
 /// the Lisp argument list and calls your function.
 ///
-/// # Syntax
+/// # Basic Syntax
 ///
 /// ```rust
 /// use lisp_eval::define_native;
@@ -387,18 +387,42 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// });
 /// ```
 ///
+/// # With Lisp Context Access
+///
+/// For complex functions that need access to the Lisp context (for allocation,
+/// creating values, etc.), use the `@with_lisp` variant:
+///
+/// ```rust
+/// use lisp_eval::define_native;
+///
+/// // Function that needs to call Lisp methods
+/// define_native!(bit_set @with_lisp, (value: i64, bit: i64) -> bool, {
+///     // `lisp` is available here for Lisp context operations
+///     if bit >= 0 && bit < 64 {
+///         (value & (1i64 << bit)) != 0
+///     } else {
+///         false
+///     }
+/// });
+/// ```
+///
 /// # Generated Code
 ///
 /// The macro generates a function with signature:
 /// `fn name<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex>`
 #[macro_export]
 macro_rules! define_native {
+    // ========================================================================
+    // Standard variants (body does not access lisp directly)
+    // ========================================================================
+
     // No arguments, with return type
     ($name:ident, () -> $ret:ty, $body:block) => {
         pub fn $name<const N: usize>(
             lisp: &$crate::Lisp<N>,
             _args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let _ = lisp; // suppress unused warning when lisp not used in body
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
@@ -453,6 +477,81 @@ macro_rules! define_native {
             let ($arg2, rest): ($ty2, _) = $crate::extract_arg(lisp, rest)?;
             let ($arg3, rest): ($ty3, _) = $crate::extract_arg(lisp, rest)?;
             let ($arg4, _rest): ($ty4, _) = $crate::extract_arg(lisp, rest)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // ========================================================================
+    // @with_lisp variants (body can access lisp context and args directly)
+    // These provide access to 'lisp' and 'args' for complex operations
+    // ========================================================================
+
+    // No arguments, with lisp access
+    ($name:ident @with_lisp, () -> $ret:ty, $body:block) => {
+        #[allow(unused_variables)]
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Single argument, with lisp access
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:block) => {
+        #[allow(unused_variables)]
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let ($arg1, args): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Two arguments, with lisp access
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:block) => {
+        #[allow(unused_variables)]
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let ($arg1, args): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg2, args): ($ty2, _) = $crate::extract_arg(lisp, args)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Three arguments, with lisp access
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:block) => {
+        #[allow(unused_variables)]
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let ($arg1, args): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg2, args): ($ty2, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg3, args): ($ty3, _) = $crate::extract_arg(lisp, args)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Four arguments, with lisp access
+    ($name:ident @with_lisp, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:block) => {
+        #[allow(unused_variables)]
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let ($arg1, args): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg2, args): ($ty2, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg3, args): ($ty3, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg4, args): ($ty4, _) = $crate::extract_arg(lisp, args)?;
             let result: $ret = $body;
             $crate::ToLisp::to_lisp(&result, lisp)
         }
