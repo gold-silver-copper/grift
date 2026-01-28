@@ -41,16 +41,52 @@ pub enum Value {
     Nil,                                    // Empty list ()
     True,                                   // #t
     False,                                  // #f
-    Number(i64),                           // Integers
-    Char(char),                            // Characters
+    Number(isize),                          // Integers
+    Char(char),                             // Characters
     Cons { car: ArenaIndex, cdr: ArenaIndex },
-    Symbol { chars: ArenaIndex, len: usize },
-    Lambda { params: ArenaIndex, body: ArenaIndex, env: ArenaIndex },
-    Builtin(Builtin),                      // Optimized primitives
-    StdLib { func: StdLib, cached_body: ArenaIndex, cached_params: ArenaIndex },
+    Symbol { chars: ArenaIndex },           // Points to String value
+    Lambda { data: ArenaIndex },            // Points to (params . (body . env))
+    Builtin(Builtin),                       // Optimized primitives
+    StdLib { func: StdLib, cache: ArenaIndex }, // NULL or (body . params)
     Array { data: ArenaIndex, len: usize }, // Contiguous value storage
+    String { data: ArenaIndex, len: usize }, // Contiguous char storage
+    Native { id: usize, name_hash: usize }, // Rust function reference
 }
 ```
+
+### Memory Optimization
+
+The `Value` enum has been optimized to minimize its size (24 bytes on 64-bit systems):
+
+1. **Lambda** - Stores only a single `ArenaIndex` pointing to a linked structure `(params . (body . env))` in the arena. This reduces Lambda's payload from 24 bytes (3 × ArenaIndex) to 8 bytes (1 × ArenaIndex).
+
+2. **StdLib** - Uses a single `cache` field that is either NULL (not yet parsed) or points to a cons cell `(body . params)`. This reduces StdLib's payload from 17+ bytes to 9 bytes.
+
+The trade-off is that accessing Lambda or StdLib fields requires additional arena lookups:
+- `Lisp::lambda_parts(idx)` extracts `(params, body, env)` from a Lambda
+- `Lisp::stdlib_cache(idx)` gets cached `(body, params)` from a StdLib
+
+This is an example of the classic space/time trade-off: we save memory at the cost of extra indirection.
+
+### Further Memory Optimization Opportunities
+
+Several additional techniques could further reduce memory usage:
+
+1. **NaN-boxing** - Use the NaN space in 64-bit floats to encode values inline. This could pack small integers, symbols, and singletons without arena allocation.
+
+2. **Tagged pointers** - Use the lower bits of ArenaIndex for type tags, eliminating the discriminant byte in some cases.
+
+3. **Compact Array/String representation** - For small arrays (≤2 elements) or short strings (≤7 chars), store data inline in the Value variant itself.
+
+4. **Intern table optimization** - Use a hash table with open addressing instead of an alist, reducing memory per interned symbol.
+
+5. **Deduplicate Numbers** - Intern small integers (e.g., -128 to 127) similar to how Python does, reducing allocations.
+
+6. **Compress environment alists** - Use more compact representations for environments, such as arrays of (symbol, value) pairs.
+
+7. **Use u32 for ArenaIndex** - If the arena capacity is always < 4 billion, use `u32` instead of `usize` to halve index sizes on 64-bit systems.
+
+8. **Lazy stdlib parsing** - Currently cached after first call, but the StdLib enum could be stored once globally instead of per-value.
 
 ### Reserved Slots
 
@@ -76,8 +112,8 @@ Symbols are interned to ensure identity equality:
 The intern table is stored in the arena and acts as a GC root, keeping all interned symbols alive.
 
 Symbols use contiguous string storage for efficiency:
-- The `chars` field points to a length slot followed by character slots
-- Each character is stored as `Value::Char(c)`
+- The `chars` field points to a `Value::String` containing the symbol name
+- The String contains contiguous `Value::Char(c)` slots
 - This uses less memory than a linked list of characters
 
 ### Arrays
@@ -249,9 +285,9 @@ define_stdlib! {
 - Parsing overhead is minimal
 
 **Implementation**:
-- The `StdLib` value stores cached parsed body/params
-- First call parses the body and caches it
-- Subsequent calls reuse the cached AST
+- The `StdLib` value stores a `cache` field (NULL until first call, then `(body . params)`)
+- First call parses the body and caches it via `Lisp::set_stdlib_cache()`
+- Subsequent calls reuse the cached AST via `Lisp::stdlib_cache()`
 
 ## Macro System
 

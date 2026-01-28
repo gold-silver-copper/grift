@@ -389,11 +389,17 @@ pub enum Value {
         chars: ArenaIndex,
     },
     
-    /// Lambda / closure
+    /// Lambda / closure (memory-optimized)
+    /// 
+    /// To minimize enum size, lambda data is stored as a linked list in the arena:
+    /// `data` points to a cons cell `(params . (body . env))` where:
+    /// - `params`: List of parameter symbols
+    /// - `body`: Expression to evaluate
+    /// - `env`: Captured environment (alist)
+    /// 
+    /// Use `Lisp::lambda()` to create and `Lisp::lambda_parts()` to extract.
     Lambda {
-        params: ArenaIndex,  // List of symbols
-        body: ArenaIndex,    // Expression
-        env: ArenaIndex,     // Captured environment (alist)
+        data: ArenaIndex,  // Points to (params . (body . env))
     },
     
     /// Built-in function (optimized)
@@ -411,14 +417,14 @@ pub enum Value {
     /// - Parsed body and params are cached on first call
     /// - Subsequent calls reuse the cached parsed AST
     /// 
-    /// # Cache Fields
+    /// # Cache Field
     /// 
-    /// - `cached_body`: NULL until first call, then points to parsed body AST
-    /// - `cached_params`: NULL until first call, then points to param list
+    /// - `cache`: NULL until first call, then points to `(body . params)` cons cell
+    /// 
+    /// Use `Lisp::stdlib()` to create and `Lisp::stdlib_cache()` to access cache.
     StdLib {
         func: StdLib,
-        cached_body: ArenaIndex,    // NULL = not yet parsed
-        cached_params: ArenaIndex,  // NULL = not yet created
+        cache: ArenaIndex,  // NULL = not yet parsed, else (body . params)
     },
     
     /// Array (contiguous storage of values in the arena)
@@ -618,13 +624,10 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Native { .. } => {
                 // No references
             }
-            Value::StdLib { cached_body, cached_params, .. } => {
-                // Trace cached parsed body and params if they exist
-                if !cached_body.is_null() {
-                    tracer(*cached_body);
-                }
-                if !cached_params.is_null() {
-                    tracer(*cached_params);
+            Value::StdLib { cache, .. } => {
+                // Trace cached cons cell (body . params) if it exists
+                if !cache.is_null() {
+                    tracer(*cache);
                 }
             }
             Value::Cons { car, cdr } => {
@@ -635,10 +638,9 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // chars points to a Value::String, which handles its own tracing
                 tracer(*chars);
             }
-            Value::Lambda { params, body, env } => {
-                tracer(*params);
-                tracer(*body);
-                tracer(*env);
+            Value::Lambda { data } => {
+                // data points to (params . (body . env)), trace the whole structure
+                tracer(*data);
             }
             Value::Array { data, len } => {
                 // For non-empty arrays, trace all elements in the contiguous block
@@ -1012,9 +1014,43 @@ impl<const N: usize> Lisp<N> {
     pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::StdLib { 
             func: s, 
-            cached_body: ArenaIndex::NULL, 
-            cached_params: ArenaIndex::NULL 
+            cache: ArenaIndex::NULL,
         })
+    }
+    
+    /// Get cached body and params from a StdLib value.
+    /// 
+    /// Returns `Some((body, params))` if cached, `None` if not yet parsed.
+    #[inline]
+    pub fn stdlib_cache(&self, index: ArenaIndex) -> ArenaResult<Option<(ArenaIndex, ArenaIndex)>> {
+        let val = self.get(index)?;
+        match val {
+            Value::StdLib { cache, .. } => {
+                if cache.is_null() {
+                    Ok(None)
+                } else {
+                    // cache points to (body . params)
+                    let body = self.car(cache)?;
+                    let params = self.cdr(cache)?;
+                    Ok(Some((body, params)))
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Set the cached body and params for a StdLib value.
+    #[inline]
+    pub fn set_stdlib_cache(&self, index: ArenaIndex, body: ArenaIndex, params: ArenaIndex) -> ArenaResult<()> {
+        let val = self.get(index)?;
+        match val {
+            Value::StdLib { func, .. } => {
+                // Create cons cell (body . params)
+                let cache = self.cons(body, params)?;
+                self.set(index, Value::StdLib { func, cache })
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
     
     /// Allocate a native function reference.
@@ -1028,8 +1064,33 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a lambda
+    /// 
+    /// Stores lambda data as a linked structure in the arena: `(params . (body . env))`
     pub fn lambda(&self, params: ArenaIndex, body: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Lambda { params, body, env })
+        // Build (body . env)
+        let body_env = self.cons(body, env)?;
+        // Build (params . (body . env))
+        let data = self.cons(params, body_env)?;
+        self.alloc(Value::Lambda { data })
+    }
+    
+    /// Extract parts from a lambda: (params, body, env)
+    /// 
+    /// Lambda data is stored as `(params . (body . env))`.
+    #[inline]
+    pub fn lambda_parts(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let val = self.get(index)?;
+        match val {
+            Value::Lambda { data } => {
+                // data = (params . (body . env))
+                let params = self.car(data)?;
+                let body_env = self.cdr(data)?;
+                let body = self.car(body_env)?;
+                let env = self.cdr(body_env)?;
+                Ok((params, body, env))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
     
     /// Build a list from an iterator of indices
