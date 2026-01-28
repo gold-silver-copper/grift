@@ -390,21 +390,15 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// # With Lisp Context Access
 ///
 /// For complex functions that need access to the Lisp context (for allocation,
-/// creating values, etc.), use the `@with_lisp` variant:
+/// creating values, etc.) or remaining arguments, use the `@with_lisp` variant.
+/// The `lisp` and `args` variables are available in the body:
 ///
-/// ```rust
-/// use lisp_eval::define_native;
+/// - `lisp`: Reference to the Lisp context for allocating values, calling methods
+/// - `args`: The remaining argument list (ArenaIndex) after extracting typed args
 ///
-/// // Function that needs to call Lisp methods
-/// define_native!(bit_set @with_lisp, (value: i64, bit: i64) -> bool, {
-///     // `lisp` is available here for Lisp context operations
-///     if bit >= 0 && bit < 64 {
-///         (value & (1i64 << bit)) != 0
-///     } else {
-///         false
-///     }
-/// });
-/// ```
+/// Note: The `@with_lisp` variant is mainly useful when you need to process
+/// variadic arguments or access the remaining argument list after typed extraction.
+/// For most simple functions, the standard variant is sufficient.
 ///
 /// # Generated Code
 ///
