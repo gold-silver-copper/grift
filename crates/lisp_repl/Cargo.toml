@@ -17,3 +17,4 @@ path = "src/bench.rs"
 pwn_arena = { path = "../pwn_arena" }
 lisp_parser = { path = "../lisp_parser" }
 lisp_eval = { path = "../lisp_eval" }
+pwn_arena_embedded = { path = "../pwn_arena_embedded" }

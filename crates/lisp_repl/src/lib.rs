@@ -99,6 +99,10 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<array:{}>", len).unwrap();
         }
+        Ok(Value::Native { id, .. }) => {
+            use std::fmt::Write;
+            write!(buf, "#<native:{}>", id).unwrap();
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }
