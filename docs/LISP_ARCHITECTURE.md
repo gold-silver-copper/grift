@@ -93,10 +93,11 @@ Arrays provide O(1) indexed access to values stored contiguously in the arena:
 (array-length arr)             ; => 5
 ```
 
-Arrays use contiguous storage for efficient access:
-- The `data` field points directly to the first element (no length slot like symbols)
-- Length is stored in the `Value::Array` variant itself for O(1) access
-- Elements are stored at consecutive arena slots: data+0, data+1, ..., data+(len-1)
+Arrays use contiguous storage for efficient access, with the same memory layout as strings:
+- The `data` field points to a contiguous block: `[Number(len), elem0, elem1, ..., elem(len-1)]`
+- Length is stored in the first slot as a Number value (consistent with string layout)
+- Length is also cached in the `Value::Array` variant for O(1) access without dereferencing
+- Elements are stored at consecutive arena slots: data+1, data+2, ..., data+len
 - O(1) read and write operations via direct index calculation
 - Efficient memory layout for cache-friendly access
 
