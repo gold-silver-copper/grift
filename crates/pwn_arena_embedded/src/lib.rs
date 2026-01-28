@@ -363,11 +363,12 @@ pub fn register_embedded_natives<const N: usize>(eval: &mut Evaluator<N>) -> Res
 /// Reset mock memory and GPIO registers to zero.
 ///
 /// This is useful for testing to ensure a clean state.
+/// Uses SeqCst ordering to ensure all resets are visible across threads.
 pub fn reset_mock_hardware() {
     for mem in MOCK_MEMORY.iter() {
-        mem.store(0, Ordering::Relaxed);
+        mem.store(0, Ordering::SeqCst);
     }
     for gpio in MOCK_GPIO.iter() {
-        gpio.store(0, Ordering::Relaxed);
+        gpio.store(0, Ordering::SeqCst);
     }
 }

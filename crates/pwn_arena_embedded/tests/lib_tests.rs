@@ -60,20 +60,31 @@ fn test_gpio_bit_operations() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
+    // Use GPIO register 1 instead of 0 to avoid conflicts with test_gpio_read_write
+    // which uses register 0. This prevents race conditions when tests run in parallel.
+    let gpio_reg = 1;
+    
+    // Explicitly clear GPIO register to ensure clean state
+    let _ = eval.eval_str(&format!("(gpio-write {} 0)", gpio_reg)).unwrap();
+    
+    // Verify GPIO register is 0 after reset
+    let result = eval.eval_str(&format!("(gpio-read {})", gpio_reg)).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0), "GPIO register should be 0 after reset");
+    
     // Set bit 0
-    let result = eval.eval_str("(gpio-set 0 0)").unwrap();
+    let result = eval.eval_str(&format!("(gpio-set {} 0)", gpio_reg)).unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
     
     // Set bit 3
-    let result = eval.eval_str("(gpio-set 0 3)").unwrap();
+    let result = eval.eval_str(&format!("(gpio-set {} 3)", gpio_reg)).unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(9)); // 1 + 8
     
     // Toggle bit 0
-    let result = eval.eval_str("(gpio-toggle 0 0)").unwrap();
+    let result = eval.eval_str(&format!("(gpio-toggle {} 0)", gpio_reg)).unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(8));
     
     // Clear bit 3
-    let result = eval.eval_str("(gpio-clear 0 3)").unwrap();
+    let result = eval.eval_str(&format!("(gpio-clear {} 3)", gpio_reg)).unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
 }
 
