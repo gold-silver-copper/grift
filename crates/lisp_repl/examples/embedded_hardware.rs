@@ -1,12 +1,14 @@
 //! # Embedded Hardware Access Example
 //!
-//! This example demonstrates how to use the pwn_arena_embedded crate
+//! This example demonstrates how to use the embedded hardware builtins
 //! to access simulated hardware registers and memory from Lisp code.
+//!
+//! Note: These functions are now built-in to the Lisp interpreter and
+//! don't require separate registration.
 //!
 //! Run with: `cargo run --example embedded_hardware`
 
-use lisp_eval::{Lisp, Evaluator};
-use pwn_arena_embedded::{register_embedded_natives, reset_mock_hardware};
+use lisp_eval::{Lisp, Evaluator, reset_mock_hardware};
 
 fn main() {
     println!("=== Embedded Hardware Access Example ===\n");
@@ -18,10 +20,8 @@ fn main() {
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Register all embedded native functions
-    register_embedded_natives(&mut eval).unwrap();
-    
-    println!("Registered embedded functions:");
+    // Embedded functions are now built-in and automatically available
+    println!("Built-in embedded functions:");
     println!("  Memory: peek, poke, peek32, poke32");
     println!("  GPIO: gpio-read, gpio-write, gpio-set, gpio-clear, gpio-toggle");
     println!("  Bits: bit-set?, bit-extract, bit-insert\n");

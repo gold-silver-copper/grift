@@ -1,11 +1,11 @@
-//! # Native Function Interop
+//! # Builtin Function Support
 //!
-//! This module provides traits and macros for calling Rust functions from Lisp code.
+//! This module provides traits and macros for defining Lisp builtin functions in Rust.
 //!
 //! ## Overview
 //!
-//! The native function interop system allows you to:
-//! - Register Rust functions that can be called from Lisp
+//! The builtin function system allows you to:
+//! - Define Rust functions that can be called from Lisp as builtins
 //! - Automatically convert Lisp values to Rust types and back
 //! - Handle errors gracefully
 //!
@@ -17,13 +17,12 @@
 //! ## Usage
 //!
 //! ```rust
-//! use lisp_eval::{NativeRegistry, register_native};
+//! use lisp_eval::register_native;
 //!
-//! // Define a native function using the register_native! macro
+//! // Define a builtin function using the register_native! macro
 //! register_native!(add_one, (x: isize) -> isize, { x + 1 });
 //!
-//! // Register it with an evaluator
-//! // eval.register_native("add-one", add_one).unwrap();
+//! // The function can now be used as a builtin implementation
 //! ```
 //!
 //! ## Design Notes
@@ -164,154 +163,20 @@ impl<const N: usize> ToLisp<N> for ArenaIndex {
 }
 
 // ============================================================================
-// Native Function Registry
+// Builtin Function Type
 // ============================================================================
 
-/// Maximum number of native functions that can be registered.
-pub const MAX_NATIVE_FUNCTIONS: usize = 64;
-
-/// A native function that can be called from Lisp.
+/// A builtin function that can be called from Lisp.
 ///
-/// Native functions receive:
+/// Builtin functions receive:
 /// - A reference to the Lisp context
 /// - The argument list as an ArenaIndex (a Lisp list)
 ///
 /// They return an ArenaResult<ArenaIndex> containing the result.
 pub type NativeFn<const N: usize> = fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>;
 
-/// A registered native function with its name.
-#[derive(Clone, Copy)]
-pub struct NativeEntry<const N: usize> {
-    /// The name used to call this function from Lisp
-    pub name: &'static str,
-    /// The Rust function to call
-    pub func: NativeFn<N>,
-}
-
-/// Registry for native functions.
-///
-/// This struct holds the registered native functions and provides
-/// lookup functionality for the evaluator.
-///
-/// # Example
-///
-/// ```rust
-/// use lisp_eval::{NativeRegistry, Lisp, ArenaIndex, ArenaResult};
-///
-/// fn my_add<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-///     use lisp_eval::FromLisp;
-///     let a = isize::from_lisp(lisp, lisp.car(args)?)?;
-///     let b = isize::from_lisp(lisp, lisp.car(lisp.cdr(args)?)?)?;
-///     lisp.number(a + b)
-/// }
-///
-/// let mut registry: NativeRegistry<1000> = NativeRegistry::new();
-/// registry.register("my-add", my_add);
-/// ```
-pub struct NativeRegistry<const N: usize> {
-    entries: [Option<NativeEntry<N>>; MAX_NATIVE_FUNCTIONS],
-    count: usize,
-}
-
-impl<const N: usize> NativeRegistry<N> {
-    /// Create a new empty native function registry.
-    pub const fn new() -> Self {
-        NativeRegistry {
-            entries: [None; MAX_NATIVE_FUNCTIONS],
-            count: 0,
-        }
-    }
-
-    /// Register a native function.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the registry is full (MAX_NATIVE_FUNCTIONS exceeded).
-    pub fn register(&mut self, name: &'static str, func: NativeFn<N>) {
-        assert!(self.count < MAX_NATIVE_FUNCTIONS, "Native function registry is full");
-        self.entries[self.count] = Some(NativeEntry { name, func });
-        self.count += 1;
-    }
-
-    /// Look up a native function by name.
-    ///
-    /// Returns None if the function is not registered.
-    pub fn lookup(&self, name: &str) -> Option<NativeFn<N>> {
-        for entry in &self.entries[..self.count] {
-            if let Some(e) = entry {
-                if e.name == name {
-                    return Some(e.func);
-                }
-            }
-        }
-        None
-    }
-
-    /// Get all registered function names.
-    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.entries[..self.count]
-            .iter()
-            .filter_map(|e| e.as_ref().map(|e| e.name))
-    }
-
-    /// Get the number of registered functions.
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Check if the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-    
-    /// Look up a native function by its ID (index).
-    ///
-    /// Returns None if the ID is out of range.
-    pub fn lookup_by_id(&self, id: usize) -> Option<NativeFn<N>> {
-        if id < self.count {
-            self.entries[id].map(|e| e.func)
-        } else {
-            None
-        }
-    }
-    
-    /// Get the name of a native function by its ID.
-    pub fn name_by_id(&self, id: usize) -> Option<&'static str> {
-        if id < self.count {
-            self.entries[id].map(|e| e.name)
-        } else {
-            None
-        }
-    }
-}
-
-impl<const N: usize> Default for NativeRegistry<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // ============================================================================
-// Hash Function
-// ============================================================================
-
-/// Simple hash function for native function names.
-///
-/// Uses a simple djb2-like hash that's fast and produces good distribution.
-/// This is used for verification during native function calls.
-pub const fn simple_hash(s: &str) -> usize {
-    let bytes = s.as_bytes();
-    let mut hash: usize = 5381;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash = hash.wrapping_mul(33).wrapping_add(bytes[i] as usize);
-        i += 1;
-    }
-    hash
-}
-
-// ============================================================================
-// Helper Functions for Native Functions
+// Helper Functions for Builtin Functions
 // ============================================================================
 
 /// Extract a single argument from a Lisp argument list.
@@ -360,7 +225,45 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 }
 
 // ============================================================================
-// Macro for Native Function Definition
+// Mock Hardware Storage (for embedded builtins)
+// ============================================================================
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// Number of 32-bit words in mock memory (256 words = 1KB)
+pub const MOCK_MEMORY_WORDS: usize = 256;
+
+/// Number of GPIO registers
+pub const MOCK_GPIO_COUNT: usize = 16;
+
+/// Simulated memory for testing (256 x word-size units = 1KB on 32-bit)
+/// Using AtomicUsize for thread-safe access without unsafe code
+pub static MOCK_MEMORY: [AtomicUsize; MOCK_MEMORY_WORDS] = {
+    const INIT: AtomicUsize = AtomicUsize::new(0);
+    [INIT; MOCK_MEMORY_WORDS]
+};
+
+/// Simulated GPIO registers (16 registers, word-size each)
+pub static MOCK_GPIO: [AtomicUsize; MOCK_GPIO_COUNT] = {
+    const INIT: AtomicUsize = AtomicUsize::new(0);
+    [INIT; MOCK_GPIO_COUNT]
+};
+
+/// Reset mock memory and GPIO registers to zero.
+///
+/// This is useful for testing to ensure a clean state.
+/// Uses SeqCst ordering to ensure all resets are visible across threads.
+pub fn reset_mock_hardware() {
+    for mem in MOCK_MEMORY.iter() {
+        mem.store(0, Ordering::SeqCst);
+    }
+    for gpio in MOCK_GPIO.iter() {
+        gpio.store(0, Ordering::SeqCst);
+    }
+}
+
+// ============================================================================
+// Macro for Builtin Function Definition
 // ============================================================================
 
 /// Register a native Rust function as a Lisp builtin with automatic argument extraction.

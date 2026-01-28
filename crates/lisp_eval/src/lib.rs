@@ -65,11 +65,14 @@ pub use lisp_parser::{
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
 };
 
-// Native function interop
+// Builtin function support
 pub mod native;
 pub use native::{
-    FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
-    extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+    FromLisp, ToLisp, NativeFn,
+    extract_arg, args_empty, count_args,
+    // Mock hardware for embedded builtins
+    MOCK_MEMORY, MOCK_GPIO, MOCK_MEMORY_WORDS, MOCK_GPIO_COUNT,
+    reset_mock_hardware,
 };
 
 // ============================================================================
@@ -433,8 +436,6 @@ pub struct Evaluator<'a, const N: usize> {
     /// Macro definitions: (name, (params, body))
     macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
     macro_count: usize,
-    /// Native function registry
-    native_registry: NativeRegistry<N>,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -449,7 +450,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             cont_depth: 0,
             macros: [(ArenaIndex::NULL, ArenaIndex::NULL, ArenaIndex::NULL); MAX_MACROS],
             macro_count: 0,
-            native_registry: NativeRegistry::new(),
         };
         
         // Initialize global environment with builtins
@@ -489,51 +489,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get the global environment
     pub fn global_env(&self) -> ArenaIndex {
         self.global_env
-    }
-    
-    /// Register a native Rust function that can be called from Lisp.
-    ///
-    /// The function will be bound to the given name in the global environment.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use lisp_eval::{Lisp, Evaluator, ArenaIndex, ArenaResult, FromLisp, ToLisp};
-    ///
-    /// fn my_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    ///     let n = isize::from_lisp(lisp, lisp.car(args)?)?;
-    ///     (n * 2).to_lisp(lisp)
-    /// }
-    ///
-    /// let lisp: Lisp<10000> = Lisp::new();
-    /// let mut eval = Evaluator::new(&lisp).unwrap();
-    /// eval.register_native("my-double", my_double).unwrap();
-    ///
-    /// // Now you can call (my-double 5) from Lisp to get 10
-    /// let result = eval.eval_str("(my-double 5)").unwrap();
-    /// assert_eq!(lisp.get(result).unwrap().as_number(), Some(10));
-    /// ```
-    pub fn register_native(&mut self, name: &'static str, func: NativeFn<N>) -> Result<(), EvalError> {
-        // Get the ID before registering (it's the current count)
-        let id = self.native_registry.len();
-        
-        // Compute a simple hash of the name for verification
-        let name_hash = simple_hash(name);
-        
-        // Register in the native registry
-        self.native_registry.register(name, func);
-        
-        // Create a symbol and a Native value, then bind in global env
-        let name_sym = self.lisp.symbol(name)?;
-        let native_val = self.lisp.native(id, name_hash)?;
-        self.global_env = self.env_extend(self.global_env, name_sym, native_val)?;
-        
-        Ok(())
-    }
-    
-    /// Get a reference to the native function registry.
-    pub fn native_registry(&self) -> &NativeRegistry<N> {
-        &self.native_registry
     }
     
     /// Run GC with current roots (global env only)
@@ -933,7 +888,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } |
-            Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
+            Value::Array { .. } | Value::String { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -1252,22 +1207,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
-                        }
-                    }
-                    Value::Native { id, .. } => {
-                        // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
-                        self.pop_frame();
-                        
-                        // Evaluate all arguments first
-                        let args = self.eval_args_list(args_expr, env)?;
-                        
-                        // Look up the native function and call it
-                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
-                            let result = native_fn(self.lisp, args)?;
-                            Ok(Some(TrampolineState::Return { val: result }))
-                        } else {
-                            Err(self.make_error(ErrorKind::NotAFunction, call_expr)
-                                .with_message("native function not found"))
                         }
                     }
                     _ => {
@@ -1688,6 +1627,196 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let list = self.lisp.cons(allocated, list)?;
                 let list = self.lisp.cons(capacity, list)?;
                 Ok(list)
+            }
+            
+            // ================================================================
+            // Memory access (embedded/hardware operations)
+            // ================================================================
+            
+            Builtin::Peek => {
+                // (peek address) - Read byte from memory at address
+                extract_args!(self, args, addr_idx);
+                let addr = self.get_number_from_forced(addr_idx, call_expr)?;
+                use crate::native::{MOCK_MEMORY, MOCK_MEMORY_WORDS};
+                use core::sync::atomic::Ordering;
+                let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
+                let word_idx = byte_addr / 4;
+                let byte_offset = byte_addr % 4;
+                let word = MOCK_MEMORY[word_idx].load(Ordering::Relaxed);
+                let result = ((word >> (byte_offset * 8)) & 0xFF) as isize;
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::Poke => {
+                // (poke address value) - Write byte to memory at address
+                extract_args!(self, args, addr_idx, val_idx);
+                let addr = self.get_number_from_forced(addr_idx, call_expr)?;
+                let value = self.get_number_from_forced(val_idx, call_expr)?;
+                use crate::native::{MOCK_MEMORY, MOCK_MEMORY_WORDS};
+                use core::sync::atomic::Ordering;
+                let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
+                let word_idx = byte_addr / 4;
+                let byte_offset = byte_addr % 4;
+                let mask = 0xFFusize << (byte_offset * 8);
+                let new_byte = ((value as usize) & 0xFF) << (byte_offset * 8);
+                let _ = MOCK_MEMORY[word_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                    Some((old & !mask) | new_byte)
+                });
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::Peek32 => {
+                // (peek32 address) - Read 32-bit word from memory at address
+                extract_args!(self, args, addr_idx);
+                let addr = self.get_number_from_forced(addr_idx, call_expr)?;
+                use crate::native::{MOCK_MEMORY, MOCK_MEMORY_WORDS};
+                use core::sync::atomic::Ordering;
+                let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
+                let result = MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as isize;
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::Poke32 => {
+                // (poke32 address value) - Write 32-bit word to memory at address
+                extract_args!(self, args, addr_idx, val_idx);
+                let addr = self.get_number_from_forced(addr_idx, call_expr)?;
+                let value = self.get_number_from_forced(val_idx, call_expr)?;
+                use crate::native::{MOCK_MEMORY, MOCK_MEMORY_WORDS};
+                use core::sync::atomic::Ordering;
+                let word_idx = ((addr as usize) / 4) % MOCK_MEMORY_WORDS;
+                MOCK_MEMORY[word_idx].store(value as usize, Ordering::Relaxed);
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            // ================================================================
+            // GPIO operations (embedded/hardware operations)
+            // ================================================================
+            
+            Builtin::GpioRead => {
+                // (gpio-read register) - Read GPIO register
+                extract_args!(self, args, reg_idx);
+                let reg = self.get_number_from_forced(reg_idx, call_expr)?;
+                use crate::native::{MOCK_GPIO, MOCK_GPIO_COUNT};
+                use core::sync::atomic::Ordering;
+                let result = if reg < 0 || reg >= MOCK_GPIO_COUNT as isize {
+                    0
+                } else {
+                    MOCK_GPIO[reg as usize].load(Ordering::Relaxed) as isize
+                };
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::GpioWrite => {
+                // (gpio-write register value) - Write GPIO register
+                extract_args!(self, args, reg_idx, val_idx);
+                let reg = self.get_number_from_forced(reg_idx, call_expr)?;
+                let value = self.get_number_from_forced(val_idx, call_expr)?;
+                use crate::native::{MOCK_GPIO, MOCK_GPIO_COUNT};
+                use core::sync::atomic::Ordering;
+                if reg >= 0 && reg < MOCK_GPIO_COUNT as isize {
+                    MOCK_GPIO[reg as usize].store(value as usize, Ordering::Relaxed);
+                }
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::GpioSet => {
+                // (gpio-set register bit) - Set bit in GPIO register
+                extract_args!(self, args, reg_idx, bit_idx);
+                let reg = self.get_number_from_forced(reg_idx, call_expr)?;
+                let bit = self.get_number_from_forced(bit_idx, call_expr)?;
+                use crate::native::{MOCK_GPIO, MOCK_GPIO_COUNT};
+                use core::sync::atomic::Ordering;
+                let result = if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+                    let mask = 1usize << bit;
+                    let old = MOCK_GPIO[reg as usize].fetch_or(mask, Ordering::Relaxed);
+                    (old | mask) as isize
+                } else {
+                    0
+                };
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::GpioClear => {
+                // (gpio-clear register bit) - Clear bit in GPIO register
+                extract_args!(self, args, reg_idx, bit_idx);
+                let reg = self.get_number_from_forced(reg_idx, call_expr)?;
+                let bit = self.get_number_from_forced(bit_idx, call_expr)?;
+                use crate::native::{MOCK_GPIO, MOCK_GPIO_COUNT};
+                use core::sync::atomic::Ordering;
+                let result = if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+                    let mask = !(1usize << bit);
+                    let old = MOCK_GPIO[reg as usize].fetch_and(mask, Ordering::Relaxed);
+                    (old & mask) as isize
+                } else {
+                    0
+                };
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::GpioToggle => {
+                // (gpio-toggle register bit) - Toggle bit in GPIO register
+                extract_args!(self, args, reg_idx, bit_idx);
+                let reg = self.get_number_from_forced(reg_idx, call_expr)?;
+                let bit = self.get_number_from_forced(bit_idx, call_expr)?;
+                use crate::native::{MOCK_GPIO, MOCK_GPIO_COUNT};
+                use core::sync::atomic::Ordering;
+                let result = if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+                    let mask = 1usize << bit;
+                    let old = MOCK_GPIO[reg as usize].fetch_xor(mask, Ordering::Relaxed);
+                    (old ^ mask) as isize
+                } else {
+                    0
+                };
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            // ================================================================
+            // Bit manipulation
+            // ================================================================
+            
+            Builtin::BitSetP => {
+                // (bit-set? value bit) - Check if bit is set
+                extract_args!(self, args, val_idx, bit_idx);
+                let value = self.get_number_from_forced(val_idx, call_expr)?;
+                let bit = self.get_number_from_forced(bit_idx, call_expr)?;
+                let result = if bit >= 0 && bit < 64 {
+                    (value & (1isize << bit)) != 0
+                } else {
+                    false
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            
+            Builtin::BitExtract => {
+                // (bit-extract value start width) - Extract bits
+                extract_args!(self, args, val_idx, start_idx, width_idx);
+                let value = self.get_number_from_forced(val_idx, call_expr)?;
+                let start = self.get_number_from_forced(start_idx, call_expr)?;
+                let width = self.get_number_from_forced(width_idx, call_expr)?;
+                let result = if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
+                    let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
+                    (value >> start) & mask
+                } else {
+                    0
+                };
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::BitInsert => {
+                // (bit-insert value insert start width) - Insert bits
+                extract_args!(self, args, val_idx, ins_idx, start_idx, width_idx);
+                let value = self.get_number_from_forced(val_idx, call_expr)?;
+                let insert = self.get_number_from_forced(ins_idx, call_expr)?;
+                let start = self.get_number_from_forced(start_idx, call_expr)?;
+                let width = self.get_number_from_forced(width_idx, call_expr)?;
+                let result = if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
+                    let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
+                    let cleared = value & !(mask << start);
+                    cleared | ((insert & mask) << start)
+                } else {
+                    value
+                };
+                self.lisp.number(result).map_err(Into::into)
             }
         }
     }
@@ -2554,45 +2683,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     
     // NOTE: eval_list removed - trampoline handles evaluation directly
-    
-    /// Evaluate all arguments in a list (synchronously).
-    ///
-    /// This is used for native function calls where we need all arguments
-    /// evaluated before calling the Rust function.
-    ///
-    /// ITERATIVE implementation to avoid Rust stack overflow
-    fn eval_args_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        const MAX_ARGS: usize = 64;
-        let mut evaluated: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
-        let mut count = 0;
-        let mut current = list;
-        
-        // First pass: evaluate each argument
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car, cdr } => {
-                    if count >= MAX_ARGS {
-                        return Err(self.make_error(ErrorKind::StackOverflow, list));
-                    }
-                    // Evaluate the expression
-                    let evaled = self.eval_in_env(car, env)?;
-                    evaluated[count] = evaled;
-                    count += 1;
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
-            }
-        }
-        
-        // Second pass: build result list (backwards to preserve order)
-        let mut result = self.lisp.nil()?;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(evaluated[i], result)?;
-        }
-        
-        Ok(result)
-    }
     
     /// Count elements in a list
     fn count_list(&self, mut list: ArenaIndex) -> Result<usize, EvalError> {
