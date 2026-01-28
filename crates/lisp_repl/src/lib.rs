@@ -99,6 +99,22 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<array:{}>", len).unwrap();
         }
+        Ok(Value::String { len, .. }) => {
+            // Format string like in many Lisps: "..."
+            buf.push('"');
+            for i in 0..len {
+                if let Ok(c) = lisp.string_char_at(idx, i) {
+                    match c {
+                        '"' => buf.push_str("\\\""),
+                        '\\' => buf.push_str("\\\\"),
+                        '\n' => buf.push_str("\\n"),
+                        '\t' => buf.push_str("\\t"),
+                        _ => buf.push(c),
+                    }
+                }
+            }
+            buf.push('"');
+        }
         Ok(Value::Native { id, .. }) => {
             use std::fmt::Write;
             write!(buf, "#<native:{}>", id).unwrap();

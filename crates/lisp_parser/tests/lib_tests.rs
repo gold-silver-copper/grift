@@ -590,15 +590,20 @@ fn test_string_memory_layout() {
     
     let hello = lisp.string("hello").unwrap();
     
-    // First slot should be Number(5)
-    assert_eq!(lisp.get(hello).unwrap(), Value::Number(5));
-    
-    // Following slots should be Char values
-    let idx1 = lisp.arena().index_at_offset(hello, 1).unwrap();
-    let idx2 = lisp.arena().index_at_offset(hello, 2).unwrap();
-    
-    assert_eq!(lisp.get(idx1).unwrap(), Value::Char('h'));
-    assert_eq!(lisp.get(idx2).unwrap(), Value::Char('e'));
+    // String value should be Value::String { data, len }
+    match lisp.get(hello).unwrap() {
+        Value::String { data, len } => {
+            assert_eq!(len, 5);
+            
+            // Data slots should contain Char values
+            let idx0 = lisp.arena().index_at_offset(data, 0).unwrap();
+            let idx1 = lisp.arena().index_at_offset(data, 1).unwrap();
+            
+            assert_eq!(lisp.get(idx0).unwrap(), Value::Char('h'));
+            assert_eq!(lisp.get(idx1).unwrap(), Value::Char('e'));
+        }
+        other => panic!("Expected Value::String, got {:?}", other),
+    }
 }
 
 #[test]
