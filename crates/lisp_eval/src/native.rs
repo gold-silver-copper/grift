@@ -551,3 +551,112 @@ macro_rules! define_native {
         }
     };
 }
+
+/// Define a native function with automatic argument extraction and static variable access.
+///
+/// This macro extends `define_native!` to indicate that the function accesses
+/// a static variable. The static variable name is passed to the macro for documentation
+/// and compile-time verification, but the body should reference the static directly.
+///
+/// # Syntax
+///
+/// ```rust
+/// use lisp_eval::define_native_stateful;
+/// use core::sync::atomic::{AtomicU32, Ordering};
+///
+/// // Define a static variable
+/// static MY_COUNTER: AtomicU32 = AtomicU32::new(0);
+///
+/// // Define a function that accesses the static
+/// define_native_stateful!(
+///     native_increment,
+///     static: MY_COUNTER,
+///     () -> i64,
+///     {
+///         MY_COUNTER.fetch_add(1, Ordering::Relaxed) as i64
+///     }
+/// );
+/// ```
+///
+/// # Generated Code
+///
+/// The macro generates a function with signature:
+/// `fn name<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex>`
+///
+/// The body has direct access to the named static variable.
+#[macro_export]
+macro_rules! define_native_stateful {
+    // ========================================================================
+    // Stateful variants with static variable access
+    // ========================================================================
+
+    // No arguments
+    ($name:ident, static: $static_name:ident, () -> $ret:ty, $body:tt) => {
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            _args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let _ = (lisp, &$static_name); // suppress unused warning, verify static exists
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Single argument
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty) -> $ret:ty, $body:tt) => {
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let _ = &$static_name; // verify static exists at compile time
+            let ($arg1, _rest): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Two arguments
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty) -> $ret:ty, $body:tt) => {
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let _ = &$static_name; // verify static exists at compile time
+            let ($arg1, rest): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg2, _rest): ($ty2, _) = $crate::extract_arg(lisp, rest)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Three arguments
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty) -> $ret:ty, $body:tt) => {
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let _ = &$static_name; // verify static exists at compile time
+            let ($arg1, rest): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg2, rest): ($ty2, _) = $crate::extract_arg(lisp, rest)?;
+            let ($arg3, _rest): ($ty3, _) = $crate::extract_arg(lisp, rest)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+
+    // Four arguments
+    ($name:ident, static: $static_name:ident, ($arg1:ident : $ty1:ty, $arg2:ident : $ty2:ty, $arg3:ident : $ty3:ty, $arg4:ident : $ty4:ty) -> $ret:ty, $body:tt) => {
+        pub fn $name<const N: usize>(
+            lisp: &$crate::Lisp<N>,
+            args: $crate::ArenaIndex,
+        ) -> $crate::ArenaResult<$crate::ArenaIndex> {
+            let _ = &$static_name; // verify static exists at compile time
+            let ($arg1, rest): ($ty1, _) = $crate::extract_arg(lisp, args)?;
+            let ($arg2, rest): ($ty2, _) = $crate::extract_arg(lisp, rest)?;
+            let ($arg3, rest): ($ty3, _) = $crate::extract_arg(lisp, rest)?;
+            let ($arg4, _rest): ($ty4, _) = $crate::extract_arg(lisp, rest)?;
+            let result: $ret = $body;
+            $crate::ToLisp::to_lisp(&result, lisp)
+        }
+    };
+}
