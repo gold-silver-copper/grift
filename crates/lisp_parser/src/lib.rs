@@ -238,6 +238,32 @@ define_builtins! {
     GcEnabledP => "gc-enabled?",
     /// arena-stats - Get arena statistics as a list
     ArenaStats => "arena-stats",
+    
+    // Embedded/Hardware operations (mock implementation for testing)
+    /// peek - Read byte from memory address
+    Peek => "peek",
+    /// poke - Write byte to memory address
+    Poke => "poke",
+    /// peek32 - Read 32-bit word from memory address
+    Peek32 => "peek32",
+    /// poke32 - Write 32-bit word to memory address
+    Poke32 => "poke32",
+    /// gpio-read - Read GPIO register
+    GpioRead => "gpio-read",
+    /// gpio-write - Write GPIO register
+    GpioWrite => "gpio-write",
+    /// gpio-set - Set GPIO bit
+    GpioSet => "gpio-set",
+    /// gpio-clear - Clear GPIO bit
+    GpioClear => "gpio-clear",
+    /// gpio-toggle - Toggle GPIO bit
+    GpioToggle => "gpio-toggle",
+    /// bit-set? - Check if bit is set
+    BitSetp => "bit-set?",
+    /// bit-extract - Extract bits from value
+    BitExtract => "bit-extract",
+    /// bit-insert - Insert bits into value
+    BitInsert => "bit-insert",
 }
 
 /// Macro for defining standard library functions.
@@ -470,20 +496,6 @@ pub enum Value {
         data: ArenaIndex,  // Points to first Char in contiguous block
         len: usize,        // Number of characters
     },
-    
-    /// Native function (Rust function callable from Lisp)
-    ///
-    /// Native functions are registered at runtime and identified by their ID.
-    /// The actual function pointer is stored in the evaluator's NativeRegistry.
-    ///
-    /// # Fields
-    ///
-    /// - `id`: Index into the NativeRegistry's entries array
-    /// - `name_hash`: Hash of the function name for quick comparison
-    Native {
-        id: usize,          // Index in the NativeRegistry
-        name_hash: usize,   // Hash for debugging/lookup verification
-    },
 }
 
 impl Value {
@@ -554,16 +566,10 @@ impl Value {
         matches!(self, Value::StdLib { .. })
     }
     
-    /// Check if this value is a native (Rust) function
-    #[inline]
-    pub const fn is_native(&self) -> bool {
-        matches!(self, Value::Native { .. })
-    }
-    
-    /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
+    /// Check if this value is a procedure (lambda, builtin, or stdlib function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Native { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. })
     }
     
     /// Check if this value is an array
@@ -608,7 +614,6 @@ impl Value {
             Value::Lambda { .. } => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib { .. } => "procedure",
-            Value::Native { .. } => "native",
             Value::Array { .. } => "array",
             Value::String { .. } => "string",
         }
@@ -620,8 +625,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::Native { .. } => {
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) => {
                 // No references
             }
             Value::StdLib { cache, .. } => {
@@ -1051,16 +1055,6 @@ impl<const N: usize> Lisp<N> {
             }
             _ => Err(ArenaError::InvalidIndex),
         }
-    }
-    
-    /// Allocate a native function reference.
-    ///
-    /// Native functions are Rust functions registered with the evaluator.
-    /// The `id` is the index in the NativeRegistry, and `name_hash` is
-    /// a simple hash for verification.
-    #[inline]
-    pub fn native(&self, id: usize, name_hash: usize) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Native { id, name_hash })
     }
     
     /// Allocate a lambda

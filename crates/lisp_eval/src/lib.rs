@@ -65,11 +65,35 @@ pub use lisp_parser::{
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
 };
 
-// Native function interop
+// Lisp function interop
 pub mod native;
 pub use native::{
-    FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
-    extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+    FromLisp, ToLisp, extract_arg, args_empty, count_args,
+};
+
+// ============================================================================
+// Mock Memory/Register Storage for Embedded Operations
+// ============================================================================
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// Number of 32-bit words in mock memory (256 words = 1KB)
+const MOCK_MEMORY_WORDS: usize = 256;
+
+/// Number of GPIO registers
+const MOCK_GPIO_COUNT: usize = 16;
+
+/// Simulated memory for testing (256 x word-size units = 1KB on 32-bit)
+/// Using AtomicUsize for thread-safe access without unsafe code
+static MOCK_MEMORY: [AtomicUsize; MOCK_MEMORY_WORDS] = {
+    const INIT: AtomicUsize = AtomicUsize::new(0);
+    [INIT; MOCK_MEMORY_WORDS]
+};
+
+/// Simulated GPIO registers (16 registers, word-size each)
+static MOCK_GPIO: [AtomicUsize; MOCK_GPIO_COUNT] = {
+    const INIT: AtomicUsize = AtomicUsize::new(0);
+    [INIT; MOCK_GPIO_COUNT]
 };
 
 // ============================================================================
@@ -433,8 +457,6 @@ pub struct Evaluator<'a, const N: usize> {
     /// Macro definitions: (name, (params, body))
     macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
     macro_count: usize,
-    /// Native function registry
-    native_registry: NativeRegistry<N>,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -449,7 +471,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             cont_depth: 0,
             macros: [(ArenaIndex::NULL, ArenaIndex::NULL, ArenaIndex::NULL); MAX_MACROS],
             macro_count: 0,
-            native_registry: NativeRegistry::new(),
         };
         
         // Initialize global environment with builtins
@@ -489,51 +510,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get the global environment
     pub fn global_env(&self) -> ArenaIndex {
         self.global_env
-    }
-    
-    /// Register a native Rust function that can be called from Lisp.
-    ///
-    /// The function will be bound to the given name in the global environment.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use lisp_eval::{Lisp, Evaluator, ArenaIndex, ArenaResult, FromLisp, ToLisp};
-    ///
-    /// fn my_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    ///     let n = isize::from_lisp(lisp, lisp.car(args)?)?;
-    ///     (n * 2).to_lisp(lisp)
-    /// }
-    ///
-    /// let lisp: Lisp<10000> = Lisp::new();
-    /// let mut eval = Evaluator::new(&lisp).unwrap();
-    /// eval.register_native("my-double", my_double).unwrap();
-    ///
-    /// // Now you can call (my-double 5) from Lisp to get 10
-    /// let result = eval.eval_str("(my-double 5)").unwrap();
-    /// assert_eq!(lisp.get(result).unwrap().as_number(), Some(10));
-    /// ```
-    pub fn register_native(&mut self, name: &'static str, func: NativeFn<N>) -> Result<(), EvalError> {
-        // Get the ID before registering (it's the current count)
-        let id = self.native_registry.len();
-        
-        // Compute a simple hash of the name for verification
-        let name_hash = simple_hash(name);
-        
-        // Register in the native registry
-        self.native_registry.register(name, func);
-        
-        // Create a symbol and a Native value, then bind in global env
-        let name_sym = self.lisp.symbol(name)?;
-        let native_val = self.lisp.native(id, name_hash)?;
-        self.global_env = self.env_extend(self.global_env, name_sym, native_val)?;
-        
-        Ok(())
-    }
-    
-    /// Get a reference to the native function registry.
-    pub fn native_registry(&self) -> &NativeRegistry<N> {
-        &self.native_registry
     }
     
     /// Run GC with current roots (global env only)
@@ -933,7 +909,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } |
-            Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
+            Value::Array { .. } | Value::String { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -1252,22 +1228,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
-                        }
-                    }
-                    Value::Native { id, .. } => {
-                        // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
-                        self.pop_frame();
-                        
-                        // Evaluate all arguments first
-                        let args = self.eval_args_list(args_expr, env)?;
-                        
-                        // Look up the native function and call it
-                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
-                            let result = native_fn(self.lisp, args)?;
-                            Ok(Some(TrampolineState::Return { val: result }))
-                        } else {
-                            Err(self.make_error(ErrorKind::NotAFunction, call_expr)
-                                .with_message("native function not found"))
                         }
                     }
                     _ => {
@@ -1688,6 +1648,229 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let list = self.lisp.cons(allocated, list)?;
                 let list = self.lisp.cons(capacity, list)?;
                 Ok(list)
+            }
+            
+            // ================================================================
+            // Embedded/Hardware Operations (mock implementation)
+            // ================================================================
+            
+            Builtin::Peek => {
+                // (peek addr) - Read byte from memory address
+                extract_args!(self, args, addr_idx);
+                let addr = match self.lisp.get(addr_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(addr_idx)?.type_name())),
+                };
+                let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
+                let word_idx = byte_addr / 4;
+                let byte_offset = byte_addr % 4;
+                let word = MOCK_MEMORY[word_idx].load(Ordering::Relaxed);
+                let byte_val = ((word >> (byte_offset * 8)) & 0xFF) as isize;
+                self.lisp.number(byte_val).map_err(Into::into)
+            }
+            
+            Builtin::Poke => {
+                // (poke addr value) - Write byte to memory address
+                extract_args!(self, args, addr_idx, val_idx);
+                let addr = match self.lisp.get(addr_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(addr_idx)?.type_name())),
+                };
+                let value = match self.lisp.get(val_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(val_idx)?.type_name())),
+                };
+                let byte_addr = (addr as usize) % (MOCK_MEMORY_WORDS * 4);
+                let word_idx = byte_addr / 4;
+                let byte_offset = byte_addr % 4;
+                let byte_value = (value as usize) & 0xFF;
+                let mask = !(0xFFusize << (byte_offset * 8));
+                let _ = MOCK_MEMORY[word_idx].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                    Some((old & mask) | (byte_value << (byte_offset * 8)))
+                });
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::Peek32 => {
+                // (peek32 addr) - Read 32-bit word from memory address
+                extract_args!(self, args, addr_idx);
+                let addr = match self.lisp.get(addr_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(addr_idx)?.type_name())),
+                };
+                let word_idx = (addr as usize / 4) % MOCK_MEMORY_WORDS;
+                let value = MOCK_MEMORY[word_idx].load(Ordering::Relaxed) as isize;
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::Poke32 => {
+                // (poke32 addr value) - Write 32-bit word to memory address
+                extract_args!(self, args, addr_idx, val_idx);
+                let addr = match self.lisp.get(addr_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(addr_idx)?.type_name())),
+                };
+                let value = match self.lisp.get(val_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(val_idx)?.type_name())),
+                };
+                let word_idx = (addr as usize / 4) % MOCK_MEMORY_WORDS;
+                MOCK_MEMORY[word_idx].store(value as usize, Ordering::Relaxed);
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::GpioRead => {
+                // (gpio-read reg) - Read GPIO register
+                extract_args!(self, args, reg_idx);
+                let reg = match self.lisp.get(reg_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(reg_idx)?.type_name())),
+                };
+                let idx = (reg as usize) % MOCK_GPIO_COUNT;
+                let value = MOCK_GPIO[idx].load(Ordering::Relaxed) as isize;
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::GpioWrite => {
+                // (gpio-write reg value) - Write GPIO register
+                extract_args!(self, args, reg_idx, val_idx);
+                let reg = match self.lisp.get(reg_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(reg_idx)?.type_name())),
+                };
+                let value = match self.lisp.get(val_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(val_idx)?.type_name())),
+                };
+                let idx = (reg as usize) % MOCK_GPIO_COUNT;
+                MOCK_GPIO[idx].store(value as usize, Ordering::Relaxed);
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::GpioSet => {
+                // (gpio-set reg bit) - Set GPIO bit
+                extract_args!(self, args, reg_idx, bit_idx);
+                let reg = match self.lisp.get(reg_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(reg_idx)?.type_name())),
+                };
+                let bit = match self.lisp.get(bit_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(bit_idx)?.type_name())),
+                };
+                let idx = (reg as usize) % MOCK_GPIO_COUNT;
+                let mask = 1usize << (bit as usize % 64);
+                let _ = MOCK_GPIO[idx].fetch_or(mask, Ordering::Relaxed);
+                let value = MOCK_GPIO[idx].load(Ordering::Relaxed) as isize;
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::GpioClear => {
+                // (gpio-clear reg bit) - Clear GPIO bit
+                extract_args!(self, args, reg_idx, bit_idx);
+                let reg = match self.lisp.get(reg_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(reg_idx)?.type_name())),
+                };
+                let bit = match self.lisp.get(bit_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(bit_idx)?.type_name())),
+                };
+                let idx = (reg as usize) % MOCK_GPIO_COUNT;
+                let mask = !(1usize << (bit as usize % 64));
+                let _ = MOCK_GPIO[idx].fetch_and(mask, Ordering::Relaxed);
+                let value = MOCK_GPIO[idx].load(Ordering::Relaxed) as isize;
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::GpioToggle => {
+                // (gpio-toggle reg bit) - Toggle GPIO bit
+                extract_args!(self, args, reg_idx, bit_idx);
+                let reg = match self.lisp.get(reg_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(reg_idx)?.type_name())),
+                };
+                let bit = match self.lisp.get(bit_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(bit_idx)?.type_name())),
+                };
+                let idx = (reg as usize) % MOCK_GPIO_COUNT;
+                let mask = 1usize << (bit as usize % 64);
+                let _ = MOCK_GPIO[idx].fetch_xor(mask, Ordering::Relaxed);
+                let value = MOCK_GPIO[idx].load(Ordering::Relaxed) as isize;
+                self.lisp.number(value).map_err(Into::into)
+            }
+            
+            Builtin::BitSetp => {
+                // (bit-set? value bit) - Check if bit is set
+                extract_args!(self, args, val_idx, bit_idx);
+                let value = match self.lisp.get(val_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(val_idx)?.type_name())),
+                };
+                let bit = match self.lisp.get(bit_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(bit_idx)?.type_name())),
+                };
+                let result = if bit >= 0 && bit < 64 {
+                    (value & (1isize << bit)) != 0
+                } else {
+                    false
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            
+            Builtin::BitExtract => {
+                // (bit-extract value start width) - Extract bits from value
+                extract_args!(self, args, val_idx, start_idx, width_idx);
+                let value = match self.lisp.get(val_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(val_idx)?.type_name())),
+                };
+                let start = match self.lisp.get(start_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(start_idx)?.type_name())),
+                };
+                let width = match self.lisp.get(width_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(width_idx)?.type_name())),
+                };
+                let result = if start >= 0 && width > 0 && start + width <= 64 {
+                    let mask = (1isize << width) - 1;
+                    (value >> start) & mask
+                } else {
+                    0
+                };
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::BitInsert => {
+                // (bit-insert value insert start width) - Insert bits into value
+                extract_args!(self, args, val_idx, ins_idx, start_idx, width_idx);
+                let value = match self.lisp.get(val_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(val_idx)?.type_name())),
+                };
+                let insert = match self.lisp.get(ins_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(ins_idx)?.type_name())),
+                };
+                let start = match self.lisp.get(start_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(start_idx)?.type_name())),
+                };
+                let width = match self.lisp.get(width_idx)? {
+                    Value::Number(n) => n,
+                    _ => return Err(self.type_error(call_expr, "number", self.lisp.get(width_idx)?.type_name())),
+                };
+                let result = if start >= 0 && width > 0 && start + width <= 64 {
+                    let mask = ((1isize << width) - 1) << start;
+                    let insert_masked = (insert & ((1isize << width) - 1)) << start;
+                    (value & !mask) | insert_masked
+                } else {
+                    value
+                };
+                self.lisp.number(result).map_err(Into::into)
             }
         }
     }
@@ -2553,46 +2736,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Helpers
     // ========================================================================
     
-    // NOTE: eval_list removed - trampoline handles evaluation directly
-    
-    /// Evaluate all arguments in a list (synchronously).
-    ///
-    /// This is used for native function calls where we need all arguments
-    /// evaluated before calling the Rust function.
-    ///
-    /// ITERATIVE implementation to avoid Rust stack overflow
-    fn eval_args_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        const MAX_ARGS: usize = 64;
-        let mut evaluated: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
-        let mut count = 0;
-        let mut current = list;
-        
-        // First pass: evaluate each argument
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car, cdr } => {
-                    if count >= MAX_ARGS {
-                        return Err(self.make_error(ErrorKind::StackOverflow, list));
-                    }
-                    // Evaluate the expression
-                    let evaled = self.eval_in_env(car, env)?;
-                    evaluated[count] = evaled;
-                    count += 1;
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
-            }
-        }
-        
-        // Second pass: build result list (backwards to preserve order)
-        let mut result = self.lisp.nil()?;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(evaluated[i], result)?;
-        }
-        
-        Ok(result)
-    }
+    // NOTE: eval_list and eval_args_list removed - trampoline handles evaluation directly
     
     /// Count elements in a list
     fn count_list(&self, mut list: ArenaIndex) -> Result<usize, EvalError> {

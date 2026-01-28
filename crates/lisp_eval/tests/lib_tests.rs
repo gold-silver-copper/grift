@@ -17,7 +17,7 @@ fn eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input:
 
 #[test]
 fn test_eval_number() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "42"), 42);
@@ -26,7 +26,7 @@ fn test_eval_number() {
 
 #[test]
 fn test_eval_booleans() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "#t"));
@@ -37,7 +37,7 @@ fn test_eval_booleans() {
 
 #[test]
 fn test_nil_is_truthy() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // nil/'() is NOT false - only #f is false
@@ -49,7 +49,7 @@ fn test_nil_is_truthy() {
 
 #[test]
 fn test_eval_arithmetic() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2)"), 3);
@@ -61,7 +61,7 @@ fn test_eval_arithmetic() {
 
 #[test]
 fn test_eval_quote() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("'hello").unwrap();
@@ -70,7 +70,7 @@ fn test_eval_quote() {
 
 #[test]
 fn test_eval_if() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if #t 1 2)"), 1);
@@ -80,7 +80,7 @@ fn test_eval_if() {
 
 #[test]
 fn test_eval_define() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 42)").unwrap();
@@ -89,7 +89,7 @@ fn test_eval_define() {
 
 #[test]
 fn test_eval_lambda() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "((lambda (x) (+ x 1)) 5)"), 6);
@@ -97,7 +97,7 @@ fn test_eval_lambda() {
 
 #[test]
 fn test_eval_define_function() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (square x) (* x x))").unwrap();
@@ -106,7 +106,7 @@ fn test_eval_define_function() {
 
 #[test]
 fn test_eval_let() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(let ((x 10) (y 20)) (+ x y))"), 30);
@@ -114,7 +114,7 @@ fn test_eval_let() {
 
 #[test]
 fn test_eval_let_star() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // let* allows sequential binding
@@ -154,7 +154,7 @@ fn test_eval_recursion() {
 
 #[test]
 fn test_simple_fib_define() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     // Simple single-recursive function
     eval.eval_str("(define (countdown n) (if (= n 0) 0 (countdown (- n 1))))").unwrap();
@@ -427,7 +427,7 @@ fn test_strict_closure() {
 
 #[test]
 fn test_predicates() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(null? '())"));
@@ -454,7 +454,7 @@ fn test_predicates() {
 
 #[test]
 fn test_not() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(not #f)"));
@@ -465,7 +465,7 @@ fn test_not() {
 
 #[test]
 fn test_cond() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval_to_num(&lisp, &mut eval, 
@@ -475,7 +475,7 @@ fn test_cond() {
 
 #[test]
 fn test_and_or() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(and #t #t)"));
@@ -489,7 +489,7 @@ fn test_and_or() {
 
 #[test]
 fn test_gc_during_eval() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 42)").unwrap();
@@ -1343,7 +1343,7 @@ fn test_filter_multiples() {
 
 #[test]
 fn test_mutation_set() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic set! mutation
@@ -1377,7 +1377,7 @@ fn test_mutation_set_in_closure() {
 
 #[test]
 fn test_mutation_set_car_basic() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define p (cons 1 2))").unwrap();
@@ -1390,7 +1390,7 @@ fn test_mutation_set_car_basic() {
 
 #[test]
 fn test_mutation_set_cdr_basic() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define p (cons 1 2))").unwrap();
@@ -1596,7 +1596,7 @@ fn test_gc_intern_table_survives() {
 /// In this Lisp, only #f is false. nil/() is the empty list and is truthy.
 #[test]
 fn test_pitfall_nil_is_truthy() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // nil is truthy!
@@ -1610,7 +1610,7 @@ fn test_pitfall_nil_is_truthy() {
 /// PITFALL: 0 is also truthy!
 #[test]
 fn test_pitfall_zero_is_truthy() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // 0 is truthy (unlike C/Python)
