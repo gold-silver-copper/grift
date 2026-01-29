@@ -1202,23 +1202,34 @@ impl<const N: usize> Lisp<N> {
     /// This limit is chosen to balance stack usage in no_std environments
     /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
-        // Create a new roots array with intern table included
+        // Create a new roots array with reserved slots and intern table included
         // Using const-sized array to avoid alloc in no_std
         // 512 roots should be sufficient for most programs while keeping
         // stack usage reasonable (~8KB on 64-bit systems)
         const MAX_ROOTS: usize = 512;
         
         // Panic if too many roots - this indicates a programming error
-        assert!(roots.len() < MAX_ROOTS, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 1);
+        // Account for 4 reserved roots (nil, true, false, intern_table)
+        assert!(roots.len() < MAX_ROOTS - 4, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 5);
         
         let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
+        let mut root_count = 0;
         
-        // Add intern table reference cell as first root
+        // Add reserved slots as roots to prevent them from being collected
+        // These slots (nil, true, false) must always be preserved
+        all_roots[root_count] = self.nil_slot;
+        root_count += 1;
+        all_roots[root_count] = self.true_slot;
+        root_count += 1;
+        all_roots[root_count] = self.false_slot;
+        root_count += 1;
+        
+        // Add intern table reference cell as root
         // This is a cons cell whose car is the intern table alist
         // Tracing from this cell will reach all interned symbols
-        all_roots[0] = self.intern_table_slot;
-        let mut root_count = 1;
+        all_roots[root_count] = self.intern_table_slot;
+        root_count += 1;
         
         // Copy provided roots
         for &root in roots {
