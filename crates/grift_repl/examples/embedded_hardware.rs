@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example embedded_hardware`
 
-use lisp_eval::{Lisp, Evaluator};
+use grift_eval::{Lisp, Evaluator};
 use pwn_arena_embedded::{register_embedded_natives, reset_mock_hardware};
 
 fn main() {

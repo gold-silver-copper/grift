@@ -60,12 +60,12 @@ pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 /// 
 /// This macro generates the `Builtin` enum, its `name()` method, and the `ALL` constant
 /// from a single declarative definition. To add a new builtin, simply add a new entry
-/// to the macro invocation (and implement its evaluation in lisp_eval).
+/// to the macro invocation (and implement its evaluation in grift_eval).
 /// 
 /// # Syntax
 /// 
 /// ```rust
-/// use lisp_parser::define_builtins;
+/// use grift_parser::define_builtins;
 /// define_builtins! {
 ///     /// Documentation comment
 ///     VariantName => "lisp-name",
@@ -78,7 +78,7 @@ pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 /// To add a new builtin `my-builtin`:
 /// 
 /// ```rust
-/// use lisp_parser::define_builtins;
+/// use grift_parser::define_builtins;
 /// define_builtins! {
 ///     // ... existing builtins ...
 ///     /// (my-builtin x) - Does something with x
@@ -87,7 +87,7 @@ pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 /// ```
 /// 
 /// Note: After adding a builtin here, you must also implement its evaluation
-/// logic in the `lisp_eval` crate.
+/// logic in the `grift_eval` crate.
 #[macro_export]
 macro_rules! define_builtins {
     (
@@ -106,7 +106,7 @@ macro_rules! define_builtins {
         /// 
         /// To add a new builtin:
         /// 1. Add an entry to the `define_builtins!` macro invocation
-        /// 2. Implement its evaluation logic in `lisp_eval`
+        /// 2. Implement its evaluation logic in `grift_eval`
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Builtin {
             $(
@@ -136,7 +136,7 @@ macro_rules! define_builtins {
 }
 
 // Define all built-in functions using the macro.
-// To add a new builtin, add an entry here and implement its evaluation in lisp_eval.
+// To add a new builtin, add an entry here and implement its evaluation in grift_eval.
 define_builtins! {
     // List operations
     /// car - Get first element of pair
@@ -350,7 +350,7 @@ define_builtins! {
 /// # Syntax
 /// 
 /// ```rust
-/// use lisp_parser::define_stdlib;
+/// use grift_parser::define_stdlib;
 /// define_stdlib! {
 ///     /// Documentation comment
 ///     VariantName("function-name", ["param1", "param2"], "lisp-body-code"),
@@ -363,7 +363,7 @@ define_builtins! {
 /// To add a new function `(my-func x y)` that returns `(+ x y)`:
 /// 
 /// ```rust
-/// use lisp_parser::define_stdlib;
+/// use grift_parser::define_stdlib;
 /// define_stdlib! {
 ///     // ... existing functions ...
 ///     /// (my-func x y) - Add two numbers
@@ -457,7 +457,7 @@ macro_rules! define_stdlib {
 // Note: member/assoc use eq? for comparison (like Scheme's memq/assq).
 // This works for symbols and identical objects. For value comparison,
 // define a custom function or use fold with a predicate.
-lisp_macros::include_stdlib!("src/stdlib.scm");
+grift_macros::include_stdlib!("src/stdlib.scm");
 
 /// A Lisp value
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1434,7 +1434,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     /// 
     /// ```rust
-    /// use lisp_parser::Lisp;
+    /// use grift_parser::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let hello = lisp.string("hello").unwrap();
     /// 
@@ -1663,7 +1663,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     /// 
     /// ```rust
-    /// use lisp_parser::Lisp;
+    /// use grift_parser::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let arr = lisp.make_array(3, lisp.nil().unwrap()).unwrap();
     /// 

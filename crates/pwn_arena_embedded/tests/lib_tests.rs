@@ -1,5 +1,5 @@
 use pwn_arena_embedded::*;
-use lisp_eval::{Lisp, Evaluator};
+use grift_eval::{Lisp, Evaluator};
 
 #[test]
 fn test_peek_poke() {
