@@ -13,7 +13,7 @@ fn test_from_lisp_isize() {
 fn test_to_lisp_isize() {
     let lisp: Lisp<100> = Lisp::new();
     let idx = 42isize.to_lisp(&lisp).unwrap();
-    assert_eq!(lisp.get(idx).unwrap().as_number(), Some(42));
+    assert_eq!(lisp.get(idx).unwrap().as_integer(), Some(42));
 }
 
 #[test]
@@ -122,13 +122,13 @@ fn test_register_native_macro() {
     // Test no-arg function
     let nil = lisp.nil().unwrap();
     let result = native_const(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(42));
     
     // Test single-arg function
     let n5 = lisp.number(5).unwrap();
     let args = lisp.cons(n5, nil).unwrap();
     let result = native_add_one(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(6));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(6));
     
     // Test two-arg function
     let n3 = lisp.number(3).unwrap();
@@ -136,7 +136,7 @@ fn test_register_native_macro() {
     let args = lisp.cons(n4, nil).unwrap();
     let args = lisp.cons(n3, args).unwrap();
     let result = native_add(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(7));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(7));
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn test_register_native_with_lisp_three_args() {
     let args = lisp.cons(min, args).unwrap();
     let args = lisp.cons(value, args).unwrap();
     let result = native_clamp(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(10));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(10));
     
     // 5 clamped to [0, 10] should be 5
     let value = lisp.number(5).unwrap();
@@ -192,7 +192,7 @@ fn test_register_native_with_lisp_three_args() {
     let args = lisp.cons(min, args).unwrap();
     let args = lisp.cons(value, args).unwrap();
     let result = native_clamp(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(5));
     
     // -5 clamped to [0, 10] should be 0
     let value = lisp.number(-5).unwrap();
@@ -200,7 +200,7 @@ fn test_register_native_with_lisp_three_args() {
     let args = lisp.cons(min, args).unwrap();
     let args = lisp.cons(value, args).unwrap();
     let result = native_clamp(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0));
 }
 
 // ============================================================================
@@ -275,15 +275,15 @@ fn test_register_native_stateful_no_args() {
     
     // First increment
     let result = native_increment_counter(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0)); // returns old value
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0)); // returns old value
     
     // Second increment
     let result = native_increment_counter(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(1));
     
     // Third increment
     let result = native_increment_counter(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(2));
 }
 
 #[test]
@@ -298,13 +298,13 @@ fn test_register_native_stateful_one_arg() {
     let n5 = lisp.number(5).unwrap();
     let args = lisp.cons(n5, nil).unwrap();
     let result = native_add_to_counter(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0)); // returns old value
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0)); // returns old value
     
     // Counter should now be 5, add 10 more
     let n10 = lisp.number(10).unwrap();
     let args = lisp.cons(n10, nil).unwrap();
     let result = native_add_to_counter(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5)); // returns old value
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(5)); // returns old value
     
     // Verify counter is now 15
     assert_eq!(COUNTER_ONE_ARG.load(Ordering::Relaxed), 15);
@@ -324,7 +324,7 @@ fn test_register_native_stateful_two_args() {
     let args = lisp.cons(new_val, nil).unwrap();
     let args = lisp.cons(threshold, args).unwrap();
     let result = native_set_counter_if_less(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(100));
     assert_eq!(COUNTER_TWO_ARGS.load(Ordering::Relaxed), 100);
     
     // Set to 50 if counter < 10 (should NOT set)
@@ -332,7 +332,7 @@ fn test_register_native_stateful_two_args() {
     let args = lisp.cons(new_val, nil).unwrap();
     let args = lisp.cons(threshold, args).unwrap();
     let result = native_set_counter_if_less(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100)); // returns current value
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(100)); // returns current value
     assert_eq!(COUNTER_TWO_ARGS.load(Ordering::Relaxed), 100); // unchanged
 }
 
@@ -352,13 +352,13 @@ fn test_register_native_stateful_with_evaluator() {
     
     // Test calling the functions from Lisp
     let result = eval.eval_str("(inc-counter)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0));
     
     let result = eval.eval_str("(inc-counter)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(1));
     
     let result = eval.eval_str("(add-counter 10)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(2));
     
     // Verify counter is 12 now
     assert_eq!(COUNTER_EVALUATOR.load(Ordering::Relaxed), 12);
@@ -424,10 +424,10 @@ fn test_simplified_stateful_no_args() {
     let nil = lisp.nil().unwrap();
     
     let result = native_simple_inc(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0));
     
     let result = native_simple_inc(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(1));
 }
 
 #[test]
@@ -440,7 +440,7 @@ fn test_multi_static_access() {
     
     // First call: main=5, secondary=100, result=105
     let result = native_multi_static(&lisp, nil).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(105));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(105));
     
     // After call: main=6, secondary=110
     assert_eq!(SIMPLE_COUNTER.load(Ordering::Relaxed), 6);
@@ -464,11 +464,11 @@ fn test_simplified_stateful_with_evaluator() {
     
     // Test simple increment
     let result = eval.eval_str("(simple-inc)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0));
     
     // Test multi-static access: main=1, secondary=0, result=1
     let result = eval.eval_str("(multi-static)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(1));
     
     // After: main=2, secondary=10
     assert_eq!(SIMPLE_COUNTER.load(Ordering::Relaxed), 2);
@@ -476,7 +476,7 @@ fn test_simplified_stateful_with_evaluator() {
     
     // Test simple-add
     let result = eval.eval_str("(simple-add 5)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(2)); // Returns old value
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(2)); // Returns old value
     assert_eq!(SIMPLE_COUNTER.load(Ordering::Relaxed), 7);
 }
 
@@ -519,7 +519,7 @@ fn native_sum_all<const N: usize>(
     let mut current = args;
     while !lisp.get(current)?.is_nil() {
         let val = lisp.car(current)?;
-        if let Some(n) = lisp.get(val)?.as_number() {
+        if let Some(n) = lisp.get(val)?.as_integer() {
             sum += n;
         }
         current = lisp.cdr(current)?;
@@ -562,8 +562,8 @@ fn test_with_lisp_make_pair() {
     let car = lisp.car(result).unwrap();
     let cdr = lisp.cdr(result).unwrap();
     
-    assert_eq!(lisp.get(car).unwrap().as_number(), Some(10));
-    assert_eq!(lisp.get(cdr).unwrap().as_number(), Some(20));
+    assert_eq!(lisp.get(car).unwrap().as_integer(), Some(10));
+    assert_eq!(lisp.get(cdr).unwrap().as_integer(), Some(20));
 }
 
 #[test]
@@ -579,7 +579,7 @@ fn test_with_lisp_sum_all() {
     }
     
     let result = native_sum_all(&lisp, args).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(15)); // 1+2+3+4+5
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(15)); // 1+2+3+4+5
 }
 
 #[test]
@@ -602,9 +602,9 @@ fn test_with_lisp_range() {
     let v3 = lisp.car(rest).unwrap();
     let rest = lisp.cdr(rest).unwrap();
     
-    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1));
-    assert_eq!(lisp.get(v2).unwrap().as_number(), Some(2));
-    assert_eq!(lisp.get(v3).unwrap().as_number(), Some(3));
+    assert_eq!(lisp.get(v1).unwrap().as_integer(), Some(1));
+    assert_eq!(lisp.get(v2).unwrap().as_integer(), Some(2));
+    assert_eq!(lisp.get(v3).unwrap().as_integer(), Some(3));
     assert!(lisp.get(rest).unwrap().is_nil());
 }
 
@@ -624,26 +624,26 @@ fn test_with_lisp_functions_in_evaluator() {
     let result = eval.eval_str("(make-pair 5 10)").unwrap();
     let car = lisp.car(result).unwrap();
     let cdr = lisp.cdr(result).unwrap();
-    assert_eq!(lisp.get(car).unwrap().as_number(), Some(5));
-    assert_eq!(lisp.get(cdr).unwrap().as_number(), Some(10));
+    assert_eq!(lisp.get(car).unwrap().as_integer(), Some(5));
+    assert_eq!(lisp.get(cdr).unwrap().as_integer(), Some(10));
     
     // Test sum-all with multiple arguments
     let result = eval.eval_str("(sum-all 1 2 3 4 5)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(15));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(15));
     
     // Test sum-all with no arguments
     let result = eval.eval_str("(sum-all)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0));
     
     // Test my-range
     let result = eval.eval_str("(my-range 0 5)").unwrap();
     // Should be (0 1 2 3 4)
     let first = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(first).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(first).unwrap().as_integer(), Some(0));
     
     // Test integration: sum-all with my-range using apply
     let result = eval.eval_str("(apply sum-all (my-range 1 6))").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(15)); // 1+2+3+4+5
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(15)); // 1+2+3+4+5
 }
 
 // ============================================================================
@@ -677,13 +677,13 @@ fn test_stateful_with_lisp_context() {
     // Each call should increment counter and return (counter-value)
     let result = eval.eval_str("(stateful-cons)").unwrap();
     let first = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(first).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(first).unwrap().as_integer(), Some(0));
     
     let result = eval.eval_str("(stateful-cons)").unwrap();
     let first = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(first).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(first).unwrap().as_integer(), Some(1));
     
     let result = eval.eval_str("(stateful-cons)").unwrap();
     let first = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(first).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(first).unwrap().as_integer(), Some(2));
 }
