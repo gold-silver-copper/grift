@@ -2753,6 +2753,9 @@ fn test_doc_special_forms() {
     // letrec
     assert_eq!(eval_to_num(&lisp, &mut eval, "(letrec ((f (lambda (n) (if (= n 0) 1 (* n (f (- n 1))))))) (f 5))"), 120);
     
+    // letrec*
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(letrec* ((a 1) (b (+ a 1))) b)"), 2);
+    
     // begin
     assert_eq!(eval_to_num(&lisp, &mut eval, "(begin 1 2 3)"), 3);
     
@@ -2777,6 +2780,10 @@ fn test_doc_special_forms() {
     
     // apply
     assert_eq!(eval_to_num(&lisp, &mut eval, "(apply + '(1 2 3))"), 6);
+    
+    // values - returns multiple values as a list
+    let result = eval.eval_str("(values 1 2 3)").unwrap();
+    assert!(lisp.get(result).unwrap().is_cons());
 }
 
 #[test]
@@ -2870,7 +2877,10 @@ fn test_doc_character_operations() {
     // char->integer
     assert_eq!(eval_to_num(&lisp, &mut eval, "(char->integer #\\A)"), 65);
     
-    // integer->char and char-upcase
+    // integer->char
+    assert!(eval_is_true(&lisp, &mut eval, "(char=? (integer->char 65) #\\A)"));
+    
+    // char-upcase and char-downcase
     assert!(eval_is_true(&lisp, &mut eval, "(char=? (char-upcase #\\a) #\\A)"));
     assert!(eval_is_true(&lisp, &mut eval, "(char=? (char-downcase #\\A) #\\a)"));
 }
