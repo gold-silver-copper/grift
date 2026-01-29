@@ -79,7 +79,7 @@ This repository contains:
 | **Proper Tail Calls** | Full TCO via trampolining — no stack overflow on deep recursion |
 | **Strict Evaluation** | Call-by-value semantics; arguments evaluated before function application |
 | **Lexical Closures** | First-class functions with captured environments |
-| **Macros** | `defmacro` with `quasiquote`/`unquote` for metaprogramming |
+| **Quasiquote Templates** | `quasiquote`/`unquote` for code generation |
 | **Pattern Matching** | `case` for value matching, `cond` for conditionals |
 | **Mutation** | `set!`, `set-car!`, `set-cdr!` for imperative programming |
 | **Garbage Collection** | Mark-and-sweep GC controllable from Lisp code |
@@ -154,9 +154,8 @@ This repository contains:
 (do ((i 0 (+ i 1)) (sum 0 (+ sum i)))
     ((= i 10) sum))
 
-; Macros
-(defmacro unless (cond then else)
-  (list 'if cond else then))
+; Quasiquote templates for code generation
+`(list ,(+ 1 2) ,@'(4 5))  ; => (list 3 4 5)
 
 ; Runtime evaluation
 (eval '(+ 1 2))        ; => 3

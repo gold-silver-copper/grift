@@ -204,6 +204,8 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 ### Phase 5: Hygienic Macros
 **Goal**: R7RS-compliant macro system
 
+**Note**: The previous `defmacro` and `gensym` implementations were removed for R7RS conformance. R7RS uses hygienic macros via `syntax-rules` instead.
+
 #### 5.1 Syntax-Rules (Section 4.3.2)
 - [ ] Implement `syntax-rules` - Pattern-based macros
 - [ ] Implement `let-syntax` / `letrec-syntax` - Local syntax bindings
