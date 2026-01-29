@@ -1,0 +1,30 @@
+[package]
+name = "grift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A minimal no_std Scheme implementation with arena-based garbage collection"
+readme = "README.md"
+keywords = ["scheme", "lisp", "no_std", "embedded", "interpreter"]
+categories = ["no-std", "embedded", "development-tools"]
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift"
+
+[lib]
+name = "grift"
+path = "src/lib.rs"
+
+[[bin]]
+name = "grift"
+path = "src/main.rs"
+required-features = ["std"]
+
+[features]
+default = []
+std = ["dep:grift_repl"]
+
+[dependencies]
+pwn_arena = { path = "../pwn_arena" }
+grift_parser = { path = "../grift_parser" }
+grift_eval = { path = "../grift_eval" }
+grift_repl = { path = "../grift_repl", optional = true }
