@@ -225,7 +225,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
     }
 
-    /// Force garbage collection even if GC is disabled.
+    /// Perform garbage collection unconditionally, even if GC is disabled.
     ///
     /// This ignores the `gc_enabled` flag and always performs collection.
     /// Useful when you need to collect garbage regardless of the current
@@ -255,11 +255,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let stats = arena.collect_garbage(&[root]);
     /// assert_eq!(stats.collected, 0);
     ///
-    /// // This WILL collect (forced)
-    /// let stats = arena.collect_garbage_forced(&[root]);
+    /// // This WILL collect (unconditionally)
+    /// let stats = arena.collect_garbage_unconditional(&[root]);
     /// assert_eq!(stats.collected, 2);
     /// ```
-    pub fn collect_garbage_forced(&self, roots: &[ArenaIndex]) -> GcStats
+    pub fn collect_garbage_unconditional(&self, roots: &[ArenaIndex]) -> GcStats
     where
         T: Trace<T, N>,
     {
@@ -275,7 +275,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// This iterates through all provided root sets and marks objects
     /// reachable from any of them.
     ///
-    /// Respects the `gc_enabled` flag - use [`Arena::collect_garbage_multi_forced`]
+    /// Respects the `gc_enabled` flag - use [`Arena::collect_garbage_multi_unconditional`]
     /// to ignore the flag.
     ///
     /// # Note
@@ -323,8 +323,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
     }
 
-    /// Force garbage collection with multiple root sets, ignoring the `gc_enabled` flag.
-    pub fn collect_garbage_multi_forced(&self, root_sets: &[&[ArenaIndex]]) -> GcStats
+    /// Perform garbage collection unconditionally with multiple root sets, ignoring the `gc_enabled` flag.
+    pub fn collect_garbage_multi_unconditional(&self, root_sets: &[&[ArenaIndex]]) -> GcStats
     where
         T: Trace<T, N>,
     {
@@ -374,7 +374,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             Ok(idx) => Ok(idx),
             Err(ArenaError::OutOfMemory) => {
                 // Run GC and retry
-                self.collect_garbage_forced(roots);
+                self.collect_garbage_unconditional(roots);
                 self.alloc(value)
             }
             Err(e) => Err(e),

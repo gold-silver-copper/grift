@@ -198,8 +198,6 @@ define_builtins! {
     Not => "not",
     
     // I/O
-    /// print - Print value with newline
-    Print => "print",
     /// newline - Print a newline
     Newline => "newline",
     /// display - Print value without quotes

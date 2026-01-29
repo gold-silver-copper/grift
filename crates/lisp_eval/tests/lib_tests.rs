@@ -954,19 +954,8 @@ fn test_list_comprehensive() {
 // Predicates
 // ───────────────────────────────────────────────────────────────────────────
 
-#[test]
-fn test_atom_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // atom is now a stdlib function: (define (atom x) (not (pair? x)))
-    assert!(eval_is_true(&lisp, &mut eval, "(atom 42)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(atom 'x)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(atom #t)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(atom '())"));
-    assert!(eval_is_false(&lisp, &mut eval, "(atom '(1 2))"));
-    assert!(eval_is_false(&lisp, &mut eval, "(atom (cons 1 2))"));
-}
+// Note: atom has been removed for Scheme R7RS conformance.
+// Use (not (pair? x)) instead.
 
 #[test]
 fn test_eq_comprehensive() {
@@ -1224,12 +1213,11 @@ fn test_or_comprehensive() {
 // ───────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_print_display() {
+fn test_display() {
     let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // print and display return their argument
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(print 42)"), 42);
+    // display returns its argument (R7RS compliant)
     assert_eq!(eval_to_num(&lisp, &mut eval, "(display 99)"), 99);
 }
 

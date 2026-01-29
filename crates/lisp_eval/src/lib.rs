@@ -1301,7 +1301,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(remaining_args)?.is_nil() {
                     // All args evaluated - apply builtin
                     let args = self.reverse_list(new_collected)?;
-                    let result = self.apply_builtin_with_forced_args(builtin, args, call_expr)?;
+                    let result = self.apply_builtin(builtin, args, call_expr)?;
                     Ok(Some(TrampolineState::Return { val: result }))
                 } else {
                     // More args to evaluate
@@ -1392,12 +1392,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         -> Result<TrampolineState, EvalError> 
     {
         // In strict evaluation, args are already evaluated values
-        let result = self.apply_builtin_with_forced_args(builtin, args, call_expr)?;
+        let result = self.apply_builtin(builtin, args, call_expr)?;
         Ok(TrampolineState::Return { val: result })
     }
     
     /// Apply a builtin with already-evaluated arguments
-    fn apply_builtin_with_forced_args(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
+    fn apply_builtin(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> EvalResult 
     {
         match builtin {
@@ -1489,32 +1489,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Not => builtin_unary_pred!(self, args, |v: Value| v.is_false()),
             
-            Builtin::Add => self.numeric_fold_forced(args, 0, |a, b| a.checked_add(b), call_expr),
+            Builtin::Add => self.numeric_fold(args, 0, |a, b| a.checked_add(b), call_expr),
             
             Builtin::Sub => {
-                let first = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
+                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
                 if self.lisp.get(rest)?.is_nil() {
                     self.lisp.number(-first).map_err(Into::into)
                 } else {
-                    self.numeric_fold_start_forced(rest, first, |a, b| a.checked_sub(b), call_expr)
+                    self.numeric_fold_start(rest, first, |a, b| a.checked_sub(b), call_expr)
                 }
             }
             
-            Builtin::Mul => self.numeric_fold_forced(args, 1, |a, b| a.checked_mul(b), call_expr),
+            Builtin::Mul => self.numeric_fold(args, 1, |a, b| a.checked_mul(b), call_expr),
             
             Builtin::Div => {
-                let first = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
+                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
-                self.numeric_fold_start_forced(rest, first, |a, b| {
+                self.numeric_fold_start(rest, first, |a, b| {
                     if b == 0 { None } else { a.checked_div(b) }
                 }, call_expr)
             }
             
             Builtin::Modulo => {
                 // Scheme modulo: result has the sign of the divisor
-                let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
-                let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1525,8 +1525,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Remainder => {
                 // Scheme remainder: result has the sign of the dividend
-                let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
-                let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1534,13 +1534,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.number(a % b).map_err(Into::into)
             }
             
-            Builtin::Lt => self.compare_forced(args, |a, b| a < b, call_expr),
-            Builtin::Gt => self.compare_forced(args, |a, b| a > b, call_expr),
-            Builtin::Le => self.compare_forced(args, |a, b| a <= b, call_expr),
-            Builtin::Ge => self.compare_forced(args, |a, b| a >= b, call_expr),
-            Builtin::NumEq => self.compare_forced(args, |a, b| a == b, call_expr),
+            Builtin::Lt => self.compare_numbers(args, |a, b| a < b, call_expr),
+            Builtin::Gt => self.compare_numbers(args, |a, b| a > b, call_expr),
+            Builtin::Le => self.compare_numbers(args, |a, b| a <= b, call_expr),
+            Builtin::Ge => self.compare_numbers(args, |a, b| a >= b, call_expr),
+            Builtin::NumEq => self.compare_numbers(args, |a, b| a == b, call_expr),
             
-            Builtin::Print | Builtin::Display => {
+            Builtin::Display => {
                 Ok(self.lisp.car(args)?)
             }
             
@@ -1702,32 +1702,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         match builtin {
             Builtin::Add => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 x.checked_add(y)
                     .map(|n| self.lisp.number(n))
                     .ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?
                     .map_err(Into::into)
             }
             Builtin::Sub => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 x.checked_sub(y)
                     .map(|n| self.lisp.number(n))
                     .ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?
                     .map_err(Into::into)
             }
             Builtin::Mul => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 x.checked_mul(y)
                     .map(|n| self.lisp.number(n))
                     .ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?
                     .map_err(Into::into)
             }
             Builtin::Div => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 if y == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1735,8 +1735,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Builtin::Modulo => {
                 // Scheme modulo: result has the sign of the divisor
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 if y == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1745,36 +1745,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Builtin::Remainder => {
                 // Scheme remainder: result has the sign of the dividend
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 if y == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
                 self.lisp.number(x % y).map_err(Into::into)
             }
             Builtin::Lt => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 self.lisp.boolean(x < y).map_err(Into::into)
             }
             Builtin::Gt => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 self.lisp.boolean(x > y).map_err(Into::into)
             }
             Builtin::Le => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 self.lisp.boolean(x <= y).map_err(Into::into)
             }
             Builtin::Ge => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 self.lisp.boolean(x >= y).map_err(Into::into)
             }
             Builtin::NumEq => {
-                let x = self.get_number_from_forced(a, call_expr)?;
-                let y = self.get_number_from_forced(b, call_expr)?;
+                let x = self.get_number(a, call_expr)?;
+                let y = self.get_number(b, call_expr)?;
                 self.lisp.boolean(x == y).map_err(Into::into)
             }
             Builtin::EqP | Builtin::EqvP => {
@@ -1800,13 +1800,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             _ => {
                 let rest = self.lisp.cons(b, self.lisp.nil()?)?;
                 let args = self.lisp.cons(a, rest)?;
-                self.apply_builtin_with_forced_args(builtin, args, call_expr)
+                self.apply_builtin(builtin, args, call_expr)
             }
         }
     }
     
     /// Get number from already-evaluated value
-    fn get_number_from_forced(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<isize, EvalError> {
+    fn get_number(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<isize, EvalError> {
         match self.lisp.get(idx)? {
             Value::Number(n) => Ok(n),
             v => Err(self.type_error(call_expr, "number", v.type_name())),
@@ -1814,13 +1814,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Numeric fold with already-evaluated args
-    fn numeric_fold_forced<F>(&self, args: ArenaIndex, init: isize, f: F, call_expr: ArenaIndex) -> EvalResult
+    fn numeric_fold<F>(&self, args: ArenaIndex, init: isize, f: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(isize, isize) -> Option<isize>
     {
-        self.numeric_fold_start_forced(args, init, f, call_expr)
+        self.numeric_fold_start(args, init, f, call_expr)
     }
     
-    fn numeric_fold_start_forced<F>(&self, args: ArenaIndex, mut acc: isize, f: F, call_expr: ArenaIndex) -> EvalResult
+    fn numeric_fold_start<F>(&self, args: ArenaIndex, mut acc: isize, f: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(isize, isize) -> Option<isize>
     {
         let mut current = args;
@@ -1828,7 +1828,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             match self.lisp.get(current)? {
                 Value::Nil => return self.lisp.number(acc).map_err(Into::into),
                 Value::Cons { car, cdr } => {
-                    let n = self.get_number_from_forced(car, call_expr)?;
+                    let n = self.get_number(car, call_expr)?;
                     acc = f(acc, n).ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?;
                     current = cdr;
                 }
@@ -1838,11 +1838,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Compare two numbers with already-evaluated args
-    fn compare_forced<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
+    fn compare_numbers<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(isize, isize) -> bool
     {
-        let a = self.get_number_from_forced(self.lisp.car(args)?, call_expr)?;
-        let b = self.get_number_from_forced(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        let a = self.get_number(self.lisp.car(args)?, call_expr)?;
+        let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
         self.lisp.boolean(cmp(a, b)).map_err(Into::into)
     }
     
