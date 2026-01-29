@@ -793,7 +793,10 @@
                 (/ (- (* ai br) (* ar bi)) denom)))
 
 (define (div-complex-helper ar ai br bi)
-  (div-complex-denom ar ai br bi (+ (* br br) (* bi bi))))
+  (define denom (+ (* br br) (* bi bi)))
+  (if (= denom 0)
+      (error "Division by zero in div-complex")
+      (div-complex-denom ar ai br bi denom)))
 
 (define (div-complex a b)
   (div-complex-helper (real-part a) (imag-part a)
@@ -817,25 +820,22 @@
   (rationalize-helper (- x y) (+ x y)))
 
 (define (rationalize-helper lo hi)
-  (let ((lo-floor (floor lo))
-        (hi-floor (floor hi)))
-    (cond
-      ;; If both bounds have the same floor, that's an integer in range
-      ((>= lo-floor hi-floor)
-       (if (= lo-floor hi-floor)
-           (if (and (>= lo-floor lo) (<= lo-floor hi))
-               lo-floor
-               (+ lo-floor 1))
-           lo-floor))
-      ((= lo-floor hi-floor)
-       (if (= lo-floor lo)
-           lo-floor
-           (let ((rest (rationalize-helper (/ 1 (- hi lo-floor))
-                                           (/ 1 (- lo lo-floor)))))
-             (+ lo-floor (/ 1 rest)))))
-      (else 
-       ;; Floor of lo is in range
-       (+ lo-floor 1)))))
+  (define lo-floor (floor lo))
+  (define hi-floor (floor hi))
+  (cond
+    ;; If lo-floor > hi-floor, lo-floor is in the range
+    ((> lo-floor hi-floor) lo-floor)
+    ;; If lo-floor = hi-floor, that integer might be in range
+    ((= lo-floor hi-floor)
+     (cond
+       ;; If lo equals lo-floor exactly, that's the answer
+       ((= lo-floor lo) lo-floor)
+       ;; Otherwise recurse with reciprocals to find a fraction
+       (else
+        (+ lo-floor (/ 1 (rationalize-helper (/ 1 (- hi lo-floor))
+                                             (/ 1 (- lo lo-floor))))))))
+    ;; Otherwise, ceiling of lo is an integer in the range
+    (else (+ lo-floor 1))))
 
 ;;; ============================================================================
 ;;; Extended Type Predicates for Numerical Tower
@@ -956,18 +956,23 @@
   (cond
     ((= power 0) 1)
     ((and (integer? power) (> power 0))
-     (if (= power 1)
-         base
-         (if (complex-representation? base)
-             (mul-complex base (complex-expt base (- power 1)))
-             (* base (complex-expt base (- power 1))))))
+     (complex-expt-pos base power))
     ((and (integer? power) (< power 0))
-     (if (complex-representation? base)
-         (div-complex 1 (complex-expt base (- power)))
-         (/ 1 (complex-expt base (- power)))))
+     (complex-expt-neg base power))
     (else
-     ;; General case: b^p = e^(p * ln(b))
      (complex-exp (mul-complex power (complex-log base))))))
+
+(define (complex-expt-pos base power)
+  (if (= power 1)
+      base
+      (if (complex-representation? base)
+          (mul-complex base (complex-expt-pos base (- power 1)))
+          (* base (complex-expt-pos base (- power 1))))))
+
+(define (complex-expt-neg base power)
+  (if (complex-representation? base)
+      (div-complex 1 (complex-expt base (- power)))
+      (/ 1 (complex-expt base (- power)))))
 
 ;;; ============================================================================
 ;;; Display Functions for Numerical Tower
