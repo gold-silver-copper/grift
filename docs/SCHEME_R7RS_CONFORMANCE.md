@@ -230,7 +230,7 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 ### Phase 4: Vector Support
 **Goal**: R7RS vector operations (distinct from arrays)
 
-#### 3.1 Vector Operations (Section 6.8)
+#### 4.1 Vector Operations (Section 6.8)
 - [ ] Implement `vector` constructor
 - [ ] Implement `vector?` predicate
 - [ ] Implement `make-vector` - Create vector with optional fill
