@@ -54,6 +54,7 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // ============================================================================
 // Core Re-exports from pwn_arena
@@ -121,6 +122,7 @@ pub use eval::{
 
 /// REPL and formatting utilities (requires `std` feature).
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod repl {
     pub use grift_repl::{
         run_repl, Repl,
@@ -129,6 +131,7 @@ pub mod repl {
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use repl::{
     run_repl, Repl,
     format_value, format_error, value_to_string, eval_to_string,
