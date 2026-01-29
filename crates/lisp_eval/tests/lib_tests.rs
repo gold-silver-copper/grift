@@ -2050,3 +2050,414 @@ fn test_make_list_edge_cases() {
     let result = eval.eval_str("(make-list -5 'x)").unwrap();
     assert!(lisp.get(result).unwrap().is_nil());
 }
+
+// ============================================================
+// R7RS Phase 2: Character and String Tests
+// ============================================================
+
+// Helper to get a character from eval result
+fn eval_to_char<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> char {
+    let result = eval.eval_str(input).unwrap();
+    lisp.get(result).unwrap().as_char().unwrap()
+}
+
+// Helper to check if a string matches
+fn eval_string_matches<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str, expected: &str) -> bool {
+    let result = eval.eval_str(input).unwrap();
+    lisp.string_matches(result, expected).unwrap()
+}
+
+// ============================================================
+// Character Literal Parsing Tests
+// ============================================================
+
+#[test]
+fn test_char_literal_simple() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Simple character literals
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\a"), 'a');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\A"), 'A');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\z"), 'z');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\0"), '0');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\("), '(');
+}
+
+#[test]
+fn test_char_literal_named() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Named character literals
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\newline"), '\n');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\space"), ' ');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\tab"), '\t');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\return"), '\r');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\null"), '\0');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\alarm"), '\x07');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\backspace"), '\x08');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\delete"), '\x7F');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\escape"), '\x1B');
+}
+
+#[test]
+fn test_char_literal_hex() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Hex character literals
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\x41"), 'A');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\x61"), 'a');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"#\x20"), ' ');
+}
+
+// ============================================================
+// Character Predicate and Operation Tests
+// ============================================================
+
+#[test]
+fn test_char_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // char? predicate
+    assert!(eval_is_true(&lisp, &mut eval, r"(char? #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char? #\space)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(char? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(char? "hello")"#));
+}
+
+#[test]
+fn test_char_comparison() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // char=?
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? #\a #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char=? #\a #\b)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? #\a #\a #\a)"));
+    
+    // char<?
+    assert!(eval_is_true(&lisp, &mut eval, r"(char<? #\a #\b)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char<? #\a #\b #\c)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char<? #\b #\a)"));
+    
+    // char>?
+    assert!(eval_is_true(&lisp, &mut eval, r"(char>? #\b #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char>? #\a #\b)"));
+    
+    // char<=?
+    assert!(eval_is_true(&lisp, &mut eval, r"(char<=? #\a #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char<=? #\a #\b)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char<=? #\b #\a)"));
+    
+    // char>=?
+    assert!(eval_is_true(&lisp, &mut eval, r"(char>=? #\a #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char>=? #\b #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char>=? #\a #\b)"));
+}
+
+#[test]
+fn test_char_conversion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // char->integer
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(char->integer #\A)"), 65);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(char->integer #\a)"), 97);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(char->integer #\space)"), 32);
+    
+    // integer->char
+    assert_eq!(eval_to_char(&lisp, &mut eval, "(integer->char 65)"), 'A');
+    assert_eq!(eval_to_char(&lisp, &mut eval, "(integer->char 97)"), 'a');
+    assert_eq!(eval_to_char(&lisp, &mut eval, "(integer->char 32)"), ' ');
+}
+
+#[test]
+fn test_char_case_conversion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // char-upcase
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-upcase #\a)"), 'A');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-upcase #\z)"), 'Z');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-upcase #\A)"), 'A'); // Already uppercase
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-upcase #\0)"), '0'); // Non-letter
+    
+    // char-downcase
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-downcase #\A)"), 'a');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-downcase #\Z)"), 'z');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-downcase #\a)"), 'a'); // Already lowercase
+    assert_eq!(eval_to_char(&lisp, &mut eval, r"(char-downcase #\0)"), '0'); // Non-letter
+}
+
+// ============================================================
+// String Literal Parsing Tests
+// ============================================================
+
+#[test]
+fn test_string_literal_simple() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Simple string literals
+    assert!(eval_string_matches(&lisp, &mut eval, r#""hello""#, "hello"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#""world""#, "world"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#""""#, "")); // Empty string
+}
+
+#[test]
+fn test_string_literal_escapes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Escape sequences
+    assert!(eval_string_matches(&lisp, &mut eval, r#""hello\nworld""#, "hello\nworld"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#""tab\there""#, "tab\there"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#""quote\"here""#, "quote\"here"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#""back\\slash""#, "back\\slash"));
+}
+
+#[test]
+fn test_string_literal_hex_escape() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Hex escape: \xNN;
+    assert!(eval_string_matches(&lisp, &mut eval, r#""\x41;bc""#, "Abc"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#""a\x42;c""#, "aBc"));
+}
+
+// ============================================================
+// String Predicate and Operation Tests
+// ============================================================
+
+#[test]
+fn test_string_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string? predicate
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string? "hello")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string? "")"#));
+    assert!(eval_is_false(&lisp, &mut eval, "(string? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(string? #\a)"));
+}
+
+#[test]
+fn test_string_length() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length "hello")"#), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length "")"#), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length "a")"#), 1);
+}
+
+#[test]
+fn test_string_ref() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string-ref
+    assert_eq!(eval_to_char(&lisp, &mut eval, r#"(string-ref "hello" 0)"#), 'h');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r#"(string-ref "hello" 4)"#), 'o');
+    assert_eq!(eval_to_char(&lisp, &mut eval, r#"(string-ref "abc" 1)"#), 'b');
+}
+
+#[test]
+fn test_make_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // make-string with fill
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(make-string 5 #\x)"#, "xxxxx"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(make-string 3 #\a)"#, "aaa"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(make-string 0 #\x)"#, ""));
+}
+
+#[test]
+fn test_string_constructor() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string constructor
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string #\h #\e #\l #\l #\o)"#, "hello"));
+    assert!(eval_string_matches(&lisp, &mut eval, r"(string)", "")); // Empty string
+}
+
+#[test]
+fn test_string_comparison() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string=?
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string=? "abc" "abc")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string=? "abc" "abd")"#));
+    
+    // string<?
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string<? "abc" "abd")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string<? "ab" "abc")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string<? "abc" "abc")"#));
+    
+    // string>?
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string>? "abd" "abc")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string>? "abc" "abc")"#));
+    
+    // string<=?
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string<=? "abc" "abc")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string<=? "abc" "abd")"#));
+    
+    // string>=?
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string>=? "abc" "abc")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string>=? "abd" "abc")"#));
+}
+
+#[test]
+fn test_string_append() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-append "hello" " " "world")"#, "hello world"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-append "a" "b" "c")"#, "abc"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-append)"#, ""));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-append "solo")"#, "solo"));
+}
+
+#[test]
+fn test_string_to_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string->list
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(length (string->list "hello"))"#), 5);
+    assert_eq!(eval_to_char(&lisp, &mut eval, r#"(car (string->list "hello"))"#), 'h');
+    
+    // list->string
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(list->string (list #\a #\b #\c))"#, "abc"));
+    assert!(eval_string_matches(&lisp, &mut eval, r"(list->string '())", ""));
+}
+
+#[test]
+fn test_substring() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(substring "hello" 1 4)"#, "ell"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(substring "hello" 0 5)"#, "hello"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(substring "hello" 2 2)"#, "")); // Empty substring
+}
+
+#[test]
+fn test_string_copy() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-copy "hello")"#, "hello"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-copy "")"#, ""));
+}
+
+#[test]
+fn test_string_set() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string-set! modifies in place
+    eval.eval_str(r#"(define s (string-copy "hello"))"#).unwrap();
+    eval.eval_str(r#"(string-set! s 0 #\H)"#).unwrap();
+    assert!(eval_string_matches(&lisp, &mut eval, "s", "Hello"));
+}
+
+// ============================================================
+// Character Predicate Stdlib Tests
+// ============================================================
+
+#[test]
+fn test_char_alphabetic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\Z)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-alphabetic? #\0)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-alphabetic? #\space)"));
+}
+
+#[test]
+fn test_char_numeric() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\0)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\9)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-numeric? #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-numeric? #\space)"));
+}
+
+#[test]
+fn test_char_whitespace() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\space)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\tab)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\newline)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-whitespace? #\a)"));
+}
+
+#[test]
+fn test_char_upper_lower_case() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-upper-case? #\A)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-upper-case? #\Z)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-upper-case? #\a)"));
+    
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-lower-case? #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-lower-case? #\z)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-lower-case? #\A)"));
+}
+
+#[test]
+fn test_digit_value() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\0)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\9)"), 9);
+    assert!(eval_is_false(&lisp, &mut eval, r"(digit-value #\a)"));
+}
+
+#[test]
+fn test_char_ci_comparisons() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci=? #\a #\A)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci=? #\Z #\z)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci<? #\a #\B)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci>? #\B #\a)"));
+}
+
+#[test]
+fn test_string_case_conversion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-upcase "hello")"#, "HELLO"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-downcase "HELLO")"#, "hello"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-downcase "HeLLo")"#, "hello"));
+}
+
+#[test]
+fn test_string_ci_equals() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "hello" "HELLO")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "ABC" "abc")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci=? "abc" "abd")"#));
+}

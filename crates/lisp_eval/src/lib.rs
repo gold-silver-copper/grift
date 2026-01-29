@@ -2093,6 +2093,366 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let list = self.lisp.cons(capacity, list)?;
                 Ok(list)
             }
+            
+            // ============================================================
+            // Character operations (R7RS Section 6.6)
+            // ============================================================
+            
+            Builtin::Charp => {
+                // (char? obj) - Check if value is a character
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Char(_)))
+            }
+            
+            Builtin::CharEq => {
+                // (char=? char1 char2 ...) - Character equality
+                self.char_chain_compare(args, |a, b| a == b, call_expr)
+            }
+            
+            Builtin::CharLt => {
+                // (char<? char1 char2 ...) - Monotonically increasing
+                self.char_chain_compare(args, |a, b| a < b, call_expr)
+            }
+            
+            Builtin::CharGt => {
+                // (char>? char1 char2 ...) - Monotonically decreasing
+                self.char_chain_compare(args, |a, b| a > b, call_expr)
+            }
+            
+            Builtin::CharLe => {
+                // (char<=? char1 char2 ...) - Monotonically non-decreasing
+                self.char_chain_compare(args, |a, b| a <= b, call_expr)
+            }
+            
+            Builtin::CharGe => {
+                // (char>=? char1 char2 ...) - Monotonically non-increasing
+                self.char_chain_compare(args, |a, b| a >= b, call_expr)
+            }
+            
+            Builtin::CharToInteger => {
+                // (char->integer char) - Convert char to Unicode code point
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(c as isize).map_err(Into::into)
+            }
+            
+            Builtin::IntegerToChar => {
+                // (integer->char n) - Convert Unicode code point to char
+                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if n < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                match char::from_u32(n as u32) {
+                    Some(c) => self.lisp.char(c).map_err(Into::into),
+                    None => Err(self.type_error(call_expr, "valid Unicode code point", "invalid code point")),
+                }
+            }
+            
+            Builtin::CharUpcase => {
+                // (char-upcase char) - Convert to uppercase
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                // Simple ASCII uppercase for no_std
+                let upper = if c >= 'a' && c <= 'z' {
+                    ((c as u8) - b'a' + b'A') as char
+                } else {
+                    c
+                };
+                self.lisp.char(upper).map_err(Into::into)
+            }
+            
+            Builtin::CharDowncase => {
+                // (char-downcase char) - Convert to lowercase
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                // Simple ASCII lowercase for no_std
+                let lower = if c >= 'A' && c <= 'Z' {
+                    ((c as u8) - b'A' + b'a') as char
+                } else {
+                    c
+                };
+                self.lisp.char(lower).map_err(Into::into)
+            }
+            
+            // ============================================================
+            // String operations (R7RS Section 6.7)
+            // ============================================================
+            
+            Builtin::Stringp => {
+                // (string? obj) - Check if value is a string
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::String { .. }))
+            }
+            
+            Builtin::MakeString => {
+                // (make-string k) or (make-string k char)
+                let k = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let rest = self.lisp.cdr(args)?;
+                let fill = if self.lisp.get(rest)?.is_nil() {
+                    ' ' // Default fill character
+                } else {
+                    self.get_char(self.lisp.car(rest)?, call_expr)?
+                };
+                
+                // Create string of k characters
+                const MAX_MAKE_STRING_LEN: usize = 1024;
+                let len = k as usize;
+                if len > MAX_MAKE_STRING_LEN {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                let mut chars = ['\0'; MAX_MAKE_STRING_LEN];
+                for i in 0..len {
+                    chars[i] = fill;
+                }
+                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+            }
+            
+            Builtin::String => {
+                // (string char ...) - Create string from characters
+                const MAX_STRING_LEN: usize = 1024;
+                let mut chars = ['\0'; MAX_STRING_LEN];
+                let mut len = 0;
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { car, cdr } => {
+                            if len >= MAX_STRING_LEN {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            chars[len] = self.get_char(car, call_expr)?;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+            }
+            
+            Builtin::StringLength => {
+                // (string-length string) - Get length
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, .. } => self.lisp.number(len as isize).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringRef => {
+                // (string-ref string k) - Get character at index
+                extract_args!(self, args, str_idx, k_idx);
+                match self.lisp.get(str_idx)? {
+                    Value::String { data, len } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 || (k as usize) >= len {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        match self.lisp.get(char_slot)? {
+                            Value::Char(c) => self.lisp.char(c).map_err(Into::into),
+                            _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringSet => {
+                // (string-set! string k char) - Set character at index
+                let str_idx = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let k_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let char_arg = self.lisp.car(rest2)?;
+                
+                match self.lisp.get(str_idx)? {
+                    Value::String { data, len } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 || (k as usize) >= len {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let c = self.get_char(char_arg, call_expr)?;
+                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        self.lisp.set(char_slot, Value::Char(c))?;
+                        // Return unspecified value (we use the string itself)
+                        Ok(str_idx)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringEq => {
+                // (string=? string1 string2 ...) - String equality
+                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
+            }
+            
+            Builtin::StringLt => {
+                // (string<? string1 string2 ...) - Monotonically increasing
+                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
+            }
+            
+            Builtin::StringGt => {
+                // (string>? string1 string2 ...) - Monotonically decreasing
+                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
+            }
+            
+            Builtin::StringLe => {
+                // (string<=? string1 string2 ...) - Monotonically non-decreasing
+                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
+            }
+            
+            Builtin::StringGe => {
+                // (string>=? string1 string2 ...) - Monotonically non-increasing
+                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
+            }
+            
+            Builtin::StringAppend => {
+                // (string-append string ...) - Concatenate strings
+                const MAX_TOTAL_LEN: usize = 4096;
+                let mut chars = ['\0'; MAX_TOTAL_LEN];
+                let mut total_len = 0;
+                
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { car, cdr } => {
+                            match self.lisp.get(car)? {
+                                Value::String { data, len } => {
+                                    if total_len + len > MAX_TOTAL_LEN {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    for i in 0..len {
+                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                        match self.lisp.get(char_slot)? {
+                                            Value::Char(c) => {
+                                                chars[total_len] = c;
+                                                total_len += 1;
+                                            }
+                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                                        }
+                                    }
+                                }
+                                v => return Err(self.type_error(call_expr, "string", v.type_name())),
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                
+                self.lisp.string_from_chars(&chars[..total_len]).map_err(Into::into)
+            }
+            
+            Builtin::StringToList => {
+                // (string->list string) - Convert string to list of characters
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { data, len } => {
+                        let mut result = self.lisp.nil()?;
+                        // Build list from end to start
+                        for i in (0..len).rev() {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => {
+                                    let char_val = self.lisp.char(c)?;
+                                    result = self.lisp.cons(char_val, result)?;
+                                }
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::ListToString => {
+                // (list->string list) - Convert list of characters to string
+                const MAX_STRING_LEN: usize = 1024;
+                let mut chars = ['\0'; MAX_STRING_LEN];
+                let mut len = 0;
+                
+                let mut current = self.lisp.car(args)?;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { car, cdr } => {
+                            if len >= MAX_STRING_LEN {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            chars[len] = self.get_char(car, call_expr)?;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                
+                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+            }
+            
+            Builtin::Substring => {
+                // (substring string start end) - Extract substring
+                let str_idx = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let start_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let end_idx = self.lisp.car(rest2)?;
+                
+                match self.lisp.get(str_idx)? {
+                    Value::String { data, len } => {
+                        let start = self.get_int(start_idx, call_expr)?;
+                        let end = self.get_int(end_idx, call_expr)?;
+                        
+                        if start < 0 || end < 0 || (start as usize) > len || (end as usize) > len || start > end {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        let sub_len = (end - start) as usize;
+                        const MAX_SUBSTRING_LEN: usize = 1024;
+                        let mut chars = ['\0'; MAX_SUBSTRING_LEN];
+                        if sub_len > MAX_SUBSTRING_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        for i in 0..sub_len {
+                            let char_slot = self.lisp.arena_index_at_offset(data, (start as usize) + i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => chars[i] = c,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        
+                        self.lisp.string_from_chars(&chars[..sub_len]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringCopy => {
+                // (string-copy string) - Copy a string
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { data, len } => {
+                        const MAX_STRING_LEN: usize = 1024;
+                        let mut chars = ['\0'; MAX_STRING_LEN];
+                        if len > MAX_STRING_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        for i in 0..len {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => chars[i] = c,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        
+                        self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
         }
     }
     
@@ -2258,6 +2618,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Get character from already-evaluated value
+    fn get_char(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<char, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Char(c) => Ok(c),
+            v => Err(self.type_error(call_expr, "char", v.type_name())),
+        }
+    }
+    
     /// Allocate a Num value in the arena
     fn alloc_num(&self, n: Num) -> ArenaResult<ArenaIndex> {
         match n {
@@ -2344,6 +2712,112 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         result
+    }
+    
+    /// Helper for character chain comparisons (char=?, char<?, etc.)
+    fn char_chain_compare<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex) -> EvalResult
+    where
+        F: Fn(char, char) -> bool
+    {
+        // Need at least 2 arguments
+        let first = self.get_char(self.lisp.car(args)?, call_expr)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest)?.is_nil() {
+            return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+        }
+        
+        let mut prev = first;
+        let mut current = rest;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { car, cdr } => {
+                    let c = self.get_char(car, call_expr)?;
+                    if !compare_fn(prev, c) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev = c;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+    
+    /// Helper for string chain comparisons (string=?, string<?, etc.)
+    fn string_chain_compare<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex) -> EvalResult
+    where
+        F: Fn(core::cmp::Ordering) -> bool
+    {
+        // Need at least 2 arguments
+        let first_idx = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest)?.is_nil() {
+            return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+        }
+        
+        let mut prev_idx = first_idx;
+        let mut current = rest;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { car, cdr } => {
+                    let ordering = self.compare_strings(prev_idx, car, call_expr)?;
+                    if !compare_fn(ordering) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev_idx = car;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+    
+    /// Compare two strings lexicographically
+    fn compare_strings(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
+        let (data_a, len_a) = match self.lisp.get(a)? {
+            Value::String { data, len } => (data, len),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        let (data_b, len_b) = match self.lisp.get(b)? {
+            Value::String { data, len } => (data, len),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        
+        let min_len = if len_a < len_b { len_a } else { len_b };
+        
+        for i in 0..min_len {
+            let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
+            let char_a = match self.lisp.get(slot_a)? {
+                Value::Char(c) => c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            };
+            let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
+            let char_b = match self.lisp.get(slot_b)? {
+                Value::Char(c) => c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            };
+            
+            if char_a < char_b {
+                return Ok(core::cmp::Ordering::Less);
+            } else if char_a > char_b {
+                return Ok(core::cmp::Ordering::Greater);
+            }
+        }
+        
+        // All compared characters are equal, compare lengths
+        if len_a < len_b {
+            Ok(core::cmp::Ordering::Less)
+        } else if len_a > len_b {
+            Ok(core::cmp::Ordering::Greater)
+        } else {
+            Ok(core::cmp::Ordering::Equal)
+        }
     }
     
     /// Floor function without libm

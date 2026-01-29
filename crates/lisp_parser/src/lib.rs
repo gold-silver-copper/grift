@@ -272,6 +272,62 @@ define_builtins! {
     /// array? - Check if value is an array
     Arrayp => "array?",
     
+    // Character operations (R7RS Section 6.6)
+    /// char? - Check if value is a character
+    Charp => "char?",
+    /// char=? - Character equality
+    CharEq => "char=?",
+    /// char<? - Character less than
+    CharLt => "char<?",
+    /// char>? - Character greater than
+    CharGt => "char>?",
+    /// char<=? - Character less than or equal
+    CharLe => "char<=?",
+    /// char>=? - Character greater than or equal
+    CharGe => "char>=?",
+    /// char->integer - Convert character to its Unicode code point
+    CharToInteger => "char->integer",
+    /// integer->char - Convert Unicode code point to character
+    IntegerToChar => "integer->char",
+    /// char-upcase - Convert character to uppercase
+    CharUpcase => "char-upcase",
+    /// char-downcase - Convert character to lowercase
+    CharDowncase => "char-downcase",
+    
+    // String operations (R7RS Section 6.7)
+    /// string? - Check if value is a string
+    Stringp => "string?",
+    /// make-string - Create a string of given length
+    MakeString => "make-string",
+    /// string - Create string from characters
+    String => "string",
+    /// string-length - Get length of string
+    StringLength => "string-length",
+    /// string-ref - Get character at index
+    StringRef => "string-ref",
+    /// string-set! - Set character at index
+    StringSet => "string-set!",
+    /// string=? - String equality
+    StringEq => "string=?",
+    /// string<? - String less than
+    StringLt => "string<?",
+    /// string>? - String greater than
+    StringGt => "string>?",
+    /// string<=? - String less than or equal
+    StringLe => "string<=?",
+    /// string>=? - String greater than or equal
+    StringGe => "string>=?",
+    /// string-append - Concatenate strings
+    StringAppend => "string-append",
+    /// string->list - Convert string to list of characters
+    StringToList => "string->list",
+    /// list->string - Convert list of characters to string
+    ListToString => "list->string",
+    /// substring - Extract a substring
+    Substring => "substring",
+    /// string-copy - Copy a string
+    StringCopy => "string-copy",
+    
     // Garbage collection and arena control
     /// gc - Manually trigger garbage collection
     Gc => "gc",
@@ -857,6 +913,14 @@ impl<const N: usize> Lisp<N> {
         self.arena.set(index, value)
     }
     
+    /// Get an arena index at a given offset from a base index.
+    /// 
+    /// This is useful for accessing elements in contiguous storage (strings, arrays).
+    #[inline]
+    pub fn arena_index_at_offset(&self, base: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
+        self.arena.index_at_offset(base, offset)
+    }
+    
     /// Get the pre-allocated Nil singleton (empty list)
     /// 
     /// This returns the reserved slot 0 which always contains `Value::Nil`.
@@ -1401,6 +1465,33 @@ impl<const N: usize> Lisp<N> {
         self.alloc(Value::String { data, len: char_count })
     }
     
+    /// Allocate a string from a slice of chars.
+    /// 
+    /// Returns an ArenaIndex pointing to a Value::String.
+    pub fn string_from_chars(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
+        let char_count = chars.len();
+        
+        if char_count == 0 {
+            // Empty string - no data slots needed
+            return self.alloc(Value::String { 
+                data: ArenaIndex::NULL, 
+                len: 0 
+            });
+        }
+        
+        // Allocate contiguous block for characters
+        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+        
+        // Set characters in slots
+        for (i, &c) in chars.iter().enumerate() {
+            let char_idx = self.arena.index_at_offset(data, i)?;
+            self.arena.set(char_idx, Value::Char(c))?;
+        }
+        
+        // Create the String value pointing to the data
+        self.alloc(Value::String { data, len: char_count })
+    }
+    
     /// Get the length of a string.
     /// 
     /// Returns O(1) since length is stored in the String value.
@@ -1711,6 +1802,12 @@ pub enum ParseErrorKind {
     OutOfMemory,
     /// Invalid hash literal
     InvalidHashLiteral,
+    /// Invalid character literal
+    InvalidCharLiteral,
+    /// Invalid string escape sequence
+    InvalidEscapeSequence,
+    /// Unterminated string literal
+    UnterminatedString,
 }
 
 impl ParseError {
@@ -1826,6 +1923,8 @@ impl<'a> Parser<'a> {
             
             Some(b')') => Err(self.error(ParseErrorKind::UnmatchedParen)),
             
+            Some(b'"') => self.parse_string(lisp),
+            
             Some(b'\'') => {
                 // Quote: 'x -> (quote x)
                 self.advance();
@@ -1855,7 +1954,7 @@ impl<'a> Parser<'a> {
         }
     }
     
-    /// Parse hash literals (#t, #f, etc.)
+    /// Parse hash literals (#t, #f, #\char, etc.)
     fn parse_hash_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         self.advance(); // consume '#'
         
@@ -1868,9 +1967,217 @@ impl<'a> Parser<'a> {
                 self.advance();
                 lisp.false_val().map_err(Into::into)
             }
+            Some(b'\\') => self.parse_char_literal(lisp),
             Some(_) => Err(self.error(ParseErrorKind::InvalidHashLiteral)),
             None => Err(self.error(ParseErrorKind::UnexpectedEof)),
         }
+    }
+    
+    /// Parse character literal (#\a, #\space, #\newline, etc.)
+    fn parse_char_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        self.advance(); // consume '\'
+        
+        // First check for named characters
+        // We need to look ahead to see if there's a multi-char name
+        let start = self.pos;
+        
+        // Read characters that could form a name
+        while let Some(c) = self.peek() {
+            if Self::is_symbol_char(c) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        
+        let name_len = self.pos - start;
+        
+        if name_len == 0 {
+            // #\ followed by non-symbol character like space: #\ 
+            return match self.peek() {
+                Some(c) => {
+                    self.advance();
+                    lisp.char(c as char).map_err(Into::into)
+                }
+                None => Err(self.error(ParseErrorKind::UnexpectedEof)),
+            };
+        }
+        
+        // Get the name as a slice
+        let name = &self.input[start..self.pos];
+        
+        // If it's a single character, return it directly
+        if name_len == 1 {
+            return lisp.char(name[0] as char).map_err(Into::into);
+        }
+        
+        // Check for named characters (R7RS Section 6.6)
+        match name {
+            b"alarm" => lisp.char('\x07').map_err(Into::into),
+            b"backspace" => lisp.char('\x08').map_err(Into::into),
+            b"delete" => lisp.char('\x7F').map_err(Into::into),
+            b"escape" => lisp.char('\x1B').map_err(Into::into),
+            b"newline" => lisp.char('\n').map_err(Into::into),
+            b"null" => lisp.char('\0').map_err(Into::into),
+            b"return" => lisp.char('\r').map_err(Into::into),
+            b"space" => lisp.char(' ').map_err(Into::into),
+            b"tab" => lisp.char('\t').map_err(Into::into),
+            _ => {
+                // Check for hex character #\xNN...
+                if name.len() >= 2 && (name[0] == b'x' || name[0] == b'X') {
+                    let hex_str = &name[1..];
+                    if let Some(code) = Self::parse_hex(hex_str) {
+                        if let Some(c) = char::from_u32(code) {
+                            return lisp.char(c).map_err(Into::into);
+                        }
+                    }
+                }
+                Err(self.error(ParseErrorKind::InvalidCharLiteral))
+            }
+        }
+    }
+    
+    /// Parse hex digits into a u32 value
+    fn parse_hex(bytes: &[u8]) -> Option<u32> {
+        if bytes.is_empty() {
+            return None;
+        }
+        let mut result: u32 = 0;
+        for &b in bytes {
+            let digit = match b {
+                b'0'..=b'9' => (b - b'0') as u32,
+                b'a'..=b'f' => (b - b'a' + 10) as u32,
+                b'A'..=b'F' => (b - b'A' + 10) as u32,
+                _ => return None,
+            };
+            result = result.checked_mul(16)?.checked_add(digit)?;
+        }
+        Some(result)
+    }
+    
+    /// Parse a string literal ("..." with escape sequences)
+    fn parse_string<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        self.advance(); // consume opening '"'
+        
+        // Collect characters into a fixed-size buffer
+        const MAX_STRING_LEN: usize = 1024;
+        let mut chars: [char; MAX_STRING_LEN] = ['\0'; MAX_STRING_LEN];
+        let mut len = 0;
+        
+        loop {
+            match self.peek() {
+                None => return Err(self.error(ParseErrorKind::UnterminatedString)),
+                Some(b'"') => {
+                    self.advance(); // consume closing '"'
+                    break;
+                }
+                Some(b'\\') => {
+                    // Escape sequence
+                    self.advance(); // consume '\'
+                    let c = match self.peek() {
+                        None => return Err(self.error(ParseErrorKind::UnterminatedString)),
+                        Some(b'a') => { self.advance(); '\x07' } // alarm
+                        Some(b'b') => { self.advance(); '\x08' } // backspace
+                        Some(b't') => { self.advance(); '\t' }   // tab
+                        Some(b'n') => { self.advance(); '\n' }   // newline
+                        Some(b'r') => { self.advance(); '\r' }   // return
+                        Some(b'"') => { self.advance(); '"' }    // double quote
+                        Some(b'\\') => { self.advance(); '\\' }  // backslash
+                        Some(b'|') => { self.advance(); '|' }    // vertical line
+                        Some(b'x') => {
+                            // Hex escape: \xNN;
+                            self.advance(); // consume 'x'
+                            let hex_start = self.pos;
+                            while let Some(c) = self.peek() {
+                                if c == b';' {
+                                    break;
+                                }
+                                if c.is_ascii_hexdigit() {
+                                    self.advance();
+                                } else {
+                                    return Err(self.error(ParseErrorKind::InvalidEscapeSequence));
+                                }
+                            }
+                            let hex_bytes = &self.input[hex_start..self.pos];
+                            if self.peek() != Some(b';') {
+                                return Err(self.error(ParseErrorKind::InvalidEscapeSequence));
+                            }
+                            self.advance(); // consume ';'
+                            match Self::parse_hex(hex_bytes) {
+                                Some(code) => {
+                                    match char::from_u32(code) {
+                                        Some(ch) => ch,
+                                        None => return Err(self.error(ParseErrorKind::InvalidEscapeSequence)),
+                                    }
+                                }
+                                None => return Err(self.error(ParseErrorKind::InvalidEscapeSequence)),
+                            }
+                        }
+                        Some(b'\n') | Some(b'\r') => {
+                            // Line continuation: skip the line ending and any intraline whitespace on next line
+                            // Per R7RS, skip only the first line ending, then intraline whitespace
+                            self.advance(); // consume the \n or \r
+                            // Handle \r\n as a single line ending
+                            if self.peek() == Some(b'\n') {
+                                self.advance();
+                            }
+                            // Skip intraline whitespace on next line (spaces and tabs only, not newlines)
+                            while let Some(c) = self.peek() {
+                                if c == b' ' || c == b'\t' {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                            continue; // Don't add any character
+                        }
+                        Some(c) if c == b' ' || c == b'\t' => {
+                            // \<intraline whitespace>*<line ending> - skip whitespace until line ending
+                            while let Some(c) = self.peek() {
+                                if c == b' ' || c == b'\t' {
+                                    self.advance();
+                                } else if c == b'\n' || c == b'\r' {
+                                    self.advance();
+                                    // Handle \r\n as a single line ending
+                                    if c == b'\r' && self.peek() == Some(b'\n') {
+                                        self.advance();
+                                    }
+                                    // Skip trailing whitespace on next line (intraline only)
+                                    while let Some(c) = self.peek() {
+                                        if c == b' ' || c == b'\t' {
+                                            self.advance();
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                } else {
+                                    return Err(self.error(ParseErrorKind::InvalidEscapeSequence));
+                                }
+                            }
+                            continue; // Don't add any character
+                        }
+                        Some(_) => return Err(self.error(ParseErrorKind::InvalidEscapeSequence)),
+                    };
+                    if len >= MAX_STRING_LEN {
+                        return Err(self.error(ParseErrorKind::OutOfMemory));
+                    }
+                    chars[len] = c;
+                    len += 1;
+                }
+                Some(c) => {
+                    if len >= MAX_STRING_LEN {
+                        return Err(self.error(ParseErrorKind::OutOfMemory));
+                    }
+                    chars[len] = c as char;
+                    len += 1;
+                    self.advance();
+                }
+            }
+        }
+        
+        // Allocate the string in the arena
+        lisp.string_from_chars(&chars[..len]).map_err(Into::into)
     }
     
     /// Parse a list (including nil)
