@@ -17,19 +17,68 @@ This is a classic Lisp implementation with modern features:
 
 ```
 crates/
-├── pwn_arena/     # Arena allocator (no_std, no_alloc)
-├── grift_parser/   # Parser, Value type, builtins (no_std)
-├── grift_eval/     # Evaluator with trampolined TCO (no_std)
-├── grift_repl/     # REPL with I/O (uses std)
-└── grift_macros/   # Proc macros for stdlib generation
+├── pwn_arena/       # Arena allocator (no_std, no_alloc)
+├── grift_parser/    # Parser, Value type, builtins (no_std)
+├── grift_eval/      # Evaluator with trampolined TCO (no_std)
+├── grift_repl/      # REPL with I/O (uses std)
+├── grift_macros/    # Proc macros for stdlib generation
+├── grift/           # Unified re-export crate (no_std by default, std feature optional)
+└── pwn_arena_embedded/  # Embedded examples
 ```
 
 ### Dependency Graph
 
 ```
-pwn_arena ← grift_parser ← grift_eval ← grift_repl
-                ↑
-           grift_macros
+                    ┌─────────────────────┐
+                    │       grift         │  (unified crate)
+                    │  no_std by default  │
+                    │  std feature opt-in │
+                    └─────────┬───────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐    ┌───────────────┐    ┌───────────────┐
+│  grift_repl   │    │  grift_eval   │    │ grift_parser  │
+│   (std)       │    │   (no_std)    │    │   (no_std)    │
+└───────┬───────┘    └───────┬───────┘    └───────┬───────┘
+        │                    │                    │
+        └────────────────────┼────────────────────┘
+                             │
+                             ▼
+                    ┌───────────────┐
+                    │   pwn_arena   │
+                    │ (no_std, no_alloc)
+                    └───────────────┘
+                             ▲
+                             │
+                    ┌───────────────┐
+                    │ grift_macros  │
+                    │ (proc macros) │
+                    └───────────────┘
+```
+
+### The `grift` Unified Crate
+
+The `grift` crate is the primary entry point for users. It provides:
+
+- **`no_std`, `no_alloc` by default** — Works on bare metal, WASM, or embedded
+- **`std` feature** — Enables REPL and formatting utilities
+- **Complete re-exports** — All public APIs from underlying crates
+
+```rust
+// Minimal no_std usage
+use grift::{Lisp, Evaluator, Value};
+
+let lisp: Lisp<10000> = Lisp::new();
+let mut eval = Evaluator::new(&lisp).unwrap();
+let result = eval.eval_str("(+ 1 2 3)").unwrap();
+```
+
+```bash
+# Install and run the REPL
+cargo install grift --features std
+grift
 ```
 
 ## Value Representation
