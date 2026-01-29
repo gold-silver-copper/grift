@@ -240,6 +240,9 @@ cargo test --workspace
 
 # Run the REPL
 cargo run -p grift --features std
+
+# Run the minimal example
+cargo run -p grift --example minimal
 ```
 
 ## 📄 License
