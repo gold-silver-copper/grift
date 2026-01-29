@@ -228,6 +228,50 @@ define_builtins! {
     /// exact-integer? - Check if value is an exact integer
     ExactIntegerp => "exact-integer?",
     
+    // Complex number predicates and operations (R7RS Section 6.2)
+    /// complex? - Check if value is a complex number (all numbers are complex)
+    Complexp => "complex?",
+    /// real? - Check if value is a real number (imaginary part is zero)
+    Realp => "real?",
+    /// rational? - Check if value is a rational number
+    Rationalp => "rational?",
+    /// finite? - Check if number is finite
+    Finitep => "finite?",
+    /// infinite? - Check if number is infinite
+    Infinitep => "infinite?",
+    /// nan? - Check if number is NaN
+    Nanp => "nan?",
+    
+    // Complex number operations (R7RS Section 6.2.6)
+    /// make-rectangular - Create complex from real and imaginary parts
+    MakeRectangular => "make-rectangular",
+    /// make-polar - Create complex from magnitude and angle
+    MakePolar => "make-polar",
+    /// real-part - Get real part of complex number
+    RealPart => "real-part",
+    /// imag-part - Get imaginary part of complex number
+    ImagPart => "imag-part",
+    /// magnitude - Get magnitude of complex number
+    Magnitude => "magnitude",
+    /// angle - Get angle of complex number
+    Angle => "angle",
+    
+    // Rational number operations (R7RS Section 6.2.6)
+    /// numerator - Get numerator of rational
+    Numerator => "numerator",
+    /// denominator - Get denominator of rational
+    Denominator => "denominator",
+    
+    // Exactness conversion (R7RS Section 6.2.6)
+    /// exact - Convert to exact number
+    Exact => "exact",
+    /// inexact - Convert to inexact number
+    Inexact => "inexact",
+    
+    // Square root (R7RS Section 6.2.6)
+    /// sqrt - Square root
+    Sqrt => "sqrt",
+    
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
     Floor => "floor",

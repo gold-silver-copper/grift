@@ -922,3 +922,302 @@ fn test_string_gc_trace() {
     assert_eq!(lisp.string_len(s).unwrap(), 11);
     assert!(lisp.string_matches(s, "hello world").unwrap());
 }
+
+// ========================================================================
+// Numerical Tower Tests
+// ========================================================================
+
+#[test]
+fn test_parse_integer() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Basic integers
+    let idx = parse(&lisp, "42").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(42)));
+    
+    let idx = parse(&lisp, "-123").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(-123)));
+    
+    let idx = parse(&lisp, "+456").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(456)));
+}
+
+#[test]
+fn test_parse_float() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Basic floats
+    let idx = parse(&lisp, "3.14").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!(n.is_inexact());
+            assert!((n.to_f64() - 3.14).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    // Leading decimal
+    let idx = parse(&lisp, ".5").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => assert!((n.to_f64() - 0.5).abs() < 0.0001),
+        _ => panic!("Expected Number"),
+    }
+    
+    // Trailing decimal
+    let idx = parse(&lisp, "5.").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => assert!((n.to_f64() - 5.0).abs() < 0.0001),
+        _ => panic!("Expected Number"),
+    }
+    
+    // Scientific notation
+    let idx = parse(&lisp, "1.5e2").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => assert!((n.to_f64() - 150.0).abs() < 0.0001),
+        _ => panic!("Expected Number"),
+    }
+}
+
+#[test]
+fn test_parse_rational() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Basic rationals
+    let idx = parse(&lisp, "3/4").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(Number::Rational { num, denom }) => {
+            assert_eq!(num, 3);
+            assert_eq!(denom, 4);
+        }
+        _ => panic!("Expected Rational"),
+    }
+    
+    // Rational that reduces to integer
+    let idx = parse(&lisp, "6/2").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(3)));
+    
+    // Negative rational
+    let idx = parse(&lisp, "-3/4").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(Number::Rational { num, denom }) => {
+            assert_eq!(num, -3);
+            assert_eq!(denom, 4);
+        }
+        _ => panic!("Expected Rational"),
+    }
+}
+
+#[test]
+fn test_parse_complex_rectangular() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Basic complex
+    let idx = parse(&lisp, "3+4i").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!(!n.is_real());
+            assert!((n.real_part().to_f64() - 3.0).abs() < 0.0001);
+            assert!((n.imag_part().to_f64() - 4.0).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    // Negative imaginary
+    let idx = parse(&lisp, "1-2i").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!((n.real_part().to_f64() - 1.0).abs() < 0.0001);
+            assert!((n.imag_part().to_f64() - (-2.0)).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    // Pure imaginary
+    let idx = parse(&lisp, "+3i").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!((n.real_part().to_f64()).abs() < 0.0001);
+            assert!((n.imag_part().to_f64() - 3.0).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    // Imaginary unit
+    let idx = parse(&lisp, "+i").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!((n.real_part().to_f64()).abs() < 0.0001);
+            assert!((n.imag_part().to_f64() - 1.0).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    let idx = parse(&lisp, "-i").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!((n.real_part().to_f64()).abs() < 0.0001);
+            assert!((n.imag_part().to_f64() - (-1.0)).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+}
+
+#[test]
+fn test_parse_special_floats() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Positive infinity
+    let idx = parse(&lisp, "+inf.0").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!(n.is_infinite());
+            assert!(n.to_f64().is_sign_positive());
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    // Negative infinity
+    let idx = parse(&lisp, "-inf.0").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!(n.is_infinite());
+            assert!(n.to_f64().is_sign_negative());
+        }
+        _ => panic!("Expected Number"),
+    }
+    
+    // NaN
+    let idx = parse(&lisp, "+nan.0").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => assert!(n.is_nan()),
+        _ => panic!("Expected Number"),
+    }
+}
+
+#[test]
+fn test_parse_radix_prefixes() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Binary
+    let idx = parse(&lisp, "#b1010").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(10)));
+    
+    // Octal
+    let idx = parse(&lisp, "#o755").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(493)));
+    
+    // Hexadecimal
+    let idx = parse(&lisp, "#xFF").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(255)));
+    
+    // Decimal (explicit)
+    let idx = parse(&lisp, "#d42").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(42)));
+}
+
+#[test]
+fn test_parse_exactness_prefixes() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Force exact
+    let idx = parse(&lisp, "#e3.14").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => assert!(n.is_exact()),
+        _ => panic!("Expected Number"),
+    }
+    
+    // Force inexact
+    let idx = parse(&lisp, "#i42").unwrap();
+    match lisp.get(idx).unwrap() {
+        Value::Number(n) => {
+            assert!(n.is_inexact());
+            assert!((n.to_f64() - 42.0).abs() < 0.0001);
+        }
+        _ => panic!("Expected Number"),
+    }
+}
+
+#[test]
+fn test_number_type_predicates() {
+    // Integer is: integer, rational, real, complex, exact
+    let n = Number::integer(42);
+    assert!(n.is_integer());
+    assert!(n.is_rational());
+    assert!(n.is_real());
+    assert!(n.is_complex());
+    assert!(n.is_exact());
+    assert!(!n.is_inexact());
+    
+    // Float is: rational (if finite), real, complex, inexact
+    let n = Number::float(3.14);
+    assert!(!n.is_integer());
+    assert!(n.is_rational()); // finite floats are rational
+    assert!(n.is_real());
+    assert!(n.is_complex());
+    assert!(!n.is_exact());
+    assert!(n.is_inexact());
+    
+    // Rational is: rational, real, complex, exact
+    let n = Number::rational(3, 4);
+    assert!(!n.is_integer());
+    assert!(n.is_rational());
+    assert!(n.is_real());
+    assert!(n.is_complex());
+    assert!(n.is_exact());
+    assert!(!n.is_inexact());
+    
+    // Complex is: complex, inexact
+    let n = Number::complex(3.0, 4.0);
+    assert!(!n.is_integer());
+    assert!(!n.is_rational());
+    assert!(!n.is_real());
+    assert!(n.is_complex());
+    assert!(!n.is_exact());
+    assert!(n.is_inexact());
+}
+
+#[test]
+fn test_number_arithmetic() {
+    // Integer arithmetic
+    let a = Number::integer(10);
+    let b = Number::integer(3);
+    assert_eq!(a.add(&b), Number::integer(13));
+    assert_eq!(a.sub(&b), Number::integer(7));
+    assert_eq!(a.mul(&b), Number::integer(30));
+    
+    // Integer division produces rational
+    match a.div(&b) {
+        Number::Rational { num, denom } => {
+            assert_eq!(num, 10);
+            assert_eq!(denom, 3);
+        }
+        _ => panic!("Expected Rational"),
+    }
+    
+    // Rational arithmetic
+    let r1 = Number::rational(1, 2);
+    let r2 = Number::rational(1, 3);
+    match r1.add(&r2) {
+        Number::Rational { num, denom } => {
+            assert_eq!(num, 5);
+            assert_eq!(denom, 6);
+        }
+        _ => panic!("Expected Rational"),
+    }
+}
+
+#[test]
+fn test_complex_operations() {
+    // Magnitude of 3+4i = 5
+    let c = Number::complex(3.0, 4.0);
+    assert!((c.magnitude().to_f64() - 5.0).abs() < 0.0001);
+    
+    // Real and imaginary parts
+    assert!((c.real_part().to_f64() - 3.0).abs() < 0.0001);
+    assert!((c.imag_part().to_f64() - 4.0).abs() < 0.0001);
+    
+    // Polar form
+    let p = Number::from_polar(5.0, 0.0);
+    assert!((p.real_part().to_f64() - 5.0).abs() < 0.0001);
+    assert!(p.imag_part().to_f64().abs() < 0.0001);
+}
