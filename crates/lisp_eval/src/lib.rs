@@ -1590,8 +1590,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Some(0)
                     } else {
                         // lcm(a, b) = |a * b| / gcd(a, b)
+                        // Use saturating_mul to prevent overflow
                         let g = Self::gcd_helper(a, b_abs);
-                        Some((a / g) * b_abs)
+                        Some((a / g).saturating_mul(b_abs))
                     }
                 }, call_expr)
             }
@@ -1610,8 +1611,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // For integers, x^(-n) = 1/(x^n), which is 0 for |x| > 1
                     if base == 1 { return self.lisp.number(1).map_err(Into::into); }
                     if base == -1 { 
-                        // (-1)^(-n) = (-1)^n
-                        return self.lisp.number(if power % 2 == 0 { 1 } else { -1 }).map_err(Into::into);
+                        // (-1)^(-n) = (-1)^|n|, use absolute value for parity check
+                        return self.lisp.number(if power.abs() % 2 == 0 { 1 } else { -1 }).map_err(Into::into);
                     }
                     return self.lisp.number(0).map_err(Into::into);
                 }

@@ -1245,7 +1245,7 @@ impl<const N: usize> Lisp<N> {
         // Panic if too many roots - this indicates a programming error
         // Account for 4 reserved roots (nil, true, false, intern_table)
         assert!(roots.len() < MAX_ROOTS - 4, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 5);
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 4 - 1);
         
         let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
         let mut root_count = 0;
