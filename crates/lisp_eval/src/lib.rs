@@ -2792,23 +2792,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let min_len = if len_a < len_b { len_a } else { len_b };
         
         for i in 0..min_len {
-            let char_a = if len_a > 0 {
-                let slot = self.lisp.arena_index_at_offset(data_a, i)?;
-                match self.lisp.get(slot)? {
-                    Value::Char(c) => c,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
-            } else {
-                '\0'
+            let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
+            let char_a = match self.lisp.get(slot_a)? {
+                Value::Char(c) => c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
-            let char_b = if len_b > 0 {
-                let slot = self.lisp.arena_index_at_offset(data_b, i)?;
-                match self.lisp.get(slot)? {
-                    Value::Char(c) => c,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
-            } else {
-                '\0'
+            let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
+            let char_b = match self.lisp.get(slot_b)? {
+                Value::Char(c) => c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
             
             if char_a < char_b {

@@ -1995,10 +1995,6 @@ impl<'a> Parser<'a> {
         if name_len == 0 {
             // #\ followed by non-symbol character like space: #\ 
             return match self.peek() {
-                Some(b' ') => {
-                    self.advance();
-                    lisp.char(' ').map_err(Into::into)
-                }
                 Some(c) => {
                     self.advance();
                     lisp.char(c as char).map_err(Into::into)
@@ -2118,9 +2114,16 @@ impl<'a> Parser<'a> {
                             }
                         }
                         Some(b'\n') | Some(b'\r') => {
-                            // Line continuation: skip whitespace after line ending
+                            // Line continuation: skip the line ending and any intraline whitespace on next line
+                            // Per R7RS, skip only the first line ending, then intraline whitespace
+                            self.advance(); // consume the \n or \r
+                            // Handle \r\n as a single line ending
+                            if self.peek() == Some(b'\n') {
+                                self.advance();
+                            }
+                            // Skip intraline whitespace on next line (spaces and tabs only, not newlines)
                             while let Some(c) = self.peek() {
-                                if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+                                if c == b' ' || c == b'\t' {
                                     self.advance();
                                 } else {
                                     break;
@@ -2135,7 +2138,11 @@ impl<'a> Parser<'a> {
                                     self.advance();
                                 } else if c == b'\n' || c == b'\r' {
                                     self.advance();
-                                    // Skip trailing whitespace on next line
+                                    // Handle \r\n as a single line ending
+                                    if c == b'\r' && self.peek() == Some(b'\n') {
+                                        self.advance();
+                                    }
+                                    // Skip trailing whitespace on next line (intraline only)
                                     while let Some(c) = self.peek() {
                                         if c == b' ' || c == b'\t' {
                                             self.advance();
