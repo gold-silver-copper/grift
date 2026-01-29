@@ -49,6 +49,11 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Float Predicates**: `nan?`, `infinite?`, `finite?`, `real?`, `rational?`, `complex?`
 - ✅ **Type Conversion**: `exact->inexact`, `inexact->exact`
 - ✅ **Constants**: `get-pi`, `get-e`, `get-epsilon`
+- ✅ **Rational Numbers**: `make-rational`, `numerator-of`, `denominator-of`, `add-rational`, `sub-rational`, `mul-rational`, `div-rational`, `rational->float`, `rational-representation?`, `tower-rational?`
+- ✅ **Complex Numbers**: `make-complex`, `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `angle`, `add-complex`, `sub-complex`, `mul-complex`, `div-complex`, `conjugate`, `negate-complex`, `complex-representation?`, `tower-complex?`, `complex=?`
+- ✅ **Complex Transcendentals**: `complex-sqrt`, `complex-exp`, `complex-log`, `complex-sin`, `complex-cos`, `complex-tan`, `complex-expt`
+- ✅ **Tower Predicates**: `tower-integer?`, `tower-rational?`, `tower-real?`, `tower-complex?`, `tower-number?`
+- ✅ **Rationalize**: `rationalize`
 - ✅ **Character Predicates**: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `digit-value`, `char-foldcase`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
 - ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`
 
@@ -175,7 +180,54 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 - [x] Implement `string-upcase` / `string-downcase` / `string-foldcase` - Case conversion (stdlib)
 - [x] Implement `string-ci=?` - Case-insensitive equality (stdlib)
 
-### Phase 3: Vector Support
+### Phase 3: Numerical Tower (Complex and Rational Numbers) ✅ COMPLETED
+**Goal**: Full R7RS numerical tower with complex and rational number support
+
+#### 3.1 Rational Number Support (Section 6.2)
+- [x] Implement rational number representation as `(rational . (numerator . denominator))`
+- [x] Implement `make-rational` - Create normalized rational number
+- [x] Implement `numerator-of` / `denominator-of` - Access rational components
+- [x] Implement rational arithmetic: `add-rational`, `sub-rational`, `mul-rational`, `div-rational`
+- [x] Implement `rational-gcd` - GCD for rational normalization
+- [x] Implement `rational->float` - Convert rational to float
+- [x] Implement `rational-representation?` - Check if value is tagged as rational
+- [x] Implement `tower-rational?` - Check if value is rational in the tower
+
+#### 3.2 Complex Number Support (Section 6.2)
+- [x] Implement complex number representation as `(complex . (real-part . imag-part))`
+- [x] Implement `make-complex` / `make-rectangular` - Create complex number
+- [x] Implement `make-polar` - Create complex from polar coordinates
+- [x] Implement `real-part` / `imag-part` - Access complex components
+- [x] Implement `magnitude` / `angle` - Polar form accessors
+- [x] Implement complex arithmetic: `add-complex`, `sub-complex`, `mul-complex`, `div-complex`
+- [x] Implement `conjugate` / `negate-complex` - Complex operations
+- [x] Implement `complex-representation?` - Check if value is tagged as complex
+- [x] Implement `tower-complex?` - Check if value is complex in the tower
+
+#### 3.3 Numerical Tower Predicates (Section 6.2)
+- [x] Implement `tower-integer?` - Integer type predicate
+- [x] Implement `tower-rational?` - Rational type predicate (includes integers)
+- [x] Implement `tower-real?` - Real type predicate (includes rationals and floats)
+- [x] Implement `tower-complex?` - Complex type predicate (includes all numbers)
+- [x] Implement `tower-number?` - Number type predicate
+
+#### 3.4 Complex Transcendental Functions (Section 6.2.6)
+- [x] Implement `complex-sqrt` - Square root with complex result for negatives
+- [x] Implement `complex-exp` - Exponential for complex numbers (Euler's formula)
+- [x] Implement `complex-log` - Natural log for complex numbers
+- [x] Implement `complex-sin` / `complex-cos` / `complex-tan` - Trig for complex
+- [x] Implement `complex-expt` - Exponentiation with complex support
+
+#### 3.5 Additional Functions (Section 6.2)
+- [x] Implement `rationalize` - Find simplest rational approximation
+- [x] Implement `complex=?` - Complex number equality
+- [x] Implement `display-rational` / `display-complex` / `display-tower-number` - Display functions
+
+#### 3.6 Known Limitations
+- **StdLib nested call issue**: When a StdLib function calls another StdLib function with an inline expression as argument, the evaluation can return the wrong result. Workaround: Use user-defined functions or bind intermediate values with `define`.
+- **Example**: `(car (stdlib-func args))` may fail, but `(define x (stdlib-func args)) (car x)` works.
+
+### Phase 4: Vector Support
 **Goal**: R7RS vector operations (distinct from arrays)
 
 #### 3.1 Vector Operations (Section 6.8)
@@ -188,46 +240,46 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 - [ ] Implement `vector-fill!` - Fill vector with value
 - [ ] Implement `vector-copy` - Copy vector
 
-### Phase 4: Multiple Values
+### Phase 5: Multiple Values
 **Goal**: Full multiple value support
 
-#### 4.1 Multiple Values (Section 6.10)
+#### 5.1 Multiple Values (Section 6.10)
 - [ ] Verify `values` implementation
 - [ ] Implement `call-with-values` - Receive multiple values
 - [ ] Implement `let-values` / `let*-values` - Bind multiple values
 - [ ] Implement `define-values` - Define multiple values
 
-### Phase 5: Hygienic Macros
+### Phase 6: Hygienic Macros
 **Goal**: R7RS-compliant macro system
 
-#### 5.1 Syntax-Rules (Section 4.3.2)
+#### 6.1 Syntax-Rules (Section 4.3.2)
 - [ ] Implement `syntax-rules` - Pattern-based macros
 - [ ] Implement `let-syntax` / `letrec-syntax` - Local syntax bindings
 - [ ] Implement `define-syntax` - Top-level syntax definitions
 - [ ] Implement `syntax-error` - Macro error signaling
 
-### Phase 6: Control Features
+### Phase 7: Control Features
 **Goal**: Advanced control flow
 
-#### 6.1 Conditionals
+#### 7.1 Conditionals
 - [ ] Implement `when` / `unless` - Convenience conditionals
 - [ ] Implement `cond-expand` - Feature-based conditional expansion
 - [ ] Implement `case-lambda` - Multiple-arity procedures
 
-#### 6.2 Exception Handling (Section 6.11)
+#### 7.2 Exception Handling (Section 6.11)
 - [ ] Implement `guard` - Exception handling syntax
 - [ ] Implement `raise` / `raise-continuable` - Exception raising
 - [ ] Implement `with-exception-handler` - Exception handler installation
 - [ ] Implement `error-object?` / `error-object-message` / `error-object-irritants`
 
-#### 6.3 Dynamic Bindings (Section 4.2.6)
+#### 7.3 Dynamic Bindings (Section 4.2.6)
 - [ ] Implement `make-parameter` - Create parameter object
 - [ ] Implement `parameterize` - Dynamic binding
 
-### Phase 7: I/O System
+### Phase 8: I/O System
 **Goal**: R7RS I/O operations
 
-#### 7.1 Ports (Section 6.13)
+#### 8.1 Ports (Section 6.13)
 - [ ] Implement port types and predicates
 - [ ] Implement `current-input-port` / `current-output-port` / `current-error-port`
 - [ ] Implement `open-input-string` / `open-output-string` / `get-output-string`
@@ -236,7 +288,7 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 - [ ] Implement `write` / `write-simple` - Datum output
 - [ ] Implement `read` - Datum input
 
-### Phase 8: Library System
+### Phase 9: Library System
 **Goal**: R7RS module system
 
 #### 8.1 Libraries (Section 5.6)
