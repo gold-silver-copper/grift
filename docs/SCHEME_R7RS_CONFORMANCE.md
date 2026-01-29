@@ -35,6 +35,8 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Number Operations**: `abs`, `max`, `min`, `gcd`, `lcm`, `expt`, `square`, `floor`, `ceiling`, `truncate`, `round`
 - ✅ **Number Predicates**: `zero?`, `positive?`, `negative?`, `odd?`, `even?`
 - ✅ **Type Predicates**: `symbol?`, `procedure?`
+- ✅ **Characters**: `char?`, `char=?`, `char<?`, `char>?`, `char<=?`, `char>=?`, `char->integer`, `integer->char`, `char-upcase`, `char-downcase`
+- ✅ **Strings**: `string?`, `make-string`, `string`, `string-length`, `string-ref`, `string-set!`, `string=?`, `string<?`, `string>?`, `string<=?`, `string>=?`, `string-append`, `string->list`, `list->string`, `substring`, `string-copy`
 - ✅ **I/O**: `display`, `newline`, `error`
 
 #### Standard Library Functions (`stdlib.scm`)
@@ -47,6 +49,8 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Float Predicates**: `nan?`, `infinite?`, `finite?`, `real?`, `rational?`, `complex?`
 - ✅ **Type Conversion**: `exact->inexact`, `inexact->exact`
 - ✅ **Constants**: `get-pi`, `get-e`, `get-epsilon`
+- ✅ **Character Predicates**: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `digit-value`, `char-foldcase`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
+- ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`
 
 ### 🔧 Implementation Extensions (Non-R7RS)
 
@@ -133,25 +137,43 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 - [x] Implement `fold-right` / `reduce` - Right fold operations
 - [x] Implement full c...r accessors (up to 4 levels: `cddddr`, `cadddr`)
 
-### Phase 2: String and Character Support
+### Phase 2: String and Character Support ✅ COMPLETED
 **Goal**: Full R7RS string and character operations
 
-#### 2.1 Character Operations (Section 6.6)
-- [ ] Implement `char?` predicate properly
-- [ ] Implement `char=?` / `char<?` / `char>?` / `char<=?` / `char>=?` - Comparison
-- [ ] Implement `char->integer` / `integer->char` - Conversion
-- [ ] Implement character predicates: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`
-- [ ] Implement `char-upcase` / `char-downcase` - Case conversion
+#### 2.1 Character Literal Parsing
+- [x] Character literal syntax: `#\a`, `#\A`, `#\0`, `#\(`, etc.
+- [x] Named characters: `#\newline`, `#\space`, `#\tab`, `#\return`, `#\null`, `#\alarm`, `#\backspace`, `#\delete`, `#\escape`
+- [x] Hex character literals: `#\x41` (for 'A'), `#\x20` (for space)
 
-#### 2.2 String Operations (Section 6.7)
-- [ ] Implement `string` constructor
-- [ ] Implement `string-length`
-- [ ] Implement `string-ref` / `string-set!` - Access and mutation
-- [ ] Implement `string=?` / `string<?` / `string>?` / `string<=?` / `string>=?` - Comparison
-- [ ] Implement `string-append` - Concatenation
-- [ ] Implement `string->list` / `list->string` - Conversion
-- [ ] Implement `substring` - Substring extraction
-- [ ] Implement `string-copy` - String copying
+#### 2.2 String Literal Parsing  
+- [x] Basic string literals: `"hello"`, `""` (empty string)
+- [x] Escape sequences: `\n`, `\t`, `\r`, `\"`, `\\`, `\a`, `\b`, `\|`
+- [x] Hex escapes: `\x41;` (note the terminating semicolon per R7RS)
+- [x] Line continuation: `\` followed by whitespace and newline
+
+#### 2.3 Character Operations (Section 6.6)
+- [x] Implement `char?` predicate (builtin)
+- [x] Implement `char=?` / `char<?` / `char>?` / `char<=?` / `char>=?` - Comparison (builtins)
+- [x] Implement `char->integer` / `integer->char` - Conversion (builtins)
+- [x] Implement `char-upcase` / `char-downcase` - Case conversion (builtins)
+- [x] Implement character predicates (stdlib): `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`
+- [x] Implement `digit-value` - Get numeric value of digit character (stdlib)
+- [x] Implement `char-foldcase` - Unicode simple case-folding (stdlib)
+- [x] Implement case-insensitive comparisons (stdlib): `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
+
+#### 2.4 String Operations (Section 6.7)
+- [x] Implement `string?` predicate (builtin)
+- [x] Implement `make-string` - Create string with fill character (builtin)
+- [x] Implement `string` constructor - Create string from characters (builtin)
+- [x] Implement `string-length` (builtin)
+- [x] Implement `string-ref` / `string-set!` - Access and mutation (builtins)
+- [x] Implement `string=?` / `string<?` / `string>?` / `string<=?` / `string>=?` - Comparison (builtins)
+- [x] Implement `string-append` - Concatenation (builtin)
+- [x] Implement `string->list` / `list->string` - Conversion (builtins)
+- [x] Implement `substring` - Substring extraction (builtin)
+- [x] Implement `string-copy` - String copying (builtin)
+- [x] Implement `string-upcase` / `string-downcase` / `string-foldcase` - Case conversion (stdlib)
+- [x] Implement `string-ci=?` - Case-insensitive equality (stdlib)
 
 ### Phase 3: Vector Support
 **Goal**: R7RS vector operations (distinct from arrays)
