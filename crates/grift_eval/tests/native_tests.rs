@@ -35,6 +35,34 @@ fn test_to_lisp_bool() {
 }
 
 #[test]
+fn test_from_lisp_unit_nil() {
+    let lisp: Lisp<100> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    // Unit should only be converted from nil
+    assert!(<()>::from_lisp(&lisp, nil).is_ok());
+}
+
+#[test]
+fn test_from_lisp_unit_rejects_non_nil() {
+    let lisp: Lisp<100> = Lisp::new();
+    let num = lisp.number(42).unwrap();
+    let t = lisp.true_val().unwrap();
+    let sym = lisp.symbol("test").unwrap();
+    
+    // Unit should NOT be converted from other types
+    assert!(<()>::from_lisp(&lisp, num).is_err());
+    assert!(<()>::from_lisp(&lisp, t).is_err());
+    assert!(<()>::from_lisp(&lisp, sym).is_err());
+}
+
+#[test]
+fn test_to_lisp_unit() {
+    let lisp: Lisp<100> = Lisp::new();
+    let idx = ().to_lisp(&lisp).unwrap();
+    assert!(lisp.get(idx).unwrap().is_nil());
+}
+
+#[test]
 fn test_native_registry() {
     fn dummy_fn<const N: usize>(lisp: &Lisp<N>, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         lisp.nil()
