@@ -19,13 +19,21 @@
 //! - `Nil` - The empty list (NOT false!)
 //! - `True` - Boolean true (#t)
 //! - `False` - Boolean false (#f)
-//! - `Number(isize)` - Integer numbers
+//! - `Number(Number)` - Full numerical tower: integer, rational, real, complex
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell
 //! - `Symbol { chars }` - Symbol with contiguous string storage
 //! - `Lambda { params, body, env }` - Closure
 //! - `Builtin(Builtin)` - Optimized built-in function
 //! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
+//!
+//! ## Numerical Tower
+//!
+//! The parser supports the full Scheme R7RS numerical tower:
+//! - **Integer** - Exact integers (isize): `42`, `-17`
+//! - **Rational** - Exact rationals: `3/4`, `-1/3`
+//! - **Real** - Inexact floats (f64): `3.14`, `1.0e10`, `+inf.0`, `-inf.0`, `+nan.0`
+//! - **Complex** - Complex numbers: `3+4i`, `1.0-2.5i`, `3@1.57`
 //!
 //! ## Reserved Slots
 //!
@@ -52,6 +60,9 @@
 //! - Body is parsed on each call (minor overhead, but keeps code out of arena)
 //! - Recursive stdlib functions work via the global environment
 //! - Errors in static source strings are only caught at runtime
+
+pub mod number;
+pub use number::Number;
 
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
@@ -414,8 +425,8 @@ pub enum Value {
     /// Boolean false (#f) - the ONLY false value
     False,
     
-    /// Integer number
-    Number(isize),
+    /// Number (full numerical tower: integer, rational, real, complex)
+    Number(Number),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -624,9 +635,18 @@ impl Value {
     
     /// Get the number value if this is a number
     #[inline]
-    pub const fn as_number(&self) -> Option<isize> {
+    pub const fn as_number(&self) -> Option<Number> {
         match self {
             Value::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+    
+    /// Get the number as an isize if this is an exact integer
+    #[inline]
+    pub fn as_integer(&self) -> Option<isize> {
+        match self {
+            Value::Number(n) => n.to_isize(),
             _ => None,
         }
     }
@@ -854,10 +874,34 @@ impl<const N: usize> Lisp<N> {
         if b { self.true_val() } else { self.false_val() }
     }
     
-    /// Allocate a number
+    /// Allocate an integer number
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Number(Number::integer(n)))
+    }
+    
+    /// Allocate a number from the full Number type
+    #[inline]
+    pub fn number_value(&self, n: Number) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Number(n))
+    }
+    
+    /// Allocate a float number
+    #[inline]
+    pub fn float(&self, f: f64) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Number(Number::float(f)))
+    }
+    
+    /// Allocate a rational number
+    #[inline]
+    pub fn rational(&self, num: isize, denom: isize) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Number(Number::rational(num, denom)))
+    }
+    
+    /// Allocate a complex number
+    #[inline]
+    pub fn complex(&self, real: f64, imag: f64) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Number(Number::complex(real, imag).normalize()))
     }
     
     /// Allocate a character
@@ -1669,6 +1713,8 @@ pub enum ParseErrorKind {
     OutOfMemory,
     /// Invalid hash literal
     InvalidHashLiteral,
+    /// Invalid syntax in number
+    InvalidSyntax,
 }
 
 impl ParseError {
@@ -1798,12 +1844,36 @@ impl<'a> Parser<'a> {
             
             Some(c) if c.is_ascii_digit() => self.parse_number(lisp),
             
-            Some(b'-') => {
-                // Could be negative number or symbol
+            Some(b'.') => {
+                // Could be .5 (number) or a symbol
                 if self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
                     self.parse_number(lisp)
                 } else {
                     self.parse_symbol(lisp)
+                }
+            }
+            
+            Some(b'-') => {
+                // Could be negative number, -inf.0, -nan.0, -i, or symbol
+                match self.peek_next() {
+                    Some(c) if c.is_ascii_digit() => self.parse_number(lisp),
+                    Some(b'.') => self.parse_number(lisp),  // -.5
+                    Some(b'i') => self.parse_number(lisp),  // -i, -3i
+                    Some(b'n') | Some(b'N') => self.parse_number(lisp),  // -nan.0
+                    Some(b'I') => self.parse_number(lisp),  // -inf.0
+                    _ => self.parse_symbol(lisp)
+                }
+            }
+            
+            Some(b'+') => {
+                // Could be positive number, +inf.0, +nan.0, +i, or symbol
+                match self.peek_next() {
+                    Some(c) if c.is_ascii_digit() => self.parse_number(lisp),
+                    Some(b'.') => self.parse_number(lisp),  // +.5
+                    Some(b'i') => self.parse_number(lisp),  // +i, +3i
+                    Some(b'n') | Some(b'N') => self.parse_number(lisp),  // +nan.0
+                    Some(b'I') => self.parse_number(lisp),  // +inf.0
+                    _ => self.parse_symbol(lisp)
                 }
             }
             
@@ -1813,21 +1883,110 @@ impl<'a> Parser<'a> {
         }
     }
     
-    /// Parse hash literals (#t, #f, etc.)
+    /// Parse hash literals (#t, #f, #e, #i, #b, #o, #d, #x, #\char, etc.)
     fn parse_hash_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.advance(); // consume '#'
+        // Don't consume # yet - parse_number handles prefixes
         
-        match self.peek() {
+        match self.peek_at(1) {
+            // Boolean literals
             Some(b't') | Some(b'T') => {
-                self.advance();
+                self.advance(); // #
+                self.advance(); // t
+                // Check for #true
+                if self.peek() == Some(b'r') {
+                    if self.matches_bytes(b"rue") {
+                        return lisp.true_val().map_err(Into::into);
+                    }
+                }
                 lisp.true_val().map_err(Into::into)
             }
             Some(b'f') | Some(b'F') => {
-                self.advance();
+                self.advance(); // #
+                self.advance(); // f
+                // Check for #false
+                if self.peek() == Some(b'a') {
+                    if self.matches_bytes(b"alse") {
+                        return lisp.false_val().map_err(Into::into);
+                    }
+                }
                 lisp.false_val().map_err(Into::into)
+            }
+            // Number prefixes - delegate to parse_number
+            Some(b'e') | Some(b'E') | Some(b'i') | Some(b'I') |
+            Some(b'b') | Some(b'B') | Some(b'o') | Some(b'O') |
+            Some(b'd') | Some(b'D') | Some(b'x') | Some(b'X') => {
+                self.parse_number(lisp)
+            }
+            // Character literal
+            Some(b'\\') => {
+                self.advance(); // #
+                self.advance(); // \
+                self.parse_character_literal(lisp)
             }
             Some(_) => Err(self.error(ParseErrorKind::InvalidHashLiteral)),
             None => Err(self.error(ParseErrorKind::UnexpectedEof)),
+        }
+    }
+    
+    /// Parse a character literal after #\
+    fn parse_character_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        // Try named characters first
+        if let Some(c) = self.try_parse_named_char()? {
+            return lisp.char(c).map_err(Into::into);
+        }
+        
+        // Single character
+        match self.peek() {
+            Some(c) => {
+                self.advance();
+                lisp.char(c as char).map_err(Into::into)
+            }
+            None => Err(self.error(ParseErrorKind::UnexpectedEof)),
+        }
+    }
+    
+    /// Try to parse named character constants
+    fn try_parse_named_char(&mut self) -> Result<Option<char>, ParseError> {
+        let start = self.pos;
+        
+        // Read identifier
+        let mut buf = [0u8; 16];
+        let mut len = 0;
+        while let Some(c) = self.peek() {
+            if Self::is_symbol_char(c) && len < 16 {
+                buf[len] = c.to_ascii_lowercase();
+                len += 1;
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        
+        if len == 0 {
+            return Ok(None);
+        }
+        
+        let name = &buf[..len];
+        match name {
+            b"space" => Ok(Some(' ')),
+            b"newline" => Ok(Some('\n')),
+            b"tab" => Ok(Some('\t')),
+            b"return" => Ok(Some('\r')),
+            b"null" => Ok(Some('\0')),
+            b"alarm" => Ok(Some('\x07')),
+            b"backspace" => Ok(Some('\x08')),
+            b"delete" => Ok(Some('\x7f')),
+            b"escape" => Ok(Some('\x1b')),
+            _ => {
+                // Not a named char - if single character, return that
+                if len == 1 {
+                    self.pos = start + 1;
+                    Ok(Some(buf[0] as char))
+                } else {
+                    self.pos = start;
+                    Ok(None)
+                }
+            }
         }
     }
     
@@ -1896,33 +2055,326 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
     
-    /// Parse a number
+    /// Parse a number (full numerical tower support)
+    /// 
+    /// Supports:
+    /// - Integers: 42, -17, #b1010, #o755, #xFF
+    /// - Rationals: 3/4, -1/3
+    /// - Floats: 3.14, 1.0e10, .5, 5.
+    /// - Special floats: +inf.0, -inf.0, +nan.0, -nan.0
+    /// - Complex rectangular: 3+4i, 1-2i, +3i, -4i, 3+i, 3-i
+    /// - Complex polar: 1@0.5
+    /// - Exactness prefixes: #e (exact), #i (inexact)
     fn parse_number<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        let mut value: isize = 0;
-        let negative = if self.peek() == Some(b'-') {
+        // Parse optional prefixes (#e, #i, #b, #o, #d, #x)
+        let mut force_exact = false;
+        let mut force_inexact = false;
+        let mut radix = 10u8;
+        
+        // Check for prefixes (can have exactness and radix in any order)
+        while self.peek() == Some(b'#') {
+            let saved_pos = self.pos;
             self.advance();
-            true
-        } else {
-            false
+            match self.peek().map(|c| c.to_ascii_lowercase()) {
+                Some(b'e') => { self.advance(); force_exact = true; }
+                Some(b'i') => { self.advance(); force_inexact = true; }
+                Some(b'b') => { self.advance(); radix = 2; }
+                Some(b'o') => { self.advance(); radix = 8; }
+                Some(b'd') => { self.advance(); radix = 10; }
+                Some(b'x') => { self.advance(); radix = 16; }
+                _ => {
+                    self.pos = saved_pos;
+                    break;
+                }
+            }
+        }
+        
+        // Check for special values: +inf.0, -inf.0, +nan.0, -nan.0
+        if let Some(special) = self.try_parse_special_float()? {
+            return lisp.float(special).map_err(Into::into);
+        }
+        
+        // Parse sign
+        let negative = match self.peek() {
+            Some(b'-') => { self.advance(); true }
+            Some(b'+') => { self.advance(); false }
+            _ => false
         };
+        
+        // Check for pure imaginary: +i, -i
+        if self.peek() == Some(b'i') && (self.peek_at(1).is_none() || self.is_delimiter(self.peek_at(1).unwrap_or(b' '))) {
+            self.advance();
+            let imag = if negative { -1.0 } else { 1.0 };
+            return lisp.complex(0.0, imag).map_err(Into::into);
+        }
+        
+        // Parse integer part
+        let (int_part, _has_int) = self.parse_integer_part(radix)?;
+        
+        // Check for decimal point (only valid for radix 10)
+        let (frac_part, has_frac) = if radix == 10 && self.peek() == Some(b'.') {
+            self.advance();
+            let (frac, frac_digits) = self.parse_fractional_part()?;
+            (frac / pow10(frac_digits as i32), true)
+        } else {
+            (0.0, false)
+        };
+        
+        // Check for exponent (only valid for radix 10)
+        let exp_part = if radix == 10 && matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            self.advance();
+            self.parse_exponent()?
+        } else {
+            0
+        };
+        
+        // Check for rational denominator
+        if self.peek() == Some(b'/') {
+            self.advance();
+            let (denom, _) = self.parse_integer_part(radix)?;
+            if denom == 0 {
+                return lisp.float(f64::NAN).map_err(Into::into);
+            }
+            let num = if negative { -(int_part as isize) } else { int_part as isize };
+            
+            if force_inexact {
+                return lisp.float(num as f64 / denom as f64).map_err(Into::into);
+            }
+            return lisp.rational(num, denom as isize).map_err(Into::into);
+        }
+        
+        // Check for complex (rectangular: +/- imaginary part, or polar: @angle)
+        if self.peek() == Some(b'@') {
+            // Polar form: r@theta
+            self.advance();
+            let angle_negative = match self.peek() {
+                Some(b'-') => { self.advance(); true }
+                Some(b'+') => { self.advance(); false }
+                _ => false
+            };
+            let angle = self.parse_real_magnitude(radix)?;
+            let angle = if angle_negative { -angle } else { angle };
+            let r = self.build_real(int_part, frac_part, exp_part, negative);
+            let real = r * libm::cos(angle);
+            let imag = r * libm::sin(angle);
+            return lisp.complex(real, imag).map_err(Into::into);
+        }
+        
+        // Check for complex rectangular imaginary part
+        if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+            let imag_negative = self.peek() == Some(b'-');
+            self.advance();
+            
+            // Check for +i or -i (imaginary unit)
+            if self.peek() == Some(b'i') && (self.peek_at(1).is_none() || self.is_delimiter(self.peek_at(1).unwrap_or(b' '))) {
+                self.advance();
+                let real = self.build_real(int_part, frac_part, exp_part, negative);
+                let imag = if imag_negative { -1.0 } else { 1.0 };
+                return lisp.complex(real, imag).map_err(Into::into);
+            }
+            
+            let imag = self.parse_real_magnitude(radix)?;
+            
+            // Must end with 'i'
+            if self.peek() != Some(b'i') {
+                return Err(self.error(ParseErrorKind::InvalidSyntax));
+            }
+            self.advance();
+            
+            let real = self.build_real(int_part, frac_part, exp_part, negative);
+            let imag = if imag_negative { -imag } else { imag };
+            return lisp.complex(real, imag).map_err(Into::into);
+        }
+        
+        // Check for pure imaginary with magnitude: 3i
+        if self.peek() == Some(b'i') {
+            self.advance();
+            let imag = self.build_real(int_part, frac_part, exp_part, negative);
+            return lisp.complex(0.0, imag).map_err(Into::into);
+        }
+        
+        // Build the final number
+        if has_frac || exp_part != 0 || force_inexact {
+            // Inexact (float)
+            let value = self.build_real(int_part, frac_part, exp_part, negative);
+            if force_exact {
+                // Convert to exact rational
+                let n = Number::float(value).to_exact();
+                lisp.number_value(n).map_err(Into::into)
+            } else {
+                lisp.float(value).map_err(Into::into)
+            }
+        } else {
+            // Exact integer
+            let value = if negative { -(int_part as isize) } else { int_part as isize };
+            if force_inexact {
+                lisp.float(value as f64).map_err(Into::into)
+            } else {
+                lisp.number(value).map_err(Into::into)
+            }
+        }
+    }
+    
+    /// Try to parse special float constants: +inf.0, -inf.0, +nan.0, -nan.0
+    fn try_parse_special_float(&mut self) -> Result<Option<f64>, ParseError> {
+        let start = self.pos;
+        
+        // Check for sign
+        let sign = match self.peek() {
+            Some(b'+') => { self.advance(); 1.0 }
+            Some(b'-') => { self.advance(); -1.0 }
+            _ => return Ok(None)
+        };
+        
+        // Try to match "inf.0" or "nan.0"
+        if self.matches_bytes(b"inf.0") {
+            return Ok(Some(sign * f64::INFINITY));
+        }
+        if self.matches_bytes(b"nan.0") {
+            return Ok(Some(f64::NAN));
+        }
+        
+        // Not a special float, reset position
+        self.pos = start;
+        Ok(None)
+    }
+    
+    /// Check if the current position matches the given bytes (case-insensitive)
+    fn matches_bytes(&mut self, bytes: &[u8]) -> bool {
+        for (i, &b) in bytes.iter().enumerate() {
+            match self.peek_at(i) {
+                Some(c) if c.to_ascii_lowercase() == b.to_ascii_lowercase() => {}
+                _ => return false
+            }
+        }
+        // All matched, advance
+        for _ in 0..bytes.len() {
+            self.advance();
+        }
+        true
+    }
+    
+    /// Peek at a specific offset from current position
+    fn peek_at(&self, offset: usize) -> Option<u8> {
+        self.input.get(self.pos + offset).copied()
+    }
+    
+    /// Parse an integer in the given radix
+    fn parse_integer_part(&mut self, radix: u8) -> Result<(usize, bool), ParseError> {
+        let mut value: usize = 0;
+        let mut has_digits = false;
+        
+        while let Some(c) = self.peek() {
+            let digit = match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => c - b'a' + 10,
+                b'A'..=b'F' => c - b'A' + 10,
+                _ => break,
+            };
+            
+            if digit >= radix {
+                break;
+            }
+            
+            self.advance();
+            has_digits = true;
+            value = value.checked_mul(radix as usize)
+                .and_then(|v| v.checked_add(digit as usize))
+                .ok_or_else(|| self.error(ParseErrorKind::NumberOverflow))?;
+        }
+        
+        Ok((value, has_digits))
+    }
+    
+    /// Parse fractional part after decimal point
+    fn parse_fractional_part(&mut self) -> Result<(f64, usize), ParseError> {
+        let mut value = 0.0;
+        let mut digits = 0usize;
         
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
-                value = value.checked_mul(10)
-                    .and_then(|v| v.checked_add((c - b'0') as isize))
-                    .ok_or_else(|| self.error(ParseErrorKind::NumberOverflow))?;
+                value = value * 10.0 + (c - b'0') as f64;
+                digits += 1;
             } else {
                 break;
             }
         }
         
-        if negative {
-            value = -value;
+        Ok((value, digits))
+    }
+    
+    /// Parse exponent part
+    fn parse_exponent(&mut self) -> Result<i32, ParseError> {
+        let negative = match self.peek() {
+            Some(b'-') => { self.advance(); true }
+            Some(b'+') => { self.advance(); false }
+            _ => false
+        };
+        
+        let mut exp: i32 = 0;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.advance();
+                exp = exp.saturating_mul(10).saturating_add((c - b'0') as i32);
+            } else {
+                break;
+            }
         }
         
-        lisp.number(value).map_err(Into::into)
+        Ok(if negative { -exp } else { exp })
     }
+    
+    /// Parse a real number magnitude (for complex parts)
+    fn parse_real_magnitude(&mut self, radix: u8) -> Result<f64, ParseError> {
+        let (int_part, _) = self.parse_integer_part(radix)?;
+        
+        let frac_part = if radix == 10 && self.peek() == Some(b'.') {
+            self.advance();
+            let (frac, frac_digits) = self.parse_fractional_part()?;
+            frac / pow10(frac_digits as i32)
+        } else {
+            0.0
+        };
+        
+        let exp_part = if radix == 10 && matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            self.advance();
+            self.parse_exponent()?
+        } else {
+            0
+        };
+        
+        // Check for rational
+        if self.peek() == Some(b'/') {
+            self.advance();
+            let (denom, _) = self.parse_integer_part(radix)?;
+            if denom == 0 {
+                return Ok(f64::NAN);
+            }
+            return Ok(int_part as f64 / denom as f64);
+        }
+        
+        Ok(self.build_real(int_part, frac_part, exp_part, false))
+    }
+    
+    /// Build a real number from components
+    fn build_real(&self, int_part: usize, frac_part: f64, exp_part: i32, negative: bool) -> f64 {
+        let value = (int_part as f64 + frac_part) * pow10(exp_part);
+        if negative { -value } else { value }
+    }
+    
+    /// Check if character is a delimiter
+    fn is_delimiter(&self, c: u8) -> bool {
+        matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'(' | b')' | b'"' | b';' | b'[' | b']' | b'{' | b'}')
+    }
+}
+
+/// Power of 10 helper (no_std compatible)
+fn pow10(exp: i32) -> f64 {
+    libm::pow(10.0, exp as f64)
+}
+
+impl<'a> Parser<'a> {
     
     /// Parse a symbol
     fn parse_symbol<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {

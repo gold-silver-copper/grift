@@ -11,11 +11,11 @@ fn test_peek_poke() {
     
     // Write a value
     let result = eval.eval_str("(poke 0 42)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(42));
     
     // Read it back
     let result = eval.eval_str("(peek 0)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(42));
 }
 
 #[test]
@@ -28,11 +28,11 @@ fn test_peek_poke_32() {
     
     // Write a 32-bit value (305419896 = 0x12345678)
     let result = eval.eval_str("(poke32 100 305419896)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0x12345678));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0x12345678));
     
     // Read it back
     let result = eval.eval_str("(peek32 100)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0x12345678));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0x12345678));
 }
 
 #[test]
@@ -45,11 +45,11 @@ fn test_gpio_read_write() {
     
     // Write to GPIO register 0
     let result = eval.eval_str("(gpio-write 0 255)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(255));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(255));
     
     // Read it back
     let result = eval.eval_str("(gpio-read 0)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(255));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(255));
 }
 
 #[test]
@@ -69,23 +69,23 @@ fn test_gpio_bit_operations() {
     
     // Verify GPIO register is 0 after reset
     let result = eval.eval_str(&format!("(gpio-read {})", gpio_reg)).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0), "GPIO register should be 0 after reset");
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0), "GPIO register should be 0 after reset");
     
     // Set bit 0
     let result = eval.eval_str(&format!("(gpio-set {} 0)", gpio_reg)).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(1));
     
     // Set bit 3
     let result = eval.eval_str(&format!("(gpio-set {} 3)", gpio_reg)).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(9)); // 1 + 8
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(9)); // 1 + 8
     
     // Toggle bit 0
     let result = eval.eval_str(&format!("(gpio-toggle {} 0)", gpio_reg)).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(8));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(8));
     
     // Clear bit 3
     let result = eval.eval_str(&format!("(gpio-clear {} 3)", gpio_reg)).unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(0));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(0));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn test_bit_extract() {
     // 0xABCD = 0b1010101111001101
     // Bits 4-7 = 0b1100 = 12
     let result = eval.eval_str("(bit-extract 43981 4 4)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(12));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(12));
 }
 
 #[test]
@@ -129,5 +129,5 @@ fn test_bit_insert() {
     // Insert 15 (0xF) into bits 4-7 of 0
     // Result should be 0xF0 = 240
     let result = eval.eval_str("(bit-insert 0 15 4 4)").unwrap();
-    assert_eq!(lisp.get(result).unwrap().as_number(), Some(240));
+    assert_eq!(lisp.get(result).unwrap().as_integer(), Some(240));
 }

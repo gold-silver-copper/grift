@@ -221,6 +221,7 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                     ParseErrorKind::NumberOverflow => buf.push_str("number too large"),
                     ParseErrorKind::OutOfMemory => buf.push_str("out of memory"),
                     ParseErrorKind::InvalidHashLiteral => buf.push_str("invalid # literal"),
+                    ParseErrorKind::InvalidSyntax => buf.push_str("invalid syntax"),
                 }
             }
         }

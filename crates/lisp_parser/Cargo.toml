@@ -8,3 +8,4 @@ description = "Lisp parser for the pwn_arena workspace"
 [dependencies]
 pwn_arena = { path = "../pwn_arena" }
 lisp_macros = { path = "../lisp_macros" }
+libm = "0.2.8"

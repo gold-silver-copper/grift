@@ -2,7 +2,7 @@ use lisp_eval::*;
 
 fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
     let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().as_number().unwrap()
+    lisp.get(result).unwrap().as_integer().unwrap()
 }
 
 fn eval_is_true<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
@@ -791,7 +791,7 @@ fn test_quasiquote_basic() {
     let result = eval.eval_str("(quasiquote (a b (unquote x)))").unwrap();
     // Check structure: (a b 42)
     let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
-    assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 42);
+    assert_eq!(lisp.get(third).unwrap().as_integer().unwrap(), 42);
 }
 
 #[test]
@@ -806,8 +806,8 @@ fn test_quasiquote_nested() {
     let first = lisp.car(result).unwrap();
     let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
     
-    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 10);
-    assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 11);
+    assert_eq!(lisp.get(first).unwrap().as_integer().unwrap(), 10);
+    assert_eq!(lisp.get(third).unwrap().as_integer().unwrap(), 11);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -879,7 +879,7 @@ fn test_values_basic() {
     
     // values returns a list of its arguments
     let result = eval.eval_str("(values 1 2 3)").unwrap();
-    assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_integer().unwrap(), 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -910,7 +910,7 @@ fn test_cdr_comprehensive() {
     
     // cdr of list
     let result = eval.eval_str("(cdr '(1 2 3))").unwrap();
-    assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 2);
+    assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_integer().unwrap(), 2);
     
     // cdr of pair
     assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr (cons 1 2))"), 2);
@@ -1672,13 +1672,13 @@ fn test_arena_stats_builtin() {
     
     // First element should be capacity = 2000
     let capacity = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(capacity).unwrap().as_number(), Some(2000));
+    assert_eq!(lisp.get(capacity).unwrap().as_integer(), Some(2000));
     
     // Second element (allocated) should be a number
     let rest = lisp.cdr(result).unwrap();
     let allocated = lisp.car(rest).unwrap();
     assert!(lisp.get(allocated).unwrap().is_number());
-    assert!(lisp.get(allocated).unwrap().as_number().unwrap() > 0);
+    assert!(lisp.get(allocated).unwrap().as_integer().unwrap() > 0);
 }
 
 #[test]
@@ -1692,16 +1692,16 @@ fn test_gc_disabled_no_collect() {
     // Create some garbage
     let before = eval.eval_str("(arena-stats)").unwrap();
     let _before_allocated = lisp.get(lisp.car(lisp.cdr(before).unwrap()).unwrap())
-        .unwrap().as_number().unwrap();
+        .unwrap().as_integer().unwrap();
     
     eval.eval_str("(cons 1 2)").unwrap();
     eval.eval_str("(cons 3 4)").unwrap();
     
     // GC with disabled - should not collect
     let gc_result = eval.eval_str("(gc)").unwrap();
-    let marked = lisp.get(lisp.car(gc_result).unwrap()).unwrap().as_number().unwrap();
+    let marked = lisp.get(lisp.car(gc_result).unwrap()).unwrap().as_integer().unwrap();
     let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
-        .unwrap().as_number().unwrap();
+        .unwrap().as_integer().unwrap();
     
     // When disabled, marked and collected should be 0
     assert_eq!(marked, 0);
@@ -1879,7 +1879,7 @@ fn test_make_list_stdlib() {
     
     // First element is the fill value
     let car = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(car).unwrap().as_number().unwrap(), 0);
+    assert_eq!(lisp.get(car).unwrap().as_integer().unwrap(), 0);
 }
 
 #[test]
@@ -1943,7 +1943,7 @@ fn test_fold_right() {
     // it preserves the original order: (cons 1 (cons 2 (cons 3 '()))) = (1 2 3)
     let result = eval.eval_str("(fold-right cons '() '(1 2 3))").unwrap();
     let first = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(first).unwrap().as_integer().unwrap(), 1);
 }
 
 #[test]
@@ -1963,7 +1963,7 @@ fn test_cddddr() {
     
     let result = eval.eval_str("(cddddr '(1 2 3 4 5 6))").unwrap();
     let first = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 5);
+    assert_eq!(lisp.get(first).unwrap().as_integer().unwrap(), 5);
 }
 
 #[test]

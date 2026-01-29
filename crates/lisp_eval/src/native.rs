@@ -86,7 +86,7 @@ pub trait ToLisp<const N: usize> {
 impl<const N: usize> FromLisp<N> for isize {
     fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
         match lisp.get(idx)? {
-            Value::Number(n) => Ok(n),
+            Value::Number(n) => n.to_isize().ok_or(ArenaError::InvalidIndex),
             // Note: Using InvalidIndex for type errors is semantically imprecise,
             // but ArenaError doesn't have a TypeError variant and adding one
             // would require changes to the core no_std crate.

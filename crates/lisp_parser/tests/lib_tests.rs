@@ -139,10 +139,10 @@ fn test_parse_number() {
     let lisp: Lisp<100> = Lisp::new();
     
     let idx = parse(&lisp, "42").unwrap();
-    assert_eq!(lisp.get(idx).unwrap(), Value::Number(42));
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(42)));
     
     let idx = parse(&lisp, "-123").unwrap();
-    assert_eq!(lisp.get(idx).unwrap(), Value::Number(-123));
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(Number::integer(-123)));
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn test_parse_list() {
     
     // Check first element
     let car = lisp.car(idx).unwrap();
-    assert_eq!(lisp.get(car).unwrap(), Value::Number(1));
+    assert_eq!(lisp.get(car).unwrap(), Value::Number(Number::integer(1)));
 }
 
 #[test]
@@ -718,9 +718,9 @@ fn test_array_get_set() {
     let elem1 = lisp.array_get(arr, 1).unwrap();
     let elem2 = lisp.array_get(arr, 2).unwrap();
     
-    assert_eq!(lisp.get(elem0).unwrap(), Value::Number(42));
+    assert_eq!(lisp.get(elem0).unwrap(), Value::Number(Number::integer(42)));
     assert_eq!(lisp.get(elem1).unwrap(), Value::Nil);  // Unchanged
-    assert_eq!(lisp.get(elem2).unwrap(), Value::Number(100));
+    assert_eq!(lisp.get(elem2).unwrap(), Value::Number(Number::integer(100)));
 }
 
 #[test]
