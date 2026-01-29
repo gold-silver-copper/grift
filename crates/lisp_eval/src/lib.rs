@@ -2351,6 +2351,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if x.is_nan() || x.is_infinite() {
             return x;
         }
+        // Handle very large floats that exceed i64 range
+        // These are already integers (no fractional part)
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
+            return x;
+        }
         let int_part = x as i64 as f64;
         if x >= 0.0 || x == int_part {
             int_part
@@ -2362,6 +2369,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Ceiling function without libm
     fn ceil_f64(x: f64) -> f64 {
         if x.is_nan() || x.is_infinite() {
+            return x;
+        }
+        // Handle very large floats that exceed i64 range
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
             return x;
         }
         let int_part = x as i64 as f64;
@@ -2377,12 +2390,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if x.is_nan() || x.is_infinite() {
             return x;
         }
+        // Handle very large floats that exceed i64 range
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
+            return x;
+        }
         x as i64 as f64
     }
     
     /// Round function without libm (round half to even)
     fn round_f64(x: f64) -> f64 {
         if x.is_nan() || x.is_infinite() {
+            return x;
+        }
+        // Handle very large floats that exceed i64 range
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
             return x;
         }
         let floor = Self::floor_f64(x);

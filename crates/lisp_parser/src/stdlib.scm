@@ -386,12 +386,13 @@
 ;;; (atan2 y x) - Arctangent of two arguments
 (define (atan2 y x)
   (cond
+   ((and (= x 0) (= y 0)) +nan.0)
    ((> x 0) (atan1 (/ y x)))
    ((and (< x 0) (>= y 0)) (+ (atan1 (/ y x)) 3.141592653589793))
    ((and (< x 0) (< y 0)) (- (atan1 (/ y x)) 3.141592653589793))
    ((and (= x 0) (> y 0)) (/ 3.141592653589793 2))
    ((and (= x 0) (< y 0)) (/ 3.141592653589793 -2))
-   (else 0.0)))
+   (else +nan.0)))
 
 ;;; ============================================================
 ;;; Hyperbolic Functions
@@ -421,9 +422,13 @@
 
 ;;; (log-base base x) - Logarithm with arbitrary base
 (define (log-base base x)
-  (let ((lx (log x))
-        (lb (log base)))
-    (/ lx lb)))
+  (cond
+   ((<= base 0) +nan.0)
+   ((= base 1) +nan.0)
+   (else
+    (let ((lx (log x))
+          (lb (log base)))
+      (/ lx lb)))))
 
 ;;; (log10 x) - Base-10 logarithm
 (define (log10 x)

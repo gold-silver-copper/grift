@@ -67,9 +67,11 @@ fn format_value_impl<const N: usize>(
                 }
             } else {
                 // Format float with trailing .0 if needed
+                let start_len = buf.len();
                 write!(buf, "{}", f).unwrap();
-                // Ensure there's a decimal point
-                if !buf.ends_with(".0") && !buf.contains('.') && !buf.contains('e') {
+                // Check only the newly written portion for decimal point
+                let new_part = &buf[start_len..];
+                if !new_part.ends_with(".0") && !new_part.contains('.') && !new_part.contains('e') {
                     buf.push_str(".0");
                 }
             }
