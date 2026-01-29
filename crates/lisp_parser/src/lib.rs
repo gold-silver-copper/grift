@@ -19,7 +19,8 @@
 //! - `Nil` - The empty list (NOT false!)
 //! - `True` - Boolean true (#t)
 //! - `False` - Boolean false (#f)
-//! - `Number(isize)` - Integer numbers
+//! - `Number(isize)` - Integer numbers (exact)
+//! - `Float(f64)` - Floating-point numbers (inexact)
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell
 //! - `Symbol { chars }` - Symbol with contiguous string storage
@@ -414,8 +415,11 @@ pub enum Value {
     /// Boolean false (#f) - the ONLY false value
     False,
     
-    /// Integer number
+    /// Integer number (exact)
     Number(isize),
+    
+    /// Floating-point number (inexact)
+    Float(f64),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -562,10 +566,22 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number
+    /// Check if this value is a number (integer or float)
     #[inline]
     pub const fn is_number(&self) -> bool {
+        matches!(self, Value::Number(_) | Value::Float(_))
+    }
+    
+    /// Check if this value is an integer
+    #[inline]
+    pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
+    }
+    
+    /// Check if this value is a float
+    #[inline]
+    pub const fn is_float(&self) -> bool {
+        matches!(self, Value::Float(_))
     }
     
     /// Check if this value is a symbol
@@ -622,11 +638,30 @@ impl Value {
         matches!(self, Value::String { .. })
     }
     
-    /// Get the number value if this is a number
+    /// Get the number value if this is an integer
     #[inline]
     pub const fn as_number(&self) -> Option<isize> {
         match self {
             Value::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+    
+    /// Get the float value if this is a float
+    #[inline]
+    pub const fn as_float(&self) -> Option<f64> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
+    /// Get any numeric value as f64
+    #[inline]
+    pub const fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Number(n) => Some(*n as f64),
+            Value::Float(f) => Some(*f),
             _ => None,
         }
     }
@@ -646,6 +681,7 @@ impl Value {
             Value::Nil => "nil",
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
+            Value::Float(_) => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol { .. } => "symbol",
@@ -664,7 +700,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
             Value::Native { .. } => {
                 // No references
             }
@@ -858,6 +894,12 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Number(n))
+    }
+    
+    /// Allocate a floating-point number
+    #[inline]
+    pub fn float(&self, f: f64) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Float(f))
     }
     
     /// Allocate a character
@@ -1769,7 +1811,7 @@ impl<'a> Parser<'a> {
         matches!(c, 
             b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' |
             b'+' | b'-' | b'*' | b'/' | b'<' | b'>' | b'=' |
-            b'?' | b'!' | b'_' | b'&' | b'%' | b'^' | b'~'
+            b'?' | b'!' | b'_' | b'&' | b'%' | b'^' | b'~' | b'.'
         )
     }
     
@@ -1896,9 +1938,8 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
     
-    /// Parse a number
+    /// Parse a number (integer or float)
     fn parse_number<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        let mut value: isize = 0;
         let negative = if self.peek() == Some(b'-') {
             self.advance();
             true
@@ -1906,10 +1947,13 @@ impl<'a> Parser<'a> {
             false
         };
         
+        // Parse integer part
+        let mut int_value: isize = 0;
+        
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
-                value = value.checked_mul(10)
+                int_value = int_value.checked_mul(10)
                     .and_then(|v| v.checked_add((c - b'0') as isize))
                     .ok_or_else(|| self.error(ParseErrorKind::NumberOverflow))?;
             } else {
@@ -1917,11 +1961,94 @@ impl<'a> Parser<'a> {
             }
         }
         
-        if negative {
-            value = -value;
+        // Check for decimal point or exponent
+        let is_float = matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E'));
+        
+        if is_float {
+            // Parse as floating point
+            let mut float_value = int_value as f64;
+            
+            // Parse fractional part
+            if self.peek() == Some(b'.') {
+                self.advance();
+                let mut frac_mult = 0.1;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.advance();
+                        float_value += (c - b'0') as f64 * frac_mult;
+                        frac_mult *= 0.1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            
+            // Parse exponent
+            if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+                self.advance();
+                let exp_negative = match self.peek() {
+                    Some(b'-') => {
+                        self.advance();
+                        true
+                    }
+                    Some(b'+') => {
+                        self.advance();
+                        false
+                    }
+                    _ => false,
+                };
+                
+                let mut exp_value: i32 = 0;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.advance();
+                        exp_value = exp_value.saturating_mul(10).saturating_add((c - b'0') as i32);
+                    } else {
+                        break;
+                    }
+                }
+                
+                if exp_negative {
+                    exp_value = -exp_value;
+                }
+                
+                // Manual power of 10 calculation (no libm)
+                float_value = Self::multiply_by_pow10(float_value, exp_value);
+            }
+            
+            if negative {
+                float_value = -float_value;
+            }
+            
+            lisp.float(float_value).map_err(Into::into)
+        } else {
+            // Return as integer
+            if negative {
+                int_value = -int_value;
+            }
+            lisp.number(int_value).map_err(Into::into)
+        }
+    }
+    
+    /// Multiply a float by 10^exp without using libm
+    fn multiply_by_pow10(value: f64, exp: i32) -> f64 {
+        if exp == 0 {
+            return value;
         }
         
-        lisp.number(value).map_err(Into::into)
+        let mut result = value;
+        let mut e = exp.abs();
+        let mut multiplier = if exp > 0 { 10.0 } else { 0.1 };
+        
+        while e > 0 {
+            if e & 1 == 1 {
+                result *= multiplier;
+            }
+            multiplier *= multiplier;
+            e >>= 1;
+        }
+        
+        result
     }
     
     /// Parse a symbol
@@ -1941,6 +2068,20 @@ impl<'a> Parser<'a> {
         }
         
         let name = &buffer[..len];
+        
+        // Check for special float literals (R7RS)
+        // +nan.0, -nan.0, +inf.0, -inf.0
+        if len == 6 {
+            if name == b"+nan.0" || name == b"-nan.0" {
+                return lisp.float(f64::NAN).map_err(Into::into);
+            }
+            if name == b"+inf.0" {
+                return lisp.float(f64::INFINITY).map_err(Into::into);
+            }
+            if name == b"-inf.0" {
+                return lisp.float(f64::NEG_INFINITY).map_err(Into::into);
+            }
+        }
         
         // Note: In Scheme, nil is just a regular symbol.
         // The empty list is written as () or '() only.

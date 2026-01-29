@@ -71,6 +71,70 @@ pub use native::{
 };
 
 // ============================================================================
+// Float helper functions (no_std compatible)
+// ============================================================================
+
+/// Get the fractional part of a float (no_std compatible)
+#[inline]
+fn fract_f64(x: f64) -> f64 {
+    x - trunc_f64_helper(x)
+}
+
+/// Truncate a float to integer (no_std compatible)
+#[inline]
+fn trunc_f64_helper(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        x
+    } else {
+        x as i64 as f64
+    }
+}
+
+/// Get the absolute value of a float (no_std compatible)
+#[inline]
+fn abs_f64(x: f64) -> f64 {
+    if x < 0.0 { -x } else { x }
+}
+
+// ============================================================================
+// Numeric Type for Mixed Arithmetic
+// ============================================================================
+
+/// Numeric value that can be either an integer or a float.
+/// Used internally for arithmetic operations with type promotion.
+#[derive(Clone, Copy, Debug)]
+pub enum Num {
+    Int(isize),
+    Float(f64),
+}
+
+impl Num {
+    /// Convert to f64
+    #[inline]
+    pub fn to_f64(self) -> f64 {
+        match self {
+            Num::Int(i) => i as f64,
+            Num::Float(f) => f,
+        }
+    }
+    
+    /// Check if this is an integer
+    #[inline]
+    pub fn is_int(self) -> bool {
+        matches!(self, Num::Int(_))
+    }
+    
+    /// Get as isize if it's an integer
+    #[inline]
+    pub fn as_int(self) -> Option<isize> {
+        match self {
+            Num::Int(i) => Some(i),
+            Num::Float(_) => None,
+        }
+    }
+}
+
+// ============================================================================
 // Helper Macros for Code Deduplication
 // ============================================================================
 
@@ -913,7 +977,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match val {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | 
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
                 Ok(TrampolineState::Return { val: expr })
@@ -1505,6 +1569,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::True, Value::True) => true,
                     (Value::False, Value::False) => true,
                     (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Float(x), Value::Float(y)) => x == y,
+                    (Value::Number(x), Value::Float(y)) | (Value::Float(y), Value::Number(x)) => x as f64 == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
                     (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
                     _ => a == b,
@@ -1533,32 +1599,47 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Not => builtin_unary_pred!(self, args, |v: Value| v.is_false()),
             
-            Builtin::Add => self.numeric_fold(args, 0, |a, b| a.checked_add(b), call_expr),
+            Builtin::Add => self.numeric_fold_mixed(args, Num::Int(0), 
+                |a, b| a.checked_add(b), 
+                |a, b| a + b, 
+                call_expr),
             
             Builtin::Sub => {
-                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let first = self.get_num(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
                 if self.lisp.get(rest)?.is_nil() {
-                    self.lisp.number(-first).map_err(Into::into)
+                    // Unary minus
+                    match first {
+                        Num::Int(n) => self.lisp.number(-n).map_err(Into::into),
+                        Num::Float(f) => self.lisp.float(-f).map_err(Into::into),
+                    }
                 } else {
-                    self.numeric_fold_start(rest, first, |a, b| a.checked_sub(b), call_expr)
+                    self.numeric_fold_mixed(rest, first, 
+                        |a, b| a.checked_sub(b), 
+                        |a, b| a - b, 
+                        call_expr)
                 }
             }
             
-            Builtin::Mul => self.numeric_fold(args, 1, |a, b| a.checked_mul(b), call_expr),
+            Builtin::Mul => self.numeric_fold_mixed(args, Num::Int(1), 
+                |a, b| a.checked_mul(b), 
+                |a, b| a * b, 
+                call_expr),
             
             Builtin::Div => {
-                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
+                // Division always produces float for consistency with Scheme
+                let first = self.get_num(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
-                self.numeric_fold_start(rest, first, |a, b| {
-                    if b == 0 { None } else { a.checked_div(b) }
-                }, call_expr)
+                self.numeric_fold_mixed(rest, first, 
+                    |a, b| if b == 0 { None } else { a.checked_div(b) },
+                    |a, b| a / b,
+                    call_expr)
             }
             
             Builtin::Modulo => {
                 // Scheme modulo: result has the sign of the divisor
-                let a = self.get_number(self.lisp.car(args)?, call_expr)?;
-                let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_int(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1569,8 +1650,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Remainder => {
                 // Scheme remainder: result has the sign of the dividend
-                let a = self.get_number(self.lisp.car(args)?, call_expr)?;
-                let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_int(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1580,8 +1661,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Quotient => {
                 // Integer quotient (truncated towards zero)
-                let a = self.get_number(self.lisp.car(args)?, call_expr)?;
-                let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_int(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1591,175 +1672,273 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Abs => {
                 // Absolute value
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.number(n.abs()).map_err(Into::into)
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                match n {
+                    Num::Int(i) => self.lisp.number(i.abs()).map_err(Into::into),
+                    Num::Float(f) => self.lisp.float(abs_f64(f)).map_err(Into::into),
+                }
             }
             
             Builtin::Max => {
                 // Maximum of one or more numbers
-                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let first = self.get_num(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
-                self.numeric_fold_start(rest, first, |a, b| Some(if a > b { a } else { b }), call_expr)
+                self.numeric_fold_mixed(rest, first, 
+                    |a, b| Some(if a > b { a } else { b }),
+                    |a, b| if a > b { a } else { b },
+                    call_expr)
             }
             
             Builtin::Min => {
                 // Minimum of one or more numbers
-                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let first = self.get_num(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
-                self.numeric_fold_start(rest, first, |a, b| Some(if a < b { a } else { b }), call_expr)
+                self.numeric_fold_mixed(rest, first,
+                    |a, b| Some(if a < b { a } else { b }),
+                    |a, b| if a < b { a } else { b },
+                    call_expr)
             }
             
             Builtin::Gcd => {
-                // Greatest common divisor
+                // Greatest common divisor (integers only)
                 // gcd() with no args returns 0, gcd(n) returns |n|
                 if self.lisp.get(args)?.is_nil() {
                     return self.lisp.number(0).map_err(Into::into);
                 }
-                let first = self.get_number(self.lisp.car(args)?, call_expr)?.abs();
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?.abs();
                 let rest = self.lisp.cdr(args)?;
-                self.numeric_fold_start(rest, first, |a, b| Some(Self::gcd_helper(a, b.abs())), call_expr)
+                let mut acc = first;
+                let mut current = rest;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => return self.lisp.number(acc).map_err(Into::into),
+                        Value::Cons { car, cdr } => {
+                            let n = self.get_int(car, call_expr)?.abs();
+                            acc = Self::gcd_helper(acc, n);
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
             }
             
             Builtin::Lcm => {
-                // Least common multiple
+                // Least common multiple (integers only)
                 // lcm() with no args returns 1, lcm(n) returns |n|
                 if self.lisp.get(args)?.is_nil() {
                     return self.lisp.number(1).map_err(Into::into);
                 }
-                let first = self.get_number(self.lisp.car(args)?, call_expr)?.abs();
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?.abs();
                 let rest = self.lisp.cdr(args)?;
-                self.numeric_fold_start(rest, first, |a, b| {
-                    let b_abs = b.abs();
-                    if a == 0 || b_abs == 0 {
-                        Some(0)
-                    } else {
-                        // lcm(a, b) = |a * b| / gcd(a, b)
-                        // Use saturating_mul to prevent overflow
-                        let g = Self::gcd_helper(a, b_abs);
-                        Some((a / g).saturating_mul(b_abs))
+                let mut acc = first;
+                let mut current = rest;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => return self.lisp.number(acc).map_err(Into::into),
+                        Value::Cons { car, cdr } => {
+                            let b_abs = self.get_int(car, call_expr)?.abs();
+                            if acc == 0 || b_abs == 0 {
+                                acc = 0;
+                            } else {
+                                let g = Self::gcd_helper(acc, b_abs);
+                                acc = (acc / g).saturating_mul(b_abs);
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
-                }, call_expr)
+                }
             }
             
             Builtin::Expt => {
                 // Exponentiation: (expt base power)
-                let base = self.get_number(self.lisp.car(args)?, call_expr)?;
-                let power = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let base = self.get_num(self.lisp.car(args)?, call_expr)?;
+                let power = self.get_num(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 
-                if power < 0 {
-                    // Negative exponents would give fractions, which we can't represent
-                    // For integer arithmetic, return 0 for base > 1, error for base <= 1
-                    if base == 0 {
-                        return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                match (base, power) {
+                    (Num::Int(b), Num::Int(p)) => {
+                        if p < 0 {
+                            // Negative integer exponent produces float result
+                            if b == 0 {
+                                return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                            }
+                            let result = 1.0 / Self::int_pow(b, (-p) as usize) as f64;
+                            self.lisp.float(result).map_err(Into::into)
+                        } else {
+                            let result = Self::int_pow(b, p as usize);
+                            self.lisp.number(result).map_err(Into::into)
+                        }
                     }
-                    // For integers, x^(-n) = 1/(x^n), which is 0 for |x| > 1
-                    if base == 1 { return self.lisp.number(1).map_err(Into::into); }
-                    if base == -1 { 
-                        // (-1)^(-n) = (-1)^|n|, use absolute value for parity check
-                        return self.lisp.number(if power.abs() % 2 == 0 { 1 } else { -1 }).map_err(Into::into);
+                    (b, p) => {
+                        // Float exponentiation using exp(p * ln(b))
+                        let b_f = b.to_f64();
+                        let p_f = p.to_f64();
+                        
+                        if b_f == 0.0 {
+                            if p_f > 0.0 {
+                                return self.lisp.float(0.0).map_err(Into::into);
+                            } else if p_f == 0.0 {
+                                return self.lisp.float(1.0).map_err(Into::into);
+                            } else {
+                                return self.lisp.float(f64::INFINITY).map_err(Into::into);
+                            }
+                        }
+                        
+                        if b_f < 0.0 && fract_f64(p_f) != 0.0 {
+                            // Complex result - return NaN
+                            return self.lisp.float(f64::NAN).map_err(Into::into);
+                        }
+                        
+                        // Use x^y = exp(y * ln(x)) - but we can't use libm
+                        // For now, handle integer powers and simple cases
+                        if fract_f64(p_f) == 0.0 && abs_f64(p_f) < 1000.0 {
+                            let exp_int = p_f as i64;
+                            if exp_int >= 0 {
+                                let mut result = 1.0;
+                                for _ in 0..exp_int {
+                                    result *= b_f;
+                                }
+                                self.lisp.float(result).map_err(Into::into)
+                            } else {
+                                let mut result = 1.0;
+                                for _ in 0..(-exp_int) {
+                                    result *= b_f;
+                                }
+                                self.lisp.float(1.0 / result).map_err(Into::into)
+                            }
+                        } else {
+                            // For non-integer powers, we need exp and log which are in stdlib
+                            // For now, use iterative approximation for positive bases
+                            let result = Self::pow_float(b_f, p_f);
+                            self.lisp.float(result).map_err(Into::into)
+                        }
                     }
-                    return self.lisp.number(0).map_err(Into::into);
                 }
-                
-                // Use integer exponentiation with overflow checking
-                let result = Self::int_pow(base, power as usize);
-                self.lisp.number(result).map_err(Into::into)
             }
             
             Builtin::Square => {
                 // Square of a number
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.number(n.saturating_mul(n)).map_err(Into::into)
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                match n {
+                    Num::Int(i) => self.lisp.number(i.saturating_mul(i)).map_err(Into::into),
+                    Num::Float(f) => self.lisp.float(f * f).map_err(Into::into),
+                }
             }
             
             // Numeric predicates
             Builtin::Zerop => {
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(n == 0).map_err(Into::into)
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                let is_zero = match n {
+                    Num::Int(i) => i == 0,
+                    Num::Float(f) => f == 0.0,
+                };
+                self.lisp.boolean(is_zero).map_err(Into::into)
             }
             
             Builtin::Positivep => {
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(n > 0).map_err(Into::into)
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                let is_pos = match n {
+                    Num::Int(i) => i > 0,
+                    Num::Float(f) => f > 0.0,
+                };
+                self.lisp.boolean(is_pos).map_err(Into::into)
             }
             
             Builtin::Negativep => {
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(n < 0).map_err(Into::into)
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                let is_neg = match n {
+                    Num::Int(i) => i < 0,
+                    Num::Float(f) => f < 0.0,
+                };
+                self.lisp.boolean(is_neg).map_err(Into::into)
             }
             
             Builtin::Oddp => {
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
                 self.lisp.boolean(n % 2 != 0).map_err(Into::into)
             }
             
             Builtin::Evenp => {
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
                 self.lisp.boolean(n % 2 == 0).map_err(Into::into)
             }
             
             Builtin::Integerp => {
-                // In our implementation, all numbers are integers
                 let val = self.lisp.car(args)?;
-                let is_int = matches!(self.lisp.get(val)?, Value::Number(_));
+                let is_int = match self.lisp.get(val)? {
+                    Value::Number(_) => true,
+                    Value::Float(f) => fract_f64(f) == 0.0 && f.is_finite(),
+                    _ => false,
+                };
                 self.lisp.boolean(is_int).map_err(Into::into)
             }
             
             Builtin::Exactp => {
-                // In our implementation, all numbers are exact integers
+                // Exact numbers are integers
                 let val = self.lisp.car(args)?;
-                let is_num = matches!(self.lisp.get(val)?, Value::Number(_));
-                self.lisp.boolean(is_num).map_err(Into::into)
+                let is_exact = matches!(self.lisp.get(val)?, Value::Number(_));
+                self.lisp.boolean(is_exact).map_err(Into::into)
             }
             
             Builtin::Inexactp => {
-                // In our implementation, we don't have inexact numbers
+                // Inexact numbers are floats
                 let val = self.lisp.car(args)?;
-                // Verify it's a number, then return false
+                let is_inexact = matches!(self.lisp.get(val)?, Value::Float(_));
                 match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
-                    _ => Err(self.type_error(call_expr, "number", self.lisp.get(val)?.type_name())),
+                    Value::Number(_) | Value::Float(_) => self.lisp.boolean(is_inexact).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
             
             Builtin::ExactIntegerp => {
                 // exact-integer? returns #t if z is both exact and an integer
-                // In our implementation, all numbers are exact integers
                 let val = self.lisp.car(args)?;
                 let is_exact_int = matches!(self.lisp.get(val)?, Value::Number(_));
                 self.lisp.boolean(is_exact_int).map_err(Into::into)
             }
             
-            // Rounding operations - For integers, these are all identity functions
+            // Rounding operations
             Builtin::Floor => {
-                // floor: largest integer not greater than x (identity for integers)
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.number(n).map_err(Into::into)
+                // floor: largest integer not greater than x
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                match n {
+                    Num::Int(i) => self.lisp.number(i).map_err(Into::into),
+                    Num::Float(f) => self.lisp.float(Self::floor_f64(f)).map_err(Into::into),
+                }
             }
             
             Builtin::Ceiling => {
-                // ceiling: smallest integer not less than x (identity for integers)
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.number(n).map_err(Into::into)
+                // ceiling: smallest integer not less than x
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                match n {
+                    Num::Int(i) => self.lisp.number(i).map_err(Into::into),
+                    Num::Float(f) => self.lisp.float(Self::ceil_f64(f)).map_err(Into::into),
+                }
             }
             
             Builtin::Truncate => {
-                // truncate: integer closest to x whose absolute value is not larger (identity for integers)
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.number(n).map_err(Into::into)
+                // truncate: integer closest to x whose absolute value is not larger
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                match n {
+                    Num::Int(i) => self.lisp.number(i).map_err(Into::into),
+                    Num::Float(f) => self.lisp.float(Self::trunc_f64(f)).map_err(Into::into),
+                }
             }
             
             Builtin::Round => {
-                // round: closest integer to x, rounding to even when x is halfway (identity for integers)
-                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
-                self.lisp.number(n).map_err(Into::into)
+                // round: closest integer to x, rounding to even when x is halfway
+                let n = self.get_num(self.lisp.car(args)?, call_expr)?;
+                match n {
+                    Num::Int(i) => self.lisp.number(i).map_err(Into::into),
+                    Num::Float(f) => self.lisp.float(Self::round_f64(f)).map_err(Into::into),
+                }
             }
             
-            Builtin::Lt => self.compare_numbers(args, |a, b| a < b, call_expr),
-            Builtin::Gt => self.compare_numbers(args, |a, b| a > b, call_expr),
-            Builtin::Le => self.compare_numbers(args, |a, b| a <= b, call_expr),
-            Builtin::Ge => self.compare_numbers(args, |a, b| a >= b, call_expr),
-            Builtin::NumEq => self.compare_numbers(args, |a, b| a == b, call_expr),
+            Builtin::Lt => self.compare_numbers_mixed(args, |a, b| a < b, call_expr),
+            Builtin::Gt => self.compare_numbers_mixed(args, |a, b| a > b, call_expr),
+            Builtin::Le => self.compare_numbers_mixed(args, |a, b| a <= b, call_expr),
+            Builtin::Ge => self.compare_numbers_mixed(args, |a, b| a >= b, call_expr),
+            Builtin::NumEq => self.compare_numbers_mixed(args, |a, b| a == b, call_expr),
             
             Builtin::Display => {
                 Ok(self.lisp.car(args)?)
@@ -1923,41 +2102,67 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         match builtin {
             Builtin::Add => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                x.checked_add(y)
-                    .map(|n| self.lisp.number(n))
-                    .ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?
-                    .map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                match (x, y) {
+                    (Num::Int(xi), Num::Int(yi)) => {
+                        match xi.checked_add(yi) {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                        }
+                    }
+                    _ => self.lisp.float(x.to_f64() + y.to_f64()).map_err(Into::into),
+                }
             }
             Builtin::Sub => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                x.checked_sub(y)
-                    .map(|n| self.lisp.number(n))
-                    .ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?
-                    .map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                match (x, y) {
+                    (Num::Int(xi), Num::Int(yi)) => {
+                        match xi.checked_sub(yi) {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                        }
+                    }
+                    _ => self.lisp.float(x.to_f64() - y.to_f64()).map_err(Into::into),
+                }
             }
             Builtin::Mul => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                x.checked_mul(y)
-                    .map(|n| self.lisp.number(n))
-                    .ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?
-                    .map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                match (x, y) {
+                    (Num::Int(xi), Num::Int(yi)) => {
+                        match xi.checked_mul(yi) {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                        }
+                    }
+                    _ => self.lisp.float(x.to_f64() * y.to_f64()).map_err(Into::into),
+                }
             }
             Builtin::Div => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                if y == 0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                match (x, y) {
+                    (Num::Int(xi), Num::Int(yi)) => {
+                        if yi == 0 {
+                            return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                        }
+                        self.lisp.number(xi / yi).map_err(Into::into)
+                    }
+                    _ => {
+                        let yf = y.to_f64();
+                        if yf == 0.0 {
+                            return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                        }
+                        self.lisp.float(x.to_f64() / yf).map_err(Into::into)
+                    }
                 }
-                self.lisp.number(x / y).map_err(Into::into)
             }
             Builtin::Modulo => {
-                // Scheme modulo: result has the sign of the divisor
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
+                // Scheme modulo: result has the sign of the divisor (integers only)
+                let x = self.get_int(a, call_expr)?;
+                let y = self.get_int(b, call_expr)?;
                 if y == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
@@ -1965,38 +2170,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.number(result).map_err(Into::into)
             }
             Builtin::Remainder => {
-                // Scheme remainder: result has the sign of the dividend
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
+                // Scheme remainder: result has the sign of the dividend (integers only)
+                let x = self.get_int(a, call_expr)?;
+                let y = self.get_int(b, call_expr)?;
                 if y == 0 {
                     return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
                 }
                 self.lisp.number(x % y).map_err(Into::into)
             }
             Builtin::Lt => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                self.lisp.boolean(x < y).map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                self.lisp.boolean(x.to_f64() < y.to_f64()).map_err(Into::into)
             }
             Builtin::Gt => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                self.lisp.boolean(x > y).map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                self.lisp.boolean(x.to_f64() > y.to_f64()).map_err(Into::into)
             }
             Builtin::Le => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                self.lisp.boolean(x <= y).map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                self.lisp.boolean(x.to_f64() <= y.to_f64()).map_err(Into::into)
             }
             Builtin::Ge => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                self.lisp.boolean(x >= y).map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                self.lisp.boolean(x.to_f64() >= y.to_f64()).map_err(Into::into)
             }
             Builtin::NumEq => {
-                let x = self.get_number(a, call_expr)?;
-                let y = self.get_number(b, call_expr)?;
-                self.lisp.boolean(x == y).map_err(Into::into)
+                let x = self.get_num(a, call_expr)?;
+                let y = self.get_num(b, call_expr)?;
+                self.lisp.boolean(x.to_f64() == y.to_f64()).map_err(Into::into)
             }
             Builtin::EqP | Builtin::EqvP => {
                 let val_a = self.lisp.get(a)?;
@@ -2007,6 +2212,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::True, Value::True) => true,
                     (Value::False, Value::False) => true,
                     (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Float(x), Value::Float(y)) => x == y,
+                    (Value::Number(x), Value::Float(y)) | (Value::Float(y), Value::Number(x)) => x as f64 == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
                     (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
                     _ => a == b,
@@ -2026,31 +2233,61 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Get number from already-evaluated value
-    fn get_number(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<isize, EvalError> {
+    /// Get number from already-evaluated value as a Num
+    fn get_num(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<Num, EvalError> {
         match self.lisp.get(idx)? {
-            Value::Number(n) => Ok(n),
+            Value::Number(n) => Ok(Num::Int(n)),
+            Value::Float(f) => Ok(Num::Float(f)),
             v => Err(self.type_error(call_expr, "number", v.type_name())),
         }
     }
     
-    /// Numeric fold with already-evaluated args
-    fn numeric_fold<F>(&self, args: ArenaIndex, init: isize, f: F, call_expr: ArenaIndex) -> EvalResult
-    where F: Fn(isize, isize) -> Option<isize>
-    {
-        self.numeric_fold_start(args, init, f, call_expr)
+    /// Get integer from already-evaluated value (for operations that require integers)
+    fn get_int(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<isize, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Number(n) => Ok(n),
+            Value::Float(f) => {
+                // Allow floats that are exact integers
+                if fract_f64(f) == 0.0 && f >= isize::MIN as f64 && f <= isize::MAX as f64 {
+                    Ok(f as isize)
+                } else {
+                    Err(self.type_error(call_expr, "integer", "inexact number"))
+                }
+            }
+            v => Err(self.type_error(call_expr, "integer", v.type_name())),
+        }
     }
     
-    fn numeric_fold_start<F>(&self, args: ArenaIndex, mut acc: isize, f: F, call_expr: ArenaIndex) -> EvalResult
-    where F: Fn(isize, isize) -> Option<isize>
+    /// Allocate a Num value in the arena
+    fn alloc_num(&self, n: Num) -> ArenaResult<ArenaIndex> {
+        match n {
+            Num::Int(i) => self.lisp.number(i),
+            Num::Float(f) => self.lisp.float(f),
+        }
+    }
+    
+    /// Numeric fold with already-evaluated args (supports mixed int/float)
+    fn numeric_fold_mixed<F, G>(&self, args: ArenaIndex, init: Num, int_f: F, float_f: G, call_expr: ArenaIndex) -> EvalResult
+    where 
+        F: Fn(isize, isize) -> Option<isize>,
+        G: Fn(f64, f64) -> f64,
     {
+        let mut acc = init;
         let mut current = args;
         loop {
             match self.lisp.get(current)? {
-                Value::Nil => return self.lisp.number(acc).map_err(Into::into),
+                Value::Nil => return self.alloc_num(acc).map_err(Into::into),
                 Value::Cons { car, cdr } => {
-                    let n = self.get_number(car, call_expr)?;
-                    acc = f(acc, n).ok_or_else(|| self.make_error(ErrorKind::DivisionByZero, call_expr))?;
+                    let n = self.get_num(car, call_expr)?;
+                    acc = match (acc, n) {
+                        (Num::Int(a), Num::Int(b)) => {
+                            match int_f(a, b) {
+                                Some(r) => Num::Int(r),
+                                None => return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                            }
+                        }
+                        (a, b) => Num::Float(float_f(a.to_f64(), b.to_f64())),
+                    };
                     current = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::TypeError, current)),
@@ -2058,13 +2295,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Compare two numbers with already-evaluated args
-    fn compare_numbers<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
-    where F: Fn(isize, isize) -> bool
+    /// Compare two numbers with already-evaluated args (supports mixed int/float)
+    fn compare_numbers_mixed<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
+    where F: Fn(f64, f64) -> bool
     {
-        let a = self.get_number(self.lisp.car(args)?, call_expr)?;
-        let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-        self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+        let a = self.get_num(self.lisp.car(args)?, call_expr)?;
+        let b = self.get_num(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        self.lisp.boolean(cmp(a.to_f64(), b.to_f64())).map_err(Into::into)
     }
     
     /// Helper for computing GCD using Euclidean algorithm
@@ -2109,6 +2346,237 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         result
     }
     
+    /// Floor function without libm
+    fn floor_f64(x: f64) -> f64 {
+        if x.is_nan() || x.is_infinite() {
+            return x;
+        }
+        // Handle very large floats that exceed i64 range
+        // These are already integers (no fractional part)
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
+            return x;
+        }
+        let int_part = x as i64 as f64;
+        if x >= 0.0 || x == int_part {
+            int_part
+        } else {
+            int_part - 1.0
+        }
+    }
+    
+    /// Ceiling function without libm
+    fn ceil_f64(x: f64) -> f64 {
+        if x.is_nan() || x.is_infinite() {
+            return x;
+        }
+        // Handle very large floats that exceed i64 range
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
+            return x;
+        }
+        let int_part = x as i64 as f64;
+        if x <= 0.0 || x == int_part {
+            int_part
+        } else {
+            int_part + 1.0
+        }
+    }
+    
+    /// Truncate function without libm
+    fn trunc_f64(x: f64) -> f64 {
+        if x.is_nan() || x.is_infinite() {
+            return x;
+        }
+        // Handle very large floats that exceed i64 range
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
+            return x;
+        }
+        x as i64 as f64
+    }
+    
+    /// Round function without libm (round half to even)
+    fn round_f64(x: f64) -> f64 {
+        if x.is_nan() || x.is_infinite() {
+            return x;
+        }
+        // Handle very large floats that exceed i64 range
+        const I64_MAX_F64: f64 = 9223372036854775807.0;
+        const I64_MIN_F64: f64 = -9223372036854775808.0;
+        if x >= I64_MAX_F64 || x <= I64_MIN_F64 {
+            return x;
+        }
+        let floor = Self::floor_f64(x);
+        let frac = x - floor;
+        
+        if frac < 0.5 {
+            floor
+        } else if frac > 0.5 {
+            floor + 1.0
+        } else {
+            // Round half to even
+            let floor_int = floor as i64;
+            if floor_int % 2 == 0 {
+                floor
+            } else {
+                floor + 1.0
+            }
+        }
+    }
+    
+    /// Float exponentiation without libm
+    /// Uses iterative multiplication for integer powers, 
+    /// and exp(y * ln(x)) approximation for fractional powers
+    fn pow_float(base: f64, exp: f64) -> f64 {
+        if exp == 0.0 {
+            return 1.0;
+        }
+        if base == 0.0 {
+            return if exp > 0.0 { 0.0 } else { f64::INFINITY };
+        }
+        if base == 1.0 {
+            return 1.0;
+        }
+        if exp == 1.0 {
+            return base;
+        }
+        
+        // For integer exponents, use iterative approach
+        if fract_f64(exp) == 0.0 && abs_f64(exp) < 1000.0 {
+            let n = exp as i64;
+            if n >= 0 {
+                let mut result = 1.0;
+                let mut b = base;
+                let mut e = n as u64;
+                while e > 0 {
+                    if e & 1 == 1 {
+                        result *= b;
+                    }
+                    b *= b;
+                    e >>= 1;
+                }
+                result
+            } else {
+                let mut result = 1.0;
+                let mut b = base;
+                let mut e = (-n) as u64;
+                while e > 0 {
+                    if e & 1 == 1 {
+                        result *= b;
+                    }
+                    b *= b;
+                    e >>= 1;
+                }
+                1.0 / result
+            }
+        } else {
+            // For fractional exponents, use exp(y * ln(x))
+            // Compute ln(x) and exp(y * ln(x)) using Taylor series
+            Self::exp_float(exp * Self::ln_float(base))
+        }
+    }
+    
+    /// Natural logarithm approximation without libm
+    fn ln_float(x: f64) -> f64 {
+        if x <= 0.0 {
+            return f64::NAN;
+        }
+        if x == 1.0 {
+            return 0.0;
+        }
+        if x.is_infinite() {
+            return f64::INFINITY;
+        }
+        
+        // Reduce x to [1, 2) by extracting exponent
+        // x = m * 2^e where 1 <= m < 2
+        // ln(x) = ln(m) + e * ln(2)
+        let mut mantissa = x;
+        let mut exponent: i32 = 0;
+        
+        while mantissa >= 2.0 {
+            mantissa /= 2.0;
+            exponent += 1;
+        }
+        while mantissa < 1.0 {
+            mantissa *= 2.0;
+            exponent -= 1;
+        }
+        
+        // Now 1 <= mantissa < 2
+        // Use series: ln(1+z) = z - z^2/2 + z^3/3 - z^4/4 + ... for |z| < 1
+        // Let z = (mantissa - 1), so 0 <= z < 1
+        let z = mantissa - 1.0;
+        
+        let mut sum: f64 = 0.0;
+        let mut term: f64 = z;
+        let mut n = 1;
+        let mut sign: f64 = 1.0;
+        
+        while abs_f64(term) > 1e-15 && n < 200 {
+            sum += sign * term / n as f64;
+            term *= z;
+            sign = -sign;
+            n += 1;
+        }
+        
+        // ln(2) ≈ 0.693147180559945
+        const LN_2: f64 = 0.693147180559945;
+        sum + exponent as f64 * LN_2
+    }
+    
+    /// Exponential function approximation without libm
+    fn exp_float(x: f64) -> f64 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
+        if x == 0.0 {
+            return 1.0;
+        }
+        if x > 700.0 {
+            return f64::INFINITY;
+        }
+        if x < -700.0 {
+            return 0.0;
+        }
+        
+        // For negative x, use exp(-x) = 1/exp(x)
+        if x < 0.0 {
+            return 1.0 / Self::exp_float(-x);
+        }
+        
+        // Reduce range: exp(x) = exp(x/n)^n
+        // Choose n so that x/n is small
+        let mut reduced = x;
+        let mut squares = 0;
+        while reduced > 1.0 {
+            reduced /= 2.0;
+            squares += 1;
+        }
+        
+        // Taylor series: exp(z) = 1 + z + z^2/2! + z^3/3! + ...
+        let mut sum: f64 = 1.0;
+        let mut term: f64 = 1.0;
+        let mut n = 1;
+        
+        while abs_f64(term) > 1e-15 && n < 100 {
+            term *= reduced / n as f64;
+            sum += term;
+            n += 1;
+        }
+        
+        // Square back up
+        for _ in 0..squares {
+            sum *= sum;
+        }
+        
+        sum
+    }
+    
     /// Recursive structural equality for equal? predicate
     fn equal_recursive(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
         // Check if they're the same index first
@@ -2124,6 +2592,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             (Value::True, Value::True) => Ok(true),
             (Value::False, Value::False) => Ok(true),
             (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Float(x), Value::Float(y)) => Ok(x == y),
+            (Value::Number(x), Value::Float(y)) | (Value::Float(y), Value::Number(x)) => {
+                Ok(x as f64 == y)
+            }
             (Value::Char(x), Value::Char(y)) => Ok(x == y),
             (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b).map_err(Into::into),
             (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {

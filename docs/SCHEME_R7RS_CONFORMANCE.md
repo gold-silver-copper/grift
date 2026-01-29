@@ -31,6 +31,7 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Booleans**: `not`, `boolean?`
 - ✅ **Pairs/Lists**: `car`, `cdr`, `cons`, `list`, `null?`, `pair?`, `set-car!`, `set-cdr!`
 - ✅ **Numbers**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `quotient`, `=`, `<`, `>`, `<=`, `>=`, `number?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
+- ✅ **Floats**: Full support for floating-point literals (`3.14`, `1e-15`, `+nan.0`, `+inf.0`, `-inf.0`)
 - ✅ **Number Operations**: `abs`, `max`, `min`, `gcd`, `lcm`, `expt`, `square`, `floor`, `ceiling`, `truncate`, `round`
 - ✅ **Number Predicates**: `zero?`, `positive?`, `negative?`, `odd?`, `even?`
 - ✅ **Type Predicates**: `symbol?`, `procedure?`
@@ -42,6 +43,10 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Higher-Order Functions**: `for-each`, `any`, `every`, `filter-map`, `partition`, `remove`, `delete`
 - ✅ **Utilities**: `range`, `compose`, `identity`, `constantly`, `flip`, `curry`, `sign`, `boolean-eq`
 - ✅ **Car/Cdr Compositions**: Full set of `caar`, `cadr`, `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `cdaar`, `cdadr`, `cddar`, `caddr`, `cdddr`, `cadddr`, `cddddr`
+- ✅ **Math Functions**: `sqrt`, `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan1`, `atan2`, `sinh`, `cosh`, `tanh`, `log10`, `log2`, `log-base`
+- ✅ **Float Predicates**: `nan?`, `infinite?`, `finite?`, `real?`, `rational?`, `complex?`
+- ✅ **Type Conversion**: `exact->inexact`, `inexact->exact`
+- ✅ **Constants**: `get-pi`, `get-e`, `get-epsilon`
 
 ### 🔧 Implementation Extensions (Non-R7RS)
 
@@ -89,16 +94,35 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [x] Implement `max` / `min` - Maximum and minimum
 - [x] Implement `quotient` - Integer quotient (alias for truncate-quotient)
 - [x] Implement `gcd` / `lcm` - Greatest common divisor / least common multiple
-- [x] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations (identity for integers)
+- [x] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations (works for floats too)
 - [x] Implement `expt` - Exponentiation
 - [x] Implement `square` - Square of a number
 - [x] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
 
-#### 1.4 Convenience Conditionals ✅
+#### 1.4 Numerical Tower ✅ (Section 6.2)
+- [x] Implement floating-point number parsing (e.g., `3.14`, `1e-15`, `-2.5`)
+- [x] Implement special float values (`+nan.0`, `+inf.0`, `-inf.0`)
+- [x] Mixed integer/float arithmetic (auto-promotion)
+- [x] Float predicates: `nan?`, `infinite?`, `finite?`
+- [x] Type predicates: `real?`, `rational?`, `complex?`
+- [x] Type conversion: `exact->inexact`, `inexact->exact`
+
+#### 1.5 Transcendental Functions ✅ (Section 6.2.6)
+All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (no libm dependency):
+- [x] Constants: `get-pi`, `get-e`, `get-epsilon`
+- [x] Square root: `sqrt` (Newton-Raphson)
+- [x] Exponential: `exp` (Taylor series)
+- [x] Logarithm: `log` (Newton's method + series)
+- [x] Logarithm variants: `log10`, `log2`, `log-base`
+- [x] Trigonometric: `sin`, `cos`, `tan` (Taylor series)
+- [x] Inverse trig: `asin`, `acos`, `atan1`, `atan2` (Newton's method + series)
+- [x] Hyperbolic: `sinh`, `cosh`, `tanh`
+
+#### 1.6 Convenience Conditionals ✅
 - [x] Implement `when` - Execute body when test is true
 - [x] Implement `unless` - Execute body when test is false
 
-#### 1.5 Additional Stdlib Functions ✅
+#### 1.7 Additional Stdlib Functions ✅
 - [x] Implement `make-list` - Create a list of k elements with fill value
 - [x] Implement `list-set!` - Store obj at element k of list
 - [x] Implement `last` / `last-pair` - Access last element/pair

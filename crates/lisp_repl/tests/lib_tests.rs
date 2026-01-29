@@ -2,14 +2,14 @@ use lisp_repl::*;
 
 #[test]
 fn test_format_number() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.number(42).unwrap();
     assert_eq!(value_to_string(&lisp, idx), "42");
 }
 
 #[test]
 fn test_format_booleans() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     
     let t = lisp.true_val().unwrap();
     assert_eq!(value_to_string(&lisp, t), "#t");
@@ -20,21 +20,21 @@ fn test_format_booleans() {
 
 #[test]
 fn test_format_nil() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.nil().unwrap();
     assert_eq!(value_to_string(&lisp, idx), "()");
 }
 
 #[test]
 fn test_format_symbol() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.symbol("hello").unwrap();
     assert_eq!(value_to_string(&lisp, idx), "hello");
 }
 
 #[test]
 fn test_format_list() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let a = lisp.number(1).unwrap();
     let b = lisp.number(2).unwrap();
     let c = lisp.number(3).unwrap();
@@ -47,7 +47,7 @@ fn test_format_list() {
 
 #[test]
 fn test_format_dotted_pair() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let a = lisp.number(1).unwrap();
     let b = lisp.number(2).unwrap();
     let pair = lisp.cons(a, b).unwrap();
@@ -56,7 +56,7 @@ fn test_format_dotted_pair() {
 
 #[test]
 fn test_format_lambda() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let params = lisp.nil().unwrap();
     let body = lisp.number(42).unwrap();
     let env = lisp.nil().unwrap();
@@ -66,7 +66,7 @@ fn test_format_lambda() {
 
 #[test]
 fn test_eval_and_format() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_string(&lisp, &mut eval, "(+ 1 2)").unwrap(), "3");
@@ -77,7 +77,7 @@ fn test_eval_and_format() {
 
 #[test]
 fn test_factorial() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))").unwrap();
@@ -87,7 +87,7 @@ fn test_factorial() {
 #[test]
 fn test_tco_recursion() {
     // Hybrid evaluation: tail calls are STRICT, so TCO works properly!
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n))))").unwrap();
@@ -96,7 +96,7 @@ fn test_tco_recursion() {
 
 #[test]
 fn test_fibonacci() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))").unwrap();
@@ -105,7 +105,7 @@ fn test_fibonacci() {
 
 #[test]
 fn test_higher_order() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (twice f x) (f (f x)))").unwrap();
@@ -115,7 +115,7 @@ fn test_higher_order() {
 
 #[test]
 fn test_closures() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (make-adder n) (lambda (x) (+ x n)))").unwrap();
@@ -125,7 +125,7 @@ fn test_closures() {
 
 #[test]
 fn test_list_operations() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Define length
@@ -139,7 +139,7 @@ fn test_list_operations() {
 
 #[test]
 fn test_map() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (map f lst) (if (null? lst) '() (cons (f (car lst)) (map f (cdr lst)))))").unwrap();
@@ -149,7 +149,7 @@ fn test_map() {
 
 #[test]
 fn test_filter() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (filter pred lst) (cond ((null? lst) '()) ((pred (car lst)) (cons (car lst) (filter pred (cdr lst)))) (else (filter pred (cdr lst)))))").unwrap();
@@ -161,7 +161,7 @@ fn test_filter() {
 
 #[test]
 fn test_fold() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (fold f acc lst) (if (null? lst) acc (fold f (f acc (car lst)) (cdr lst))))").unwrap();
@@ -175,7 +175,7 @@ fn test_fold() {
 
 #[test]
 fn test_strict_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Simple computations work
@@ -187,7 +187,7 @@ fn test_strict_basic() {
 
 #[test]
 fn test_strict_cons() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define p (cons 1 2))").unwrap();
@@ -197,7 +197,7 @@ fn test_strict_cons() {
 
 #[test]
 fn test_strict_if_branches() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Only selected branch is evaluated (if is still a special form)
@@ -209,7 +209,7 @@ fn test_strict_if_branches() {
 #[test]
 fn test_strict_evaluation() {
     // All function arguments are evaluated before application
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Function args are strict
@@ -222,7 +222,7 @@ fn test_strict_evaluation() {
 
 #[test]
 fn test_empty_list_is_truthy() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // The empty list '() is truthy (in Scheme, only #f is false)
