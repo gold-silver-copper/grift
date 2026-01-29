@@ -150,16 +150,19 @@
 ;;; Additional R7RS List Functions (Section 6.4)
 ;;; ============================================================
 
-;;; (make-list k fill) - Create a list of k elements, each initialized to fill
-(define (make-list k fill) (if (= k 0) '() (cons fill (make-list (- k 1) fill))))
+;;; (make-list k fill) - Create a list of k elements, each initialized to fill. 
+;;; Note: k must be non-negative, negative values cause infinite recursion.
+(define (make-list k fill) (if (<= k 0) '() (cons fill (make-list (- k 1) fill))))
 
 ;;; (list-set! lst k obj) - Store obj in element k of lst
 (define (list-set! lst k obj) (set-car! (list-tail lst k) obj))
 
-;;; (last-pair lst) - Return the last pair in a list
+;;; (last-pair lst) - Return the last pair in a non-empty list
+;;; Note: Error if called on empty list.
 (define (last-pair lst) (if (null? (cdr lst)) lst (last-pair (cdr lst))))
 
-;;; (last lst) - Return the last element of a list
+;;; (last lst) - Return the last element of a non-empty list
+;;; Note: Error if called on empty list.
 (define (last lst) (car (last-pair lst)))
 
 ;;; ============================================================
@@ -192,10 +195,14 @@
 (define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))
 
 ;;; (filter-map f lst) - Map f over lst, keeping only non-#f results
-(define (filter-map f lst) (if (null? lst) '() (let ((result (f (car lst)))) (if result (cons result (filter-map f (cdr lst))) (filter-map f (cdr lst))))))
+;;; Note: This version avoids let binding due to recursion issue
+(define (filter-map f lst) (if (null? lst) '() (if (f (car lst)) (cons (f (car lst)) (filter-map f (cdr lst))) (filter-map f (cdr lst)))))
 
-;;; (partition pred lst) - Split lst into two lists based on pred
-(define (partition pred lst) (if (null? lst) (cons '() '()) (let ((rest (partition pred (cdr lst)))) (if (pred (car lst)) (cons (cons (car lst) (car rest)) (cdr rest)) (cons (car rest) (cons (car lst) (cdr rest)))))))
+;;; (partition pred lst) - Split lst into pair of two lists: (matching . non-matching)
+;;; Returns (cons matches non-matches) where matches contains elements satisfying pred.
+;;; Note: Uses tail-recursive helper to avoid let-binding issue in recursion.
+(define (partition pred lst) (partition-helper pred lst '() '()))
+(define (partition-helper pred lst matches non-matches) (if (null? lst) (cons (reverse matches) (reverse non-matches)) (if (pred (car lst)) (partition-helper pred (cdr lst) (cons (car lst) matches) non-matches) (partition-helper pred (cdr lst) matches (cons (car lst) non-matches)))))
 
 ;;; (remove pred lst) - Return lst with elements where pred is true removed
 (define (remove pred lst) (filter (lambda (x) (not (pred x))) lst))

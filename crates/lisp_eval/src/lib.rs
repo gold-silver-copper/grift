@@ -1034,11 +1034,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let body = self.lisp.cdr(cdr)?;
                 let test_result = self.eval_in_env(test_expr, env)?;
                 if !self.is_false(test_result)? {
-                    // Test passed (truthy) - return unspecified value (nil)
+                    // Test is true (truthy) - skip body, return unspecified value (nil)
                     let nil = self.lisp.nil()?;
                     return Ok(TrampolineState::Return { val: nil });
                 }
-                // Test failed (false) - evaluate body as begin
+                // Test is false - evaluate body as begin
                 let begin = self.lisp.symbol("begin")?;
                 let new_expr = self.lisp.cons(begin, body)?;
                 return Ok(TrampolineState::Eval { expr: new_expr, env });

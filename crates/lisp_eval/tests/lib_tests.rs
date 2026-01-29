@@ -1939,8 +1939,8 @@ fn test_fold_right() {
     let lisp: Lisp<3000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // fold-right processes list right-to-left
-    // For cons, this will reverse the order from the original
+    // fold-right processes list from right-to-left, but with cons and empty list
+    // it preserves the original order: (cons 1 (cons 2 (cons 3 '()))) = (1 2 3)
     let result = eval.eval_str("(fold-right cons '() '(1 2 3))").unwrap();
     let first = lisp.car(result).unwrap();
     assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 1);
@@ -1964,4 +1964,89 @@ fn test_cddddr() {
     let result = eval.eval_str("(cddddr '(1 2 3 4 5 6))").unwrap();
     let first = lisp.car(result).unwrap();
     assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 5);
+}
+
+#[test]
+fn test_partition() {
+    // partition splits a list into matching and non-matching elements
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // partition returns (cons matching non-matching) - a pair of two lists
+    eval.eval_str("(define result (partition even? '(1 2 3 4 5 6)))").unwrap();
+    
+    // car is the matching elements (even numbers: 2, 4, 6)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (car result))"), 3);
+    
+    // cdr is the non-matching elements (odd numbers: 1, 3, 5)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (cdr result))"), 3);
+}
+
+#[test]
+fn test_filter_map() {
+    // filter-map applies function and keeps non-#f results
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a function that returns #f for negative numbers
+    eval.eval_str("(define (pos-or-false x) (if (positive? x) x #f))").unwrap();
+    
+    // filter-map keeps only the positive values
+    eval.eval_str("(define result (filter-map pos-or-false '(-1 2 -3 4 -5)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length result)"), 2);
+}
+
+#[test]
+fn test_boolean_eq() {
+    // boolean-eq checks if both arguments have the same boolean value
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean-eq #t #t)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean-eq #f #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean-eq #t #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean-eq #f #t)"));
+}
+
+#[test]
+fn test_member_equal_and_assoc_equal() {
+    // member-equal and assoc-equal use equal? for comparison
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // member-equal works with nested lists (unlike memq which uses eq?)
+    let result = eval.eval_str("(member-equal '(a) '(x (a) y))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false()); // Should find it
+    
+    // assoc-equal works with nested keys
+    let result = eval.eval_str("(assoc-equal '(a) '(((a) 1) ((b) 2)))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false()); // Should find it
+}
+
+#[test]
+fn test_list_set() {
+    // list-set! mutates an element in a list
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define my-list (list 1 2 3 4 5))").unwrap();
+    eval.eval_str("(list-set! my-list 2 99)").unwrap();
+    
+    // Third element (index 2) should now be 99
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(list-ref my-list 2)"), 99);
+}
+
+#[test]
+fn test_make_list_edge_cases() {
+    // make-list handles edge cases
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Empty list for k=0
+    let result = eval.eval_str("(make-list 0 'x)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+    
+    // Negative k should return empty list (not infinite recursion)
+    let result = eval.eval_str("(make-list -5 'x)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
 }
