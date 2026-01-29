@@ -260,20 +260,7 @@ define_builtins! {
     /// set-cdr! - Mutate cdr of pair
     SetCdr => "set-cdr!",
     
-    // Array operations (O(1) indexed access and mutation) - Embedded extension
-    /// make-array - Create an array with given length and initial value
-    MakeArray => "make-array",
-    /// array-ref - Get element at index (O(1))
-    ArrayRef => "array-ref",
-    /// array-set! - Set element at index (O(1))
-    ArraySet => "array-set!",
-    /// array-length - Get array length (O(1))
-    ArrayLength => "array-length",
-    /// array? - Check if value is an array
-    Arrayp => "array?",
-    
     // Vector operations (R7RS Section 6.8)
-    // Vectors use the same underlying representation as arrays
     /// vector? - Check if value is a vector
     Vectorp => "vector?",
     /// make-vector - Create a vector with optional fill value
@@ -554,10 +541,11 @@ pub enum Value {
         cache: ArenaIndex,  // NULL = not yet parsed, else (body . params)
     },
     
-    /// Array (contiguous storage of values in the arena)
+    /// Vector/Array (contiguous storage of values in the arena)
     /// 
-    /// Arrays store values contiguously in the arena, similar to how symbols
+    /// Vectors store values contiguously in the arena, similar to how symbols
     /// store characters. This provides O(1) indexed access and mutation.
+    /// Used internally for R7RS vector operations (Section 6.8).
     /// 
     /// # Memory Layout
     /// 
@@ -567,10 +555,11 @@ pub enum Value {
     /// # Example
     /// 
     /// ```lisp
-    /// (define arr (make-array 3 0))  ; Create array of 3 zeros
-    /// (array-set! arr 1 42)          ; Set index 1 to 42
-    /// (array-ref arr 1)              ; => 42
-    /// (array-length arr)             ; => 3
+    /// (define vec (make-vector 3 0))  ; Create vector of 3 zeros
+    /// (vector-set! vec 1 42)          ; Set index 1 to 42
+    /// (vector-ref vec 1)              ; => 42
+    /// (vector-length vec)             ; => 3
+    /// #(1 2 3)                        ; Vector literal syntax
     /// ```
     Array {
         data: ArenaIndex,  // Points to first element in contiguous block
@@ -579,7 +568,7 @@ pub enum Value {
     
     /// String (contiguous storage of Char values in the arena)
     /// 
-    /// Strings store characters contiguously in the arena, similar to arrays.
+    /// Strings store characters contiguously in the arena, similar to vectors.
     /// This provides O(1) indexed access and O(1) length lookup.
     /// 
     /// # Memory Layout

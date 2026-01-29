@@ -2700,18 +2700,18 @@ fn test_doc_gc_operations() {
 }
 
 #[test]
-fn test_doc_array_operations() {
+fn test_doc_vector_operations() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Array builtins from README
-    eval.eval_str("(define arr (make-array 5 0))").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(array-length arr)"), 5);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(array-ref arr 2)"), 0);
-    eval.eval_str("(array-set! arr 2 42)").unwrap();
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(array-ref arr 2)"), 42);
-    assert!(eval_is_true(&lisp, &mut eval, "(array? arr)"));
-    assert!(eval_is_false(&lisp, &mut eval, "(array? 42)"));
+    // Vector builtins from README (R7RS Section 6.8)
+    eval.eval_str("(define vec (make-vector 5 0))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length vec)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref vec 2)"), 0);
+    eval.eval_str("(vector-set! vec 2 42)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref vec 2)"), 42);
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? vec)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(vector? 42)"));
 }
 
 #[test]
@@ -3115,16 +3115,6 @@ fn test_vector_with_mixed_types() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 0 '(2 2 2 2) \"Anna\") 0)"), 0);
     assert!(eval_is_true(&lisp, &mut eval, "(pair? (vector-ref (vector 0 '(2 2 2 2) \"Anna\") 1))"));
     assert!(eval_is_true(&lisp, &mut eval, "(string? (vector-ref (vector 0 '(2 2 2 2) \"Anna\") 2))"));
-}
-
-#[test]
-fn test_vector_array_compatibility() {
-    let lisp: Lisp<20000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Vectors and arrays use the same underlying type
-    assert!(eval_is_true(&lisp, &mut eval, "(array? (vector 1 2 3))"));
-    assert!(eval_is_true(&lisp, &mut eval, "(vector? (make-array 3 0))"));
 }
 
 #[test]

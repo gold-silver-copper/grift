@@ -165,18 +165,19 @@ Symbols use contiguous string storage for efficiency:
 - The String contains contiguous `Value::Char(c)` slots
 - This uses less memory than a linked list of characters
 
-### Arrays
+### Vectors
 
-Arrays provide O(1) indexed access to values stored contiguously in the arena:
+Vectors (R7RS Section 6.8) provide O(1) indexed access to values stored contiguously in the arena:
 
 ```lisp
-(define arr (make-array 5 0))  ; Array of 5 zeros
-(array-set! arr 2 42)          ; Set element at index 2
-(array-ref arr 2)              ; => 42
-(array-length arr)             ; => 5
+(define vec (make-vector 5 0))  ; Vector of 5 zeros
+(vector-set! vec 2 42)          ; Set element at index 2
+(vector-ref vec 2)              ; => 42
+(vector-length vec)             ; => 5
+#(1 2 3)                        ; Vector literal syntax
 ```
 
-Arrays use contiguous storage for efficient access:
+Vectors use contiguous storage for efficient access:
 - The `data` field points directly to the first element (no length slot like symbols)
 - Length is stored in the `Value::Array` variant itself for O(1) access
 - Elements are stored at consecutive arena slots: data+0, data+1, ..., data+(len-1)
@@ -304,7 +305,7 @@ Builtins are optimized primitives stored as enum variants. The complete list inc
 
 **List Operations**: `car`, `cdr`, `cons`, `list`
 
-**Type Predicates**: `null?`, `pair?`, `number?`, `boolean?`, `procedure?`, `symbol?`, `char?`, `string?`, `array?`, `vector?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
+**Type Predicates**: `null?`, `pair?`, `number?`, `boolean?`, `procedure?`, `symbol?`, `char?`, `string?`, `vector?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
 
 **Equality**: `eq?`, `eqv?`, `equal?`
 
@@ -321,8 +322,6 @@ Builtins are optimized primitives stored as enum variants. The complete list inc
 **I/O**: `display`, `newline`, `error`
 
 **Mutation**: `set-car!`, `set-cdr!`
-
-**Arrays** (Embedded Extension): `make-array`, `array-ref`, `array-set!`, `array-length`, `array?`
 
 **Vectors** (R7RS Section 6.8): `vector?`, `make-vector`, `vector`, `vector-length`, `vector-ref`, `vector-set!`, `vector->list`, `list->vector`, `vector-fill!`, `vector-copy`
 

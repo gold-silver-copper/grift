@@ -483,78 +483,78 @@ fn main() {
     // SECTION 6: Arrays (O(1) indexed access)
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 6: Arrays (O(1) indexed access)");
+    println!("Section 6: Vectors (R7RS Section 6.8)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Create array for reuse
-    let _ = eval_str(&lisp, &mut eval, "(define bench-arr (make-array 100 0))");
+    // Create vector for reuse
+    let _ = eval_str(&lisp, &mut eval, "(define bench-vec (make-vector 100 0))");
 
     results.push(run_bench(
-        "Create array[50] x 200",
+        "Create vector[50] x 200",
         &lisp,
         &mut eval,
         200,
-        "(make-array 50 0)",
+        "(make-vector 50 0)",
         None,
     ));
 
     results.push(run_bench(
-        "Create large array[500] x 20",
+        "Create large vector[500] x 20",
         &lisp,
         &mut eval,
         20,
-        "(make-array 500 42)",
+        "(make-vector 500 42)",
         None,
     ));
 
     results.push(run_bench(
-        "Array-ref (O(1) access) x 500",
+        "Vector-ref (O(1) access) x 500",
         &lisp,
         &mut eval,
         500,
-        "(array-ref bench-arr 50)",
+        "(vector-ref bench-vec 50)",
         Some("0"),
     ));
 
     results.push(run_bench(
-        "Array-set! (O(1) mutation) x 500",
+        "Vector-set! (O(1) mutation) x 500",
         &lisp,
         &mut eval,
         500,
-        "(array-set! bench-arr 50 999)",
+        "(vector-set! bench-vec 50 999)",
         None,
     ));
 
     results.push(run_bench(
-        "Array-length x 500",
+        "Vector-length x 500",
         &lisp,
         &mut eval,
         500,
-        "(array-length bench-arr)",
+        "(vector-length bench-vec)",
         Some("100"),
     ));
 
     results.push(run_bench(
-        "Array? predicate x 500",
+        "Vector? predicate x 500",
         &lisp,
         &mut eval,
         500,
-        "(array? bench-arr)",
+        "(vector? bench-vec)",
         Some("#t"),
     ));
 
-    // Array iteration pattern
+    // Vector iteration pattern
     let _ = eval_str(
         &lisp,
         &mut eval,
-        "(define (array-sum arr len) (if (= len 0) 0 (+ (array-ref arr (- len 1)) (array-sum arr (- len 1)))))",
+        "(define (vector-sum vec len) (if (= len 0) 0 (+ (vector-ref vec (- len 1)) (vector-sum vec (- len 1)))))",
     );
     results.push(run_bench(
-        "Array sum recursive (10 elements) x 50",
+        "Vector sum recursive (10 elements) x 50",
         &lisp,
         &mut eval,
         50,
-        "(let ((arr (make-array 10 1))) (array-sum arr 10))",
+        "(let ((vec (make-vector 10 1))) (vector-sum vec 10))",
         Some("10"),
     ));
 
@@ -883,18 +883,18 @@ fn main() {
         Some("380"),
     ));
 
-    // Array operations in functional style
+    // Vector operations in functional style
     let _ = eval_str(
         &lisp,
         &mut eval,
-        "(define (array-to-list arr len) (if (= len 0) '() (cons (array-ref arr (- len 1)) (array-to-list arr (- len 1)))))",
+        "(define (vector-to-list-manual vec len) (if (= len 0) '() (cons (vector-ref vec (- len 1)) (vector-to-list-manual vec (- len 1)))))",
     );
     results.push(run_bench(
-        "Array to list conversion (10 elements) x 30",
+        "Vector to list conversion (10 elements) x 30",
         &lisp,
         &mut eval,
         30,
-        "(let ((arr (make-array 10 1))) (array-to-list arr 10))",
+        "(let ((vec (make-vector 10 1))) (vector-to-list-manual vec 10))",
         None,
     ));
 
