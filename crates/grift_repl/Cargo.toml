@@ -14,7 +14,7 @@ name = "grift-bench"
 path = "src/bench.rs"
 
 [dependencies]
-pwn_arena = { path = "../pwn_arena" }
-grift_parser = { path = "../grift_parser" }
-grift_eval = { path = "../grift_eval" }
-pwn_arena_embedded = { path = "../pwn_arena_embedded" }
+pwn_arena = { version = "0.1.0", path = "../pwn_arena" }
+grift_parser = { version = "0.1.0", path = "../grift_parser" }
+grift_eval = { version = "0.1.0", path = "../grift_eval" }
+pwn_arena_embedded = { version = "0.1.0", path = "../pwn_arena_embedded" }

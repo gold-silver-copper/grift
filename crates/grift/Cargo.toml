@@ -24,7 +24,7 @@ default = []
 std = ["dep:grift_repl"]
 
 [dependencies]
-pwn_arena = { path = "../pwn_arena" }
-grift_parser = { path = "../grift_parser" }
-grift_eval = { path = "../grift_eval" }
-grift_repl = { path = "../grift_repl", optional = true }
+pwn_arena = { version = "0.1.0", path = "../pwn_arena" }
+grift_parser = { version = "0.1.0", path = "../grift_parser" }
+grift_eval = { version = "0.1.0", path = "../grift_eval" }
+grift_repl = { version = "0.1.0", path = "../grift_repl", optional = true }

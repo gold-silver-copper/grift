@@ -6,5 +6,5 @@ license.workspace = true
 description = "Lisp parser for the grift Lisp language"
 
 [dependencies]
-pwn_arena = { path = "../pwn_arena" }
-grift_macros = { path = "../grift_macros" }
+pwn_arena = { version = "0.1.0", path = "../pwn_arena" }
+grift_macros = { version = "0.1.0", path = "../grift_macros" }
