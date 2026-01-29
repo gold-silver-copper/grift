@@ -287,31 +287,48 @@ Special forms are handled directly by the evaluator, not as functions:
 | `set!` | Mutate variable binding |
 | `let` | Parallel local bindings |
 | `let*` | Sequential local bindings |
+| `letrec` | Recursive local bindings |
+| `letrec*` | Sequential recursive local bindings |
 | `begin` | Sequence of expressions |
 | `and`/`or` | Short-circuit boolean operations |
+| `when`/`unless` | Convenience conditionals |
 | `do` | Iteration loop |
 | `quasiquote` | Template with unquote |
 | `eval` | Runtime evaluation |
 | `apply` | Apply function to argument list |
-| `defmacro` | Define macro |
+| `values` | Return multiple values |
 
 ## Built-in Functions
 
-Builtins are optimized primitives stored as enum variants:
+Builtins are optimized primitives stored as enum variants. The complete list includes:
 
-```rust
-pub enum Builtin {
-    Car, Cdr, Cons, List,
-    Null, Pairp, Numberp, Booleanp, Procedurep, Symbolp,
-    EqP, EqvP, EqualP,
-    Add, Sub, Mul, Div, Modulo, Remainder,
-    Lt, Gt, Le, Ge, NumEq,
-    Not, Display, Newline, Error,
-    SetCar, SetCdr,
-    MakeArray, ArrayRef, ArraySet, ArrayLength, Arrayp,
-    Gc, GcEnable, GcDisable, GcEnabledP, ArenaStats,
-}
-```
+**List Operations**: `car`, `cdr`, `cons`, `list`
+
+**Type Predicates**: `null?`, `pair?`, `number?`, `boolean?`, `procedure?`, `symbol?`, `char?`, `string?`, `array?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
+
+**Equality**: `eq?`, `eqv?`, `equal?`
+
+**Arithmetic**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `quotient`, `abs`, `max`, `min`, `gcd`, `lcm`, `expt`, `square`
+
+**Numeric Predicates**: `zero?`, `positive?`, `negative?`, `odd?`, `even?`
+
+**Rounding**: `floor`, `ceiling`, `truncate`, `round`
+
+**Comparison**: `<`, `>`, `<=`, `>=`, `=`
+
+**Boolean**: `not`
+
+**I/O**: `display`, `newline`, `error`
+
+**Mutation**: `set-car!`, `set-cdr!`
+
+**Arrays**: `make-array`, `array-ref`, `array-set!`, `array-length`, `array?`
+
+**Characters**: `char?`, `char=?`, `char<?`, `char>?`, `char<=?`, `char>=?`, `char->integer`, `integer->char`, `char-upcase`, `char-downcase`
+
+**Strings**: `string?`, `make-string`, `string`, `string-length`, `string-ref`, `string-set!`, `string=?`, `string<?`, `string>?`, `string<=?`, `string>=?`, `string-append`, `string->list`, `list->string`, `substring`, `string-copy`
+
+**GC Control**: `gc`, `gc-enable`, `gc-disable`, `gc-enabled?`, `arena-stats`
 
 Adding a new builtin:
 1. Add variant to `define_builtins!` macro in `grift_parser`
@@ -319,15 +336,7 @@ Adding a new builtin:
 
 ## Standard Library
 
-The stdlib is defined as static Lisp code, not hardcoded ASTs:
-
-```rust
-define_stdlib! {
-    Length("length", ["lst"], "(if (null? lst) 0 (+ 1 (length (cdr lst))))"),
-    Map("map", ["f", "lst"], "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))"),
-    // ...
-}
-```
+The stdlib is defined in `stdlib.scm` and processed by the `include_stdlib!` macro:
 
 **Advantages**:
 - Easy to read and maintain
@@ -339,39 +348,20 @@ define_stdlib! {
 - First call parses the body and caches it via `Lisp::set_stdlib_cache()`
 - Subsequent calls reuse the cached AST via `Lisp::stdlib_cache()`
 
-## Macro System
+## Quasiquote
 
-Macros are implemented as a simple expansion phase:
-
-```rust
-macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
-macro_count: usize,
-```
-
-Each macro stores `(name, params, body)`.
-
-### Macro Expansion
-
-Before evaluation, expressions are checked for macro calls:
-
-1. If the car is a symbol matching a macro name:
-   - Bind macro parameters to the unevaluated arguments
-   - Evaluate the macro body in this environment
-   - Replace the original expression with the result
-   - Re-expand (in case macro produces another macro call)
-
-### Quasiquote
-
-`quasiquote` enables template-based macro bodies:
+`quasiquote` enables template-based code generation:
 
 ```lisp
-(defmacro unless (cond then else)
-  `(if ,cond ,else ,then))
+(define x 5)
+(quasiquote (a b (unquote x)))  ; => (a b 5)
 ```
 
-- `` ` `` (quasiquote) - Return structure mostly unevaluated
-- `,` (unquote) - Evaluate this sub-expression
-- `,@` (unquote-splicing) - Splice list into surrounding list
+- `(quasiquote ...)` - Return structure mostly unevaluated
+- `(unquote ...)` - Evaluate this sub-expression
+- `(unquote-splicing ...)` - Splice list into surrounding list
+
+Note: The shorthand syntax (`` ` `` for quasiquote, `,` for unquote) is not currently supported in the parser.
 
 ## Garbage Collection Integration
 
@@ -415,30 +405,30 @@ During evaluation, the following are GC roots:
 
 **Rationale**: Follows Scheme semantics. Separating "empty list" from "false" is cleaner.
 
-**Gotcha**: `(if nil 'yes 'no)` returns `'yes`!
+**Gotcha**: `(if '() 'yes 'no)` returns `'yes`! The empty list is truthy.
 
 ## Gotchas
 
-### 1. Nil is Truthy
+### 1. Empty List is Truthy
 
-In this Lisp, only `#f` is false. `nil`/`()` is the empty list and is truthy:
+In this Lisp, only `#f` is false. The empty list `'()` is truthy:
 
 ```lisp
-(if nil 'yes 'no)   ; => yes
-(if '() 'yes 'no)   ; => yes
+(if '() 'yes 'no)   ; => yes (empty list is truthy!)
+(if 0 'yes 'no)     ; => yes (zero is truthy!)
 (if #f 'yes 'no)    ; => no (only #f is false)
 ```
 
-### 2. Macro Hygiene
+### 2. Quasiquote Requires Full Syntax
 
-`gensym` should be used to avoid variable capture:
+The shorthand syntax (`` ` `` and `,`) is not currently supported. Use the full form:
 
 ```lisp
-(defmacro swap (a b)
-  (let ((temp (gensym)))
-    `(let ((,temp ,a))
-       (set! ,a ,b)
-       (set! ,b ,temp))))
+; Use this:
+(quasiquote (a b (unquote x)))
+
+; Not this (currently unsupported):
+; `(a b ,x)
 ```
 
 ### 3. Intern Table is Always Reachable
