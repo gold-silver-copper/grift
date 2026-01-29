@@ -571,3 +571,188 @@
 ;;; (string-foldcase s) - Convert string using case folding
 (define (string-foldcase s)
   (list->string (map char-foldcase (string->list s))))
+
+;;; ============================================================
+;;; Additional R7RS List Functions (SRFI-1 compatible)
+;;; ============================================================
+
+;;; (iota1 count) - Generate list of integers [0, count)
+(define (iota1 count)
+  (iota-helper count 0 1 '()))
+
+;;; (iota2 count start) - Generate list of integers [start, start+count)
+(define (iota2 count start)
+  (iota-helper count start 1 '()))
+
+;;; (iota3 count start step) - Generate arithmetic sequence
+(define (iota3 count start step)
+  (iota-helper count start step '()))
+
+(define (iota-helper count start step acc)
+  (if (<= count 0)
+      (reverse acc)
+      (iota-helper (- count 1) (+ start step) step (cons start acc))))
+
+;;; (list-tabulate n proc) - Create list by applying proc to 0..n-1
+(define (list-tabulate n proc)
+  (list-tabulate-helper n 0 proc '()))
+
+(define (list-tabulate-helper n i proc acc)
+  (if (>= i n)
+      (reverse acc)
+      (list-tabulate-helper n (+ i 1) proc (cons (proc i) acc))))
+
+;;; (circular-list x ...) - Create a circular list (infinite)
+;;; Note: This is dangerous - use carefully or not at all in finite memory
+
+;;; (first lst) - Return first element (alias for car)
+(define (first lst) (car lst))
+
+;;; (second lst) - Return second element
+(define (second lst) (cadr lst))
+
+;;; (third lst) - Return third element
+(define (third lst) (caddr lst))
+
+;;; (fourth lst) - Return fourth element
+(define (fourth lst) (cadddr lst))
+
+;;; (fifth lst) - Return fifth element
+(define (fifth lst) (car (cddddr lst)))
+
+;;; (sixth lst) - Return sixth element
+(define (sixth lst) (cadr (cddddr lst)))
+
+;;; (seventh lst) - Return seventh element
+(define (seventh lst) (caddr (cddddr lst)))
+
+;;; (eighth lst) - Return eighth element
+(define (eighth lst) (cadddr (cddddr lst)))
+
+;;; (ninth lst) - Return ninth element
+(define (ninth lst) (car (cddddr (cddddr lst))))
+
+;;; (tenth lst) - Return tenth element
+(define (tenth lst) (cadr (cddddr (cddddr lst))))
+
+;;; (take-right lst k) - Return the last k elements of lst
+(define (take-right lst k)
+  (drop lst (- (length lst) k)))
+
+;;; (drop-right lst k) - Return all but the last k elements
+(define (drop-right lst k)
+  (take lst (- (length lst) k)))
+
+;;; (split-at lst k) - Split list at position k, returns (take . drop)
+(define (split-at lst k)
+  (cons (take lst k) (drop lst k)))
+
+;;; (concatenate lsts) - Append all lists in lsts
+(define (concatenate lsts)
+  (fold-right append '() lsts))
+
+;;; (flatten lst) - Flatten a nested list structure
+(define (flatten lst)
+  (cond
+    ((null? lst) '())
+    ((not (pair? lst)) (list lst))
+    (else (append (flatten (car lst)) (flatten (cdr lst))))))
+
+;;; (count pred lst) - Count elements satisfying predicate
+(define (count pred lst)
+  (fold (lambda (acc x) (if (pred x) (+ acc 1) acc)) 0 lst))
+
+;;; ============================================================
+;;; Additional String Functions
+;;; ============================================================
+
+;;; (string-for-each proc s) - Apply proc to each character for side effects
+(define (string-for-each proc s)
+  (for-each proc (string->list s)))
+
+;;; (string-map proc s) - Map proc over characters, return new string
+(define (string-map proc s)
+  (list->string (map proc (string->list s))))
+
+;;; (string-null? s) - Check if string is empty
+(define (string-null? s)
+  (= (string-length s) 0))
+
+;;; (string-reverse s) - Reverse a string
+(define (string-reverse s)
+  (list->string (reverse (string->list s))))
+
+;;; (string-contains s1 s2) - Check if s2 is a substring of s1
+;;; Returns index of first occurrence or #f
+(define (string-contains s1 s2)
+  (let ((len1 (string-length s1))
+        (len2 (string-length s2)))
+    (if (> len2 len1)
+        #f
+        (string-contains-helper s1 s2 0 len1 len2))))
+
+(define (string-contains-helper s1 s2 i len1 len2)
+  (if (> (+ i len2) len1)
+      #f
+      (if (string-prefix? s1 s2 i)
+          i
+          (string-contains-helper s1 s2 (+ i 1) len1 len2))))
+
+(define (string-prefix? s1 s2 start)
+  (string-prefix-helper s1 s2 start 0 (string-length s2)))
+
+(define (string-prefix-helper s1 s2 i j len2)
+  (if (>= j len2)
+      #t
+      (if (char=? (string-ref s1 i) (string-ref s2 j))
+          (string-prefix-helper s1 s2 (+ i 1) (+ j 1) len2)
+          #f)))
+
+;;; (string-join lst sep) - Join list of strings with separator
+(define (string-join lst sep)
+  (if (null? lst)
+      ""
+      (fold (lambda (acc s) (string-append acc sep s))
+            (car lst)
+            (cdr lst))))
+
+;;; (string-split s sep) - Split string by separator character
+;;; Returns list of strings
+(define (string-split s sep)
+  (string-split-helper (string->list s) sep '() '()))
+
+(define (string-split-helper chars sep current result)
+  (cond
+    ((null? chars)
+     (reverse (cons (list->string (reverse current)) result)))
+    ((char=? (car chars) sep)
+     (string-split-helper (cdr chars) sep '() 
+                          (cons (list->string (reverse current)) result)))
+    (else
+     (string-split-helper (cdr chars) sep (cons (car chars) current) result))))
+
+;;; (string-trim s) - Remove leading and trailing whitespace
+(define (string-trim s)
+  (list->string (reverse (drop-while-ws (reverse (drop-while-ws (string->list s)))))))
+
+(define (drop-while-ws lst)
+  (cond
+    ((null? lst) '())
+    ((char-whitespace? (car lst)) (drop-while-ws (cdr lst)))
+    (else lst)))
+
+;;; ============================================================
+;;; Additional Numeric Functions
+;;; ============================================================
+
+;;; (sum lst) - Sum of a list of numbers
+(define (sum lst)
+  (fold + 0 lst))
+
+;;; (product lst) - Product of a list of numbers
+(define (product lst)
+  (fold * 1 lst))
+
+;;; (average lst) - Average of a list of numbers
+(define (average lst)
+  (/ (sum lst) (length lst)))

@@ -41,16 +41,20 @@ All conformance work should reference this specification. The spec is organized 
 
 #### Standard Library Functions (`stdlib.scm`)
 - ✅ **List Operations**: `map`, `filter`, `fold`, `fold-right`, `reduce`, `length`, `append`, `reverse`, `nth`, `take`, `drop`, `zip`, `list?`, `list-ref`, `list-tail`, `list-copy`, `make-list`, `list-set!`, `last`, `last-pair`
+- ✅ **List Accessors**: `first`, `second`, `third`, `fourth`, `fifth`, `sixth`, `seventh`, `eighth`, `ninth`, `tenth`
+- ✅ **List Generators**: `iota1`, `iota2`, `iota3`, `list-tabulate`, `range`
+- ✅ **List Utilities**: `take-right`, `drop-right`, `split-at`, `concatenate`, `flatten`, `count`
 - ✅ **Search Functions**: `member`, `memq`, `memv`, `member-equal`, `assoc`, `assq`, `assv`, `assoc-equal`, `find`
 - ✅ **Higher-Order Functions**: `for-each`, `any`, `every`, `filter-map`, `partition`, `remove`, `delete`
-- ✅ **Utilities**: `range`, `compose`, `identity`, `constantly`, `flip`, `curry`, `sign`, `boolean-eq`
+- ✅ **Utilities**: `compose`, `identity`, `constantly`, `flip`, `curry`, `sign`, `boolean-eq`
 - ✅ **Car/Cdr Compositions**: Full set of `caar`, `cadr`, `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `cdaar`, `cdadr`, `cddar`, `caddr`, `cdddr`, `cadddr`, `cddddr`
 - ✅ **Math Functions**: `sqrt`, `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan1`, `atan2`, `sinh`, `cosh`, `tanh`, `log10`, `log2`, `log-base`
+- ✅ **Numeric Utilities**: `sum`, `product`, `average`
 - ✅ **Float Predicates**: `nan?`, `infinite?`, `finite?`, `real?`, `rational?`, `complex?`
 - ✅ **Type Conversion**: `exact->inexact`, `inexact->exact`
 - ✅ **Constants**: `get-pi`, `get-e`, `get-epsilon`
 - ✅ **Character Predicates**: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `digit-value`, `char-foldcase`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
-- ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`
+- ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`, `string-map`, `string-for-each`, `string-null?`, `string-reverse`, `string-contains`, `string-join`, `string-split`, `string-trim`
 
 ### 🔧 Implementation Extensions (Non-R7RS)
 
@@ -210,7 +214,7 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 **Goal**: Advanced control flow
 
 #### 6.1 Conditionals
-- [ ] Implement `when` / `unless` - Convenience conditionals
+- [x] Implement `when` / `unless` - Convenience conditionals (already in evaluator)
 - [ ] Implement `cond-expand` - Feature-based conditional expansion
 - [ ] Implement `case-lambda` - Multiple-arity procedures
 
