@@ -478,3 +478,96 @@
   (if (inexact? x)
       (truncate x)
       x))
+
+;;; ============================================================
+;;; Character Predicates (R7RS Section 6.6)
+;;; ============================================================
+
+;;; (char-alphabetic? char) - Check if char is alphabetic (a-z, A-Z)
+(define (char-alphabetic? c)
+  (let ((n (char->integer c)))
+    (or (and (>= n 65) (<= n 90))
+        (and (>= n 97) (<= n 122)))))
+
+;;; (char-numeric? char) - Check if char is a decimal digit (0-9)
+(define (char-numeric? c)
+  (let ((n (char->integer c)))
+    (and (>= n 48) (<= n 57))))
+
+;;; (char-whitespace? char) - Check if char is whitespace
+(define (char-whitespace? c)
+  (let ((n (char->integer c)))
+    (or (= n 32) (= n 9) (= n 10) (= n 13) (= n 12))))
+
+;;; (char-upper-case? char) - Check if char is uppercase (A-Z)
+(define (char-upper-case? c)
+  (let ((n (char->integer c)))
+    (and (>= n 65) (<= n 90))))
+
+;;; (char-lower-case? char) - Check if char is lowercase (a-z)
+(define (char-lower-case? c)
+  (let ((n (char->integer c)))
+    (and (>= n 97) (<= n 122))))
+
+;;; (digit-value char) - Return numeric value (0-9) of a digit character, or #f
+(define (digit-value c)
+  (let ((n (char->integer c)))
+    (if (and (>= n 48) (<= n 57))
+        (- n 48)
+        #f)))
+
+;;; (char-foldcase char) - Unicode simple case-folding (lowercase for ASCII)
+(define (char-foldcase c)
+  (char-downcase c))
+
+;;; Case-insensitive character comparisons
+
+;;; (char-ci=? char1 char2 ...) - Case-insensitive char=?
+(define (char-ci=? c1 c2)
+  (char=? (char-foldcase c1) (char-foldcase c2)))
+
+;;; (char-ci<? char1 char2) - Case-insensitive char<?
+(define (char-ci<? c1 c2)
+  (char<? (char-foldcase c1) (char-foldcase c2)))
+
+;;; (char-ci>? char1 char2) - Case-insensitive char>?
+(define (char-ci>? c1 c2)
+  (char>? (char-foldcase c1) (char-foldcase c2)))
+
+;;; (char-ci<=? char1 char2) - Case-insensitive char<=?
+(define (char-ci<=? c1 c2)
+  (char<=? (char-foldcase c1) (char-foldcase c2)))
+
+;;; (char-ci>=? char1 char2) - Case-insensitive char>=?
+(define (char-ci>=? c1 c2)
+  (char>=? (char-foldcase c1) (char-foldcase c2)))
+
+;;; ============================================================
+;;; String Case-Insensitive Comparisons (R7RS Section 6.7)
+;;; ============================================================
+
+;;; (string-ci=? s1 s2) - Case-insensitive string=?
+;;; Note: For full implementation, would need to fold case of entire strings
+(define (string-ci=? s1 s2)
+  (string-ci-compare-helper s1 s2 0 (string-length s1) (string-length s2)))
+
+(define (string-ci-compare-helper s1 s2 i len1 len2)
+  (cond
+   ((and (= i len1) (= i len2)) #t)
+   ((= i len1) #f)
+   ((= i len2) #f)
+   ((char-ci=? (string-ref s1 i) (string-ref s2 i))
+    (string-ci-compare-helper s1 s2 (+ i 1) len1 len2))
+   (else #f)))
+
+;;; (string-upcase s) - Convert string to uppercase
+(define (string-upcase s)
+  (list->string (map char-upcase (string->list s))))
+
+;;; (string-downcase s) - Convert string to lowercase
+(define (string-downcase s)
+  (list->string (map char-downcase (string->list s))))
+
+;;; (string-foldcase s) - Convert string using case folding
+(define (string-foldcase s)
+  (list->string (map char-foldcase (string->list s))))
