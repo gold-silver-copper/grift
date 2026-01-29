@@ -260,7 +260,7 @@ define_builtins! {
     /// set-cdr! - Mutate cdr of pair
     SetCdr => "set-cdr!",
     
-    // Array operations (O(1) indexed access and mutation)
+    // Array operations (O(1) indexed access and mutation) - Embedded extension
     /// make-array - Create an array with given length and initial value
     MakeArray => "make-array",
     /// array-ref - Get element at index (O(1))
@@ -271,6 +271,29 @@ define_builtins! {
     ArrayLength => "array-length",
     /// array? - Check if value is an array
     Arrayp => "array?",
+    
+    // Vector operations (R7RS Section 6.8)
+    // Vectors use the same underlying representation as arrays
+    /// vector? - Check if value is a vector
+    Vectorp => "vector?",
+    /// make-vector - Create a vector with optional fill value
+    MakeVector => "make-vector",
+    /// vector - Create vector from arguments
+    Vector => "vector",
+    /// vector-length - Get length of vector
+    VectorLength => "vector-length",
+    /// vector-ref - Get element at index
+    VectorRef => "vector-ref",
+    /// vector-set! - Set element at index
+    VectorSet => "vector-set!",
+    /// vector->list - Convert vector to list
+    VectorToList => "vector->list",
+    /// list->vector - Convert list to vector
+    ListToVector => "list->vector",
+    /// vector-fill! - Fill vector with value
+    VectorFill => "vector-fill!",
+    /// vector-copy - Copy a vector
+    VectorCopy => "vector-copy",
     
     // Character operations (R7RS Section 6.6)
     /// char? - Check if value is a character
@@ -1808,6 +1831,8 @@ pub enum ParseErrorKind {
     InvalidEscapeSequence,
     /// Unterminated string literal
     UnterminatedString,
+    /// Vector literal exceeds maximum size (256 elements in no_std)
+    VectorLiteralTooLarge,
 }
 
 impl ParseError {
@@ -1954,7 +1979,7 @@ impl<'a> Parser<'a> {
         }
     }
     
-    /// Parse hash literals (#t, #f, #\char, etc.)
+    /// Parse hash literals (#t, #f, #\char, #(vector), etc.)
     fn parse_hash_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         self.advance(); // consume '#'
         
@@ -1968,9 +1993,58 @@ impl<'a> Parser<'a> {
                 lisp.false_val().map_err(Into::into)
             }
             Some(b'\\') => self.parse_char_literal(lisp),
+            Some(b'(') => self.parse_vector_literal(lisp),
             Some(_) => Err(self.error(ParseErrorKind::InvalidHashLiteral)),
             None => Err(self.error(ParseErrorKind::UnexpectedEof)),
         }
+    }
+    
+    /// Parse vector literal #(obj ...)
+    /// 
+    /// Note: In no_std environments, vector literals are limited to 256 elements
+    /// due to stack allocation constraints. Use `make-vector` or `vector` for
+    /// larger vectors.
+    fn parse_vector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        self.advance(); // consume '('
+        
+        // Parse elements into a stack-allocated array (no_std constraint)
+        // Maximum 256 elements for literals; use make-vector for larger vectors
+        let mut elements: [ArenaIndex; 256] = [ArenaIndex::NULL; 256];
+        let mut count = 0usize;
+        
+        self.skip_whitespace();
+        while let Some(c) = self.peek() {
+            if c == b')' {
+                break;
+            }
+            
+            if count >= 256 {
+                return Err(self.error(ParseErrorKind::VectorLiteralTooLarge));
+            }
+            
+            let elem = self.parse(lisp)?;
+            elements[count] = elem;
+            count += 1;
+            
+            self.skip_whitespace();
+        }
+        
+        // Consume closing paren
+        match self.advance() {
+            Some(b')') => {}
+            _ => return Err(self.error(ParseErrorKind::UnmatchedParen)),
+        }
+        
+        // Create the vector
+        let placeholder = lisp.number(0)?;
+        let vec = lisp.make_array(count, placeholder)?;
+        
+        // Fill in elements
+        for i in 0..count {
+            lisp.array_set(vec, i, elements[i])?;
+        }
+        
+        Ok(vec)
     }
     
     /// Parse character literal (#\a, #\space, #\newline, etc.)

@@ -2045,6 +2045,207 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.boolean(is_array).map_err(Into::into)
             }
             
+            // ============================================================
+            // Vector operations (R7RS Section 6.8)
+            // Vectors use the same underlying representation as arrays
+            // ============================================================
+            
+            Builtin::Vectorp => {
+                // (vector? x) - check if x is a vector
+                // In our implementation, vectors and arrays are the same type
+                let val = self.lisp.car(args)?;
+                let is_vector = matches!(self.lisp.get(val)?, Value::Array { .. });
+                self.lisp.boolean(is_vector).map_err(Into::into)
+            }
+            
+            Builtin::MakeVector => {
+                // (make-vector k) or (make-vector k fill) - create a vector
+                let len_val = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                
+                let len = match self.lisp.get(len_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                // Default fill is 0 (unspecified in R7RS, we use 0)
+                let fill = if self.lisp.get(rest)?.is_nil() {
+                    self.lisp.number(0)?
+                } else {
+                    self.lisp.car(rest)?
+                };
+                
+                self.lisp.make_array(len, fill).map_err(Into::into)
+            }
+            
+            Builtin::Vector => {
+                // (vector obj ...) - create vector from arguments
+                // First count the arguments (args is always a proper list from evaluator)
+                let mut count = 0usize;
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { cdr, .. } => {
+                            count += 1;
+                            current = cdr;
+                        }
+                        _ => break, // Should not happen for function args
+                    }
+                }
+                
+                // Create vector with placeholder
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                
+                // Fill in the elements
+                current = args;
+                for i in 0..count {
+                    let val = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, val)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                
+                Ok(vec)
+            }
+            
+            Builtin::VectorLength => {
+                // (vector-length vec) - get length of vector
+                let vec = self.lisp.car(args)?;
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { len, .. } => {
+                        self.lisp.number(len as isize).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorRef => {
+                // (vector-ref vec k) - get element at index k
+                extract_args!(self, args, vec, index_val);
+                
+                let index = match self.lisp.get(index_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        self.lisp.array_get(vec, index).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorSet => {
+                // (vector-set! vec k obj) - set element at index k
+                extract_args!(self, args, vec, index_val, value);
+                
+                let index = match self.lisp.get(index_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        self.lisp.array_set(vec, index, value)?;
+                        // R7RS: returns unspecified, we return the vector
+                        Ok(vec)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorToList => {
+                // (vector->list vec) - convert vector to list
+                let vec = self.lisp.car(args)?;
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { len, .. } => {
+                        // Build list from end to front
+                        let mut result = self.lisp.nil()?;
+                        for i in (0..len).rev() {
+                            let elem = self.lisp.array_get(vec, i)?;
+                            result = self.lisp.cons(elem, result)?;
+                        }
+                        Ok(result)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::ListToVector => {
+                // (list->vector lst) - convert list to vector
+                let lst = self.lisp.car(args)?;
+                
+                // First count the list elements, validating it's a proper list
+                let mut count = 0usize;
+                let mut current = lst;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { cdr, .. } => {
+                            count += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                }
+                
+                // Create vector with placeholder
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                
+                // Fill in the elements
+                current = lst;
+                for i in 0..count {
+                    let val = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, val)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                
+                Ok(vec)
+            }
+            
+            Builtin::VectorFill => {
+                // (vector-fill! vec fill) - fill vector with value
+                extract_args!(self, args, vec, fill);
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { len, .. } => {
+                        for i in 0..len {
+                            self.lisp.array_set(vec, i, fill)?;
+                        }
+                        // R7RS: returns unspecified, we return the vector
+                        Ok(vec)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorCopy => {
+                // (vector-copy vec) - copy a vector
+                let vec = self.lisp.car(args)?;
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { len, .. } => {
+                        // Create new vector with same length
+                        let placeholder = self.lisp.number(0)?;
+                        let new_vec = self.lisp.make_array(len, placeholder)?;
+                        
+                        // Copy elements
+                        for i in 0..len {
+                            let elem = self.lisp.array_get(vec, i)?;
+                            self.lisp.array_set(new_vec, i, elem)?;
+                        }
+                        
+                        Ok(new_vec)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
             Builtin::Gc => {
                 // (gc) - Manually trigger garbage collection
                 // Returns a list: (marked collected total-before)

@@ -250,7 +250,7 @@ fn test_auto_memoization_mutual_recursion_detection() {
 #[test]
 fn test_auto_memoization_nested_recursive_calls() {
     // Test with deeply nested recursive structure
-    let lisp: Lisp<4000> = Lisp::new();
+    let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Sum function - tail recursive
@@ -1602,7 +1602,7 @@ fn test_stdlib_parses_on_each_call() {
 /// PITFALL: Recursive stdlib functions work via the global environment
 #[test]
 fn test_stdlib_recursion_works() {
-    let lisp: Lisp<4000> = Lisp::new();
+    let lisp: Lisp<5000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // length is recursive - should work for small lists
@@ -2961,4 +2961,203 @@ fn test_doc_number_predicates() {
     assert!(eval_is_true(&lisp, &mut eval, "(integer? 5)"));
     assert!(eval_is_true(&lisp, &mut eval, "(exact? 5)"));
     assert!(eval_is_true(&lisp, &mut eval, "(inexact? 3.14)"));
+}
+
+// ============================================================
+// Vector tests (R7RS Section 6.8)
+// ============================================================
+
+#[test]
+fn test_vector_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // vector? returns true for vectors
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? (vector 1 2 3))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? (make-vector 5))"));
+    
+    // vector? returns false for non-vectors
+    assert!(eval_is_false(&lisp, &mut eval, "(vector? '(1 2 3))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(vector? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(vector? \"hello\")"));
+}
+
+#[test]
+fn test_make_vector() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // make-vector with just length
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (make-vector 5))"), 5);
+    
+    // make-vector with fill value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (make-vector 3 42) 0)"), 42);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (make-vector 3 42) 1)"), 42);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (make-vector 3 42) 2)"), 42);
+}
+
+#[test]
+fn test_vector_constructor() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // vector creates a vector from arguments
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (vector))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (vector 1 2 3))"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 10 20 30) 0)"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 10 20 30) 1)"), 20);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 10 20 30) 2)"), 30);
+}
+
+#[test]
+fn test_vector_length() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (vector))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (vector 'a))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (vector 'a 'b 'c 'd 'e))"), 5);
+}
+
+#[test]
+fn test_vector_ref() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 1 1 2 3 5 8 13 21) 5)"), 8);
+}
+
+#[test]
+fn test_vector_set() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test mutating a vector
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let ((vec (vector 0 1 2)))
+           (vector-set! vec 1 42)
+           (vector-ref vec 1))"), 42);
+}
+
+#[test]
+fn test_vector_to_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // vector->list converts to list
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (vector->list (vector 1 2 3)))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr (vector->list (vector 1 2 3)))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(caddr (vector->list (vector 1 2 3)))"), 3);
+    
+    // Empty vector converts to empty list
+    assert!(eval_is_true(&lisp, &mut eval, "(null? (vector->list (vector)))"));
+}
+
+#[test]
+fn test_list_to_vector() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // list->vector converts list to vector
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (list->vector '(1 2 3)) 0)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (list->vector '(1 2 3)) 1)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (list->vector '(1 2 3)) 2)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (list->vector '(1 2 3)))"), 3);
+    
+    // Empty list converts to empty vector
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (list->vector '()))"), 0);
+}
+
+#[test]
+fn test_vector_fill() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // vector-fill! fills all elements
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let ((vec (vector 1 2 3)))
+           (vector-fill! vec 0)
+           (+ (vector-ref vec 0) (vector-ref vec 1) (vector-ref vec 2)))"), 0);
+}
+
+#[test]
+fn test_vector_copy() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // vector-copy creates an independent copy
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let ((vec1 (vector 1 2 3)))
+           (let ((vec2 (vector-copy vec1)))
+             (vector-set! vec2 0 100)
+             (+ (vector-ref vec1 0) (vector-ref vec2 0))))"), 101);
+}
+
+#[test]
+fn test_vector_literal() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Vector literal #(...)
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? #())"));
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? #(1 2 3))"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length #())"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length #(1 2 3))"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref #(10 20 30) 1)"), 20);
+}
+
+#[test]
+fn test_vector_with_mixed_types() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Vectors can hold heterogeneous types
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 0 '(2 2 2 2) \"Anna\") 0)"), 0);
+    assert!(eval_is_true(&lisp, &mut eval, "(pair? (vector-ref (vector 0 '(2 2 2 2) \"Anna\") 1))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(string? (vector-ref (vector 0 '(2 2 2 2) \"Anna\") 2))"));
+}
+
+#[test]
+fn test_vector_array_compatibility() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Vectors and arrays use the same underlying type
+    assert!(eval_is_true(&lisp, &mut eval, "(array? (vector 1 2 3))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? (make-array 3 0))"));
+}
+
+#[test]
+fn test_vector_nested_literal() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Nested vector literals
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? (vector-ref #(1 #(2 3) 4) 1))"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector-ref #(1 #(2 3) 4) 1) 0)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector-ref #(1 #(2 3) 4) 1) 1)"), 3);
+}
+
+#[test]
+fn test_list_to_vector_improper_list_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // list->vector with non-list should error
+    let result = eval.eval_str("(list->vector 42)");
+    assert!(result.is_err());
+    
+    // list->vector with improper list should error
+    let result = eval.eval_str("(list->vector (cons 1 2))");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_vector_make_vector_negative_length() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // make-vector with negative length should error
+    let result = eval.eval_str("(make-vector -1)");
+    assert!(result.is_err());
 }

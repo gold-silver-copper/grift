@@ -119,7 +119,15 @@ This repository contains:
 (gc-enabled?)          ; => #t or #f
 (arena-stats)          ; => (capacity allocated free usage%)
 
-; Arrays (O(1) indexed access)
+; Vectors (R7RS Section 6.8)
+(define vec (vector 1 2 3))    ; Create vector with elements
+(vector-ref vec 1)             ; => 2 (get element at index 1)
+(vector-set! vec 1 42)         ; Set element at index 1
+(vector-length vec)            ; => 3
+(vector? vec)                  ; => #t
+#(1 2 3)                       ; Vector literal syntax
+
+; Arrays (O(1) indexed access - embedded extension)
 (define arr (make-array 5 0))  ; Create array of 5 zeros
 (array-ref arr 2)              ; => 0 (get element at index 2)
 (array-set! arr 2 42)          ; Set element at index 2

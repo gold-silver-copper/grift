@@ -106,9 +106,18 @@ fn format_value_impl<const N: usize>(
             buf.push_str(s.name());
             buf.push('>');
         }
-        Ok(Value::Array { len, .. }) => {
-            use std::fmt::Write;
-            write!(buf, "#<array:{}>", len).unwrap();
+        Ok(Value::Array { data: _, len }) => {
+            // Format as R7RS vector literal: #(elem1 elem2 ...)
+            buf.push_str("#(");
+            for i in 0..len {
+                if i > 0 {
+                    buf.push(' ');
+                }
+                if let Ok(elem_idx) = lisp.array_get(idx, i) {
+                    format_value(lisp, elem_idx, buf);
+                }
+            }
+            buf.push(')');
         }
         Ok(Value::String { len, .. }) => {
             // Format string like in many Lisps: "..."
@@ -245,6 +254,7 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                     ParseErrorKind::InvalidCharLiteral => buf.push_str("invalid character literal"),
                     ParseErrorKind::InvalidEscapeSequence => buf.push_str("invalid escape sequence"),
                     ParseErrorKind::UnterminatedString => buf.push_str("unterminated string"),
+                    ParseErrorKind::VectorLiteralTooLarge => buf.push_str("vector literal exceeds 256 elements"),
                 }
             }
         }
