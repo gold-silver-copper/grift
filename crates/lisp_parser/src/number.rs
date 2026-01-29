@@ -972,10 +972,12 @@ impl Number {
             // Mixed types: convert to common representation
             _ => {
                 if self.is_exact() && other.is_exact() {
-                    // Compare as rationals
+                    // Compare as rationals using i128 to avoid overflow for typical cases.
+                    // Note: For extremely large values (near isize::MAX with large denominators),
+                    // the multiplication could still overflow i128, though this is rare in practice.
                     let (n1, d1) = self.to_rational_parts();
                     let (n2, d2) = other.to_rational_parts();
-                    n1 * (d2 as i128) == n2 * (d1 as i128)
+                    n1.saturating_mul(d2 as i128) == n2.saturating_mul(d1 as i128)
                 } else {
                     // Compare as floats
                     self.to_f64() == other.to_f64()
@@ -1097,8 +1099,18 @@ pub fn lcm(a: usize, b: usize) -> usize {
     }
 }
 
-/// Convert float to rational approximation
-/// Uses continued fraction algorithm
+/// Convert float to rational approximation.
+///
+/// Uses a simple decimal expansion approach: repeatedly multiply by 10
+/// until the value is an integer, then reduce. This is simpler than a
+/// continued fraction algorithm but may not find the simplest representation.
+///
+/// # Limitations
+///
+/// - Maximum denominator is 1,000,000 to prevent overflow
+/// - For some values (e.g., 1/7 = 0.142857...), this may not find the
+///   exact rational representation
+/// - For very precise floats, the result may have a large denominator
 fn float_to_rational(f: f64) -> (isize, usize) {
     if !f.is_finite() {
         return (0, 1);

@@ -1549,10 +1549,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Mul => self.numeric_fold(args, Number::integer(1), |a, b| a.mul(b), call_expr),
             
             Builtin::Div => {
+                // R7RS Scheme division semantics:
+                // - Integer / Integer produces exact rational (e.g., (/ 1 3) → 1/3)
+                // - (/ n) returns 1/n (reciprocal)
                 let first = self.get_number(self.lisp.car(args)?, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
                 if self.lisp.get(rest)?.is_nil() {
-                    // (/ n) = 1/n
+                    // (/ n) = 1/n (reciprocal)
                     let result = Number::integer(1).div(&first);
                     self.lisp.number_value(result).map_err(Into::into)
                 } else {

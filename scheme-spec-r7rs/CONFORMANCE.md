@@ -151,6 +151,8 @@ pub enum Number {
 - **Float precision**: Uses `f64` (IEEE 754 double precision)
 - **Rational overflow**: Very large numerator/denominator may overflow
 - **Memory usage**: The `Number` enum is 40 bytes (due to `ExactComplex` variant)
+- **Float→Rational conversion**: Uses decimal expansion, not continued fractions, so may not find simplest representation
+- **Comparison of extreme rationals**: For rationals with values near isize::MAX, equality comparison uses saturating arithmetic which may be imprecise
 
 ## Future Work
 
