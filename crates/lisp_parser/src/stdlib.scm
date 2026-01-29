@@ -69,3 +69,76 @@
 
 ;;; (cddr lst) - (cdr (cdr lst))
 (define (cddr lst) (cdr (cdr lst)))
+
+;;; ============================================================
+;;; Phase 1: Core R7RS Procedures (Section 6.3-6.4)
+;;; ============================================================
+
+;;; (for-each f lst) - Apply f to each element for side effects
+(define (for-each f lst) (if (null? lst) '() (begin (f (car lst)) (for-each f (cdr lst)))))
+
+;;; (list-tail lst k) - Return sublist starting at k-th element
+(define (list-tail lst k) (if (= k 0) lst (list-tail (cdr lst) (- k 1))))
+
+;;; (list-ref lst k) - Return k-th element of lst (0-indexed)
+(define (list-ref lst k) (if (= k 0) (car lst) (list-ref (cdr lst) (- k 1))))
+
+;;; (list? obj) - Check if obj is a proper list
+(define (list? obj) (if (null? obj) #t (if (pair? obj) (list? (cdr obj)) #f)))
+
+;;; (list-copy lst) - Create a shallow copy of a list
+(define (list-copy lst) (if (null? lst) '() (cons (car lst) (list-copy (cdr lst)))))
+
+;;; (memq obj lst) - Find obj in lst using eq?, return sublist or #f
+(define (memq obj lst) (if (null? lst) #f (if (eq? obj (car lst)) lst (memq obj (cdr lst)))))
+
+;;; (memv obj lst) - Find obj in lst using eqv?, return sublist or #f
+(define (memv obj lst) (if (null? lst) #f (if (eqv? obj (car lst)) lst (memv obj (cdr lst)))))
+
+;;; (assq key alist) - Look up key in alist using eq?
+(define (assq key alist) (if (null? alist) #f (if (eq? key (car (car alist))) (car alist) (assq key (cdr alist)))))
+
+;;; (assv key alist) - Look up key in alist using eqv?
+(define (assv key alist) (if (null? alist) #f (if (eqv? key (car (car alist))) (car alist) (assv key (cdr alist)))))
+
+;;; ============================================================
+;;; Additional c...r accessors (R7RS Section 6.4)
+;;; ============================================================
+
+;;; (caar lst) - (car (car lst))
+(define (caar lst) (car (car lst)))
+
+;;; (cdar lst) - (cdr (car lst))
+(define (cdar lst) (cdr (car lst)))
+
+;;; (caaar lst) - (car (car (car lst)))
+(define (caaar lst) (car (car (car lst))))
+
+;;; (caadr lst) - (car (car (cdr lst)))
+(define (caadr lst) (car (car (cdr lst))))
+
+;;; (cadar lst) - (car (cdr (car lst)))
+(define (cadar lst) (car (cdr (car lst))))
+
+;;; (cdaar lst) - (cdr (car (car lst)))
+(define (cdaar lst) (cdr (car (car lst))))
+
+;;; (cdadr lst) - (cdr (car (cdr lst)))
+(define (cdadr lst) (cdr (car (cdr lst))))
+
+;;; (cddar lst) - (cdr (cdr (car lst)))
+(define (cddar lst) (cdr (cdr (car lst))))
+
+;;; (cdddr lst) - (cdr (cdr (cdr lst)))
+(define (cdddr lst) (cdr (cdr (cdr lst))))
+
+;;; (cadddr lst) - (car (cdr (cdr (cdr lst))))
+(define (cadddr lst) (car (cdr (cdr (cdr lst)))))
+
+;;; ============================================================
+;;; Number utilities (R7RS Section 6.2.6)
+;;; ============================================================
+
+;;; (modulo a b) already builtin - use remainder-based modulo for stdlib
+;;; (sign n) - Return -1, 0, or 1 based on sign of n
+(define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
