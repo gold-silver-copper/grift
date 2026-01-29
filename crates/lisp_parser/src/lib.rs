@@ -214,6 +214,18 @@ define_builtins! {
     Exactp => "exact?",
     /// inexact? - Check if number is inexact (always false for integers)
     Inexactp => "inexact?",
+    /// exact-integer? - Check if value is an exact integer
+    ExactIntegerp => "exact-integer?",
+    
+    // Rounding operations (R7RS Section 6.2.6) - Identity for integers
+    /// floor - Largest integer not greater than x (identity for integers)
+    Floor => "floor",
+    /// ceiling - Smallest integer not less than x (identity for integers)
+    Ceiling => "ceiling",
+    /// truncate - Integer closest to x whose absolute value is not larger (identity for integers)
+    Truncate => "truncate",
+    /// round - Closest integer to x, rounding to even when x is halfway (identity for integers)
+    Round => "round",
     
     // Comparison
     /// < - Less than
