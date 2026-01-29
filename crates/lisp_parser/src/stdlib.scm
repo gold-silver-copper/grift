@@ -571,3 +571,431 @@
 ;;; (string-foldcase s) - Convert string using case folding
 (define (string-foldcase s)
   (list->string (map char-foldcase (string->list s))))
+
+;;; ============================================================================
+;;; Numerical Tower Implementation (R7RS Section 6.2)
+;;; ============================================================================
+;;;
+;;; Type hierarchy (predicates follow Scheme subset relationships):
+;;;
+;;; number?      - ALL numbers (every complex is a number)
+;;;   └─ complex?   - Complex numbers AND all reals (every real is complex)
+;;;        └─ real?      - Real numbers: floats, rationals, and integers
+;;;             └─ rational?  - Rationals AND integers (every int is rational)
+;;;                  └─ integer?   - Only integers (isize)
+;;;
+;;; Internal representations:
+;;; - Integer: primitive isize
+;;; - Rational: (rational . (numerator . denominator))
+;;; - Real/Float: primitive f64
+;;; - Complex: (complex . (real-part . imag-part))
+;;; ============================================================================
+
+;;; ============================================================================
+;;; Rational Number Type Tags and Constructors
+;;; ============================================================================
+
+;;; (rational-representation? x) - Check if x is tagged as a rational pair
+(define (rational-representation? x)
+  (and (pair? x) (eq? (car x) 'rational)))
+
+;;; (make-rational-raw n d) - Create a rational pair without normalization
+(define (make-rational-raw n d)
+  (cons 'rational (cons n d)))
+
+;;; (rational-gcd a b) - GCD for rational normalization
+(define (rational-gcd a b)
+  (if (= b 0)
+      (abs a)
+      (rational-gcd b (modulo a b))))
+
+;;; (normalize-rational n d) - Create a normalized rational number
+;;; Reduces to lowest terms and ensures positive denominator
+;;; If d=1, returns the integer n instead of a rational
+;;; Helper to build normalized rational from computed gcd
+(define (normalize-rational-helper n d g)
+  (normalize-rational-final (quotient n g) (quotient d g)))
+
+(define (normalize-rational-final n1 d1)
+  (if (< d1 0)
+      (if (= (- d1) 1)
+          (- n1)
+          (make-rational-raw (- n1) (- d1)))
+      (if (= d1 1)
+          n1
+          (make-rational-raw n1 d1))))
+
+(define (normalize-rational n d)
+  (if (= d 0)
+      (error "Division by zero in rational")
+      (normalize-rational-helper n d (rational-gcd (abs n) (abs d)))))
+
+;;; (make-rational n d) - Create a normalized rational number
+(define (make-rational n d)
+  (normalize-rational n d))
+
+;;; ============================================================================
+;;; Complex Number Type Tags and Constructors
+;;; ============================================================================
+
+;;; (complex-representation? x) - Check if x is tagged as a complex pair
+(define (complex-representation? x)
+  (and (pair? x) (eq? (car x) 'complex)))
+
+;;; (make-complex-raw real imag) - Create a complex pair without normalization
+(define (make-complex-raw real imag)
+  (cons 'complex (cons real imag)))
+
+;;; (make-complex real imag) - Create a complex number, normalizing to real if imag=0
+(define (make-complex real imag)
+  (if (and (number? imag) (= imag 0))
+      real
+      (make-complex-raw real imag)))
+
+;;; (make-rectangular x1 x2) - R7RS: Create complex from real and imaginary parts
+(define (make-rectangular x1 x2)
+  (make-complex x1 x2))
+
+;;; (make-polar r theta) - R7RS: Create complex from magnitude and angle
+;;; Uses helper to avoid nested stdlib call issue
+(define (make-polar-helper real-part imag-part)
+  (make-complex real-part imag-part))
+
+(define (make-polar r theta)
+  (define real-val (* r (cos theta)))
+  (define imag-val (* r (sin theta)))
+  (make-polar-helper real-val imag-val))
+
+;;; ============================================================================
+;;; Rational Number Accessors
+;;; ============================================================================
+
+;;; (numerator-of q) - Get numerator of a rational or integer
+(define (numerator-of q)
+  (cond
+    ((rational-representation? q) (car (cdr q)))
+    ((integer? q) q)
+    (else (error "numerator requires rational or integer"))))
+
+;;; (denominator-of q) - Get denominator of a rational or integer
+(define (denominator-of q)
+  (cond
+    ((rational-representation? q) (cdr (cdr q)))
+    ((integer? q) 1)
+    (else (error "denominator requires rational or integer"))))
+
+;;; ============================================================================
+;;; Complex Number Accessors
+;;; ============================================================================
+
+;;; (real-part z) - R7RS: Get real part of a complex number
+(define (real-part z)
+  (cond
+    ((complex-representation? z) (car (cdr z)))
+    ((number? z) z)
+    (else (error "real-part requires a number"))))
+
+;;; (imag-part z) - R7RS: Get imaginary part of a complex number
+(define (imag-part z)
+  (cond
+    ((complex-representation? z) (cdr (cdr z)))
+    ((number? z) 0)
+    (else (error "imag-part requires a number"))))
+
+;;; (magnitude z) - R7RS: Get magnitude of a complex number
+(define (magnitude z)
+  (cond
+    ((complex-representation? z)
+     (let ((r (real-part z))
+           (i (imag-part z)))
+       (sqrt (+ (* r r) (* i i)))))
+    ((number? z) (abs z))
+    (else (error "magnitude requires a number"))))
+
+;;; (angle z) - R7RS: Get angle (argument) of a complex number
+(define (angle z)
+  (cond
+    ((complex-representation? z)
+     (atan2 (imag-part z) (real-part z)))
+    ((number? z)
+     (if (< z 0) (get-pi) 0))
+    (else (error "angle requires a number"))))
+
+;;; ============================================================================
+;;; Rational Arithmetic
+;;; ============================================================================
+
+;;; (add-rational a b) - Add two rationals
+(define (add-rational-helper an ad bn bd)
+  (normalize-rational (+ (* an bd) (* bn ad))
+                      (* ad bd)))
+
+(define (add-rational a b)
+  (add-rational-helper (numerator-of a) (denominator-of a)
+                       (numerator-of b) (denominator-of b)))
+
+;;; (sub-rational a b) - Subtract two rationals
+(define (sub-rational-helper an ad bn bd)
+  (normalize-rational (- (* an bd) (* bn ad))
+                      (* ad bd)))
+
+(define (sub-rational a b)
+  (sub-rational-helper (numerator-of a) (denominator-of a)
+                       (numerator-of b) (denominator-of b)))
+
+;;; (mul-rational a b) - Multiply two rationals
+(define (mul-rational-helper an ad bn bd)
+  (normalize-rational (* an bn) (* ad bd)))
+
+(define (mul-rational a b)
+  (mul-rational-helper (numerator-of a) (denominator-of a)
+                       (numerator-of b) (denominator-of b)))
+
+;;; (div-rational a b) - Divide two rationals
+(define (div-rational-helper an ad bn bd)
+  (normalize-rational (* an bd) (* ad bn)))
+
+(define (div-rational a b)
+  (div-rational-helper (numerator-of a) (denominator-of a)
+                       (numerator-of b) (denominator-of b)))
+
+;;; (rational->float r) - Convert rational to float
+(define (rational->float r)
+  (/ (exact->inexact (numerator-of r))
+     (exact->inexact (denominator-of r))))
+
+;;; ============================================================================
+;;; Complex Arithmetic
+;;; ============================================================================
+
+;;; (add-complex a b) - Add two complex numbers
+(define (add-complex a b)
+  (make-complex (+ (real-part a) (real-part b))
+                (+ (imag-part a) (imag-part b))))
+
+;;; (sub-complex a b) - Subtract two complex numbers
+(define (sub-complex a b)
+  (make-complex (- (real-part a) (real-part b))
+                (- (imag-part a) (imag-part b))))
+
+;;; (mul-complex a b) - Multiply two complex numbers
+(define (mul-complex-helper ar ai br bi)
+  (make-complex (- (* ar br) (* ai bi))
+                (+ (* ar bi) (* ai br))))
+
+(define (mul-complex a b)
+  (mul-complex-helper (real-part a) (imag-part a)
+                      (real-part b) (imag-part b)))
+
+;;; (div-complex a b) - Divide two complex numbers
+(define (div-complex-denom ar ai br bi denom)
+  (make-complex (/ (+ (* ar br) (* ai bi)) denom)
+                (/ (- (* ai br) (* ar bi)) denom)))
+
+(define (div-complex-helper ar ai br bi)
+  (define denom (+ (* br br) (* bi bi)))
+  (if (= denom 0)
+      (error "Division by zero in div-complex")
+      (div-complex-denom ar ai br bi denom)))
+
+(define (div-complex a b)
+  (div-complex-helper (real-part a) (imag-part a)
+                      (real-part b) (imag-part b)))
+
+;;; (negate-complex z) - Negate a complex number
+(define (negate-complex z)
+  (make-complex (- (real-part z)) (- (imag-part z))))
+
+;;; (conjugate z) - Complex conjugate
+(define (conjugate z)
+  (make-complex (real-part z) (- (imag-part z))))
+
+;;; ============================================================================
+;;; Rationalize (R7RS Section 6.2.6)
+;;; ============================================================================
+
+;;; (rationalize x y) - Return simplest rational within y of x
+;;; Uses Stern-Brocot tree / continued fraction approach
+(define (rationalize x y)
+  (rationalize-helper (- x y) (+ x y)))
+
+(define (rationalize-helper lo hi)
+  (define lo-floor (floor lo))
+  (define hi-floor (floor hi))
+  (cond
+    ;; If lo-floor > hi-floor, lo-floor is in the range
+    ((> lo-floor hi-floor) lo-floor)
+    ;; If lo-floor = hi-floor, that integer might be in range
+    ((= lo-floor hi-floor)
+     (cond
+       ;; If lo equals lo-floor exactly, that's the answer
+       ((= lo-floor lo) lo-floor)
+       ;; Otherwise recurse with reciprocals to find a fraction
+       (else
+        (+ lo-floor (/ 1 (rationalize-helper (/ 1 (- hi lo-floor))
+                                             (/ 1 (- lo lo-floor))))))))
+    ;; Otherwise, ceiling of lo is an integer in the range
+    (else (+ lo-floor 1))))
+
+;;; ============================================================================
+;;; Extended Type Predicates for Numerical Tower
+;;; ============================================================================
+;;; Note: We redefine these to include the tower types
+
+;;; (tower-integer? x) - Check if x is an integer in the tower
+(define (tower-integer? x)
+  (or (integer? x)
+      (and (rational-representation? x) (= (denominator-of x) 1))))
+
+;;; (tower-rational? x) - Check if x is rational (integer or rational representation)
+(define (tower-rational? x)
+  (or (integer? x)
+      (rational-representation? x)))
+
+;;; (tower-real? x) - Check if x is real (integer, rational, or float)
+(define (tower-real? x)
+  (or (integer? x)
+      (rational-representation? x)
+      (and (number? x) (not (complex-representation? x)))))
+
+;;; (tower-complex? x) - Check if x is complex (any number including complex)
+(define (tower-complex? x)
+  (or (integer? x)
+      (rational-representation? x)
+      (number? x)
+      (complex-representation? x)))
+
+;;; (tower-number? x) - Check if x is any kind of number
+(define (tower-number? x)
+  (tower-complex? x))
+
+;;; ============================================================================
+;;; Complex Comparisons
+;;; ============================================================================
+
+;;; (complex=? a b) - Check if two complex numbers are equal
+(define (complex=? a b)
+  (and (= (real-part a) (real-part b))
+       (= (imag-part a) (imag-part b))))
+
+;;; ============================================================================
+;;; Complex Transcendental Functions
+;;; ============================================================================
+
+;;; (complex-sqrt z) - Square root of a complex number
+;;; For complex input: uses polar form
+;;; For negative real: returns pure imaginary
+;;; For positive real: returns sqrt
+(define (complex-sqrt-from-polar r theta)
+  (make-polar (sqrt r) (/ theta 2)))
+
+;;; Helper that creates 0+yi given y (avoids nested call issue)
+(define (make-pure-imaginary y)
+  (make-complex-raw 0 y))
+
+;;; Helper for negative real sqrt (uses define to avoid nested call bug)
+(define (complex-sqrt-neg z)
+  (define neg-val (- z))
+  (define sqrt-val (sqrt neg-val))
+  (make-pure-imaginary sqrt-val))
+
+(define (complex-sqrt z)
+  (if (complex-representation? z)
+      (complex-sqrt-from-polar (magnitude z) (angle z))
+      (if (< z 0)
+          (complex-sqrt-neg z)
+          (sqrt z))))
+
+;;; (complex-exp z) - e^z for complex z
+(define (complex-exp-parts r i er)
+  (make-complex (* er (cos i))
+                (* er (sin i))))
+
+(define (complex-exp-helper r i)
+  (complex-exp-parts r i (exp r)))
+
+(define (complex-exp z)
+  (if (complex-representation? z)
+      (complex-exp-helper (real-part z) (imag-part z))
+      (exp z)))
+
+;;; (complex-log z) - Natural log of complex z
+(define (complex-log z)
+  (if (complex-representation? z)
+      (make-complex (log (magnitude z)) (angle z))
+      (if (< z 0)
+          (make-complex (log (abs z)) (get-pi))
+          (log z))))
+
+;;; (complex-sin z) - Sine of complex z
+(define (complex-sin-parts r i)
+  (make-complex (* (sin r) (cosh i))
+                (* (cos r) (sinh i))))
+
+(define (complex-sin z)
+  (if (complex-representation? z)
+      (complex-sin-parts (real-part z) (imag-part z))
+      (sin z)))
+
+;;; (complex-cos z) - Cosine of complex z
+(define (complex-cos-parts r i)
+  (make-complex (* (cos r) (cosh i))
+                (- (* (sin r) (sinh i)))))
+
+(define (complex-cos z)
+  (if (complex-representation? z)
+      (complex-cos-parts (real-part z) (imag-part z))
+      (cos z)))
+
+;;; (complex-tan z) - Tangent of complex z
+(define (complex-tan z)
+  (div-complex (complex-sin z) (complex-cos z)))
+
+;;; (complex-expt base power) - Exponentiation with complex support
+(define (complex-expt base power)
+  (cond
+    ((= power 0) 1)
+    ((and (integer? power) (> power 0))
+     (complex-expt-pos base power))
+    ((and (integer? power) (< power 0))
+     (complex-expt-neg base power))
+    (else
+     (complex-exp (mul-complex power (complex-log base))))))
+
+(define (complex-expt-pos base power)
+  (if (= power 1)
+      base
+      (if (complex-representation? base)
+          (mul-complex base (complex-expt-pos base (- power 1)))
+          (* base (complex-expt-pos base (- power 1))))))
+
+(define (complex-expt-neg base power)
+  (if (complex-representation? base)
+      (div-complex 1 (complex-expt base (- power)))
+      (/ 1 (complex-expt base (- power)))))
+
+;;; ============================================================================
+;;; Display Functions for Numerical Tower
+;;; ============================================================================
+
+;;; (display-rational r) - Display a rational number
+(define (display-rational r)
+  (display (numerator-of r))
+  (display "/")
+  (display (denominator-of r)))
+
+;;; (display-complex z) - Display a complex number  
+(define (display-complex z)
+  (display (real-part z))
+  (if (>= (imag-part z) 0)
+      (display "+")
+      (display ""))
+  (display (imag-part z))
+  (display "i"))
+
+;;; (display-tower-number x) - Display any tower number appropriately
+(define (display-tower-number x)
+  (cond
+    ((complex-representation? x) (display-complex x))
+    ((rational-representation? x) (display-rational x))
+    (else (display x))))
