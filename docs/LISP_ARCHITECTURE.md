@@ -287,13 +287,16 @@ Special forms are handled directly by the evaluator, not as functions:
 | `set!` | Mutate variable binding |
 | `let` | Parallel local bindings |
 | `let*` | Sequential local bindings |
+| `letrec` | Recursive let binding |
+| `letrec*` | Sequential recursive let binding |
 | `begin` | Sequence of expressions |
 | `and`/`or` | Short-circuit boolean operations |
+| `when`/`unless` | Convenience conditionals |
 | `do` | Iteration loop |
 | `quasiquote` | Template with unquote |
 | `eval` | Runtime evaluation |
 | `apply` | Apply function to argument list |
-| `defmacro` | Define macro |
+| `values` | Return multiple values as a list |
 
 ## Built-in Functions
 
@@ -339,39 +342,21 @@ define_stdlib! {
 - First call parses the body and caches it via `Lisp::set_stdlib_cache()`
 - Subsequent calls reuse the cached AST via `Lisp::stdlib_cache()`
 
-## Macro System
+## Quasiquote and Code Generation
 
-Macros are implemented as a simple expansion phase:
-
-```rust
-macros: [(ArenaIndex, ArenaIndex, ArenaIndex); MAX_MACROS],
-macro_count: usize,
-```
-
-Each macro stores `(name, params, body)`.
-
-### Macro Expansion
-
-Before evaluation, expressions are checked for macro calls:
-
-1. If the car is a symbol matching a macro name:
-   - Bind macro parameters to the unevaluated arguments
-   - Evaluate the macro body in this environment
-   - Replace the original expression with the result
-   - Re-expand (in case macro produces another macro call)
-
-### Quasiquote
-
-`quasiquote` enables template-based macro bodies:
+Quasiquote enables template-based code generation:
 
 ```lisp
-(defmacro unless (cond then else)
-  `(if ,cond ,else ,then))
+; Quasiquote for building code structures
+`(+ 1 ,(+ 2 3))           ; => (+ 1 5)
+`(list ,@'(1 2 3))        ; => (list 1 2 3)
 ```
 
 - `` ` `` (quasiquote) - Return structure mostly unevaluated
 - `,` (unquote) - Evaluate this sub-expression
 - `,@` (unquote-splicing) - Splice list into surrounding list
+
+**Note**: For R7RS conformance, hygienic macros via `syntax-rules` are planned for a future phase. The traditional `defmacro` is not implemented.
 
 ## Garbage Collection Integration
 
@@ -429,23 +414,11 @@ In this Lisp, only `#f` is false. `nil`/`()` is the empty list and is truthy:
 (if #f 'yes 'no)    ; => no (only #f is false)
 ```
 
-### 2. Macro Hygiene
-
-`gensym` should be used to avoid variable capture:
-
-```lisp
-(defmacro swap (a b)
-  (let ((temp (gensym)))
-    `(let ((,temp ,a))
-       (set! ,a ,b)
-       (set! ,b ,temp))))
-```
-
-### 3. Intern Table is Always Reachable
+### 2. Intern Table is Always Reachable
 
 All interned symbols are GC roots. If you create many unique symbols, they won't be collected.
 
-### 4. StdLib Re-parsing (Now Cached)
+### 3. StdLib Re-parsing (Now Cached)
 
 StdLib functions cache their parsed body after first call. The initial parse happens once per function.
 

@@ -24,9 +24,9 @@
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell
 //! - `Symbol { chars }` - Symbol with contiguous string storage
-//! - `Lambda { params, body, env }` - Closure
+//! - `Lambda { data }` - Closure (data points to (params . (body . env)))
 //! - `Builtin(Builtin)` - Optimized built-in function
-//! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
+//! - `StdLib { func, cache }` - Standard library function (static code, cached on first call)
 //!
 //! ## Reserved Slots
 //!
@@ -50,7 +50,7 @@
 //! - Run `gc()` with appropriate roots to reclaim memory
 //!
 //! ### StdLib Functions
-//! - Body is parsed on each call (minor overhead, but keeps code out of arena)
+//! - Body is parsed on first call and cached for subsequent calls
 //! - Recursive stdlib functions work via the global environment
 //! - Errors in static source strings are only caught at runtime
 
@@ -396,7 +396,7 @@ macro_rules! define_stdlib {
         /// Each StdLib variant stores references to static data:
         /// - Function name (for lookup and debugging)
         /// - Parameter names (static slice)
-        /// - Body source code (static string, parsed on each call)
+        /// - Body source code (static string, parsed and cached on first call)
         /// 
         /// # Adding New Functions
         /// 
@@ -431,8 +431,8 @@ macro_rules! define_stdlib {
             
             /// Get the body source code (Lisp expression as static string)
             /// 
-            /// This string is parsed on each call to the function.
-            /// The parsed AST is temporary and GC'd after evaluation.
+            /// This string is parsed on first call and cached. Subsequent calls
+            /// reuse the cached parsed AST for better performance.
             pub const fn body(&self) -> &'static str {
                 match self {
                     $(
