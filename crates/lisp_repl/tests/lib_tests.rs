@@ -2,14 +2,14 @@ use lisp_repl::*;
 
 #[test]
 fn test_format_number() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let idx = lisp.number(42).unwrap();
     assert_eq!(value_to_string(&lisp, idx), "42");
 }
 
 #[test]
 fn test_format_booleans() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     
     let t = lisp.true_val().unwrap();
     assert_eq!(value_to_string(&lisp, t), "#t");
@@ -20,21 +20,21 @@ fn test_format_booleans() {
 
 #[test]
 fn test_format_nil() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let idx = lisp.nil().unwrap();
     assert_eq!(value_to_string(&lisp, idx), "()");
 }
 
 #[test]
 fn test_format_symbol() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let idx = lisp.symbol("hello").unwrap();
     assert_eq!(value_to_string(&lisp, idx), "hello");
 }
 
 #[test]
 fn test_format_list() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let a = lisp.number(1).unwrap();
     let b = lisp.number(2).unwrap();
     let c = lisp.number(3).unwrap();
@@ -47,7 +47,7 @@ fn test_format_list() {
 
 #[test]
 fn test_format_dotted_pair() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let a = lisp.number(1).unwrap();
     let b = lisp.number(2).unwrap();
     let pair = lisp.cons(a, b).unwrap();
@@ -56,7 +56,7 @@ fn test_format_dotted_pair() {
 
 #[test]
 fn test_format_lambda() {
-    let lisp: Lisp<100> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let params = lisp.nil().unwrap();
     let body = lisp.number(42).unwrap();
     let env = lisp.nil().unwrap();
@@ -66,7 +66,7 @@ fn test_format_lambda() {
 
 #[test]
 fn test_eval_and_format() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_string(&lisp, &mut eval, "(+ 1 2)").unwrap(), "3");
@@ -222,7 +222,7 @@ fn test_strict_evaluation() {
 
 #[test]
 fn test_empty_list_is_truthy() {
-    let lisp: Lisp<1000> = Lisp::new();
+    let lisp: Lisp<2000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // The empty list '() is truthy (in Scheme, only #f is false)

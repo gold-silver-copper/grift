@@ -180,6 +180,40 @@ define_builtins! {
     Modulo => "modulo",
     /// remainder - Scheme remainder (result has sign of dividend)
     Remainder => "remainder",
+    /// quotient - Integer quotient (truncated towards zero)
+    Quotient => "quotient",
+    /// abs - Absolute value
+    Abs => "abs",
+    /// max - Maximum of numbers
+    Max => "max",
+    /// min - Minimum of numbers
+    Min => "min",
+    /// gcd - Greatest common divisor
+    Gcd => "gcd",
+    /// lcm - Least common multiple
+    Lcm => "lcm",
+    /// expt - Exponentiation
+    Expt => "expt",
+    /// square - Square of a number
+    Square => "square",
+    
+    // Numeric predicates
+    /// zero? - Check if number is zero
+    Zerop => "zero?",
+    /// positive? - Check if number is positive
+    Positivep => "positive?",
+    /// negative? - Check if number is negative
+    Negativep => "negative?",
+    /// odd? - Check if number is odd
+    Oddp => "odd?",
+    /// even? - Check if number is even
+    Evenp => "even?",
+    /// integer? - Check if value is an integer
+    Integerp => "integer?",
+    /// exact? - Check if number is exact (always true for integers)
+    Exactp => "exact?",
+    /// inexact? - Check if number is inexact (always false for integers)
+    Inexactp => "inexact?",
     
     // Comparison
     /// < - Less than

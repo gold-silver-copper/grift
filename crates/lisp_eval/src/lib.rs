@@ -1534,6 +1534,149 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.number(a % b).map_err(Into::into)
             }
             
+            Builtin::Quotient => {
+                // Integer quotient (truncated towards zero)
+                let a = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if b == 0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                // Rust's / operator truncates towards zero for integers
+                self.lisp.number(a / b).map_err(Into::into)
+            }
+            
+            Builtin::Abs => {
+                // Absolute value
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(n.abs()).map_err(Into::into)
+            }
+            
+            Builtin::Max => {
+                // Maximum of one or more numbers
+                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold_start(rest, first, |a, b| Some(if a > b { a } else { b }), call_expr)
+            }
+            
+            Builtin::Min => {
+                // Minimum of one or more numbers
+                let first = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold_start(rest, first, |a, b| Some(if a < b { a } else { b }), call_expr)
+            }
+            
+            Builtin::Gcd => {
+                // Greatest common divisor
+                // gcd() with no args returns 0, gcd(n) returns |n|
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(0).map_err(Into::into);
+                }
+                let first = self.get_number(self.lisp.car(args)?, call_expr)?.abs();
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold_start(rest, first, |a, b| Some(Self::gcd_helper(a, b.abs())), call_expr)
+            }
+            
+            Builtin::Lcm => {
+                // Least common multiple
+                // lcm() with no args returns 1, lcm(n) returns |n|
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(1).map_err(Into::into);
+                }
+                let first = self.get_number(self.lisp.car(args)?, call_expr)?.abs();
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold_start(rest, first, |a, b| {
+                    let b_abs = b.abs();
+                    if a == 0 || b_abs == 0 {
+                        Some(0)
+                    } else {
+                        // lcm(a, b) = |a * b| / gcd(a, b)
+                        let g = Self::gcd_helper(a, b_abs);
+                        Some((a / g) * b_abs)
+                    }
+                }, call_expr)
+            }
+            
+            Builtin::Expt => {
+                // Exponentiation: (expt base power)
+                let base = self.get_number(self.lisp.car(args)?, call_expr)?;
+                let power = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                
+                if power < 0 {
+                    // Negative exponents would give fractions, which we can't represent
+                    // For integer arithmetic, return 0 for base > 1, error for base <= 1
+                    if base == 0 {
+                        return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                    }
+                    // For integers, x^(-n) = 1/(x^n), which is 0 for |x| > 1
+                    if base == 1 { return self.lisp.number(1).map_err(Into::into); }
+                    if base == -1 { 
+                        // (-1)^(-n) = (-1)^n
+                        return self.lisp.number(if power % 2 == 0 { 1 } else { -1 }).map_err(Into::into);
+                    }
+                    return self.lisp.number(0).map_err(Into::into);
+                }
+                
+                // Use integer exponentiation with overflow checking
+                let result = Self::int_pow(base, power as usize);
+                self.lisp.number(result).map_err(Into::into)
+            }
+            
+            Builtin::Square => {
+                // Square of a number
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(n.saturating_mul(n)).map_err(Into::into)
+            }
+            
+            // Numeric predicates
+            Builtin::Zerop => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n == 0).map_err(Into::into)
+            }
+            
+            Builtin::Positivep => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n > 0).map_err(Into::into)
+            }
+            
+            Builtin::Negativep => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n < 0).map_err(Into::into)
+            }
+            
+            Builtin::Oddp => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n % 2 != 0).map_err(Into::into)
+            }
+            
+            Builtin::Evenp => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n % 2 == 0).map_err(Into::into)
+            }
+            
+            Builtin::Integerp => {
+                // In our implementation, all numbers are integers
+                let val = self.lisp.car(args)?;
+                let is_int = matches!(self.lisp.get(val)?, Value::Number(_));
+                self.lisp.boolean(is_int).map_err(Into::into)
+            }
+            
+            Builtin::Exactp => {
+                // In our implementation, all numbers are exact integers
+                let val = self.lisp.car(args)?;
+                let is_num = matches!(self.lisp.get(val)?, Value::Number(_));
+                self.lisp.boolean(is_num).map_err(Into::into)
+            }
+            
+            Builtin::Inexactp => {
+                // In our implementation, we don't have inexact numbers
+                let val = self.lisp.car(args)?;
+                // Verify it's a number, then return false
+                match self.lisp.get(val)? {
+                    Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
+                    _ => Err(self.type_error(call_expr, "number", self.lisp.get(val)?.type_name())),
+                }
+            }
+            
             Builtin::Lt => self.compare_numbers(args, |a, b| a < b, call_expr),
             Builtin::Gt => self.compare_numbers(args, |a, b| a > b, call_expr),
             Builtin::Le => self.compare_numbers(args, |a, b| a <= b, call_expr),
@@ -1844,6 +1987,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let a = self.get_number(self.lisp.car(args)?, call_expr)?;
         let b = self.get_number(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
         self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+    }
+    
+    /// Helper for computing GCD using Euclidean algorithm
+    fn gcd_helper(mut a: isize, mut b: isize) -> isize {
+        while b != 0 {
+            let t = b;
+            b = a % b;
+            a = t;
+        }
+        a.abs()
+    }
+    
+    /// Helper for integer exponentiation (base^power) with overflow checking
+    fn int_pow(base: isize, power: usize) -> isize {
+        if power == 0 {
+            return 1;
+        }
+        if base == 0 {
+            return 0;
+        }
+        if base == 1 {
+            return 1;
+        }
+        if base == -1 {
+            return if power % 2 == 0 { 1 } else { -1 };
+        }
+        
+        // Use exponentiation by squaring with saturating operations
+        let mut result: isize = 1;
+        let mut base = base;
+        let mut exp = power;
+        
+        while exp > 0 {
+            if exp % 2 == 1 {
+                result = result.saturating_mul(base);
+            }
+            exp /= 2;
+            if exp > 0 {
+                base = base.saturating_mul(base);
+            }
+        }
+        result
     }
     
     /// Recursive structural equality for equal? predicate
