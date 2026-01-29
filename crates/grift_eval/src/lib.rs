@@ -2080,12 +2080,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Vector => {
                 // (vector obj ...) - create vector from arguments
-                // First count the arguments
+                // First count the arguments (args is always a proper list from evaluator)
                 let mut count = 0usize;
                 let mut current = args;
-                while !self.lisp.get(current)?.is_nil() {
-                    count += 1;
-                    current = self.lisp.cdr(current)?;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { cdr, .. } => {
+                            count += 1;
+                            current = cdr;
+                        }
+                        _ => break, // Should not happen for function args
+                    }
                 }
                 
                 // Create vector with placeholder
@@ -2173,12 +2179,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (list->vector lst) - convert list to vector
                 let lst = self.lisp.car(args)?;
                 
-                // First count the list elements
+                // First count the list elements, validating it's a proper list
                 let mut count = 0usize;
                 let mut current = lst;
-                while !self.lisp.get(current)?.is_nil() {
-                    count += 1;
-                    current = self.lisp.cdr(current)?;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { cdr, .. } => {
+                            count += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
                 }
                 
                 // Create vector with placeholder

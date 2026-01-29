@@ -1831,6 +1831,8 @@ pub enum ParseErrorKind {
     InvalidEscapeSequence,
     /// Unterminated string literal
     UnterminatedString,
+    /// Vector literal exceeds maximum size (256 elements in no_std)
+    VectorLiteralTooLarge,
 }
 
 impl ParseError {
@@ -1998,10 +2000,15 @@ impl<'a> Parser<'a> {
     }
     
     /// Parse vector literal #(obj ...)
+    /// 
+    /// Note: In no_std environments, vector literals are limited to 256 elements
+    /// due to stack allocation constraints. Use `make-vector` or `vector` for
+    /// larger vectors.
     fn parse_vector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         self.advance(); // consume '('
         
-        // First, parse all elements into a temporary list
+        // Parse elements into a stack-allocated array (no_std constraint)
+        // Maximum 256 elements for literals; use make-vector for larger vectors
         let mut elements: [ArenaIndex; 256] = [ArenaIndex::NULL; 256];
         let mut count = 0usize;
         
@@ -2012,7 +2019,7 @@ impl<'a> Parser<'a> {
             }
             
             if count >= 256 {
-                return Err(self.error(ParseErrorKind::OutOfMemory));
+                return Err(self.error(ParseErrorKind::VectorLiteralTooLarge));
             }
             
             let elem = self.parse(lisp)?;

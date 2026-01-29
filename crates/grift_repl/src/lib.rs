@@ -245,6 +245,7 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                     ParseErrorKind::InvalidCharLiteral => buf.push_str("invalid character literal"),
                     ParseErrorKind::InvalidEscapeSequence => buf.push_str("invalid escape sequence"),
                     ParseErrorKind::UnterminatedString => buf.push_str("unterminated string"),
+                    ParseErrorKind::VectorLiteralTooLarge => buf.push_str("vector literal exceeds 256 elements"),
                 }
             }
         }

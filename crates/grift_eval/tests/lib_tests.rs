@@ -3126,3 +3126,38 @@ fn test_vector_array_compatibility() {
     assert!(eval_is_true(&lisp, &mut eval, "(array? (vector 1 2 3))"));
     assert!(eval_is_true(&lisp, &mut eval, "(vector? (make-array 3 0))"));
 }
+
+#[test]
+fn test_vector_nested_literal() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Nested vector literals
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? (vector-ref #(1 #(2 3) 4) 1))"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector-ref #(1 #(2 3) 4) 1) 0)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector-ref #(1 #(2 3) 4) 1) 1)"), 3);
+}
+
+#[test]
+fn test_list_to_vector_improper_list_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // list->vector with non-list should error
+    let result = eval.eval_str("(list->vector 42)");
+    assert!(result.is_err());
+    
+    // list->vector with improper list should error
+    let result = eval.eval_str("(list->vector (cons 1 2))");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_vector_make_vector_negative_length() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // make-vector with negative length should error
+    let result = eval.eval_str("(make-vector -1)");
+    assert!(result.is_err());
+}
