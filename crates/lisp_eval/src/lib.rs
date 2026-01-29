@@ -1749,6 +1749,107 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.number_value(n.round()).map_err(Into::into)
             }
             
+            // Complex number predicates
+            Builtin::Complexp => {
+                let val = self.lisp.car(args)?;
+                let is_complex = matches!(self.lisp.get(val)?, Value::Number(n) if n.is_complex());
+                self.lisp.boolean(is_complex).map_err(Into::into)
+            }
+            
+            Builtin::Realp => {
+                let val = self.lisp.car(args)?;
+                match self.lisp.get(val)? {
+                    Value::Number(n) => self.lisp.boolean(n.is_real()).map_err(Into::into),
+                    _ => self.lisp.boolean(false).map_err(Into::into),
+                }
+            }
+            
+            Builtin::Rationalp => {
+                let val = self.lisp.car(args)?;
+                match self.lisp.get(val)? {
+                    Value::Number(n) => self.lisp.boolean(n.is_rational()).map_err(Into::into),
+                    _ => self.lisp.boolean(false).map_err(Into::into),
+                }
+            }
+            
+            Builtin::Finitep => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n.is_finite()).map_err(Into::into)
+            }
+            
+            Builtin::Infinitep => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n.is_infinite()).map_err(Into::into)
+            }
+            
+            Builtin::Nanp => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.boolean(n.is_nan()).map_err(Into::into)
+            }
+            
+            // Complex number operations
+            Builtin::MakeRectangular => {
+                extract_args!(self, args, real_val, imag_val);
+                let real = self.get_number(real_val, call_expr)?.to_f64();
+                let imag = self.get_number(imag_val, call_expr)?.to_f64();
+                self.lisp.complex(real, imag).map_err(Into::into)
+            }
+            
+            Builtin::MakePolar => {
+                extract_args!(self, args, mag_val, angle_val);
+                let mag = self.get_number(mag_val, call_expr)?.to_f64();
+                let angle = self.get_number(angle_val, call_expr)?.to_f64();
+                self.lisp.number_value(Number::from_polar(mag, angle)).map_err(Into::into)
+            }
+            
+            Builtin::RealPart => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.real_part()).map_err(Into::into)
+            }
+            
+            Builtin::ImagPart => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.imag_part()).map_err(Into::into)
+            }
+            
+            Builtin::Magnitude => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.magnitude()).map_err(Into::into)
+            }
+            
+            Builtin::Angle => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.angle()).map_err(Into::into)
+            }
+            
+            // Rational number operations
+            Builtin::Numerator => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.numerator()).map_err(Into::into)
+            }
+            
+            Builtin::Denominator => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.denominator()).map_err(Into::into)
+            }
+            
+            // Exactness conversion
+            Builtin::Exact => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.to_exact()).map_err(Into::into)
+            }
+            
+            Builtin::Inexact => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.to_inexact()).map_err(Into::into)
+            }
+            
+            // Square root
+            Builtin::Sqrt => {
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number_value(n.sqrt()).map_err(Into::into)
+            }
+            
             Builtin::Lt => self.compare_numbers(args, |a, b| {
                 a.partial_cmp_real(b).map_or(false, |o| o == core::cmp::Ordering::Less)
             }, call_expr),
