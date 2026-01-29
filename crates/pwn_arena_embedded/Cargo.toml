@@ -6,9 +6,9 @@ license.workspace = true
 description = "Embedded-specific features for the grift Lisp, including hardware register and memory access"
 
 [dependencies]
-pwn_arena = { version = "0.1.0", path = "../pwn_arena" }
-grift_parser = { version = "0.1.0", path = "../grift_parser" }
-grift_eval = { version = "0.1.0", path = "../grift_eval" }
+pwn_arena = { version = "0.1.1", path = "../pwn_arena" }
+grift_parser = { version = "0.1.1", path = "../grift_parser" }
+grift_eval = { version = "0.1.1", path = "../grift_eval" }
 
 [features]
 default = []
