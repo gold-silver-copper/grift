@@ -1000,6 +1000,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
             }
             
+            // letrec - Recursive let binding (R7RS Section 4.2.2)
+            if self.lisp.symbol_matches(car, "letrec")? {
+                let (new_expr, new_env) = self.eval_letrec_tco(cdr, env)?;
+                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+            }
+            
+            // letrec* - Sequential recursive let binding (R7RS Section 4.2.2)
+            if self.lisp.symbol_matches(car, "letrec*")? {
+                let (new_expr, new_env) = self.eval_letrec_star_tco(cdr, env)?;
+                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+            }
+            
+            // when - Convenience conditional (R7RS Section 4.2.1)
+            if self.lisp.symbol_matches(car, "when")? {
+                let test_expr = self.lisp.car(cdr)?;
+                let body = self.lisp.cdr(cdr)?;
+                let test_result = self.eval_in_env(test_expr, env)?;
+                if self.is_false(test_result)? {
+                    // Test failed - return unspecified value (nil)
+                    let nil = self.lisp.nil()?;
+                    return Ok(TrampolineState::Return { val: nil });
+                }
+                // Test passed - evaluate body as begin
+                let begin = self.lisp.symbol("begin")?;
+                let new_expr = self.lisp.cons(begin, body)?;
+                return Ok(TrampolineState::Eval { expr: new_expr, env });
+            }
+            
+            // unless - Convenience conditional (R7RS Section 4.2.1)
+            if self.lisp.symbol_matches(car, "unless")? {
+                let test_expr = self.lisp.car(cdr)?;
+                let body = self.lisp.cdr(cdr)?;
+                let test_result = self.eval_in_env(test_expr, env)?;
+                if !self.is_false(test_result)? {
+                    // Test is true (truthy) - skip body, return unspecified value (nil)
+                    let nil = self.lisp.nil()?;
+                    return Ok(TrampolineState::Return { val: nil });
+                }
+                // Test is false - evaluate body as begin
+                let begin = self.lisp.symbol("begin")?;
+                let new_expr = self.lisp.cons(begin, body)?;
+                return Ok(TrampolineState::Eval { expr: new_expr, env });
+            }
+            
             // begin - TCO in last expression
             if self.lisp.symbol_matches(car, "begin")? {
                 match self.eval_begin_tco(cdr, env)? {
@@ -1676,6 +1720,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
                     _ => Err(self.type_error(call_expr, "number", self.lisp.get(val)?.type_name())),
                 }
+            }
+            
+            Builtin::ExactIntegerp => {
+                // exact-integer? returns #t if z is both exact and an integer
+                // In our implementation, all numbers are exact integers
+                let val = self.lisp.car(args)?;
+                let is_exact_int = matches!(self.lisp.get(val)?, Value::Number(_));
+                self.lisp.boolean(is_exact_int).map_err(Into::into)
+            }
+            
+            // Rounding operations - For integers, these are all identity functions
+            Builtin::Floor => {
+                // floor: largest integer not greater than x (identity for integers)
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(n).map_err(Into::into)
+            }
+            
+            Builtin::Ceiling => {
+                // ceiling: smallest integer not less than x (identity for integers)
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(n).map_err(Into::into)
+            }
+            
+            Builtin::Truncate => {
+                // truncate: integer closest to x whose absolute value is not larger (identity for integers)
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(n).map_err(Into::into)
+            }
+            
+            Builtin::Round => {
+                // round: closest integer to x, rounding to even when x is halfway (identity for integers)
+                let n = self.get_number(self.lisp.car(args)?, call_expr)?;
+                self.lisp.number(n).map_err(Into::into)
             }
             
             Builtin::Lt => self.compare_numbers(args, |a, b| a < b, call_expr),
@@ -2542,6 +2619,123 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         
+        let body_expr = if self.lisp.get(self.lisp.cdr(body)?)?.is_nil() {
+            self.lisp.car(body)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body)?
+        };
+        
+        Ok((body_expr, new_env))
+    }
+    
+    /// Evaluate letrec with TCO in body (R7RS Section 4.2.2)
+    /// 
+    /// Semantics: All variables are bound to fresh locations containing unspecified values,
+    /// then all init expressions are evaluated (in some unspecified order) and the variables
+    /// are assigned to the results. This allows mutually recursive definitions.
+    fn eval_letrec_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Step 1: Bind all variables to undefined (nil) first
+        // This creates the environment where all names are visible
+        let mut new_env = env;
+        let mut current = bindings;
+        
+        // Collect all names and their init expressions
+        const MAX_BINDINGS: usize = 64;
+        let mut names: [ArenaIndex; MAX_BINDINGS] = [ArenaIndex::NULL; MAX_BINDINGS];
+        let mut init_exprs: [ArenaIndex; MAX_BINDINGS] = [ArenaIndex::NULL; MAX_BINDINGS];
+        let mut count = 0;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: binding, cdr: rest } => {
+                    if count >= MAX_BINDINGS {
+                        return Err(self.make_error(ErrorKind::StackOverflow, bindings));
+                    }
+                    let name = self.lisp.car(binding)?;
+                    let value_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                    names[count] = name;
+                    init_exprs[count] = value_expr;
+                    
+                    // Bind to undefined (nil) initially
+                    let undefined = self.lisp.nil()?;
+                    new_env = self.env_extend(new_env, name, undefined)?;
+                    count += 1;
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
+            }
+        }
+        
+        // Step 2: Evaluate all init expressions in the new environment (where all names are visible)
+        // Then set! each variable to its computed value
+        for i in 0..count {
+            let value = self.eval_in_env(init_exprs[i], new_env)?;
+            self.env_set(new_env, names[i], value)?;
+        }
+        
+        // Body becomes a begin block for TCO
+        let body_expr = if self.lisp.get(self.lisp.cdr(body)?)?.is_nil() {
+            self.lisp.car(body)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body)?
+        };
+        
+        Ok((body_expr, new_env))
+    }
+    
+    /// Evaluate letrec* with TCO in body (R7RS Section 4.2.2)
+    /// 
+    /// Semantics: Similar to letrec, but init expressions are evaluated and assigned
+    /// sequentially from left to right. This is stricter than letrec.
+    fn eval_letrec_star_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Step 1: Bind all variables to undefined (nil) first
+        let mut new_env = env;
+        let mut current = bindings;
+        
+        // First pass: collect all names and bind them to undefined
+        const MAX_BINDINGS: usize = 64;
+        let mut names: [ArenaIndex; MAX_BINDINGS] = [ArenaIndex::NULL; MAX_BINDINGS];
+        let mut init_exprs: [ArenaIndex; MAX_BINDINGS] = [ArenaIndex::NULL; MAX_BINDINGS];
+        let mut count = 0;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: binding, cdr: rest } => {
+                    if count >= MAX_BINDINGS {
+                        return Err(self.make_error(ErrorKind::StackOverflow, bindings));
+                    }
+                    let name = self.lisp.car(binding)?;
+                    let value_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                    names[count] = name;
+                    init_exprs[count] = value_expr;
+                    
+                    // Bind to undefined (nil) initially
+                    let undefined = self.lisp.nil()?;
+                    new_env = self.env_extend(new_env, name, undefined)?;
+                    count += 1;
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
+            }
+        }
+        
+        // Step 2: Evaluate and assign SEQUENTIALLY (this is the difference from letrec)
+        for i in 0..count {
+            let value = self.eval_in_env(init_exprs[i], new_env)?;
+            self.env_set(new_env, names[i], value)?;
+        }
+        
+        // Body becomes a begin block for TCO
         let body_expr = if self.lisp.get(self.lisp.cdr(body)?)?.is_nil() {
             self.lisp.car(body)?
         } else {

@@ -315,6 +315,21 @@ fn to_pascal_case(name: &str) -> String {
                 result.push('P');
                 capitalize_next = true;
             }
+            '=' => {
+                // Replace with 'Eq' for equality operators
+                result.push_str("Eq");
+                capitalize_next = true;
+            }
+            '>' => {
+                // Replace with 'Gt' for greater-than
+                result.push_str("Gt");
+                capitalize_next = true;
+            }
+            '<' => {
+                // Replace with 'Lt' for less-than
+                result.push_str("Lt");
+                capitalize_next = true;
+            }
             _ => {
                 if capitalize_next {
                     result.extend(c.to_uppercase());

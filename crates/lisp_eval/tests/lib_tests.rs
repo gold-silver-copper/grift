@@ -1710,3 +1710,343 @@ fn test_gc_disabled_no_collect() {
     // Re-enable GC
     eval.eval_str("(gc-enable)").unwrap();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R7RS PHASE 1 CONFORMANCE TESTS
+// Testing letrec, letrec*, when, unless, and new stdlib functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_letrec_basic() {
+    // letrec allows mutually recursive definitions
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic letrec - recursive function
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(letrec ((fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1))))))) (fact 5))"), 
+        120);
+}
+
+#[test]
+fn test_letrec_mutual_recursion() {
+    // letrec supports mutually recursive definitions (R7RS example)
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Even?/odd? mutual recursion from R7RS spec
+    assert!(eval_is_true(&lisp, &mut eval, 
+        "(letrec ((even? (lambda (n) (if (zero? n) #t (odd? (- n 1))))) 
+                  (odd? (lambda (n) (if (zero? n) #f (even? (- n 1)))))) 
+          (even? 88))"));
+    
+    assert!(eval_is_false(&lisp, &mut eval, 
+        "(letrec ((even? (lambda (n) (if (zero? n) #t (odd? (- n 1))))) 
+                  (odd? (lambda (n) (if (zero? n) #f (even? (- n 1)))))) 
+          (even? 7))"));
+}
+
+#[test]
+fn test_letrec_star_basic() {
+    // letrec* evaluates bindings sequentially
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic letrec* - same as letrec for simple cases
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(letrec* ((x 1) (y (+ x 2))) (+ x y))"), 
+        4);
+}
+
+#[test]
+fn test_letrec_star_mutual_recursion() {
+    // letrec* also supports mutual recursion
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Mutual recursion works in letrec*
+    assert!(eval_is_true(&lisp, &mut eval, 
+        "(letrec* ((even? (lambda (n) (if (zero? n) #t (odd? (- n 1))))) 
+                   (odd? (lambda (n) (if (zero? n) #f (even? (- n 1)))))) 
+          (even? 10))"));
+}
+
+#[test]
+fn test_when_basic() {
+    // when evaluates body when test is true
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a counter to track when the body is evaluated
+    eval.eval_str("(define counter 0)").unwrap();
+    
+    // When test is true, body executes
+    eval.eval_str("(when #t (set! counter (+ counter 1)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 1);
+    
+    // When test is false, body does not execute
+    eval.eval_str("(when #f (set! counter (+ counter 10)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 1);
+}
+
+#[test]
+fn test_when_multiple_expressions() {
+    // when can have multiple expressions in body
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define a 0)").unwrap();
+    eval.eval_str("(define b 0)").unwrap();
+    
+    eval.eval_str("(when (= 1 1) (set! a 1) (set! b 2))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "a"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "b"), 2);
+}
+
+#[test]
+fn test_unless_basic() {
+    // unless evaluates body when test is false
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define counter 0)").unwrap();
+    
+    // Unless test is true (truthy), body does not execute
+    eval.eval_str("(unless #t (set! counter (+ counter 1)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 0);
+    
+    // Unless test is false, body executes
+    eval.eval_str("(unless #f (set! counter (+ counter 10)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 10);
+}
+
+#[test]
+fn test_unless_multiple_expressions() {
+    // unless can have multiple expressions in body
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define a 0)").unwrap();
+    eval.eval_str("(define b 0)").unwrap();
+    
+    // Only executes when test is false
+    eval.eval_str("(unless (= 1 2) (set! a 5) (set! b 6))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "a"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "b"), 6);
+}
+
+#[test]
+fn test_rounding_operations() {
+    // floor, ceiling, truncate, round are identity for integers
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // All rounding operations are identity for integers
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(floor 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(floor -5)"), -5);
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(ceiling 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(ceiling -5)"), -5);
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(truncate 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(truncate -5)"), -5);
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(round 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(round -5)"), -5);
+}
+
+#[test]
+fn test_exact_integer_predicate() {
+    // exact-integer? returns #t for all our integers
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(exact-integer? 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(exact-integer? 0)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(exact-integer? -100)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(exact-integer? 'symbol)"));
+}
+
+#[test]
+fn test_make_list_stdlib() {
+    // make-list creates a list of k elements
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Make a list of 3 zeros
+    let result = eval.eval_str("(make-list 3 0)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (make-list 3 0))"), 3);
+    
+    // First element is the fill value
+    let car = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(car).unwrap().as_number().unwrap(), 0);
+}
+
+#[test]
+fn test_last_and_last_pair() {
+    // last returns the last element, last-pair returns the last pair
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(last '(1 2 3))"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(last '(5))"), 5);
+    
+    // last-pair returns the last pair
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (last-pair '(1 2 3)))"), 3);
+}
+
+#[test]
+fn test_any_and_every() {
+    // any and every higher-order functions
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // any returns #t if predicate is true for any element
+    assert!(eval_is_true(&lisp, &mut eval, "(any positive? '(1 -2 -3))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(any positive? '(-1 -2 -3))"));
+    
+    // every returns #t if predicate is true for all elements
+    assert!(eval_is_true(&lisp, &mut eval, "(every positive? '(1 2 3))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(every positive? '(1 -2 3))"));
+}
+
+#[test]
+fn test_find() {
+    // find returns the first element matching predicate
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(find even? '(1 3 4 5 6))"), 4);
+    assert!(eval_is_false(&lisp, &mut eval, "(find even? '(1 3 5 7))"));
+}
+
+#[test]
+fn test_remove_and_delete() {
+    // remove and delete filter lists
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // remove removes elements matching predicate
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (remove even? '(1 2 3 4 5)))"), 3);
+    
+    // delete removes specific element using equal?
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (delete 2 '(1 2 3 2 4)))"), 3);
+}
+
+#[test]
+fn test_fold_right() {
+    // fold-right is a right fold
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // fold-right processes list from right-to-left, but with cons and empty list
+    // it preserves the original order: (cons 1 (cons 2 (cons 3 '()))) = (1 2 3)
+    let result = eval.eval_str("(fold-right cons '() '(1 2 3))").unwrap();
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 1);
+}
+
+#[test]
+fn test_reduce() {
+    // reduce is an alias for fold-right
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reduce + 0 '(1 2 3 4))"), 10);
+}
+
+#[test]
+fn test_cddddr() {
+    // cddddr - 4-level cdr
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    let result = eval.eval_str("(cddddr '(1 2 3 4 5 6))").unwrap();
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 5);
+}
+
+#[test]
+fn test_partition() {
+    // partition splits a list into matching and non-matching elements
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // partition returns (cons matching non-matching) - a pair of two lists
+    eval.eval_str("(define result (partition even? '(1 2 3 4 5 6)))").unwrap();
+    
+    // car is the matching elements (even numbers: 2, 4, 6)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (car result))"), 3);
+    
+    // cdr is the non-matching elements (odd numbers: 1, 3, 5)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (cdr result))"), 3);
+}
+
+#[test]
+fn test_filter_map() {
+    // filter-map applies function and keeps non-#f results
+    let lisp: Lisp<5000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a function that returns #f for negative numbers
+    eval.eval_str("(define (pos-or-false x) (if (positive? x) x #f))").unwrap();
+    
+    // filter-map keeps only the positive values
+    eval.eval_str("(define result (filter-map pos-or-false '(-1 2 -3 4 -5)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length result)"), 2);
+}
+
+#[test]
+fn test_boolean_eq() {
+    // boolean-eq checks if both arguments have the same boolean value
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean-eq #t #t)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean-eq #f #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean-eq #t #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean-eq #f #t)"));
+}
+
+#[test]
+fn test_member_equal_and_assoc_equal() {
+    // member-equal and assoc-equal use equal? for comparison
+    let lisp: Lisp<3000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // member-equal works with nested lists (unlike memq which uses eq?)
+    let result = eval.eval_str("(member-equal '(a) '(x (a) y))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false()); // Should find it
+    
+    // assoc-equal works with nested keys
+    let result = eval.eval_str("(assoc-equal '(a) '(((a) 1) ((b) 2)))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false()); // Should find it
+}
+
+#[test]
+fn test_list_set() {
+    // list-set! mutates an element in a list
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define my-list (list 1 2 3 4 5))").unwrap();
+    eval.eval_str("(list-set! my-list 2 99)").unwrap();
+    
+    // Third element (index 2) should now be 99
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(list-ref my-list 2)"), 99);
+}
+
+#[test]
+fn test_make_list_edge_cases() {
+    // make-list handles edge cases
+    let lisp: Lisp<2000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Empty list for k=0
+    let result = eval.eval_str("(make-list 0 'x)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+    
+    // Negative k should return empty list (not infinite recursion)
+    let result = eval.eval_str("(make-list -5 'x)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+}

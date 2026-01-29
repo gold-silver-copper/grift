@@ -24,18 +24,24 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Lexical scoping with closures
 - ✅ Proper tail-call optimization (via trampolining)
 - ✅ Strict evaluation (call-by-value)
-- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `begin`, `and`, `or`, `do`, `quasiquote`, `eval`, `apply`, `values`
+- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`
 
 #### Built-in Procedures (Chapter 6)
 - ✅ **Equivalence**: `eq?`, `eqv?`, `equal?`
 - ✅ **Booleans**: `not`, `boolean?`
 - ✅ **Pairs/Lists**: `car`, `cdr`, `cons`, `list`, `null?`, `pair?`, `set-car!`, `set-cdr!`
-- ✅ **Numbers**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `=`, `<`, `>`, `<=`, `>=`, `number?`
+- ✅ **Numbers**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `quotient`, `=`, `<`, `>`, `<=`, `>=`, `number?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
+- ✅ **Number Operations**: `abs`, `max`, `min`, `gcd`, `lcm`, `expt`, `square`, `floor`, `ceiling`, `truncate`, `round`
+- ✅ **Number Predicates**: `zero?`, `positive?`, `negative?`, `odd?`, `even?`
 - ✅ **Type Predicates**: `symbol?`, `procedure?`
 - ✅ **I/O**: `display`, `newline`, `error`
 
 #### Standard Library Functions (`stdlib.scm`)
-- ✅ `map`, `filter`, `fold`, `length`, `append`, `reverse`, `nth`, `take`, `drop`, `zip`, `member`, `assoc`, `range`, `compose`, `identity`, `constantly`, `flip`, `curry`, `cadr`, `caddr`, `cddr`
+- ✅ **List Operations**: `map`, `filter`, `fold`, `fold-right`, `reduce`, `length`, `append`, `reverse`, `nth`, `take`, `drop`, `zip`, `list?`, `list-ref`, `list-tail`, `list-copy`, `make-list`, `list-set!`, `last`, `last-pair`
+- ✅ **Search Functions**: `member`, `memq`, `memv`, `member-equal`, `assoc`, `assq`, `assv`, `assoc-equal`, `find`
+- ✅ **Higher-Order Functions**: `for-each`, `any`, `every`, `filter-map`, `partition`, `remove`, `delete`
+- ✅ **Utilities**: `range`, `compose`, `identity`, `constantly`, `flip`, `curry`, `sign`, `boolean-eq`
+- ✅ **Car/Cdr Compositions**: Full set of `caar`, `cadr`, `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `cdaar`, `cdadr`, `cddar`, `caddr`, `cdddr`, `cadddr`, `cddddr`
 
 ### 🔧 Implementation Extensions (Non-R7RS)
 
@@ -63,30 +69,45 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 
 ## Multi-Phase R7RS Conformance Plan
 
-### Phase 1: Core Language Foundation (Current Focus)
+### Phase 1: Core Language Foundation ✅ COMPLETED
 **Goal**: Ensure all basic R7RS semantics are correctly implemented
 
-#### 1.1 Binding Constructs
-- [ ] Implement `letrec` - Recursive let binding (Section 4.2.2)
-- [ ] Implement `letrec*` - Sequential recursive let binding
-- [ ] Verify `let` and `let*` follow R7RS semantics exactly
+#### 1.1 Binding Constructs ✅
+- [x] Implement `letrec` - Recursive let binding (Section 4.2.2)
+- [x] Implement `letrec*` - Sequential recursive let binding
+- [x] Verify `let` and `let*` follow R7RS semantics exactly
 
-#### 1.2 Core Procedures
-- [ ] Implement `for-each` - Apply procedure for side effects
-- [ ] Implement `list-tail` - Return sublist starting at index
-- [ ] Implement `list-ref` - Return element at index
-- [ ] Implement `list?` - Check if value is a proper list
-- [ ] Implement `list-copy` - Create a copy of a list
+#### 1.2 Core Procedures ✅
+- [x] Implement `for-each` - Apply procedure for side effects
+- [x] Implement `list-tail` - Return sublist starting at index
+- [x] Implement `list-ref` - Return element at index
+- [x] Implement `list?` - Check if value is a proper list
+- [x] Implement `list-copy` - Create a copy of a list
 
-#### 1.3 Number Operations
-- [ ] Implement `abs` - Absolute value
-- [ ] Implement `max` / `min` - Maximum and minimum
-- [ ] Implement `quotient` - Integer quotient (alias for truncate-quotient)
-- [ ] Implement `gcd` / `lcm` - Greatest common divisor / least common multiple
-- [ ] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations
-- [ ] Implement `expt` - Exponentiation
-- [ ] Implement `square` - Square of a number
-- [ ] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
+#### 1.3 Number Operations ✅
+- [x] Implement `abs` - Absolute value
+- [x] Implement `max` / `min` - Maximum and minimum
+- [x] Implement `quotient` - Integer quotient (alias for truncate-quotient)
+- [x] Implement `gcd` / `lcm` - Greatest common divisor / least common multiple
+- [x] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations (identity for integers)
+- [x] Implement `expt` - Exponentiation
+- [x] Implement `square` - Square of a number
+- [x] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
+
+#### 1.4 Convenience Conditionals ✅
+- [x] Implement `when` - Execute body when test is true
+- [x] Implement `unless` - Execute body when test is false
+
+#### 1.5 Additional Stdlib Functions ✅
+- [x] Implement `make-list` - Create a list of k elements with fill value
+- [x] Implement `list-set!` - Store obj at element k of list
+- [x] Implement `last` / `last-pair` - Access last element/pair
+- [x] Implement `any` / `every` - Higher-order predicates
+- [x] Implement `find` - Find first element matching predicate
+- [x] Implement `partition` - Split list by predicate
+- [x] Implement `remove` / `delete` - Remove elements from list
+- [x] Implement `fold-right` / `reduce` - Right fold operations
+- [x] Implement full c...r accessors (up to 4 levels: `cddddr`, `cadddr`)
 
 ### Phase 2: String and Character Support
 **Goal**: Full R7RS string and character operations
