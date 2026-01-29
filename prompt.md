@@ -1,0 +1,3 @@
+Refer to scheme spec md file and spec.html Do not use any external libraries. Document and fix any bugs you come across. Write tests and docs for all new features as you progress. Document progress in the scheme conformance MD file. Analyze,debug then fix the following bug: StdLib functions have an evaluation bug with nested inline calls. Documented in conformance doc; does not affect user-defined functions. Do not use work arounds, fix the core issue.
+
+Afterwards add numerical tests to bench.rs
