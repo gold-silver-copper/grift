@@ -1,4 +1,4 @@
-use lisp_eval::*;
+use grift_eval::*;
 
 fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
     let result = eval.eval_str(input).unwrap();

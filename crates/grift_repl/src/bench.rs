@@ -2,14 +2,14 @@
 
 //! # Lisp Stress Test / Benchmark Suite
 //!
-//! Run with: `cargo run -p lisp_repl --bin lisp-bench --release`
+//! Run with: `cargo run -p grift_repl --bin grift-bench --release`
 //!
 //! This runs various stress tests on the Lisp interpreter to measure performance
 //! and verify correctness under load.
 
-use lisp_eval::Evaluator;
-use lisp_parser::Lisp;
-use lisp_repl::format_value;
+use grift_eval::Evaluator;
+use grift_parser::Lisp;
+use grift_repl::format_value;
 use std::time::{Duration, Instant};
 
 /// Result of a single benchmark
@@ -337,7 +337,7 @@ fn main() {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // Note: map, filter, fold, range, and reverse are now part of the stdlib
-    // (defined via the define_stdlib! macro in lisp_parser).
+    // (defined via the define_stdlib! macro in grift_parser).
     // The stdlib range function takes (start end) and produces [start, end).
 
     results.push(run_bench(

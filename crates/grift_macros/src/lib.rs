@@ -1,4 +1,4 @@
-//! Procedural macros for lisp_parser standard library
+//! Procedural macros for grift_parser standard library
 //!
 //! This crate provides the `include_stdlib!` macro which parses a `.scm` file
 //! containing function definitions and transforms them into the format expected

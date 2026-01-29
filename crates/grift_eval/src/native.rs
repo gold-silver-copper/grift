@@ -17,7 +17,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use lisp_eval::{NativeRegistry, register_native};
+//! use grift_eval::{NativeRegistry, register_native};
 //!
 //! // Define a native function using the register_native! macro
 //! register_native!(add_one, (x: isize) -> isize, { x + 1 });
@@ -44,7 +44,7 @@ use crate::{ArenaIndex, ArenaResult, ArenaError, Lisp, Value};
 /// # Example
 ///
 /// ```rust
-/// use lisp_eval::{FromLisp, Lisp, ArenaIndex, ArenaResult, Value};
+/// use grift_eval::{FromLisp, Lisp, ArenaIndex, ArenaResult, Value};
 ///
 /// // isize is already implemented
 /// fn example<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<isize> {
@@ -65,7 +65,7 @@ pub trait FromLisp<const N: usize>: Sized {
 /// # Example
 ///
 /// ```rust
-/// use lisp_eval::{ToLisp, Lisp, ArenaIndex, ArenaResult};
+/// use grift_eval::{ToLisp, Lisp, ArenaIndex, ArenaResult};
 ///
 /// // isize is already implemented
 /// fn example<const N: usize>(lisp: &Lisp<N>, value: isize) -> ArenaResult<ArenaIndex> {
@@ -196,10 +196,10 @@ pub struct NativeEntry<const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use lisp_eval::{NativeRegistry, Lisp, ArenaIndex, ArenaResult};
+/// use grift_eval::{NativeRegistry, Lisp, ArenaIndex, ArenaResult};
 ///
 /// fn my_add<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-///     use lisp_eval::FromLisp;
+///     use grift_eval::FromLisp;
 ///     let a = isize::from_lisp(lisp, lisp.car(args)?)?;
 ///     let b = isize::from_lisp(lisp, lisp.car(lisp.cdr(args)?)?)?;
 ///     lisp.number(a + b)
@@ -319,7 +319,7 @@ pub const fn simple_hash(s: &str) -> usize {
 /// # Example
 ///
 /// ```rust
-/// use lisp_eval::{extract_arg, Lisp, ArenaIndex, ArenaResult};
+/// use grift_eval::{extract_arg, Lisp, ArenaIndex, ArenaResult};
 ///
 /// fn example<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<(isize, ArenaIndex)> {
 ///     extract_arg::<N, isize>(lisp, args)
@@ -372,7 +372,7 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// # Basic Syntax
 ///
 /// ```rust
-/// use lisp_eval::register_native;
+/// use grift_eval::register_native;
 ///
 /// // Define a function that adds two numbers
 /// register_native!(add_two, (a: isize, b: isize) -> isize, {
@@ -391,7 +391,7 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// The macro can also be used for functions that access global static variables:
 ///
 /// ```rust
-/// use lisp_eval::register_native;
+/// use grift_eval::register_native;
 /// use core::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// static MY_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -415,7 +415,7 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
 /// processing variadic arguments, etc.), define a regular function instead:
 ///
 /// ```rust
-/// use lisp_eval::{Lisp, ArenaIndex, ArenaResult, FromLisp};
+/// use grift_eval::{Lisp, ArenaIndex, ArenaResult, FromLisp};
 /// use pwn_arena::ArenaResult as PwnResult;
 ///
 /// fn my_custom_fn<const N: usize>(

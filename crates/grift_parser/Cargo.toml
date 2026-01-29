@@ -1,10 +1,10 @@
 [package]
-name = "lisp_parser"
+name = "grift_parser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Lisp parser for the pwn_arena workspace"
+description = "Lisp parser for the grift Lisp language"
 
 [dependencies]
 pwn_arena = { path = "../pwn_arena" }
-lisp_macros = { path = "../lisp_macros" }
+grift_macros = { path = "../grift_macros" }

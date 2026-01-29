@@ -1,4 +1,4 @@
-use lisp_repl::*;
+use grift_repl::*;
 
 #[test]
 fn test_format_number() {

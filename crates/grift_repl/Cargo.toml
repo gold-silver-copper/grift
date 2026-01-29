@@ -1,20 +1,20 @@
 [package]
-name = "lisp_repl"
+name = "grift_repl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Lisp REPL for the pwn_arena workspace"
+description = "REPL for the grift Lisp language"
 
 [[bin]]
-name = "lisp"
+name = "grift"
 path = "src/main.rs"
 
 [[bin]]
-name = "lisp-bench"
+name = "grift-bench"
 path = "src/bench.rs"
 
 [dependencies]
 pwn_arena = { path = "../pwn_arena" }
-lisp_parser = { path = "../lisp_parser" }
-lisp_eval = { path = "../lisp_eval" }
+grift_parser = { path = "../grift_parser" }
+grift_eval = { path = "../grift_eval" }
 pwn_arena_embedded = { path = "../pwn_arena_embedded" }

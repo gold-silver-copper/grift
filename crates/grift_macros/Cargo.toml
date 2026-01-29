@@ -1,9 +1,9 @@
 [package]
-name = "lisp_macros"
+name = "grift_macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Procedural macros for lisp_parser standard library"
+description = "Procedural macros for grift_parser standard library"
 
 [lib]
 proc-macro = true

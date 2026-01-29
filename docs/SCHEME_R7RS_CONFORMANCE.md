@@ -268,16 +268,16 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 
 ### For Special Forms
 
-1. **Add to parser** (`crates/lisp_parser/src/lib.rs`):
+1. **Add to parser** (`crates/grift_parser/src/lib.rs`):
    - Add syntax recognition in the parser
    - Ensure proper AST representation
 
-2. **Add to evaluator** (`crates/lisp_eval/src/lib.rs`):
+2. **Add to evaluator** (`crates/grift_eval/src/lib.rs`):
    - Add handling in `step_eval` for the new special form
    - Implement semantics according to R7RS spec
    - Add appropriate continuations if needed
 
-3. **Add tests** (`crates/lisp_eval/tests/lib_tests.rs`):
+3. **Add tests** (`crates/grift_eval/tests/lib_tests.rs`):
    - Test basic functionality
    - Test edge cases
    - Test conformance with R7RS examples
@@ -285,12 +285,12 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 ### For Standard Procedures
 
 1. **Builtins** (for performance-critical operations):
-   - Add variant to `define_builtins!` macro in `crates/lisp_parser/src/lib.rs`
-   - Implement in `apply_builtin` in `crates/lisp_eval/src/lib.rs`
+   - Add variant to `define_builtins!` macro in `crates/grift_parser/src/lib.rs`
+   - Implement in `apply_builtin` in `crates/grift_eval/src/lib.rs`
    - Add tests
 
 2. **Standard Library** (for less critical operations):
-   - Add definition to `crates/lisp_parser/src/stdlib.scm`
+   - Add definition to `crates/grift_parser/src/stdlib.scm`
    - The `include_stdlib!` macro will automatically generate the enum variant
    - Add tests
 
@@ -329,9 +329,9 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 - **Spec**: `scheme-spec-r7rs/spec.html`
 - **Architecture**: `docs/LISP_ARCHITECTURE.md`
 - **Arena Architecture**: `docs/ARENA_ARCHITECTURE.md`
-- **Current Stdlib**: `crates/lisp_parser/src/stdlib.scm`
-- **Parser**: `crates/lisp_parser/src/lib.rs`
-- **Evaluator**: `crates/lisp_eval/src/lib.rs`
+- **Current Stdlib**: `crates/grift_parser/src/stdlib.scm`
+- **Parser**: `crates/grift_parser/src/lib.rs`
+- **Evaluator**: `crates/grift_eval/src/lib.rs`
 
 ---
 
