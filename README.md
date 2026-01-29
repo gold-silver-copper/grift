@@ -1,25 +1,25 @@
-# pwn_arena
+# grift
 
 [![Crates.io](https://img.shields.io/crates/v/pwn_arena.svg)](https://crates.io/crates/pwn_arena)
 [![Documentation](https://docs.rs/pwn_arena/badge.svg)](https://docs.rs/pwn_arena)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-A minimal Lisp implementation built on a custom `no_std` arena allocator. This project demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
+A minimal Lisp (named "grift") built on a custom `no_std` arena allocator. This project demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
 
 ## 🎯 Project Overview
 
 This repository contains:
 
 - **`pwn_arena`** — A fixed-size arena allocator with mark-and-sweep garbage collection
-- **`lisp_parser`** — A Lisp parser with symbol interning
-- **`lisp_eval`** — A fully trampolined evaluator with proper tail-call optimization
-- **`lisp_repl`** — An interactive Read-Eval-Print-Loop
+- **`grift_parser`** — A Lisp parser with symbol interning
+- **`grift_eval`** — A fully trampolined evaluator with proper tail-call optimization
+- **`grift_repl`** — An interactive Read-Eval-Print-Loop
 
 ## 🚀 Quick Start
 
 ```bash
 # Run the REPL
-cargo run -p lisp_repl
+cargo run -p grift_repl
 
 # Run tests
 cargo test --workspace
@@ -259,10 +259,10 @@ The standard library is defined as static Lisp code, parsed on-demand:
 pwn_arena/
 ├── crates/
 │   ├── pwn_arena/     # Core arena allocator (no_std, no_alloc)
-│   ├── lisp_parser/   # Lisp parser and value types (no_std)
-│   ├── lisp_eval/     # Trampolined evaluator (no_std)
-│   ├── lisp_repl/     # Interactive REPL (uses std for I/O)
-│   └── lisp_macros/   # Proc macros for stdlib generation
+│   ├── grift_parser/   # Lisp parser and value types (no_std)
+│   ├── grift_eval/     # Trampolined evaluator (no_std)
+│   ├── grift_repl/     # Interactive REPL (uses std for I/O)
+│   └── grift_macros/   # Proc macros for stdlib generation
 ├── docs/
 │   ├── ARENA_ARCHITECTURE.md
 │   └── LISP_ARCHITECTURE.md

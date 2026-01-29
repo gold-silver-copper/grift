@@ -11,13 +11,13 @@
 //! ## Design
 //!
 //! This crate is designed to be modular and work in `no_std` environments.
-//! The core Lisp interpreter (`lisp_eval`) remains independent of hardware,
+//! The core Lisp interpreter (`grift_eval`) remains independent of hardware,
 //! while this crate provides the bridge to embedded functionality.
 //!
 //! ## Usage
 //!
 //! ```rust
-//! use lisp_eval::{Lisp, Evaluator};
+//! use grift_eval::{Lisp, Evaluator};
 //! use pwn_arena_embedded::register_embedded_natives;
 //!
 //! let lisp: Lisp<10000> = Lisp::new();
@@ -43,7 +43,7 @@
 #![forbid(unsafe_code)]
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use lisp_eval::{Evaluator, EvalError, register_native};
+use grift_eval::{Evaluator, EvalError, register_native};
 
 // ============================================================================
 // Mock Memory/Register Storage using Atomics
@@ -298,7 +298,7 @@ register_native!(native_bit_insert, (value: isize, insert: isize, start: isize, 
 // # Example
 
 // ```rust
-// use lisp_eval::{Lisp, Evaluator};
+// use grift_eval::{Lisp, Evaluator};
 // use pwn_arena_embedded::register_embedded_natives;
 
 // let lisp: Lisp<10000> = Lisp::new();

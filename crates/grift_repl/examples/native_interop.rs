@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example native_interop`
 
-use lisp_eval::{
+use grift_eval::{
     Lisp, Evaluator, ArenaIndex, ArenaResult, ToLisp, extract_arg,
 };
 

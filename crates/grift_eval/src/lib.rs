@@ -58,7 +58,7 @@
 //! - `apply` - Apply function to argument list
 //! - `values` - Return multiple values as a list
 
-pub use lisp_parser::{
+pub use grift_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
 };
@@ -148,8 +148,8 @@ impl Num {
 /// 
 /// The macro `extract_args!(self, args, a, b, c)` expands to:
 /// ```rust
-/// # fn example() -> lisp_eval::ArenaResult<()> {
-/// #     use lisp_eval::*;
+/// # fn example() -> grift_eval::ArenaResult<()> {
+/// #     use grift_eval::*;
 /// #     let lisp = Lisp::<1000>::new();
 /// #     let args = lisp.nil()?;
 /// #     let a = lisp.car(args)?;
@@ -181,8 +181,8 @@ macro_rules! extract_args {
 /// 
 /// The macro `builtin_unary_pred!(self, args, |v| v.is_nil())` expands to:
 /// ```rust
-/// # fn example() -> lisp_eval::ArenaResult<()> {
-/// #     use lisp_eval::*;
+/// # fn example() -> grift_eval::ArenaResult<()> {
+/// #     use grift_eval::*;
 /// #     let lisp = Lisp::<1000>::new();
 /// #     let args = lisp.nil()?;
 /// #     let arg = lisp.car(args)?;
@@ -544,7 +544,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// # Example
     ///
     /// ```rust
-    /// use lisp_eval::{Lisp, Evaluator, ArenaIndex, ArenaResult, FromLisp, ToLisp};
+    /// use grift_eval::{Lisp, Evaluator, ArenaIndex, ArenaResult, FromLisp, ToLisp};
     ///
     /// fn my_double<const N: usize>(lisp: &Lisp<N>, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     ///     let n = isize::from_lisp(lisp, lisp.car(args)?)?;

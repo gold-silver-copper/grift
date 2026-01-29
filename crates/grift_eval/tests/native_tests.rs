@@ -1,5 +1,5 @@
-use lisp_eval::native::*;
-use lisp_eval::{Lisp, register_native};
+use grift_eval::native::*;
+use grift_eval::{Lisp, register_native};
 use pwn_arena::{ArenaIndex, ArenaResult};
 
 #[test]
@@ -341,7 +341,7 @@ fn test_register_native_stateful_with_evaluator() {
     // Reset counter for this test
     COUNTER_EVALUATOR.store(0, Ordering::Relaxed);
     
-    use lisp_eval::Evaluator;
+    use grift_eval::Evaluator;
     
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -452,7 +452,7 @@ fn test_simplified_stateful_with_evaluator() {
     SIMPLE_COUNTER.store(0, Ordering::Relaxed);
     SECONDARY_COUNTER.store(0, Ordering::Relaxed);
     
-    use lisp_eval::Evaluator;
+    use grift_eval::Evaluator;
     
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -610,7 +610,7 @@ fn test_with_lisp_range() {
 
 #[test]
 fn test_with_lisp_functions_in_evaluator() {
-    use lisp_eval::Evaluator;
+    use grift_eval::Evaluator;
     
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -667,7 +667,7 @@ fn native_stateful_cons<const N: usize>(
 fn test_stateful_with_lisp_context() {
     CONTEXT_COUNTER.store(0, Ordering::Relaxed);
     
-    use lisp_eval::Evaluator;
+    use grift_eval::Evaluator;
     
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();

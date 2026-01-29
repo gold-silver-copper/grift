@@ -1,10 +1,10 @@
 [package]
-name = "lisp_eval"
+name = "grift_eval"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Lisp evaluator for the pwn_arena workspace"
+description = "Lisp evaluator for the grift Lisp language"
 
 [dependencies]
 pwn_arena = { path = "../pwn_arena" }
-lisp_parser = { path = "../lisp_parser" }
+grift_parser = { path = "../grift_parser" }

@@ -1,4 +1,4 @@
-use lisp_parser::*;
+use grift_parser::*;
 
 // ========================================================================
 // Reserved Slots Tests

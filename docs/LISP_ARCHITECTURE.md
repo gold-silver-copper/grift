@@ -18,18 +18,18 @@ This is a classic Lisp implementation with modern features:
 ```
 crates/
 ├── pwn_arena/     # Arena allocator (no_std, no_alloc)
-├── lisp_parser/   # Parser, Value type, builtins (no_std)
-├── lisp_eval/     # Evaluator with trampolined TCO (no_std)
-├── lisp_repl/     # REPL with I/O (uses std)
-└── lisp_macros/   # Proc macros for stdlib generation
+├── grift_parser/   # Parser, Value type, builtins (no_std)
+├── grift_eval/     # Evaluator with trampolined TCO (no_std)
+├── grift_repl/     # REPL with I/O (uses std)
+└── grift_macros/   # Proc macros for stdlib generation
 ```
 
 ### Dependency Graph
 
 ```
-pwn_arena ← lisp_parser ← lisp_eval ← lisp_repl
+pwn_arena ← grift_parser ← grift_eval ← grift_repl
                 ↑
-           lisp_macros
+           grift_macros
 ```
 
 ## Value Representation
@@ -265,8 +265,8 @@ pub enum Builtin {
 ```
 
 Adding a new builtin:
-1. Add variant to `define_builtins!` macro in `lisp_parser`
-2. Implement evaluation in `apply_builtin` in `lisp_eval`
+1. Add variant to `define_builtins!` macro in `grift_parser`
+2. Implement evaluation in `apply_builtin` in `grift_eval`
 
 ## Standard Library
 

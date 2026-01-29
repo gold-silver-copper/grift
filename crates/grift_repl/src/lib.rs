@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! # Lisp REPL
+//! # Grift REPL
 //!
-//! A Read-Eval-Print-Loop for the classic Lisp interpreter.
+//! A Read-Eval-Print-Loop for the grift Lisp interpreter.
 //!
 //! ## Features
 //!
@@ -13,14 +13,14 @@
 //! ## Usage
 //!
 //! ```rust
-//! use lisp_repl::run_repl;
+//! use grift_repl::run_repl;
 //!
 //! run_repl::<10000>();
 //! ```
 
 use std::io::{self, BufRead, Write};
 
-pub use lisp_eval::{
+pub use grift_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
     EvalError, EvalResult, Evaluator, ErrorKind, StackFrame,
@@ -357,7 +357,7 @@ pub fn run_repl<const N: usize>() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     
-    println!("Classic Lisp (pwn_arena)");
+    println!("Grift Lisp (pwn_arena)");
     println!("========================");
     println!("Features: TCO, strict (call-by-value), full mutation, rich errors");
     println!("Truthiness: only #f is false (nil/'() are truthy!)");
@@ -496,7 +496,7 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
 }
 
 fn print_help() {
-    println!("Classic Lisp Help");
+    println!("Grift Lisp Help");
     println!("=================");
     println!();
     println!("Truthiness:");
