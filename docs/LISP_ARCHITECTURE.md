@@ -304,7 +304,7 @@ Builtins are optimized primitives stored as enum variants. The complete list inc
 
 **List Operations**: `car`, `cdr`, `cons`, `list`
 
-**Type Predicates**: `null?`, `pair?`, `number?`, `boolean?`, `procedure?`, `symbol?`, `char?`, `string?`, `array?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
+**Type Predicates**: `null?`, `pair?`, `number?`, `boolean?`, `procedure?`, `symbol?`, `char?`, `string?`, `array?`, `vector?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
 
 **Equality**: `eq?`, `eqv?`, `equal?`
 
@@ -322,7 +322,9 @@ Builtins are optimized primitives stored as enum variants. The complete list inc
 
 **Mutation**: `set-car!`, `set-cdr!`
 
-**Arrays**: `make-array`, `array-ref`, `array-set!`, `array-length`, `array?`
+**Arrays** (Embedded Extension): `make-array`, `array-ref`, `array-set!`, `array-length`, `array?`
+
+**Vectors** (R7RS Section 6.8): `vector?`, `make-vector`, `vector`, `vector-length`, `vector-ref`, `vector-set!`, `vector->list`, `list->vector`, `vector-fill!`, `vector-copy`
 
 **Characters**: `char?`, `char=?`, `char<?`, `char>?`, `char<=?`, `char>=?`, `char->integer`, `integer->char`, `char-upcase`, `char-downcase`
 
