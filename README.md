@@ -1,44 +1,74 @@
-# grift
+# Grift
 
-[![Crates.io](https://img.shields.io/crates/v/pwn_arena.svg)](https://crates.io/crates/pwn_arena)
-[![Documentation](https://docs.rs/pwn_arena/badge.svg)](https://docs.rs/pwn_arena)
+[![Crates.io](https://img.shields.io/crates/v/grift.svg)](https://crates.io/crates/grift)
+[![Documentation](https://docs.rs/grift/badge.svg)](https://docs.rs/grift)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-A minimal Lisp (named "grift") built on a custom `no_std` arena allocator. This project demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
+A minimal `no_std`, `no_alloc` Scheme implementation built on a custom arena allocator. Grift demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
+
+## 📦 Installation
+
+```bash
+# Install the REPL
+cargo install grift --features std
+
+# Or add to your Cargo.toml for library use (no_std by default)
+[dependencies]
+grift = "0.1"
+```
+
+## 🚀 Quick Start
+
+### As a Library (no_std)
+
+```rust
+use grift::{Lisp, Evaluator, Value};
+
+// Create an interpreter with a 10,000-cell arena
+let lisp: Lisp<10000> = Lisp::new();
+let mut eval = Evaluator::new(&lisp).unwrap();
+
+// Evaluate expressions
+let result = eval.eval_str("(+ 1 2 3)").unwrap();
+```
+
+### Interactive REPL
+
+```bash
+# Run directly
+cargo run -p grift --features std
+
+# Or after installing
+grift
+```
+
+```scheme
+Grift Lisp
+> (define (factorial n)
+    (if (= n 0) 1
+        (* n (factorial (- n 1)))))
+> (factorial 10)
+3628800
+
+> (map (lambda (x) (* x x)) '(1 2 3 4 5))
+(1 4 9 16 25)
+
+> (arena-stats)
+(50000 127 49873 0)  ; (capacity allocated free usage%)
+```
 
 ## 🎯 Project Overview
 
 This repository contains:
 
-- **`pwn_arena`** — A fixed-size arena allocator with mark-and-sweep garbage collection
-- **`grift_parser`** — A Lisp parser with symbol interning
-- **`grift_eval`** — A fully trampolined evaluator with proper tail-call optimization
-- **`grift_repl`** — An interactive Read-Eval-Print-Loop
-
-## 🚀 Quick Start
-
-```bash
-# Run the REPL
-cargo run -p grift_repl
-
-# Run tests
-cargo test --workspace
-```
-
-```lisp
-> (define (factorial n) 
-    (if (= n 0) 1 
-        (* n (factorial (- n 1)))))
-> (factorial 10)
-3628800
-
-> (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))
-> (sum 1000 0)
-500500
-
-> (arena-stats)
-(50000 127 49873 0)  ; (capacity allocated free usage%)
-```
+| Crate | Description | `no_std` |
+|-------|-------------|----------|
+| **`grift`** | Unified re-export crate (primary entry point) | ✅ default |
+| **`pwn_arena`** | Arena allocator with mark-and-sweep GC | ✅ |
+| **`grift_parser`** | Lisp parser with symbol interning | ✅ |
+| **`grift_eval`** | Trampolined evaluator with proper TCO | ✅ |
+| **`grift_repl`** | Interactive REPL | ❌ (uses std) |
+| **`grift_macros`** | Proc macros for stdlib generation | N/A |
 
 ## ✨ Lisp Features
 
@@ -256,17 +286,32 @@ The standard library is defined as static Lisp code, parsed on-demand:
 ## 🔧 Project Structure
 
 ```
-pwn_arena/
+grift/
 ├── crates/
-│   ├── pwn_arena/     # Core arena allocator (no_std, no_alloc)
-│   ├── grift_parser/   # Lisp parser and value types (no_std)
-│   ├── grift_eval/     # Trampolined evaluator (no_std)
-│   ├── grift_repl/     # Interactive REPL (uses std for I/O)
-│   └── grift_macros/   # Proc macros for stdlib generation
+│   ├── grift/           # Unified re-export crate (primary entry point)
+│   ├── pwn_arena/       # Core arena allocator (no_std, no_alloc)
+│   ├── grift_parser/    # Lisp parser and value types (no_std)
+│   ├── grift_eval/      # Trampolined evaluator (no_std)
+│   ├── grift_repl/      # Interactive REPL (uses std for I/O)
+│   └── grift_macros/    # Proc macros for stdlib generation
 ├── docs/
 │   ├── ARENA_ARCHITECTURE.md
-│   └── LISP_ARCHITECTURE.md
+│   ├── LISP_ARCHITECTURE.md
+│   └── SCHEME_R7RS_CONFORMANCE.md
 └── README.md
+```
+
+## 🛠️ Development
+
+```bash
+# Build all crates
+cargo build --workspace
+
+# Run tests
+cargo test --workspace
+
+# Run the REPL in development
+cargo run -p grift --features std
 ```
 
 ## 🤝 Contributing

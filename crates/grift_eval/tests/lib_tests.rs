@@ -2461,3 +2461,127 @@ fn test_string_ci_equals() {
     assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "ABC" "abc")"#));
     assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci=? "abc" "abd")"#));
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEW STDLIB FUNCTIONS (iota, list-tabulate, string utilities, etc.)
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_iota_functions() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // iota1: simple count
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (iota1 5))"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (iota1 5))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(last (iota1 5))"), 4);
+    
+    // iota2: count with start
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (iota2 5 10))"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(last (iota2 5 10))"), 14);
+    
+    // iota3: count with start and step
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (iota3 5 0 2))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(second (iota3 5 0 2))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(last (iota3 5 0 2))"), 8);
+}
+
+#[test]
+fn test_list_tabulate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // list-tabulate with identity-like function
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (list-tabulate 5 (lambda (x) x)))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(last (list-tabulate 5 (lambda (x) x)))"), 4);
+    
+    // list-tabulate with square
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (list-tabulate 5 square))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(second (list-tabulate 5 square))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(third (list-tabulate 5 square))"), 4);
+}
+
+#[test]
+fn test_list_accessors() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define lst '(1 2 3 4 5 6 7 8 9 10))").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(first lst)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(second lst)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(third lst)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(fourth lst)"), 4);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(fifth lst)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sixth lst)"), 6);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(seventh lst)"), 7);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(eighth lst)"), 8);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(ninth lst)"), 9);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tenth lst)"), 10);
+}
+
+#[test]
+fn test_list_utilities() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // concatenate
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (concatenate '((1 2) (3 4) (5 6))))"), 6);
+    
+    // flatten
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (flatten '(1 (2 3) ((4 5) 6))))"), 6);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(first (flatten '(1 (2 3))))"), 1);
+    
+    // count
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(count positive? '(-2 -1 0 1 2))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(count even? '(1 2 3 4 5 6))"), 3);
+    
+    // sum, product, average
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sum '(1 2 3 4 5))"), 15);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(product '(1 2 3 4 5))"), 120);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(average '(2 4 6 8))"), 5);
+}
+
+#[test]
+fn test_string_utilities() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string-null?
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-null? "")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-null? "x")"#));
+    
+    // string-reverse
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-reverse "hello")"#, "olleh"));
+    
+    // string-contains
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-contains "hello world" "wor")"#), 6);
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-contains "hello" "xyz")"#));
+    
+    // string-join
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-join '("a" "b" "c") "-")"#, "a-b-c"));
+    
+    // string-trim
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-trim "  hello  ")"#, "hello"));
+}
+
+#[test]
+fn test_string_map_and_for_each() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string-map
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-map char-upcase "hello")"#, "HELLO"));
+}
+
+#[test]
+fn test_string_split() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // string-split
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(length (string-split "a-b-c" #\-))"#), 3);
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(car (string-split "a-b-c" #\-))"#, "a"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(second (string-split "a-b-c" #\-))"#, "b"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(third (string-split "a-b-c" #\-))"#, "c"));
+}

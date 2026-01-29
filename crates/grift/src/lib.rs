@@ -1,0 +1,135 @@
+//! # Grift
+//!
+//! A minimal `no_std`, `no_alloc` Scheme implementation built on arena-based
+//! garbage collection. Perfect for embedded systems, WebAssembly, or any
+//! environment where heap allocation is unavailable or undesirable.
+//!
+//! ## Features
+//!
+//! - **`no_std`, `no_alloc` by default** — Runs on bare metal
+//! - **Arena-based allocation** — Fixed memory footprint, no heap
+//! - **Mark-and-sweep GC** — Controllable from Scheme code
+//! - **Proper tail-call optimization** — Via trampolining
+//! - **Lexical closures** — First-class functions with captured environments
+//! - **R7RS-inspired** — Scheme semantics with only `#f` as false
+//!
+//! ## Quick Start
+//!
+//! ```rust
+//! use grift::{Lisp, Evaluator, Value};
+//!
+//! // Create a Lisp interpreter with a 10,000-cell arena
+//! let lisp: Lisp<10000> = Lisp::new();
+//! let mut eval = Evaluator::new(&lisp).unwrap();
+//!
+//! // Evaluate expressions
+//! let result = eval.eval_str("(+ 1 2 3)").unwrap();
+//! assert!(matches!(lisp.get(result), Ok(Value::Number(6))));
+//! ```
+//!
+//! ## Optional REPL
+//!
+//! Enable the `std` feature for an interactive REPL:
+//!
+//! ```toml
+//! [dependencies]
+//! grift = { version = "0.1", features = ["std"] }
+//! ```
+//!
+//! Then run:
+//!
+//! ```bash
+//! cargo install grift --features std
+//! grift
+//! ```
+//!
+//! ## Crate Organization
+//!
+//! This crate re-exports the complete Grift stack:
+//!
+//! - [`pwn_arena`] — Arena allocator with GC
+//! - [`grift_parser`] — Lexer, parser, and value types
+//! - [`grift_eval`] — Trampolined evaluator
+//! - [`grift_repl`] — Interactive REPL (behind `std` feature)
+
+#![no_std]
+#![forbid(unsafe_code)]
+
+// ============================================================================
+// Core Re-exports from pwn_arena
+// ============================================================================
+
+/// Arena allocator and garbage collection primitives.
+pub mod arena {
+    pub use pwn_arena::{
+        Arena, ArenaIndex, ArenaError, ArenaResult,
+        GcStats, Trace,
+    };
+}
+
+pub use arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats, Trace};
+
+// ============================================================================
+// Parser Re-exports from grift_parser
+// ============================================================================
+
+/// Parser, value types, and built-in definitions.
+pub mod parser {
+    pub use grift_parser::{
+        // Core types
+        Value, Builtin, StdLib, Lisp,
+        // Parsing
+        parse, ParseError, ParseErrorKind, SourceLoc,
+        // Macros
+        define_builtins, define_stdlib,
+    };
+}
+
+pub use parser::{
+    Value, Builtin, StdLib, Lisp,
+    parse, ParseError, ParseErrorKind, SourceLoc,
+    define_builtins, define_stdlib,
+};
+
+// ============================================================================
+// Evaluator Re-exports from grift_eval
+// ============================================================================
+
+/// Evaluator, error handling, and native function interop.
+pub mod eval {
+    pub use grift_eval::{
+        // Evaluator
+        Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
+        // Numeric helpers
+        Num,
+        // Native FFI
+        FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
+        extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+    };
+}
+
+pub use eval::{
+    Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
+    Num,
+    FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
+    extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+};
+
+// ============================================================================
+// REPL Re-exports (std feature only)
+// ============================================================================
+
+/// REPL and formatting utilities (requires `std` feature).
+#[cfg(feature = "std")]
+pub mod repl {
+    pub use grift_repl::{
+        run_repl, Repl,
+        format_value, format_error, value_to_string, eval_to_string,
+    };
+}
+
+#[cfg(feature = "std")]
+pub use repl::{
+    run_repl, Repl,
+    format_value, format_error, value_to_string, eval_to_string,
+};

@@ -6,6 +6,7 @@ members = [
     "crates/grift_parser",
     "crates/grift_eval",
     "crates/grift_repl",
+    "crates/grift",
     "crates/pwn_arena_embedded",
 ]
 
