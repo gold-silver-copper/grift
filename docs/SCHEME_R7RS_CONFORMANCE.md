@@ -68,13 +68,6 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - `gc-enabled?` - Check if GC is enabled
 - `arena-stats` - Get arena statistics as a list
 
-#### Array Operations (Embedded Extension)
-- `make-array` - Create an array with given length and initial value
-- `array-ref` - Get element at index (O(1))
-- `array-set!` - Set element at index (O(1))
-- `array-length` - Get array length (O(1))
-- `array?` - Check if value is an array
-
 #### Native Function FFI (Embedded Extension)
 - Native Rust functions can be registered and called from Lisp
 - Used for hardware access in embedded contexts
@@ -197,8 +190,7 @@ All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (
 - [x] Implement `#(obj ...)` vector literal parsing - Self-evaluating vector constants
 
 **Implementation Notes**:
-- Vectors use the same underlying `Value::Array` representation as the embedded array extension
-- This means `(vector? (make-array 3 0))` returns `#t` and vice versa
+- Vectors use the `Value::Array` internal representation for O(1) indexed access
 - All vector operations are implemented as builtins for optimal performance
 - Vector literal `#(...)` is parsed at read time and creates a vector directly
 

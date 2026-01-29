@@ -475,8 +475,10 @@ fn is_binary_builtin(builtin: Builtin) -> bool {
 // Evaluator
 // ============================================================================
 
-/// Maximum number of macros that can be defined
-/// The Lisp evaluator with full trampolined TCO
+/// The Lisp evaluator with full trampolined TCO.
+///
+/// This evaluator uses continuation-passing style with an explicit stack,
+/// enabling unlimited recursion depth without Rust stack overflow.
 pub struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
     /// Global environment
@@ -1979,80 +1981,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::MakeArray => {
-                // (make-array len default) - create an array of given length
-                extract_args!(self, args, len_val, default);
-                
-                let len = match self.lisp.get(len_val)? {
-                    Value::Number(n) if n >= 0 => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
-                
-                self.lisp.make_array(len, default).map_err(Into::into)
-            }
-            
-            Builtin::ArrayRef => {
-                // (array-ref arr index) - get element at index
-                extract_args!(self, args, arr, index_val);
-                
-                let index = match self.lisp.get(index_val)? {
-                    Value::Number(n) if n >= 0 => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
-                
-                match self.lisp.get(arr)? {
-                    Value::Array { .. } => {
-                        self.lisp.array_get(arr, index).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
-            }
-            
-            Builtin::ArraySet => {
-                // (array-set! arr index value) - set element at index
-                extract_args!(self, args, arr, index_val, value);
-                
-                let index = match self.lisp.get(index_val)? {
-                    Value::Number(n) if n >= 0 => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
-                
-                match self.lisp.get(arr)? {
-                    Value::Array { .. } => {
-                        self.lisp.array_set(arr, index, value)?;
-                        Ok(arr) // Return the array
-                    }
-                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
-            }
-            
-            Builtin::ArrayLength => {
-                // (array-length arr) - get length of array
-                let arr = self.lisp.car(args)?;
-                
-                match self.lisp.get(arr)? {
-                    Value::Array { len, .. } => {
-                        self.lisp.number(len as isize).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
-            }
-            
-            Builtin::Arrayp => {
-                // (array? x) - check if x is an array
-                let val = self.lisp.car(args)?;
-                let is_array = matches!(self.lisp.get(val)?, Value::Array { .. });
-                self.lisp.boolean(is_array).map_err(Into::into)
-            }
-            
             // ============================================================
             // Vector operations (R7RS Section 6.8)
-            // Vectors use the same underlying representation as arrays
             // ============================================================
             
             Builtin::Vectorp => {
                 // (vector? x) - check if x is a vector
-                // In our implementation, vectors and arrays are the same type
                 let val = self.lisp.car(args)?;
                 let is_vector = matches!(self.lisp.get(val)?, Value::Array { .. });
                 self.lisp.boolean(is_vector).map_err(Into::into)

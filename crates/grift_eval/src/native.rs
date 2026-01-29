@@ -120,10 +120,11 @@ impl<const N: usize> ToLisp<N> for bool {
 
 impl<const N: usize> FromLisp<N> for () {
     fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
-        // Accept nil as unit
+        // Only accept nil as unit - other types are an error
         match lisp.get(idx)? {
             Value::Nil => Ok(()),
-            _ => Ok(()), // Accept anything, just ignore
+            // Note: Using InvalidIndex for type errors (see isize impl for rationale)
+            _ => Err(ArenaError::InvalidIndex),
         }
     }
 }
