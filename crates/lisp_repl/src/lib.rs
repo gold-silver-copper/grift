@@ -55,6 +55,25 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "{}", n).unwrap();
         }
+        Ok(Value::Float(f)) => {
+            use std::fmt::Write;
+            if f.is_nan() {
+                buf.push_str("+nan.0");
+            } else if f.is_infinite() {
+                if f.is_sign_positive() {
+                    buf.push_str("+inf.0");
+                } else {
+                    buf.push_str("-inf.0");
+                }
+            } else {
+                // Format float with trailing .0 if needed
+                write!(buf, "{}", f).unwrap();
+                // Ensure there's a decimal point
+                if !buf.ends_with(".0") && !buf.contains('.') && !buf.contains('e') {
+                    buf.push_str(".0");
+                }
+            }
+        }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
             match c {

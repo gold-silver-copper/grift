@@ -216,3 +216,260 @@
 
 ;;; (boolean-eq b1 b2) - Return #t if both arguments are #t or both are #f
 (define (boolean-eq b1 b2) (or (and b1 b2) (and (not b1) (not b2))))
+
+;;; ============================================================
+;;; Mathematical Constants and Functions (R7RS Section 6.2.6)
+;;; ============================================================
+
+;;; (get-pi) - Returns pi, the ratio of a circle's circumference to its diameter
+(define (get-pi) 3.141592653589793)
+
+;;; (get-e) - Returns Euler's number e, the base of natural logarithms
+(define (get-e) 2.718281828459045)
+
+;;; (get-epsilon) - Returns accuracy threshold for iterative algorithms
+(define (get-epsilon) 1e-15)
+
+;;; ============================================================
+;;; Square Root - Newton-Raphson method
+;;; ============================================================
+
+;;; (sqrt-iter x guess) - Helper for sqrt iteration
+(define (sqrt-iter x guess)
+  (let ((next (/ (+ guess (/ x guess)) 2.0)))
+    (if (< (abs (- next guess)) (* 1e-15 (abs guess)))
+        next
+        (sqrt-iter x next))))
+
+;;; (sqrt x) - Square root using Newton-Raphson iteration
+(define (sqrt x)
+  (if (< x 0)
+      +nan.0
+      (if (= x 0)
+          0.0
+          (sqrt-iter x 1.0))))
+
+;;; ============================================================
+;;; Exponential and Logarithm Functions
+;;; ============================================================
+
+;;; (exp-iter x term sum n) - Helper for exp Taylor series
+(define (exp-iter x term sum n)
+  (let ((new-term (* term (/ x (* 1.0 n)))))
+    (if (< (abs new-term) 1e-15)
+        sum
+        (exp-iter x new-term (+ sum new-term) (+ n 1)))))
+
+;;; (exp x) - Exponential function e^x using Taylor series
+(define (exp x)
+  (cond
+   ((= x 0) 1.0)
+   ((< x 0)
+    (let ((pos-exp (exp (- x))))
+      (/ 1.0 pos-exp)))
+   ((> x 1)
+    (let ((half (exp (/ x 2.0))))
+      (* half half)))
+   (else (exp-iter x 1.0 1.0 1))))
+
+;;; (log-series-iter z term sum n sign) - Helper for log series
+(define (log-series-iter z term sum n sign)
+  (let ((new-term (* term z)))
+    (if (< (abs new-term) 1e-15)
+        sum
+        (log-series-iter z new-term (+ sum (* sign (/ new-term (* 1.0 n)))) (+ n 1) (- sign)))))
+
+;;; (log-newton-iter x guess) - Helper for log Newton iteration
+(define (log-newton-iter x guess)
+  (let* ((exp-guess (exp guess))
+         (next (+ guess (/ (- x exp-guess) exp-guess))))
+    (if (< (abs (- next guess)) 1e-15)
+        next
+        (log-newton-iter x next))))
+
+;;; (log x) - Natural logarithm using Newton's method and series
+(define (log x)
+  (cond
+   ((<= x 0) +nan.0)
+   ((= x 1) 0.0)
+   ((and (> x 0.5) (< x 2.0))
+    (let ((z (- x 1.0)))
+      (log-series-iter z z z 2 -1)))
+   (else
+    (log-newton-iter x (if (> x 1) 1.0 -1.0)))))
+
+;;; ============================================================
+;;; Trigonometric Functions
+;;; ============================================================
+
+;;; (sin-iter x term sum n) - Helper for sin Taylor series
+(define (sin-iter x term sum n)
+  (let ((new-term (* term (/ (- (square x)) (* (* 1.0 (+ n 1)) (+ n 2))))))
+    (if (< (abs new-term) 1e-15)
+        sum
+        (sin-iter x new-term (+ sum new-term) (+ n 2)))))
+
+;;; (sin-reduce x) - Reduce angle to [-pi, pi]
+(define (sin-reduce x)
+  (- x (* 2.0 3.141592653589793 (round (/ x (* 2.0 3.141592653589793))))))
+
+;;; (sin x) - Sine using Taylor series
+(define (sin x)
+  (let ((reduced (sin-reduce x)))
+    (sin-iter reduced reduced reduced 1)))
+
+;;; (cos-iter x term sum n) - Helper for cos Taylor series
+(define (cos-iter x term sum n)
+  (let ((new-term (* term (/ (- (square x)) (* (* 1.0 (+ n 1)) (+ n 2))))))
+    (if (< (abs new-term) 1e-15)
+        sum
+        (cos-iter x new-term (+ sum new-term) (+ n 2)))))
+
+;;; (cos x) - Cosine using Taylor series
+(define (cos x)
+  (let ((reduced (sin-reduce x)))
+    (cos-iter reduced 1.0 1.0 0)))
+
+;;; (tan x) - Tangent as sin/cos
+(define (tan x)
+  (let ((s (sin x))
+        (c (cos x)))
+    (/ s c)))
+
+;;; ============================================================
+;;; Inverse Trigonometric Functions
+;;; ============================================================
+
+;;; (asin-iter guess x) - Helper for asin Newton iteration
+(define (asin-iter guess x)
+  (let* ((sin-guess (sin guess))
+         (cos-guess (cos guess))
+         (next (- guess (/ (- sin-guess x) cos-guess))))
+    (if (< (abs (- next guess)) 1e-15)
+        next
+        (asin-iter next x))))
+
+;;; (asin x) - Inverse sine using Newton's method
+(define (asin x)
+  (cond
+   ((< (abs x) 1e-15) 0.0)
+   ((> (abs x) 1) +nan.0)
+   ((= x 1) (/ 3.141592653589793 2))
+   ((= x -1) (/ 3.141592653589793 -2))
+   (else (asin-iter x x))))
+
+;;; (acos x) - Inverse cosine
+(define (acos x)
+  (- (/ 3.141592653589793 2) (asin x)))
+
+;;; (atan-series-iter y y2 term sum n) - Helper for atan series
+(define (atan-series-iter y y2 term sum n)
+  (let ((new-term (* term (- y2))))
+    (let ((denom (+ (* 2.0 n) 1.0)))
+      (if (< (abs (/ new-term denom)) 1e-15)
+          sum
+          (atan-series-iter y y2 new-term (+ sum (/ new-term denom)) (+ n 1))))))
+
+;;; (atan1 y) - Arctangent of single argument
+(define (atan1 y)
+  (cond
+   ((= y 0) 0.0)
+   ((= y 1) 0.7853981633974483)
+   ((= y -1) -0.7853981633974483)
+   ((> (abs y) 1)
+    (let ((result (- (/ 3.141592653589793 2.0) (atan1 (/ 1.0 y)))))
+      (if (< y 0) (- result) result)))
+   (else
+    (let ((y2 (square y)))
+      (atan-series-iter y y2 y y 1)))))
+
+;;; (atan2 y x) - Arctangent of two arguments
+(define (atan2 y x)
+  (cond
+   ((> x 0) (atan1 (/ y x)))
+   ((and (< x 0) (>= y 0)) (+ (atan1 (/ y x)) 3.141592653589793))
+   ((and (< x 0) (< y 0)) (- (atan1 (/ y x)) 3.141592653589793))
+   ((and (= x 0) (> y 0)) (/ 3.141592653589793 2))
+   ((and (= x 0) (< y 0)) (/ 3.141592653589793 -2))
+   (else 0.0)))
+
+;;; ============================================================
+;;; Hyperbolic Functions
+;;; ============================================================
+
+;;; (sinh x) - Hyperbolic sine
+(define (sinh x)
+  (let ((ex (exp x))
+        (emx (exp (- x))))
+    (/ (- ex emx) 2.0)))
+
+;;; (cosh x) - Hyperbolic cosine
+(define (cosh x)
+  (let ((ex (exp x))
+        (emx (exp (- x))))
+    (/ (+ ex emx) 2.0)))
+
+;;; (tanh x) - Hyperbolic tangent
+(define (tanh x)
+  (let ((sh (sinh x))
+        (ch (cosh x)))
+    (/ sh ch)))
+
+;;; ============================================================
+;;; Logarithm Variants
+;;; ============================================================
+
+;;; (log-base base x) - Logarithm with arbitrary base
+(define (log-base base x)
+  (let ((lx (log x))
+        (lb (log base)))
+    (/ lx lb)))
+
+;;; (log10 x) - Base-10 logarithm
+(define (log10 x)
+  (log-base 10 x))
+
+;;; (log2 x) - Base-2 logarithm
+(define (log2 x)
+  (log-base 2 x))
+
+;;; ============================================================
+;;; Type Predicates for Numbers
+;;; ============================================================
+
+;;; (nan? x) - Check if x is NaN
+(define (nan? x)
+  (and (number? x) (not (= x x))))
+
+;;; (infinite? x) - Check if x is infinite
+(define (infinite? x)
+  (and (number? x) (or (= x +inf.0) (= x -inf.0))))
+
+;;; (finite? x) - Check if x is a finite number
+(define (finite? x)
+  (and (number? x) (not (nan? x)) (not (infinite? x))))
+
+;;; (real? x) - Check if x is a real number (same as number? in our implementation)
+(define (real? x) (number? x))
+
+;;; (rational? x) - Check if x is a rational number (floats are approximate rationals)
+(define (rational? x) (and (number? x) (finite? x)))
+
+;;; (complex? x) - Check if x is a complex number (same as number? - no complex support)
+(define (complex? x) (number? x))
+
+;;; ============================================================
+;;; Type Conversion Functions
+;;; ============================================================
+
+;;; (exact->inexact x) - Convert exact to inexact (int to float)
+(define (exact->inexact x)
+  (if (exact? x)
+      (+ x 0.0)
+      x))
+
+;;; (inexact->exact x) - Convert inexact to exact (float to int, truncates)
+(define (inexact->exact x)
+  (if (inexact? x)
+      (truncate x)
+      x))

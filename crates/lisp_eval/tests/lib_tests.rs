@@ -17,7 +17,7 @@ fn eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input:
 
 #[test]
 fn test_eval_number() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "42"), 42);
@@ -26,7 +26,7 @@ fn test_eval_number() {
 
 #[test]
 fn test_eval_booleans() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // In Scheme, only #t and #f are booleans (no true/false aliases)
@@ -36,7 +36,7 @@ fn test_eval_booleans() {
 
 #[test]
 fn test_empty_list_is_truthy() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // '() (the empty list) is NOT false - only #f is false
@@ -48,7 +48,7 @@ fn test_empty_list_is_truthy() {
 
 #[test]
 fn test_eval_arithmetic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2)"), 3);
@@ -60,7 +60,7 @@ fn test_eval_arithmetic() {
 
 #[test]
 fn test_eval_quote() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("'hello").unwrap();
@@ -69,7 +69,7 @@ fn test_eval_quote() {
 
 #[test]
 fn test_eval_if() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(if #t 1 2)"), 1);
@@ -79,7 +79,7 @@ fn test_eval_if() {
 
 #[test]
 fn test_eval_define() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 42)").unwrap();
@@ -88,7 +88,7 @@ fn test_eval_define() {
 
 #[test]
 fn test_eval_lambda() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "((lambda (x) (+ x 1)) 5)"), 6);
@@ -96,7 +96,7 @@ fn test_eval_lambda() {
 
 #[test]
 fn test_eval_define_function() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (square x) (* x x))").unwrap();
@@ -105,7 +105,7 @@ fn test_eval_define_function() {
 
 #[test]
 fn test_eval_let() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(let ((x 10) (y 20)) (+ x y))"), 30);
@@ -113,7 +113,7 @@ fn test_eval_let() {
 
 #[test]
 fn test_eval_let_star() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // let* allows sequential binding
@@ -124,7 +124,7 @@ fn test_eval_let_star() {
 fn test_tco_recursion() {
     // Strict evaluation with proper TCO
     // Deep recursion is safe with tail call optimization
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // This would overflow without proper TCO
@@ -134,7 +134,7 @@ fn test_tco_recursion() {
 
 #[test]
 fn test_eval_recursion() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))").unwrap();
@@ -153,7 +153,7 @@ fn test_eval_recursion() {
 
 #[test]
 fn test_simple_fib_define() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     // Simple single-recursive function
     eval.eval_str("(define (countdown n) (if (= n 0) 0 (countdown (- n 1))))").unwrap();
@@ -178,7 +178,7 @@ fn test_auto_memoization_fibonacci() {
 #[test]
 fn test_auto_memoization_factorial() {
     // Factorial is automatically memoized
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))").unwrap();
@@ -194,7 +194,7 @@ fn test_auto_memoization_factorial() {
 #[test]
 fn test_auto_memoization_not_applied_to_non_recursive() {
     // Non-recursive functions should NOT be memoized
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // This function doesn't reference itself - should not be memoized
@@ -208,7 +208,7 @@ fn test_auto_memoization_not_applied_to_non_recursive() {
 #[test]
 fn test_auto_memoization_with_multiple_args() {
     // Test memoization with multiple arguments - using simpler function
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Simple recursive function with 2 args
@@ -236,7 +236,7 @@ fn test_auto_memoization_cache_works() {
 #[test]
 fn test_auto_memoization_mutual_recursion_detection() {
     // Functions with complex recursion patterns should be detected
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Helper function that calls itself through conditions
@@ -288,7 +288,7 @@ fn test_lru_cache_eviction() {
 #[test]
 fn test_strict_basic() {
     // Basic strict evaluation - arguments are evaluated immediately
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Simple computation works
@@ -302,7 +302,7 @@ fn test_strict_basic() {
 #[test]
 fn test_strict_cons_evaluates_args() {
     // cons evaluates its arguments in strict mode
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create a pair - arguments are evaluated immediately
@@ -319,7 +319,7 @@ fn test_strict_cons_evaluates_args() {
 #[test]
 fn test_strict_side_effects_immediate() {
     // Side effects happen immediately in strict evaluation
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Define a counter to track side effects
@@ -340,7 +340,7 @@ fn test_strict_side_effects_immediate() {
 #[test]
 fn test_strict_if_branches() {
     // Only the selected branch of 'if' is evaluated (short-circuit)
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // The non-selected branch is never evaluated
@@ -352,7 +352,7 @@ fn test_strict_if_branches() {
 #[test]
 fn test_strict_if_unevaluated_branch() {
     // 'if' is a special form - only one branch is evaluated
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // The undefined branch is never evaluated
@@ -367,7 +367,7 @@ fn test_strict_if_unevaluated_branch() {
 #[test]
 fn test_strict_lambda_args_evaluated() {
     // Lambda arguments are evaluated before function application
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Lambda args are evaluated strictly
@@ -387,7 +387,7 @@ fn test_strict_lambda_args_evaluated() {
 #[test]
 fn test_strict_tco_works() {
     // TCO works properly with strict evaluation
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Deep recursion with TCO
@@ -398,7 +398,7 @@ fn test_strict_tco_works() {
 #[test]
 fn test_strict_variable_binding() {
     // Variables are bound to evaluated values
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (square x) (* x x))").unwrap();
@@ -413,7 +413,7 @@ fn test_strict_variable_binding() {
 #[test]
 fn test_strict_closure() {
     // Closures capture their environment correctly
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (make-adder n) (lambda (x) (+ x n)))").unwrap();
@@ -426,7 +426,7 @@ fn test_strict_closure() {
 
 #[test]
 fn test_predicates() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // null? tests for empty list
@@ -453,7 +453,7 @@ fn test_predicates() {
 
 #[test]
 fn test_not() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(not #f)"));
@@ -464,7 +464,7 @@ fn test_not() {
 
 #[test]
 fn test_cond() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval_to_num(&lisp, &mut eval, 
@@ -474,7 +474,7 @@ fn test_cond() {
 
 #[test]
 fn test_and_or() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(and #t #t)"));
@@ -488,7 +488,7 @@ fn test_and_or() {
 
 #[test]
 fn test_gc_during_eval() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 42)").unwrap();
@@ -503,7 +503,7 @@ fn test_gc_during_eval() {
 #[test]
 fn test_tco_deep_recursion() {
     // Test TCO with deep recursion
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Tail-recursive sum: sum 1 to n
@@ -519,7 +519,7 @@ fn test_tco_deep_recursion() {
 #[test]
 fn test_tco_mutual_recursion() {
     // Mutual recursion with TCO - even/odd predicates
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (my-even n) (if (= n 0) #t (my-odd (- n 1))))").unwrap();
@@ -536,7 +536,7 @@ fn test_tco_mutual_recursion() {
 #[test]
 fn test_tco_accumulator_pattern() {
     // Classic tail-recursive patterns
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Tail-recursive factorial
@@ -556,7 +556,7 @@ fn test_tco_accumulator_pattern() {
 #[test]
 fn test_tco_in_cond() {
     // TCO should work in cond branches
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str(r#"
@@ -581,7 +581,7 @@ fn test_tco_in_cond() {
 #[test]
 fn test_and_or_short_circuit() {
     // and/or short-circuit evaluation (only evaluates until result is known)
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // 'and' stops at first false
@@ -596,7 +596,7 @@ fn test_and_or_short_circuit() {
 #[test]
 fn test_let_bindings() {
     // let bindings evaluate values strictly
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic let
@@ -613,7 +613,7 @@ fn test_let_bindings() {
 #[test]
 fn test_cons_with_expressions() {
     // cons evaluates expressions in strict mode
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Build a list with computations - all evaluated immediately
@@ -627,7 +627,7 @@ fn test_cons_with_expressions() {
 #[test]
 fn test_nested_structures() {
     // Deeply nested structures work with strict evaluation
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create nested pairs
@@ -646,7 +646,7 @@ fn test_nested_structures() {
 #[test]
 fn test_nested_calls() {
     // Test behavior with nested function calls
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (double x) (* x 2))").unwrap();
@@ -659,7 +659,7 @@ fn test_nested_calls() {
 #[test]
 fn test_higher_order() {
     // Higher-order functions
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (apply-twice f x) (f (f x)))").unwrap();
@@ -672,7 +672,7 @@ fn test_higher_order() {
 #[test]
 fn test_currying() {
     // Curried functions
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (curry-add a) (lambda (b) (lambda (c) (+ a b c))))").unwrap();
@@ -686,7 +686,7 @@ fn test_currying() {
 #[test]
 fn test_repeated_access() {
     // Verify repeated access returns same value
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create a computation stored in a cons
@@ -708,7 +708,7 @@ fn test_repeated_access() {
 
 #[test]
 fn test_case_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, 
@@ -717,7 +717,7 @@ fn test_case_basic() {
 
 #[test]
 fn test_case_multiple_datums() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval,
@@ -726,7 +726,7 @@ fn test_case_multiple_datums() {
 
 #[test]
 fn test_case_else() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval,
@@ -735,7 +735,7 @@ fn test_case_else() {
 
 #[test]
 fn test_case_no_match() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("(case 5 ((1) 10) ((2) 20))").unwrap();
@@ -748,7 +748,7 @@ fn test_case_no_match() {
 
 #[test]
 fn test_do_basic() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Simple countdown
@@ -758,7 +758,7 @@ fn test_do_basic() {
 
 #[test]
 fn test_do_accumulator() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Sum 1 to 5 using do loop
@@ -768,7 +768,7 @@ fn test_do_accumulator() {
 
 #[test]
 fn test_do_factorial() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Factorial using do loop
@@ -782,7 +782,7 @@ fn test_do_factorial() {
 
 #[test]
 fn test_quasiquote_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 42)").unwrap();
@@ -796,7 +796,7 @@ fn test_quasiquote_basic() {
 
 #[test]
 fn test_quasiquote_nested() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define y 10)").unwrap();
@@ -816,7 +816,7 @@ fn test_quasiquote_nested() {
 
 #[test]
 fn test_eval_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Evaluate a quoted expression
@@ -825,7 +825,7 @@ fn test_eval_basic() {
 
 #[test]
 fn test_eval_symbol() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 99)").unwrap();
@@ -834,7 +834,7 @@ fn test_eval_symbol() {
 
 #[test]
 fn test_eval_computed() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Build expression dynamically and evaluate it
@@ -853,7 +853,7 @@ fn test_eval_computed() {
 
 #[test]
 fn test_apply_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(apply + '(1 2 3))"), 6);
@@ -861,7 +861,7 @@ fn test_apply_basic() {
 
 #[test]
 fn test_apply_lambda() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (sum3 a b c) (+ a b c))").unwrap();
@@ -874,7 +874,7 @@ fn test_apply_lambda() {
 
 #[test]
 fn test_values_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // values returns a list of its arguments
@@ -892,7 +892,7 @@ fn test_values_basic() {
 
 #[test]
 fn test_car_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car '(1 2 3))"), 1);
@@ -905,7 +905,7 @@ fn test_car_comprehensive() {
 
 #[test]
 fn test_cdr_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // cdr of list
@@ -922,7 +922,7 @@ fn test_cdr_comprehensive() {
 
 #[test]
 fn test_cons_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic cons
@@ -935,7 +935,7 @@ fn test_cons_comprehensive() {
 
 #[test]
 fn test_list_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Empty list
@@ -959,7 +959,7 @@ fn test_list_comprehensive() {
 
 #[test]
 fn test_eq_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Scheme uses eq? for identity comparison
@@ -983,7 +983,7 @@ fn test_eq_comprehensive() {
 
 #[test]
 fn test_null_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // null? tests for the empty list '()
@@ -996,7 +996,7 @@ fn test_null_comprehensive() {
 
 #[test]
 fn test_pair_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(pair? '(1 2))"));
@@ -1008,7 +1008,7 @@ fn test_pair_comprehensive() {
 
 #[test]
 fn test_number_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(number? 42)"));
@@ -1021,7 +1021,7 @@ fn test_number_comprehensive() {
 
 #[test]
 fn test_boolean_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(boolean? #t)"));
@@ -1033,7 +1033,7 @@ fn test_boolean_comprehensive() {
 
 #[test]
 fn test_symbol_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(symbol? 'x)"));
@@ -1045,7 +1045,7 @@ fn test_symbol_comprehensive() {
 
 #[test]
 fn test_procedure_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(procedure? +)"));
@@ -1061,7 +1061,7 @@ fn test_procedure_comprehensive() {
 
 #[test]
 fn test_add_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(+)"), 0);
@@ -1073,7 +1073,7 @@ fn test_add_comprehensive() {
 
 #[test]
 fn test_sub_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(- 10)"), -10);
@@ -1084,7 +1084,7 @@ fn test_sub_comprehensive() {
 
 #[test]
 fn test_mul_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(*)"), 1);
@@ -1096,7 +1096,7 @@ fn test_mul_comprehensive() {
 
 #[test]
 fn test_div_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(/ 10 2)"), 5);
@@ -1106,7 +1106,7 @@ fn test_div_comprehensive() {
 
 #[test]
 fn test_modulo_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Scheme modulo: result has sign of divisor
@@ -1119,7 +1119,7 @@ fn test_modulo_comprehensive() {
 
 #[test]
 fn test_remainder_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Scheme remainder: result has sign of dividend
@@ -1135,7 +1135,7 @@ fn test_remainder_comprehensive() {
 
 #[test]
 fn test_comparisons_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Less than
@@ -1169,7 +1169,7 @@ fn test_comparisons_comprehensive() {
 
 #[test]
 fn test_not_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(not #f)"));
@@ -1181,7 +1181,7 @@ fn test_not_comprehensive() {
 
 #[test]
 fn test_and_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(and)"));
@@ -1196,7 +1196,7 @@ fn test_and_comprehensive() {
 
 #[test]
 fn test_or_comprehensive() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_false(&lisp, &mut eval, "(or)"));
@@ -1214,7 +1214,7 @@ fn test_or_comprehensive() {
 
 #[test]
 fn test_display() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // display returns its argument (R7RS compliant)
@@ -1223,7 +1223,7 @@ fn test_display() {
 
 #[test]
 fn test_newline() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("(newline)").unwrap();
@@ -1232,7 +1232,7 @@ fn test_newline() {
 
 #[test]
 fn test_error() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("(error 'test-error)");
@@ -1246,7 +1246,7 @@ fn test_error() {
 
 #[test]
 fn test_closure_counter() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Counter using closure (pure functional - returns new state)
@@ -1259,7 +1259,7 @@ fn test_closure_counter() {
 
 #[test]
 fn test_closure_nested() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Triple-nested closures
@@ -1269,7 +1269,7 @@ fn test_closure_nested() {
 
 #[test]
 fn test_closure_captures_correct_env() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Verify lexical scoping (not dynamic)
@@ -1287,7 +1287,7 @@ fn test_closure_captures_correct_env() {
 
 #[test]
 fn test_filter_multiples() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Filter helper: filter out multiples (using modulo instead of mod)
@@ -1308,7 +1308,7 @@ fn test_filter_multiples() {
 
 #[test]
 fn test_mutation_set() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic set! mutation
@@ -1326,7 +1326,7 @@ fn test_mutation_set() {
 
 #[test]
 fn test_mutation_set_in_closure() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Counter using set!
@@ -1342,7 +1342,7 @@ fn test_mutation_set_in_closure() {
 
 #[test]
 fn test_mutation_set_car_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define p (cons 1 2))").unwrap();
@@ -1355,7 +1355,7 @@ fn test_mutation_set_car_basic() {
 
 #[test]
 fn test_mutation_set_cdr_basic() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define p (cons 1 2))").unwrap();
@@ -1368,7 +1368,7 @@ fn test_mutation_set_cdr_basic() {
 
 #[test]
 fn test_mutation_build_list() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Build a list by mutation
@@ -1381,7 +1381,7 @@ fn test_mutation_build_list() {
 
 #[test]
 fn test_mutation_with_gc() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Mutation should survive GC
@@ -1402,7 +1402,7 @@ fn test_mutation_with_gc() {
 
 #[test]
 fn test_stdlib_length() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(length '())"), 0);
@@ -1413,7 +1413,7 @@ fn test_stdlib_length() {
 
 #[test]
 fn test_stdlib_fold() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Sum of a list
@@ -1428,7 +1428,7 @@ fn test_stdlib_fold() {
 
 #[test]
 fn test_stdlib_nth() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(nth 0 '(10 20 30))"), 10);
@@ -1438,7 +1438,7 @@ fn test_stdlib_nth() {
 
 #[test]
 fn test_stdlib_range() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Test range function
@@ -1450,7 +1450,7 @@ fn test_stdlib_range() {
 
 #[test]
 fn test_stdlib_identity_and_constantly() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(identity 42)"), 42);
@@ -1463,7 +1463,7 @@ fn test_stdlib_identity_and_constantly() {
 
 #[test]
 fn test_stdlib_curry() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Curry + 5 to create add5
@@ -1474,7 +1474,7 @@ fn test_stdlib_curry() {
 
 #[test]
 fn test_stdlib_cadr_caddr_cddr() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr '(1 2 3))"), 2);
@@ -1486,7 +1486,7 @@ fn test_stdlib_cadr_caddr_cddr() {
 
 #[test]
 fn test_stdlib_member() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(member 2 '(1 2 3))"));
@@ -1501,7 +1501,7 @@ fn test_stdlib_member() {
 
 #[test]
 fn test_gc_preserves_closures() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (make-counter) (define n 0) (lambda () (set! n (+ n 1)) n))").unwrap();
@@ -1518,7 +1518,7 @@ fn test_gc_preserves_closures() {
 
 #[test]
 fn test_gc_collects_unreachable() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create some garbage
@@ -1537,7 +1537,7 @@ fn test_gc_collects_unreachable() {
 
 #[test]
 fn test_gc_intern_table_survives() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create some symbols
@@ -1562,7 +1562,7 @@ fn test_gc_intern_table_survives() {
 /// Note: 'nil' is just a regular symbol in Scheme, not the empty list.
 #[test]
 fn test_pitfall_empty_list_is_truthy() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // The empty list is truthy!
@@ -1575,7 +1575,7 @@ fn test_pitfall_empty_list_is_truthy() {
 /// PITFALL: 0 is also truthy!
 #[test]
 fn test_pitfall_zero_is_truthy() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // 0 is truthy (unlike C/Python)
@@ -1586,7 +1586,7 @@ fn test_pitfall_zero_is_truthy() {
 /// This is intentional - it keeps function code out of the arena.
 #[test]
 fn test_stdlib_parses_on_each_call() {
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Multiple calls to stdlib function work correctly
@@ -1618,7 +1618,7 @@ fn test_stdlib_recursion_works() {
 
 #[test]
 fn test_gc_builtin() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Create some garbage
@@ -1638,7 +1638,7 @@ fn test_gc_builtin() {
 
 #[test]
 fn test_gc_enable_disable() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // GC should be enabled by default
@@ -1661,7 +1661,7 @@ fn test_gc_enable_disable() {
 
 #[test]
 fn test_arena_stats_builtin() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Get arena stats
@@ -1670,9 +1670,9 @@ fn test_arena_stats_builtin() {
     // Result should be a list (capacity allocated free usage-percent)
     assert!(lisp.get(result).unwrap().is_cons());
     
-    // First element should be capacity = 2000
+    // First element should be capacity = 20000
     let capacity = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(capacity).unwrap().as_number(), Some(2000));
+    assert_eq!(lisp.get(capacity).unwrap().as_number(), Some(20000));
     
     // Second element (allocated) should be a number
     let rest = lisp.cdr(result).unwrap();
@@ -1683,7 +1683,7 @@ fn test_arena_stats_builtin() {
 
 #[test]
 fn test_gc_disabled_no_collect() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Disable GC
@@ -1719,7 +1719,7 @@ fn test_gc_disabled_no_collect() {
 #[test]
 fn test_letrec_basic() {
     // letrec allows mutually recursive definitions
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic letrec - recursive function
@@ -1731,7 +1731,7 @@ fn test_letrec_basic() {
 #[test]
 fn test_letrec_mutual_recursion() {
     // letrec supports mutually recursive definitions (R7RS example)
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Even?/odd? mutual recursion from R7RS spec
@@ -1749,7 +1749,7 @@ fn test_letrec_mutual_recursion() {
 #[test]
 fn test_letrec_star_basic() {
     // letrec* evaluates bindings sequentially
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic letrec* - same as letrec for simple cases
@@ -1761,7 +1761,7 @@ fn test_letrec_star_basic() {
 #[test]
 fn test_letrec_star_mutual_recursion() {
     // letrec* also supports mutual recursion
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Mutual recursion works in letrec*
@@ -1774,7 +1774,7 @@ fn test_letrec_star_mutual_recursion() {
 #[test]
 fn test_when_basic() {
     // when evaluates body when test is true
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Define a counter to track when the body is evaluated
@@ -1792,7 +1792,7 @@ fn test_when_basic() {
 #[test]
 fn test_when_multiple_expressions() {
     // when can have multiple expressions in body
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define a 0)").unwrap();
@@ -1806,7 +1806,7 @@ fn test_when_multiple_expressions() {
 #[test]
 fn test_unless_basic() {
     // unless evaluates body when test is false
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define counter 0)").unwrap();
@@ -1823,7 +1823,7 @@ fn test_unless_basic() {
 #[test]
 fn test_unless_multiple_expressions() {
     // unless can have multiple expressions in body
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define a 0)").unwrap();
@@ -1838,7 +1838,7 @@ fn test_unless_multiple_expressions() {
 #[test]
 fn test_rounding_operations() {
     // floor, ceiling, truncate, round are identity for integers
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // All rounding operations are identity for integers
@@ -1858,7 +1858,7 @@ fn test_rounding_operations() {
 #[test]
 fn test_exact_integer_predicate() {
     // exact-integer? returns #t for all our integers
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(exact-integer? 42)"));
@@ -1870,7 +1870,7 @@ fn test_exact_integer_predicate() {
 #[test]
 fn test_make_list_stdlib() {
     // make-list creates a list of k elements
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Make a list of 3 zeros
@@ -1885,7 +1885,7 @@ fn test_make_list_stdlib() {
 #[test]
 fn test_last_and_last_pair() {
     // last returns the last element, last-pair returns the last pair
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(last '(1 2 3))"), 3);
@@ -1898,7 +1898,7 @@ fn test_last_and_last_pair() {
 #[test]
 fn test_any_and_every() {
     // any and every higher-order functions
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // any returns #t if predicate is true for any element
@@ -1913,7 +1913,7 @@ fn test_any_and_every() {
 #[test]
 fn test_find() {
     // find returns the first element matching predicate
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(find even? '(1 3 4 5 6))"), 4);
@@ -1923,7 +1923,7 @@ fn test_find() {
 #[test]
 fn test_remove_and_delete() {
     // remove and delete filter lists
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // remove removes elements matching predicate
@@ -1936,7 +1936,7 @@ fn test_remove_and_delete() {
 #[test]
 fn test_fold_right() {
     // fold-right is a right fold
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // fold-right processes list from right-to-left, but with cons and empty list
@@ -1949,7 +1949,7 @@ fn test_fold_right() {
 #[test]
 fn test_reduce() {
     // reduce is an alias for fold-right
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(reduce + 0 '(1 2 3 4))"), 10);
@@ -1958,7 +1958,7 @@ fn test_reduce() {
 #[test]
 fn test_cddddr() {
     // cddddr - 4-level cdr
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("(cddddr '(1 2 3 4 5 6))").unwrap();
@@ -1969,7 +1969,7 @@ fn test_cddddr() {
 #[test]
 fn test_partition() {
     // partition splits a list into matching and non-matching elements
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // partition returns (cons matching non-matching) - a pair of two lists
@@ -1985,7 +1985,7 @@ fn test_partition() {
 #[test]
 fn test_filter_map() {
     // filter-map applies function and keeps non-#f results
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Define a function that returns #f for negative numbers
@@ -1999,7 +1999,7 @@ fn test_filter_map() {
 #[test]
 fn test_boolean_eq() {
     // boolean-eq checks if both arguments have the same boolean value
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     assert!(eval_is_true(&lisp, &mut eval, "(boolean-eq #t #t)"));
@@ -2011,7 +2011,7 @@ fn test_boolean_eq() {
 #[test]
 fn test_member_equal_and_assoc_equal() {
     // member-equal and assoc-equal use equal? for comparison
-    let lisp: Lisp<3000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // member-equal works with nested lists (unlike memq which uses eq?)
@@ -2026,7 +2026,7 @@ fn test_member_equal_and_assoc_equal() {
 #[test]
 fn test_list_set() {
     // list-set! mutates an element in a list
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define my-list (list 1 2 3 4 5))").unwrap();
@@ -2039,7 +2039,7 @@ fn test_list_set() {
 #[test]
 fn test_make_list_edge_cases() {
     // make-list handles edge cases
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Empty list for k=0
