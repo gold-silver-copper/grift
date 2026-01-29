@@ -253,11 +253,12 @@ Builtins are optimized primitives stored as enum variants:
 ```rust
 pub enum Builtin {
     Car, Cdr, Cons, List,
-    Atom, Eq, Null, Pairp, Numberp, Booleanp, Procedurep, Symbolp,
-    Add, Sub, Mul, Div, Mod,
+    Null, Pairp, Numberp, Booleanp, Procedurep, Symbolp,
+    EqP, EqvP, EqualP,
+    Add, Sub, Mul, Div, Modulo, Remainder,
     Lt, Gt, Le, Ge, NumEq,
-    Not, Print, Display, Newline, Error,
-    Memoize, Gensym, SetCar, SetCdr,
+    Not, Display, Newline, Error,
+    SetCar, SetCdr,
     MakeArray, ArrayRef, ArraySet, ArrayLength, Arrayp,
     Gc, GcEnable, GcDisable, GcEnabledP, ArenaStats,
 }
@@ -265,7 +266,7 @@ pub enum Builtin {
 
 Adding a new builtin:
 1. Add variant to `define_builtins!` macro in `lisp_parser`
-2. Implement evaluation in `apply_builtin_with_forced_args` in `lisp_eval`
+2. Implement evaluation in `apply_builtin` in `lisp_eval`
 
 ## Standard Library
 

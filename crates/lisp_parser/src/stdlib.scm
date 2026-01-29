@@ -7,9 +7,6 @@
 ;;;   ;;; Documentation comment
 ;;;   (define (function-name param1 param2 ...) body)
 
-;;; (atom x) - Check if x is an atom (not a pair)
-(define (atom x) (not (pair? x)))
-
 ;;; (map f lst) - Apply f to each element of lst
 (define (map f lst) (if (null? lst) '() (cons (f (car lst)) (map f (cdr lst)))))
 

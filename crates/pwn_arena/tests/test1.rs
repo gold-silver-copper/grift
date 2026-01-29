@@ -1684,7 +1684,7 @@ fn test_gc_reenable_collects() {
 }
 
 #[test]
-fn test_gc_forced_ignores_disabled() {
+fn test_gc_unconditional_ignores_disabled() {
     let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let root = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1693,13 +1693,13 @@ fn test_gc_forced_ignores_disabled() {
     arena.set_gc_enabled(false);
     assert!(!arena.is_gc_enabled());
 
-    // Forced collection should work even when disabled
-    let stats = arena.collect_garbage_forced(&[root]);
+    // Unconditional collection should work even when disabled
+    let stats = arena.collect_garbage_unconditional(&[root]);
 
     assert_eq!(stats.collected, 1);
     assert_eq!(arena.len(), 1);
 
-    // GC should still be disabled after forced collection
+    // GC should still be disabled after unconditional collection
     assert!(!arena.is_gc_enabled());
 }
 
@@ -1792,7 +1792,7 @@ fn test_gc_multi_disabled() {
 }
 
 #[test]
-fn test_gc_multi_forced() {
+fn test_gc_multi_unconditional() {
     let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let root1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1801,8 +1801,8 @@ fn test_gc_multi_forced() {
 
     arena.set_gc_enabled(false);
 
-    // Forced multi should ignore disabled flag
-    let stats = arena.collect_garbage_multi_forced(&[&[root1], &[root2]]);
+    // Unconditional multi should ignore disabled flag
+    let stats = arena.collect_garbage_multi_unconditional(&[&[root1], &[root2]]);
     assert_eq!(stats.collected, 1);
     assert_eq!(arena.len(), 2);
 
@@ -1867,7 +1867,7 @@ fn test_gc_disabled_preserves_all_objects() {
 }
 
 #[test]
-fn test_gc_forced_then_normal() {
+fn test_gc_unconditional_then_normal() {
     let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let root = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1876,8 +1876,8 @@ fn test_gc_forced_then_normal() {
 
     arena.set_gc_enabled(false);
 
-    // Force collect once
-    let stats1 = arena.collect_garbage_forced(&[root]);
+    // Unconditional collect once
+    let stats1 = arena.collect_garbage_unconditional(&[root]);
     assert_eq!(stats1.collected, 2);
 
     // Add more garbage
@@ -1888,8 +1888,8 @@ fn test_gc_forced_then_normal() {
     assert_eq!(stats2.collected, 0);
     assert_eq!(arena.len(), 2); // root + new garbage
 
-    // Force collect again
-    let stats3 = arena.collect_garbage_forced(&[root]);
+    // Unconditional collect again
+    let stats3 = arena.collect_garbage_unconditional(&[root]);
     assert_eq!(stats3.collected, 1);
     assert_eq!(arena.len(), 1);
 }

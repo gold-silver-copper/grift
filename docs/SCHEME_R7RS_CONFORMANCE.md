@@ -24,176 +24,182 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Lexical scoping with closures
 - ✅ Proper tail-call optimization (via trampolining)
 - ✅ Strict evaluation (call-by-value)
-- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `begin`, `and`, `or`, `do`, `quasiquote`, `eval`, `apply`
-- ✅ Macros: `defmacro` (note: R7RS uses `syntax-rules`, see below)
+- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `begin`, `and`, `or`, `do`, `quasiquote`, `eval`, `apply`, `values`
 
 #### Built-in Procedures (Chapter 6)
 - ✅ **Equivalence**: `eq?`, `eqv?`, `equal?`
 - ✅ **Booleans**: `not`, `boolean?`
 - ✅ **Pairs/Lists**: `car`, `cdr`, `cons`, `list`, `null?`, `pair?`, `set-car!`, `set-cdr!`
-- ✅ **Numbers**: `+`, `-`, `*`, `/`, `mod`, `modulo`, `remainder`, `=`, `<`, `>`, `<=`, `>=`, `number?`
-- ✅ **Characters**: `char?` (basic support)
-- ✅ **Strings**: Basic string operations (via arrays)
-- ✅ **Type Predicates**: `atom`, `symbol?`, `procedure?`
-- ✅ **I/O**: `print`, `display`, `newline`, `error`
-- ✅ **GC Control**: `gc`, `gc-enable`, `gc-disable`, `gc-enabled?`, `arena-stats`
+- ✅ **Numbers**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `=`, `<`, `>`, `<=`, `>=`, `number?`
+- ✅ **Type Predicates**: `symbol?`, `procedure?`
+- ✅ **I/O**: `display`, `newline`, `error`
 
 #### Standard Library Functions (`stdlib.scm`)
-- ✅ `atom`, `map`, `filter`, `fold`, `length`, `append`, `reverse`, `nth`, `take`, `drop`, `zip`, `member`, `assoc`, `range`, `compose`, `identity`, `constantly`, `flip`, `curry`, `cadr`, `caddr`, `cddr`
+- ✅ `map`, `filter`, `fold`, `length`, `append`, `reverse`, `nth`, `take`, `drop`, `zip`, `member`, `assoc`, `range`, `compose`, `identity`, `constantly`, `flip`, `curry`, `cadr`, `caddr`, `cddr`
 
-### ❌ Missing Critical Features
+### 🔧 Implementation Extensions (Non-R7RS)
 
-#### Syntax and Special Forms (Chapter 4)
-- ❌ `letrec` - Recursive let binding
-- ❌ `letrec*` - Sequential recursive let binding
-- ❌ `let-values` / `let*-values` - Multiple value binding
-- ❌ `define-values` - Multiple value definitions
-- ❌ `case-lambda` - Multiple arity procedures (Chapter 4.2.9)
-- ❌ `when` / `unless` - Convenience conditionals
-- ❌ `delay` / `force` / `delay-force` - Lazy evaluation (Chapter 4.2.5)
-- ❌ `make-promise` / `promise?` - Promise procedures
-- ❌ `parameterize` / `make-parameter` - Dynamic bindings (Chapter 4.2.6)
-- ❌ `dynamic-wind` - Dynamic extent control
-- ❌ `call-with-current-continuation` / `call/cc` - First-class continuations
-- ❌ `guard` - Exception handling (Chapter 4.2.7)
-- ❌ `raise` / `raise-continuable` - Exception raising
-- ❌ `error-object?` / `error-object-message` / `error-object-irritants` - Error objects
-- ❌ `syntax-rules` - Hygienic macros (replaces `defmacro` for R7RS conformance)
-- ❌ `syntax-error` - Macro error signaling
-- ❌ `let-syntax` / `letrec-syntax` - Local syntax bindings
-- ❌ `cond-expand` - Conditional expansion
+These features are intentionally non-R7RS for embedded systems and runtime control:
 
-#### Standard Procedures (Chapter 6)
+#### GC Control (Embedded Extension)
+- `gc` - Manually trigger garbage collection
+- `gc-enable` - Enable automatic garbage collection
+- `gc-disable` - Disable automatic garbage collection
+- `gc-enabled?` - Check if GC is enabled
+- `arena-stats` - Get arena statistics as a list
 
-**Numbers (Section 6.2)**
-- ❌ `abs` - Absolute value
-- ❌ `expt` - Exponentiation
-- ❌ `exact?` / `inexact?` - Exactness predicates
-- ❌ `exact-integer?` - Integer predicate
-- ❌ `finite?` / `infinite?` / `nan?` - Number predicates
-- ❌ `max` / `min` - Min/max
-- ❌ `quotient` / `remainder` / `modulo` - Integer division (partially implemented)
-- ❌ `floor` / `ceiling` / `truncate` / `round` - Rounding
-- ❌ `rationalize` - Rational approximation
-- ❌ `exp` / `log` - Exponential/logarithm
-- ❌ `sin` / `cos` / `tan` / `asin` / `acos` / `atan` - Trigonometry
-- ❌ `sqrt` - Square root
-- ❌ `square` - Square
-- ❌ `exact-integer-sqrt` - Integer square root
-- ❌ `number->string` / `string->number` - Number conversion
+#### Array Operations (Embedded Extension)
+- `make-array` - Create an array with given length and initial value
+- `array-ref` - Get element at index (O(1))
+- `array-set!` - Set element at index (O(1))
+- `array-length` - Get array length (O(1))
+- `array?` - Check if value is an array
 
-**Characters (Section 6.3)**
-- ❌ `char=?` / `char<?` / `char>?` / `char<=?` / `char>=?` - Character comparison
-- ❌ `char-ci=?` / `char-ci<?` / etc. - Case-insensitive comparison
-- ❌ `char-alphabetic?` / `char-numeric?` / `char-whitespace?` / `char-upper-case?` / `char-lower-case?` - Character predicates
-- ❌ `char->integer` / `integer->char` - Character conversion
-- ❌ `char-upcase` / `char-downcase` - Case conversion
-- ❌ `digit-value` - Numeric character value
+#### Native Function FFI (Embedded Extension)
+- Native Rust functions can be registered and called from Lisp
+- Used for hardware access in embedded contexts
 
-**Strings (Section 6.4)**
-- ❌ `string` - String constructor
-- ❌ `string-length` - String length
-- ❌ `string-ref` / `string-set!` - String access/mutation
-- ❌ `string=?` / `string<?` / `string>?` / `string<=?` / `string>=?` - String comparison
-- ❌ `string-ci=?` / `string-ci<?` / etc. - Case-insensitive comparison
-- ❌ `string-upcase` / `string-downcase` / `string-foldcase` - Case conversion
-- ❌ `string-append` - String concatenation
-- ❌ `string->list` / `list->string` - String/list conversion
-- ❌ `string-copy` / `string-copy!` - String copying
-- ❌ `string-fill!` - String filling
-- ❌ `substring` - Substring extraction
-- ❌ `string-map` / `string-for-each` - String iteration
-- ❌ `string->vector` / `vector->string` - String/vector conversion
+---
 
-**Vectors (Section 6.5)**
-- ❌ `vector` - Vector constructor
-- ❌ `vector?` - Vector predicate
-- ❌ `make-vector` - Vector creation
-- ❌ `vector-length` - Vector length
-- ❌ `vector-ref` / `vector-set!` - Vector access/mutation
-- ❌ `vector->list` / `list->vector` - Vector/list conversion
-- ❌ `vector-fill!` - Vector filling
-- ❌ `vector-map` / `vector-for-each` - Vector iteration
-- ❌ `vector-copy` / `vector-copy!` - Vector copying
-- ❌ `vector-append` - Vector concatenation
+## Multi-Phase R7RS Conformance Plan
 
-**Bytevectors (Section 6.6)**
-- ❌ Entire bytevector type and operations (optional in R7RS)
+### Phase 1: Core Language Foundation (Current Focus)
+**Goal**: Ensure all basic R7RS semantics are correctly implemented
 
-**Control Features (Section 6.10)**
-- ❌ `call-with-current-continuation` / `call/cc` - Continuations
-- ❌ `values` - Multiple values
-- ❌ `call-with-values` - Multiple value handling
-- ❌ `dynamic-wind` - Dynamic extent
+#### 1.1 Binding Constructs
+- [ ] Implement `letrec` - Recursive let binding (Section 4.2.2)
+- [ ] Implement `letrec*` - Sequential recursive let binding
+- [ ] Verify `let` and `let*` follow R7RS semantics exactly
 
-**I/O (Section 6.13)**
-- ❌ `read` - Read datum from port
-- ❌ `write` / `display` / `write-simple` / `write-shared` - Output procedures (partial: `display` exists)
-- ❌ `read-char` / `peek-char` - Character input
-- ❌ `write-char` / `newline` - Character output (partial: `newline` exists)
-- ❌ `read-line` - Line input
-- ❌ `eof-object?` - EOF predicate
-- ❌ `open-input-file` / `open-output-file` / `close-input-port` / `close-output-port` / `close-port` - File ports
-- ❌ `open-input-string` / `open-output-string` / `get-output-string` - String ports
-- ❌ `current-input-port` / `current-output-port` - Current ports
-- ❌ `with-input-from-file` / `with-output-to-file` - Port redirection
-- ❌ `input-port-open?` / `output-port-open?` - Port predicates
-- ❌ `flush-output-port` - Output flushing
-- ❌ `load` - File loading
+#### 1.2 Core Procedures
+- [ ] Implement `for-each` - Apply procedure for side effects
+- [ ] Implement `list-tail` - Return sublist starting at index
+- [ ] Implement `list-ref` - Return element at index
+- [ ] Implement `list?` - Check if value is a proper list
+- [ ] Implement `list-copy` - Create a copy of a list
 
-**System Interface (Section 6.14)**
-- ❌ `file-exists?` / `delete-file` - File operations
-- ❌ `command-line` - Command line arguments
-- ❌ `exit` / `emergency-exit` - Program termination
-- ❌ `get-environment-variable` / `get-environment-variables` - Environment variables
+#### 1.3 Number Operations
+- [ ] Implement `abs` - Absolute value
+- [ ] Implement `max` / `min` - Maximum and minimum
+- [ ] Implement `quotient` - Integer quotient (alias for truncate-quotient)
+- [ ] Implement `gcd` / `lcm` - Greatest common divisor / least common multiple
+- [ ] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations
+- [ ] Implement `expt` - Exponentiation
+- [ ] Implement `square` - Square of a number
+- [ ] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
 
-**Time (Section 6.15)**
-- ❌ `current-second` - Current time
-- ❌ `current-jiffy` / `jiffies-per-second` - High-resolution timing
+### Phase 2: String and Character Support
+**Goal**: Full R7RS string and character operations
 
-**Miscellaneous (Section 6.16)**
-- ❌ `features` - Implementation features list
+#### 2.1 Character Operations (Section 6.6)
+- [ ] Implement `char?` predicate properly
+- [ ] Implement `char=?` / `char<?` / `char>?` / `char<=?` / `char>=?` - Comparison
+- [ ] Implement `char->integer` / `integer->char` - Conversion
+- [ ] Implement character predicates: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`
+- [ ] Implement `char-upcase` / `char-downcase` - Case conversion
 
-#### Program Structure (Chapter 5)
-- ❌ Library system (`define-library`, `import`, `export`)
-- ❌ Program structure (import declarations, definitions, expressions)
-- ❌ `include` / `include-ci` / `include-library-declarations` - File inclusion
-- ❌ `cond-expand` - Conditional expansion
+#### 2.2 String Operations (Section 6.7)
+- [ ] Implement `string` constructor
+- [ ] Implement `string-length`
+- [ ] Implement `string-ref` / `string-set!` - Access and mutation
+- [ ] Implement `string=?` / `string<?` / `string>?` / `string<=?` / `string>=?` - Comparison
+- [ ] Implement `string-append` - Concatenation
+- [ ] Implement `string->list` / `list->string` - Conversion
+- [ ] Implement `substring` - Substring extraction
+- [ ] Implement `string-copy` - String copying
 
-#### Lexical Conventions (Chapter 2)
-- ❌ Extended identifier characters (full Unicode support optional)
-- ❌ Datum labels (`#n=` / `#n#`) - Shared/circular structure
-- ❌ Block comments (`#| ... |#`)
-- ❌ Datum comment (`#;`)
+### Phase 3: Vector Support
+**Goal**: R7RS vector operations (distinct from arrays)
+
+#### 3.1 Vector Operations (Section 6.8)
+- [ ] Implement `vector` constructor
+- [ ] Implement `vector?` predicate
+- [ ] Implement `make-vector` - Create vector with optional fill
+- [ ] Implement `vector-length`
+- [ ] Implement `vector-ref` / `vector-set!` - Access and mutation
+- [ ] Implement `vector->list` / `list->vector` - Conversion
+- [ ] Implement `vector-fill!` - Fill vector with value
+- [ ] Implement `vector-copy` - Copy vector
+
+### Phase 4: Multiple Values
+**Goal**: Full multiple value support
+
+#### 4.1 Multiple Values (Section 6.10)
+- [ ] Verify `values` implementation
+- [ ] Implement `call-with-values` - Receive multiple values
+- [ ] Implement `let-values` / `let*-values` - Bind multiple values
+- [ ] Implement `define-values` - Define multiple values
+
+### Phase 5: Hygienic Macros
+**Goal**: R7RS-compliant macro system
+
+#### 5.1 Syntax-Rules (Section 4.3.2)
+- [ ] Implement `syntax-rules` - Pattern-based macros
+- [ ] Implement `let-syntax` / `letrec-syntax` - Local syntax bindings
+- [ ] Implement `define-syntax` - Top-level syntax definitions
+- [ ] Implement `syntax-error` - Macro error signaling
+
+### Phase 6: Control Features
+**Goal**: Advanced control flow
+
+#### 6.1 Conditionals
+- [ ] Implement `when` / `unless` - Convenience conditionals
+- [ ] Implement `cond-expand` - Feature-based conditional expansion
+- [ ] Implement `case-lambda` - Multiple-arity procedures
+
+#### 6.2 Exception Handling (Section 6.11)
+- [ ] Implement `guard` - Exception handling syntax
+- [ ] Implement `raise` / `raise-continuable` - Exception raising
+- [ ] Implement `with-exception-handler` - Exception handler installation
+- [ ] Implement `error-object?` / `error-object-message` / `error-object-irritants`
+
+#### 6.3 Dynamic Bindings (Section 4.2.6)
+- [ ] Implement `make-parameter` - Create parameter object
+- [ ] Implement `parameterize` - Dynamic binding
+
+### Phase 7: I/O System
+**Goal**: R7RS I/O operations
+
+#### 7.1 Ports (Section 6.13)
+- [ ] Implement port types and predicates
+- [ ] Implement `current-input-port` / `current-output-port` / `current-error-port`
+- [ ] Implement `open-input-string` / `open-output-string` / `get-output-string`
+- [ ] Implement `read-char` / `peek-char` / `write-char`
+- [ ] Implement `read-line` / `read-string`
+- [ ] Implement `write` / `write-simple` - Datum output
+- [ ] Implement `read` - Datum input
+
+### Phase 8: Library System
+**Goal**: R7RS module system
+
+#### 8.1 Libraries (Section 5.6)
+- [ ] Implement `define-library` syntax
+- [ ] Implement `import` declarations
+- [ ] Implement `export` declarations
+- [ ] Implement library name resolution
+- [ ] Implement `include` / `include-ci` - File inclusion
+
+### Phase 9: Advanced Features (Optional)
+**Goal**: Complete R7RS conformance
+
+#### 9.1 Continuations
+- [ ] Implement `call-with-current-continuation` / `call/cc`
+- [ ] Implement `dynamic-wind`
+
+#### 9.2 Lazy Evaluation (scheme lazy library)
+- [ ] Implement `delay` / `force` / `delay-force`
+- [ ] Implement `make-promise` / `promise?`
+
+#### 9.3 Environments
+- [ ] Implement `environment` - Create evaluation environment
+- [ ] Implement `scheme-report-environment`
+- [ ] Implement `null-environment`
+
+---
 
 ## Implementation Guidelines
 
-### Priority Order
-
-1. **High Priority** (Core R7RS features):
-   - `letrec` / `letrec*` - Required for many standard library functions
-   - `values` / `call-with-values` - Multiple values (used by many procedures)
-   - `syntax-rules` - Hygienic macros (replaces `defmacro`)
-   - Standard library procedures from `(scheme base)` (see Appendix A)
-   - Library system (`define-library`, `import`, `export`)
-
-2. **Medium Priority** (Commonly used):
-   - String operations (Section 6.4)
-   - Vector operations (Section 6.5)
-   - Number operations (Section 6.2)
-   - Character operations (Section 6.3)
-   - I/O operations (Section 6.13)
-
-3. **Low Priority** (Advanced features):
-   - Continuations (`call/cc`)
-   - Dynamic bindings (`parameterize`)
-   - Exception handling (`guard`, `raise`)
-   - Bytevectors (optional)
-   - Full Unicode support (optional)
-
-### Implementation Approach
-
-#### For Special Forms
+### For Special Forms
 
 1. **Add to parser** (`crates/lisp_parser/src/lib.rs`):
    - Add syntax recognition in the parser
@@ -209,25 +215,17 @@ All conformance work should reference this specification. The spec is organized 
    - Test edge cases
    - Test conformance with R7RS examples
 
-#### For Standard Procedures
+### For Standard Procedures
 
 1. **Builtins** (for performance-critical operations):
    - Add variant to `define_builtins!` macro in `crates/lisp_parser/src/lib.rs`
-   - Implement in `apply_builtin_with_forced_args` in `crates/lisp_eval/src/lib.rs`
+   - Implement in `apply_builtin` in `crates/lisp_eval/src/lib.rs`
    - Add tests
 
 2. **Standard Library** (for less critical operations):
    - Add definition to `crates/lisp_parser/src/stdlib.scm`
    - The `include_stdlib!` macro will automatically generate the enum variant
    - Add tests
-
-#### For Library System
-
-This is a major feature requiring:
-- Parser support for `define-library`, `import`, `export`
-- Library resolution and loading mechanism
-- Module system integration with evaluator
-- See Chapter 5 of the spec for details
 
 ### Testing Strategy
 
@@ -236,14 +234,9 @@ This is a major feature requiring:
 3. **Integration Tests**: Test features working together
 4. **Edge Cases**: Test error conditions, boundary cases
 
-### Reference Implementation Notes
+---
 
-- The spec includes many examples - use these as test cases
-- Pay attention to error conditions ("it is an error if...")
-- Note which features are optional vs. required
-- Some features may conflict with current implementation (e.g., `defmacro` vs `syntax-rules`)
-
-## Current Architecture Compatibility
+## Architecture Notes
 
 ### Compatible Features
 - ✅ Trampolined evaluation supports proper tail recursion
@@ -251,37 +244,18 @@ This is a major feature requiring:
 - ✅ GC integration supports long-running programs
 - ✅ Lexical scoping supports closures
 
-### Potential Conflicts
+### Potential Challenges
 
-1. **Macros**: Current `defmacro` is non-hygienic. R7RS requires `syntax-rules` (hygienic).
-   - **Solution**: Implement `syntax-rules` alongside `defmacro`, or replace it
+1. **Continuations**: Current trampoline design doesn't support `call/cc`.
+   - **Impact**: Low priority - defer to Phase 9
    
-2. **Multiple Values**: Current implementation returns single values.
-   - **Solution**: Add `values` and `call-with-values` support
-   
-3. **Continuations**: Current trampoline design doesn't support `call/cc`.
-   - **Solution**: This is a major architectural change - defer to low priority
+2. **Multiple Values**: Partially implemented - needs `call-with-values`.
+   - **Impact**: Medium priority - Phase 4
 
-4. **Library System**: Current implementation has no module system.
-   - **Solution**: Implement library system per Chapter 5
+3. **Library System**: No module system yet.
+   - **Impact**: Required for full conformance - Phase 8
 
-## Appendix A Reference
-
-The spec's Appendix A lists all identifiers exported by standard libraries. Focus on `(scheme base)` first, which includes:
-- Core syntax (special forms)
-- Essential procedures (equivalence, booleans, pairs, numbers, etc.)
-- Basic I/O
-
-Other libraries (`scheme char`, `scheme complex`, `scheme cxr`, `scheme eval`, `scheme file`, `scheme inexact`, `scheme lazy`, `scheme load`, `scheme process-context`, `scheme read`, `scheme repl`, `scheme time`, `scheme write`) can be implemented later.
-
-## Next Steps
-
-1. **Review spec.html** for the feature you want to implement
-2. **Check current implementation** to see what exists
-3. **Design the implementation** considering the architecture
-4. **Implement incrementally** - add parser support, then evaluator, then tests
-5. **Test thoroughly** - use spec examples as test cases
-6. **Document** - update this file as features are completed
+---
 
 ## Resources
 
@@ -292,9 +266,12 @@ Other libraries (`scheme char`, `scheme complex`, `scheme cxr`, `scheme eval`, `
 - **Parser**: `crates/lisp_parser/src/lib.rs`
 - **Evaluator**: `crates/lisp_eval/src/lib.rs`
 
+---
+
 ## Notes
 
 - The implementation uses `no_std` - ensure any new features maintain this constraint
 - The arena has fixed capacity - consider memory usage for new features
 - GC integration is important - ensure new features properly mark roots
 - Performance matters - prefer builtins for hot paths, stdlib for convenience
+- Extensions (GC control, arrays, FFI) are intentionally kept for embedded use
