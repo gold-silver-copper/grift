@@ -3179,3 +3179,250 @@ fn test_complex_expt() {
     // 3^2 = 9
     assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-expt 3 2)"), 9);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STDLIB NESTED INLINE CALL BUG TESTS
+// These tests document and verify the fix for the nested inline call issue
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_stdlib_nested_inline_call_bug_simple() {
+    // BUG: StdLib functions with nested inline calls may return wrong results
+    // This demonstrates the issue documented in SCHEME_R7RS_CONFORMANCE.md section 3.6
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // cadr is a stdlib function: (define (cadr lst) (car (cdr lst)))
+    // First verify with pre-defined list works
+    eval.eval_str("(define temp (list 1 2 3))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr temp)"), 2);
+    
+    // Now test the nested inline call - this is where the bug manifests
+    // (cadr (list 1 2 3)) should return 2
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr (list 1 2 3))"), 2);
+}
+
+#[test]  
+fn test_stdlib_nested_inline_length_of_range() {
+    // Another nested call case: (length (range 0 5))
+    // length is stdlib, range is stdlib, both called inline
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // This should return 5
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (range 0 5))"), 5);
+    
+    // Compare with workaround
+    eval.eval_str("(define r (range 0 5))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length r)"), 5);
+}
+
+#[test]
+fn test_stdlib_nested_inline_reverse_range() {
+    // (reverse (range 0 3)) should return (2 1 0)
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Car of reversed range should be 2 (last element of range 0 3)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (reverse (range 0 3)))"), 2);
+    
+    // Compare with workaround
+    eval.eval_str("(define r (range 0 3))").unwrap();
+    eval.eval_str("(define rev (reverse r))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car rev)"), 2);
+}
+
+#[test]
+fn test_stdlib_nested_inline_complex_case() {
+    // Test the pattern that causes the bug:
+    // When a stdlib function calls another stdlib function
+    // with an inline expression as argument
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // This pattern is problematic:
+    // (make-pure-imaginary (sqrt (- z)))
+    // where make-pure-imaginary is stdlib, sqrt is stdlib, - is builtin
+    
+    // Test: make-pure-imaginary with inline sqrt call
+    // make-pure-imaginary(y) = make-complex-raw(0, y)
+    // sqrt(4) = 2
+    // So (make-pure-imaginary (sqrt 4)) should create complex 0+2i
+    
+    let result = eval.eval_str("(make-pure-imaginary (sqrt 4))").unwrap();
+    let val = lisp.get(result).unwrap();
+    
+    // Get real and imaginary parts
+    let real_result = eval.eval_str("(real-part (make-pure-imaginary (sqrt 4)))").unwrap();
+    let real_val = lisp.get(real_result).unwrap();
+    
+    match real_val {
+        Value::Number(n) => assert_eq!(n, 0, "real part should be 0"),
+        Value::Float(f) => assert!((f - 0.0).abs() < 1e-10, "real part should be 0"),
+        _ => panic!("Expected number for real-part"),
+    }
+    
+    let imag_result = eval.eval_str("(imag-part (make-pure-imaginary (sqrt 4)))").unwrap();
+    let imag_val = lisp.get(imag_result).unwrap();
+    
+    match imag_val {
+        Value::Number(n) => assert_eq!(n, 2, "imag part should be 2"),
+        Value::Float(f) => assert!((f - 2.0).abs() < 1e-10, "imag part should be 2"),
+        _ => panic!("Expected number for imag-part"),
+    }
+}
+
+#[test]
+fn test_stdlib_nested_inline_debug() {
+    // Debug test to show the actual bug
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First test the components
+    println!("\nTest sqrt(4):");
+    let sqrt_result = eval.eval_str("(sqrt 4)").unwrap();
+    let sqrt_val = lisp.get(sqrt_result).unwrap();
+    println!("sqrt(4) = {:?}", sqrt_val);
+    
+    println!("\nTest (make-pure-imaginary 2):");
+    let pi_result = eval.eval_str("(make-pure-imaginary 2)").unwrap();
+    let pi_val = lisp.get(pi_result).unwrap();
+    println!("make-pure-imaginary(2) = {:?}", pi_val);
+    
+    println!("\nTest real-part and imag-part of (make-pure-imaginary 2):");
+    let r = eval.eval_str("(real-part (make-pure-imaginary 2))").unwrap();
+    let i = eval.eval_str("(imag-part (make-pure-imaginary 2))").unwrap();
+    println!("real-part = {:?}", lisp.get(r).unwrap());
+    println!("imag-part = {:?}", lisp.get(i).unwrap());
+    
+    // Now the bug:
+    println!("\nTest (make-pure-imaginary (sqrt 4)):");
+    let result = eval.eval_str("(make-pure-imaginary (sqrt 4))").unwrap();
+    let val = lisp.get(result).unwrap();
+    println!("Result = {:?}", val);
+    
+    println!("\nTest real-part of (make-pure-imaginary (sqrt 4)):");
+    let r = eval.eval_str("(real-part (make-pure-imaginary (sqrt 4)))").unwrap();
+    println!("real-part = {:?}", lisp.get(r).unwrap());
+    
+    println!("\nTest imag-part of (make-pure-imaginary (sqrt 4)):");
+    let i = eval.eval_str("(imag-part (make-pure-imaginary (sqrt 4)))").unwrap();
+    println!("imag-part = {:?}", lisp.get(i).unwrap());
+    
+    // Compare with using define workaround
+    println!("\nTest with define workaround:");
+    eval.eval_str("(define temp-sqrt (sqrt 4))").unwrap();
+    let result2 = eval.eval_str("(make-pure-imaginary temp-sqrt)").unwrap();
+    let val2 = lisp.get(result2).unwrap();
+    println!("(make-pure-imaginary temp-sqrt) = {:?}", val2);
+    
+    let r2 = eval.eval_str("(real-part (make-pure-imaginary temp-sqrt))").unwrap();
+    let i2 = eval.eval_str("(imag-part (make-pure-imaginary temp-sqrt))").unwrap();
+    println!("real-part = {:?}", lisp.get(r2).unwrap());
+    println!("imag-part = {:?}", lisp.get(i2).unwrap());
+}
+
+#[test]
+fn test_stdlib_nested_inline_debug2() {
+    // More detailed debug - separate the components
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test with a user-defined function that mimics make-pure-imaginary
+    eval.eval_str("(define (my-make-pure-imag y) (make-complex-raw 0 y))").unwrap();
+    
+    println!("\nTest 1: (my-make-pure-imag (sqrt 4)) - user-defined wrapper");
+    let result = eval.eval_str("(my-make-pure-imag (sqrt 4))").unwrap();
+    let val = lisp.get(result).unwrap();
+    println!("Result = {:?}", val);
+    
+    // Should give us imag-part = 2
+    let imag = eval.eval_str("(imag-part (my-make-pure-imag (sqrt 4)))").unwrap();
+    println!("imag-part = {:?}", lisp.get(imag).unwrap());
+    
+    println!("\nTest 2: (make-pure-imaginary (sqrt 4)) - stdlib function");
+    let result = eval.eval_str("(make-pure-imaginary (sqrt 4))").unwrap();
+    let val = lisp.get(result).unwrap();
+    println!("Result = {:?}", val);
+}
+
+#[test]
+fn test_stdlib_nested_inline_debug3() {
+    // Test different scenarios
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test case 1: Stdlib func with builtin arg - should work
+    println!("\nTest 1: (make-pure-imaginary (+ 1 1))");
+    let result = eval.eval_str("(make-pure-imaginary (+ 1 1))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Test case 2: Stdlib func with stdlib arg
+    println!("\nTest 2: (make-pure-imaginary (sqrt 4))");
+    let result = eval.eval_str("(make-pure-imaginary (sqrt 4))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Test case 3: User-defined func with builtin arg
+    eval.eval_str("(define (my-func y) (cons 0 y))").unwrap();
+    println!("\nTest 3: (my-func (+ 1 1))");
+    let result = eval.eval_str("(my-func (+ 1 1))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Test case 4: User-defined func with stdlib arg  
+    println!("\nTest 4: (my-func (sqrt 4))");
+    let result = eval.eval_str("(my-func (sqrt 4))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Test case 5: User-defined func with user-defined arg
+    eval.eval_str("(define (double x) (* x 2))").unwrap();
+    println!("\nTest 5: (my-func (double 1))");
+    let result = eval.eval_str("(my-func (double 1))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+}
+
+#[test]
+fn test_stdlib_nested_inline_debug4() {
+    // Isolate the exact scenario
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a simpler stdlib-like function
+    eval.eval_str("(define (my-inc x) (+ x 1))").unwrap();
+    
+    // Test: Nested function calls with user-defined inner function
+    println!("\nTest 1: (my-func (my-inc 1)) - user-defined inner");
+    eval.eval_str("(define (my-func y) (cons 0 y))").unwrap();
+    let result = eval.eval_str("(my-func (my-inc 1))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Now let's define a function that mimics sqrt behavior
+    // sqrt just returns a float value
+    eval.eval_str("(define (my-sqrt x) (* 1.0 x))").unwrap();
+    
+    println!("\nTest 2: (my-func (my-sqrt 4)) - should return cons but might fail");
+    let result = eval.eval_str("(my-func (my-sqrt 4))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Now with actual stdlib sqrt
+    println!("\nTest 3: (my-func (sqrt 4)) - with stdlib sqrt");
+    let result = eval.eval_str("(my-func (sqrt 4))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Check what sqrt itself returns
+    println!("\nTest 4: Just (sqrt 4)");
+    let result = eval.eval_str("(sqrt 4)").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+    
+    // Test with identity
+    println!("\nTest 5: (my-func (identity 2))");
+    let result = eval.eval_str("(my-func (identity 2))").unwrap();
+    println!("Result = {:?}", lisp.get(result).unwrap());
+}
