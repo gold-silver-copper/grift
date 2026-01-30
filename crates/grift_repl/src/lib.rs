@@ -67,12 +67,12 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Symbol(chars)) => {
             format_symbol(lisp, chars, buf);
         }
-        Ok(Value::Cons(_)) => {
+        Ok(Value::Cons { .. }) => {
             buf.push('(');
             format_list_contents(lisp, idx, buf, depth + 1);
             buf.push(')');
         }
-        Ok(Value::Lambda(_)) => {
+        Ok(Value::Lambda { .. }) => {
             buf.push_str("#<lambda>");
         }
         Ok(Value::Builtin(b)) => {
@@ -85,7 +85,7 @@ fn format_value_impl<const N: usize>(
             buf.push_str(s.name());
             buf.push('>');
         }
-        Ok(Value::Array(_)) => {
+        Ok(Value::Array { .. }) => {
             // Format as R7RS vector literal: #(elem1 elem2 ...)
             buf.push_str("#(");
             let len = lisp.array_len(idx).unwrap_or(0);
@@ -99,7 +99,7 @@ fn format_value_impl<const N: usize>(
             }
             buf.push(')');
         }
-        Ok(Value::String(_)) => {
+        Ok(Value::String { .. }) => {
             // Format string like in many Lisps: "..."
             buf.push('"');
             let len = lisp.string_len(idx).unwrap_or(0);
@@ -116,7 +116,7 @@ fn format_value_impl<const N: usize>(
             }
             buf.push('"');
         }
-        Ok(Value::Native(_)) => {
+        Ok(Value::Native { .. }) => {
             use std::fmt::Write;
             let id = lisp.native_id(idx).unwrap_or(0);
             write!(buf, "#<native:{}>", id).unwrap();
@@ -151,7 +151,7 @@ fn format_list_contents<const N: usize>(
         
         match lisp.get(idx) {
             Ok(Value::Nil) => break,
-            Ok(Value::Cons(_)) => {
+            Ok(Value::Cons { .. }) => {
                 if !first {
                     buf.push(' ');
                 }
@@ -488,7 +488,7 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
     loop {
         match lisp.get(env) {
             Ok(Value::Nil) => return count,
-            Ok(Value::Cons(_)) => {
+            Ok(Value::Cons { .. }) => {
                 count += 1;
                 env = lisp.cdr(env).unwrap_or(ArenaIndex::NIL);
             }

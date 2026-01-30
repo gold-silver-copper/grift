@@ -79,12 +79,12 @@ fn format_value_impl<const N: usize>(lisp: &Lisp<N>, idx: grift::ArenaIndex, buf
             buf.push_str("#\\");
             buf.push(c);
         }
-        Ok(Value::Cons(_)) => {
+        Ok(Value::Cons { .. }) => {
             buf.push('(');
             format_list(lisp, idx, buf, depth + 1);
             buf.push(')');
         }
-        Ok(Value::Lambda(_)) => buf.push_str("#<lambda>"),
+        Ok(Value::Lambda { .. }) => buf.push_str("#<lambda>"),
         Ok(Value::Builtin(b)) => {
             buf.push_str("#<builtin:");
             buf.push_str(b.name());
@@ -104,7 +104,7 @@ fn format_list<const N: usize>(lisp: &Lisp<N>, mut idx: grift::ArenaIndex, buf: 
     loop {
         match lisp.get(idx) {
             Ok(Value::Nil) => break,
-            Ok(Value::Cons(_)) => {
+            Ok(Value::Cons { .. }) => {
                 if !first { buf.push(' '); }
                 first = false;
                 let car = lisp.car(idx).unwrap_or(grift::ArenaIndex::NIL);

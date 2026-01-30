@@ -66,7 +66,7 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
         (Value::Symbol(_), Value::Symbol(_)) => lisp.symbol_eq(a, b).map_err(Into::into),
-        (Value::Cons(_), Value::Cons(_)) => {
+        (Value::Cons { .. }, Value::Cons { .. }) => {
             // Recursively check car and cdr
             let car_a = lisp.car(a)?;
             let cdr_a = lisp.cdr(a)?;
@@ -99,7 +99,7 @@ pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex
         (Value::Symbol(_), Value::Symbol(_)) => {
             lisp.symbol_eq(a, b).map_err(Into::into)
         }
-        (Value::Cons(_), Value::Cons(_)) => {
+        (Value::Cons { .. }, Value::Cons { .. }) => {
             // Recursively compare (limited depth to avoid stack overflow)
             let car_a = lisp.car(a)?;
             let cdr_a = lisp.cdr(a)?;
@@ -121,7 +121,7 @@ pub fn case_matches<const N: usize>(lisp: &Lisp<N>, key: ArenaIndex, datums: Are
     loop {
         match lisp.get(current)? {
             Value::Nil => return Ok(false),
-            Value::Cons(_) => {
+            Value::Cons { .. } => {
                 let datum = lisp.car(current)?;
                 let rest = lisp.cdr(current)?;
                 if values_equal(lisp, key, datum)? {
