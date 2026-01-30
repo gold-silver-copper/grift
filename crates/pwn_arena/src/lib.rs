@@ -10,10 +10,10 @@
 //! - **Fixed-size**: All memory pre-allocated at compile time
 //! - **No-std, no-alloc**: Works in embedded environments with no heap
 //! - **Generic**: Works with any `Copy` type
-//! - **Interior mutability**: Safe concurrent access via `RefCell`
+//! - **Interior mutability**: Safe access via `Cell` (no runtime borrow checking overhead)
 //! - **O(1) allocation**: Free-list based allocation and deallocation
 //! - **Mark-and-sweep GC**: Trait-based garbage collection via [`Trace`]
-//! - **Zero dependencies**: Only uses `core::cell::RefCell`
+//! - **Zero dependencies**: Only uses `core::cell::Cell`
 //!
 //! ## Module Organization
 //!

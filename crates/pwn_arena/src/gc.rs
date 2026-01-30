@@ -50,11 +50,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             *stack_len -= 1;
             let current_idx = mark_stack[*stack_len];
 
-            let slots = self.slots.borrow();
-
-            if let Slot::Occupied { value } = slots[current_idx] {
-                drop(slots);
-
+            if let Slot::Occupied { value } = self.slots[current_idx].get() {
                 // Use iterative batching to process all children
                 // This fixes the overflow bug by continuing to batch until all children are processed
                 loop {
@@ -113,10 +109,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         // Single-pass sweep: iterate once and free immediately
         for idx in 0..N {
-            let should_free = {
-                let slots = self.slots.borrow();
-                matches!(slots[idx], Slot::Occupied { .. }) && !marked[idx]
-            };
+            let should_free = matches!(self.slots[idx].get(), Slot::Occupied { .. }) && !marked[idx];
 
             if should_free {
                 if self.free(ArenaIndex::new(idx)).is_ok() {

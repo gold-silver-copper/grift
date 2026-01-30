@@ -2,7 +2,7 @@
 //!
 //! This module contains the main [`Arena`] struct and its core operations.
 
-use core::cell::RefCell;
+use core::cell::Cell;
 
 use crate::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, ArenaDelete, ArenaCopy};
 use crate::types::{Slot, FREE_LIST_END};
@@ -17,7 +17,7 @@ use crate::iter::ArenaIterator;
 ///
 /// # Memory Layout
 ///
-/// - `slots`: Array of `Slot<T>` (either free with next pointer, or occupied with value)
+/// - `slots`: Array of `Cell<Slot<T>>` (either free with next pointer, or occupied with value)
 /// - `free_head`: Head of the free list
 /// - `len`: Number of currently allocated slots
 /// - `gc_enabled`: Whether garbage collection is enabled
@@ -32,11 +32,17 @@ use crate::iter::ArenaIterator;
 /// The arena supports mark-and-sweep garbage collection via the [`Trace`] trait.
 /// GC can be enabled or disabled at runtime using [`Arena::set_gc_enabled`].
 /// When disabled, [`Arena::collect_garbage`] returns immediately without collecting.
+///
+/// # Performance
+///
+/// Uses `Cell` instead of `RefCell` for interior mutability. This eliminates
+/// runtime borrow checking overhead and the risk of borrow panics, while
+/// still maintaining safe Rust guarantees.
 pub struct Arena<T: Copy, const N: usize> {
-    pub(crate) slots: RefCell<[Slot<T>; N]>,
-    pub(crate) free_head: RefCell<usize>,
-    pub(crate) len: RefCell<usize>,
-    pub(crate) gc_enabled: RefCell<bool>,
+    pub(crate) slots: [Cell<Slot<T>>; N],
+    pub(crate) free_head: Cell<usize>,
+    pub(crate) len: Cell<usize>,
+    pub(crate) gc_enabled: Cell<bool>,
 }
 
 impl<T: Copy, const N: usize> Arena<T, N> {
@@ -54,18 +60,17 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn new(_default_value: T) -> Self {
         // Initialize all slots as free, linked together
         // Slot 0 -> 1 -> 2 -> ... -> N-1 -> FREE_LIST_END
-        let mut slots = [Slot::Free { next_free: FREE_LIST_END }; N];
-        for i in 0..N {
-            slots[i] = Slot::Free {
+        let slots: [Cell<Slot<T>>; N] = core::array::from_fn(|i| {
+            Cell::new(Slot::Free {
                 next_free: if i + 1 < N { i + 1 } else { FREE_LIST_END },
-            };
-        }
+            })
+        });
 
         Arena {
-            slots: RefCell::new(slots),
-            free_head: RefCell::new(if N > 0 { 0 } else { FREE_LIST_END }),
-            len: RefCell::new(0),
-            gc_enabled: RefCell::new(true), // GC enabled by default
+            slots,
+            free_head: Cell::new(if N > 0 { 0 } else { FREE_LIST_END }),
+            len: Cell::new(0),
+            gc_enabled: Cell::new(true), // GC enabled by default
         }
     }
 
@@ -75,7 +80,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// performing any collection.
     #[inline]
     pub fn is_gc_enabled(&self) -> bool {
-        *self.gc_enabled.borrow()
+        self.gc_enabled.get()
     }
 
     /// Enable or disable garbage collection.
@@ -103,7 +108,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```
     #[inline]
     pub fn set_gc_enabled(&self, enabled: bool) {
-        *self.gc_enabled.borrow_mut() = enabled;
+        self.gc_enabled.set(enabled);
     }
 
     /// Temporarily disable GC, run a closure, then restore the previous state.
@@ -158,7 +163,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// Get the number of currently allocated cells.
     #[inline]
     pub fn len(&self) -> usize {
-        *self.len.borrow()
+        self.len.get()
     }
 
     /// Check if the arena is empty (no allocated cells).
@@ -198,29 +203,27 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```
     #[must_use]
     pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
-        let mut free_head = self.free_head.borrow_mut();
+        let free_head = self.free_head.get();
 
         // Check if there's a free slot
-        if *free_head == FREE_LIST_END {
+        if free_head == FREE_LIST_END {
             return Err(ArenaError::OutOfMemory);
         }
 
-        let idx = *free_head;
-        let mut slots = self.slots.borrow_mut();
+        let idx = free_head;
 
         // Pop from free list
-        let next_free = match slots[idx] {
+        let next_free = match self.slots[idx].get() {
             Slot::Free { next_free } => next_free,
             Slot::Occupied { .. } => unreachable!("free_head pointed to occupied slot"),
         };
 
         // Mark as occupied
-        slots[idx] = Slot::Occupied { value };
-        *free_head = next_free;
+        self.slots[idx].set(Slot::Occupied { value });
+        self.free_head.set(next_free);
 
         // Increment allocated count
-        drop(slots);
-        *self.len.borrow_mut() += 1;
+        self.len.set(self.len.get() + 1);
 
         Ok(ArenaIndex::new(idx))
     }
@@ -245,7 +248,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let idx = self.check_bounds(index)?;
 
         // Check if slot is occupied
-        match self.slots.borrow()[idx] {
+        match self.slots[idx].get() {
             Slot::Occupied { .. } => Ok(idx),
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
         }
@@ -261,8 +264,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
         let idx = self.check_bounds(index)?;
 
-        // Check if slot is occupied and get value in one borrow
-        match self.slots.borrow()[idx] {
+        // Check if slot is occupied and get value
+        match self.slots[idx].get() {
             Slot::Occupied { value } => Ok(value),
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
         }
@@ -277,13 +280,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
-        self.slots.borrow_mut()[idx] = Slot::Occupied { value };
+        self.slots[idx].set(Slot::Occupied { value });
         Ok(())
     }
 
     /// Modify a value in place using a closure.
     ///
-    /// This is more efficient than `get` + `set` as it avoids copying the value twice.
+    /// With Cell-based storage, this is implemented as get + modify + set.
     ///
     /// # Errors
     ///
@@ -307,9 +310,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     {
         let idx = self.validate_index(index)?;
 
-        let mut slots = self.slots.borrow_mut();
-        if let Slot::Occupied { ref mut value } = slots[idx] {
-            f(value);
+        if let Slot::Occupied { mut value } = self.slots[idx].get() {
+            f(&mut value);
+            self.slots[idx].set(Slot::Occupied { value });
             Ok(())
         } else {
             Err(ArenaError::InvalidIndex)
@@ -327,300 +330,287 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
     
     // ========================================================================
-    // Batch read operations (single borrow for multiple contiguous values)
+    // Batch read operations for contiguous values
     // ========================================================================
     
-    /// Get 2 contiguous values with a single RefCell borrow.
-    /// Much faster than calling get() twice.
+    /// Get 2 contiguous values.
     #[inline]
     pub fn get_contiguous2(&self, start: ArenaIndex) -> ArenaResult<(T, T)> {
         let idx = start.raw();
         if idx + 1 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let slots = self.slots.borrow();
-        let a = match slots[idx] {
+        let a = match self.slots[idx].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let b = match slots[idx + 1] {
+        let b = match self.slots[idx + 1].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
         Ok((a, b))
     }
     
-    /// Get 3 contiguous values with a single RefCell borrow.
+    /// Get 3 contiguous values.
     #[inline]
     pub fn get_contiguous3(&self, start: ArenaIndex) -> ArenaResult<(T, T, T)> {
         let idx = start.raw();
         if idx + 2 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let slots = self.slots.borrow();
-        let a = match slots[idx] {
+        let a = match self.slots[idx].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let b = match slots[idx + 1] {
+        let b = match self.slots[idx + 1].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let c = match slots[idx + 2] {
+        let c = match self.slots[idx + 2].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
         Ok((a, b, c))
     }
     
-    /// Get 4 contiguous values with a single RefCell borrow.
+    /// Get 4 contiguous values.
     #[inline]
     pub fn get_contiguous4(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T)> {
         let idx = start.raw();
         if idx + 3 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let slots = self.slots.borrow();
-        let a = match slots[idx] {
+        let a = match self.slots[idx].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let b = match slots[idx + 1] {
+        let b = match self.slots[idx + 1].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let c = match slots[idx + 2] {
+        let c = match self.slots[idx + 2].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let d = match slots[idx + 3] {
+        let d = match self.slots[idx + 3].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
         Ok((a, b, c, d))
     }
     
-    /// Get 5 contiguous values with a single RefCell borrow.
+    /// Get 5 contiguous values.
     #[inline]
     pub fn get_contiguous5(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T, T)> {
         let idx = start.raw();
         if idx + 4 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let slots = self.slots.borrow();
-        let a = match slots[idx] {
+        let a = match self.slots[idx].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let b = match slots[idx + 1] {
+        let b = match self.slots[idx + 1].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let c = match slots[idx + 2] {
+        let c = match self.slots[idx + 2].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let d = match slots[idx + 3] {
+        let d = match self.slots[idx + 3].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let e = match slots[idx + 4] {
+        let e = match self.slots[idx + 4].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
         Ok((a, b, c, d, e))
     }
     
-    /// Get 6 contiguous values with a single RefCell borrow.
+    /// Get 6 contiguous values.
     #[inline]
     pub fn get_contiguous6(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T, T, T)> {
         let idx = start.raw();
         if idx + 5 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let slots = self.slots.borrow();
-        let a = match slots[idx] {
+        let a = match self.slots[idx].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let b = match slots[idx + 1] {
+        let b = match self.slots[idx + 1].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let c = match slots[idx + 2] {
+        let c = match self.slots[idx + 2].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let d = match slots[idx + 3] {
+        let d = match self.slots[idx + 3].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let e = match slots[idx + 4] {
+        let e = match self.slots[idx + 4].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let f = match slots[idx + 5] {
+        let f = match self.slots[idx + 5].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
         Ok((a, b, c, d, e, f))
     }
     
-    /// Get 7 contiguous values with a single RefCell borrow.
+    /// Get 7 contiguous values.
     #[inline]
     pub fn get_contiguous7(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T, T, T, T)> {
         let idx = start.raw();
         if idx + 6 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let slots = self.slots.borrow();
-        let a = match slots[idx] {
+        let a = match self.slots[idx].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let b = match slots[idx + 1] {
+        let b = match self.slots[idx + 1].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let c = match slots[idx + 2] {
+        let c = match self.slots[idx + 2].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let d = match slots[idx + 3] {
+        let d = match self.slots[idx + 3].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let e = match slots[idx + 4] {
+        let e = match self.slots[idx + 4].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let f = match slots[idx + 5] {
+        let f = match self.slots[idx + 5].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
-        let g = match slots[idx + 6] {
+        let g = match self.slots[idx + 6].get() {
             Slot::Occupied { value } => value,
             Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
         };
         Ok((a, b, c, d, e, f, g))
     }
     
-    /// Set 2 contiguous values with a single RefCell borrow.
+    /// Set 2 contiguous values.
     #[inline]
     pub fn set_contiguous2(&self, start: ArenaIndex, a: T, b: T) -> ArenaResult<()> {
         let idx = start.raw();
         if idx + 1 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let mut slots = self.slots.borrow_mut();
         // Verify both are occupied first
-        match (&slots[idx], &slots[idx + 1]) {
+        match (self.slots[idx].get(), self.slots[idx + 1].get()) {
             (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
             _ => return Err(ArenaError::InvalidIndex),
         }
-        slots[idx] = Slot::Occupied { value: a };
-        slots[idx + 1] = Slot::Occupied { value: b };
+        self.slots[idx].set(Slot::Occupied { value: a });
+        self.slots[idx + 1].set(Slot::Occupied { value: b });
         Ok(())
     }
     
-    /// Set 3 contiguous values with a single RefCell borrow.
+    /// Set 3 contiguous values.
     #[inline]
     pub fn set_contiguous3(&self, start: ArenaIndex, a: T, b: T, c: T) -> ArenaResult<()> {
         let idx = start.raw();
         if idx + 2 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let mut slots = self.slots.borrow_mut();
-        match (&slots[idx], &slots[idx + 1], &slots[idx + 2]) {
+        match (self.slots[idx].get(), self.slots[idx + 1].get(), self.slots[idx + 2].get()) {
             (Slot::Occupied { .. }, Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
             _ => return Err(ArenaError::InvalidIndex),
         }
-        slots[idx] = Slot::Occupied { value: a };
-        slots[idx + 1] = Slot::Occupied { value: b };
-        slots[idx + 2] = Slot::Occupied { value: c };
+        self.slots[idx].set(Slot::Occupied { value: a });
+        self.slots[idx + 1].set(Slot::Occupied { value: b });
+        self.slots[idx + 2].set(Slot::Occupied { value: c });
         Ok(())
     }
     
-    /// Set 4 contiguous values with a single RefCell borrow.
+    /// Set 4 contiguous values.
     #[inline]
     pub fn set_contiguous4(&self, start: ArenaIndex, a: T, b: T, c: T, d: T) -> ArenaResult<()> {
         let idx = start.raw();
         if idx + 3 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let mut slots = self.slots.borrow_mut();
-        match (&slots[idx], &slots[idx + 1], &slots[idx + 2], &slots[idx + 3]) {
+        match (self.slots[idx].get(), self.slots[idx + 1].get(), self.slots[idx + 2].get(), self.slots[idx + 3].get()) {
             (Slot::Occupied { .. }, Slot::Occupied { .. }, Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
             _ => return Err(ArenaError::InvalidIndex),
         }
-        slots[idx] = Slot::Occupied { value: a };
-        slots[idx + 1] = Slot::Occupied { value: b };
-        slots[idx + 2] = Slot::Occupied { value: c };
-        slots[idx + 3] = Slot::Occupied { value: d };
+        self.slots[idx].set(Slot::Occupied { value: a });
+        self.slots[idx + 1].set(Slot::Occupied { value: b });
+        self.slots[idx + 2].set(Slot::Occupied { value: c });
+        self.slots[idx + 3].set(Slot::Occupied { value: d });
         Ok(())
     }
     
-    /// Set 5 contiguous values with a single RefCell borrow.
+    /// Set 5 contiguous values.
     #[inline]
     pub fn set_contiguous5(&self, start: ArenaIndex, a: T, b: T, c: T, d: T, e: T) -> ArenaResult<()> {
         let idx = start.raw();
         if idx + 4 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let mut slots = self.slots.borrow_mut();
         // For 5+ we just check the first and last
-        match (&slots[idx], &slots[idx + 4]) {
+        match (self.slots[idx].get(), self.slots[idx + 4].get()) {
             (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
             _ => return Err(ArenaError::InvalidIndex),
         }
-        slots[idx] = Slot::Occupied { value: a };
-        slots[idx + 1] = Slot::Occupied { value: b };
-        slots[idx + 2] = Slot::Occupied { value: c };
-        slots[idx + 3] = Slot::Occupied { value: d };
-        slots[idx + 4] = Slot::Occupied { value: e };
+        self.slots[idx].set(Slot::Occupied { value: a });
+        self.slots[idx + 1].set(Slot::Occupied { value: b });
+        self.slots[idx + 2].set(Slot::Occupied { value: c });
+        self.slots[idx + 3].set(Slot::Occupied { value: d });
+        self.slots[idx + 4].set(Slot::Occupied { value: e });
         Ok(())
     }
     
-    /// Set 6 contiguous values with a single RefCell borrow.
+    /// Set 6 contiguous values.
     #[inline]
     pub fn set_contiguous6(&self, start: ArenaIndex, a: T, b: T, c: T, d: T, e: T, f: T) -> ArenaResult<()> {
         let idx = start.raw();
         if idx + 5 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let mut slots = self.slots.borrow_mut();
-        match (&slots[idx], &slots[idx + 5]) {
+        match (self.slots[idx].get(), self.slots[idx + 5].get()) {
             (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
             _ => return Err(ArenaError::InvalidIndex),
         }
-        slots[idx] = Slot::Occupied { value: a };
-        slots[idx + 1] = Slot::Occupied { value: b };
-        slots[idx + 2] = Slot::Occupied { value: c };
-        slots[idx + 3] = Slot::Occupied { value: d };
-        slots[idx + 4] = Slot::Occupied { value: e };
-        slots[idx + 5] = Slot::Occupied { value: f };
+        self.slots[idx].set(Slot::Occupied { value: a });
+        self.slots[idx + 1].set(Slot::Occupied { value: b });
+        self.slots[idx + 2].set(Slot::Occupied { value: c });
+        self.slots[idx + 3].set(Slot::Occupied { value: d });
+        self.slots[idx + 4].set(Slot::Occupied { value: e });
+        self.slots[idx + 5].set(Slot::Occupied { value: f });
         Ok(())
     }
     
-    /// Set 7 contiguous values with a single RefCell borrow.
+    /// Set 7 contiguous values.
     #[inline]
     pub fn set_contiguous7(&self, start: ArenaIndex, a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> ArenaResult<()> {
         let idx = start.raw();
         if idx + 6 >= N {
             return Err(ArenaError::InvalidIndex);
         }
-        let mut slots = self.slots.borrow_mut();
-        match (&slots[idx], &slots[idx + 6]) {
+        match (self.slots[idx].get(), self.slots[idx + 6].get()) {
             (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
             _ => return Err(ArenaError::InvalidIndex),
         }
-        slots[idx] = Slot::Occupied { value: a };
-        slots[idx + 1] = Slot::Occupied { value: b };
-        slots[idx + 2] = Slot::Occupied { value: c };
-        slots[idx + 3] = Slot::Occupied { value: d };
-        slots[idx + 4] = Slot::Occupied { value: e };
-        slots[idx + 5] = Slot::Occupied { value: f };
-        slots[idx + 6] = Slot::Occupied { value: g };
+        self.slots[idx].set(Slot::Occupied { value: a });
+        self.slots[idx + 1].set(Slot::Occupied { value: b });
+        self.slots[idx + 2].set(Slot::Occupied { value: c });
+        self.slots[idx + 3].set(Slot::Occupied { value: d });
+        self.slots[idx + 4].set(Slot::Occupied { value: e });
+        self.slots[idx + 5].set(Slot::Occupied { value: f });
+        self.slots[idx + 6].set(Slot::Occupied { value: g });
         Ok(())
     }
 
@@ -637,15 +627,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             return Ok(()); // Same slot, nothing to do
         }
 
-        let mut slots = self.slots.borrow_mut();
-
-        let (val_a, val_b) = match (&slots[idx_a], &slots[idx_b]) {
-            (Slot::Occupied { value: va }, Slot::Occupied { value: vb }) => (*va, *vb),
+        let (val_a, val_b) = match (self.slots[idx_a].get(), self.slots[idx_b].get()) {
+            (Slot::Occupied { value: va }, Slot::Occupied { value: vb }) => (va, vb),
             _ => return Err(ArenaError::InvalidIndex),
         };
 
-        slots[idx_a] = Slot::Occupied { value: val_b };
-        slots[idx_b] = Slot::Occupied { value: val_a };
+        self.slots[idx_a].set(Slot::Occupied { value: val_b });
+        self.slots[idx_b].set(Slot::Occupied { value: val_a });
 
         Ok(())
     }
@@ -658,10 +646,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn replace(&self, index: ArenaIndex, value: T) -> ArenaResult<T> {
         let idx = self.validate_index(index)?;
 
-        let mut slots = self.slots.borrow_mut();
-        match slots[idx] {
+        match self.slots[idx].get() {
             Slot::Occupied { value: old } => {
-                slots[idx] = Slot::Occupied { value };
+                self.slots[idx].set(Slot::Occupied { value });
                 Ok(old)
             }
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
@@ -689,12 +676,12 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let idx = self.validate_index(index)?;
 
         // Push onto free list
-        let mut free_head = self.free_head.borrow_mut();
-        self.slots.borrow_mut()[idx] = Slot::Free { next_free: *free_head };
-        *free_head = idx;
+        let free_head = self.free_head.get();
+        self.slots[idx].set(Slot::Free { next_free: free_head });
+        self.free_head.set(idx);
 
         // Decrement allocated count
-        *self.len.borrow_mut() -= 1;
+        self.len.set(self.len.get() - 1);
 
         Ok(())
     }
@@ -712,15 +699,14 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// This does not call any destructors. Use with caution.
     pub fn clear(&self) {
         // Rebuild free list
-        let mut slots = self.slots.borrow_mut();
         for i in 0..N {
-            slots[i] = Slot::Free {
+            self.slots[i].set(Slot::Free {
                 next_free: if i + 1 < N { i + 1 } else { FREE_LIST_END },
-            };
+            });
         }
 
-        *self.free_head.borrow_mut() = if N > 0 { 0 } else { FREE_LIST_END };
-        *self.len.borrow_mut() = 0;
+        self.free_head.set(if N > 0 { 0 } else { FREE_LIST_END });
+        self.len.set(0);
     }
 
     /// Iterate over all allocated indices and values.
@@ -758,12 +744,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     fn calculate_fragmentation(&self) -> f32 {
-        let slots = self.slots.borrow();
         let mut fragments = 0;
         let mut in_free = false;
 
-        for slot in slots.iter() {
-            match slot {
+        for i in 0..N {
+            match self.slots[i].get() {
                 Slot::Free { .. } => {
                     if !in_free {
                         fragments += 1;
@@ -793,12 +778,16 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// - Slot count matches `len`
     /// - All free slots are in the free list
     pub fn validate(&self) -> bool {
-        let slots = self.slots.borrow();
-        let free_head = *self.free_head.borrow();
-        let len = *self.len.borrow();
+        let free_head = self.free_head.get();
+        let len = self.len.get();
 
         // Count occupied slots
-        let occupied_count = slots.iter().filter(|s| matches!(s, Slot::Occupied { .. })).count();
+        let mut occupied_count = 0;
+        for i in 0..N {
+            if matches!(self.slots[i].get(), Slot::Occupied { .. }) {
+                occupied_count += 1;
+            }
+        }
         if occupied_count != len {
             return false;
         }
@@ -817,7 +806,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             }
             visited[current] = true;
 
-            match slots[current] {
+            match self.slots[current].get() {
                 Slot::Free { next_free } => {
                     free_count += 1;
                     current = next_free;
@@ -834,8 +823,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
 
         // Check all free slots are in the free list
-        for (i, slot) in slots.iter().enumerate() {
-            if matches!(slot, Slot::Free { .. }) && !visited[i] {
+        for i in 0..N {
+            if matches!(self.slots[i].get(), Slot::Free { .. }) && !visited[i] {
                 return false; // Free slot not in free list
             }
         }
@@ -850,7 +839,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         if slot_index >= N {
             return false;
         }
-        matches!(self.slots.borrow()[slot_index], Slot::Occupied { .. })
+        matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
     }
 
     /// Get indices of all allocated slots.
@@ -861,10 +850,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let mut result = [ArenaIndex::NIL; N];
         let mut count = 0;
 
-        let slots = self.slots.borrow();
-
-        for (idx, slot) in slots.iter().enumerate() {
-            if let Slot::Occupied { .. } = slot {
+        for idx in 0..N {
+            if let Slot::Occupied { .. } = self.slots[idx].get() {
                 result[count] = ArenaIndex::new(idx);
                 count += 1;
             }
@@ -875,16 +862,14 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
     /// Apply a function to all allocated values.
     ///
-    /// This is useful for bulk updates without the overhead of iteration.
+    /// This is useful for bulk reads without the overhead of iteration.
     pub fn for_each<F>(&self, mut f: F)
     where
         F: FnMut(ArenaIndex, &T),
     {
-        let slots = self.slots.borrow();
-
-        for (idx, slot) in slots.iter().enumerate() {
-            if let Slot::Occupied { value } = slot {
-                f(ArenaIndex::new(idx), value);
+        for idx in 0..N {
+            if let Slot::Occupied { value } = self.slots[idx].get() {
+                f(ArenaIndex::new(idx), &value);
             }
         }
     }
@@ -894,11 +879,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnMut(ArenaIndex, &mut T),
     {
-        let mut slots = self.slots.borrow_mut();
-
-        for (idx, slot) in slots.iter_mut().enumerate() {
-            if let Slot::Occupied { value } = slot {
-                f(ArenaIndex::new(idx), value);
+        for idx in 0..N {
+            if let Slot::Occupied { mut value } = self.slots[idx].get() {
+                f(ArenaIndex::new(idx), &mut value);
+                self.slots[idx].set(Slot::Occupied { value });
             }
         }
     }
@@ -908,17 +892,15 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        let slots = self.slots.borrow();
-        slots
-            .iter()
-            .filter(|slot| {
-                if let Slot::Occupied { value } = slot {
-                    predicate(value)
-                } else {
-                    false
+        let mut count = 0;
+        for i in 0..N {
+            if let Slot::Occupied { value } = self.slots[i].get() {
+                if predicate(&value) {
+                    count += 1;
                 }
-            })
-            .count()
+            }
+        }
+        count
     }
 
     /// Find the first value matching a predicate.
@@ -926,12 +908,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        let slots = self.slots.borrow();
-
-        for (idx, slot) in slots.iter().enumerate() {
-            if let Slot::Occupied { value } = slot {
-                if predicate(value) {
-                    return Some((ArenaIndex::new(idx), *value));
+        for idx in 0..N {
+            if let Slot::Occupied { value } = self.slots[idx].get() {
+                if predicate(&value) {
+                    return Some((ArenaIndex::new(idx), value));
                 }
             }
         }
@@ -954,11 +934,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        let slots = self.slots.borrow();
-
-        for slot in slots.iter() {
-            if let Slot::Occupied { value } = slot {
-                if !predicate(value) {
+        for i in 0..N {
+            if let Slot::Occupied { value } = self.slots[i].get() {
+                if !predicate(&value) {
                     return false;
                 }
             }
@@ -984,12 +962,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             return None;
         }
 
-        let slots = self.slots.borrow();
         let mut consecutive = 0;
         let mut start = 0;
 
         for i in 0..N {
-            match slots[i] {
+            match self.slots[i].get() {
                 Slot::Free { .. } => {
                     if consecutive == 0 {
                         start = i;
@@ -1013,25 +990,24 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// This is a helper for contiguous allocation that removes a specific
     /// slot index from the free list by updating the linked list.
     fn remove_from_free_list(&self, slot_idx: usize) {
-        let mut free_head = self.free_head.borrow_mut();
-        let mut slots = self.slots.borrow_mut();
+        let free_head = self.free_head.get();
 
         // If the slot to remove is the head of the free list
-        if *free_head == slot_idx {
-            if let Slot::Free { next_free } = slots[slot_idx] {
-                *free_head = next_free;
+        if free_head == slot_idx {
+            if let Slot::Free { next_free } = self.slots[slot_idx].get() {
+                self.free_head.set(next_free);
             }
             return;
         }
 
         // Otherwise, search for the slot in the free list
-        let mut current = *free_head;
+        let mut current = free_head;
         while current != FREE_LIST_END {
-            if let Slot::Free { next_free } = slots[current] {
+            if let Slot::Free { next_free } = self.slots[current].get() {
                 if next_free == slot_idx {
                     // Found it! Update the previous slot to skip this one
-                    if let Slot::Free { next_free: removed_next } = slots[slot_idx] {
-                        slots[current] = Slot::Free { next_free: removed_next };
+                    if let Slot::Free { next_free: removed_next } = self.slots[slot_idx].get() {
+                        self.slots[current].set(Slot::Free { next_free: removed_next });
                     }
                     return;
                 }
@@ -1086,11 +1062,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         for i in 0..count {
             let idx = start_idx + i;
             self.remove_from_free_list(idx);
-            self.slots.borrow_mut()[idx] = Slot::Occupied { value: default };
+            self.slots[idx].set(Slot::Occupied { value: default });
         }
 
         // Update length
-        *self.len.borrow_mut() += count;
+        self.len.set(self.len.get() + count);
 
         Ok(ArenaIndex::new(start_idx))
     }
@@ -1126,7 +1102,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let index = ArenaIndex::new(new_idx);
         
         // Verify the slot is actually occupied
-        match self.slots.borrow()[new_idx] {
+        match self.slots[new_idx].get() {
             Slot::Occupied { .. } => Ok(index),
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
         }
@@ -1170,31 +1146,30 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             }
             
             // Check that slot is occupied
-            match self.slots.borrow()[idx] {
+            match self.slots[idx].get() {
                 Slot::Occupied { .. } => {}
                 Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
             }
         }
 
         // Free all slots and add to free list
-        let mut free_head = self.free_head.borrow_mut();
-        let mut slots = self.slots.borrow_mut();
+        let free_head = self.free_head.get();
 
         // Link freed slots together, then link to free_head
         // Process in reverse so the slots end up in order in the free list
         for i in (0..count).rev() {
             let idx = start_idx + i;
-            slots[idx] = Slot::Free {
+            self.slots[idx].set(Slot::Free {
                 next_free: if i == count - 1 {
-                    *free_head
+                    free_head
                 } else {
                     start_idx + i + 1
                 },
-            };
+            });
         }
 
-        *free_head = start_idx;
-        *self.len.borrow_mut() -= count;
+        self.free_head.set(start_idx);
+        self.len.set(self.len.get() - count);
 
         Ok(())
     }
