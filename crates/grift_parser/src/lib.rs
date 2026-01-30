@@ -30,11 +30,13 @@
 //!
 //! ## Reserved Slots
 //!
-//! The first 4 slots of the arena are reserved:
-//! - Slot 0: `Value::Nil` - the empty list singleton
-//! - Slot 1: `Value::True` - boolean true singleton
-//! - Slot 2: `Value::False` - boolean false singleton
-//! - Slot 3: `Value::Cons` - intern table reference cell
+//! The Lisp nil value is represented by `ArenaIndex::NIL` (usize::MAX), which
+//! is not an actual arena slot. `get(ArenaIndex::NIL)` returns `Value::Nil` directly.
+//!
+//! The first 3 slots of the arena are reserved:
+//! - Slot 0: `Value::True` - boolean true singleton
+//! - Slot 1: `Value::False` - boolean false singleton
+//! - Slot 2: `Value::Cons` - intern table reference cell
 //!
 //! ## Pitfalls and Gotchas
 //!

@@ -12,16 +12,21 @@ use crate::value::{Value, Builtin, StdLib};
 
 /// A Lisp execution context wrapping an arena
 /// 
+/// ## Nil Value
+/// 
+/// The Lisp nil value (`Value::Nil`) is represented by `ArenaIndex::NIL` (usize::MAX).
+/// This sentinel value is not an actual arena slot - `get(ArenaIndex::NIL)` returns
+/// `Value::Nil` directly. This saves one arena slot and simplifies the design.
+/// 
 /// ## Reserved Slots
 /// 
-/// The first 4 slots of the arena are reserved for singleton values:
-/// - Slot 0: `Value::Nil` - the empty list
-/// - Slot 1: `Value::True` - boolean true (#t)
-/// - Slot 2: `Value::False` - boolean false (#f)
-/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
+/// The first 3 slots of the arena are reserved for singleton values:
+/// - Slot 0: `Value::True` - boolean true (#t)
+/// - Slot 1: `Value::False` - boolean false (#f)
+/// - Slot 2: `Value::Cons` - intern table reference cell (car = intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
-/// constants from `nil()`, `true_val()`, and `false_val()`. This optimization
+/// constants from `true_val()` and `false_val()`. This optimization
 /// avoids allocating new slots for these frequently-used values.
 /// 
 /// ## Symbol Interning
@@ -34,58 +39,55 @@ use crate::value::{Value, Builtin, StdLib};
 /// This ensures that the same symbol name always returns the same index.
 pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
-    /// Pre-allocated Nil slot (always slot 0)
-    nil_slot: ArenaIndex,
-    /// Pre-allocated True slot (always slot 1)
+    /// Pre-allocated True slot (always slot 0)
     true_slot: ArenaIndex,
-    /// Pre-allocated False slot (always slot 2)
+    /// Pre-allocated False slot (always slot 1)
     false_slot: ArenaIndex,
-    /// Intern table reference cell (always slot 3)
+    /// Intern table reference cell (always slot 2)
     /// This is a cons cell where car = intern table root (alist)
     /// Using a cons cell avoids needing RefCell for interior mutability
     intern_table_slot: ArenaIndex,
 }
 
-/// Number of reserved slots in the arena (nil, true, false, intern_table_ref)
-pub const RESERVED_SLOTS: usize = 4;
+/// Number of reserved slots in the arena (true, false, intern_table_ref)
+pub const RESERVED_SLOTS: usize = 3;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
-    /// Pre-allocates reserved slots for Nil, True, False, and intern table ref cell.
-    /// These slots (0, 1, 2, 3) are never freed and are returned as constants
-    /// from `nil()`, `true_val()`, and `false_val()`.
+    /// Pre-allocates reserved slots for True, False, and intern table ref cell.
+    /// These slots (0, 1, 2) are never freed and are returned as constants
+    /// from `true_val()` and `false_val()`.
     /// 
+    /// Nil is represented by `ArenaIndex::NIL` and doesn't use an arena slot.
     /// The intern table is initialized to nil (empty alist).
     /// 
     /// # Panics
     /// 
-    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 4 slots
+    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 3 slots
     /// for the reserved singleton values and intern table reference cell.
     pub fn new() -> Self {
         const { assert!(N >= RESERVED_SLOTS, "Lisp arena must have capacity >= RESERVED_SLOTS for reserved slots") };
         
         let arena = Arena::new(Value::Nil);
         
-        // Pre-allocate reserved slots in order: Nil, True, False, InternTableRef
-        // These will be slots 0, 1, 2, 3 respectively
-        let nil_slot = arena.alloc(Value::Nil)
-            .expect("Failed to pre-allocate reserved Nil slot during Lisp initialization");
+        // Pre-allocate reserved slots in order: True, False, InternTableRef
+        // These will be slots 0, 1, 2 respectively
+        // Nil is represented by ArenaIndex::NIL (usize::MAX) and doesn't need a slot
         let true_slot = arena.alloc(Value::True)
             .expect("Failed to pre-allocate reserved True slot during Lisp initialization");
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
         
-        // Pre-allocate intern table reference cell (slot 3)
+        // Pre-allocate intern table reference cell (slot 2)
         // This is a cons cell where car = intern table root (initially nil)
         // Using a cons cell as a "reference cell" allows updating via set()
         // instead of requiring RefCell for interior mutability
-        let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
+        let intern_table_slot = arena.alloc(Value::Cons { car: ArenaIndex::NIL, cdr: ArenaIndex::NIL })
             .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
         
         Lisp {
             arena,
-            nil_slot,
             true_slot,
             false_slot,
             intern_table_slot,
@@ -103,10 +105,16 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(value)
     }
     
-    /// Get a value
+    /// Get a value from the arena by index
+    /// 
+    /// Special case: `ArenaIndex::NIL` returns `Value::Nil` without arena access.
     #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<Value> {
-        self.arena.get(index)
+        if index.is_null() {
+            Ok(Value::Nil)
+        } else {
+            self.arena.get(index)
+        }
     }
     
     /// Set a value
@@ -123,18 +131,18 @@ impl<const N: usize> Lisp<N> {
         self.arena.index_at_offset(base, offset)
     }
     
-    /// Get the pre-allocated Nil singleton (empty list)
+    /// Get the Nil singleton (empty list)
     /// 
-    /// This returns the reserved slot 0 which always contains `Value::Nil`.
-    /// No allocation is performed.
+    /// Returns `ArenaIndex::NIL` which represents `Value::Nil`.
+    /// No arena slot is used - `get(ArenaIndex::NIL)` returns `Value::Nil` directly.
     #[inline]
     pub fn nil(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.nil_slot)
+        Ok(ArenaIndex::NIL)
     }
     
     /// Get the pre-allocated True singleton (#t)
     /// 
-    /// This returns the reserved slot 1 which always contains `Value::True`.
+    /// This returns the reserved slot 0 which always contains `Value::True`.
     /// No allocation is performed.
     #[inline]
     pub fn true_val(&self) -> ArenaResult<ArenaIndex> {
@@ -143,7 +151,7 @@ impl<const N: usize> Lisp<N> {
     
     /// Get the pre-allocated False singleton (#f)
     /// 
-    /// This returns the reserved slot 2 which always contains `Value::False`.
+    /// This returns the reserved slot 1 which always contains `Value::False`.
     /// No allocation is performed.
     #[inline]
     pub fn false_val(&self) -> ArenaResult<ArenaIndex> {
@@ -261,7 +269,7 @@ impl<const N: usize> Lisp<N> {
     
     /// Set the intern table root (update the car of the reference cell)
     fn set_intern_table_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
-        self.set(self.intern_table_slot, Value::Cons { car: new_root, cdr: self.nil_slot })
+        self.set(self.intern_table_slot, Value::Cons { car: new_root, cdr: ArenaIndex::NIL })
     }
     
     /// Look up a string in the intern table
@@ -539,9 +547,8 @@ impl<const N: usize> Lisp<N> {
         let mut root_count = 0;
         
         // Add reserved slots as roots to prevent them from being collected
-        // These slots (nil, true, false) must always be preserved
-        all_roots[root_count] = self.nil_slot;
-        root_count += 1;
+        // These slots (true, false) must always be preserved
+        // Note: nil is ArenaIndex::NIL (not an arena slot), so no root needed
         all_roots[root_count] = self.true_slot;
         root_count += 1;
         all_roots[root_count] = self.false_slot;
@@ -872,7 +879,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Allocate contiguous block: 1 slot for length + len slots for elements
-        let default_val = self.arena.get(default)?;
+        let default_val = self.get(default)?;
         let data = self.arena.alloc_contiguous(1 + len, default_val)?;
         
         // Store length at data[0]
@@ -961,7 +968,7 @@ impl<const N: usize> Lisp<N> {
                 }
                 // Elements start at data+1
                 let elem_slot = self.arena.index_at_offset(data, 1 + index)?;
-                let val = self.arena.get(value)?;
+                let val = self.get(value)?;
                 self.arena.set(elem_slot, val)
             }
             _ => Err(ArenaError::InvalidIndex),

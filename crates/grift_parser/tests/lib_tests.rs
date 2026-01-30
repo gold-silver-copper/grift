@@ -46,28 +46,31 @@ fn test_reserved_slots_have_correct_values() {
 }
 
 #[test]
-fn test_reserved_slots_occupy_first_three_slots() {
+fn test_reserved_slots_occupy_first_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // Reserved slots should be the first 4 slots (nil, true, false, intern_table_ref)
-    assert_eq!(lisp.nil().unwrap().raw(), 0);
-    assert_eq!(lisp.true_val().unwrap().raw(), 1);
-    assert_eq!(lisp.false_val().unwrap().raw(), 2);
+    // Nil is ArenaIndex::NIL (usize::MAX), not an arena slot
+    assert!(lisp.nil().unwrap().is_null());
+    assert_eq!(lisp.nil().unwrap().raw(), usize::MAX);
+    
+    // Reserved slots: 0=true, 1=false, 2=intern_table_ref
+    assert_eq!(lisp.true_val().unwrap().raw(), 0);
+    assert_eq!(lisp.false_val().unwrap().raw(), 1);
 }
 
 #[test]
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // After creating the Lisp context, 4 slots should be used
-    // (nil, true, false, intern_table_ref)
-    assert_eq!(lisp.arena().len(), 4);
+    // After creating the Lisp context, 3 slots should be used
+    // (true, false, intern_table_ref) - nil is ArenaIndex::NIL, not a slot
+    assert_eq!(lisp.arena().len(), 3);
     
     // Calling nil/true_val/false_val should NOT increase allocation count
     let _ = lisp.nil();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 4);
+    assert_eq!(lisp.arena().len(), 3);
     
     // Calling many times should not increase count
     for _ in 0..100 {
@@ -75,7 +78,7 @@ fn test_reserved_slots_not_reallocated() {
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 4);
+    assert_eq!(lisp.arena().len(), 3);
 }
 
 #[test]
@@ -120,14 +123,15 @@ fn test_reserved_slots_survive_gc() {
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // First regular allocation should be at slot 4 (after reserved 0, 1, 2, 3)
-    // Slots: 0=nil, 1=true, 2=false, 3=intern_table_ref
+    // First regular allocation should be at slot 3 (after reserved 0, 1, 2)
+    // Slots: 0=true, 1=false, 2=intern_table_ref
+    // (nil is ArenaIndex::NIL, not a slot)
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 4);
+    assert_eq!(num.raw(), 3);
     
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 5);
+    assert_eq!(num2.raw(), 4);
 }
 
 // ========================================================================
