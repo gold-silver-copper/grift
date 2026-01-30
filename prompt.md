@@ -12,4 +12,15 @@ I believe that much of the documentation of the README the architecture document
 
 macro replacement
 
+I have removed most math functions that used to exist in my scheme because they were poorly implemented. If you need any math functions to test, reimplement them in stdlib.scm
 
+Please improve and optimize the function of the evaluator, the enviornment, and of continuations in my lisp.
+
+The following tests fails when ran without release mode: thread 'test_nested_stdlib_calls' (38627484) has overflowed its stack
+
+Even with small saved arrays, each call to eval_preserving_stack adds a new call frame on the Rust stack. For deeply nested stdlib calls (like sqrt which calls sqrt-iter multiple times), this creates many nested calls.
+
+The proper solution would be to convert let and similar constructs to use continuations instead of synchronous calls.
+
+
+All possible things that can be stored inside the arena, should be stored inside the arena.
