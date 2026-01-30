@@ -1,59 +1,8 @@
 //! Math and utility helper functions for evaluation.
 
-use grift_parser::{ArenaIndex, ArenaResult, Lisp, Value};
-use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::num::{Num, fract_f64, abs_f64};
-
-// ============================================================================
-// Numeric Helper Methods for Evaluator
-// ============================================================================
-
-/// Get number from already-evaluated value as a Num
-pub fn get_num<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex, call_expr: ArenaIndex, 
-    make_type_error: impl FnOnce(&'static str, &'static str) -> EvalError
-) -> Result<Num, EvalError> {
-    match lisp.get(idx)? {
-        Value::Number(n) => Ok(Num::Int(n)),
-        Value::Float(f) => Ok(Num::Float(f)),
-        v => Err(make_type_error("number", v.type_name())),
-    }
-}
-
-/// Get integer from already-evaluated value (for operations that require integers)
-pub fn get_int<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex, call_expr: ArenaIndex,
-    make_type_error: impl FnOnce(&'static str, &'static str) -> EvalError
-) -> Result<isize, EvalError> {
-    match lisp.get(idx)? {
-        Value::Number(n) => Ok(n),
-        Value::Float(f) => {
-            // Allow floats that are exact integers
-            if fract_f64(f) == 0.0 && f >= isize::MIN as f64 && f <= isize::MAX as f64 {
-                Ok(f as isize)
-            } else {
-                Err(make_type_error("integer", "inexact number"))
-            }
-        }
-        v => Err(make_type_error("integer", v.type_name())),
-    }
-}
-
-/// Get character from already-evaluated value
-pub fn get_char<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex, call_expr: ArenaIndex,
-    make_type_error: impl FnOnce(&'static str, &'static str) -> EvalError
-) -> Result<char, EvalError> {
-    match lisp.get(idx)? {
-        Value::Char(c) => Ok(c),
-        v => Err(make_type_error("char", v.type_name())),
-    }
-}
-
-/// Allocate a Num value in the arena
-pub fn alloc_num<const N: usize>(lisp: &Lisp<N>, n: Num) -> ArenaResult<ArenaIndex> {
-    match n {
-        Num::Int(i) => lisp.number(i),
-        Num::Float(f) => lisp.float(f),
-    }
-}
+use grift_parser::{ArenaIndex, Lisp, Value};
+use crate::error::EvalError;
+use crate::num::{fract_f64, abs_f64};
 
 // ============================================================================
 // Pure math helper functions

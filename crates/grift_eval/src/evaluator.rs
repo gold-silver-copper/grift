@@ -12,7 +12,7 @@ use crate::num::{Num, fract_f64, abs_f64};
 use crate::continuation::{Cont, TrampolineState, is_binary_builtin, MAX_CONT_DEPTH};
 use crate::helpers::{
     gcd_helper, int_pow, floor_f64, ceil_f64, trunc_f64, round_f64,
-    pow_float, ln_float, exp_float, equal_recursive, values_equal, case_matches,
+    pow_float, equal_recursive, case_matches,
 };
 use crate::native::{NativeRegistry, NativeFn, simple_hash};
 
@@ -2920,10 +2920,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     // ========================================================================
-    // Special Form Helpers
+    // Special Form Helpers (TCO variants)
+    // These are kept for completeness but the continuation-based variants are used
     // ========================================================================
     
     /// Evaluate cond with TCO
+    #[allow(dead_code)]
     fn eval_cond_tco(&mut self, clauses: ArenaIndex, env: ArenaIndex) -> Result<TcoResult, EvalError> {
         let mut current = clauses;
         
@@ -2978,6 +2980,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate and with TCO
+    #[allow(dead_code)]
     fn eval_and_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TcoResult, EvalError> {
         let mut current = args;
         
@@ -3007,6 +3010,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate or with TCO
+    #[allow(dead_code)]
     fn eval_or_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TcoResult, EvalError> {
         let mut current = args;
         
@@ -3294,6 +3298,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate let with TCO in body
+    #[allow(dead_code)]
     fn eval_let_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let bindings = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
@@ -3329,6 +3334,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate let* with TCO in body
+    #[allow(dead_code)]
     fn eval_let_star_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let bindings = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
@@ -3366,6 +3372,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Semantics: All variables are bound to fresh locations containing unspecified values,
     /// then all init expressions are evaluated (in some unspecified order) and the variables
     /// are assigned to the results. This allows mutually recursive definitions.
+    #[allow(dead_code)]
     fn eval_letrec_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let bindings = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
@@ -3425,6 +3432,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// Semantics: Similar to letrec, but init expressions are evaluated and assigned
     /// sequentially from left to right. This is stricter than letrec.
+    #[allow(dead_code)]
     fn eval_letrec_star_tco(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let bindings = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
