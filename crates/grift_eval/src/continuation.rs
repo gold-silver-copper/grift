@@ -1,17 +1,22 @@
 //! Continuation types for trampolined evaluation.
 //!
-//! All continuation variants (except Done, QuasiquoteUnquoteWrap, and QuasiquoteNestedWrap)
-//! store their data as a single ArenaIndex pointing to contiguous Ref slots in the arena.
-//! This is much more efficient than cons-lists (e.g., 3 values = 3 slots vs 9 slots for cons).
+//! Continuation data is stored in a separate data stack (not the arena).
+//! Each Cont variant stores a `data_start` offset into the evaluator's data stack.
+//! The number of elements is fixed per variant type.
 
-use grift_parser::{ArenaIndex, Builtin};
+use grift_parser::Builtin;
 
 /// Maximum continuation stack depth
 pub const MAX_CONT_DEPTH: usize = 1024;
 
+/// Maximum data stack size (stores ArenaIndex values for continuation data)
+/// Each continuation needs at most 7 values, so this is plenty.
+pub const MAX_DATA_STACK: usize = MAX_CONT_DEPTH * 8;
+
 /// Continuation - what to do after a computation completes
 ///
-/// Each variant stores its data as an ArenaIndex pointing to contiguous Ref slots in the arena.
+/// Each variant stores a `data_start` offset into the evaluator's data stack.
+/// The number of elements is fixed per variant (encoded in the variant type).
 /// Use the corresponding pack_*/unpack_* methods in Evaluator to create and access data.
 #[derive(Clone, Copy, Debug)]
 pub enum Cont {
@@ -19,129 +24,131 @@ pub enum Cont {
     Done,
 
     /// After evaluating function, decide builtin vs lambda
-    /// data: [args_expr, env, call_expr]
-    ApplyForced { data: ArenaIndex },
+    /// Stack data: [args_expr, env, call_expr] (3 elements)
+    ApplyForced { data_start: usize },
 
     /// After evaluating condition, choose branch
-    /// data: [then_expr, else_expr, env]
-    IfBranch { data: ArenaIndex },
+    /// Stack data: [then_expr, else_expr, env] (3 elements)
+    IfBranch { data_start: usize },
 
     /// After evaluating argument for builtin (variadic ops like +)
-    /// data: [builtin_val, remaining_args, collected, call_expr, eval_env]
-    BuiltinForceArg { data: ArenaIndex },
+    /// Stack data: [builtin_as_u8, remaining_args, collected, call_expr, eval_env] (5 elements)
+    /// Note: builtin stored as u8 discriminant to avoid arena allocation
+    BuiltinForceArg { data_start: usize },
 
     /// OPTIMIZED: After evaluating first arg of binary builtin, evaluate second arg
-    /// data: [builtin_val, second_arg, call_expr, eval_env]
-    BinaryBuiltinFirst { data: ArenaIndex },
+    /// Stack data: [builtin_as_u8, second_arg, call_expr, eval_env] (4 elements)
+    BinaryBuiltinFirst { data_start: usize },
 
     /// OPTIMIZED: After evaluating both args of binary builtin, apply
-    /// data: [builtin_val, first_val, call_expr]
-    BinaryBuiltinSecond { data: ArenaIndex },
+    /// Stack data: [builtin_as_u8, first_val, call_expr] (3 elements)
+    BinaryBuiltinSecond { data_start: usize },
 
     /// After evaluating first lambda arg, bind it to param
-    /// data: [param]
-    LambdaFirstBind { data: ArenaIndex },
+    /// Stack data: [param] (1 element)
+    LambdaFirstBind { data_start: usize },
 
     /// After binding a lambda arg, continue with remaining args
-    /// data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]
-    LambdaBindArg { data: ArenaIndex },
+    /// Stack data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr] (6 elements)
+    LambdaBindArg { data_start: usize },
 
     /// After evaluating a let binding value, extend env and continue with remaining bindings
-    /// data: [remaining_bindings, new_env, original_env, body, name]
-    LetBinding { data: ArenaIndex },
+    /// Stack data: [remaining_bindings, new_env, original_env, body, name] (5 elements)
+    LetBinding { data_start: usize },
 
     /// After evaluating a let* binding value, extend env and continue
-    /// data: [remaining_bindings, new_env, body, name]
-    LetStarBinding { data: ArenaIndex },
+    /// Stack data: [remaining_bindings, new_env, body, name] (4 elements)
+    LetStarBinding { data_start: usize },
 
     /// After evaluating a letrec init expression, set! the variable and continue
-    /// data: [remaining_bindings, new_env, body, name]
-    LetrecInit { data: ArenaIndex },
+    /// Stack data: [remaining_bindings, new_env, body, name] (4 elements)
+    LetrecInit { data_start: usize },
 
     /// After evaluating test in when, decide whether to run body
-    /// data: [body, env]
-    When { data: ArenaIndex },
+    /// Stack data: [body, env] (2 elements)
+    When { data_start: usize },
 
     /// After evaluating test in unless, decide whether to run body
-    /// data: [body, env]
-    Unless { data: ArenaIndex },
+    /// Stack data: [body, env] (2 elements)
+    Unless { data_start: usize },
 
     /// After evaluating expr in eval special form
-    /// data: [env]
-    EvalExpr { data: ArenaIndex },
+    /// Stack data: [env] (1 element)
+    EvalExpr { data_start: usize },
 
     /// After evaluating cond test clause
-    /// data: [then_exprs, remaining_clauses, env]
-    CondTest { data: ArenaIndex },
+    /// Stack data: [then_exprs, remaining_clauses, env] (3 elements)
+    CondTest { data_start: usize },
 
     /// Processing and short-circuit evaluation
-    /// data: [remaining, env]
-    And { data: ArenaIndex },
+    /// Stack data: [remaining, env] (2 elements)
+    And { data_start: usize },
 
     /// Processing or short-circuit evaluation
-    /// data: [remaining, env]
-    Or { data: ArenaIndex },
+    /// Stack data: [remaining, env] (2 elements)
+    Or { data_start: usize },
 
     /// Processing begin expressions (non-tail)
-    /// data: [remaining, env]
-    BeginSeq { data: ArenaIndex },
+    /// Stack data: [remaining, env] (2 elements)
+    BeginSeq { data_start: usize },
 
     // ========================================================================
     // Continuation types for fully trampolined evaluation
-    // (Replacing eval_preserving_stack)
     // ========================================================================
 
     /// After evaluating key for case, check clauses
-    /// data: [clauses, env]
-    CaseKey { data: ArenaIndex },
+    /// Stack data: [clauses, env] (2 elements)
+    CaseKey { data_start: usize },
 
     /// After evaluating a do init expression, bind and continue with remaining bindings
-    /// data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var]
-    DoInit { data: ArenaIndex },
+    /// Stack data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var] (7 elements)
+    DoInit { data_start: usize },
 
     /// After evaluating do test, decide to exit or continue
-    /// data: [var_steps, test_clause, body, loop_env]
-    DoTestResult { data: ArenaIndex },
+    /// Stack data: [var_steps, test_clause, body, loop_env] (4 elements)
+    DoTestResult { data_start: usize },
 
     /// Evaluate body expressions in do loop (for side effects)
-    /// data: [remaining_body, var_steps, test_clause, body, loop_env]
-    DoBody { data: ArenaIndex },
+    /// Stack data: [remaining_body, var_steps, test_clause, body, loop_env] (5 elements)
+    DoBody { data_start: usize },
 
     /// Evaluate step expressions in do loop
-    /// data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var]
-    DoStep { data: ArenaIndex },
+    /// Stack data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var] (7 elements)
+    DoStep { data_start: usize },
 
     /// After evaluating first arg for apply, evaluate second arg (args list)
-    /// data: [args_list_expr, env]
-    ApplyFirst { data: ArenaIndex },
+    /// Stack data: [args_list_expr, env] (2 elements)
+    ApplyFirst { data_start: usize },
 
     /// After evaluating both args for apply, perform the application
-    /// data: [func, env]
-    ApplySecond { data: ArenaIndex },
+    /// Stack data: [func, env] (2 elements)
+    ApplySecond { data_start: usize },
 
     /// Evaluate expressions for values, collecting results
-    /// data: [remaining, collected, env]
-    ValuesCollect { data: ArenaIndex },
+    /// Stack data: [remaining, collected, env] (3 elements)
+    ValuesCollect { data_start: usize },
 
     /// After evaluating value for define
-    /// data: [name]
-    DefineValue { data: ArenaIndex },
+    /// Stack data: [name] (1 element)
+    DefineValue { data_start: usize },
 
     /// After evaluating value for set!
-    /// data: [name, env]
-    SetValue { data: ArenaIndex },
+    /// Stack data: [name, env] (2 elements)
+    SetValue { data_start: usize },
 
     /// Evaluate arguments for native function call
-    /// data: [remaining, collected, id_val, env]
-    NativeArgsCollect { data: ArenaIndex },
+    /// Stack data: [remaining, collected, id_as_usize, env] (4 elements)
+    /// Note: id stored as raw usize bits in ArenaIndex
+    NativeArgsCollect { data_start: usize },
 
     /// After evaluating car in quasiquote, evaluate cdr
-    /// data: [cdr, depth_val, env]
-    QuasiquoteCar { data: ArenaIndex },
+    /// Stack data: [cdr, depth_as_usize, env] (3 elements)
+    /// Note: depth stored as raw usize bits in ArenaIndex
+    QuasiquoteCar { data_start: usize },
 
     /// After evaluating cdr in quasiquote, cons with car
-    /// data: [car_val]
-    QuasiquoteCdr { data: ArenaIndex },
+    /// Stack data: [car_val] (1 element)
+    QuasiquoteCdr { data_start: usize },
 
     /// After evaluating unquote in quasiquote at depth > 1, wrap with unquote symbol
     QuasiquoteUnquoteWrap,
@@ -150,21 +157,66 @@ pub enum Cont {
     QuasiquoteNestedWrap,
 
     /// After evaluating unquote-splicing, append with rest
-    /// data: [cdr, depth_val, env]
-    QuasiquoteSplice { data: ArenaIndex },
+    /// Stack data: [cdr, depth_as_usize, env] (3 elements)
+    QuasiquoteSplice { data_start: usize },
 
     /// After evaluating cdr for splice, append with splice value
-    /// data: [splice_val]
-    QuasiquoteSpliceAppend { data: ArenaIndex },
+    /// Stack data: [splice_val] (1 element)
+    QuasiquoteSpliceAppend { data_start: usize },
+}
+
+impl Cont {
+    /// Get the number of data stack elements this continuation uses.
+    /// Used for restoring the data stack when popping.
+    #[inline]
+    pub const fn data_len(&self) -> usize {
+        match self {
+            Cont::Done => 0,
+            Cont::QuasiquoteUnquoteWrap => 0,
+            Cont::QuasiquoteNestedWrap => 0,
+            Cont::LambdaFirstBind { .. } => 1,
+            Cont::EvalExpr { .. } => 1,
+            Cont::DefineValue { .. } => 1,
+            Cont::QuasiquoteCdr { .. } => 1,
+            Cont::QuasiquoteSpliceAppend { .. } => 1,
+            Cont::When { .. } => 2,
+            Cont::Unless { .. } => 2,
+            Cont::And { .. } => 2,
+            Cont::Or { .. } => 2,
+            Cont::BeginSeq { .. } => 2,
+            Cont::CaseKey { .. } => 2,
+            Cont::ApplyFirst { .. } => 2,
+            Cont::ApplySecond { .. } => 2,
+            Cont::SetValue { .. } => 2,
+            Cont::ApplyForced { .. } => 3,
+            Cont::IfBranch { .. } => 3,
+            Cont::BinaryBuiltinSecond { .. } => 3,
+            Cont::CondTest { .. } => 3,
+            Cont::ValuesCollect { .. } => 3,
+            Cont::QuasiquoteCar { .. } => 3,
+            Cont::QuasiquoteSplice { .. } => 3,
+            Cont::BinaryBuiltinFirst { .. } => 4,
+            Cont::LetStarBinding { .. } => 4,
+            Cont::LetrecInit { .. } => 4,
+            Cont::DoTestResult { .. } => 4,
+            Cont::NativeArgsCollect { .. } => 4,
+            Cont::BuiltinForceArg { .. } => 5,
+            Cont::LetBinding { .. } => 5,
+            Cont::DoBody { .. } => 5,
+            Cont::LambdaBindArg { .. } => 6,
+            Cont::DoInit { .. } => 7,
+            Cont::DoStep { .. } => 7,
+        }
+    }
 }
 
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {
     /// Evaluate expression in environment
-    Eval { expr: ArenaIndex, env: ArenaIndex },
+    Eval { expr: grift_parser::ArenaIndex, env: grift_parser::ArenaIndex },
     /// Return a value to the continuation
-    Return { val: ArenaIndex },
+    Return { val: grift_parser::ArenaIndex },
 }
 
 /// Check if a builtin is a binary operation (exactly 2 args, optimized path)

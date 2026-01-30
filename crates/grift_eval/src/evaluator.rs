@@ -9,7 +9,7 @@ use crate::error::{
     MAX_STACK_DEPTH, MAX_BACKTRACE,
 };
 use crate::num::{Num, fract_f64, abs_f64};
-use crate::continuation::{Cont, TrampolineState, is_binary_builtin, MAX_CONT_DEPTH};
+use crate::continuation::{Cont, TrampolineState, is_binary_builtin, MAX_CONT_DEPTH, MAX_DATA_STACK};
 use crate::helpers::{
     gcd_helper, int_pow, floor_f64, ceil_f64, trunc_f64, round_f64,
     pow_float, equal_recursive, case_matches,
@@ -37,6 +37,10 @@ pub struct Evaluator<'a, const N: usize> {
     /// Continuation stack for full trampolining
     cont_stack: [Cont; MAX_CONT_DEPTH],
     cont_depth: usize,
+    /// Data stack for continuation data (separate from arena for performance)
+    /// Stores raw ArenaIndex values without Value::Ref wrapper
+    data_stack: [ArenaIndex; MAX_DATA_STACK],
+    data_stack_top: usize,
     /// Native function registry
     native_registry: NativeRegistry<N>,
 }
@@ -51,6 +55,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             call_stack_depth: 0,
             cont_stack: [Cont::Done; MAX_CONT_DEPTH],
             cont_depth: 0,
+            data_stack: [ArenaIndex::NIL; MAX_DATA_STACK],
+            data_stack_top: 0,
             native_registry: NativeRegistry::new(),
         };
         
@@ -167,44 +173,57 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 break; // Leave some room
             }
             
-            match self.cont_stack[i] {
-                Cont::Done => {}
-                Cont::QuasiquoteUnquoteWrap => {}
-                Cont::QuasiquoteNestedWrap => {}
-                // All other variants store data as a single ArenaIndex
-                Cont::ApplyForced { data } |
-                Cont::IfBranch { data } |
-                Cont::BuiltinForceArg { data } |
-                Cont::BinaryBuiltinFirst { data } |
-                Cont::BinaryBuiltinSecond { data } |
-                Cont::LambdaFirstBind { data } |
-                Cont::LambdaBindArg { data } |
-                Cont::LetBinding { data } |
-                Cont::LetStarBinding { data } |
-                Cont::LetrecInit { data } |
-                Cont::When { data } |
-                Cont::Unless { data } |
-                Cont::EvalExpr { data } |
-                Cont::CondTest { data } |
-                Cont::And { data } |
-                Cont::Or { data } |
-                Cont::BeginSeq { data } |
-                Cont::CaseKey { data } |
-                Cont::DoInit { data } |
-                Cont::DoTestResult { data } |
-                Cont::DoBody { data } |
-                Cont::DoStep { data } |
-                Cont::ApplyFirst { data } |
-                Cont::ApplySecond { data } |
-                Cont::ValuesCollect { data } |
-                Cont::DefineValue { data } |
-                Cont::SetValue { data } |
-                Cont::NativeArgsCollect { data } |
-                Cont::QuasiquoteCar { data } |
-                Cont::QuasiquoteCdr { data } |
-                Cont::QuasiquoteSplice { data } |
-                Cont::QuasiquoteSpliceAppend { data } => {
-                    roots[root_count] = data; root_count += 1;
+            // Continuation data is now stored in a separate data_stack, not in the arena.
+            // The data_stack stores raw ArenaIndex values that may reference arena objects.
+            // We need to trace all ArenaIndex values in the data_stack up to current top.
+            let cont = self.cont_stack[i];
+            let data_len = cont.data_len();
+            if data_len > 0 {
+                // Get the data_start from the continuation
+                let ds = match cont {
+                    Cont::Done | Cont::QuasiquoteUnquoteWrap | Cont::QuasiquoteNestedWrap => 0,
+                    Cont::ApplyForced { data_start } |
+                    Cont::IfBranch { data_start } |
+                    Cont::BuiltinForceArg { data_start } |
+                    Cont::BinaryBuiltinFirst { data_start } |
+                    Cont::BinaryBuiltinSecond { data_start } |
+                    Cont::LambdaFirstBind { data_start } |
+                    Cont::LambdaBindArg { data_start } |
+                    Cont::LetBinding { data_start } |
+                    Cont::LetStarBinding { data_start } |
+                    Cont::LetrecInit { data_start } |
+                    Cont::When { data_start } |
+                    Cont::Unless { data_start } |
+                    Cont::EvalExpr { data_start } |
+                    Cont::CondTest { data_start } |
+                    Cont::And { data_start } |
+                    Cont::Or { data_start } |
+                    Cont::BeginSeq { data_start } |
+                    Cont::CaseKey { data_start } |
+                    Cont::DoInit { data_start } |
+                    Cont::DoTestResult { data_start } |
+                    Cont::DoBody { data_start } |
+                    Cont::DoStep { data_start } |
+                    Cont::ApplyFirst { data_start } |
+                    Cont::ApplySecond { data_start } |
+                    Cont::ValuesCollect { data_start } |
+                    Cont::DefineValue { data_start } |
+                    Cont::SetValue { data_start } |
+                    Cont::NativeArgsCollect { data_start } |
+                    Cont::QuasiquoteCar { data_start } |
+                    Cont::QuasiquoteCdr { data_start } |
+                    Cont::QuasiquoteSplice { data_start } |
+                    Cont::QuasiquoteSpliceAppend { data_start } => data_start,
+                };
+                // Add all ArenaIndex values from this continuation's data to roots
+                for j in 0..data_len {
+                    let idx = self.data_stack[ds + j];
+                    // Skip encoded builtins/raw usize values (they have very high values)
+                    // ArenaIndex::NIL is usize::MAX, real indices are < N
+                    if idx.raw() < N && !idx.is_null() {
+                        roots[root_count] = idx;
+                        root_count += 1;
+                    }
                 }
             }
         }
@@ -408,21 +427,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Pop a continuation from the stack
+    /// Also restores the data stack by popping the continuation's data
     #[inline]
     fn pop_cont(&mut self) -> Cont {
         if self.cont_depth == 0 {
             Cont::Done
         } else {
             self.cont_depth -= 1;
-            self.cont_stack[self.cont_depth]
+            let cont = self.cont_stack[self.cont_depth];
+            // Restore data stack - pop this continuation's data
+            // data_start points to where this continuation's data begins
+            // After unpack, data_stack_top should be restored to data_start
+            // (This happens automatically since unpack reads but doesn't modify data_stack_top,
+            // and the next pack will overwrite from the current data_stack_top)
+            // Actually we need to restore here since unpack doesn't change data_stack_top
+            let data_len = cont.data_len();
+            if data_len > 0 {
+                self.data_stack_top -= data_len;
+            }
+            cont
         }
     }
     
     
     /// Evaluate an expression (entry point)
     pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
-        // Reset continuation stack
+        // Reset continuation stack and data stack
         self.cont_depth = 0;
+        self.data_stack_top = 0;
         // Start evaluation
         self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
@@ -544,8 +576,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 
                 // Push continuation for after condition is evaluated
-                let data = self.pack_if_branch(then_expr, else_expr, env)?;
-                self.push_cont(Cont::IfBranch { data })?;
+                let data_start = self.pack_if_branch(then_expr, else_expr, env)?;
+                self.push_cont(Cont::IfBranch { data_start })?;
                 
                 // Evaluate condition
                 return Ok(TrampolineState::Eval { expr: cond_expr, env });
@@ -596,8 +628,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "when")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let data = self.pack_when(body, env)?;
-                self.push_cont(Cont::When { data })?;
+                let data_start = self.pack_when(body, env)?;
+                self.push_cont(Cont::When { data_start })?;
                 return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
 
@@ -605,8 +637,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "unless")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let data = self.pack_unless(body, env)?;
-                self.push_cont(Cont::Unless { data })?;
+                let data_start = self.pack_unless(body, env)?;
+                self.push_cont(Cont::Unless { data_start })?;
                 return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
 
@@ -644,8 +676,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
                 // Push continuation to evaluate the result in global environment
-                let data = self.pack_eval_expr(self.global_env)?;
-                self.push_cont(Cont::EvalExpr { data })?;
+                let data_start = self.pack_eval_expr(self.global_env)?;
+                self.push_cont(Cont::EvalExpr { data_start })?;
                 // First evaluate the expression to get the code to eval
                 return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
             }
@@ -665,8 +697,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.push_frame(expr, car)?;
         
         // Push continuation: after evaluating func, apply it
-        let data = self.pack_apply_forced(cdr, env, expr)?;
-        self.push_cont(Cont::ApplyForced { data })?;
+        let data_start = self.pack_apply_forced(cdr, env, expr)?;
+        self.push_cont(Cont::ApplyForced { data_start })?;
         
         // Evaluate the function expression
         Ok(TrampolineState::Eval { expr: car, env })
@@ -697,8 +729,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Push continuation for after evaluating test
-        let data = self.pack_cond_test(then_exprs, rest_clauses, env)?;
-        self.push_cont(Cont::CondTest { data })?;
+        let data_start = self.pack_cond_test(then_exprs, rest_clauses, env)?;
+        self.push_cont(Cont::CondTest { data_start })?;
 
         // Evaluate the test
         Ok(TrampolineState::Eval { expr: test, env })
@@ -714,8 +746,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(None)
             }
             
-            Cont::IfBranch { data } => {
-                let (then_expr, else_expr, env) = self.unpack_if_branch(data)?;
+            Cont::IfBranch { data_start } => {
+                let (then_expr, else_expr, env) = self.unpack_if_branch(data_start);
                 // val is the evaluated condition
                 let branch = if !self.is_false(val)? { then_expr } else { else_expr };
                 if branch.is_null() {
@@ -726,8 +758,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::ApplyForced { data } => {
-                let (args_expr, env, call_expr) = self.unpack_apply_forced(data)?;
+            Cont::ApplyForced { data_start } => {
+                let (args_expr, env, call_expr) = self.unpack_apply_forced(data_start);
                 // val is the evaluated function
                 match self.lisp.get(val)? {
                     Value::Builtin(b) => {
@@ -773,13 +805,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            let data = self.pack_lambda_bind_arg(
+                            let data_start = self.pack_lambda_bind_arg(
                                 rest_exprs, env, rest_params, body, closure_env, call_expr
                             )?;
-                            self.push_cont(Cont::LambdaBindArg { data })?;
+                            self.push_cont(Cont::LambdaBindArg { data_start })?;
                             // Push binding continuation for first param
-                            let data = self.pack_lambda_first_bind(first_param)?;
-                            self.push_cont(Cont::LambdaFirstBind { data })?;
+                            let data_start = self.pack_lambda_first_bind(first_param)?;
+                            self.push_cont(Cont::LambdaFirstBind { data_start })?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
@@ -818,13 +850,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            let data = self.pack_lambda_bind_arg(
+                            let data_start = self.pack_lambda_bind_arg(
                                 rest_exprs, env, rest_params, body, closure_env, call_expr
                             )?;
-                            self.push_cont(Cont::LambdaBindArg { data })?;
+                            self.push_cont(Cont::LambdaBindArg { data_start })?;
                             // Push binding continuation for first param
-                            let data = self.pack_lambda_first_bind(first_param)?;
-                            self.push_cont(Cont::LambdaFirstBind { data })?;
+                            let data_start = self.pack_lambda_first_bind(first_param)?;
+                            self.push_cont(Cont::LambdaFirstBind { data_start })?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
@@ -850,8 +882,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest = self.lisp.cdr(args_expr)?;
                             let nil = self.lisp.nil()?;
                             
-                            let data = self.pack_native_args_collect(rest, nil, id, env)?;
-                            self.push_cont(Cont::NativeArgsCollect { data })?;
+                            let data_start = self.pack_native_args_collect(rest, nil, id, env)?;
+                            self.push_cont(Cont::NativeArgsCollect { data_start })?;
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
@@ -862,15 +894,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::LambdaFirstBind { data } => {
-                let param = self.unpack_lambda_first_bind(data)?;
+            Cont::LambdaFirstBind { data_start } => {
+                let param = self.unpack_lambda_first_bind(data_start);
                 // val is evaluated first arg - bind to param
                 // Pop LambdaBindArg, extend env, push it back
                 let cont = self.pop_cont();
-                if let Cont::LambdaBindArg { data } = cont {
+                if let Cont::LambdaBindArg { data_start } = cont {
                     // Unpack the cons-list
                     let (remaining_exprs, eval_env, remaining_params, body, new_env, call_expr) = 
-                        self.unpack_lambda_bind_arg(data)?;
+                        self.unpack_lambda_bind_arg(data_start);
                     
                     // Extend environment with binding
                     let extended_env = self.env_extend(new_env, param, val)?;
@@ -896,12 +928,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let rest_exprs = self.lisp.cdr(remaining_exprs)?;
                         
                         // Continue with remaining args
-                        let new_data = self.pack_lambda_bind_arg(
+                        let new_data_start = self.pack_lambda_bind_arg(
                             rest_exprs, eval_env, rest_params, body, extended_env, call_expr
                         )?;
-                        self.push_cont(Cont::LambdaBindArg { data: new_data })?;
-                        let data = self.pack_lambda_first_bind(next_param)?;
-                        self.push_cont(Cont::LambdaFirstBind { data })?;
+                        self.push_cont(Cont::LambdaBindArg { data_start: new_data_start })?;
+                        let data_start = self.pack_lambda_first_bind(next_param)?;
+                        self.push_cont(Cont::LambdaFirstBind { data_start })?;
                         
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
                     }
@@ -916,8 +948,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Err(self.make_error(ErrorKind::Generic, val))
             }
             
-            Cont::BuiltinForceArg { data } => {
-                let (builtin, remaining_args, collected, call_expr, eval_env) = self.unpack_builtin_force_arg(data)?;
+            Cont::BuiltinForceArg { data_start } => {
+                let (builtin, remaining_args, collected, call_expr, eval_env) = self.unpack_builtin_force_arg(data_start);
                 // val is an evaluated argument for a builtin
                 let new_collected = self.lisp.cons(val, collected)?;
                 
@@ -931,30 +963,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_arg = self.lisp.car(remaining_args)?;
                     let rest_args = self.lisp.cdr(remaining_args)?;
                     
-                    let data = self.pack_builtin_force_arg(builtin, rest_args, new_collected, call_expr, eval_env)?;
-                    self.push_cont(Cont::BuiltinForceArg { data })?;
+                    let data_start = self.pack_builtin_force_arg(builtin, rest_args, new_collected, call_expr, eval_env)?;
+                    self.push_cont(Cont::BuiltinForceArg { data_start })?;
                     
                     Ok(Some(TrampolineState::Eval { expr: next_arg, env: eval_env }))
                 }
             }
             
-            Cont::BinaryBuiltinFirst { data } => {
-                let (builtin, second_arg, call_expr, eval_env) = self.unpack_binary_builtin_first(data)?;
+            Cont::BinaryBuiltinFirst { data_start } => {
+                let (builtin, second_arg, call_expr, eval_env) = self.unpack_binary_builtin_first(data_start);
                 // val is first evaluated arg - now evaluate second
-                let data = self.pack_binary_builtin_second(builtin, val, call_expr)?;
-                self.push_cont(Cont::BinaryBuiltinSecond { data })?;
+                let data_start = self.pack_binary_builtin_second(builtin, val, call_expr)?;
+                self.push_cont(Cont::BinaryBuiltinSecond { data_start })?;
                 Ok(Some(TrampolineState::Eval { expr: second_arg, env: eval_env }))
             }
             
-            Cont::BinaryBuiltinSecond { data } => {
-                let (builtin, first_val, call_expr) = self.unpack_binary_builtin_second(data)?;
+            Cont::BinaryBuiltinSecond { data_start } => {
+                let (builtin, first_val, call_expr) = self.unpack_binary_builtin_second(data_start);
                 // val is second evaluated arg - apply binary operation directly
                 let result = self.apply_binary_builtin(builtin, first_val, val, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::LetBinding { data } => {
-                let (remaining_bindings, new_env, original_env, body, name) = self.unpack_let_binding(data)?;
+            Cont::LetBinding { data_start } => {
+                let (remaining_bindings, new_env, original_env, body, name) = self.unpack_let_binding(data_start);
                 // val is the evaluated value for the current binding
                 // Extend environment with the binding
                 let extended_env = self.env_extend(new_env, name, val)?;
@@ -971,16 +1003,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
 
                     // Push continuation for after evaluating this binding
-                    let data = self.pack_let_binding(rest_bindings, extended_env, original_env, body, next_name)?;
-                    self.push_cont(Cont::LetBinding { data })?;
+                    let data_start = self.pack_let_binding(rest_bindings, extended_env, original_env, body, next_name)?;
+                    self.push_cont(Cont::LetBinding { data_start })?;
 
                     // Evaluate the value expression in the ORIGINAL environment
                     Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: original_env }))
                 }
             }
 
-            Cont::LetStarBinding { data } => {
-                let (remaining_bindings, new_env, body, name) = self.unpack_let_star_binding(data)?;
+            Cont::LetStarBinding { data_start } => {
+                let (remaining_bindings, new_env, body, name) = self.unpack_let_star_binding(data_start);
                 // val is the evaluated value for the current binding
                 // Extend environment with the binding
                 let extended_env = self.env_extend(new_env, name, val)?;
@@ -997,16 +1029,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
 
                     // Push continuation for after evaluating this binding
-                    let data = self.pack_let_star_binding(rest_bindings, extended_env, body, next_name)?;
-                    self.push_cont(Cont::LetStarBinding { data })?;
+                    let data_start = self.pack_let_star_binding(rest_bindings, extended_env, body, next_name)?;
+                    self.push_cont(Cont::LetStarBinding { data_start })?;
 
                     // Evaluate the value expression in the NEW (extended) environment
                     Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: extended_env }))
                 }
             }
 
-            Cont::LetrecInit { data } => {
-                let (remaining_bindings, new_env, body, name) = self.unpack_letrec_init(data)?;
+            Cont::LetrecInit { data_start } => {
+                let (remaining_bindings, new_env, body, name) = self.unpack_letrec_init(data_start);
                 // val is the evaluated init expression - set! the variable
                 self.env_set(new_env, name, val)?;
 
@@ -1022,16 +1054,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_init_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
 
                     // Push continuation for after evaluating this init
-                    let data = self.pack_letrec_init(rest_bindings, new_env, body, next_name)?;
-                    self.push_cont(Cont::LetrecInit { data })?;
+                    let data_start = self.pack_letrec_init(rest_bindings, new_env, body, next_name)?;
+                    self.push_cont(Cont::LetrecInit { data_start })?;
 
                     // Evaluate the init expression in the letrec environment
                     Ok(Some(TrampolineState::Eval { expr: next_init_expr, env: new_env }))
                 }
             }
 
-            Cont::When { data } => {
-                let (body, env) = self.unpack_when(data)?;
+            Cont::When { data_start } => {
+                let (body, env) = self.unpack_when(data_start);
                 // val is the evaluated test result
                 let test_passed = !self.is_false(val)?;
 
@@ -1047,8 +1079,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Cont::Unless { data } => {
-                let (body, env) = self.unpack_unless(data)?;
+            Cont::Unless { data_start } => {
+                let (body, env) = self.unpack_unless(data_start);
                 // val is the evaluated test result
                 let test_passed = !self.is_false(val)?;
 
@@ -1064,14 +1096,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Cont::EvalExpr { data } => {
-                let env = self.unpack_eval_expr(data)?;
+            Cont::EvalExpr { data_start } => {
+                let env = self.unpack_eval_expr(data_start);
                 // val is the evaluated expression - now evaluate it
                 Ok(Some(TrampolineState::Eval { expr: val, env }))
             }
 
-            Cont::CondTest { data } => {
-                let (then_exprs, remaining_clauses, env) = self.unpack_cond_test(data)?;
+            Cont::CondTest { data_start } => {
+                let (then_exprs, remaining_clauses, env) = self.unpack_cond_test(data_start);
                 // val is the evaluated test
                 if !self.is_false(val)? {
                     // Test passed - evaluate body expressions
@@ -1090,8 +1122,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Cont::And { data } => {
-                let (remaining, env) = self.unpack_and(data)?;
+            Cont::And { data_start } => {
+                let (remaining, env) = self.unpack_and(data_start);
                 // val is the evaluated expression
                 // and: if false, short-circuit and return #f
                 if self.is_false(val)? {
@@ -1104,14 +1136,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More expressions - evaluate next
                     let next_expr = self.lisp.car(remaining)?;
                     let rest = self.lisp.cdr(remaining)?;
-                    let data = self.pack_and(rest, env)?;
-                    self.push_cont(Cont::And { data })?;
+                    let data_start = self.pack_and(rest, env)?;
+                    self.push_cont(Cont::And { data_start })?;
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
-            Cont::Or { data } => {
-                let (remaining, env) = self.unpack_or(data)?;
+            Cont::Or { data_start } => {
+                let (remaining, env) = self.unpack_or(data_start);
                 // val is the evaluated expression
                 // or: if truthy, short-circuit and return the value
                 if !self.is_false(val)? {
@@ -1124,14 +1156,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More expressions - evaluate next
                     let next_expr = self.lisp.car(remaining)?;
                     let rest = self.lisp.cdr(remaining)?;
-                    let data = self.pack_or(rest, env)?;
-                    self.push_cont(Cont::Or { data })?;
+                    let data_start = self.pack_or(rest, env)?;
+                    self.push_cont(Cont::Or { data_start })?;
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
-            Cont::BeginSeq { data } => {
-                let (remaining, env) = self.unpack_begin_seq(data)?;
+            Cont::BeginSeq { data_start } => {
+                let (remaining, env) = self.unpack_begin_seq(data_start);
                 // val is the result of the previous expression (discarded unless last)
                 if self.lisp.get(remaining)?.is_nil() {
                     // This was the last expression - return its value
@@ -1145,8 +1177,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                     } else {
                         // More after next - push continuation
-                        let data = self.pack_begin_seq(rest, env)?;
-                        self.push_cont(Cont::BeginSeq { data })?;
+                        let data_start = self.pack_begin_seq(rest, env)?;
+                        self.push_cont(Cont::BeginSeq { data_start })?;
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                     }
                 }
@@ -1156,21 +1188,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // New continuation types for fully trampolined evaluation
             // ================================================================
 
-            Cont::CaseKey { data } => {
-                let (clauses, env) = self.unpack_case_key(data)?;
+            Cont::CaseKey { data_start } => {
+                let (clauses, env) = self.unpack_case_key(data_start);
                 // val is the evaluated key - check clauses
                 self.step_return_case_key(val, clauses, env)
             }
 
-            Cont::DoInit { data } => {
-                let (remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var) = self.unpack_do_init(data)?;
+            Cont::DoInit { data_start } => {
+                let (remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var) = self.unpack_do_init(data_start);
                 // val is the evaluated init expression - bind and continue
                 let extended_env = self.env_extend(loop_env, current_var, val)?;
                 self.step_return_do_init(remaining_bindings, var_steps, test_clause, body, extended_env, original_env)
             }
 
-            Cont::DoTestResult { data } => {
-                let (var_steps, test_clause, body, loop_env) = self.unpack_do_test_result(data)?;
+            Cont::DoTestResult { data_start } => {
+                let (var_steps, test_clause, body, loop_env) = self.unpack_do_test_result(data_start);
                 // val is the evaluated test result
                 if !self.is_false(val)? {
                     // Test passed - evaluate result expressions
@@ -1190,15 +1222,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Evaluate body expressions
                         let first_body = self.lisp.car(body)?;
                         let rest_body = self.lisp.cdr(body)?;
-                        let data = self.pack_do_body(rest_body, var_steps, test_clause, body, loop_env)?;
-                        self.push_cont(Cont::DoBody { data })?;
+                        let data_start = self.pack_do_body(rest_body, var_steps, test_clause, body, loop_env)?;
+                        self.push_cont(Cont::DoBody { data_start })?;
                         Ok(Some(TrampolineState::Eval { expr: first_body, env: loop_env }))
                     }
                 }
             }
 
-            Cont::DoBody { data } => {
-                let (remaining_body, var_steps, test_clause, body, loop_env) = self.unpack_do_body(data)?;
+            Cont::DoBody { data_start } => {
+                let (remaining_body, var_steps, test_clause, body, loop_env) = self.unpack_do_body(data_start);
                 // val is discarded (body evaluated for side effects)
                 if self.lisp.get(remaining_body)?.is_nil() {
                     // Body done - start evaluating step expressions
@@ -1207,14 +1239,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More body expressions
                     let next_body = self.lisp.car(remaining_body)?;
                     let rest_body = self.lisp.cdr(remaining_body)?;
-                    let data = self.pack_do_body(rest_body, var_steps, test_clause, body, loop_env)?;
-                    self.push_cont(Cont::DoBody { data })?;
+                    let data_start = self.pack_do_body(rest_body, var_steps, test_clause, body, loop_env)?;
+                    self.push_cont(Cont::DoBody { data_start })?;
                     Ok(Some(TrampolineState::Eval { expr: next_body, env: loop_env }))
                 }
             }
 
-            Cont::DoStep { data } => {
-                let (remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var) = self.unpack_do_step(data)?;
+            Cont::DoStep { data_start } => {
+                let (remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var) = self.unpack_do_step(data_start);
                 // val is the evaluated step expression - collect and continue
                 let new_collected = self.lisp.cons(current_var, val)?;
                 let new_collected = self.lisp.cons(new_collected, collected_vals)?;
@@ -1223,8 +1255,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // All steps evaluated - update environment and loop
                     let new_env = self.apply_do_step_values(loop_env, new_collected)?;
                     // Continue to next iteration - evaluate test
-                    let data = self.pack_do_test_result(var_steps, test_clause, body, new_env)?;
-                    self.push_cont(Cont::DoTestResult { data })?;
+                    let data_start = self.pack_do_test_result(var_steps, test_clause, body, new_env)?;
+                    self.push_cont(Cont::DoTestResult { data_start })?;
                     let test = self.lisp.car(test_clause)?;
                     Ok(Some(TrampolineState::Eval { expr: test, env: new_env }))
                 } else {
@@ -1234,33 +1266,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_var = self.lisp.car(next_pair)?;
                     let next_step = self.lisp.cdr(next_pair)?;
                     
-                    let data = self.pack_do_step(rest_steps, new_collected, var_steps, test_clause, body, loop_env, next_var)?;
-                    self.push_cont(Cont::DoStep { data })?;
+                    let data_start = self.pack_do_step(rest_steps, new_collected, var_steps, test_clause, body, loop_env, next_var)?;
+                    self.push_cont(Cont::DoStep { data_start })?;
                     Ok(Some(TrampolineState::Eval { expr: next_step, env: loop_env }))
                 }
             }
 
-            Cont::ApplyFirst { data } => {
-                let (args_list_expr, env) = self.unpack_apply_first(data)?;
+            Cont::ApplyFirst { data_start } => {
+                let (args_list_expr, env) = self.unpack_apply_first(data_start);
                 // val is the evaluated function - now evaluate args list
-                let data = self.pack_apply_second(val, env)?;
-                self.push_cont(Cont::ApplySecond { data })?;
+                let data_start = self.pack_apply_second(val, env)?;
+                self.push_cont(Cont::ApplySecond { data_start })?;
                 Ok(Some(TrampolineState::Eval { expr: args_list_expr, env }))
             }
 
-            Cont::ApplySecond { data } => {
-                let (func, env) = self.unpack_apply_second(data)?;
+            Cont::ApplySecond { data_start } => {
+                let (func, env) = self.unpack_apply_second(data_start);
                 // val is the evaluated args list - perform application
                 let args_list = val;
                 let call_expr = self.lisp.cons(func, args_list)?;
                 self.push_frame(call_expr, func)?;
-                let data = self.pack_apply_forced(args_list, env, call_expr)?;
-                self.push_cont(Cont::ApplyForced { data })?;
+                let data_start = self.pack_apply_forced(args_list, env, call_expr)?;
+                self.push_cont(Cont::ApplyForced { data_start })?;
                 Ok(Some(TrampolineState::Return { val: func }))
             }
 
-            Cont::ValuesCollect { data } => {
-                let (remaining, collected, env) = self.unpack_values_collect(data)?;
+            Cont::ValuesCollect { data_start } => {
+                let (remaining, collected, env) = self.unpack_values_collect(data_start);
                 // val is an evaluated value - collect and continue
                 let new_collected = self.lisp.cons(val, collected)?;
                 
@@ -1272,28 +1304,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More values to evaluate
                     let next_expr = self.lisp.car(remaining)?;
                     let rest = self.lisp.cdr(remaining)?;
-                    let data = self.pack_values_collect(rest, new_collected, env)?;
-                    self.push_cont(Cont::ValuesCollect { data })?;
+                    let data_start = self.pack_values_collect(rest, new_collected, env)?;
+                    self.push_cont(Cont::ValuesCollect { data_start })?;
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
-            Cont::DefineValue { data } => {
-                let name = self.unpack_define_value(data)?;
+            Cont::DefineValue { data_start } => {
+                let name = self.unpack_define_value(data_start);
                 // val is the evaluated value - define the binding
                 self.define(name, val)?;
                 Ok(Some(TrampolineState::Return { val: name }))
             }
 
-            Cont::SetValue { data } => {
-                let (name, env) = self.unpack_set_value(data)?;
+            Cont::SetValue { data_start } => {
+                let (name, env) = self.unpack_set_value(data_start);
                 // val is the evaluated value - set! the binding
                 self.env_set(env, name, val)?;
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            Cont::NativeArgsCollect { data } => {
-                let (remaining, collected, id, env) = self.unpack_native_args_collect(data)?;
+            Cont::NativeArgsCollect { data_start } => {
+                let (remaining, collected, id, env) = self.unpack_native_args_collect(data_start);
                 // val is an evaluated argument - collect and continue
                 let new_collected = self.lisp.cons(val, collected)?;
                 
@@ -1311,23 +1343,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More args to evaluate
                     let next_expr = self.lisp.car(remaining)?;
                     let rest = self.lisp.cdr(remaining)?;
-                    let data = self.pack_native_args_collect(rest, new_collected, id, env)?;
-                    self.push_cont(Cont::NativeArgsCollect { data })?;
+                    let data_start = self.pack_native_args_collect(rest, new_collected, id, env)?;
+                    self.push_cont(Cont::NativeArgsCollect { data_start })?;
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
-            Cont::QuasiquoteCar { data } => {
-                let (cdr, depth, env) = self.unpack_quasiquote_car(data)?;
+            Cont::QuasiquoteCar { data_start } => {
+                let (cdr, depth, env) = self.unpack_quasiquote_car(data_start);
                 // val is the evaluated car - now process cdr
                 let car_val = val;
-                let data = self.pack_quasiquote_cdr(car_val)?;
-                self.push_cont(Cont::QuasiquoteCdr { data })?;
+                let data_start = self.pack_quasiquote_cdr(car_val)?;
+                self.push_cont(Cont::QuasiquoteCdr { data_start })?;
                 Ok(Some(self.step_quasiquote_trampoline(cdr, env, depth)?))
             }
 
-            Cont::QuasiquoteCdr { data } => {
-                let car_val = self.unpack_quasiquote_cdr(data)?;
+            Cont::QuasiquoteCdr { data_start } => {
+                let car_val = self.unpack_quasiquote_cdr(data_start);
                 // val is the processed cdr - cons with car
                 let result = self.lisp.cons(car_val, val)?;
                 Ok(Some(TrampolineState::Return { val: result }))
@@ -1351,17 +1383,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::QuasiquoteSplice { data } => {
-                let (cdr, depth, env) = self.unpack_quasiquote_splice(data)?;
+            Cont::QuasiquoteSplice { data_start } => {
+                let (cdr, depth, env) = self.unpack_quasiquote_splice(data_start);
                 // val is the evaluated splice expression - process cdr then append
                 let splice_val = val;
-                let data = self.pack_quasiquote_splice_append(splice_val)?;
-                self.push_cont(Cont::QuasiquoteSpliceAppend { data })?;
+                let data_start = self.pack_quasiquote_splice_append(splice_val)?;
+                self.push_cont(Cont::QuasiquoteSpliceAppend { data_start })?;
                 Ok(Some(self.step_quasiquote_trampoline(cdr, env, depth)?))
             }
 
-            Cont::QuasiquoteSpliceAppend { data } => {
-                let splice_val = self.unpack_quasiquote_splice_append(data)?;
+            Cont::QuasiquoteSpliceAppend { data_start } => {
+                let splice_val = self.unpack_quasiquote_splice_append(data_start);
                 // val is the processed cdr - append splice_val with it
                 let result = self.append_lists(splice_val, val)?;
                 Ok(Some(TrampolineState::Return { val: result }))
@@ -1394,8 +1426,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Push continuation for after evaluating test
-        let data = self.pack_cond_test(then_exprs, rest_clauses, env)?;
-        self.push_cont(Cont::CondTest { data })?;
+        let data_start = self.pack_cond_test(then_exprs, rest_clauses, env)?;
+        self.push_cont(Cont::CondTest { data_start })?;
 
         // Evaluate the test
         Ok(Some(TrampolineState::Eval { expr: test, env }))
@@ -1455,8 +1487,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<Option<TrampolineState>, EvalError> {
         if self.lisp.get(remaining_bindings)?.is_nil() {
             // All bindings done - start the loop by evaluating the test
-            let data = self.pack_do_test_result(var_steps, test_clause, body, loop_env)?;
-            self.push_cont(Cont::DoTestResult { data })?;
+            let data_start = self.pack_do_test_result(var_steps, test_clause, body, loop_env)?;
+            self.push_cont(Cont::DoTestResult { data_start })?;
             let test = self.lisp.car(test_clause)?;
             Ok(Some(TrampolineState::Eval { expr: test, env: loop_env }))
         } else {
@@ -1479,8 +1511,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let new_var_steps = self.lisp.cons(var_step_pair, var_steps)?;
             
             // Push continuation and evaluate init
-            let data = self.pack_do_init(rest, new_var_steps, test_clause, body, loop_env, original_env, var)?;
-            self.push_cont(Cont::DoInit { data })?;
+            let data_start = self.pack_do_init(rest, new_var_steps, test_clause, body, loop_env, original_env, var)?;
+            self.push_cont(Cont::DoInit { data_start })?;
             Ok(Some(TrampolineState::Eval { expr: init, env: original_env }))
         }
     }
@@ -1495,8 +1527,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<Option<TrampolineState>, EvalError> {
         if self.lisp.get(var_steps)?.is_nil() {
             // No variables - just loop back to test
-            let data = self.pack_do_test_result(var_steps, test_clause, body, loop_env)?;
-            self.push_cont(Cont::DoTestResult { data })?;
+            let data_start = self.pack_do_test_result(var_steps, test_clause, body, loop_env)?;
+            self.push_cont(Cont::DoTestResult { data_start })?;
             let test = self.lisp.car(test_clause)?;
             Ok(Some(TrampolineState::Eval { expr: test, env: loop_env }))
         } else {
@@ -1511,8 +1543,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let first_step = self.lisp.cdr(first_pair)?;
             
             let nil = self.lisp.nil()?;
-            let data = self.pack_do_step(rest_steps, nil, reversed, test_clause, body, loop_env, first_var)?;
-            self.push_cont(Cont::DoStep { data })?;
+            let data_start = self.pack_do_step(rest_steps, nil, reversed, test_clause, body, loop_env, first_var)?;
+            self.push_cont(Cont::DoStep { data_start })?;
             Ok(Some(TrampolineState::Eval { expr: first_step, env: loop_env }))
         }
     }
@@ -1585,15 +1617,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
                         // Splice the result into the list
                         let splice_expr = self.lisp.car(inner_cdr)?;
-                        let data = self.pack_quasiquote_splice(cdr, depth, env)?;
-                        self.push_cont(Cont::QuasiquoteSplice { data })?;
+                        let data_start = self.pack_quasiquote_splice(cdr, depth, env)?;
+                        self.push_cont(Cont::QuasiquoteSplice { data_start })?;
                         return Ok(TrampolineState::Eval { expr: splice_expr, env });
                     }
                 }
                 
                 // Recursively process car and cdr
-                let data = self.pack_quasiquote_car(cdr, depth, env)?;
-                self.push_cont(Cont::QuasiquoteCar { data })?;
+                let data_start = self.pack_quasiquote_car(cdr, depth, env)?;
+                self.push_cont(Cont::QuasiquoteCar { data_start })?;
                 self.step_quasiquote_trampoline(car, env, depth)
             }
             _ => {
@@ -1628,8 +1660,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
 
         // Push continuation for after evaluating this binding
-        let data = self.pack_let_binding(rest_bindings, env, env, body, name)?;
-        self.push_cont(Cont::LetBinding { data })?;
+        let data_start = self.pack_let_binding(rest_bindings, env, env, body, name)?;
+        self.push_cont(Cont::LetBinding { data_start })?;
 
         // Evaluate the first value expression in the original environment
         Ok(TrampolineState::Eval { expr: value_expr, env })
@@ -1660,8 +1692,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
 
         // Push continuation for after evaluating this binding
-        let data = self.pack_let_star_binding(rest_bindings, env, body, name)?;
-        self.push_cont(Cont::LetStarBinding { data })?;
+        let data_start = self.pack_let_star_binding(rest_bindings, env, body, name)?;
+        self.push_cont(Cont::LetStarBinding { data_start })?;
 
         // Evaluate the first value expression
         Ok(TrampolineState::Eval { expr: value_expr, env })
@@ -1710,8 +1742,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let init_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
 
         // Push continuation for after evaluating this init
-        let data = self.pack_letrec_init(rest_bindings, new_env, body, name)?;
-        self.push_cont(Cont::LetrecInit { data })?;
+        let data_start = self.pack_letrec_init(rest_bindings, new_env, body, name)?;
+        self.push_cont(Cont::LetrecInit { data_start })?;
 
         // Evaluate the init expression in the new environment (where all names are visible)
         Ok(TrampolineState::Eval { expr: init_expr, env: new_env })
@@ -1733,8 +1765,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(TrampolineState::Eval { expr: first_expr, env })
         } else {
             // Multiple expressions - push continuation for the rest
-            let data = self.pack_begin_seq(rest, env)?;
-            self.push_cont(Cont::BeginSeq { data })?;
+            let data_start = self.pack_begin_seq(rest, env)?;
+            self.push_cont(Cont::BeginSeq { data_start })?;
             Ok(TrampolineState::Eval { expr: first_expr, env })
         }
     }
@@ -1755,8 +1787,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(TrampolineState::Eval { expr: first_expr, env })
         } else {
             // Multiple expressions - push continuation
-            let data = self.pack_and(rest, env)?;
-            self.push_cont(Cont::And { data })?;
+            let data_start = self.pack_and(rest, env)?;
+            self.push_cont(Cont::And { data_start })?;
             Ok(TrampolineState::Eval { expr: first_expr, env })
         }
     }
@@ -1777,8 +1809,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(TrampolineState::Eval { expr: first_expr, env })
         } else {
             // Multiple expressions - push continuation
-            let data = self.pack_or(rest, env)?;
-            self.push_cont(Cont::Or { data })?;
+            let data_start = self.pack_or(rest, env)?;
+            self.push_cont(Cont::Or { data_start })?;
             Ok(TrampolineState::Eval { expr: first_expr, env })
         }
     }
@@ -1800,8 +1832,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(third_check)?.is_nil() {
                     // Exactly 2 args - use optimized binary path
                     // Evaluate second arg expr (store for later), then evaluate first
-                    let data = self.pack_binary_builtin_first(builtin, second_arg_expr, call_expr, env)?;
-                    self.push_cont(Cont::BinaryBuiltinFirst { data })?;
+                    let data_start = self.pack_binary_builtin_first(builtin, second_arg_expr, call_expr, env)?;
+                    self.push_cont(Cont::BinaryBuiltinFirst { data_start })?;
                     return Ok(Some(TrampolineState::Eval { expr: first_arg, env }));
                 }
             }
@@ -1809,8 +1841,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // General case: collect args and apply
         let nil = self.lisp.nil()?;
-        let data = self.pack_builtin_force_arg(builtin, rest_args, nil, call_expr, env)?;
-        self.push_cont(Cont::BuiltinForceArg { data })?;
+        let data_start = self.pack_builtin_force_arg(builtin, rest_args, nil, call_expr, env)?;
+        self.push_cont(Cont::BuiltinForceArg { data_start })?;
         
         Ok(Some(TrampolineState::Eval { expr: first_arg, env }))
     }
@@ -3295,8 +3327,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let clauses = self.lisp.cdr(args)?;
         
         // Push continuation to check clauses after key is evaluated
-        let data = self.pack_case_key(clauses, env)?;
-        self.push_cont(Cont::CaseKey { data })?;
+        let data_start = self.pack_case_key(clauses, env)?;
+        self.push_cont(Cont::CaseKey { data_start })?;
         
         // Evaluate the key expression
         Ok(TrampolineState::Eval { expr: key_expr, env })
@@ -3314,8 +3346,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.get(bindings)?.is_nil() {
             // No variables - just evaluate test
             let nil = self.lisp.nil()?;
-            let data = self.pack_do_test_result(nil, test_clause, body, env)?;
-            self.push_cont(Cont::DoTestResult { data })?;
+            let data_start = self.pack_do_test_result(nil, test_clause, body, env)?;
+            self.push_cont(Cont::DoTestResult { data_start })?;
             let test = self.lisp.car(test_clause)?;
             return Ok(TrampolineState::Eval { expr: test, env });
         }
@@ -3340,8 +3372,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let var_steps = self.lisp.cons(var_step_pair, nil)?;
         
         // Push continuation and evaluate first init
-        let data = self.pack_do_init(rest_bindings, var_steps, test_clause, body, env, env, var)?;
-        self.push_cont(Cont::DoInit { data })?;
+        let data_start = self.pack_do_init(rest_bindings, var_steps, test_clause, body, env, env, var)?;
+        self.push_cont(Cont::DoInit { data_start })?;
         Ok(TrampolineState::Eval { expr: init, env })
     }
     
@@ -3370,8 +3402,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
         // Push continuation to evaluate args_list after func is evaluated
-        let data = self.pack_apply_first(args_list_expr, env)?;
-        self.push_cont(Cont::ApplyFirst { data })?;
+        let data_start = self.pack_apply_first(args_list_expr, env)?;
+        self.push_cont(Cont::ApplyFirst { data_start })?;
         
         // Evaluate function first
         Ok(TrampolineState::Eval { expr: func_expr, env })
@@ -3390,8 +3422,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let rest = self.lisp.cdr(args)?;
         let nil = self.lisp.nil()?;
         
-        let data = self.pack_values_collect(rest, nil, env)?;
-        self.push_cont(Cont::ValuesCollect { data })?;
+        let data_start = self.pack_values_collect(rest, nil, env)?;
+        self.push_cont(Cont::ValuesCollect { data_start })?;
         Ok(TrampolineState::Eval { expr: first_expr, env })
     }
     
@@ -3421,8 +3453,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Symbol(_) => {
                 let value_expr = self.lisp.car(rest)?;
                 // Push continuation and evaluate value
-                let data = self.pack_define_value(first)?;
-                self.push_cont(Cont::DefineValue { data })?;
+                let data_start = self.pack_define_value(first)?;
+                self.push_cont(Cont::DefineValue { data_start })?;
                 Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             // (define (name params...) body...) -> (define name (lambda (params...) body...))
@@ -3452,8 +3484,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(name)? {
             Value::Symbol(_) => {
                 // Push continuation and evaluate value
-                let data = self.pack_set_value(name, env)?;
-                self.push_cont(Cont::SetValue { data })?;
+                let data_start = self.pack_set_value(name, env)?;
+                self.push_cont(Cont::SetValue { data_start })?;
                 Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
@@ -3492,377 +3524,418 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
     
-    /// Pack LambdaBindArg data using contiguous storage: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]
-    fn pack_lambda_bind_arg(&self, remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
-                            remaining_params: ArenaIndex, body: ArenaIndex,
-                            new_env: ArenaIndex, call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs6(remaining_exprs, eval_env, remaining_params, body, new_env, call_expr).map_err(Into::into)
+    // ========================================================================
+    // Pack/Unpack helpers for continuation data (using separate data stack)
+    // ========================================================================
+    //
+    // These push/pop ArenaIndex values directly to the data_stack, avoiding
+    // arena allocation entirely. No GC pressure, no RefCell overhead.
+    
+    /// Push values to data stack, return start index
+    #[inline]
+    fn push_data(&mut self, values: &[ArenaIndex]) -> Result<usize, EvalError> {
+        let start = self.data_stack_top;
+        let new_top = start + values.len();
+        if new_top > MAX_DATA_STACK {
+            return Err(EvalError::new(ErrorKind::StackOverflow));
+        }
+        self.data_stack[start..new_top].copy_from_slice(values);
+        self.data_stack_top = new_top;
+        Ok(start)
     }
     
-    /// Unpack LambdaBindArg data from contiguous storage
-    fn unpack_lambda_bind_arg(&self, data: ArenaIndex) 
-        -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs6(data).map_err(Into::into)
+    /// Read values from data stack (does not modify stack - pop_cont handles cleanup)
+    #[inline]
+    fn read_data1(&self, start: usize) -> ArenaIndex {
+        self.data_stack[start]
+    }
+    
+    #[inline]
+    fn read_data2(&self, start: usize) -> (ArenaIndex, ArenaIndex) {
+        (self.data_stack[start], self.data_stack[start + 1])
+    }
+    
+    #[inline]
+    fn read_data3(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2])
+    }
+    
+    #[inline]
+    fn read_data4(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3])
+    }
+    
+    #[inline]
+    fn read_data5(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4])
+    }
+    
+    #[inline]
+    fn read_data6(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5])
+    }
+    
+    #[inline]
+    fn read_data7(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5], self.data_stack[start + 6])
+    }
+    
+    /// Encode Builtin as ArenaIndex (store discriminant as raw usize)
+    #[inline]
+    fn encode_builtin(builtin: Builtin) -> ArenaIndex {
+        ArenaIndex::new(builtin as u8 as usize)
+    }
+    
+    /// Decode Builtin from ArenaIndex
+    #[inline]
+    fn decode_builtin(encoded: ArenaIndex) -> Builtin {
+        Builtin::from_u8(encoded.raw() as u8)
     }
 
-    // ========================================================================
-    // Pack/Unpack helpers for continuation data (using contiguous storage)
-    // ========================================================================
+    /// Pack LambdaBindArg data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]
+    fn pack_lambda_bind_arg(&mut self, remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
+                            remaining_params: ArenaIndex, body: ArenaIndex,
+                            new_env: ArenaIndex, call_expr: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_exprs, eval_env, remaining_params, body, new_env, call_expr])
+    }
+    
+    /// Unpack LambdaBindArg data
+    fn unpack_lambda_bind_arg(&self, data_start: usize) 
+        -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data6(data_start)
+    }
 
     /// Pack ApplyForced data: [args_expr, env, call_expr]
-    fn pack_apply_forced(&self, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs3(args_expr, env, call_expr).map_err(Into::into)
+    fn pack_apply_forced(&mut self, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[args_expr, env, call_expr])
     }
 
-    /// Unpack ApplyForced data: [args_expr, env, call_expr]
-    fn unpack_apply_forced(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs3(data).map_err(Into::into)
+    /// Unpack ApplyForced data
+    fn unpack_apply_forced(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data3(data_start)
     }
 
     /// Pack IfBranch data: [then_expr, else_expr, env]
-    fn pack_if_branch(&self, then_expr: ArenaIndex, else_expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs3(then_expr, else_expr, env).map_err(Into::into)
+    fn pack_if_branch(&mut self, then_expr: ArenaIndex, else_expr: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[then_expr, else_expr, env])
     }
 
-    /// Unpack IfBranch data: [then_expr, else_expr, env]
-    fn unpack_if_branch(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs3(data).map_err(Into::into)
+    /// Unpack IfBranch data
+    fn unpack_if_branch(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data3(data_start)
     }
 
-    /// Pack BuiltinForceArg data: [builtin_val, remaining_args, collected, call_expr, eval_env]
-    fn pack_builtin_force_arg(&self, builtin: Builtin, remaining_args: ArenaIndex, collected: ArenaIndex, 
-                               call_expr: ArenaIndex, eval_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let builtin_val = self.lisp.builtin(builtin)?;
-        self.lisp.pack_refs5(builtin_val, remaining_args, collected, call_expr, eval_env).map_err(Into::into)
+    /// Pack BuiltinForceArg data: [builtin_encoded, remaining_args, collected, call_expr, eval_env]
+    fn pack_builtin_force_arg(&mut self, builtin: Builtin, remaining_args: ArenaIndex, collected: ArenaIndex, 
+                               call_expr: ArenaIndex, eval_env: ArenaIndex) -> Result<usize, EvalError> {
+        let builtin_encoded = Self::encode_builtin(builtin);
+        self.push_data(&[builtin_encoded, remaining_args, collected, call_expr, eval_env])
     }
 
-    /// Unpack BuiltinForceArg data: [builtin_val, remaining_args, collected, call_expr, eval_env]
-    fn unpack_builtin_force_arg(&self, data: ArenaIndex) -> Result<(Builtin, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (builtin_val, remaining_args, collected, call_expr, eval_env) = self.lisp.unpack_refs5(data)?;
-        let builtin = match self.lisp.get(builtin_val)? {
-            Value::Builtin(b) => b,
-            _ => return Err(self.make_error(ErrorKind::Generic, data)),
-        };
-        Ok((builtin, remaining_args, collected, call_expr, eval_env))
+    /// Unpack BuiltinForceArg data
+    fn unpack_builtin_force_arg(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        let (builtin_encoded, remaining_args, collected, call_expr, eval_env) = self.read_data5(data_start);
+        (Self::decode_builtin(builtin_encoded), remaining_args, collected, call_expr, eval_env)
     }
 
-    /// Pack BinaryBuiltinFirst data: [builtin_val, second_arg, call_expr, eval_env]
-    fn pack_binary_builtin_first(&self, builtin: Builtin, second_arg: ArenaIndex, 
-                                  call_expr: ArenaIndex, eval_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let builtin_val = self.lisp.builtin(builtin)?;
-        self.lisp.pack_refs4(builtin_val, second_arg, call_expr, eval_env).map_err(Into::into)
+    /// Pack BinaryBuiltinFirst data: [builtin_encoded, second_arg, call_expr, eval_env]
+    fn pack_binary_builtin_first(&mut self, builtin: Builtin, second_arg: ArenaIndex, 
+                                  call_expr: ArenaIndex, eval_env: ArenaIndex) -> Result<usize, EvalError> {
+        let builtin_encoded = Self::encode_builtin(builtin);
+        self.push_data(&[builtin_encoded, second_arg, call_expr, eval_env])
     }
 
-    /// Unpack BinaryBuiltinFirst data: [builtin_val, second_arg, call_expr, eval_env]
-    fn unpack_binary_builtin_first(&self, data: ArenaIndex) -> Result<(Builtin, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (builtin_val, second_arg, call_expr, eval_env) = self.lisp.unpack_refs4(data)?;
-        let builtin = match self.lisp.get(builtin_val)? {
-            Value::Builtin(b) => b,
-            _ => return Err(self.make_error(ErrorKind::Generic, data)),
-        };
-        Ok((builtin, second_arg, call_expr, eval_env))
+    /// Unpack BinaryBuiltinFirst data
+    fn unpack_binary_builtin_first(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex) {
+        let (builtin_encoded, second_arg, call_expr, eval_env) = self.read_data4(data_start);
+        (Self::decode_builtin(builtin_encoded), second_arg, call_expr, eval_env)
     }
 
-    /// Pack BinaryBuiltinSecond data: [builtin_val, first_val, call_expr]
-    fn pack_binary_builtin_second(&self, builtin: Builtin, first_val: ArenaIndex, 
-                                   call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let builtin_val = self.lisp.builtin(builtin)?;
-        self.lisp.pack_refs3(builtin_val, first_val, call_expr).map_err(Into::into)
+    /// Pack BinaryBuiltinSecond data: [builtin_encoded, first_val, call_expr]
+    fn pack_binary_builtin_second(&mut self, builtin: Builtin, first_val: ArenaIndex, 
+                                   call_expr: ArenaIndex) -> Result<usize, EvalError> {
+        let builtin_encoded = Self::encode_builtin(builtin);
+        self.push_data(&[builtin_encoded, first_val, call_expr])
     }
 
-    /// Unpack BinaryBuiltinSecond data: [builtin_val, first_val, call_expr]
-    fn unpack_binary_builtin_second(&self, data: ArenaIndex) -> Result<(Builtin, ArenaIndex, ArenaIndex), EvalError> {
-        let (builtin_val, first_val, call_expr) = self.lisp.unpack_refs3(data)?;
-        let builtin = match self.lisp.get(builtin_val)? {
-            Value::Builtin(b) => b,
-            _ => return Err(self.make_error(ErrorKind::Generic, data)),
-        };
-        Ok((builtin, first_val, call_expr))
+    /// Unpack BinaryBuiltinSecond data
+    fn unpack_binary_builtin_second(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex) {
+        let (builtin_encoded, first_val, call_expr) = self.read_data3(data_start);
+        (Self::decode_builtin(builtin_encoded), first_val, call_expr)
     }
 
     /// Pack LambdaFirstBind data: [param]
-    fn pack_lambda_first_bind(&self, param: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs1(param).map_err(Into::into)
+    fn pack_lambda_first_bind(&mut self, param: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[param])
     }
 
-    /// Unpack LambdaFirstBind data: [param]
-    fn unpack_lambda_first_bind(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.unpack_refs1(data).map_err(Into::into)
+    /// Unpack LambdaFirstBind data
+    fn unpack_lambda_first_bind(&self, data_start: usize) -> ArenaIndex {
+        self.read_data1(data_start)
     }
 
     /// Pack LetBinding data: [remaining_bindings, new_env, original_env, body, name]
-    fn pack_let_binding(&self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
-                        original_env: ArenaIndex, body: ArenaIndex, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs5(remaining_bindings, new_env, original_env, body, name).map_err(Into::into)
+    fn pack_let_binding(&mut self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
+                        original_env: ArenaIndex, body: ArenaIndex, name: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_bindings, new_env, original_env, body, name])
     }
 
-    /// Unpack LetBinding data: [remaining_bindings, new_env, original_env, body, name]
-    fn unpack_let_binding(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs5(data).map_err(Into::into)
+    /// Unpack LetBinding data
+    fn unpack_let_binding(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data5(data_start)
     }
 
     /// Pack LetStarBinding data: [remaining_bindings, new_env, body, name]
-    fn pack_let_star_binding(&self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
-                             body: ArenaIndex, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs4(remaining_bindings, new_env, body, name).map_err(Into::into)
+    fn pack_let_star_binding(&mut self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
+                             body: ArenaIndex, name: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_bindings, new_env, body, name])
     }
 
-    /// Unpack LetStarBinding data: [remaining_bindings, new_env, body, name]
-    fn unpack_let_star_binding(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs4(data).map_err(Into::into)
+    /// Unpack LetStarBinding data
+    fn unpack_let_star_binding(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data4(data_start)
     }
 
     /// Pack LetrecInit data: [remaining_bindings, new_env, body, name]
-    fn pack_letrec_init(&self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
-                        body: ArenaIndex, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs4(remaining_bindings, new_env, body, name).map_err(Into::into)
+    fn pack_letrec_init(&mut self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
+                        body: ArenaIndex, name: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_bindings, new_env, body, name])
     }
 
-    /// Unpack LetrecInit data: [remaining_bindings, new_env, body, name]
-    fn unpack_letrec_init(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs4(data).map_err(Into::into)
+    /// Unpack LetrecInit data
+    fn unpack_letrec_init(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data4(data_start)
     }
 
     /// Pack When data: [body, env]
-    fn pack_when(&self, body: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(body, env).map_err(Into::into)
+    fn pack_when(&mut self, body: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[body, env])
     }
 
-    /// Unpack When data: [body, env]
-    fn unpack_when(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack When data
+    fn unpack_when(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack Unless data: [body, env]
-    fn pack_unless(&self, body: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(body, env).map_err(Into::into)
+    fn pack_unless(&mut self, body: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[body, env])
     }
 
-    /// Unpack Unless data: [body, env]
-    fn unpack_unless(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack Unless data
+    fn unpack_unless(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack EvalExpr data: [env]
-    fn pack_eval_expr(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs1(env).map_err(Into::into)
+    fn pack_eval_expr(&mut self, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[env])
     }
 
-    /// Unpack EvalExpr data: [env]
-    fn unpack_eval_expr(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.unpack_refs1(data).map_err(Into::into)
+    /// Unpack EvalExpr data
+    fn unpack_eval_expr(&self, data_start: usize) -> ArenaIndex {
+        self.read_data1(data_start)
     }
 
     /// Pack CondTest data: [then_exprs, remaining_clauses, env]
-    fn pack_cond_test(&self, then_exprs: ArenaIndex, remaining_clauses: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs3(then_exprs, remaining_clauses, env).map_err(Into::into)
+    fn pack_cond_test(&mut self, then_exprs: ArenaIndex, remaining_clauses: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[then_exprs, remaining_clauses, env])
     }
 
-    /// Unpack CondTest data: [then_exprs, remaining_clauses, env]
-    fn unpack_cond_test(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs3(data).map_err(Into::into)
+    /// Unpack CondTest data
+    fn unpack_cond_test(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data3(data_start)
     }
 
     /// Pack And data: [remaining, env]
-    fn pack_and(&self, remaining: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(remaining, env).map_err(Into::into)
+    fn pack_and(&mut self, remaining: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining, env])
     }
 
-    /// Unpack And data: [remaining, env]
-    fn unpack_and(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack And data
+    fn unpack_and(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack Or data: [remaining, env]
-    fn pack_or(&self, remaining: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(remaining, env).map_err(Into::into)
+    fn pack_or(&mut self, remaining: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining, env])
     }
 
-    /// Unpack Or data: [remaining, env]
-    fn unpack_or(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack Or data
+    fn unpack_or(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack BeginSeq data: [remaining, env]
-    fn pack_begin_seq(&self, remaining: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(remaining, env).map_err(Into::into)
+    fn pack_begin_seq(&mut self, remaining: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining, env])
     }
 
-    /// Unpack BeginSeq data: [remaining, env]
-    fn unpack_begin_seq(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack BeginSeq data
+    fn unpack_begin_seq(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack CaseKey data: [clauses, env]
-    fn pack_case_key(&self, clauses: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(clauses, env).map_err(Into::into)
+    fn pack_case_key(&mut self, clauses: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[clauses, env])
     }
 
-    /// Unpack CaseKey data: [clauses, env]
-    fn unpack_case_key(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack CaseKey data
+    fn unpack_case_key(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack DoInit data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var]
-    fn pack_do_init(&self, remaining_bindings: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex,
-                    body: ArenaIndex, loop_env: ArenaIndex, original_env: ArenaIndex, current_var: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs7(remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var).map_err(Into::into)
+    fn pack_do_init(&mut self, remaining_bindings: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex,
+                    body: ArenaIndex, loop_env: ArenaIndex, original_env: ArenaIndex, current_var: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var])
     }
 
-    /// Unpack DoInit data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var]
-    fn unpack_do_init(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs7(data).map_err(Into::into)
+    /// Unpack DoInit data
+    fn unpack_do_init(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data7(data_start)
     }
 
     /// Pack DoTestResult data: [var_steps, test_clause, body, loop_env]
-    fn pack_do_test_result(&self, var_steps: ArenaIndex, test_clause: ArenaIndex, 
-                           body: ArenaIndex, loop_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs4(var_steps, test_clause, body, loop_env).map_err(Into::into)
+    fn pack_do_test_result(&mut self, var_steps: ArenaIndex, test_clause: ArenaIndex, 
+                           body: ArenaIndex, loop_env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[var_steps, test_clause, body, loop_env])
     }
 
-    /// Unpack DoTestResult data: [var_steps, test_clause, body, loop_env]
-    fn unpack_do_test_result(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs4(data).map_err(Into::into)
+    /// Unpack DoTestResult data
+    fn unpack_do_test_result(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data4(data_start)
     }
 
     /// Pack DoBody data: [remaining_body, var_steps, test_clause, body, loop_env]
-    fn pack_do_body(&self, remaining_body: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex, 
-                    body: ArenaIndex, loop_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs5(remaining_body, var_steps, test_clause, body, loop_env).map_err(Into::into)
+    fn pack_do_body(&mut self, remaining_body: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex, 
+                    body: ArenaIndex, loop_env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_body, var_steps, test_clause, body, loop_env])
     }
 
-    /// Unpack DoBody data: [remaining_body, var_steps, test_clause, body, loop_env]
-    fn unpack_do_body(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs5(data).map_err(Into::into)
+    /// Unpack DoBody data
+    fn unpack_do_body(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data5(data_start)
     }
 
     /// Pack DoStep data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var]
-    fn pack_do_step(&self, remaining_steps: ArenaIndex, collected_vals: ArenaIndex, var_steps: ArenaIndex,
-                    test_clause: ArenaIndex, body: ArenaIndex, loop_env: ArenaIndex, current_var: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs7(remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var).map_err(Into::into)
+    fn pack_do_step(&mut self, remaining_steps: ArenaIndex, collected_vals: ArenaIndex, var_steps: ArenaIndex,
+                    test_clause: ArenaIndex, body: ArenaIndex, loop_env: ArenaIndex, current_var: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var])
     }
 
-    /// Unpack DoStep data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var]
-    fn unpack_do_step(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs7(data).map_err(Into::into)
+    /// Unpack DoStep data
+    fn unpack_do_step(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data7(data_start)
     }
 
     /// Pack ApplyFirst data: [args_list_expr, env]
-    fn pack_apply_first(&self, args_list_expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(args_list_expr, env).map_err(Into::into)
+    fn pack_apply_first(&mut self, args_list_expr: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[args_list_expr, env])
     }
 
-    /// Unpack ApplyFirst data: [args_list_expr, env]
-    fn unpack_apply_first(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack ApplyFirst data
+    fn unpack_apply_first(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack ApplySecond data: [func, env]
-    fn pack_apply_second(&self, func: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(func, env).map_err(Into::into)
+    fn pack_apply_second(&mut self, func: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[func, env])
     }
 
-    /// Unpack ApplySecond data: [func, env]
-    fn unpack_apply_second(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack ApplySecond data
+    fn unpack_apply_second(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
     /// Pack ValuesCollect data: [remaining, collected, env]
-    fn pack_values_collect(&self, remaining: ArenaIndex, collected: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs3(remaining, collected, env).map_err(Into::into)
+    fn pack_values_collect(&mut self, remaining: ArenaIndex, collected: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[remaining, collected, env])
     }
 
-    /// Unpack ValuesCollect data: [remaining, collected, env]
-    fn unpack_values_collect(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs3(data).map_err(Into::into)
+    /// Unpack ValuesCollect data
+    fn unpack_values_collect(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+        self.read_data3(data_start)
     }
 
     /// Pack DefineValue data: [name]
-    fn pack_define_value(&self, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs1(name).map_err(Into::into)
+    fn pack_define_value(&mut self, name: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[name])
     }
 
-    /// Unpack DefineValue data: [name]
-    fn unpack_define_value(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.unpack_refs1(data).map_err(Into::into)
+    /// Unpack DefineValue data
+    fn unpack_define_value(&self, data_start: usize) -> ArenaIndex {
+        self.read_data1(data_start)
     }
 
     /// Pack SetValue data: [name, env]
-    fn pack_set_value(&self, name: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs2(name, env).map_err(Into::into)
+    fn pack_set_value(&mut self, name: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[name, env])
     }
 
-    /// Unpack SetValue data: [name, env]
-    fn unpack_set_value(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        self.lisp.unpack_refs2(data).map_err(Into::into)
+    /// Unpack SetValue data
+    fn unpack_set_value(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        self.read_data2(data_start)
     }
 
-    /// Pack NativeArgsCollect data: [remaining, collected, id_val, env]
-    fn pack_native_args_collect(&self, remaining: ArenaIndex, collected: ArenaIndex, id: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let id_val = self.lisp.usize_val(id)?;
-        self.lisp.pack_refs4(remaining, collected, id_val, env).map_err(Into::into)
+    /// Pack NativeArgsCollect data: [remaining, collected, id_as_raw, env]
+    fn pack_native_args_collect(&mut self, remaining: ArenaIndex, collected: ArenaIndex, id: usize, env: ArenaIndex) -> Result<usize, EvalError> {
+        // Store id directly as ArenaIndex (it's just a usize wrapper)
+        let id_raw = ArenaIndex::new(id);
+        self.push_data(&[remaining, collected, id_raw, env])
     }
 
-    /// Unpack NativeArgsCollect data: [remaining, collected, id_val, env]
-    fn unpack_native_args_collect(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, usize, ArenaIndex), EvalError> {
-        let (remaining, collected, id_val, env) = self.lisp.unpack_refs4(data)?;
-        let id = match self.lisp.get(id_val)? {
-            Value::Usize(n) => n,
-            _ => return Err(self.make_error(ErrorKind::Generic, data)),
-        };
-        Ok((remaining, collected, id, env))
+    /// Unpack NativeArgsCollect data
+    fn unpack_native_args_collect(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, usize, ArenaIndex) {
+        let (remaining, collected, id_raw, env) = self.read_data4(data_start);
+        (remaining, collected, id_raw.raw(), env)
     }
 
-    /// Pack QuasiquoteCar data: [cdr, depth_val, env]
-    fn pack_quasiquote_car(&self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let depth_val = self.lisp.usize_val(depth)?;
-        self.lisp.pack_refs3(cdr, depth_val, env).map_err(Into::into)
+    /// Pack QuasiquoteCar data: [cdr, depth_as_raw, env]
+    fn pack_quasiquote_car(&mut self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<usize, EvalError> {
+        let depth_raw = ArenaIndex::new(depth);
+        self.push_data(&[cdr, depth_raw, env])
     }
 
-    /// Unpack QuasiquoteCar data: [cdr, depth_val, env]
-    fn unpack_quasiquote_car(&self, data: ArenaIndex) -> Result<(ArenaIndex, usize, ArenaIndex), EvalError> {
-        let (cdr, depth_val, env) = self.lisp.unpack_refs3(data)?;
-        let depth = match self.lisp.get(depth_val)? {
-            Value::Usize(n) => n,
-            _ => return Err(self.make_error(ErrorKind::Generic, data)),
-        };
-        Ok((cdr, depth, env))
+    /// Unpack QuasiquoteCar data
+    fn unpack_quasiquote_car(&self, data_start: usize) -> (ArenaIndex, usize, ArenaIndex) {
+        let (cdr, depth_raw, env) = self.read_data3(data_start);
+        (cdr, depth_raw.raw(), env)
     }
 
     /// Pack QuasiquoteCdr data: [car_val]
-    fn pack_quasiquote_cdr(&self, car_val: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs1(car_val).map_err(Into::into)
+    fn pack_quasiquote_cdr(&mut self, car_val: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[car_val])
     }
 
-    /// Unpack QuasiquoteCdr data: [car_val]
-    fn unpack_quasiquote_cdr(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.unpack_refs1(data).map_err(Into::into)
+    /// Unpack QuasiquoteCdr data
+    fn unpack_quasiquote_cdr(&self, data_start: usize) -> ArenaIndex {
+        self.read_data1(data_start)
     }
 
-    /// Pack QuasiquoteSplice data: [cdr, depth_val, env]
-    fn pack_quasiquote_splice(&self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let depth_val = self.lisp.usize_val(depth)?;
-        self.lisp.pack_refs3(cdr, depth_val, env).map_err(Into::into)
+    /// Pack QuasiquoteSplice data: [cdr, depth_as_raw, env]
+    fn pack_quasiquote_splice(&mut self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<usize, EvalError> {
+        let depth_raw = ArenaIndex::new(depth);
+        self.push_data(&[cdr, depth_raw, env])
     }
 
-    /// Unpack QuasiquoteSplice data: [cdr, depth_val, env]
-    fn unpack_quasiquote_splice(&self, data: ArenaIndex) -> Result<(ArenaIndex, usize, ArenaIndex), EvalError> {
-        let (cdr, depth_val, env) = self.lisp.unpack_refs3(data)?;
-        let depth = match self.lisp.get(depth_val)? {
-            Value::Usize(n) => n,
-            _ => return Err(self.make_error(ErrorKind::Generic, data)),
-        };
-        Ok((cdr, depth, env))
+    /// Unpack QuasiquoteSplice data
+    fn unpack_quasiquote_splice(&self, data_start: usize) -> (ArenaIndex, usize, ArenaIndex) {
+        let (cdr, depth_raw, env) = self.read_data3(data_start);
+        (cdr, depth_raw.raw(), env)
     }
 
     /// Pack QuasiquoteSpliceAppend data: [splice_val]
-    fn pack_quasiquote_splice_append(&self, splice_val: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.pack_refs1(splice_val).map_err(Into::into)
+    fn pack_quasiquote_splice_append(&mut self, splice_val: ArenaIndex) -> Result<usize, EvalError> {
+        self.push_data(&[splice_val])
     }
 
-    /// Unpack QuasiquoteSpliceAppend data: [splice_val]
-    fn unpack_quasiquote_splice_append(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.unpack_refs1(data).map_err(Into::into)
+    /// Unpack QuasiquoteSpliceAppend data
+    fn unpack_quasiquote_splice_append(&self, data_start: usize) -> ArenaIndex {
+        self.read_data1(data_start)
     }
     
     /// Convert a ParseError to EvalError with stdlib function name context
