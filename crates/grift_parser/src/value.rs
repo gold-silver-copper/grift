@@ -467,27 +467,17 @@ pub enum Value {
     /// Built-in function (optimized)
     Builtin(Builtin),
     
-    /// Standard library function (stored in static memory with caching)
+    /// Standard library function (stored in static memory)
     /// 
     /// Unlike Lambda which stores code in the arena, StdLib references static
-    /// function definitions. The function body is parsed on first call and cached,
-    /// providing good performance while minimizing initial arena cost.
+    /// function definitions. The function body is parsed on each call.
     /// 
     /// # Memory Efficiency
     /// 
     /// - Function definitions are in static memory (const strings)
-    /// - Parsed body and params are cached on first call
-    /// - Subsequent calls reuse the cached parsed AST
-    /// 
-    /// # Cache Field
-    /// 
-    /// - `cache`: NULL until first call, then points to `(body . params)` cons cell
-    /// 
-    /// Use `Lisp::stdlib()` to create and `Lisp::stdlib_cache()` to access cache.
-    StdLib {
-        func: StdLib,
-        cache: ArenaIndex,  // NULL = not yet parsed, else (body . params)
-    },
+    /// - No arena allocation for the function definition itself
+    /// - Parsed AST is temporary and GC'd after evaluation
+    StdLib(StdLib),
     
     /// Vector/Array (contiguous storage of values in the arena)
     /// 
@@ -627,7 +617,7 @@ impl Value {
     /// Check if this value is a stdlib function
     #[inline]
     pub const fn is_stdlib(&self) -> bool {
-        matches!(self, Value::StdLib { .. })
+        matches!(self, Value::StdLib(_))
     }
     
     /// Check if this value is a native (Rust) function
@@ -639,7 +629,7 @@ impl Value {
     /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib { .. } | Value::Native { .. })
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
     }
     
     /// Check if this value is an array
@@ -703,7 +693,7 @@ impl Value {
             Value::Symbol { .. } => "symbol",
             Value::Lambda { .. } => "procedure",
             Value::Builtin(_) => "procedure",
-            Value::StdLib { .. } => "procedure",
+            Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
             Value::String { .. } => "string",
@@ -717,14 +707,8 @@ impl<const N: usize> Trace<Value, N> for Value {
         match self {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::Native { .. } => {
+            Value::Native { .. } | Value::StdLib(_) => {
                 // No references
-            }
-            Value::StdLib { cache, .. } => {
-                // Trace cached cons cell (body . params) if it exists
-                if !cache.is_null() {
-                    tracer(*cache);
-                }
             }
             Value::Cons { car, cdr } => {
                 tracer(*car);

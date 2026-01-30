@@ -94,7 +94,7 @@ fn format_value_impl<const N: usize>(lisp: &Lisp<N>, idx: grift::ArenaIndex, buf
             buf.push_str(b.name());
             buf.push('>');
         }
-        Ok(Value::StdLib { func, .. }) => {
+        Ok(Value::StdLib(func)) => {
             buf.push_str("#<stdlib:");
             buf.push_str(func.name());
             buf.push('>');

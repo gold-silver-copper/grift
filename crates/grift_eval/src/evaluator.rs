@@ -489,7 +489,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Char(_) | 
-            Value::Builtin(_) | Value::StdLib { .. } | Value::Lambda { .. } |
+            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
@@ -774,27 +774,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
-                    Value::StdLib { func: s, cache } => {
-                        // StdLib: Use cached body/params if available, otherwise parse and cache
+                    Value::StdLib(s) => {
+                        // StdLib: Parse body and params on each call
                         self.pop_frame();
                         
-                        // Check if we have cached values, otherwise parse and cache
-                        let (body, params) = if !cache.is_null() {
-                            // Use cached values (fast path) - cache is (body . params)
-                            let body = self.lisp.car(cache)?;
-                            let params = self.lisp.cdr(cache)?;
-                            (body, params)
-                        } else {
-                            // First call - parse body and create param list, then cache
-                            let parsed_body = parse(self.lisp, s.body())
-                                .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
-                            let parsed_params = self.make_stdlib_param_list(s.params())?;
-                            
-                            // Update the StdLib value in the arena with cached values
-                            self.lisp.set_stdlib_cache(val, parsed_body, parsed_params)?;
-                            
-                            (parsed_body, parsed_params)
-                        };
+                        // Parse body and create param list
+                        let body = parse(self.lisp, s.body())
+                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        let params = self.make_stdlib_param_list(s.params())?;
                         
                         // Use the global env for stdlib functions (they're defined at top level)
                         let closure_env = self.global_env;

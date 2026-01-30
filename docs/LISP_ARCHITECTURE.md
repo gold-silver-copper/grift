@@ -96,24 +96,25 @@ pub enum Value {
     Symbol { chars: ArenaIndex },           // Points to String value
     Lambda { data: ArenaIndex },            // Points to (params . (body . env))
     Builtin(Builtin),                       // Optimized primitives
-    StdLib { func: StdLib, cache: ArenaIndex }, // NULL or (body . params)
-    Array { data: ArenaIndex, len: usize }, // Contiguous value storage
-    String { data: ArenaIndex, len: usize }, // Contiguous char storage
+    StdLib(StdLib),                        // Static function reference
+    Array { data: ArenaIndex },            // data[0]=Number(len), data[1..]=elements
+    String { data: ArenaIndex },           // data[0]=Number(len), data[1..]=chars
     Native { id: usize, name_hash: usize }, // Rust function reference
 }
 ```
 
 ### Memory Optimization
 
-The `Value` enum has been optimized to minimize its size (24 bytes on 64-bit systems):
+The `Value` enum has been optimized to minimize its size:
 
 1. **Lambda** - Stores only a single `ArenaIndex` pointing to a linked structure `(params . (body . env))` in the arena. This reduces Lambda's payload from 24 bytes (3 × ArenaIndex) to 8 bytes (1 × ArenaIndex).
 
-2. **StdLib** - Uses a single `cache` field that is either NULL (not yet parsed) or points to a cons cell `(body . params)`. This reduces StdLib's payload from 17+ bytes to 9 bytes.
+2. **StdLib** - Uses a simple tuple variant `StdLib(StdLib)` with just the function enum. Function bodies are parsed on each call from static strings.
 
-The trade-off is that accessing Lambda or StdLib fields requires additional arena lookups:
+3. **Array/String** - Store only a `data` pointer. The length is stored in the arena at `data[0]` as `Value::Number(len)`, with elements/characters starting at `data[1]`.
+
+The trade-off is that accessing Lambda fields requires additional arena lookups:
 - `Lisp::lambda_parts(idx)` extracts `(params, body, env)` from a Lambda
-- `Lisp::stdlib_cache(idx)` gets cached `(body, params)` from a StdLib
 
 This is an example of the classic space/time trade-off: we save memory at the cost of extra indirection.
 
@@ -135,7 +136,7 @@ Several additional techniques could further reduce memory usage:
 
 7. **Use u32 for ArenaIndex** - If the arena capacity is always < 4 billion, use `u32` instead of `usize` to halve index sizes on 64-bit systems.
 
-8. **Lazy stdlib parsing** - Currently cached after first call, but the StdLib enum could be stored once globally instead of per-value.
+8. **Stdlib caching** - Currently stdlib function bodies are parsed on each call. A global cache could store parsed ASTs to avoid repeated parsing.
 
 ### Reserved Slots
 
@@ -345,9 +346,9 @@ The stdlib is defined in `stdlib.scm` and processed by the `include_stdlib!` mac
 - Parsing overhead is minimal
 
 **Implementation**:
-- The `StdLib` value stores a `cache` field (NULL until first call, then `(body . params)`)
-- First call parses the body and caches it via `Lisp::set_stdlib_cache()`
-- Subsequent calls reuse the cached AST via `Lisp::stdlib_cache()`
+- The `StdLib` value is a simple tuple variant containing just the `StdLib` enum
+- Each call parses the body from the static string
+- Parsed AST is temporary and GC'd after evaluation
 
 ### Complex Numbers (stdlib)
 
@@ -497,9 +498,9 @@ The shorthand syntax (`` ` `` and `,`) is not currently supported. Use the full 
 
 All interned symbols are GC roots. If you create many unique symbols, they won't be collected.
 
-### 4. StdLib Re-parsing (Now Cached)
+### 4. StdLib Re-parsing
 
-StdLib functions cache their parsed body after first call. The initial parse happens once per function.
+StdLib functions parse their body from static strings on each call. This means recursive stdlib calls will allocate new AST nodes each time. For performance-critical recursive operations, consider using larger arenas or implementing critical functions as builtins.
 
 ## Performance Considerations
 

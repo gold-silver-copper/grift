@@ -1606,7 +1606,9 @@ fn test_stdlib_parses_on_each_call() {
 /// PITFALL: Recursive stdlib functions work via the global environment
 #[test]
 fn test_stdlib_recursion_works() {
-    let lisp: Lisp<5000> = Lisp::new();
+    // Note: Stdlib functions are parsed on each call (no caching), so recursive
+    // calls need more arena space. Use a larger arena for recursive tests.
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // length is recursive - should work for small lists

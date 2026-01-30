@@ -369,48 +369,10 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a stdlib function
     /// 
     /// StdLib functions are stored in static memory with on-demand parsing.
-    /// The function body is parsed on first call and cached for reuse.
+    /// The function body is parsed on each call.
     #[inline]
     pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::StdLib { 
-            func: s, 
-            cache: ArenaIndex::NULL,
-        })
-    }
-    
-    /// Get cached body and params from a StdLib value.
-    /// 
-    /// Returns `Some((body, params))` if cached, `None` if not yet parsed.
-    #[inline]
-    pub fn stdlib_cache(&self, index: ArenaIndex) -> ArenaResult<Option<(ArenaIndex, ArenaIndex)>> {
-        let val = self.get(index)?;
-        match val {
-            Value::StdLib { cache, .. } => {
-                if cache.is_null() {
-                    Ok(None)
-                } else {
-                    // cache points to (body . params)
-                    let body = self.car(cache)?;
-                    let params = self.cdr(cache)?;
-                    Ok(Some((body, params)))
-                }
-            }
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Set the cached body and params for a StdLib value.
-    #[inline]
-    pub fn set_stdlib_cache(&self, index: ArenaIndex, body: ArenaIndex, params: ArenaIndex) -> ArenaResult<()> {
-        let val = self.get(index)?;
-        match val {
-            Value::StdLib { func, .. } => {
-                // Create cons cell (body . params)
-                let cache = self.cons(body, params)?;
-                self.set(index, Value::StdLib { func, cache })
-            }
-            _ => Err(ArenaError::InvalidIndex),
-        }
+        self.alloc(Value::StdLib(s))
     }
     
     /// Allocate a native function reference.
