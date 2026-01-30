@@ -605,6 +605,26 @@ impl Value {
         matches!(self, Value::Float(_))
     }
     
+    /// Extract ArenaIndex from a Ref value.
+    /// Returns None if not a Ref.
+    #[inline]
+    pub const fn as_ref(&self) -> Option<ArenaIndex> {
+        match self {
+            Value::Ref(idx) => Some(*idx),
+            _ => None,
+        }
+    }
+    
+    /// Extract ArenaIndex from a Ref value, panicking if not a Ref.
+    /// Use only when you are certain the value is a Ref (e.g., after alloc_contiguous for Refs).
+    #[inline]
+    pub fn unwrap_ref(self) -> ArenaIndex {
+        match self {
+            Value::Ref(idx) => idx,
+            _ => panic!("expected Ref"),
+        }
+    }
+    
     /// Check if this value is a symbol
     #[inline]
     pub const fn is_symbol(&self) -> bool {
@@ -698,15 +718,6 @@ impl Value {
     pub const fn as_char(&self) -> Option<char> {
         match self {
             Value::Char(c) => Some(*c),
-            _ => None,
-        }
-    }
-    
-    /// Get the arena index if this is a ref
-    #[inline]
-    pub const fn as_ref(&self) -> Option<ArenaIndex> {
-        match self {
-            Value::Ref(idx) => Some(*idx),
             _ => None,
         }
     }

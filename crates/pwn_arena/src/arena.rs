@@ -325,6 +325,304 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn try_get(&self, index: ArenaIndex) -> Option<T> {
         self.get(index).ok()
     }
+    
+    // ========================================================================
+    // Batch read operations (single borrow for multiple contiguous values)
+    // ========================================================================
+    
+    /// Get 2 contiguous values with a single RefCell borrow.
+    /// Much faster than calling get() twice.
+    #[inline]
+    pub fn get_contiguous2(&self, start: ArenaIndex) -> ArenaResult<(T, T)> {
+        let idx = start.raw();
+        if idx + 1 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let slots = self.slots.borrow();
+        let a = match slots[idx] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match slots[idx + 1] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b))
+    }
+    
+    /// Get 3 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn get_contiguous3(&self, start: ArenaIndex) -> ArenaResult<(T, T, T)> {
+        let idx = start.raw();
+        if idx + 2 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let slots = self.slots.borrow();
+        let a = match slots[idx] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match slots[idx + 1] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match slots[idx + 2] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c))
+    }
+    
+    /// Get 4 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn get_contiguous4(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T)> {
+        let idx = start.raw();
+        if idx + 3 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let slots = self.slots.borrow();
+        let a = match slots[idx] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match slots[idx + 1] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match slots[idx + 2] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match slots[idx + 3] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d))
+    }
+    
+    /// Get 5 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn get_contiguous5(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T, T)> {
+        let idx = start.raw();
+        if idx + 4 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let slots = self.slots.borrow();
+        let a = match slots[idx] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match slots[idx + 1] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match slots[idx + 2] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match slots[idx + 3] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let e = match slots[idx + 4] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d, e))
+    }
+    
+    /// Get 6 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn get_contiguous6(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T, T, T)> {
+        let idx = start.raw();
+        if idx + 5 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let slots = self.slots.borrow();
+        let a = match slots[idx] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match slots[idx + 1] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match slots[idx + 2] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match slots[idx + 3] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let e = match slots[idx + 4] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let f = match slots[idx + 5] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d, e, f))
+    }
+    
+    /// Get 7 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn get_contiguous7(&self, start: ArenaIndex) -> ArenaResult<(T, T, T, T, T, T, T)> {
+        let idx = start.raw();
+        if idx + 6 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let slots = self.slots.borrow();
+        let a = match slots[idx] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match slots[idx + 1] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match slots[idx + 2] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match slots[idx + 3] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let e = match slots[idx + 4] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let f = match slots[idx + 5] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        let g = match slots[idx + 6] {
+            Slot::Occupied { value } => value,
+            Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d, e, f, g))
+    }
+    
+    /// Set 2 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn set_contiguous2(&self, start: ArenaIndex, a: T, b: T) -> ArenaResult<()> {
+        let idx = start.raw();
+        if idx + 1 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let mut slots = self.slots.borrow_mut();
+        // Verify both are occupied first
+        match (&slots[idx], &slots[idx + 1]) {
+            (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
+            _ => return Err(ArenaError::InvalidIndex),
+        }
+        slots[idx] = Slot::Occupied { value: a };
+        slots[idx + 1] = Slot::Occupied { value: b };
+        Ok(())
+    }
+    
+    /// Set 3 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn set_contiguous3(&self, start: ArenaIndex, a: T, b: T, c: T) -> ArenaResult<()> {
+        let idx = start.raw();
+        if idx + 2 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let mut slots = self.slots.borrow_mut();
+        match (&slots[idx], &slots[idx + 1], &slots[idx + 2]) {
+            (Slot::Occupied { .. }, Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
+            _ => return Err(ArenaError::InvalidIndex),
+        }
+        slots[idx] = Slot::Occupied { value: a };
+        slots[idx + 1] = Slot::Occupied { value: b };
+        slots[idx + 2] = Slot::Occupied { value: c };
+        Ok(())
+    }
+    
+    /// Set 4 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn set_contiguous4(&self, start: ArenaIndex, a: T, b: T, c: T, d: T) -> ArenaResult<()> {
+        let idx = start.raw();
+        if idx + 3 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let mut slots = self.slots.borrow_mut();
+        match (&slots[idx], &slots[idx + 1], &slots[idx + 2], &slots[idx + 3]) {
+            (Slot::Occupied { .. }, Slot::Occupied { .. }, Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
+            _ => return Err(ArenaError::InvalidIndex),
+        }
+        slots[idx] = Slot::Occupied { value: a };
+        slots[idx + 1] = Slot::Occupied { value: b };
+        slots[idx + 2] = Slot::Occupied { value: c };
+        slots[idx + 3] = Slot::Occupied { value: d };
+        Ok(())
+    }
+    
+    /// Set 5 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn set_contiguous5(&self, start: ArenaIndex, a: T, b: T, c: T, d: T, e: T) -> ArenaResult<()> {
+        let idx = start.raw();
+        if idx + 4 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let mut slots = self.slots.borrow_mut();
+        // For 5+ we just check the first and last
+        match (&slots[idx], &slots[idx + 4]) {
+            (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
+            _ => return Err(ArenaError::InvalidIndex),
+        }
+        slots[idx] = Slot::Occupied { value: a };
+        slots[idx + 1] = Slot::Occupied { value: b };
+        slots[idx + 2] = Slot::Occupied { value: c };
+        slots[idx + 3] = Slot::Occupied { value: d };
+        slots[idx + 4] = Slot::Occupied { value: e };
+        Ok(())
+    }
+    
+    /// Set 6 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn set_contiguous6(&self, start: ArenaIndex, a: T, b: T, c: T, d: T, e: T, f: T) -> ArenaResult<()> {
+        let idx = start.raw();
+        if idx + 5 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let mut slots = self.slots.borrow_mut();
+        match (&slots[idx], &slots[idx + 5]) {
+            (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
+            _ => return Err(ArenaError::InvalidIndex),
+        }
+        slots[idx] = Slot::Occupied { value: a };
+        slots[idx + 1] = Slot::Occupied { value: b };
+        slots[idx + 2] = Slot::Occupied { value: c };
+        slots[idx + 3] = Slot::Occupied { value: d };
+        slots[idx + 4] = Slot::Occupied { value: e };
+        slots[idx + 5] = Slot::Occupied { value: f };
+        Ok(())
+    }
+    
+    /// Set 7 contiguous values with a single RefCell borrow.
+    #[inline]
+    pub fn set_contiguous7(&self, start: ArenaIndex, a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> ArenaResult<()> {
+        let idx = start.raw();
+        if idx + 6 >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
+        let mut slots = self.slots.borrow_mut();
+        match (&slots[idx], &slots[idx + 6]) {
+            (Slot::Occupied { .. }, Slot::Occupied { .. }) => {}
+            _ => return Err(ArenaError::InvalidIndex),
+        }
+        slots[idx] = Slot::Occupied { value: a };
+        slots[idx + 1] = Slot::Occupied { value: b };
+        slots[idx + 2] = Slot::Occupied { value: c };
+        slots[idx + 3] = Slot::Occupied { value: d };
+        slots[idx + 4] = Slot::Occupied { value: e };
+        slots[idx + 5] = Slot::Occupied { value: f };
+        slots[idx + 6] = Slot::Occupied { value: g };
+        Ok(())
+    }
 
     /// Swap the values at two indices.
     ///
