@@ -759,8 +759,7 @@
 
 ;;; ============================================================
 ;;; Complex Numbers (R7RS Section 6.2.6)
-;;; Complex numbers are represented as pairs (real . imag)
-;;; Tagged with 'complex for type checking
+;;; Complex numbers are represented as tagged lists: (complex real imag)
 ;;; ============================================================
 
 ;;; (make-rectangular x1 x2) - Create complex from real and imaginary parts
@@ -861,8 +860,7 @@
 
 ;;; ============================================================
 ;;; Fractions/Rationals (R7RS Section 6.2.6)
-;;; Fractions are represented as pairs (numerator . denominator)
-;;; Tagged with 'fraction for type checking
+;;; Fractions are represented as tagged lists: (fraction numerator denominator)
 ;;; Automatically simplified to lowest terms
 ;;; ============================================================
 

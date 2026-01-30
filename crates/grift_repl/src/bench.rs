@@ -1027,7 +1027,7 @@ fn main() {
     // SECTION 14: Garbage Collection
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 6: Garbage Collection");
+    println!("Section 14: Garbage Collection");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // GC stress test: allocate lots, then collect
