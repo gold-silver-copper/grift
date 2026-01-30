@@ -94,14 +94,7 @@ pub use continuation::{Cont, TrampolineState};
 ///
 /// # Example
 /// 
-/// The macro `extract_args!(self, args, a, b, c)` expands to:
-/// ```rust,ignore
-/// let a = self.lisp.car(args)?;
-/// let args = self.lisp.cdr(args)?;
-/// let b = self.lisp.car(args)?;
-/// let args = self.lisp.cdr(args)?;
-/// let c = self.lisp.car(args)?;
-/// ```
+/// `extract_args!(self, args, a, b, c)` extracts three arguments from `args`.
 #[macro_export]
 macro_rules! extract_args {
     ($self:expr, $args:ident, $var:ident) => {
@@ -122,13 +115,8 @@ macro_rules! extract_args {
 ///
 /// # Example
 /// 
-/// The macro `builtin_unary_pred!(self, args, |v| v.is_nil())` expands to:
-/// ```rust,ignore
-/// let arg = self.lisp.car(args)?;
-/// let val = self.lisp.get(arg)?;
-/// let check = |v: Value| v.is_nil();
-/// self.lisp.boolean(check(val))?;
-/// ```
+/// `builtin_unary_pred!(self, args, |v| v.is_nil())` extracts one argument
+/// and returns a boolean result of the predicate.
 #[macro_export]
 macro_rules! builtin_unary_pred {
     ($self:expr, $args:expr, $check:expr) => {{
