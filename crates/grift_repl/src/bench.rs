@@ -143,11 +143,11 @@ fn main() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║           Lisp Interpreter Stress Test Suite                 ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║ Arena size: 50,000 cells                                     ║");
+    println!("║ Arena size: 115,000 cells                                    ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
 
-    let lisp: Lisp<50000> = Lisp::new();
+    let lisp: Lisp<115000> = Lisp::new();
     let mut eval = match Evaluator::new(&lisp) {
         Ok(e) => e,
         Err(e) => {
