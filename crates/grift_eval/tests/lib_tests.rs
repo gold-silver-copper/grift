@@ -222,7 +222,8 @@ fn test_auto_memoization_with_multiple_args() {
 #[test]
 fn test_auto_memoization_cache_works() {
     // Verify that caching actually happens by checking repeated calls
-    let lisp: Lisp<6000> = Lisp::new();
+    // Increased arena size to accommodate pack/unpack cons-list storage
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))").unwrap();
@@ -251,7 +252,8 @@ fn test_auto_memoization_mutual_recursion_detection() {
 #[test]
 fn test_auto_memoization_nested_recursive_calls() {
     // Test with deeply nested recursive structure
-    let lisp: Lisp<5000> = Lisp::new();
+    // Increased arena size to accommodate pack/unpack cons-list storage
+    let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Sum function - tail recursive
@@ -263,7 +265,8 @@ fn test_auto_memoization_nested_recursive_calls() {
 #[test]
 fn test_lru_cache_eviction() {
     // Test that cache eviction works by exceeding MAX_MEMO_CACHE_SIZE
-    let lisp: Lisp<10000> = Lisp::new();
+    // Increased arena size to accommodate pack/unpack cons-list storage
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (identity n) (if (= n 0) 0 (identity (- n 1))))").unwrap();
