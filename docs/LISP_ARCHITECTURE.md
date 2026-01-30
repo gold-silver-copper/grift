@@ -349,6 +349,67 @@ The stdlib is defined in `stdlib.scm` and processed by the `include_stdlib!` mac
 - First call parses the body and caches it via `Lisp::set_stdlib_cache()`
 - Subsequent calls reuse the cached AST via `Lisp::stdlib_cache()`
 
+### Complex Numbers (stdlib)
+
+Complex numbers are represented as tagged lists: `(complex real imag)`. This provides full complex arithmetic without modifying the `Value` enum.
+
+```lisp
+; Create complex numbers
+(make-rectangular 3 4)           ; => (complex 3 4)
+(make-polar 5 0.785)             ; => (complex 3.54... 3.54...)
+
+; Access components
+(real-part (make-rectangular 3 4))  ; => 3
+(imag-part (make-rectangular 3 4))  ; => 4
+(magnitude (make-rectangular 3 4))  ; => 5.0
+(angle (make-rectangular 3 4))      ; => 0.927...
+
+; Arithmetic
+(complex-add z1 z2)
+(complex-sub z1 z2)
+(complex-mul z1 z2)
+(complex-div z1 z2)
+
+; Other operations
+(complex-conjugate z)
+(complex-exp z)
+(complex-log z)
+(complex-sqrt z)
+```
+
+### Fractions/Rationals (stdlib)
+
+Fractions are represented as tagged lists: `(fraction numerator denominator)`. Fractions are automatically simplified to lowest terms.
+
+```lisp
+; Create fractions (automatically simplified)
+(make-fraction 6 4)              ; => (fraction 3 2)
+(make-fraction -6 4)             ; => (fraction -3 2)
+
+; Access components
+(numerator (make-fraction 6 4))  ; => 3
+(denominator (make-fraction 6 4)); => 2
+
+; Arithmetic
+(fraction-add f1 f2)
+(fraction-sub f1 f2)
+(fraction-mul f1 f2)
+(fraction-div f1 f2)
+
+; Comparison
+(fraction-eq? f1 f2)
+(fraction-lt? f1 f2)
+(fraction-le? f1 f2)
+(fraction-gt? f1 f2)
+(fraction-ge? f1 f2)
+
+; Other operations
+(fraction-negate f)
+(fraction-reciprocal f)
+(fraction-abs f)
+(fraction->number f)             ; Convert to number (exact if possible)
+```
+
 ## Quasiquote
 
 `quasiquote` enables template-based code generation:

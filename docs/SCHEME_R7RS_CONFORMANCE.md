@@ -56,6 +56,8 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Constants**: `get-pi`, `get-e`, `get-epsilon`
 - ✅ **Character Predicates**: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `digit-value`, `char-foldcase`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
 - ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`, `string-map`, `string-for-each`, `string-null?`, `string-reverse`, `string-contains`, `string-join`, `string-split`, `string-trim`
+- ✅ **Complex Numbers** (stdlib representation): `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `angle`, `complex-number?`, `complex-add`, `complex-sub`, `complex-mul`, `complex-div`, `complex-conjugate`, `complex-exp`, `complex-log`, `complex-sqrt`
+- ✅ **Fractions/Rationals** (stdlib representation): `make-fraction`, `fraction?`, `numerator`, `denominator`, `fraction->number`, `fraction-add`, `fraction-sub`, `fraction-mul`, `fraction-div`, `fraction-eq?`, `fraction-lt?`, `fraction-le?`, `fraction-gt?`, `fraction-ge?`, `fraction-negate`, `fraction-reciprocal`, `fraction-abs`
 
 ### 🔧 Implementation Extensions (Non-R7RS)
 
@@ -108,6 +110,10 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [x] Float predicates: `nan?`, `infinite?`, `finite?`
 - [x] Type predicates: `real?`, `rational?`, `complex?`
 - [x] Type conversion: `exact->inexact`, `inexact->exact`
+- [x] Complex numbers (stdlib representation with tagged lists)
+- [x] Fractions/Rationals (stdlib representation with tagged lists)
+
+**Note**: Complex numbers and fractions are implemented in the stdlib using tagged list representations (`(complex real imag)` and `(fraction num denom)`), rather than as native Value types. This maintains the `no_std`, `no_alloc` constraint while providing full complex and fraction arithmetic.
 
 #### 1.5 Transcendental Functions ✅ (Section 6.2.6)
 All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (no libm dependency):
