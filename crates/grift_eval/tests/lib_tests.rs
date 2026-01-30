@@ -146,10 +146,11 @@ fn test_eval_recursion() {
 // Recursive functions are automatically memoized with bounded LRU caches
 // ═══════════════════════════════════════════════════════════════════════════
 
-// NOTE: Some tests may require RUST_MIN_STACK=8388608 (8MB) to run
+// NOTE: Some tests may require RUST_MIN_STACK=16777216 (16MB) to run
 // This is due to Rust's default test thread stack being too small for
-// deep parsing/evaluation of complex Lisp expressions. The runtime
-// evaluator uses trampolining and has no such limitation.
+// deep parsing/evaluation of complex Lisp expressions, especially when
+// using nested stdlib functions. The runtime evaluator uses trampolining
+// but nested evaluations during let/define still use Rust recursion.
 
 #[test]
 fn test_simple_fib_define() {
@@ -162,7 +163,7 @@ fn test_simple_fib_define() {
 
 #[test]
 fn test_auto_memoization_fibonacci() {
-    // NOTE: This test requires larger stack: RUST_MIN_STACK=8388608
+    // NOTE: This test requires larger stack: RUST_MIN_STACK=16777216
     // Fibonacci with double recursion tests automatic memoization
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -3393,9 +3394,9 @@ fn test_fraction_to_number() {
 
 
 // Additional complex number tests for better coverage
-// Note: complex-div and other deeply nested stdlib functions have issues
-// with the stdlib caching mechanism that causes UnboundVariable errors.
-// This is a pre-existing interpreter limitation documented in this PR.
+// Note: The previous issue with deeply nested stdlib function calls
+// (UnboundVariable errors) has been fixed by using eval_preserving_stack
+// instead of eval_in_env in internal evaluation functions.
 
 // Fraction error case tests
 
@@ -3407,4 +3408,35 @@ fn test_fraction_zero_denominator_error() {
     // Creating a fraction with zero denominator should error
     let result = eval.eval_str("(make-fraction 1 0)");
     assert!(result.is_err());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NESTED STDLIB CALL TESTS
+// Tests for nested stdlib function calls (issue: deeply nested stdlib calls)
+// NOTE: These tests require RUST_MIN_STACK=16777216 (16MB) to run due to
+// the recursive nature of eval_preserving_stack through the trampoline.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_nested_stdlib_calls() {
+    // This test verifies that stdlib functions work correctly when called
+    // as arguments to other functions. This was a bug where `let` and other
+    // forms called `eval_in_env` which reset the continuation stack.
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic nested stdlib call: (+ 1 (sqrt 4)) should return 3.0
+    let result = eval.eval_str("(+ 1 (sqrt 4))").unwrap();
+    let val = lisp.get(result).unwrap().as_float().unwrap();
+    assert!((val - 3.0).abs() < 0.001, "Expected 3.0, got {}", val);
+    
+    // Multiple nested stdlib calls
+    let result = eval.eval_str("(+ (sqrt 4) (sqrt 9))").unwrap();
+    let val = lisp.get(result).unwrap().as_float().unwrap();
+    assert!((val - 5.0).abs() < 0.001, "Expected 5.0, got {}", val);
+    
+    // Deeply nested stdlib calls
+    let result = eval.eval_str("(+ 1 (* 2 (sqrt 4)))").unwrap();
+    let val = lisp.get(result).unwrap().as_float().unwrap();
+    assert!((val - 5.0).abs() < 0.001, "Expected 5.0, got {}", val);
 }
