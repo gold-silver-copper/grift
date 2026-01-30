@@ -147,6 +147,29 @@
 (define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
 
 ;;; ============================================================
+;;; Math Functions (R7RS Section 6.2.6)
+;;; ============================================================
+
+;;; (sqrt x) - Square root using Newton-Raphson iteration
+;;; Returns a floating-point approximation of the square root
+(define (sqrt x)
+  (sqrt-iter 1.0 x))
+
+;;; (sqrt-iter guess x) - Newton-Raphson iteration helper for sqrt
+(define (sqrt-iter guess x)
+  (if (sqrt-good-enough? guess x)
+      guess
+      (sqrt-iter (sqrt-improve guess x) x)))
+
+;;; (sqrt-good-enough? guess x) - Check if sqrt approximation is good enough
+(define (sqrt-good-enough? guess x)
+  (< (abs (- (* guess guess) x)) 0.00001))
+
+;;; (sqrt-improve guess x) - Improve sqrt approximation using Newton-Raphson
+(define (sqrt-improve guess x)
+  (/ (+ guess (/ x guess)) 2.0))
+
+;;; ============================================================
 ;;; Additional R7RS List Functions (Section 6.4)
 ;;; ============================================================
 
