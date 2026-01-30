@@ -19,14 +19,16 @@
 //! - `Nil` - The empty list (NOT false!)
 //! - `True` - Boolean true (#t)
 //! - `False` - Boolean false (#f)
-//! - `Number(isize)` - Integer numbers (exact)
-//! - `Float(f64)` - Floating-point numbers (inexact)
+//! - `Number(isize)` - Integer numbers
 //! - `Char(char)` - Single character
-//! - `Cons { car, cdr }` - Pair/list cell
-//! - `Symbol { chars }` - Symbol with contiguous string storage
-//! - `Lambda { params, body, env }` - Closure
+//! - `Cons { car, cdr }` - Pair/list cell with inline indices
+//! - `Symbol(ArenaIndex)` - Symbol pointing to interned string
+//! - `Lambda { params, body_env }` - Closure with inline indices
 //! - `Builtin(Builtin)` - Optimized built-in function
 //! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
+//! - `Array { len, data }` - Vector with inline length
+//! - `String { len, data }` - String with inline length
+//! - `Native { id, name_hash }` - Native Rust function reference
 //!
 //! ## Reserved Slots
 //!

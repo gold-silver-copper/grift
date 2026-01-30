@@ -31,7 +31,7 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Booleans**: `not`, `boolean?`
 - ✅ **Pairs/Lists**: `car`, `cdr`, `cons`, `list`, `null?`, `pair?`, `set-car!`, `set-cdr!`
 - ✅ **Numbers**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `quotient`, `=`, `<`, `>`, `<=`, `>=`, `number?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
-- ✅ **Floats**: Full support for floating-point literals (`3.14`, `1e-15`, `+nan.0`, `+inf.0`, `-inf.0`)
+- ⚠️ **Numbers are integers only**: This implementation uses only exact integers (isize). Floating-point numbers are not supported.
 - ✅ **Number Operations**: `abs`, `max`, `min`, `gcd`, `lcm`, `expt`, `square`, `floor`, `ceiling`, `truncate`, `round`
 - ✅ **Number Predicates**: `zero?`, `positive?`, `negative?`, `odd?`, `even?`
 - ✅ **Type Predicates**: `symbol?`, `procedure?`
@@ -49,15 +49,10 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ **Higher-Order Functions**: `for-each`, `any`, `every`, `filter-map`, `partition`, `remove`, `delete`
 - ✅ **Utilities**: `compose`, `identity`, `constantly`, `flip`, `curry`, `sign`, `boolean-eq`
 - ✅ **Car/Cdr Compositions**: Full set of `caar`, `cadr`, `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `cdaar`, `cdadr`, `cddar`, `caddr`, `cdddr`, `cadddr`, `cddddr`
-- ✅ **Math Functions**: `sqrt`, `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan1`, `atan2`, `sinh`, `cosh`, `tanh`, `log10`, `log2`, `log-base`
+- ✅ **Math Functions**: `sqrt` (integer square root), `square`, `cube`
 - ✅ **Numeric Utilities**: `sum`, `product`, `average`
-- ✅ **Float Predicates**: `nan?`, `infinite?`, `finite?`, `real?`, `rational?`, `complex?`
-- ✅ **Type Conversion**: `exact->inexact`, `inexact->exact`
-- ✅ **Constants**: `get-pi`, `get-e`, `get-epsilon`
 - ✅ **Character Predicates**: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `digit-value`, `char-foldcase`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
 - ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`, `string-map`, `string-for-each`, `string-null?`, `string-reverse`, `string-contains`, `string-join`, `string-split`, `string-trim`
-- ✅ **Complex Numbers** (stdlib representation): `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `angle`, `complex-number?`, `complex-add`, `complex-sub`, `complex-mul`, `complex-div`, `complex-conjugate`, `complex-exp`, `complex-log`, `complex-sqrt`
-- ✅ **Fractions/Rationals** (stdlib representation): `make-fraction`, `fraction?`, `numerator`, `denominator`, `fraction->number`, `fraction-add`, `fraction-sub`, `fraction-mul`, `fraction-div`, `fraction-eq?`, `fraction-lt?`, `fraction-le?`, `fraction-gt?`, `fraction-ge?`, `fraction-negate`, `fraction-reciprocal`, `fraction-abs`
 
 ### 🔧 Implementation Extensions (Non-R7RS)
 
@@ -98,33 +93,27 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [x] Implement `max` / `min` - Maximum and minimum
 - [x] Implement `quotient` - Integer quotient (alias for truncate-quotient)
 - [x] Implement `gcd` / `lcm` - Greatest common divisor / least common multiple
-- [x] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations (works for floats too)
+- [x] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations (identity for integers)
 - [x] Implement `expt` - Exponentiation
 - [x] Implement `square` - Square of a number
 - [x] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
 
-#### 1.4 Numerical Tower ✅ (Section 6.2)
-- [x] Implement floating-point number parsing (e.g., `3.14`, `1e-15`, `-2.5`)
-- [x] Implement special float values (`+nan.0`, `+inf.0`, `-inf.0`)
-- [x] Mixed integer/float arithmetic (auto-promotion)
-- [x] Float predicates: `nan?`, `infinite?`, `finite?`
-- [x] Type predicates: `real?`, `rational?`, `complex?`
-- [x] Type conversion: `exact->inexact`, `inexact->exact`
-- [x] Complex numbers (stdlib representation with tagged lists)
-- [x] Fractions/Rationals (stdlib representation with tagged lists)
+#### 1.4 Numerical Tower (Section 6.2)
+**Status**: Integers only. No floating-point support.
 
-**Note**: Complex numbers and fractions are implemented in the stdlib using tagged list representations (`(complex real imag)` and `(fraction num denom)`), rather than as native Value types. This maintains the `no_std`, `no_alloc` constraint while providing full complex and fraction arithmetic.
+- [x] Integer arithmetic works correctly
+- [x] `exact?` always returns #t (all numbers are exact integers)
+- [x] `inexact?` always returns #f (no inexact numbers)
+- [ ] Floating-point numbers not implemented (no floats, NaN, infinity)
+- [ ] Complex numbers not implemented
+- [ ] Fractions/Rationals not implemented
 
-#### 1.5 Transcendental Functions ✅ (Section 6.2.6)
-All implemented in `stdlib.scm` using Taylor series and Newton-Raphson methods (no libm dependency):
-- [x] Constants: `get-pi`, `get-e`, `get-epsilon`
-- [x] Square root: `sqrt` (Newton-Raphson)
-- [x] Exponential: `exp` (Taylor series)
-- [x] Logarithm: `log` (Newton's method + series)
-- [x] Logarithm variants: `log10`, `log2`, `log-base`
-- [x] Trigonometric: `sin`, `cos`, `tan` (Taylor series)
-- [x] Inverse trig: `asin`, `acos`, `atan1`, `atan2` (Newton's method + series)
-- [x] Hyperbolic: `sinh`, `cosh`, `tanh`
+**Note**: This implementation intentionally supports only exact integers to maintain `no_std`, `no_alloc` constraints and simplicity.
+
+#### 1.5 Integer Math Functions
+- [x] `sqrt` - Integer square root (Newton-Raphson, returns largest integer whose square is ≤ x)
+- [x] `square`, `cube` - Power functions
+- [x] `expt` - Integer exponentiation
 
 #### 1.6 Convenience Conditionals ✅
 - [x] Implement `when` - Execute body when test is true

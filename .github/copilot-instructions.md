@@ -23,7 +23,7 @@ This is a Rust workspace containing a minimal Lisp implementation (named "grift"
 
 2. **Use the arena allocator** - All dynamic data structures must use `pwn_arena` for allocation.
 
-3. **Core library only** - Use `core::` instead of `std::` in no_std crates (e.g., `core::cell::RefCell`, `core::option::Option`).
+3. **Core library only** - Use `core::` instead of `std::` in no_std crates (e.g., `core::cell::Cell`, `core::option::Option`).
 
 4. **Copy types** - Types stored in the arena must implement the `Copy` trait.
 

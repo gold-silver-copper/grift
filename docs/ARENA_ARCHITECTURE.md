@@ -40,16 +40,16 @@ enum Slot<T: Copy> {
 
 Free slots form a linked list. Allocation pops from the head; freeing pushes to the head. Both are O(1).
 
-### 4. Interior Mutability with RefCell
+### 4. Interior Mutability with Cell
 
-The arena uses `RefCell` for interior mutability, allowing it to be used from shared references:
+The arena uses `Cell` for interior mutability, allowing it to be used from shared references:
 
 ```rust
 pub struct Arena<T: Copy, const N: usize> {
-    slots: RefCell<[Slot<T>; N]>,
-    free_head: RefCell<usize>,
-    len: RefCell<usize>,
-    gc_enabled: RefCell<bool>,
+    slots: [Cell<Slot<T>>; N],
+    free_head: Cell<usize>,
+    len: Cell<usize>,
+    gc_enabled: Cell<bool>,
 }
 ```
 
@@ -145,13 +145,13 @@ loop {
 
 **Mitigation**: For non-Copy types, wrap them in a newtype with manual memory management.
 
-### RefCell Runtime Checks
+### Cell vs RefCell
 
-**Trade-off**: Runtime borrow checking has some overhead.
+**Trade-off**: Using `Cell` instead of `RefCell`.
 
-**Rationale**: Safe interior mutability without `unsafe`. The interpreter needs to allocate from shared references.
+**Rationale**: `Cell` provides safe interior mutability without runtime borrow checking overhead. Since stored types must be `Copy`, we can use `get()`/`set()` which are zero-cost.
 
-**Mitigation**: The overhead is minimal (a few instructions per access). For performance-critical code, consider arena-per-thread patterns.
+**Benefit**: No risk of borrow panics, no runtime overhead for borrow tracking.
 
 ### O(N) `len()` and `is_empty()`
 

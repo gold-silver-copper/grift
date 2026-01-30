@@ -101,12 +101,12 @@ use grift::{run_repl, format_value, value_to_string};
 
 ```scheme
 42          ; Integer
-3.14        ; Float
 #t #f       ; Booleans (only #f is false!)
 'symbol     ; Symbol
 "hello"     ; String
 #\a #\space ; Characters
 '(1 2 3)    ; List
+#(1 2 3)    ; Vector
 ```
 
 ### Special Forms
@@ -187,10 +187,10 @@ use grift::{run_repl, format_value, value_to_string};
 (reverse lst)               ; Reverse list
 (range 0 5)                 ; => (0 1 2 3 4)
 
-; Math (pure Scheme, no libm)
-(sqrt 2)                    ; => 1.4142...
-(sin 0.5)                   ; => 0.4794...
-(log 10)                    ; => 2.3025...
+; Math (integer arithmetic)
+(sqrt 16)                   ; => 4 (integer square root)
+(expt 2 10)                 ; => 1024
+(gcd 12 8)                  ; => 4
 ```
 
 ## ⚠️ Important: Truthiness

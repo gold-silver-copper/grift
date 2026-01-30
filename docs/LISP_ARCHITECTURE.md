@@ -93,13 +93,15 @@ pub enum Value {
     Number(isize),                          // Integers
     Char(char),                             // Characters
     Cons { car: ArenaIndex, cdr: ArenaIndex },
-    Symbol { chars: ArenaIndex },           // Points to String value
-    Lambda { data: ArenaIndex },            // Points to (params . (body . env))
+    Symbol(ArenaIndex),                     // Points to String value
+    Lambda { params: ArenaIndex, body_env: ArenaIndex },
     Builtin(Builtin),                       // Optimized primitives
-    StdLib(StdLib),                        // Static function reference
-    Array { data: ArenaIndex },            // data[0]=Number(len), data[1..]=elements
-    String { data: ArenaIndex },           // data[0]=Number(len), data[1..]=chars
+    StdLib(StdLib),                         // Static function reference
+    Array { len: usize, data: ArenaIndex }, // Inline length + data pointer
+    String { len: usize, data: ArenaIndex },// Inline length + data pointer
     Native { id: usize, name_hash: usize }, // Rust function reference
+    Ref(ArenaIndex),                        // Internal reference
+    Usize(usize),                           // Internal unsigned int
 }
 ```
 
@@ -111,32 +113,27 @@ The `Value` enum has been optimized to minimize its size:
 
 2. **StdLib** - Uses a simple tuple variant `StdLib(StdLib)` with just the function enum. Function bodies are parsed on each call from static strings.
 
-3. **Array/String** - Store only a `data` pointer. The length is stored in the arena at `data[0]` as `Value::Number(len)`, with elements/characters starting at `data[1]`.
+3. **Array/String** - Store length inline in the Value variant for O(1) access. The `data` pointer points directly to the first element (no length header in arena). Empty arrays/strings have `len=0` and `data == NIL`.
 
-The trade-off is that accessing Lambda fields requires additional arena lookups:
-- `Lisp::lambda_parts(idx)` extracts `(params, body, env)` from a Lambda
+4. **Lambda** - Stores `params` and `body_env` inline. The `body_env` points to a cons cell `(body . env)`.
 
-This is an example of the classic space/time trade-off: we save memory at the cost of extra indirection.
+This design optimizes for common operations (length queries, iteration) while keeping arena usage minimal.
 
 ### Further Memory Optimization Opportunities
 
 Several additional techniques could further reduce memory usage:
 
-1. **NaN-boxing** - Use the NaN space in 64-bit floats to encode values inline. This could pack small integers, symbols, and singletons without arena allocation.
+1. **Tagged pointers** - Use the lower bits of ArenaIndex for type tags, eliminating the discriminant byte in some cases.
 
-2. **Tagged pointers** - Use the lower bits of ArenaIndex for type tags, eliminating the discriminant byte in some cases.
+2. **Compact Array/String representation** - For small arrays (≤2 elements) or short strings (≤7 chars), store data inline in the Value variant itself.
 
-3. **Compact Array/String representation** - For small arrays (≤2 elements) or short strings (≤7 chars), store data inline in the Value variant itself.
+3. **Intern table optimization** - Use a hash table with open addressing instead of an alist, reducing memory per interned symbol.
 
-4. **Intern table optimization** - Use a hash table with open addressing instead of an alist, reducing memory per interned symbol.
+4. **Deduplicate Numbers** - Intern small integers (e.g., -128 to 127) similar to how Python does, reducing allocations.
 
-5. **Deduplicate Numbers** - Intern small integers (e.g., -128 to 127) similar to how Python does, reducing allocations.
+5. **Compress environment alists** - Use more compact representations for environments, such as arrays of (symbol, value) pairs.
 
-6. **Compress environment alists** - Use more compact representations for environments, such as arrays of (symbol, value) pairs.
-
-7. **Use u32 for ArenaIndex** - If the arena capacity is always < 4 billion, use `u32` instead of `usize` to halve index sizes on 64-bit systems.
-
-8. **Stdlib caching** - Currently stdlib function bodies are parsed on each call. A global cache could store parsed ASTs to avoid repeated parsing.
+6. **Use u32 for ArenaIndex** - If the arena capacity is always < 4 billion, use `u32` instead of `usize` to halve index sizes on 64-bit systems.
 
 ### Reserved Slots
 
@@ -350,66 +347,6 @@ The stdlib is defined in `stdlib.scm` and processed by the `include_stdlib!` mac
 - Each call parses the body from the static string
 - Parsed AST is temporary and GC'd after evaluation
 
-### Complex Numbers (stdlib)
-
-Complex numbers are represented as tagged lists: `(complex real imag)`. This provides full complex arithmetic without modifying the `Value` enum.
-
-```lisp
-; Create complex numbers
-(make-rectangular 3 4)           ; => (complex 3 4)
-(make-polar 5 0.785)             ; => (complex 3.54... 3.54...)
-
-; Access components
-(real-part (make-rectangular 3 4))  ; => 3
-(imag-part (make-rectangular 3 4))  ; => 4
-(magnitude (make-rectangular 3 4))  ; => 5.0
-(angle (make-rectangular 3 4))      ; => 0.927...
-
-; Arithmetic
-(complex-add z1 z2)
-(complex-sub z1 z2)
-(complex-mul z1 z2)
-(complex-div z1 z2)
-
-; Other operations
-(complex-conjugate z)
-(complex-exp z)
-(complex-log z)
-(complex-sqrt z)
-```
-
-### Fractions/Rationals (stdlib)
-
-Fractions are represented as tagged lists: `(fraction numerator denominator)`. Fractions are automatically simplified to lowest terms.
-
-```lisp
-; Create fractions (automatically simplified)
-(make-fraction 6 4)              ; => (fraction 3 2)
-(make-fraction -6 4)             ; => (fraction -3 2)
-
-; Access components
-(numerator (make-fraction 6 4))  ; => 3
-(denominator (make-fraction 6 4)); => 2
-
-; Arithmetic
-(fraction-add f1 f2)
-(fraction-sub f1 f2)
-(fraction-mul f1 f2)
-(fraction-div f1 f2)
-
-; Comparison
-(fraction-eq? f1 f2)
-(fraction-lt? f1 f2)
-(fraction-le? f1 f2)
-(fraction-gt? f1 f2)
-(fraction-ge? f1 f2)
-
-; Other operations
-(fraction-negate f)
-(fraction-reciprocal f)
-(fraction-abs f)
-(fraction->number f)             ; Convert to number (exact if possible)
-```
 
 ## Quasiquote
 
