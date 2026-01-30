@@ -31,9 +31,9 @@ pub enum Cont {
     LambdaFirstBind { param: ArenaIndex },
 
     /// After binding a lambda arg, continue with remaining args
-    LambdaBindArg { remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
-                    remaining_params: ArenaIndex, body: ArenaIndex,
-                    new_env: ArenaIndex, call_expr: ArenaIndex },
+    /// data: ArenaIndex pointing to a cons-list in the arena containing:
+    ///       (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . (call_expr . nil))))))
+    LambdaBindArg { data: ArenaIndex },
 
     /// After evaluating a let binding value, extend env and continue with remaining bindings
     /// remaining_bindings: remaining ((name value-expr) ...) to process
@@ -55,9 +55,11 @@ pub enum Cont {
     LetrecInit { remaining_bindings: ArenaIndex, new_env: ArenaIndex,
                  body: ArenaIndex, name: ArenaIndex },
 
-    /// After evaluating test in when/unless, decide whether to run body
-    /// is_when: true for when, false for unless
-    WhenUnless { body: ArenaIndex, env: ArenaIndex, is_when: bool },
+    /// After evaluating test in when, decide whether to run body
+    When { body: ArenaIndex, env: ArenaIndex },
+
+    /// After evaluating test in unless, decide whether to run body
+    Unless { body: ArenaIndex, env: ArenaIndex },
 
     /// After evaluating expr in eval special form
     EvalExpr { env: ArenaIndex },
@@ -65,10 +67,13 @@ pub enum Cont {
     /// After evaluating cond test clause
     CondTest { then_exprs: ArenaIndex, remaining_clauses: ArenaIndex, env: ArenaIndex },
 
-    /// Processing and/or short-circuit evaluation
+    /// Processing and short-circuit evaluation
     /// remaining: remaining expressions to evaluate
-    /// is_and: true for and, false for or
-    AndOr { remaining: ArenaIndex, env: ArenaIndex, is_and: bool },
+    And { remaining: ArenaIndex, env: ArenaIndex },
+
+    /// Processing or short-circuit evaluation
+    /// remaining: remaining expressions to evaluate
+    Or { remaining: ArenaIndex, env: ArenaIndex },
 
     /// Processing begin expressions (non-tail)
     BeginSeq { remaining: ArenaIndex, env: ArenaIndex },
