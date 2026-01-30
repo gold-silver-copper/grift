@@ -302,8 +302,12 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
         }
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
         (Value::Symbol(_), Value::Symbol(_)) => lisp.symbol_eq(a, b).map_err(Into::into),
-        (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
+        (Value::Cons(_), Value::Cons(_)) => {
             // Recursively check car and cdr
+            let car_a = lisp.car(a)?;
+            let cdr_a = lisp.cdr(a)?;
+            let car_b = lisp.car(b)?;
+            let cdr_b = lisp.cdr(b)?;
             if !equal_recursive(lisp, car_a, car_b)? {
                 return Ok(false);
             }
@@ -318,10 +322,10 @@ pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex
     if a == b {
         return Ok(true);
     }
-    
+
     let val_a = lisp.get(a)?;
     let val_b = lisp.get(b)?;
-    
+
     match (val_a, val_b) {
         (Value::Nil, Value::Nil) => Ok(true),
         (Value::True, Value::True) => Ok(true),
@@ -331,8 +335,12 @@ pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex
         (Value::Symbol(_), Value::Symbol(_)) => {
             lisp.symbol_eq(a, b).map_err(Into::into)
         }
-        (Value::Cons { car: car_a, cdr: cdr_a }, Value::Cons { car: car_b, cdr: cdr_b }) => {
+        (Value::Cons(_), Value::Cons(_)) => {
             // Recursively compare (limited depth to avoid stack overflow)
+            let car_a = lisp.car(a)?;
+            let cdr_a = lisp.cdr(a)?;
+            let car_b = lisp.car(b)?;
+            let cdr_b = lisp.cdr(b)?;
             if values_equal(lisp, car_a, car_b)? {
                 values_equal(lisp, cdr_a, cdr_b)
             } else {
@@ -349,7 +357,9 @@ pub fn case_matches<const N: usize>(lisp: &Lisp<N>, key: ArenaIndex, datums: Are
     loop {
         match lisp.get(current)? {
             Value::Nil => return Ok(false),
-            Value::Cons { car: datum, cdr: rest } => {
+            Value::Cons(_) => {
+                let datum = lisp.car(current)?;
+                let rest = lisp.cdr(current)?;
                 if values_equal(lisp, key, datum)? {
                     return Ok(true);
                 }

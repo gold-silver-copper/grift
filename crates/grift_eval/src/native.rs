@@ -350,9 +350,9 @@ pub fn count_args<const N: usize>(lisp: &Lisp<N>, mut args: ArenaIndex) -> Arena
     loop {
         match lisp.get(args)? {
             Value::Nil => return Ok(count),
-            Value::Cons { cdr, .. } => {
+            Value::Cons(_) => {
                 count += 1;
-                args = cdr;
+                args = lisp.cdr(args)?;
             }
             // Not a proper list
             _ => return Err(ArenaError::InvalidIndex),

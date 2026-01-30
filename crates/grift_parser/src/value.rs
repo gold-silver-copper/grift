@@ -438,11 +438,11 @@ pub enum Value {
     /// Single character (used in strings and symbol storage)
     Char(char),
     
-    /// Cons cell (pair)
-    Cons {
-        car: ArenaIndex,
-        cdr: ArenaIndex,
-    },
+    /// Cons cell (pair) - contiguous storage in arena
+    ///
+    /// Points to contiguous block: [Ref(car), Ref(cdr)]
+    /// Use `Lisp::car()` and `Lisp::cdr()` to access elements.
+    Cons(ArenaIndex),
     
     /// Symbol (contains a contiguous string)
     /// Points to a Value::String which contains the symbol name.
@@ -517,19 +517,17 @@ pub enum Value {
     /// ```
     String(ArenaIndex),
     
-    /// Native function (Rust function callable from Lisp)
+    /// Native function (Rust function callable from Lisp) - contiguous storage in arena
     ///
     /// Native functions are registered at runtime and identified by their ID.
     /// The actual function pointer is stored in the evaluator's NativeRegistry.
     ///
-    /// # Fields
-    ///
+    /// Points to contiguous block: [Usize(id), Usize(name_hash)]
     /// - `id`: Index into the NativeRegistry's entries array
     /// - `name_hash`: Hash of the function name for quick comparison
-    Native {
-        id: usize,          // Index in the NativeRegistry
-        name_hash: usize,   // Hash for debugging/lookup verification
-    },
+    ///
+    /// Use `Lisp::native_parts()` to extract id and name_hash.
+    Native(ArenaIndex),
     
     /// Raw arena index reference
     /// 
@@ -586,7 +584,7 @@ impl Value {
     /// Check if this value is an atom (not a cons cell)
     #[inline]
     pub const fn is_atom(&self) -> bool {
-        !matches!(self, Value::Cons { .. })
+        !matches!(self, Value::Cons(_))
     }
     
     /// Check if this value is a number (integer or float)
@@ -616,7 +614,7 @@ impl Value {
     /// Check if this value is a cons cell (pair)
     #[inline]
     pub const fn is_cons(&self) -> bool {
-        matches!(self, Value::Cons { .. })
+        matches!(self, Value::Cons(_))
     }
     
     /// Check if this value is a lambda
@@ -640,13 +638,13 @@ impl Value {
     /// Check if this value is a native (Rust) function
     #[inline]
     pub const fn is_native(&self) -> bool {
-        matches!(self, Value::Native { .. })
+        matches!(self, Value::Native(_))
     }
     
     /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda(_) | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
+        matches!(self, Value::Lambda(_) | Value::Builtin(_) | Value::StdLib(_) | Value::Native(_))
     }
     
     /// Check if this value is an array
@@ -736,12 +734,12 @@ impl Value {
             Value::Number(_) => "number",
             Value::Float(_) => "number",
             Value::Char(_) => "char",
-            Value::Cons { .. } => "pair",
+            Value::Cons(_) => "pair",
             Value::Symbol(_) => "symbol",
             Value::Lambda(_) => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
-            Value::Native { .. } => "native",
+            Value::Native(_) => "native",
             Value::Array(_) => "array",
             Value::String(_) => "string",
             Value::Ref(_) => "ref",
@@ -754,18 +752,29 @@ impl Value {
 impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
-            Value::Nil | Value::True | Value::False | 
+            Value::Nil | Value::True | Value::False |
             Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::Native { .. } | Value::StdLib(_) | Value::Usize(_) => {
+            Value::StdLib(_) | Value::Usize(_) => {
                 // No references
             }
             Value::Ref(idx) => {
                 // Trace the referenced value
                 tracer(*idx);
             }
-            Value::Cons { car, cdr } => {
-                tracer(*car);
-                tracer(*cdr);
+            Value::Cons(data) => {
+                // Cons stores [Ref(car), Ref(cdr)] contiguously
+                // The basic trace just marks the data pointer; trace_with_arena
+                // handles the full tracing with element traversal.
+                if !data.is_null() {
+                    tracer(*data);
+                }
+            }
+            Value::Native(data) => {
+                // Native stores [Usize(id), Usize(name_hash)] contiguously
+                // These are not references, but we still need to trace the slots
+                if !data.is_null() {
+                    tracer(*data);
+                }
             }
             Value::Symbol(chars) => {
                 // chars points to a Value::String, which handles its own tracing
@@ -785,16 +794,34 @@ impl<const N: usize> Trace<Value, N> for Value {
             }
         }
     }
-    
+
     fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &pwn_arena::Arena<Value, N>, mut tracer: F) {
         match self {
+            Value::Cons(data) => {
+                // Cons stores [Ref(car), Ref(cdr)] contiguously
+                if !data.is_null() {
+                    // Trace both slots (data and data+1)
+                    tracer(*data);
+                    let cdr_idx = ArenaIndex::new(data.raw() + 1);
+                    tracer(cdr_idx);
+                }
+            }
+            Value::Native(data) => {
+                // Native stores [Usize(id), Usize(name_hash)] contiguously
+                // These don't contain references, but we still mark the slots
+                if !data.is_null() {
+                    tracer(*data);
+                    let hash_idx = ArenaIndex::new(data.raw() + 1);
+                    tracer(hash_idx);
+                }
+            }
             Value::Array(data) => {
                 // For non-empty arrays, trace the length header and all elements
                 // Empty arrays have data == NULL, so skip tracing
                 if !data.is_null() {
                     // Trace the length header at data
                     tracer(*data);
-                    
+
                     // Read the length from the arena and trace all elements
                     if let Ok(Value::Number(len)) = arena.get(*data) {
                         let base_idx = data.raw();
@@ -812,7 +839,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 if !data.is_null() {
                     // Trace the length header at data
                     tracer(*data);
-                    
+
                     // Read the length from the arena and trace all character slots
                     if let Ok(Value::Number(len)) = arena.get(*data) {
                         let base_idx = data.raw();
