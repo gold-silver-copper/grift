@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
         
         // Parse elements into a stack-allocated array (no_std constraint)
         // Maximum 256 elements for literals; use make-vector for larger vectors
-        let mut elements: [ArenaIndex; 256] = [ArenaIndex::NULL; 256];
+        let mut elements: [ArenaIndex; 256] = [ArenaIndex::NIL; 256];
         let mut count = 0usize;
         
         self.skip_whitespace();
@@ -478,7 +478,7 @@ impl<'a> Parser<'a> {
         
         // Parse elements and build list
         const MAX_LIST_DEPTH: usize = 128;
-        let mut elements: [ArenaIndex; MAX_LIST_DEPTH] = [ArenaIndex::NULL; MAX_LIST_DEPTH];
+        let mut elements: [ArenaIndex; MAX_LIST_DEPTH] = [ArenaIndex::NIL; MAX_LIST_DEPTH];
         let mut count = 0;
         
         loop {
@@ -704,7 +704,7 @@ pub fn parse<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaIndex, 
 /// Parse multiple expressions
 pub fn parse_all<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaIndex, ParseError> {
     let mut parser = Parser::new(input);
-    let mut results = [ArenaIndex::NULL; 64];
+    let mut results = [ArenaIndex::NIL; 64];
     let mut count = 0;
     
     while parser.has_more() && count < 64 {

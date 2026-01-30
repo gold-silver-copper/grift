@@ -46,7 +46,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
         let mut eval = Evaluator {
             lisp,
-            global_env: ArenaIndex::NULL,
+            global_env: ArenaIndex::NIL,
             call_stack: [StackFrame::default(); MAX_STACK_DEPTH],
             call_stack_depth: 0,
             cont_stack: [Cont::Done; MAX_CONT_DEPTH],
@@ -141,7 +141,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
         // Collect all roots: global env + current state + all ArenaIndex values in continuations
         const MAX_ROOTS: usize = 512;
-        let mut roots = [ArenaIndex::NULL; MAX_ROOTS];
+        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
         // Always include global env

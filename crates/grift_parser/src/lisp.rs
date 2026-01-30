@@ -325,7 +325,7 @@ impl<const N: usize> Lisp<N> {
         // Create a Value::String for the symbol name
         let name_str = if char_count == 0 {
             // Empty string - data is NULL
-            self.alloc(Value::String(ArenaIndex::NULL))?
+            self.alloc(Value::String(ArenaIndex::NIL))?
         } else {
             // Allocate contiguous block: 1 slot for length + char_count slots for chars
             let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
@@ -535,7 +535,7 @@ impl<const N: usize> Lisp<N> {
         assert!(roots.len() < MAX_ROOTS - 4, 
             "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 4 - 1);
         
-        let mut all_roots = [ArenaIndex::NULL; MAX_ROOTS];
+        let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
         // Add reserved slots as roots to prevent them from being collected
@@ -619,7 +619,7 @@ impl<const N: usize> Lisp<N> {
         
         if char_count == 0 {
             // Empty string - data is NULL
-            return self.alloc(Value::String(ArenaIndex::NULL));
+            return self.alloc(Value::String(ArenaIndex::NIL));
         }
         
         // Allocate contiguous block: 1 slot for length + char_count slots for chars
@@ -646,7 +646,7 @@ impl<const N: usize> Lisp<N> {
         
         if char_count == 0 {
             // Empty string - data is NULL
-            return self.alloc(Value::String(ArenaIndex::NULL));
+            return self.alloc(Value::String(ArenaIndex::NIL));
         }
         
         // Allocate contiguous block: 1 slot for length + char_count slots for chars
@@ -868,7 +868,7 @@ impl<const N: usize> Lisp<N> {
     pub fn make_array(&self, len: usize, default: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if len == 0 {
             // Empty array - data is NULL
-            return self.alloc(Value::Array(ArenaIndex::NULL));
+            return self.alloc(Value::Array(ArenaIndex::NIL));
         }
         
         // Allocate contiguous block: 1 slot for length + len slots for elements

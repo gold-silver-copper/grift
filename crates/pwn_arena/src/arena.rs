@@ -558,9 +558,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// Get indices of all allocated slots.
     ///
     /// Returns an array with the first `len()` elements being valid indices.
-    /// The remaining elements are [`ArenaIndex::NULL`].
+    /// The remaining elements are [`ArenaIndex::NIL`].
     pub fn allocated_indices(&self) -> [ArenaIndex; N] {
-        let mut result = [ArenaIndex::NULL; N];
+        let mut result = [ArenaIndex::NIL; N];
         let mut count = 0;
 
         let slots = self.slots.borrow();

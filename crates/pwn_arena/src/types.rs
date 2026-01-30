@@ -28,7 +28,7 @@ impl ArenaIndex {
     ///
     /// This can be used as a placeholder when an optional index is needed
     /// but `Option<ArenaIndex>` is not desired.
-    pub const NULL: ArenaIndex = ArenaIndex(usize::MAX);
+    pub const NIL: ArenaIndex = ArenaIndex(usize::MAX);
 
     /// Create a new arena index with the given slot index.
     ///
@@ -57,9 +57,9 @@ impl ArenaIndex {
 }
 
 impl Default for ArenaIndex {
-    /// Returns [`ArenaIndex::NULL`].
+    /// Returns [`ArenaIndex::NIL`].
     fn default() -> Self {
-        Self::NULL
+        Self::NIL
     }
 }
 
