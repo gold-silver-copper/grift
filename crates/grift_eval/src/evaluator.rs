@@ -1528,7 +1528,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Helper for quasiquote - trampolined processing
-    fn step_quasiquote_trampoline(&mut self, template: ArenaIndex, env: ArenaIndex, depth: u8) 
+    fn step_quasiquote_trampoline(&mut self, template: ArenaIndex, env: ArenaIndex, depth: usize) 
         -> Result<TrampolineState, EvalError> 
     {
         match self.lisp.get(template)? {
@@ -4014,21 +4014,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Pack QuasiquoteCar data: (cdr . (depth_as_usize . (env . nil)))
-    fn pack_quasiquote_car(&self, cdr: ArenaIndex, depth: u8, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+    fn pack_quasiquote_car(&self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let nil = self.lisp.nil()?;
-        let depth_val = self.lisp.usize_val(depth as usize)?;
+        let depth_val = self.lisp.usize_val(depth)?;
         let inner = self.lisp.cons(env, nil)?;
         let inner = self.lisp.cons(depth_val, inner)?;
         self.lisp.cons(cdr, inner).map_err(Into::into)
     }
 
     /// Unpack QuasiquoteCar data: (cdr . (depth_as_usize . (env . nil)))
-    fn unpack_quasiquote_car(&self, data: ArenaIndex) -> Result<(ArenaIndex, u8, ArenaIndex), EvalError> {
+    fn unpack_quasiquote_car(&self, data: ArenaIndex) -> Result<(ArenaIndex, usize, ArenaIndex), EvalError> {
         let cdr = self.lisp.car(data)?;
         let rest = self.lisp.cdr(data)?;
         let depth_val = self.lisp.car(rest)?;
         let depth = match self.lisp.get(depth_val)? {
-            Value::Usize(n) => n as u8,
+            Value::Usize(n) => n,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
         let rest = self.lisp.cdr(rest)?;
@@ -4048,21 +4048,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Pack QuasiquoteSplice data: (cdr . (depth_as_usize . (env . nil)))
-    fn pack_quasiquote_splice(&self, cdr: ArenaIndex, depth: u8, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+    fn pack_quasiquote_splice(&self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let nil = self.lisp.nil()?;
-        let depth_val = self.lisp.usize_val(depth as usize)?;
+        let depth_val = self.lisp.usize_val(depth)?;
         let inner = self.lisp.cons(env, nil)?;
         let inner = self.lisp.cons(depth_val, inner)?;
         self.lisp.cons(cdr, inner).map_err(Into::into)
     }
 
     /// Unpack QuasiquoteSplice data: (cdr . (depth_as_usize . (env . nil)))
-    fn unpack_quasiquote_splice(&self, data: ArenaIndex) -> Result<(ArenaIndex, u8, ArenaIndex), EvalError> {
+    fn unpack_quasiquote_splice(&self, data: ArenaIndex) -> Result<(ArenaIndex, usize, ArenaIndex), EvalError> {
         let cdr = self.lisp.car(data)?;
         let rest = self.lisp.cdr(data)?;
         let depth_val = self.lisp.car(rest)?;
         let depth = match self.lisp.get(depth_val)? {
-            Value::Usize(n) => n as u8,
+            Value::Usize(n) => n,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
         let rest = self.lisp.cdr(rest)?;
