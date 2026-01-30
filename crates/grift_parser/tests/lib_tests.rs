@@ -380,8 +380,8 @@ fn test_string_free() {
     let hello = lisp.string("hello").unwrap();
     let after_alloc = lisp.stats().allocated;
     
-    // Should have allocated 6 slots (1 length + 5 chars)
-    assert_eq!(after_alloc - initial_allocated, 6);
+    // Should have allocated 7 slots (1 length header + 5 chars + 1 String value)
+    assert_eq!(after_alloc - initial_allocated, 7);
     
     lisp.string_free(hello).unwrap();
     let after_free = lisp.stats().allocated;
@@ -416,14 +416,16 @@ fn test_string_memory_layout() {
     
     let hello = lisp.string("hello").unwrap();
     
-    // String value should be Value::String { data, len }
+    // String value should be Value::String { data }
+    // With layout: data[0] = Number(len), data[1..] = Char values
     match lisp.get(hello).unwrap() {
-        Value::String { data, len } => {
-            assert_eq!(len, 5);
+        Value::String { data } => {
+            // Check length is stored at data[0]
+            assert_eq!(lisp.arena().get(data).unwrap(), Value::Number(5));
             
-            // Data slots should contain Char values
-            let idx0 = lisp.arena().index_at_offset(data, 0).unwrap();
-            let idx1 = lisp.arena().index_at_offset(data, 1).unwrap();
+            // Data slots should contain Char values starting at data+1
+            let idx0 = lisp.arena().index_at_offset(data, 1).unwrap();
+            let idx1 = lisp.arena().index_at_offset(data, 2).unwrap();
             
             assert_eq!(lisp.get(idx0).unwrap(), Value::Char('h'));
             assert_eq!(lisp.get(idx1).unwrap(), Value::Char('e'));
@@ -804,8 +806,8 @@ fn test_array_free() {
     let arr = lisp.make_array(5, nil).unwrap();
     let after_alloc = lisp.arena().len();
     
-    // Array should have allocated: 5 data slots + 1 Array value = 6 slots
-    assert_eq!(after_alloc - initial, 6);
+    // Array should have allocated: 1 length header + 5 data slots + 1 Array value = 7 slots
+    assert_eq!(after_alloc - initial, 7);
     
     lisp.array_free(arr).unwrap();
     let after_free = lisp.arena().len();
@@ -824,16 +826,15 @@ fn test_array_memory_layout() {
     // Create array of 10 elements
     let arr = lisp.make_array(10, nil).unwrap();
     
-    // Should use: 10 data slots + 1 Array value = 11 slots
+    // Should use: 1 length header + 10 data slots + 1 Array value = 12 slots
     let after = lisp.arena().len();
-    assert_eq!(after - initial, 11);
+    assert_eq!(after - initial, 12);
 }
 
 #[test]
 fn test_array_type_name() {
     let arr = Value::Array { 
-        data: ArenaIndex::NULL, 
-        len: 0 
+        data: ArenaIndex::NULL,
     };
     assert_eq!(arr.type_name(), "array");
 }
@@ -845,8 +846,7 @@ fn test_array_type_name() {
 #[test]
 fn test_string_type_name() {
     let s = Value::String { 
-        data: ArenaIndex::NULL, 
-        len: 0 
+        data: ArenaIndex::NULL,
     };
     assert_eq!(s.type_name(), "string");
 }
@@ -869,7 +869,7 @@ fn test_string_is_string_predicate() {
 #[test]
 fn test_string_and_array_consistent_layout() {
     // This test verifies that strings and arrays have consistent memory layouts:
-    // Both use Value::Type { data, len } with data pointing to contiguous storage
+    // Both use Value::Type { data } with data pointing to [Number(len), elements...]
     let lisp: Lisp<1000> = Lisp::new();
     let nil = lisp.nil().unwrap();
     
@@ -879,24 +879,24 @@ fn test_string_and_array_consistent_layout() {
     let s = lisp.string("hello").unwrap();
     let after_string = lisp.arena().len();
     
-    // String should use: 5 data slots + 1 String value = 6 slots
-    assert_eq!(after_string - initial, 6);
+    // String should use: 1 length header + 5 chars + 1 String value = 7 slots
+    assert_eq!(after_string - initial, 7);
     
     // Create an array with 5 elements
     let arr = lisp.make_array(5, nil).unwrap();
     let after_array = lisp.arena().len();
     
-    // Array should use: 5 data slots + 1 Array value = 6 slots
-    assert_eq!(after_array - after_string, 6);
+    // Array should use: 1 length header + 5 elements + 1 Array value = 7 slots
+    assert_eq!(after_array - after_string, 7);
     
     // Verify consistent structure
     match lisp.get(s).unwrap() {
-        Value::String { len, .. } => assert_eq!(len, 5),
+        Value::String { .. } => assert_eq!(lisp.string_len(s).unwrap(), 5),
         _ => panic!("Expected String"),
     }
     
     match lisp.get(arr).unwrap() {
-        Value::Array { len, .. } => assert_eq!(len, 5),
+        Value::Array { .. } => assert_eq!(lisp.array_len(arr).unwrap(), 5),
         _ => panic!("Expected Array"),
     }
 }

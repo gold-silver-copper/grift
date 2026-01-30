@@ -62,7 +62,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
                     let mut batch_count = 0usize;
                     let mut has_more = false;
 
-                    value.trace(|child_index| {
+                    // Use trace_with_arena to allow types to read metadata from the arena
+                    value.trace_with_arena(self, |child_index| {
                         let idx = child_index.raw();
                         // Only bounds check needed - we trust trace implementations
                         if idx < N && !marked[idx] {

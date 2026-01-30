@@ -2374,7 +2374,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
-                    Value::Array { len, .. } => {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
                         self.lisp.number(len as isize).map_err(Into::into)
                     }
                     _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -2422,7 +2423,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
-                    Value::Array { len, .. } => {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
                         // Build list from end to front
                         let mut result = self.lisp.nil()?;
                         for i in (0..len).rev() {
@@ -2473,7 +2475,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 extract_args!(self, args, vec, fill);
                 
                 match self.lisp.get(vec)? {
-                    Value::Array { len, .. } => {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
                         for i in 0..len {
                             self.lisp.array_set(vec, i, fill)?;
                         }
@@ -2489,7 +2492,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
-                    Value::Array { len, .. } => {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
                         // Create new vector with same length
                         let placeholder = self.lisp.number(0)?;
                         let new_vec = self.lisp.make_array(len, placeholder)?;
@@ -2693,7 +2697,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string-length string) - Get length
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
-                    Value::String { len, .. } => self.lisp.number(len as isize).map_err(Into::into),
+                    Value::String { .. } => {
+                        let len = self.lisp.string_len(str_idx)?;
+                        self.lisp.number(len as isize).map_err(Into::into)
+                    }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
             }
@@ -2702,12 +2709,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string-ref string k) - Get character at index
                 extract_args!(self, args, str_idx, k_idx);
                 match self.lisp.get(str_idx)? {
-                    Value::String { data, len } => {
+                    Value::String { data } => {
                         let k = self.get_int(k_idx, call_expr)?;
+                        let len = self.lisp.string_len(str_idx)?;
                         if k < 0 || (k as usize) >= len {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
-                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        // Characters start at data+1
+                        let char_slot = self.lisp.arena_index_at_offset(data, 1 + k as usize)?;
                         match self.lisp.get(char_slot)? {
                             Value::Char(c) => self.lisp.char(c).map_err(Into::into),
                             _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -2726,13 +2735,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let char_arg = self.lisp.car(rest2)?;
                 
                 match self.lisp.get(str_idx)? {
-                    Value::String { data, len } => {
+                    Value::String { data } => {
                         let k = self.get_int(k_idx, call_expr)?;
+                        let len = self.lisp.string_len(str_idx)?;
                         if k < 0 || (k as usize) >= len {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         let c = self.get_char(char_arg, call_expr)?;
-                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        // Characters start at data+1
+                        let char_slot = self.lisp.arena_index_at_offset(data, 1 + k as usize)?;
                         self.lisp.set(char_slot, Value::Char(c))?;
                         // Return unspecified value (we use the string itself)
                         Ok(str_idx)
@@ -2778,12 +2789,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Nil => break,
                         Value::Cons { car, cdr } => {
                             match self.lisp.get(car)? {
-                                Value::String { data, len } => {
+                                Value::String { data } => {
+                                    let len = self.lisp.string_len(car)?;
                                     if total_len + len > MAX_TOTAL_LEN {
                                         return Err(self.make_error(ErrorKind::TypeError, call_expr));
                                     }
                                     for i in 0..len {
-                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                        // Characters start at data+1
+                                        let char_slot = self.lisp.arena_index_at_offset(data, 1 + i)?;
                                         match self.lisp.get(char_slot)? {
                                             Value::Char(c) => {
                                                 chars[total_len] = c;
@@ -2808,11 +2821,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string->list string) - Convert string to list of characters
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
-                    Value::String { data, len } => {
+                    Value::String { data } => {
+                        let len = self.lisp.string_len(str_idx)?;
                         let mut result = self.lisp.nil()?;
                         // Build list from end to start
                         for i in (0..len).rev() {
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            // Characters start at data+1
+                            let char_slot = self.lisp.arena_index_at_offset(data, 1 + i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => {
                                     let char_val = self.lisp.char(c)?;
@@ -2861,7 +2876,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let end_idx = self.lisp.car(rest2)?;
                 
                 match self.lisp.get(str_idx)? {
-                    Value::String { data, len } => {
+                    Value::String { data } => {
+                        let len = self.lisp.string_len(str_idx)?;
                         let start = self.get_int(start_idx, call_expr)?;
                         let end = self.get_int(end_idx, call_expr)?;
                         
@@ -2877,7 +2893,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         
                         for i in 0..sub_len {
-                            let char_slot = self.lisp.arena_index_at_offset(data, (start as usize) + i)?;
+                            // Characters start at data+1
+                            let char_slot = self.lisp.arena_index_at_offset(data, 1 + (start as usize) + i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => chars[i] = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -2894,7 +2911,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string-copy string) - Copy a string
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
-                    Value::String { data, len } => {
+                    Value::String { data } => {
+                        let len = self.lisp.string_len(str_idx)?;
                         const MAX_STRING_LEN: usize = 1024;
                         let mut chars = ['\0'; MAX_STRING_LEN];
                         if len > MAX_STRING_LEN {
@@ -2902,7 +2920,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         
                         for i in 0..len {
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            // Characters start at data+1
+                            let char_slot = self.lisp.arena_index_at_offset(data, 1 + i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => chars[i] = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -3199,24 +3218,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Compare two strings lexicographically
     fn compare_strings(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
-        let (data_a, len_a) = match self.lisp.get(a)? {
-            Value::String { data, len } => (data, len),
+        let data_a = match self.lisp.get(a)? {
+            Value::String { data } => data,
             v => return Err(self.type_error(call_expr, "string", v.type_name())),
         };
-        let (data_b, len_b) = match self.lisp.get(b)? {
-            Value::String { data, len } => (data, len),
+        let data_b = match self.lisp.get(b)? {
+            Value::String { data } => data,
             v => return Err(self.type_error(call_expr, "string", v.type_name())),
         };
+        
+        let len_a = self.lisp.string_len(a)?;
+        let len_b = self.lisp.string_len(b)?;
         
         let min_len = if len_a < len_b { len_a } else { len_b };
         
         for i in 0..min_len {
-            let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
+            // Characters start at data+1
+            let slot_a = self.lisp.arena_index_at_offset(data_a, 1 + i)?;
             let char_a = match self.lisp.get(slot_a)? {
                 Value::Char(c) => c,
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
-            let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
+            let slot_b = self.lisp.arena_index_at_offset(data_b, 1 + i)?;
             let char_b = match self.lisp.get(slot_b)? {
                 Value::Char(c) => c,
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),

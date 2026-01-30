@@ -318,23 +318,25 @@ impl<const N: usize> Lisp<N> {
         
         // Create a Value::String for the symbol name
         let name_str = if char_count == 0 {
-            // Empty string
+            // Empty string - data is NULL
             self.alloc(Value::String { 
-                data: ArenaIndex::NULL, 
-                len: 0 
+                data: ArenaIndex::NULL,
             })?
         } else {
-            // Allocate contiguous block for characters
-            let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+            // Allocate contiguous block: 1 slot for length + char_count slots for chars
+            let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
             
-            // Set characters in slots
+            // Store length at data[0]
+            self.arena.set(data, Value::Number(char_count as isize))?;
+            
+            // Set characters in slots (starting at data+1)
             for (i, &b) in bytes.iter().enumerate() {
-                let char_idx = self.arena.index_at_offset(data, i)?;
+                let char_idx = self.arena.index_at_offset(data, 1 + i)?;
                 self.arena.set(char_idx, Value::Char(b as char))?;
             }
             
             // Create the String value
-            self.alloc(Value::String { data, len: char_count })?
+            self.alloc(Value::String { data })?
         };
         
         // Check intern table
@@ -608,25 +610,28 @@ impl<const N: usize> Lisp<N> {
     // Contiguous String Storage
     // ========================================================================
     // 
-    // Strings are stored as Value::String { data, len } pointing to
-    // contiguous sequences of Value::Char in the arena:
-    // [Char(c1), Char(c2), ..., Char(cn)]
+    // Strings are stored as Value::String { data } pointing to a contiguous
+    // block in the arena with the following layout:
+    // [Number(len), Char(c1), Char(c2), ..., Char(cn)]
     // 
     // This provides:
-    // - O(1) length lookup (stored in the Value::String variant)
+    // - O(1) length lookup (stored in the arena at data[0])
     // - Cache-friendly sequential access
-    // - Consistent design with arrays (single source of truth for length)
+    // - Consistent design with arrays
+    // - Reduced Value enum size (no inline len field)
     // ========================================================================
     
     /// Allocate a string as contiguous Char values.
     /// 
-    /// Returns a Value::String that stores the length, with data pointing to
-    /// the first character slot. Empty strings have data == NULL and len == 0.
+    /// Returns a Value::String with data pointing to a contiguous block where:
+    /// - data[0] contains Value::Number(len)
+    /// - data[1..len+1] contains the characters
+    /// Empty strings have data == NULL.
     /// 
     /// # Memory Usage
     /// 
-    /// Allocates `s.chars().count()` slots for characters, plus 1 slot for
-    /// the String value itself.
+    /// Allocates 1 + s.chars().count() slots (length header + characters),
+    /// plus 1 slot for the String value itself.
     /// 
     /// # Errors
     /// 
@@ -647,24 +652,26 @@ impl<const N: usize> Lisp<N> {
         let char_count = s.chars().count();
         
         if char_count == 0 {
-            // Empty string - no data slots needed
+            // Empty string - data is NULL
             return self.alloc(Value::String { 
-                data: ArenaIndex::NULL, 
-                len: 0 
+                data: ArenaIndex::NULL,
             });
         }
         
-        // Allocate contiguous block for characters
-        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+        // Allocate contiguous block: 1 slot for length + char_count slots for chars
+        let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
         
-        // Set characters in slots
+        // Store length at data[0]
+        self.arena.set(data, Value::Number(char_count as isize))?;
+        
+        // Set characters in slots (starting at data+1)
         for (i, c) in s.chars().enumerate() {
-            let char_idx = self.arena.index_at_offset(data, i)?;
+            let char_idx = self.arena.index_at_offset(data, 1 + i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
         
         // Create the String value pointing to the data
-        self.alloc(Value::String { data, len: char_count })
+        self.alloc(Value::String { data })
     }
     
     /// Allocate a string from a slice of chars.
@@ -674,29 +681,31 @@ impl<const N: usize> Lisp<N> {
         let char_count = chars.len();
         
         if char_count == 0 {
-            // Empty string - no data slots needed
+            // Empty string - data is NULL
             return self.alloc(Value::String { 
-                data: ArenaIndex::NULL, 
-                len: 0 
+                data: ArenaIndex::NULL,
             });
         }
         
-        // Allocate contiguous block for characters
-        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+        // Allocate contiguous block: 1 slot for length + char_count slots for chars
+        let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
         
-        // Set characters in slots
+        // Store length at data[0]
+        self.arena.set(data, Value::Number(char_count as isize))?;
+        
+        // Set characters in slots (starting at data+1)
         for (i, &c) in chars.iter().enumerate() {
-            let char_idx = self.arena.index_at_offset(data, i)?;
+            let char_idx = self.arena.index_at_offset(data, 1 + i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
         
         // Create the String value pointing to the data
-        self.alloc(Value::String { data, len: char_count })
+        self.alloc(Value::String { data })
     }
     
     /// Get the length of a string.
     /// 
-    /// Returns O(1) since length is stored in the String value.
+    /// Returns O(1) since length is stored in the arena at data[0].
     /// 
     /// # Errors
     /// 
@@ -704,7 +713,16 @@ impl<const N: usize> Lisp<N> {
     /// a valid string.
     pub fn string_len(&self, str_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(str_idx)? {
-            Value::String { len, .. } => Ok(len),
+            Value::String { data } => {
+                if data.is_null() {
+                    Ok(0)
+                } else {
+                    match self.arena.get(data)? {
+                        Value::Number(len) => Ok(len as usize),
+                        _ => Err(ArenaError::InvalidIndex),
+                    }
+                }
+            }
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -721,11 +739,19 @@ impl<const N: usize> Lisp<N> {
     /// - The slot doesn't contain a Char value
     pub fn string_char_at(&self, str_idx: ArenaIndex, char_index: usize) -> ArenaResult<char> {
         match self.arena.get(str_idx)? {
-            Value::String { data, len } => {
+            Value::String { data } => {
+                if data.is_null() {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                let len = match self.arena.get(data)? {
+                    Value::Number(len) => len as usize,
+                    _ => return Err(ArenaError::InvalidIndex),
+                };
                 if char_index >= len {
                     return Err(ArenaError::InvalidIndex);
                 }
-                let char_slot = self.arena.index_at_offset(data, char_index)?;
+                // Characters start at data+1
+                let char_slot = self.arena.index_at_offset(data, 1 + char_index)?;
                 match self.arena.get(char_slot)? {
                     Value::Char(c) => Ok(c),
                     _ => Err(ArenaError::InvalidIndex),
@@ -828,10 +854,15 @@ impl<const N: usize> Lisp<N> {
     /// Returns an error if the string index is invalid.
     pub fn string_free(&self, str_idx: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(str_idx)? {
-            Value::String { data, len } => {
-                // Free the data slots
-                if len > 0 {
-                    self.arena.free_contiguous(data, len)?;
+            Value::String { data } => {
+                // Free the data slots (length header + characters)
+                if !data.is_null() {
+                    let len = match self.arena.get(data)? {
+                        Value::Number(len) => len as usize,
+                        _ => return Err(ArenaError::InvalidIndex),
+                    };
+                    // Free 1 + len slots (length header + characters)
+                    self.arena.free_contiguous(data, 1 + len)?;
                 }
                 // Free the String value itself
                 self.arena.free(str_idx)
@@ -844,23 +875,24 @@ impl<const N: usize> Lisp<N> {
     // Contiguous Array Storage
     // ========================================================================
     // 
-    // Arrays are stored as contiguous sequences of Value in the arena.
-    // Unlike strings which have a length slot, arrays store the length in
-    // the Value::Array variant itself.
+    // Arrays are stored as Value::Array { data } pointing to a contiguous
+    // block in the arena with the following layout:
+    // [Number(len), elem1, elem2, ..., elemn]
     // 
     // This provides:
     // - O(1) indexed access and mutation
+    // - O(1) length lookup (stored in the arena at data[0])
     // - Cache-friendly sequential access
-    // - Efficient memory layout
+    // - Reduced Value enum size (no inline len field)
     // ========================================================================
     
     /// Create an array with the given length, initialized with a default value.
     /// 
-    /// The array stores `len` values contiguously in the arena.
+    /// The array stores `len` values contiguously in the arena with a length header.
     /// 
     /// # Memory Usage
     /// 
-    /// Allocates `len` slots for element storage, plus 1 slot for the Array value itself.
+    /// Allocates 1 + len slots (length header + elements), plus 1 slot for the Array value itself.
     /// 
     /// # Example
     /// 
@@ -873,31 +905,45 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn make_array(&self, len: usize, default: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if len == 0 {
-            // Empty array - no data slots needed
+            // Empty array - data is NULL
             return self.alloc(Value::Array { 
-                data: ArenaIndex::NULL, 
-                len: 0 
+                data: ArenaIndex::NULL,
             });
         }
         
-        // Allocate contiguous block for elements
+        // Allocate contiguous block: 1 slot for length + len slots for elements
         let default_val = self.arena.get(default)?;
-        let data = self.arena.alloc_contiguous(len, default_val)?;
+        let data = self.arena.alloc_contiguous(1 + len, default_val)?;
+        
+        // Store length at data[0]
+        self.arena.set(data, Value::Number(len as isize))?;
+        
+        // Elements are already initialized with default_val at data+1 through data+len
+        // (alloc_contiguous initializes all slots with the provided value)
         
         // Create the Array value pointing to the data
-        self.alloc(Value::Array { data, len })
+        self.alloc(Value::Array { data })
     }
     
     /// Get the length of an array.
     /// 
-    /// Returns O(1) since length is stored in the Array value.
+    /// Returns O(1) since length is stored in the arena at data[0].
     /// 
     /// # Errors
     /// 
     /// Returns `ArenaError::InvalidIndex` if the index doesn't point to an array.
     pub fn array_len(&self, arr_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(arr_idx)? {
-            Value::Array { len, .. } => Ok(len),
+            Value::Array { data } => {
+                if data.is_null() {
+                    Ok(0)
+                } else {
+                    match self.arena.get(data)? {
+                        Value::Number(len) => Ok(len as usize),
+                        _ => Err(ArenaError::InvalidIndex),
+                    }
+                }
+            }
             _ => Err(ArenaError::InvalidIndex),
         }
     }
@@ -913,11 +959,19 @@ impl<const N: usize> Lisp<N> {
     /// - The element index is out of bounds
     pub fn array_get(&self, arr_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data, len } => {
+            Value::Array { data } => {
+                if data.is_null() {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                let len = match self.arena.get(data)? {
+                    Value::Number(len) => len as usize,
+                    _ => return Err(ArenaError::InvalidIndex),
+                };
                 if index >= len {
                     return Err(ArenaError::InvalidIndex);
                 }
-                self.arena.index_at_offset(data, index)
+                // Elements start at data+1
+                self.arena.index_at_offset(data, 1 + index)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
@@ -934,11 +988,19 @@ impl<const N: usize> Lisp<N> {
     /// - The element index is out of bounds
     pub fn array_set(&self, arr_idx: ArenaIndex, index: usize, value: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data, len } => {
+            Value::Array { data } => {
+                if data.is_null() {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                let len = match self.arena.get(data)? {
+                    Value::Number(len) => len as usize,
+                    _ => return Err(ArenaError::InvalidIndex),
+                };
                 if index >= len {
                     return Err(ArenaError::InvalidIndex);
                 }
-                let elem_slot = self.arena.index_at_offset(data, index)?;
+                // Elements start at data+1
+                let elem_slot = self.arena.index_at_offset(data, 1 + index)?;
                 let val = self.arena.get(value)?;
                 self.arena.set(elem_slot, val)
             }
@@ -953,10 +1015,15 @@ impl<const N: usize> Lisp<N> {
     /// Returns an error if the array index is invalid.
     pub fn array_free(&self, arr_idx: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data, len } => {
-                // Free the data slots
-                if len > 0 {
-                    self.arena.free_contiguous(data, len)?;
+            Value::Array { data } => {
+                // Free the data slots (length header + elements)
+                if !data.is_null() {
+                    let len = match self.arena.get(data)? {
+                        Value::Number(len) => len as usize,
+                        _ => return Err(ArenaError::InvalidIndex),
+                    };
+                    // Free 1 + len slots (length header + elements)
+                    self.arena.free_contiguous(data, 1 + len)?;
                 }
                 // Free the Array value itself
                 self.arena.free(arr_idx)

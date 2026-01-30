@@ -106,9 +106,10 @@ fn format_value_impl<const N: usize>(
             buf.push_str(s.name());
             buf.push('>');
         }
-        Ok(Value::Array { data: _, len }) => {
+        Ok(Value::Array { .. }) => {
             // Format as R7RS vector literal: #(elem1 elem2 ...)
             buf.push_str("#(");
+            let len = lisp.array_len(idx).unwrap_or(0);
             for i in 0..len {
                 if i > 0 {
                     buf.push(' ');
@@ -119,9 +120,10 @@ fn format_value_impl<const N: usize>(
             }
             buf.push(')');
         }
-        Ok(Value::String { len, .. }) => {
+        Ok(Value::String { .. }) => {
             // Format string like in many Lisps: "..."
             buf.push('"');
+            let len = lisp.string_len(idx).unwrap_or(0);
             for i in 0..len {
                 if let Ok(c) = lisp.string_char_at(idx, i) {
                     match c {

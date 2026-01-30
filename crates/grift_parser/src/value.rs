@@ -497,8 +497,9 @@ pub enum Value {
     /// 
     /// # Memory Layout
     /// 
-    /// - `data` points to the first element in contiguous storage
-    /// - Elements are stored at data+0, data+1, ..., data+(len-1)
+    /// - `data` points to a `Value::Number(len)` header followed by elements
+    /// - Elements are stored at data+1, data+2, ..., data+len
+    /// - Empty arrays have data == NULL (len=0)
     /// 
     /// # Example
     /// 
@@ -510,8 +511,7 @@ pub enum Value {
     /// #(1 2 3)                        ; Vector literal syntax
     /// ```
     Array {
-        data: ArenaIndex,  // Points to first element in contiguous block
-        len: usize,        // Number of elements
+        data: ArenaIndex,  // Points to Number(len) header, elements follow at data+1
     },
     
     /// String (contiguous storage of Char values in the arena)
@@ -521,8 +521,9 @@ pub enum Value {
     /// 
     /// # Memory Layout
     /// 
-    /// - `data` points to the first character in contiguous storage
-    /// - Characters are stored at data+0, data+1, ..., data+(len-1)
+    /// - `data` points to a `Value::Number(len)` header followed by characters
+    /// - Characters are stored at data+1, data+2, ..., data+len
+    /// - Empty strings have data == NULL (len=0)
     /// 
     /// # Example
     /// 
@@ -531,8 +532,7 @@ pub enum Value {
     /// (string-ref "hello" 0)    ; => #\h
     /// ```
     String {
-        data: ArenaIndex,  // Points to first Char in contiguous block
-        len: usize,        // Number of characters
+        data: ArenaIndex,  // Points to Number(len) header, chars follow at data+1
     },
     
     /// Native function (Rust function callable from Lisp)
@@ -738,28 +738,57 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // data points to (params . (body . env)), trace the whole structure
                 tracer(*data);
             }
-            Value::Array { data, len } => {
-                // For non-empty arrays, trace all elements in the contiguous block
-                // Empty arrays (len == 0) have data == NULL, so skip tracing
-                if *len > 0 {
-                    let base_idx = data.raw();
-                    for i in 0..*len {
-                        let elem_idx = ArenaIndex::new(base_idx + i);
-                        tracer(elem_idx);
+            Value::Array { data } | Value::String { data } => {
+                // For non-empty arrays/strings, we need arena access to read the length.
+                // The basic trace just marks the data pointer; trace_with_arena handles
+                // the full tracing with element traversal.
+                if !data.is_null() {
+                    tracer(*data);
+                }
+            }
+        }
+    }
+    
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &pwn_arena::Arena<Value, N>, mut tracer: F) {
+        match self {
+            Value::Array { data } => {
+                // For non-empty arrays, trace the length header and all elements
+                // Empty arrays have data == NULL, so skip tracing
+                if !data.is_null() {
+                    // Trace the length header at data
+                    tracer(*data);
+                    
+                    // Read the length from the arena and trace all elements
+                    if let Ok(Value::Number(len)) = arena.get(*data) {
+                        let base_idx = data.raw();
+                        for i in 0..(len as usize) {
+                            // Elements are at data+1, data+2, ..., data+len
+                            let elem_idx = ArenaIndex::new(base_idx + 1 + i);
+                            tracer(elem_idx);
+                        }
                     }
                 }
             }
-            Value::String { data, len } => {
-                // For non-empty strings, trace all Char slots in the contiguous block
-                // Empty strings (len == 0) have data == NULL, so skip tracing
-                if *len > 0 {
-                    let base_idx = data.raw();
-                    for i in 0..*len {
-                        let char_idx = ArenaIndex::new(base_idx + i);
-                        tracer(char_idx);
+            Value::String { data } => {
+                // For non-empty strings, trace the length header and all Char slots
+                // Empty strings have data == NULL, so skip tracing
+                if !data.is_null() {
+                    // Trace the length header at data
+                    tracer(*data);
+                    
+                    // Read the length from the arena and trace all character slots
+                    if let Ok(Value::Number(len)) = arena.get(*data) {
+                        let base_idx = data.raw();
+                        for i in 0..(len as usize) {
+                            // Characters are at data+1, data+2, ..., data+len
+                            let char_idx = ArenaIndex::new(base_idx + 1 + i);
+                            tracer(char_idx);
+                        }
                     }
                 }
             }
+            // For all other types, delegate to the standard trace
+            _ => <Value as Trace<Value, N>>::trace(self, tracer),
         }
     }
 }
