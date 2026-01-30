@@ -3492,635 +3492,377 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
     
-    /// Pack LambdaBindArg data into a cons-list:
-    /// (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . (call_expr . nil))))))
+    /// Pack LambdaBindArg data using contiguous storage: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]
     fn pack_lambda_bind_arg(&self, remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
                             remaining_params: ArenaIndex, body: ArenaIndex,
                             new_env: ArenaIndex, call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        // Build from inside out
-        let inner = self.lisp.cons(call_expr, nil)?;
-        let inner = self.lisp.cons(new_env, inner)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(remaining_params, inner)?;
-        let inner = self.lisp.cons(eval_env, inner)?;
-        let data = self.lisp.cons(remaining_exprs, inner)?;
-        Ok(data)
+        self.lisp.pack_refs6(remaining_exprs, eval_env, remaining_params, body, new_env, call_expr).map_err(Into::into)
     }
     
-    /// Unpack LambdaBindArg data from a cons-list:
-    /// (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . (call_expr . nil))))))
+    /// Unpack LambdaBindArg data from contiguous storage
     fn unpack_lambda_bind_arg(&self, data: ArenaIndex) 
         -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_exprs = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let eval_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let remaining_params = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let new_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let call_expr = self.lisp.car(rest)?;
-        Ok((remaining_exprs, eval_env, remaining_params, body, new_env, call_expr))
+        self.lisp.unpack_refs6(data).map_err(Into::into)
     }
 
     // ========================================================================
-    // Pack/Unpack helpers for continuation data
+    // Pack/Unpack helpers for continuation data (using contiguous storage)
     // ========================================================================
 
-    /// Pack ApplyForced data: (args_expr . (env . (call_expr . nil)))
+    /// Pack ApplyForced data: [args_expr, env, call_expr]
     fn pack_apply_forced(&self, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(call_expr, nil)?;
-        let inner = self.lisp.cons(env, inner)?;
-        self.lisp.cons(args_expr, inner).map_err(Into::into)
+        self.lisp.pack_refs3(args_expr, env, call_expr).map_err(Into::into)
     }
 
-    /// Unpack ApplyForced data: (args_expr . (env . (call_expr . nil)))
+    /// Unpack ApplyForced data: [args_expr, env, call_expr]
     fn unpack_apply_forced(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let args_expr = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let call_expr = self.lisp.car(rest)?;
-        Ok((args_expr, env, call_expr))
+        self.lisp.unpack_refs3(data).map_err(Into::into)
     }
 
-    /// Pack IfBranch data: (then_expr . (else_expr . (env . nil)))
+    /// Pack IfBranch data: [then_expr, else_expr, env]
     fn pack_if_branch(&self, then_expr: ArenaIndex, else_expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        let inner = self.lisp.cons(else_expr, inner)?;
-        self.lisp.cons(then_expr, inner).map_err(Into::into)
+        self.lisp.pack_refs3(then_expr, else_expr, env).map_err(Into::into)
     }
 
-    /// Unpack IfBranch data: (then_expr . (else_expr . (env . nil)))
+    /// Unpack IfBranch data: [then_expr, else_expr, env]
     fn unpack_if_branch(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let then_expr = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let else_expr = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let env = self.lisp.car(rest)?;
-        Ok((then_expr, else_expr, env))
+        self.lisp.unpack_refs3(data).map_err(Into::into)
     }
 
-    /// Pack BuiltinForceArg data: (builtin_val . (remaining_args . (collected . (call_expr . (eval_env . nil)))))
+    /// Pack BuiltinForceArg data: [builtin_val, remaining_args, collected, call_expr, eval_env]
     fn pack_builtin_force_arg(&self, builtin: Builtin, remaining_args: ArenaIndex, collected: ArenaIndex, 
                                call_expr: ArenaIndex, eval_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
         let builtin_val = self.lisp.builtin(builtin)?;
-        let inner = self.lisp.cons(eval_env, nil)?;
-        let inner = self.lisp.cons(call_expr, inner)?;
-        let inner = self.lisp.cons(collected, inner)?;
-        let inner = self.lisp.cons(remaining_args, inner)?;
-        self.lisp.cons(builtin_val, inner).map_err(Into::into)
+        self.lisp.pack_refs5(builtin_val, remaining_args, collected, call_expr, eval_env).map_err(Into::into)
     }
 
-    /// Unpack BuiltinForceArg data: (builtin_val . (remaining_args . (collected . (call_expr . (eval_env . nil)))))
+    /// Unpack BuiltinForceArg data: [builtin_val, remaining_args, collected, call_expr, eval_env]
     fn unpack_builtin_force_arg(&self, data: ArenaIndex) -> Result<(Builtin, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let builtin_val = self.lisp.car(data)?;
+        let (builtin_val, remaining_args, collected, call_expr, eval_env) = self.lisp.unpack_refs5(data)?;
         let builtin = match self.lisp.get(builtin_val)? {
             Value::Builtin(b) => b,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
-        let rest = self.lisp.cdr(data)?;
-        let remaining_args = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let collected = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let call_expr = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let eval_env = self.lisp.car(rest)?;
         Ok((builtin, remaining_args, collected, call_expr, eval_env))
     }
 
-    /// Pack BinaryBuiltinFirst data: (builtin_val . (second_arg . (call_expr . (eval_env . nil))))
+    /// Pack BinaryBuiltinFirst data: [builtin_val, second_arg, call_expr, eval_env]
     fn pack_binary_builtin_first(&self, builtin: Builtin, second_arg: ArenaIndex, 
                                   call_expr: ArenaIndex, eval_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
         let builtin_val = self.lisp.builtin(builtin)?;
-        let inner = self.lisp.cons(eval_env, nil)?;
-        let inner = self.lisp.cons(call_expr, inner)?;
-        let inner = self.lisp.cons(second_arg, inner)?;
-        self.lisp.cons(builtin_val, inner).map_err(Into::into)
+        self.lisp.pack_refs4(builtin_val, second_arg, call_expr, eval_env).map_err(Into::into)
     }
 
-    /// Unpack BinaryBuiltinFirst data: (builtin_val . (second_arg . (call_expr . (eval_env . nil))))
+    /// Unpack BinaryBuiltinFirst data: [builtin_val, second_arg, call_expr, eval_env]
     fn unpack_binary_builtin_first(&self, data: ArenaIndex) -> Result<(Builtin, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let builtin_val = self.lisp.car(data)?;
+        let (builtin_val, second_arg, call_expr, eval_env) = self.lisp.unpack_refs4(data)?;
         let builtin = match self.lisp.get(builtin_val)? {
             Value::Builtin(b) => b,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
-        let rest = self.lisp.cdr(data)?;
-        let second_arg = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let call_expr = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let eval_env = self.lisp.car(rest)?;
         Ok((builtin, second_arg, call_expr, eval_env))
     }
 
-    /// Pack BinaryBuiltinSecond data: (builtin_val . (first_val . (call_expr . nil)))
+    /// Pack BinaryBuiltinSecond data: [builtin_val, first_val, call_expr]
     fn pack_binary_builtin_second(&self, builtin: Builtin, first_val: ArenaIndex, 
                                    call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
         let builtin_val = self.lisp.builtin(builtin)?;
-        let inner = self.lisp.cons(call_expr, nil)?;
-        let inner = self.lisp.cons(first_val, inner)?;
-        self.lisp.cons(builtin_val, inner).map_err(Into::into)
+        self.lisp.pack_refs3(builtin_val, first_val, call_expr).map_err(Into::into)
     }
 
-    /// Unpack BinaryBuiltinSecond data: (builtin_val . (first_val . (call_expr . nil)))
+    /// Unpack BinaryBuiltinSecond data: [builtin_val, first_val, call_expr]
     fn unpack_binary_builtin_second(&self, data: ArenaIndex) -> Result<(Builtin, ArenaIndex, ArenaIndex), EvalError> {
-        let builtin_val = self.lisp.car(data)?;
+        let (builtin_val, first_val, call_expr) = self.lisp.unpack_refs3(data)?;
         let builtin = match self.lisp.get(builtin_val)? {
             Value::Builtin(b) => b,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
-        let rest = self.lisp.cdr(data)?;
-        let first_val = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let call_expr = self.lisp.car(rest)?;
         Ok((builtin, first_val, call_expr))
     }
 
-    /// Pack LambdaFirstBind data: (param . nil)
+    /// Pack LambdaFirstBind data: [param]
     fn pack_lambda_first_bind(&self, param: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        self.lisp.cons(param, nil).map_err(Into::into)
+        self.lisp.pack_refs1(param).map_err(Into::into)
     }
 
-    /// Unpack LambdaFirstBind data: (param . nil)
+    /// Unpack LambdaFirstBind data: [param]
     fn unpack_lambda_first_bind(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.car(data).map_err(Into::into)
+        self.lisp.unpack_refs1(data).map_err(Into::into)
     }
 
-    /// Pack LetBinding data: (remaining_bindings . (new_env . (original_env . (body . (name . nil)))))
+    /// Pack LetBinding data: [remaining_bindings, new_env, original_env, body, name]
     fn pack_let_binding(&self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
                         original_env: ArenaIndex, body: ArenaIndex, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(name, nil)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(original_env, inner)?;
-        let inner = self.lisp.cons(new_env, inner)?;
-        self.lisp.cons(remaining_bindings, inner).map_err(Into::into)
+        self.lisp.pack_refs5(remaining_bindings, new_env, original_env, body, name).map_err(Into::into)
     }
 
-    /// Unpack LetBinding data: (remaining_bindings . (new_env . (original_env . (body . (name . nil)))))
+    /// Unpack LetBinding data: [remaining_bindings, new_env, original_env, body, name]
     fn unpack_let_binding(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_bindings = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let new_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let original_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let name = self.lisp.car(rest)?;
-        Ok((remaining_bindings, new_env, original_env, body, name))
+        self.lisp.unpack_refs5(data).map_err(Into::into)
     }
 
-    /// Pack LetStarBinding data: (remaining_bindings . (new_env . (body . (name . nil))))
+    /// Pack LetStarBinding data: [remaining_bindings, new_env, body, name]
     fn pack_let_star_binding(&self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
                              body: ArenaIndex, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(name, nil)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(new_env, inner)?;
-        self.lisp.cons(remaining_bindings, inner).map_err(Into::into)
+        self.lisp.pack_refs4(remaining_bindings, new_env, body, name).map_err(Into::into)
     }
 
-    /// Unpack LetStarBinding data: (remaining_bindings . (new_env . (body . (name . nil))))
+    /// Unpack LetStarBinding data: [remaining_bindings, new_env, body, name]
     fn unpack_let_star_binding(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_bindings = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let new_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let name = self.lisp.car(rest)?;
-        Ok((remaining_bindings, new_env, body, name))
+        self.lisp.unpack_refs4(data).map_err(Into::into)
     }
 
-    /// Pack LetrecInit data: (remaining_bindings . (new_env . (body . (name . nil))))
+    /// Pack LetrecInit data: [remaining_bindings, new_env, body, name]
     fn pack_letrec_init(&self, remaining_bindings: ArenaIndex, new_env: ArenaIndex, 
                         body: ArenaIndex, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(name, nil)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(new_env, inner)?;
-        self.lisp.cons(remaining_bindings, inner).map_err(Into::into)
+        self.lisp.pack_refs4(remaining_bindings, new_env, body, name).map_err(Into::into)
     }
 
-    /// Unpack LetrecInit data: (remaining_bindings . (new_env . (body . (name . nil))))
+    /// Unpack LetrecInit data: [remaining_bindings, new_env, body, name]
     fn unpack_letrec_init(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_bindings = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let new_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let name = self.lisp.car(rest)?;
-        Ok((remaining_bindings, new_env, body, name))
+        self.lisp.unpack_refs4(data).map_err(Into::into)
     }
 
-    /// Pack When data: (body . (env . nil))
+    /// Pack When data: [body, env]
     fn pack_when(&self, body: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(body, inner).map_err(Into::into)
+        self.lisp.pack_refs2(body, env).map_err(Into::into)
     }
 
-    /// Unpack When data: (body . (env . nil))
+    /// Unpack When data: [body, env]
     fn unpack_when(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let body = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((body, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack Unless data: (body . (env . nil))
+    /// Pack Unless data: [body, env]
     fn pack_unless(&self, body: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(body, inner).map_err(Into::into)
+        self.lisp.pack_refs2(body, env).map_err(Into::into)
     }
 
-    /// Unpack Unless data: (body . (env . nil))
+    /// Unpack Unless data: [body, env]
     fn unpack_unless(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let body = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((body, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack EvalExpr data: (env . nil)
+    /// Pack EvalExpr data: [env]
     fn pack_eval_expr(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        self.lisp.cons(env, nil).map_err(Into::into)
+        self.lisp.pack_refs1(env).map_err(Into::into)
     }
 
-    /// Unpack EvalExpr data: (env . nil)
+    /// Unpack EvalExpr data: [env]
     fn unpack_eval_expr(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.car(data).map_err(Into::into)
+        self.lisp.unpack_refs1(data).map_err(Into::into)
     }
 
-    /// Pack CondTest data: (then_exprs . (remaining_clauses . (env . nil)))
+    /// Pack CondTest data: [then_exprs, remaining_clauses, env]
     fn pack_cond_test(&self, then_exprs: ArenaIndex, remaining_clauses: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        let inner = self.lisp.cons(remaining_clauses, inner)?;
-        self.lisp.cons(then_exprs, inner).map_err(Into::into)
+        self.lisp.pack_refs3(then_exprs, remaining_clauses, env).map_err(Into::into)
     }
 
-    /// Unpack CondTest data: (then_exprs . (remaining_clauses . (env . nil)))
+    /// Unpack CondTest data: [then_exprs, remaining_clauses, env]
     fn unpack_cond_test(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let then_exprs = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let remaining_clauses = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let env = self.lisp.car(rest)?;
-        Ok((then_exprs, remaining_clauses, env))
+        self.lisp.unpack_refs3(data).map_err(Into::into)
     }
 
-    /// Pack And data: (remaining . (env . nil))
+    /// Pack And data: [remaining, env]
     fn pack_and(&self, remaining: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(remaining, inner).map_err(Into::into)
+        self.lisp.pack_refs2(remaining, env).map_err(Into::into)
     }
 
-    /// Unpack And data: (remaining . (env . nil))
+    /// Unpack And data: [remaining, env]
     fn unpack_and(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let remaining = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((remaining, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack Or data: (remaining . (env . nil))
+    /// Pack Or data: [remaining, env]
     fn pack_or(&self, remaining: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(remaining, inner).map_err(Into::into)
+        self.lisp.pack_refs2(remaining, env).map_err(Into::into)
     }
 
-    /// Unpack Or data: (remaining . (env . nil))
+    /// Unpack Or data: [remaining, env]
     fn unpack_or(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let remaining = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((remaining, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack BeginSeq data: (remaining . (env . nil))
+    /// Pack BeginSeq data: [remaining, env]
     fn pack_begin_seq(&self, remaining: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(remaining, inner).map_err(Into::into)
+        self.lisp.pack_refs2(remaining, env).map_err(Into::into)
     }
 
-    /// Unpack BeginSeq data: (remaining . (env . nil))
+    /// Unpack BeginSeq data: [remaining, env]
     fn unpack_begin_seq(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let remaining = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((remaining, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack CaseKey data: (clauses . (env . nil))
+    /// Pack CaseKey data: [clauses, env]
     fn pack_case_key(&self, clauses: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(clauses, inner).map_err(Into::into)
+        self.lisp.pack_refs2(clauses, env).map_err(Into::into)
     }
 
-    /// Unpack CaseKey data: (clauses . (env . nil))
+    /// Unpack CaseKey data: [clauses, env]
     fn unpack_case_key(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let clauses = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((clauses, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack DoInit data: (remaining_bindings . (var_steps . (test_clause . (body . (loop_env . (original_env . (current_var . nil)))))))
+    /// Pack DoInit data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var]
     fn pack_do_init(&self, remaining_bindings: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex,
                     body: ArenaIndex, loop_env: ArenaIndex, original_env: ArenaIndex, current_var: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(current_var, nil)?;
-        let inner = self.lisp.cons(original_env, inner)?;
-        let inner = self.lisp.cons(loop_env, inner)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(test_clause, inner)?;
-        let inner = self.lisp.cons(var_steps, inner)?;
-        self.lisp.cons(remaining_bindings, inner).map_err(Into::into)
+        self.lisp.pack_refs7(remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var).map_err(Into::into)
     }
 
-    /// Unpack DoInit data: (remaining_bindings . (var_steps . (test_clause . (body . (loop_env . (original_env . (current_var . nil)))))))
+    /// Unpack DoInit data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var]
     fn unpack_do_init(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_bindings = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let var_steps = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let test_clause = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let loop_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let original_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let current_var = self.lisp.car(rest)?;
-        Ok((remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var))
+        self.lisp.unpack_refs7(data).map_err(Into::into)
     }
 
-    /// Pack DoTestResult data: (var_steps . (test_clause . (body . (loop_env . nil))))
+    /// Pack DoTestResult data: [var_steps, test_clause, body, loop_env]
     fn pack_do_test_result(&self, var_steps: ArenaIndex, test_clause: ArenaIndex, 
                            body: ArenaIndex, loop_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(loop_env, nil)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(test_clause, inner)?;
-        self.lisp.cons(var_steps, inner).map_err(Into::into)
+        self.lisp.pack_refs4(var_steps, test_clause, body, loop_env).map_err(Into::into)
     }
 
-    /// Unpack DoTestResult data: (var_steps . (test_clause . (body . (loop_env . nil))))
+    /// Unpack DoTestResult data: [var_steps, test_clause, body, loop_env]
     fn unpack_do_test_result(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let var_steps = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let test_clause = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let loop_env = self.lisp.car(rest)?;
-        Ok((var_steps, test_clause, body, loop_env))
+        self.lisp.unpack_refs4(data).map_err(Into::into)
     }
 
-    /// Pack DoBody data: (remaining_body . (var_steps . (test_clause . (body . (loop_env . nil)))))
+    /// Pack DoBody data: [remaining_body, var_steps, test_clause, body, loop_env]
     fn pack_do_body(&self, remaining_body: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex, 
                     body: ArenaIndex, loop_env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(loop_env, nil)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(test_clause, inner)?;
-        let inner = self.lisp.cons(var_steps, inner)?;
-        self.lisp.cons(remaining_body, inner).map_err(Into::into)
+        self.lisp.pack_refs5(remaining_body, var_steps, test_clause, body, loop_env).map_err(Into::into)
     }
 
-    /// Unpack DoBody data: (remaining_body . (var_steps . (test_clause . (body . (loop_env . nil)))))
+    /// Unpack DoBody data: [remaining_body, var_steps, test_clause, body, loop_env]
     fn unpack_do_body(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_body = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let var_steps = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let test_clause = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let loop_env = self.lisp.car(rest)?;
-        Ok((remaining_body, var_steps, test_clause, body, loop_env))
+        self.lisp.unpack_refs5(data).map_err(Into::into)
     }
 
-    /// Pack DoStep data: (remaining_steps . (collected_vals . (var_steps . (test_clause . (body . (loop_env . (current_var . nil)))))))
+    /// Pack DoStep data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var]
     fn pack_do_step(&self, remaining_steps: ArenaIndex, collected_vals: ArenaIndex, var_steps: ArenaIndex,
                     test_clause: ArenaIndex, body: ArenaIndex, loop_env: ArenaIndex, current_var: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(current_var, nil)?;
-        let inner = self.lisp.cons(loop_env, inner)?;
-        let inner = self.lisp.cons(body, inner)?;
-        let inner = self.lisp.cons(test_clause, inner)?;
-        let inner = self.lisp.cons(var_steps, inner)?;
-        let inner = self.lisp.cons(collected_vals, inner)?;
-        self.lisp.cons(remaining_steps, inner).map_err(Into::into)
+        self.lisp.pack_refs7(remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var).map_err(Into::into)
     }
 
-    /// Unpack DoStep data: (remaining_steps . (collected_vals . (var_steps . (test_clause . (body . (loop_env . (current_var . nil)))))))
+    /// Unpack DoStep data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var]
     fn unpack_do_step(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining_steps = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let collected_vals = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let var_steps = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let test_clause = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let body = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let loop_env = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let current_var = self.lisp.car(rest)?;
-        Ok((remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var))
+        self.lisp.unpack_refs7(data).map_err(Into::into)
     }
 
-    /// Pack ApplyFirst data: (args_list_expr . (env . nil))
+    /// Pack ApplyFirst data: [args_list_expr, env]
     fn pack_apply_first(&self, args_list_expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(args_list_expr, inner).map_err(Into::into)
+        self.lisp.pack_refs2(args_list_expr, env).map_err(Into::into)
     }
 
-    /// Unpack ApplyFirst data: (args_list_expr . (env . nil))
+    /// Unpack ApplyFirst data: [args_list_expr, env]
     fn unpack_apply_first(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let args_list_expr = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((args_list_expr, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack ApplySecond data: (func . (env . nil))
+    /// Pack ApplySecond data: [func, env]
     fn pack_apply_second(&self, func: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(func, inner).map_err(Into::into)
+        self.lisp.pack_refs2(func, env).map_err(Into::into)
     }
 
-    /// Unpack ApplySecond data: (func . (env . nil))
+    /// Unpack ApplySecond data: [func, env]
     fn unpack_apply_second(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let func = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((func, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack ValuesCollect data: (remaining . (collected . (env . nil)))
+    /// Pack ValuesCollect data: [remaining, collected, env]
     fn pack_values_collect(&self, remaining: ArenaIndex, collected: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        let inner = self.lisp.cons(collected, inner)?;
-        self.lisp.cons(remaining, inner).map_err(Into::into)
+        self.lisp.pack_refs3(remaining, collected, env).map_err(Into::into)
     }
 
-    /// Unpack ValuesCollect data: (remaining . (collected . (env . nil)))
+    /// Unpack ValuesCollect data: [remaining, collected, env]
     fn unpack_values_collect(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let remaining = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let collected = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let env = self.lisp.car(rest)?;
-        Ok((remaining, collected, env))
+        self.lisp.unpack_refs3(data).map_err(Into::into)
     }
 
-    /// Pack DefineValue data: (name . nil)
+    /// Pack DefineValue data: [name]
     fn pack_define_value(&self, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        self.lisp.cons(name, nil).map_err(Into::into)
+        self.lisp.pack_refs1(name).map_err(Into::into)
     }
 
-    /// Unpack DefineValue data: (name . nil)
+    /// Unpack DefineValue data: [name]
     fn unpack_define_value(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.car(data).map_err(Into::into)
+        self.lisp.unpack_refs1(data).map_err(Into::into)
     }
 
-    /// Pack SetValue data: (name . (env . nil))
+    /// Pack SetValue data: [name, env]
     fn pack_set_value(&self, name: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        let inner = self.lisp.cons(env, nil)?;
-        self.lisp.cons(name, inner).map_err(Into::into)
+        self.lisp.pack_refs2(name, env).map_err(Into::into)
     }
 
-    /// Unpack SetValue data: (name . (env . nil))
+    /// Unpack SetValue data: [name, env]
     fn unpack_set_value(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let name = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let env = self.lisp.car(rest)?;
-        Ok((name, env))
+        self.lisp.unpack_refs2(data).map_err(Into::into)
     }
 
-    /// Pack NativeArgsCollect data: (remaining . (collected . (id_as_usize . (env . nil))))
+    /// Pack NativeArgsCollect data: [remaining, collected, id_val, env]
     fn pack_native_args_collect(&self, remaining: ArenaIndex, collected: ArenaIndex, id: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
         let id_val = self.lisp.usize_val(id)?;
-        let inner = self.lisp.cons(env, nil)?;
-        let inner = self.lisp.cons(id_val, inner)?;
-        let inner = self.lisp.cons(collected, inner)?;
-        self.lisp.cons(remaining, inner).map_err(Into::into)
+        self.lisp.pack_refs4(remaining, collected, id_val, env).map_err(Into::into)
     }
 
-    /// Unpack NativeArgsCollect data: (remaining . (collected . (id_as_usize . (env . nil))))
+    /// Unpack NativeArgsCollect data: [remaining, collected, id_val, env]
     fn unpack_native_args_collect(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, usize, ArenaIndex), EvalError> {
-        let remaining = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let collected = self.lisp.car(rest)?;
-        let rest = self.lisp.cdr(rest)?;
-        let id_val = self.lisp.car(rest)?;
+        let (remaining, collected, id_val, env) = self.lisp.unpack_refs4(data)?;
         let id = match self.lisp.get(id_val)? {
             Value::Usize(n) => n,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
-        let rest = self.lisp.cdr(rest)?;
-        let env = self.lisp.car(rest)?;
         Ok((remaining, collected, id, env))
     }
 
-    /// Pack QuasiquoteCar data: (cdr . (depth_as_usize . (env . nil)))
+    /// Pack QuasiquoteCar data: [cdr, depth_val, env]
     fn pack_quasiquote_car(&self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
         let depth_val = self.lisp.usize_val(depth)?;
-        let inner = self.lisp.cons(env, nil)?;
-        let inner = self.lisp.cons(depth_val, inner)?;
-        self.lisp.cons(cdr, inner).map_err(Into::into)
+        self.lisp.pack_refs3(cdr, depth_val, env).map_err(Into::into)
     }
 
-    /// Unpack QuasiquoteCar data: (cdr . (depth_as_usize . (env . nil)))
+    /// Unpack QuasiquoteCar data: [cdr, depth_val, env]
     fn unpack_quasiquote_car(&self, data: ArenaIndex) -> Result<(ArenaIndex, usize, ArenaIndex), EvalError> {
-        let cdr = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let depth_val = self.lisp.car(rest)?;
+        let (cdr, depth_val, env) = self.lisp.unpack_refs3(data)?;
         let depth = match self.lisp.get(depth_val)? {
             Value::Usize(n) => n,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
-        let rest = self.lisp.cdr(rest)?;
-        let env = self.lisp.car(rest)?;
         Ok((cdr, depth, env))
     }
 
-    /// Pack QuasiquoteCdr data: (car_val . nil)
+    /// Pack QuasiquoteCdr data: [car_val]
     fn pack_quasiquote_cdr(&self, car_val: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        self.lisp.cons(car_val, nil).map_err(Into::into)
+        self.lisp.pack_refs1(car_val).map_err(Into::into)
     }
 
-    /// Unpack QuasiquoteCdr data: (car_val . nil)
+    /// Unpack QuasiquoteCdr data: [car_val]
     fn unpack_quasiquote_cdr(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.car(data).map_err(Into::into)
+        self.lisp.unpack_refs1(data).map_err(Into::into)
     }
 
-    /// Pack QuasiquoteSplice data: (cdr . (depth_as_usize . (env . nil)))
+    /// Pack QuasiquoteSplice data: [cdr, depth_val, env]
     fn pack_quasiquote_splice(&self, cdr: ArenaIndex, depth: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
         let depth_val = self.lisp.usize_val(depth)?;
-        let inner = self.lisp.cons(env, nil)?;
-        let inner = self.lisp.cons(depth_val, inner)?;
-        self.lisp.cons(cdr, inner).map_err(Into::into)
+        self.lisp.pack_refs3(cdr, depth_val, env).map_err(Into::into)
     }
 
-    /// Unpack QuasiquoteSplice data: (cdr . (depth_as_usize . (env . nil)))
+    /// Unpack QuasiquoteSplice data: [cdr, depth_val, env]
     fn unpack_quasiquote_splice(&self, data: ArenaIndex) -> Result<(ArenaIndex, usize, ArenaIndex), EvalError> {
-        let cdr = self.lisp.car(data)?;
-        let rest = self.lisp.cdr(data)?;
-        let depth_val = self.lisp.car(rest)?;
+        let (cdr, depth_val, env) = self.lisp.unpack_refs3(data)?;
         let depth = match self.lisp.get(depth_val)? {
             Value::Usize(n) => n,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
-        let rest = self.lisp.cdr(rest)?;
-        let env = self.lisp.car(rest)?;
         Ok((cdr, depth, env))
     }
 
-    /// Pack QuasiquoteSpliceAppend data: (splice_val . nil)
+    /// Pack QuasiquoteSpliceAppend data: [splice_val]
     fn pack_quasiquote_splice_append(&self, splice_val: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        self.lisp.cons(splice_val, nil).map_err(Into::into)
+        self.lisp.pack_refs1(splice_val).map_err(Into::into)
     }
 
-    /// Unpack QuasiquoteSpliceAppend data: (splice_val . nil)
+    /// Unpack QuasiquoteSpliceAppend data: [splice_val]
     fn unpack_quasiquote_splice_append(&self, data: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        self.lisp.car(data).map_err(Into::into)
+        self.lisp.unpack_refs1(data).map_err(Into::into)
     }
     
     /// Convert a ParseError to EvalError with stdlib function name context

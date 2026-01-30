@@ -333,6 +333,247 @@ impl<const N: usize> Lisp<N> {
     }
     
     // ========================================================================
+    // Contiguous Ref Storage (for continuation data)
+    // ========================================================================
+    // 
+    // These methods pack/unpack multiple ArenaIndex values into contiguous
+    // arena slots as Ref values. Much more efficient than cons-lists:
+    // - 3 values via cons: 9 slots (3 cons × 3 slots each)
+    // - 3 values via pack_refs3: 3 slots
+    
+    /// Pack 1 ArenaIndex into contiguous storage
+    #[inline]
+    pub fn pack_refs1(&self, a: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc(Value::Ref(a))?;
+        Ok(data)
+    }
+    
+    /// Unpack 1 ArenaIndex from contiguous storage
+    #[inline]
+    pub fn unpack_refs1(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(data)? {
+            Value::Ref(a) => Ok(a),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Pack 2 ArenaIndex values into contiguous storage
+    #[inline]
+    pub fn pack_refs2(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc_contiguous(2, Value::Nil)?;
+        self.arena.set(data, Value::Ref(a))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(b))?;
+        Ok(data)
+    }
+    
+    /// Unpack 2 ArenaIndex values from contiguous storage
+    #[inline]
+    pub fn unpack_refs2(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        let a = match self.arena.get(data)? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b))
+    }
+    
+    /// Pack 3 ArenaIndex values into contiguous storage
+    #[inline]
+    pub fn pack_refs3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc_contiguous(3, Value::Nil)?;
+        self.arena.set(data, Value::Ref(a))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(b))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 2), Value::Ref(c))?;
+        Ok(data)
+    }
+    
+    /// Unpack 3 ArenaIndex values from contiguous storage
+    #[inline]
+    pub fn unpack_refs3(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let a = match self.arena.get(data)? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match self.arena.get(ArenaIndex::new(data.raw() + 2))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c))
+    }
+    
+    /// Pack 4 ArenaIndex values into contiguous storage
+    #[inline]
+    pub fn pack_refs4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc_contiguous(4, Value::Nil)?;
+        self.arena.set(data, Value::Ref(a))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(b))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 2), Value::Ref(c))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 3), Value::Ref(d))?;
+        Ok(data)
+    }
+    
+    /// Unpack 4 ArenaIndex values from contiguous storage
+    #[inline]
+    pub fn unpack_refs4(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let a = match self.arena.get(data)? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match self.arena.get(ArenaIndex::new(data.raw() + 2))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match self.arena.get(ArenaIndex::new(data.raw() + 3))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d))
+    }
+    
+    /// Pack 5 ArenaIndex values into contiguous storage
+    #[inline]
+    pub fn pack_refs5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc_contiguous(5, Value::Nil)?;
+        self.arena.set(data, Value::Ref(a))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(b))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 2), Value::Ref(c))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 3), Value::Ref(d))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 4), Value::Ref(e))?;
+        Ok(data)
+    }
+    
+    /// Unpack 5 ArenaIndex values from contiguous storage
+    #[inline]
+    pub fn unpack_refs5(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let a = match self.arena.get(data)? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match self.arena.get(ArenaIndex::new(data.raw() + 2))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match self.arena.get(ArenaIndex::new(data.raw() + 3))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let e = match self.arena.get(ArenaIndex::new(data.raw() + 4))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d, e))
+    }
+    
+    /// Pack 6 ArenaIndex values into contiguous storage
+    #[inline]
+    pub fn pack_refs6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc_contiguous(6, Value::Nil)?;
+        self.arena.set(data, Value::Ref(a))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(b))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 2), Value::Ref(c))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 3), Value::Ref(d))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 4), Value::Ref(e))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 5), Value::Ref(f))?;
+        Ok(data)
+    }
+    
+    /// Unpack 6 ArenaIndex values from contiguous storage
+    #[inline]
+    pub fn unpack_refs6(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let base = data.raw();
+        let a = match self.arena.get(data)? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match self.arena.get(ArenaIndex::new(base + 1))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match self.arena.get(ArenaIndex::new(base + 2))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match self.arena.get(ArenaIndex::new(base + 3))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let e = match self.arena.get(ArenaIndex::new(base + 4))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let f = match self.arena.get(ArenaIndex::new(base + 5))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d, e, f))
+    }
+    
+    /// Pack 7 ArenaIndex values into contiguous storage
+    #[inline]
+    pub fn pack_refs7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let data = self.arena.alloc_contiguous(7, Value::Nil)?;
+        let base = data.raw();
+        self.arena.set(data, Value::Ref(a))?;
+        self.arena.set(ArenaIndex::new(base + 1), Value::Ref(b))?;
+        self.arena.set(ArenaIndex::new(base + 2), Value::Ref(c))?;
+        self.arena.set(ArenaIndex::new(base + 3), Value::Ref(d))?;
+        self.arena.set(ArenaIndex::new(base + 4), Value::Ref(e))?;
+        self.arena.set(ArenaIndex::new(base + 5), Value::Ref(f))?;
+        self.arena.set(ArenaIndex::new(base + 6), Value::Ref(g))?;
+        Ok(data)
+    }
+    
+    /// Unpack 7 ArenaIndex values from contiguous storage
+    #[inline]
+    pub fn unpack_refs7(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let base = data.raw();
+        let a = match self.arena.get(data)? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let b = match self.arena.get(ArenaIndex::new(base + 1))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let c = match self.arena.get(ArenaIndex::new(base + 2))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let d = match self.arena.get(ArenaIndex::new(base + 3))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let e = match self.arena.get(ArenaIndex::new(base + 4))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let f = match self.arena.get(ArenaIndex::new(base + 5))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let g = match self.arena.get(ArenaIndex::new(base + 6))? {
+            Value::Ref(idx) => idx,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((a, b, c, d, e, f, g))
+    }
+    
+    // ========================================================================
     // Symbol Interning
     // ========================================================================
     
@@ -520,27 +761,21 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Stores lambda data as a linked structure in the arena: `(params . (body . env))`
     pub fn lambda(&self, params: ArenaIndex, body: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Build (body . env)
-        let body_env = self.cons(body, env)?;
-        // Build (params . (body . env))
-        let data = self.cons(params, body_env)?;
+        // Store [params, body, env] contiguously (3 slots vs 6 for cons-list)
+        let data = self.pack_refs3(params, body, env)?;
         self.alloc(Value::Lambda(data))
     }
     
     /// Extract parts from a lambda: (params, body, env)
     /// 
-    /// Lambda data is stored as `(params . (body . env))`.
+    /// Lambda data is stored as `[params, body, env]` in contiguous Ref slots.
     #[inline]
     pub fn lambda_parts(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
         let val = self.get(index)?;
         match val {
             Value::Lambda(data) => {
-                // data = (params . (body . env))
-                let params = self.car(data)?;
-                let body_env = self.cdr(data)?;
-                let body = self.car(body_env)?;
-                let env = self.cdr(body_env)?;
-                Ok((params, body, env))
+                // data = [Ref(params), Ref(body), Ref(env)]
+                self.unpack_refs3(data)
             }
             _ => Err(ArenaError::InvalidIndex),
         }

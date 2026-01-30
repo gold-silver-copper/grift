@@ -454,10 +454,9 @@ pub enum Value {
     
     /// Lambda / closure (memory-optimized)
     /// 
-    /// To minimize enum size, lambda data is stored as a linked list in the arena.
-    /// Points to a cons cell `(params . (body . env))` where:
+    /// Lambda data is stored as contiguous Ref slots in the arena: `[params, body, env]`
     /// - `params`: List of parameter symbols
-    /// - `body`: Expression to evaluate
+    /// - `body`: Expression to evaluate  
     /// - `env`: Captured environment (alist)
     /// 
     /// Use `Lisp::lambda()` to create and `Lisp::lambda_parts()` to extract.
@@ -777,8 +776,10 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*chars);
             }
             Value::Lambda(data) => {
-                // data points to (params . (body . env)), trace the whole structure
+                // data points to contiguous [Ref(params), Ref(body), Ref(env)] - trace all 3 slots
                 tracer(*data);
+                tracer(ArenaIndex::new(data.raw() + 1));
+                tracer(ArenaIndex::new(data.raw() + 2));
             }
             Value::Array(data) | Value::String(data) => {
                 // For non-empty arrays/strings, we need arena access to read the length.
