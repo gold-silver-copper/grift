@@ -145,6 +145,10 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<ref:{}>", idx.raw()).unwrap();
         }
+        Ok(Value::Usize(n)) => {
+            use std::fmt::Write;
+            write!(buf, "#<usize:{}>", n).unwrap();
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

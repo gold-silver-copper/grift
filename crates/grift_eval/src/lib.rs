@@ -81,6 +81,7 @@ mod evaluator;
 pub use error::{ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult};
 pub use num::Num;
 pub use evaluator::Evaluator;
+pub use continuation::{Cont, TrampolineState};
 
 // ============================================================================
 // Helper Macros for Code Deduplication

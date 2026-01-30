@@ -3189,3 +3189,15 @@ fn test_nested_stdlib_calls() {
     let val = lisp.get(result).unwrap().as_float().unwrap();
     assert!((val - 5.0).abs() < 0.001, "Expected 5.0, got {}", val);
 }
+
+#[test]
+fn test_size_check() {
+    use std::mem::size_of;
+    use grift_eval::{Cont, TrampolineState};
+    println!("\n=== Size Check ===");
+    println!("Size of Cont: {} bytes", size_of::<Cont>());
+    println!("Size of TrampolineState: {} bytes", size_of::<TrampolineState>());
+    println!("Size of ArenaIndex: {} bytes", size_of::<ArenaIndex>());
+    println!("Size of Value: {} bytes", size_of::<Value>());
+    println!("==================\n");
+}

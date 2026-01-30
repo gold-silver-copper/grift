@@ -551,6 +551,18 @@ pub enum Value {
     /// exposed to Lisp code directly. It's traced by the GC like any
     /// other reference.
     Ref(ArenaIndex),
+    
+    /// Unsigned integer (internal use)
+    /// 
+    /// Used for storing unsigned values like array lengths, indices,
+    /// or other internal counters that need the full positive range
+    /// of a machine word.
+    /// 
+    /// # Note
+    /// 
+    /// This is primarily an internal implementation detail. For user-facing
+    /// integers, prefer `Number(isize)` which supports negative values.
+    Usize(usize),
 }
 
 impl Value {
@@ -709,6 +721,21 @@ impl Value {
         }
     }
     
+    /// Check if this value is a usize (internal unsigned integer)
+    #[inline]
+    pub const fn is_usize(&self) -> bool {
+        matches!(self, Value::Usize(_))
+    }
+    
+    /// Get the usize value if this is a Usize
+    #[inline]
+    pub const fn as_usize(&self) -> Option<usize> {
+        match self {
+            Value::Usize(n) => Some(*n),
+            _ => None,
+        }
+    }
+    
     /// Get a human-readable type name
     pub const fn type_name(&self) -> &'static str {
         match self {
@@ -726,6 +753,7 @@ impl Value {
             Value::Array { .. } => "array",
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
+            Value::Usize(_) => "usize",
         }
     }
 }
@@ -736,7 +764,7 @@ impl<const N: usize> Trace<Value, N> for Value {
         match self {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::Native { .. } | Value::StdLib(_) => {
+            Value::Native { .. } | Value::StdLib(_) | Value::Usize(_) => {
                 // No references
             }
             Value::Ref(idx) => {
