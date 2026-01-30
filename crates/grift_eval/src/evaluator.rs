@@ -3583,13 +3583,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Encode Builtin as ArenaIndex (store discriminant as raw usize)
     #[inline]
     fn encode_builtin(builtin: Builtin) -> ArenaIndex {
-        ArenaIndex::new(builtin as u8 as usize)
+        ArenaIndex::new(builtin as usize)
     }
     
     /// Decode Builtin from ArenaIndex
     #[inline]
     fn decode_builtin(encoded: ArenaIndex) -> Builtin {
-        Builtin::from_u8(encoded.raw() as u8)
+        Builtin::from_usize(encoded.raw())
     }
 
     /// Pack LambdaBindArg data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]

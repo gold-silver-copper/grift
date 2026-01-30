@@ -32,16 +32,16 @@ pub enum Cont {
     IfBranch { data_start: usize },
 
     /// After evaluating argument for builtin (variadic ops like +)
-    /// Stack data: [builtin_as_u8, remaining_args, collected, call_expr, eval_env] (5 elements)
-    /// Note: builtin stored as u8 discriminant to avoid arena allocation
+    /// Stack data: [builtin_encoded, remaining_args, collected, call_expr, eval_env] (5 elements)
+    /// Note: builtin stored as usize discriminant to avoid arena allocation
     BuiltinForceArg { data_start: usize },
 
     /// OPTIMIZED: After evaluating first arg of binary builtin, evaluate second arg
-    /// Stack data: [builtin_as_u8, second_arg, call_expr, eval_env] (4 elements)
+    /// Stack data: [builtin_encoded, second_arg, call_expr, eval_env] (4 elements)
     BinaryBuiltinFirst { data_start: usize },
 
     /// OPTIMIZED: After evaluating both args of binary builtin, apply
-    /// Stack data: [builtin_as_u8, first_val, call_expr] (3 elements)
+    /// Stack data: [builtin_encoded, first_val, call_expr] (3 elements)
     BinaryBuiltinSecond { data_start: usize },
 
     /// After evaluating first lambda arg, bind it to param

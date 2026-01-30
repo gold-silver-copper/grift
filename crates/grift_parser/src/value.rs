@@ -80,11 +80,11 @@ macro_rules! define_builtins {
                 )*
             ];
             
-            /// Convert from u8 discriminant (for continuation data stack encoding)
+            /// Convert from usize discriminant (for continuation data stack encoding)
             /// Returns the first builtin if out of range.
             #[inline]
-            pub fn from_u8(n: u8) -> Self {
-                Self::ALL.get(n as usize).copied().unwrap_or(Self::ALL[0])
+            pub fn from_usize(n: usize) -> Self {
+                Self::ALL.get(n).copied().unwrap_or(Self::ALL[0])
             }
         }
     };
