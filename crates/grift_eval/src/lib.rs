@@ -451,6 +451,95 @@ enum Cont {
     LambdaBindArg { remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
                     remaining_params: ArenaIndex, body: ArenaIndex,
                     new_env: ArenaIndex, call_expr: ArenaIndex },
+    
+    // ========================================================================
+    // Let-family continuations - enable trampolined evaluation of bindings
+    // ========================================================================
+    
+    /// After evaluating a let binding's value, collect it and continue with remaining bindings
+    /// `let` evaluates all values in original env, then binds all at once
+    LetBindValue { 
+        /// The name to bind this value to
+        name: ArenaIndex,
+        /// Remaining bindings to process: list of (name value-expr) pairs  
+        remaining_bindings: ArenaIndex,
+        /// Already collected (name . value) pairs (in reverse order)
+        collected: ArenaIndex,
+        /// The original evaluation environment (for let, all values are evaluated here)
+        eval_env: ArenaIndex,
+        /// The body expression(s) to evaluate after all bindings are done
+        body: ArenaIndex,
+    },
+    
+    /// After evaluating a let* binding's value, extend env and continue with remaining bindings
+    /// `let*` evaluates and binds sequentially, each in the extended environment
+    LetStarBindValue {
+        /// The name to bind this value to
+        name: ArenaIndex,
+        /// Remaining bindings to process: list of (name value-expr) pairs
+        remaining_bindings: ArenaIndex,
+        /// The current extended environment (grows with each binding)
+        current_env: ArenaIndex,
+        /// The body expression(s) to evaluate after all bindings are done
+        body: ArenaIndex,
+    },
+    
+    /// After evaluating a letrec/letrec* binding's value, set the variable and continue
+    /// Variables are pre-bound to undefined, then values are evaluated and set
+    LetrecBindValue {
+        /// The name to set (already bound in env)
+        name: ArenaIndex,
+        /// Remaining (name, value-expr) pairs to process - stored as list
+        remaining_bindings: ArenaIndex,
+        /// The environment with all variables bound (used for eval and set)
+        letrec_env: ArenaIndex,
+        /// The body expression(s) to evaluate after all bindings are done  
+        body: ArenaIndex,
+    },
+    
+    /// After evaluating when/unless test condition, evaluate body if appropriate
+    WhenUnlessTest {
+        /// The body expressions to evaluate (as a list)
+        body: ArenaIndex,
+        /// The environment for evaluation
+        env: ArenaIndex,
+        /// True for 'when' (body if truthy), false for 'unless' (body if falsy)
+        is_when: bool,
+    },
+    
+    /// After evaluating an expression in begin, continue with remaining expressions
+    BeginNext {
+        /// Remaining expressions to evaluate
+        remaining: ArenaIndex,
+        /// Evaluation environment
+        env: ArenaIndex,
+    },
+    
+    /// After evaluating an expression in and, check result and continue
+    AndNext {
+        /// Remaining expressions to evaluate
+        remaining: ArenaIndex,
+        /// Evaluation environment
+        env: ArenaIndex,
+    },
+    
+    /// After evaluating an expression in or, check result and continue
+    OrNext {
+        /// Remaining expressions to evaluate
+        remaining: ArenaIndex,
+        /// Evaluation environment
+        env: ArenaIndex,
+    },
+    
+    /// After evaluating a cond test, choose body or continue to next clause
+    CondTest {
+        /// The body expressions for this clause (if test is true)
+        body: ArenaIndex,
+        /// Remaining clauses to try (if test is false)
+        remaining_clauses: ArenaIndex,
+        /// Evaluation environment
+        env: ArenaIndex,
+    },
 }
 
 /// Trampoline state - what we're currently doing
@@ -655,6 +744,46 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = new_env; root_count += 1;
                     roots[root_count] = call_expr; root_count += 1;
                 }
+                Cont::LetBindValue { name, remaining_bindings, collected, eval_env, body } => {
+                    roots[root_count] = name; root_count += 1;
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = collected; root_count += 1;
+                    roots[root_count] = eval_env; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                }
+                Cont::LetStarBindValue { name, remaining_bindings, current_env, body } => {
+                    roots[root_count] = name; root_count += 1;
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = current_env; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                }
+                Cont::LetrecBindValue { name, remaining_bindings, letrec_env, body } => {
+                    roots[root_count] = name; root_count += 1;
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = letrec_env; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                }
+                Cont::WhenUnlessTest { body, env, .. } => {
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::BeginNext { remaining, env } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::AndNext { remaining, env } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::OrNext { remaining, env } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::CondTest { body, remaining_clauses, env } => {
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = remaining_clauses; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
             }
         }
         
@@ -707,6 +836,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(binding, env).map_err(Into::into)
     }
     
+    /// Build an environment from a list of (name . value) pairs
+    /// The list is in reverse order, so we process it in order to get proper shadowing
+    fn build_env_from_bindings(&self, collected: ArenaIndex, base_env: ArenaIndex) -> EvalResult {
+        // collected is a list of (name . value) pairs in reverse order
+        // We need to extend the environment in the correct order
+        // First reverse the list, then extend one by one
+        let mut result_env = base_env;
+        let reversed = self.reverse_list(collected)?;
+        let mut current = reversed;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    // car is (name . value)
+                    let name = self.lisp.car(car)?;
+                    let value = self.lisp.cdr(car)?;
+                    result_env = self.env_extend(result_env, name, value)?;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::Generic, collected)),
+            }
+        }
+        
+        Ok(result_env)
+    }
+    
+    /// Wrap a body (list of expressions) in begin if it has multiple expressions
+    fn wrap_body_in_begin(&self, body: ArenaIndex) -> EvalResult {
+        // If body has only one expression, return it directly
+        // Otherwise, wrap in (begin ...)
+        let cdr = self.lisp.cdr(body)?;
+        if self.lisp.get(cdr)?.is_nil() {
+            // Single expression
+            Ok(self.lisp.car(body)?)
+        } else {
+            // Multiple expressions - wrap in begin
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body).map_err(Into::into)
+        }
+    }
+
     /// Look up a variable in an environment
     fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> EvalResult {
         let mut current = env;
@@ -1084,60 +1255,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Return { val });
             }
             
-            // let - TCO in body
+            // let - trampolined binding evaluation
             if self.lisp.symbol_matches(car, "let")? {
-                let (new_expr, new_env) = self.eval_let_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_let(cdr, env);
             }
             
-            // let* - TCO in body
+            // let* - trampolined sequential binding evaluation
             if self.lisp.symbol_matches(car, "let*")? {
-                let (new_expr, new_env) = self.eval_let_star_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_let_star(cdr, env);
             }
             
             // letrec - Recursive let binding (R7RS Section 4.2.2)
             if self.lisp.symbol_matches(car, "letrec")? {
-                let (new_expr, new_env) = self.eval_letrec_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_letrec(cdr, env);
             }
             
             // letrec* - Sequential recursive let binding (R7RS Section 4.2.2)
             if self.lisp.symbol_matches(car, "letrec*")? {
-                let (new_expr, new_env) = self.eval_letrec_star_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_letrec(cdr, env); // Same as letrec - both use sequential evaluation
             }
             
             // when - Convenience conditional (R7RS Section 4.2.1)
             if self.lisp.symbol_matches(car, "when")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let test_result = self.eval_preserving_stack(test_expr, env)?;
-                if self.is_false(test_result)? {
-                    // Test failed - return unspecified value (nil)
-                    let nil = self.lisp.nil()?;
-                    return Ok(TrampolineState::Return { val: nil });
-                }
-                // Test passed - evaluate body as begin
-                let begin = self.lisp.symbol("begin")?;
-                let new_expr = self.lisp.cons(begin, body)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env });
+                
+                // Push continuation to handle test result
+                self.push_cont(Cont::WhenUnlessTest { body, env, is_when: true })?;
+                
+                // Evaluate the test expression
+                return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
             
             // unless - Convenience conditional (R7RS Section 4.2.1)
             if self.lisp.symbol_matches(car, "unless")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let test_result = self.eval_preserving_stack(test_expr, env)?;
-                if !self.is_false(test_result)? {
-                    // Test is true (truthy) - skip body, return unspecified value (nil)
-                    let nil = self.lisp.nil()?;
-                    return Ok(TrampolineState::Return { val: nil });
-                }
-                // Test is false - evaluate body as begin
-                let begin = self.lisp.symbol("begin")?;
-                let new_expr = self.lisp.cons(begin, body)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env });
+                
+                // Push continuation to handle test result
+                self.push_cont(Cont::WhenUnlessTest { body, env, is_when: false })?;
+                
+                // Evaluate the test expression
+                return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
             
             // begin - TCO in last expression
@@ -1226,6 +1385,137 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Evaluate let form using trampolined continuations (no Rust stack recursion)
+    /// 
+    /// `let` evaluates all binding values in the original environment, then binds all at once.
+    fn step_eval_let(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Handle empty bindings case
+        if self.lisp.get(bindings)?.is_nil() {
+            // No bindings - just evaluate body in current env
+            let body_expr = self.wrap_body_in_begin(body)?;
+            return Ok(TrampolineState::Eval { expr: body_expr, env });
+        }
+        
+        // Get first binding
+        let first_binding = self.lisp.car(bindings)?;
+        let rest_bindings = self.lisp.cdr(bindings)?;
+        let first_name = self.lisp.car(first_binding)?;
+        let first_value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
+        
+        // Create empty collected list
+        let nil = self.lisp.nil()?;
+        
+        // Push continuation to handle the result of evaluating first binding value
+        self.push_cont(Cont::LetBindValue {
+            name: first_name,
+            remaining_bindings: rest_bindings,
+            collected: nil,
+            eval_env: env,
+            body,
+        })?;
+        
+        // Evaluate first value expression in original environment
+        Ok(TrampolineState::Eval { expr: first_value_expr, env })
+    }
+    
+    /// Evaluate let* form using trampolined continuations (no Rust stack recursion)
+    /// 
+    /// `let*` evaluates and binds each value sequentially, with each binding visible to the next.
+    fn step_eval_let_star(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Handle empty bindings case
+        if self.lisp.get(bindings)?.is_nil() {
+            // No bindings - just evaluate body in current env
+            let body_expr = self.wrap_body_in_begin(body)?;
+            return Ok(TrampolineState::Eval { expr: body_expr, env });
+        }
+        
+        // Get first binding
+        let first_binding = self.lisp.car(bindings)?;
+        let rest_bindings = self.lisp.cdr(bindings)?;
+        let first_name = self.lisp.car(first_binding)?;
+        let first_value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
+        
+        // Push continuation to handle the result of evaluating first binding value
+        self.push_cont(Cont::LetStarBindValue {
+            name: first_name,
+            remaining_bindings: rest_bindings,
+            current_env: env,
+            body,
+        })?;
+        
+        // Evaluate first value expression in current environment
+        Ok(TrampolineState::Eval { expr: first_value_expr, env })
+    }
+    
+    /// Evaluate letrec/letrec* form using trampolined continuations (no Rust stack recursion)
+    /// 
+    /// `letrec` first binds all variables to undefined, then evaluates and sets each value.
+    /// This allows mutually recursive definitions.
+    fn step_eval_letrec(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Handle empty bindings case
+        if self.lisp.get(bindings)?.is_nil() {
+            // No bindings - just evaluate body in current env
+            let body_expr = self.wrap_body_in_begin(body)?;
+            return Ok(TrampolineState::Eval { expr: body_expr, env });
+        }
+        
+        // Step 1: Bind all variables to undefined (nil) first
+        // Collect (name . value-expr) pairs and build the letrec environment
+        let mut letrec_env = env;
+        let nil = self.lisp.nil()?;
+        let mut bindings_list = nil; // Will build as (name . value-expr) pairs
+        let mut current = bindings;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: binding, cdr: rest } => {
+                    let name = self.lisp.car(binding)?;
+                    let value_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                    
+                    // Bind name to undefined in the letrec environment
+                    letrec_env = self.env_extend(letrec_env, name, nil)?;
+                    
+                    // Add (name . value-expr) to our list (will be in reverse order)
+                    let pair = self.lisp.cons(name, value_expr)?;
+                    bindings_list = self.lisp.cons(pair, bindings_list)?;
+                    
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
+            }
+        }
+        
+        // Reverse the bindings list to get correct order
+        bindings_list = self.reverse_list(bindings_list)?;
+        
+        // Get the first binding to evaluate
+        let first_pair = self.lisp.car(bindings_list)?;
+        let rest_bindings = self.lisp.cdr(bindings_list)?;
+        let first_name = self.lisp.car(first_pair)?;
+        let first_value_expr = self.lisp.cdr(first_pair)?;
+        
+        // Push continuation to handle the result
+        self.push_cont(Cont::LetrecBindValue {
+            name: first_name,
+            remaining_bindings: rest_bindings,
+            letrec_env,
+            body,
+        })?;
+        
+        // Evaluate first value expression in the letrec environment (where all names are visible)
+        Ok(TrampolineState::Eval { expr: first_value_expr, env: letrec_env })
+    }
+
     /// Process a return value with the current continuation
     fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
         let cont = self.pop_cont();
@@ -1466,6 +1756,118 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is second evaluated arg - apply binary operation directly
                 let result = self.apply_binary_builtin(builtin, first_val, val, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: result }))
+            }
+            
+            // ========================================================================
+            // Let-family continuation handling
+            // ========================================================================
+            
+            Cont::LetBindValue { name, remaining_bindings, collected, eval_env, body } => {
+                // val is the evaluated value for current binding
+                // Store (name . value) in collected and continue with remaining bindings
+                let binding_pair = self.lisp.cons(name, val)?;
+                let new_collected = self.lisp.cons(binding_pair, collected)?;
+                
+                if self.lisp.get(remaining_bindings)?.is_nil() {
+                    // All bindings evaluated - build final environment and evaluate body
+                    // collected is in reverse order, so we need to process it
+                    let new_env = self.build_env_from_bindings(new_collected, eval_env)?;
+                    
+                    // Wrap body in begin if multiple expressions
+                    let body_expr = self.wrap_body_in_begin(body)?;
+                    Ok(Some(TrampolineState::Eval { expr: body_expr, env: new_env }))
+                } else {
+                    // More bindings to process
+                    let next_binding = self.lisp.car(remaining_bindings)?;
+                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
+                    let next_name = self.lisp.car(next_binding)?;
+                    let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
+                    
+                    self.push_cont(Cont::LetBindValue {
+                        name: next_name,
+                        remaining_bindings: rest_bindings,
+                        collected: new_collected,
+                        eval_env,
+                        body,
+                    })?;
+                    
+                    // Evaluate in original env (all let bindings see the same env)
+                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: eval_env }))
+                }
+            }
+            
+            Cont::LetStarBindValue { name, remaining_bindings, current_env, body } => {
+                // val is the evaluated value for current binding
+                // Extend environment and continue with remaining bindings
+                let new_env = self.env_extend(current_env, name, val)?;
+                
+                if self.lisp.get(remaining_bindings)?.is_nil() {
+                    // All bindings done - evaluate body
+                    let body_expr = self.wrap_body_in_begin(body)?;
+                    Ok(Some(TrampolineState::Eval { expr: body_expr, env: new_env }))
+                } else {
+                    // More bindings to process
+                    let next_binding = self.lisp.car(remaining_bindings)?;
+                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
+                    let next_name = self.lisp.car(next_binding)?;
+                    let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
+                    
+                    self.push_cont(Cont::LetStarBindValue {
+                        name: next_name,
+                        remaining_bindings: rest_bindings,
+                        current_env: new_env,
+                        body,
+                    })?;
+                    
+                    // Evaluate in new env (let* sees previous bindings)
+                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: new_env }))
+                }
+            }
+            
+            Cont::LetrecBindValue { name, remaining_bindings, letrec_env, body } => {
+                // val is the evaluated value for current binding
+                // Set the variable (it's already bound to undefined) and continue
+                self.env_set(letrec_env, name, val)?;
+                
+                if self.lisp.get(remaining_bindings)?.is_nil() {
+                    // All bindings done - evaluate body
+                    let body_expr = self.wrap_body_in_begin(body)?;
+                    Ok(Some(TrampolineState::Eval { expr: body_expr, env: letrec_env }))
+                } else {
+                    // More bindings to process
+                    // remaining_bindings is a list of (name . value-expr) pairs
+                    let next_pair = self.lisp.car(remaining_bindings)?;
+                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
+                    let next_name = self.lisp.car(next_pair)?;
+                    let next_value_expr = self.lisp.cdr(next_pair)?;
+                    
+                    self.push_cont(Cont::LetrecBindValue {
+                        name: next_name,
+                        remaining_bindings: rest_bindings,
+                        letrec_env,
+                        body,
+                    })?;
+                    
+                    // Evaluate in letrec env (all names are visible)
+                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: letrec_env }))
+                }
+            }
+            
+            Cont::WhenUnlessTest { body, env, is_when } => {
+                // val is the evaluated test condition
+                let condition = !self.is_false(val)?;
+                let should_eval_body = if is_when { condition } else { !condition };
+                
+                if should_eval_body {
+                    // Evaluate body as begin
+                    let begin = self.lisp.symbol("begin")?;
+                    let new_expr = self.lisp.cons(begin, body)?;
+                    Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
+                } else {
+                    // Return nil (unspecified value)
+                    let nil = self.lisp.nil()?;
+                    Ok(Some(TrampolineState::Return { val: nil }))
+                }
             }
         }
     }
