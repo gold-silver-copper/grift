@@ -3157,8 +3157,6 @@ fn test_vector_make_vector_negative_length() {
 // ═══════════════════════════════════════════════════════════════════════════
 // NESTED STDLIB CALL TESTS
 // Tests for nested stdlib function calls (issue: deeply nested stdlib calls)
-// NOTE: These tests require RUST_MIN_STACK=16777216 (16MB) to run due to
-// the recursive nature of eval_preserving_stack through the trampoline.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -3166,7 +3164,9 @@ fn test_nested_stdlib_calls() {
     // This test verifies that stdlib functions work correctly when called
     // as arguments to other functions. This was a bug where `let` and other
     // forms called `eval_in_env` which reset the continuation stack.
-    let lisp: Lisp<50000> = Lisp::new();
+    // Note: Arena size is kept small (10000) to avoid stack overflow from
+    // stack-allocated arena in test threads.
+    let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic nested stdlib call: (+ 1 (sqrt 4)) should return 3.0

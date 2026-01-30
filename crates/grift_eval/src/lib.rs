@@ -427,30 +427,68 @@ const MAX_CONT_DEPTH: usize = 1024;
 enum Cont {
     /// We're done - return the value
     Done,
-    
+
     /// After evaluating function, decide builtin vs lambda
     ApplyForced { args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex },
-    
+
     /// After evaluating condition, choose branch
     IfBranch { then_expr: ArenaIndex, else_expr: ArenaIndex, env: ArenaIndex },
-    
+
     /// After evaluating argument for builtin (variadic ops like +)
-    BuiltinForceArg { builtin: Builtin, remaining_args: ArenaIndex, 
+    BuiltinForceArg { builtin: Builtin, remaining_args: ArenaIndex,
                       collected: ArenaIndex, call_expr: ArenaIndex, eval_env: ArenaIndex },
-    
+
     /// OPTIMIZED: After evaluating first arg of binary builtin, evaluate second arg
     BinaryBuiltinFirst { builtin: Builtin, second_arg: ArenaIndex, call_expr: ArenaIndex, eval_env: ArenaIndex },
-    
+
     /// OPTIMIZED: After evaluating both args of binary builtin, apply
     BinaryBuiltinSecond { builtin: Builtin, first_val: ArenaIndex, call_expr: ArenaIndex },
-    
+
     /// After evaluating first lambda arg, bind it to param
     LambdaFirstBind { param: ArenaIndex },
-    
+
     /// After binding a lambda arg, continue with remaining args
     LambdaBindArg { remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
                     remaining_params: ArenaIndex, body: ArenaIndex,
                     new_env: ArenaIndex, call_expr: ArenaIndex },
+
+    /// After evaluating a let binding value, extend env and continue with remaining bindings
+    /// remaining_bindings: remaining ((name value-expr) ...) to process
+    /// new_env: environment being built with bindings
+    /// original_env: environment for evaluating value expressions (for let, not let*)
+    /// body: body expression to evaluate after all bindings
+    LetBinding { remaining_bindings: ArenaIndex, new_env: ArenaIndex,
+                 original_env: ArenaIndex, body: ArenaIndex, name: ArenaIndex },
+
+    /// After evaluating a let* binding value, extend env and continue
+    /// For let*, we use new_env for both extending AND evaluating
+    LetStarBinding { remaining_bindings: ArenaIndex, new_env: ArenaIndex,
+                     body: ArenaIndex, name: ArenaIndex },
+
+    /// After evaluating a letrec init expression, set! the variable and continue
+    /// remaining_bindings: remaining ((name init-expr) ...) to process
+    /// new_env: environment with all names bound (initially to nil)
+    /// body: body expression to evaluate after all inits
+    LetrecInit { remaining_bindings: ArenaIndex, new_env: ArenaIndex,
+                 body: ArenaIndex, name: ArenaIndex },
+
+    /// After evaluating test in when/unless, decide whether to run body
+    /// is_when: true for when, false for unless
+    WhenUnless { body: ArenaIndex, env: ArenaIndex, is_when: bool },
+
+    /// After evaluating expr in eval special form
+    EvalExpr { env: ArenaIndex },
+
+    /// After evaluating cond test clause
+    CondTest { then_exprs: ArenaIndex, remaining_clauses: ArenaIndex, env: ArenaIndex },
+
+    /// Processing and/or short-circuit evaluation
+    /// remaining: remaining expressions to evaluate
+    /// is_and: true for and, false for or
+    AndOr { remaining: ArenaIndex, env: ArenaIndex, is_and: bool },
+
+    /// Processing begin expressions (non-tail)
+    BeginSeq { remaining: ArenaIndex, env: ArenaIndex },
 }
 
 /// Trampoline state - what we're currently doing
@@ -655,9 +693,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = new_env; root_count += 1;
                     roots[root_count] = call_expr; root_count += 1;
                 }
+                Cont::LetBinding { remaining_bindings, new_env, original_env, body, name } => {
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = new_env; root_count += 1;
+                    roots[root_count] = original_env; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = name; root_count += 1;
+                }
+                Cont::LetStarBinding { remaining_bindings, new_env, body, name } => {
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = new_env; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = name; root_count += 1;
+                }
+                Cont::LetrecInit { remaining_bindings, new_env, body, name } => {
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = new_env; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = name; root_count += 1;
+                }
+                Cont::WhenUnless { body, env, .. } => {
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::EvalExpr { env } => {
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::CondTest { then_exprs, remaining_clauses, env } => {
+                    roots[root_count] = then_exprs; root_count += 1;
+                    roots[root_count] = remaining_clauses; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::AndOr { remaining, env, .. } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::BeginSeq { remaining, env } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
             }
         }
-        
+
         self.lisp.gc(&roots[..root_count])
     }
     
@@ -1084,90 +1161,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Return { val });
             }
             
-            // let - TCO in body
+            // let - continuation-based evaluation
             if self.lisp.symbol_matches(car, "let")? {
-                let (new_expr, new_env) = self.eval_let_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_let(cdr, env);
             }
-            
-            // let* - TCO in body
+
+            // let* - continuation-based evaluation
             if self.lisp.symbol_matches(car, "let*")? {
-                let (new_expr, new_env) = self.eval_let_star_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_let_star(cdr, env);
             }
-            
-            // letrec - Recursive let binding (R7RS Section 4.2.2)
+
+            // letrec - continuation-based evaluation (R7RS Section 4.2.2)
             if self.lisp.symbol_matches(car, "letrec")? {
-                let (new_expr, new_env) = self.eval_letrec_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_letrec(cdr, env);
             }
-            
-            // letrec* - Sequential recursive let binding (R7RS Section 4.2.2)
+
+            // letrec* - continuation-based evaluation (R7RS Section 4.2.2)
             if self.lisp.symbol_matches(car, "letrec*")? {
-                let (new_expr, new_env) = self.eval_letrec_star_tco(cdr, env)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
+                return self.step_eval_letrec(cdr, env); // Same as letrec for now
             }
-            
-            // when - Convenience conditional (R7RS Section 4.2.1)
+
+            // when - continuation-based evaluation (R7RS Section 4.2.1)
             if self.lisp.symbol_matches(car, "when")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let test_result = self.eval_preserving_stack(test_expr, env)?;
-                if self.is_false(test_result)? {
-                    // Test failed - return unspecified value (nil)
-                    let nil = self.lisp.nil()?;
-                    return Ok(TrampolineState::Return { val: nil });
-                }
-                // Test passed - evaluate body as begin
-                let begin = self.lisp.symbol("begin")?;
-                let new_expr = self.lisp.cons(begin, body)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env });
+                self.push_cont(Cont::WhenUnless { body, env, is_when: true })?;
+                return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
-            
-            // unless - Convenience conditional (R7RS Section 4.2.1)
+
+            // unless - continuation-based evaluation (R7RS Section 4.2.1)
             if self.lisp.symbol_matches(car, "unless")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let test_result = self.eval_preserving_stack(test_expr, env)?;
-                if !self.is_false(test_result)? {
-                    // Test is true (truthy) - skip body, return unspecified value (nil)
-                    let nil = self.lisp.nil()?;
-                    return Ok(TrampolineState::Return { val: nil });
-                }
-                // Test is false - evaluate body as begin
-                let begin = self.lisp.symbol("begin")?;
-                let new_expr = self.lisp.cons(begin, body)?;
-                return Ok(TrampolineState::Eval { expr: new_expr, env });
+                self.push_cont(Cont::WhenUnless { body, env, is_when: false })?;
+                return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
-            
-            // begin - TCO in last expression
+
+            // begin - continuation-based evaluation
             if self.lisp.symbol_matches(car, "begin")? {
-                match self.eval_begin_tco(cdr, env)? {
-                    TcoResult::Return(val) => return Ok(TrampolineState::Return { val }),
-                    TcoResult::TailCall { new_expr, new_env } => {
-                        return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
-                    }
-                }
+                return self.step_eval_begin(cdr, env);
             }
-            
-            // and - short circuit
+
+            // and - continuation-based short circuit
             if self.lisp.symbol_matches(car, "and")? {
-                match self.eval_and_tco(cdr, env)? {
-                    TcoResult::Return(val) => return Ok(TrampolineState::Return { val }),
-                    TcoResult::TailCall { new_expr, new_env } => {
-                        return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
-                    }
-                }
+                return self.step_eval_and(cdr, env);
             }
-            
-            // or - short circuit
+
+            // or - continuation-based short circuit
             if self.lisp.symbol_matches(car, "or")? {
-                match self.eval_or_tco(cdr, env)? {
-                    TcoResult::Return(val) => return Ok(TrampolineState::Return { val }),
-                    TcoResult::TailCall { new_expr, new_env } => {
-                        return Ok(TrampolineState::Eval { expr: new_expr, env: new_env });
-                    }
-                }
+                return self.step_eval_or(cdr, env);
             }
             
             // case - pattern matching
@@ -1186,12 +1228,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Return { val });
             }
             
-            // eval - evaluate expression at runtime
+            // eval - continuation-based evaluation at runtime
             if self.lisp.symbol_matches(car, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
-                let evaluated_expr = self.eval_preserving_stack(expr_to_eval, env)?;
-                // Evaluate the result in the global environment
-                return Ok(TrampolineState::Eval { expr: evaluated_expr, env: self.global_env });
+                // Push continuation to evaluate the result in global environment
+                self.push_cont(Cont::EvalExpr { env: self.global_env })?;
+                // First evaluate the expression to get the code to eval
+                return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
             }
             
             // apply - apply function to list of arguments
@@ -1216,14 +1259,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(TrampolineState::Eval { expr: car, env })
     }
     
-    /// Evaluate cond (trampolined)
+    /// Evaluate cond using continuations
     fn step_eval_cond(&mut self, clauses: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        match self.eval_cond_tco(clauses, env)? {
-            TcoResult::Return(val) => Ok(TrampolineState::Return { val }),
-            TcoResult::TailCall { new_expr, new_env } => {
-                Ok(TrampolineState::Eval { expr: new_expr, env: new_env })
-            }
+        if self.lisp.get(clauses)?.is_nil() {
+            // No clauses - return unspecified (nil)
+            let nil = self.lisp.nil()?;
+            return Ok(TrampolineState::Return { val: nil });
         }
+
+        let clause = self.lisp.car(clauses)?;
+        let rest_clauses = self.lisp.cdr(clauses)?;
+        let test = self.lisp.car(clause)?;
+        let then_exprs = self.lisp.cdr(clause)?;
+
+        // Check for else clause
+        if self.lisp.symbol_matches(test, "else")? {
+            if self.lisp.get(then_exprs)?.is_nil() {
+                let nil = self.lisp.nil()?;
+                return Ok(TrampolineState::Return { val: nil });
+            }
+            let begin = self.lisp.symbol("begin")?;
+            let new_expr = self.lisp.cons(begin, then_exprs)?;
+            return Ok(TrampolineState::Eval { expr: new_expr, env });
+        }
+
+        // Push continuation for after evaluating test
+        self.push_cont(Cont::CondTest { then_exprs, remaining_clauses: rest_clauses, env })?;
+
+        // Evaluate the test
+        Ok(TrampolineState::Eval { expr: test, env })
     }
     
     /// Process a return value with the current continuation
@@ -1467,9 +1531,411 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let result = self.apply_binary_builtin(builtin, first_val, val, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
+
+            Cont::LetBinding { remaining_bindings, new_env, original_env, body, name } => {
+                // val is the evaluated value for the current binding
+                // Extend environment with the binding
+                let extended_env = self.env_extend(new_env, name, val)?;
+
+                // Check for more bindings
+                if self.lisp.get(remaining_bindings)?.is_nil() {
+                    // All bindings done - evaluate body in extended environment
+                    Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
+                } else {
+                    // More bindings - get next binding
+                    let next_binding = self.lisp.car(remaining_bindings)?;
+                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
+                    let next_name = self.lisp.car(next_binding)?;
+                    let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
+
+                    // Push continuation for after evaluating this binding
+                    self.push_cont(Cont::LetBinding {
+                        remaining_bindings: rest_bindings,
+                        new_env: extended_env,
+                        original_env,
+                        body,
+                        name: next_name,
+                    })?;
+
+                    // Evaluate the value expression in the ORIGINAL environment
+                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: original_env }))
+                }
+            }
+
+            Cont::LetStarBinding { remaining_bindings, new_env, body, name } => {
+                // val is the evaluated value for the current binding
+                // Extend environment with the binding
+                let extended_env = self.env_extend(new_env, name, val)?;
+
+                // Check for more bindings
+                if self.lisp.get(remaining_bindings)?.is_nil() {
+                    // All bindings done - evaluate body in extended environment
+                    Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
+                } else {
+                    // More bindings - get next binding
+                    let next_binding = self.lisp.car(remaining_bindings)?;
+                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
+                    let next_name = self.lisp.car(next_binding)?;
+                    let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
+
+                    // Push continuation for after evaluating this binding
+                    self.push_cont(Cont::LetStarBinding {
+                        remaining_bindings: rest_bindings,
+                        new_env: extended_env,
+                        body,
+                        name: next_name,
+                    })?;
+
+                    // Evaluate the value expression in the NEW (extended) environment
+                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: extended_env }))
+                }
+            }
+
+            Cont::LetrecInit { remaining_bindings, new_env, body, name } => {
+                // val is the evaluated init expression - set! the variable
+                self.env_set(new_env, name, val)?;
+
+                // Check for more bindings
+                if self.lisp.get(remaining_bindings)?.is_nil() {
+                    // All inits done - evaluate body
+                    Ok(Some(TrampolineState::Eval { expr: body, env: new_env }))
+                } else {
+                    // More bindings - get next binding
+                    let next_binding = self.lisp.car(remaining_bindings)?;
+                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
+                    let next_name = self.lisp.car(next_binding)?;
+                    let next_init_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
+
+                    // Push continuation for after evaluating this init
+                    self.push_cont(Cont::LetrecInit {
+                        remaining_bindings: rest_bindings,
+                        new_env,
+                        body,
+                        name: next_name,
+                    })?;
+
+                    // Evaluate the init expression in the letrec environment
+                    Ok(Some(TrampolineState::Eval { expr: next_init_expr, env: new_env }))
+                }
+            }
+
+            Cont::WhenUnless { body, env, is_when } => {
+                // val is the evaluated test result
+                let test_passed = !self.is_false(val)?;
+                let should_run = if is_when { test_passed } else { !test_passed };
+
+                if should_run {
+                    // Evaluate body as begin
+                    let begin = self.lisp.symbol("begin")?;
+                    let new_expr = self.lisp.cons(begin, body)?;
+                    Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
+                } else {
+                    // Return unspecified value (nil)
+                    let nil = self.lisp.nil()?;
+                    Ok(Some(TrampolineState::Return { val: nil }))
+                }
+            }
+
+            Cont::EvalExpr { env } => {
+                // val is the evaluated expression - now evaluate it
+                Ok(Some(TrampolineState::Eval { expr: val, env }))
+            }
+
+            Cont::CondTest { then_exprs, remaining_clauses, env } => {
+                // val is the evaluated test
+                if !self.is_false(val)? {
+                    // Test passed - evaluate body expressions
+                    if self.lisp.get(then_exprs)?.is_nil() {
+                        // No body - return the test value itself (cond => behavior)
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else {
+                        // Evaluate body as begin
+                        let begin = self.lisp.symbol("begin")?;
+                        let new_expr = self.lisp.cons(begin, then_exprs)?;
+                        Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
+                    }
+                } else {
+                    // Test failed - try remaining clauses
+                    self.step_eval_cond_cont(remaining_clauses, env)
+                }
+            }
+
+            Cont::AndOr { remaining, env, is_and } => {
+                // val is the evaluated expression
+                if is_and {
+                    // and: if false, short-circuit and return #f
+                    if self.is_false(val)? {
+                        let false_val = self.lisp.boolean(false)?;
+                        Ok(Some(TrampolineState::Return { val: false_val }))
+                    } else if self.lisp.get(remaining)?.is_nil() {
+                        // Last expression - return its value
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else {
+                        // More expressions - evaluate next
+                        let next_expr = self.lisp.car(remaining)?;
+                        let rest = self.lisp.cdr(remaining)?;
+                        self.push_cont(Cont::AndOr { remaining: rest, env, is_and: true })?;
+                        Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                    }
+                } else {
+                    // or: if truthy, short-circuit and return the value
+                    if !self.is_false(val)? {
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else if self.lisp.get(remaining)?.is_nil() {
+                        // Last expression was false - return #f
+                        let false_val = self.lisp.boolean(false)?;
+                        Ok(Some(TrampolineState::Return { val: false_val }))
+                    } else {
+                        // More expressions - evaluate next
+                        let next_expr = self.lisp.car(remaining)?;
+                        let rest = self.lisp.cdr(remaining)?;
+                        self.push_cont(Cont::AndOr { remaining: rest, env, is_and: false })?;
+                        Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                    }
+                }
+            }
+
+            Cont::BeginSeq { remaining, env } => {
+                // val is the result of the previous expression (discarded unless last)
+                if self.lisp.get(remaining)?.is_nil() {
+                    // This was the last expression - return its value
+                    Ok(Some(TrampolineState::Return { val }))
+                } else {
+                    // More expressions - evaluate next
+                    let next_expr = self.lisp.car(remaining)?;
+                    let rest = self.lisp.cdr(remaining)?;
+                    if self.lisp.get(rest)?.is_nil() {
+                        // Next is the last - just evaluate it (tail call)
+                        Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                    } else {
+                        // More after next - push continuation
+                        self.push_cont(Cont::BeginSeq { remaining: rest, env })?;
+                        Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                    }
+                }
+            }
         }
     }
-    
+
+    /// Helper for cond continuation - process remaining clauses
+    fn step_eval_cond_cont(&mut self, clauses: ArenaIndex, env: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
+        if self.lisp.get(clauses)?.is_nil() {
+            // No more clauses - return unspecified (nil)
+            let nil = self.lisp.nil()?;
+            return Ok(Some(TrampolineState::Return { val: nil }));
+        }
+
+        let clause = self.lisp.car(clauses)?;
+        let rest_clauses = self.lisp.cdr(clauses)?;
+        let test = self.lisp.car(clause)?;
+        let then_exprs = self.lisp.cdr(clause)?;
+
+        // Check for else clause
+        if self.lisp.symbol_matches(test, "else")? {
+            if self.lisp.get(then_exprs)?.is_nil() {
+                let nil = self.lisp.nil()?;
+                return Ok(Some(TrampolineState::Return { val: nil }));
+            }
+            let begin = self.lisp.symbol("begin")?;
+            let new_expr = self.lisp.cons(begin, then_exprs)?;
+            return Ok(Some(TrampolineState::Eval { expr: new_expr, env }));
+        }
+
+        // Push continuation for after evaluating test
+        self.push_cont(Cont::CondTest { then_exprs, remaining_clauses: rest_clauses, env })?;
+
+        // Evaluate the test
+        Ok(Some(TrampolineState::Eval { expr: test, env }))
+    }
+
+    /// Evaluate let using continuations (no Rust recursion)
+    fn step_eval_let(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body_list = self.lisp.cdr(args)?;
+
+        // Build body expression
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+
+        // If no bindings, just evaluate body
+        if self.lisp.get(bindings)?.is_nil() {
+            return Ok(TrampolineState::Eval { expr: body, env });
+        }
+
+        // Get first binding
+        let first_binding = self.lisp.car(bindings)?;
+        let rest_bindings = self.lisp.cdr(bindings)?;
+        let name = self.lisp.car(first_binding)?;
+        let value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
+
+        // Push continuation for after evaluating this binding
+        self.push_cont(Cont::LetBinding {
+            remaining_bindings: rest_bindings,
+            new_env: env,
+            original_env: env,
+            body,
+            name,
+        })?;
+
+        // Evaluate the first value expression in the original environment
+        Ok(TrampolineState::Eval { expr: value_expr, env })
+    }
+
+    /// Evaluate let* using continuations (no Rust recursion)
+    fn step_eval_let_star(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body_list = self.lisp.cdr(args)?;
+
+        // Build body expression
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+
+        // If no bindings, just evaluate body
+        if self.lisp.get(bindings)?.is_nil() {
+            return Ok(TrampolineState::Eval { expr: body, env });
+        }
+
+        // Get first binding
+        let first_binding = self.lisp.car(bindings)?;
+        let rest_bindings = self.lisp.cdr(bindings)?;
+        let name = self.lisp.car(first_binding)?;
+        let value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
+
+        // Push continuation for after evaluating this binding
+        self.push_cont(Cont::LetStarBinding {
+            remaining_bindings: rest_bindings,
+            new_env: env,
+            body,
+            name,
+        })?;
+
+        // Evaluate the first value expression
+        Ok(TrampolineState::Eval { expr: value_expr, env })
+    }
+
+    /// Evaluate letrec/letrec* using continuations (no Rust recursion)
+    fn step_eval_letrec(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body_list = self.lisp.cdr(args)?;
+
+        // Build body expression
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+
+        // If no bindings, just evaluate body
+        if self.lisp.get(bindings)?.is_nil() {
+            return Ok(TrampolineState::Eval { expr: body, env });
+        }
+
+        // First, create environment with all names bound to nil
+        let mut new_env = env;
+        let mut current = bindings;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: binding, cdr: rest } => {
+                    let name = self.lisp.car(binding)?;
+                    let undefined = self.lisp.nil()?;
+                    new_env = self.env_extend(new_env, name, undefined)?;
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
+            }
+        }
+
+        // Now start evaluating init expressions
+        let first_binding = self.lisp.car(bindings)?;
+        let rest_bindings = self.lisp.cdr(bindings)?;
+        let name = self.lisp.car(first_binding)?;
+        let init_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
+
+        // Push continuation for after evaluating this init
+        self.push_cont(Cont::LetrecInit {
+            remaining_bindings: rest_bindings,
+            new_env,
+            body,
+            name,
+        })?;
+
+        // Evaluate the init expression in the new environment (where all names are visible)
+        Ok(TrampolineState::Eval { expr: init_expr, env: new_env })
+    }
+
+    /// Evaluate begin using continuations (no Rust recursion)
+    fn step_eval_begin(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        if self.lisp.get(exprs)?.is_nil() {
+            // Empty begin - return nil
+            let nil = self.lisp.nil()?;
+            return Ok(TrampolineState::Return { val: nil });
+        }
+
+        let first_expr = self.lisp.car(exprs)?;
+        let rest = self.lisp.cdr(exprs)?;
+
+        if self.lisp.get(rest)?.is_nil() {
+            // Single expression - tail call
+            Ok(TrampolineState::Eval { expr: first_expr, env })
+        } else {
+            // Multiple expressions - push continuation for the rest
+            self.push_cont(Cont::BeginSeq { remaining: rest, env })?;
+            Ok(TrampolineState::Eval { expr: first_expr, env })
+        }
+    }
+
+    /// Evaluate and using continuations (no Rust recursion)
+    fn step_eval_and(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        if self.lisp.get(exprs)?.is_nil() {
+            // (and) with no args returns #t
+            let true_val = self.lisp.boolean(true)?;
+            return Ok(TrampolineState::Return { val: true_val });
+        }
+
+        let first_expr = self.lisp.car(exprs)?;
+        let rest = self.lisp.cdr(exprs)?;
+
+        if self.lisp.get(rest)?.is_nil() {
+            // Single expression - evaluate it (its value is the result)
+            Ok(TrampolineState::Eval { expr: first_expr, env })
+        } else {
+            // Multiple expressions - push continuation
+            self.push_cont(Cont::AndOr { remaining: rest, env, is_and: true })?;
+            Ok(TrampolineState::Eval { expr: first_expr, env })
+        }
+    }
+
+    /// Evaluate or using continuations (no Rust recursion)
+    fn step_eval_or(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        if self.lisp.get(exprs)?.is_nil() {
+            // (or) with no args returns #f
+            let false_val = self.lisp.boolean(false)?;
+            return Ok(TrampolineState::Return { val: false_val });
+        }
+
+        let first_expr = self.lisp.car(exprs)?;
+        let rest = self.lisp.cdr(exprs)?;
+
+        if self.lisp.get(rest)?.is_nil() {
+            // Single expression - evaluate it (its value is the result)
+            Ok(TrampolineState::Eval { expr: first_expr, env })
+        } else {
+            // Multiple expressions - push continuation
+            self.push_cont(Cont::AndOr { remaining: rest, env, is_and: false })?;
+            Ok(TrampolineState::Eval { expr: first_expr, env })
+        }
+    }
+
     /// Apply a builtin with unevaluated args - sets up evaluation continuations
     fn apply_builtin_with_args(&mut self, builtin: Builtin, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) 
         -> Result<Option<TrampolineState>, EvalError> 
