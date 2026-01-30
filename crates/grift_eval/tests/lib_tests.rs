@@ -3197,12 +3197,61 @@ fn test_nested_stdlib_calls() {
 
 #[test]
 fn test_size_check() {
-    use std::mem::size_of;
+    use std::mem::{size_of, align_of};
     use grift_eval::{Cont, TrampolineState};
-    println!("\n=== Size Check ===");
-    println!("Size of Cont: {} bytes", size_of::<Cont>());
-    println!("Size of TrampolineState: {} bytes", size_of::<TrampolineState>());
-    println!("Size of ArenaIndex: {} bytes", size_of::<ArenaIndex>());
-    println!("Size of Value: {} bytes", size_of::<Value>());
-    println!("==================\n");
+    use grift_parser::{Builtin, StdLib};
+    
+    println!("\n╔════════════════════════════════════════════════════════════╗");
+    println!("║                    TYPE SIZE ANALYSIS                      ║");
+    println!("╠════════════════════════════════════════════════════════════╣");
+    
+    println!("║ Core Arena Types:                                          ║");
+    println!("║   ArenaIndex:      {:>3} bytes (align: {:>2})                  ║", 
+             size_of::<ArenaIndex>(), align_of::<ArenaIndex>());
+    println!("║   Value:           {:>3} bytes (align: {:>2})                  ║", 
+             size_of::<Value>(), align_of::<Value>());
+    
+    println!("╠════════════════════════════════════════════════════════════╣");
+    println!("║ Continuation Types:                                        ║");
+    println!("║   Cont:            {:>3} bytes (align: {:>2})                  ║", 
+             size_of::<Cont>(), align_of::<Cont>());
+    println!("║   TrampolineState: {:>3} bytes (align: {:>2})                  ║", 
+             size_of::<TrampolineState>(), align_of::<TrampolineState>());
+    
+    println!("╠════════════════════════════════════════════════════════════╣");
+    println!("║ Function Types:                                            ║");
+    println!("║   Builtin:         {:>3} bytes (align: {:>2}, {} variants)     ║", 
+             size_of::<Builtin>(), align_of::<Builtin>(), Builtin::ALL.len());
+    println!("║   StdLib:          {:>3} bytes (align: {:>2}, {} variants)      ║", 
+             size_of::<StdLib>(), align_of::<StdLib>(), StdLib::ALL.len());
+    
+    println!("╠════════════════════════════════════════════════════════════╣");
+    println!("║ Rust Primitives (for reference):                           ║");
+    println!("║   usize:           {:>3} bytes                               ║", size_of::<usize>());
+    println!("║   isize:           {:>3} bytes                               ║", size_of::<isize>());
+    println!("║   char:            {:>3} bytes                               ║", size_of::<char>());
+    println!("║   bool:            {:>3} bytes                               ║", size_of::<bool>());
+    
+    println!("╠════════════════════════════════════════════════════════════╣");
+    println!("║ Analysis:                                                  ║");
+    
+    // Value analysis
+    let value_slots = size_of::<Value>() / size_of::<usize>();
+    println!("║   Value = {} usizes = discriminant + {} usizes payload   ║", 
+             value_slots, value_slots - 1);
+    
+    // Cont analysis
+    let cont_slots = size_of::<Cont>() / size_of::<usize>();
+    println!("║   Cont = {} usizes (discriminant + data_start offset)     ║", cont_slots);
+    
+    // Cache line analysis (64 bytes typical)
+    let values_per_cache_line = 64 / size_of::<Value>();
+    println!("║   Values per 64-byte cache line: {}                        ║", values_per_cache_line);
+    
+    println!("╚════════════════════════════════════════════════════════════╝\n");
+    
+    // Assertions to catch regressions
+    assert!(size_of::<Value>() <= 32, "Value enum grew beyond 32 bytes!");
+    assert!(size_of::<Cont>() <= 16, "Cont enum grew beyond 16 bytes!");
+    assert!(size_of::<ArenaIndex>() == 8, "ArenaIndex should be exactly 8 bytes");
 }
