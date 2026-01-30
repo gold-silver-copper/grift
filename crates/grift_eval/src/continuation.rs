@@ -132,11 +132,11 @@ pub enum Cont {
     SetValue { data: ArenaIndex },
 
     /// Evaluate arguments for native function call
-    /// data: (remaining . (collected . (id_as_number . (env . nil))))
+    /// data: (remaining . (collected . (id_as_usize . (env . nil))))
     NativeArgsCollect { data: ArenaIndex },
 
     /// After evaluating car in quasiquote, evaluate cdr
-    /// data: (cdr . (depth_as_number . (env . nil)))
+    /// data: (cdr . (depth_as_usize . (env . nil)))
     QuasiquoteCar { data: ArenaIndex },
 
     /// After evaluating cdr in quasiquote, cons with car
@@ -150,7 +150,7 @@ pub enum Cont {
     QuasiquoteNestedWrap,
 
     /// After evaluating unquote-splicing, append with rest
-    /// data: (cdr . (depth_as_number . (env . nil)))
+    /// data: (cdr . (depth_as_usize . (env . nil)))
     QuasiquoteSplice { data: ArenaIndex },
 
     /// After evaluating cdr for splice, append with splice value

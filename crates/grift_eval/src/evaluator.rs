@@ -3987,17 +3987,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok((name, env))
     }
 
-    /// Pack NativeArgsCollect data: (remaining . (collected . (id_as_number . (env . nil))))
+    /// Pack NativeArgsCollect data: (remaining . (collected . (id_as_usize . (env . nil))))
     fn pack_native_args_collect(&self, remaining: ArenaIndex, collected: ArenaIndex, id: usize, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let nil = self.lisp.nil()?;
-        let id_val = self.lisp.number(id as isize)?;
+        let id_val = self.lisp.usize_val(id)?;
         let inner = self.lisp.cons(env, nil)?;
         let inner = self.lisp.cons(id_val, inner)?;
         let inner = self.lisp.cons(collected, inner)?;
         self.lisp.cons(remaining, inner).map_err(Into::into)
     }
 
-    /// Unpack NativeArgsCollect data: (remaining . (collected . (id_as_number . (env . nil))))
+    /// Unpack NativeArgsCollect data: (remaining . (collected . (id_as_usize . (env . nil))))
     fn unpack_native_args_collect(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, usize, ArenaIndex), EvalError> {
         let remaining = self.lisp.car(data)?;
         let rest = self.lisp.cdr(data)?;
@@ -4005,7 +4005,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let rest = self.lisp.cdr(rest)?;
         let id_val = self.lisp.car(rest)?;
         let id = match self.lisp.get(id_val)? {
-            Value::Number(n) => n as usize,
+            Value::Usize(n) => n,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
         let rest = self.lisp.cdr(rest)?;
@@ -4013,22 +4013,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok((remaining, collected, id, env))
     }
 
-    /// Pack QuasiquoteCar data: (cdr . (depth_as_number . (env . nil)))
+    /// Pack QuasiquoteCar data: (cdr . (depth_as_usize . (env . nil)))
     fn pack_quasiquote_car(&self, cdr: ArenaIndex, depth: u8, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let nil = self.lisp.nil()?;
-        let depth_val = self.lisp.number(depth as isize)?;
+        let depth_val = self.lisp.usize_val(depth as usize)?;
         let inner = self.lisp.cons(env, nil)?;
         let inner = self.lisp.cons(depth_val, inner)?;
         self.lisp.cons(cdr, inner).map_err(Into::into)
     }
 
-    /// Unpack QuasiquoteCar data: (cdr . (depth_as_number . (env . nil)))
+    /// Unpack QuasiquoteCar data: (cdr . (depth_as_usize . (env . nil)))
     fn unpack_quasiquote_car(&self, data: ArenaIndex) -> Result<(ArenaIndex, u8, ArenaIndex), EvalError> {
         let cdr = self.lisp.car(data)?;
         let rest = self.lisp.cdr(data)?;
         let depth_val = self.lisp.car(rest)?;
         let depth = match self.lisp.get(depth_val)? {
-            Value::Number(n) => n as u8,
+            Value::Usize(n) => n as u8,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
         let rest = self.lisp.cdr(rest)?;
@@ -4047,22 +4047,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.car(data).map_err(Into::into)
     }
 
-    /// Pack QuasiquoteSplice data: (cdr . (depth_as_number . (env . nil)))
+    /// Pack QuasiquoteSplice data: (cdr . (depth_as_usize . (env . nil)))
     fn pack_quasiquote_splice(&self, cdr: ArenaIndex, depth: u8, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let nil = self.lisp.nil()?;
-        let depth_val = self.lisp.number(depth as isize)?;
+        let depth_val = self.lisp.usize_val(depth as usize)?;
         let inner = self.lisp.cons(env, nil)?;
         let inner = self.lisp.cons(depth_val, inner)?;
         self.lisp.cons(cdr, inner).map_err(Into::into)
     }
 
-    /// Unpack QuasiquoteSplice data: (cdr . (depth_as_number . (env . nil)))
+    /// Unpack QuasiquoteSplice data: (cdr . (depth_as_usize . (env . nil)))
     fn unpack_quasiquote_splice(&self, data: ArenaIndex) -> Result<(ArenaIndex, u8, ArenaIndex), EvalError> {
         let cdr = self.lisp.car(data)?;
         let rest = self.lisp.cdr(data)?;
         let depth_val = self.lisp.car(rest)?;
         let depth = match self.lisp.get(depth_val)? {
-            Value::Number(n) => n as u8,
+            Value::Usize(n) => n as u8,
             _ => return Err(self.make_error(ErrorKind::Generic, data)),
         };
         let rest = self.lisp.cdr(rest)?;

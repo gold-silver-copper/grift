@@ -168,6 +168,12 @@ impl<const N: usize> Lisp<N> {
         self.alloc(Value::Float(f))
     }
     
+    /// Allocate an unsigned integer (internal use)
+    #[inline]
+    pub fn usize_val(&self, n: usize) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Usize(n))
+    }
+    
     /// Allocate a character
     #[inline]
     pub fn char(&self, c: char) -> ArenaResult<ArenaIndex> {
