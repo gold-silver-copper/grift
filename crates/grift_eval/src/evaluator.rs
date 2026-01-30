@@ -5,7 +5,7 @@ use grift_parser::{
 };
 
 use crate::error::{
-    ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult, TcoResult,
+    ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult,
     MAX_STACK_DEPTH, MAX_BACKTRACE,
 };
 use crate::num::{Num, fract_f64, abs_f64};
@@ -2919,28 +2919,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Evaluate begin with TCO
-    fn eval_begin_tco(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TcoResult, EvalError> {
-        let mut current = exprs;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => return Ok(TcoResult::Return(self.lisp.nil()?)),
-                Value::Cons { car: expr, cdr: rest } => {
-                    if self.lisp.get(rest)?.is_nil() {
-                        // Last expression - tail position
-                        return Ok(TcoResult::TailCall { new_expr: expr, new_env: env });
-                    } else {
-                        // Not last - evaluate and continue (preserve stack)
-                        self.eval_preserving_stack(expr, env)?;
-                        current = rest;
-                    }
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-            }
-        }
-    }
-    
     /// Evaluate case - pattern matching
     /// (case key ((datum1 ...) expr1 ...) ((datum2 ...) expr2 ...) (else exprn ...))
     fn step_eval_case(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
@@ -2965,27 +2943,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     
                     // Check for 'else' clause
                     if self.lisp.symbol_matches(datums, "else").unwrap_or(false) {
-                        return self.eval_case_body(body, env);
+                        return self.step_eval_begin(body, env);
                     }
                     
                     // Check if key matches any datum
                     if case_matches(self.lisp, key, datums)? {
-                        return self.eval_case_body(body, env);
+                        return self.step_eval_begin(body, env);
                     }
                     
                     current = rest;
                 }
                 _ => return Err(self.make_error(ErrorKind::TypeError, clauses)),
-            }
-        }
-    }
-    
-    /// Evaluate case clause body
-    fn eval_case_body(&mut self, body: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        match self.eval_begin_tco(body, env)? {
-            TcoResult::Return(val) => Ok(TrampolineState::Return { val }),
-            TcoResult::TailCall { new_expr, new_env } => {
-                Ok(TrampolineState::Eval { expr: new_expr, env: new_env })
             }
         }
     }
@@ -3046,7 +3014,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(result_exprs)?.is_nil() {
                     return Ok(TrampolineState::Return { val: test_result });
                 } else {
-                    return self.eval_case_body(result_exprs, loop_env);
+                    return self.step_eval_begin(result_exprs, loop_env);
                 }
             }
             

@@ -200,11 +200,3 @@ impl From<ParseError> for EvalError {
 
 /// Result type for evaluation
 pub type EvalResult = Result<ArenaIndex, EvalError>;
-
-/// Result for TCO helper functions (internal)
-pub enum TcoResult {
-    /// Return this value immediately
-    Return(ArenaIndex),
-    /// Continue evaluation with new expression and environment (tail call)
-    TailCall { new_expr: ArenaIndex, new_env: ArenaIndex },
-}
