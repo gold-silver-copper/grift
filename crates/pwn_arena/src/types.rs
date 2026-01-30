@@ -24,11 +24,17 @@
 pub struct ArenaIndex(usize);
 
 impl ArenaIndex {
-    /// A sentinel "null" index that is never valid.
+    /// A sentinel "null" index representing nil/empty list.
     ///
     /// This can be used as a placeholder when an optional index is needed
     /// but `Option<ArenaIndex>` is not desired.
     pub const NIL: ArenaIndex = ArenaIndex(usize::MAX);
+    
+    /// A sentinel index representing the boolean true value.
+    pub const TRUE: ArenaIndex = ArenaIndex(usize::MAX - 1);
+    
+    /// A sentinel index representing the boolean false value.
+    pub const FALSE: ArenaIndex = ArenaIndex(usize::MAX - 2);
 
     /// Create a new arena index with the given slot index.
     ///
@@ -49,10 +55,29 @@ impl ArenaIndex {
         self.0
     }
 
-    /// Check if this is the null index.
+    /// Check if this is the null/nil index.
     #[inline]
     pub const fn is_null(self) -> bool {
         self.0 == usize::MAX
+    }
+    
+    /// Check if this is the true sentinel.
+    #[inline]
+    pub const fn is_true(self) -> bool {
+        self.0 == usize::MAX - 1
+    }
+    
+    /// Check if this is the false sentinel.
+    #[inline]
+    pub const fn is_false(self) -> bool {
+        self.0 == usize::MAX - 2
+    }
+    
+    /// Check if this is any sentinel value (NIL, TRUE, or FALSE).
+    /// Sentinel values don't correspond to actual arena slots.
+    #[inline]
+    pub const fn is_sentinel(self) -> bool {
+        self.0 >= usize::MAX - 2
     }
 }
 

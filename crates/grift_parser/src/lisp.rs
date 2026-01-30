@@ -39,45 +39,36 @@ use crate::value::{Value, Builtin, StdLib};
 /// This ensures that the same symbol name always returns the same index.
 pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
-    /// Pre-allocated True slot (always slot 0)
-    true_slot: ArenaIndex,
-    /// Pre-allocated False slot (always slot 1)
-    false_slot: ArenaIndex,
-    /// Intern table reference cell (always slot 2)
+    /// Intern table reference cell (always slot 0)
     /// This is a cons cell where car = intern table root (alist)
     /// Using a cons cell avoids needing RefCell for interior mutability
     intern_table_slot: ArenaIndex,
 }
 
-/// Number of reserved slots in the arena (true, false, intern_table_data[2], intern_table_ref)
-pub const RESERVED_SLOTS: usize = 5;
+/// Number of reserved slots in the arena (intern_table_data[2], intern_table_ref)
+/// Note: true, false, and nil are sentinel values (ArenaIndex::TRUE, FALSE, NIL)
+/// and don't require arena slots.
+pub const RESERVED_SLOTS: usize = 3;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
-    /// Pre-allocates reserved slots for True, False, and intern table ref cell.
-    /// These slots (0, 1, 2) are never freed and are returned as constants
-    /// from `true_val()` and `false_val()`.
+    /// Pre-allocates reserved slots for the intern table ref cell.
     /// 
-    /// Nil is represented by `ArenaIndex::NIL` and doesn't use an arena slot.
+    /// The boolean values true and false are represented by sentinel indices
+    /// `ArenaIndex::TRUE` and `ArenaIndex::FALSE`, which don't use arena slots.
+    /// Similarly, nil is represented by `ArenaIndex::NIL`.
+    /// 
     /// The intern table is initialized to nil (empty alist).
     /// 
     /// # Panics
     /// 
-    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 5 slots
-    /// for the reserved singleton values and intern table reference cell.
+    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 3 slots
+    /// for the intern table reference cell.
     pub fn new() -> Self {
         const { assert!(N >= RESERVED_SLOTS, "Lisp arena must have capacity >= RESERVED_SLOTS for reserved slots") };
         
         let arena = Arena::new(Value::Nil);
-        
-        // Pre-allocate reserved slots in order: True, False, InternTableData, InternTableRef
-        // These will be slots 0, 1, 2-3, 4 respectively
-        // Nil is represented by ArenaIndex::NIL (usize::MAX) and doesn't need a slot
-        let true_slot = arena.alloc(Value::True)
-            .expect("Failed to pre-allocate reserved True slot during Lisp initialization");
-        let false_slot = arena.alloc(Value::False)
-            .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
         
         // Pre-allocate intern table reference cell
         // Cons cells now use contiguous storage: [Ref(car), Ref(cdr)]
@@ -95,8 +86,6 @@ impl<const N: usize> Lisp<N> {
         
         Lisp {
             arena,
-            true_slot,
-            false_slot,
             intern_table_slot,
         }
     }
@@ -114,11 +103,18 @@ impl<const N: usize> Lisp<N> {
     
     /// Get a value from the arena by index
     /// 
-    /// Special case: `ArenaIndex::NIL` returns `Value::Nil` without arena access.
+    /// Special cases:
+    /// - `ArenaIndex::NIL` returns `Value::Nil` without arena access.
+    /// - `ArenaIndex::TRUE` returns `Value::True` without arena access.
+    /// - `ArenaIndex::FALSE` returns `Value::False` without arena access.
     #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<Value> {
         if index.is_null() {
             Ok(Value::Nil)
+        } else if index.is_true() {
+            Ok(Value::True)
+        } else if index.is_false() {
+            Ok(Value::False)
         } else {
             self.arena.get(index)
         }
@@ -147,22 +143,22 @@ impl<const N: usize> Lisp<N> {
         Ok(ArenaIndex::NIL)
     }
     
-    /// Get the pre-allocated True singleton (#t)
+    /// Get the True singleton (#t)
     /// 
-    /// This returns the reserved slot 0 which always contains `Value::True`.
-    /// No allocation is performed.
+    /// Returns `ArenaIndex::TRUE` which represents `Value::True`.
+    /// No arena slot is used - `get(ArenaIndex::TRUE)` returns `Value::True` directly.
     #[inline]
     pub fn true_val(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.true_slot)
+        Ok(ArenaIndex::TRUE)
     }
     
-    /// Get the pre-allocated False singleton (#f)
+    /// Get the False singleton (#f)
     /// 
-    /// This returns the reserved slot 1 which always contains `Value::False`.
-    /// No allocation is performed.
+    /// Returns `ArenaIndex::FALSE` which represents `Value::False`.
+    /// No arena slot is used - `get(ArenaIndex::FALSE)` returns `Value::False` directly.
     #[inline]
     pub fn false_val(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.false_slot)
+        Ok(ArenaIndex::FALSE)
     }
     
     /// Allocate a boolean based on a Rust bool
@@ -758,20 +754,13 @@ impl<const N: usize> Lisp<N> {
         const MAX_ROOTS: usize = 512;
         
         // Panic if too many roots - this indicates a programming error
-        // Account for 4 reserved roots (nil, true, false, intern_table)
-        assert!(roots.len() < MAX_ROOTS - 4, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 4 - 1);
+        // Account for 1 reserved root (intern_table)
+        // Note: nil, true, false are sentinel indices (not arena slots), so no root needed
+        assert!(roots.len() < MAX_ROOTS - 1, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 1 - 1);
         
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
-        
-        // Add reserved slots as roots to prevent them from being collected
-        // These slots (true, false) must always be preserved
-        // Note: nil is ArenaIndex::NIL (not an arena slot), so no root needed
-        all_roots[root_count] = self.true_slot;
-        root_count += 1;
-        all_roots[root_count] = self.false_slot;
-        root_count += 1;
         
         // Add intern table reference cell as root
         // This is a cons cell whose car is the intern table alist
