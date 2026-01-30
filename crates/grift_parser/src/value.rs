@@ -439,10 +439,13 @@ pub enum Value {
     Char(char),
     
     /// Cons cell (pair)
-    Cons {
-        car: ArenaIndex,
-        cdr: ArenaIndex,
-    },
+    /// 
+    /// Points to a contiguous block of 2 slots in the arena:
+    /// - Slot 0: `Ref(car)` - the first element
+    /// - Slot 1: `Ref(cdr)` - the rest of the list
+    /// 
+    /// Use `Lisp::cons()`, `Lisp::car()`, `Lisp::cdr()` to create and access.
+    Cons(ArenaIndex),
     
     /// Symbol (contains a contiguous string)
     /// Points to a Value::String which contains the symbol name.
@@ -522,14 +525,10 @@ pub enum Value {
     /// Native functions are registered at runtime and identified by their ID.
     /// The actual function pointer is stored in the evaluator's NativeRegistry.
     ///
-    /// # Fields
-    ///
-    /// - `id`: Index into the NativeRegistry's entries array
-    /// - `name_hash`: Hash of the function name for quick comparison
-    Native {
-        id: usize,          // Index in the NativeRegistry
-        name_hash: usize,   // Hash for debugging/lookup verification
-    },
+    /// Points to a contiguous block of 2 slots in the arena:
+    /// - Slot 0: `Usize(id)` - index into the NativeRegistry's entries array
+    /// - Slot 1: `Usize(name_hash)` - hash of the function name for quick comparison
+    Native(ArenaIndex),
     
     /// Raw arena index reference
     /// 
@@ -586,7 +585,7 @@ impl Value {
     /// Check if this value is an atom (not a cons cell)
     #[inline]
     pub const fn is_atom(&self) -> bool {
-        !matches!(self, Value::Cons { .. })
+        !matches!(self, Value::Cons(_))
     }
     
     /// Check if this value is a number (integer or float)
@@ -616,7 +615,7 @@ impl Value {
     /// Check if this value is a cons cell (pair)
     #[inline]
     pub const fn is_cons(&self) -> bool {
-        matches!(self, Value::Cons { .. })
+        matches!(self, Value::Cons(_))
     }
     
     /// Check if this value is a lambda
@@ -640,13 +639,13 @@ impl Value {
     /// Check if this value is a native (Rust) function
     #[inline]
     pub const fn is_native(&self) -> bool {
-        matches!(self, Value::Native { .. })
+        matches!(self, Value::Native(_))
     }
     
     /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda(_) | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
+        matches!(self, Value::Lambda(_) | Value::Builtin(_) | Value::StdLib(_) | Value::Native(_))
     }
     
     /// Check if this value is an array
@@ -736,12 +735,12 @@ impl Value {
             Value::Number(_) => "number",
             Value::Float(_) => "number",
             Value::Char(_) => "char",
-            Value::Cons { .. } => "pair",
+            Value::Cons(_) => "pair",
             Value::Symbol(_) => "symbol",
             Value::Lambda(_) => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
-            Value::Native { .. } => "native",
+            Value::Native(_) => "native",
             Value::Array(_) => "array",
             Value::String(_) => "string",
             Value::Ref(_) => "ref",
@@ -756,16 +755,22 @@ impl<const N: usize> Trace<Value, N> for Value {
         match self {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::Native { .. } | Value::StdLib(_) | Value::Usize(_) => {
+            Value::StdLib(_) | Value::Usize(_) => {
                 // No references
             }
             Value::Ref(idx) => {
                 // Trace the referenced value
                 tracer(*idx);
             }
-            Value::Cons { car, cdr } => {
-                tracer(*car);
-                tracer(*cdr);
+            Value::Cons(data) => {
+                // data points to [Ref(car), Ref(cdr)], trace both slots
+                tracer(*data);
+                tracer(ArenaIndex::new(data.raw() + 1));
+            }
+            Value::Native(data) => {
+                // data points to [Usize(id), Usize(name_hash)], trace both slots
+                tracer(*data);
+                tracer(ArenaIndex::new(data.raw() + 1));
             }
             Value::Symbol(chars) => {
                 // chars points to a Value::String, which handles its own tracing

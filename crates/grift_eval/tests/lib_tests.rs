@@ -253,7 +253,8 @@ fn test_auto_memoization_mutual_recursion_detection() {
 fn test_auto_memoization_nested_recursive_calls() {
     // Test with deeply nested recursive structure
     // Increased arena size to accommodate pack/unpack cons-list storage
-    let lisp: Lisp<10000> = Lisp::new();
+    // Further increased for cons cells now using 3 slots each
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Sum function - tail recursive
@@ -266,7 +267,8 @@ fn test_auto_memoization_nested_recursive_calls() {
 fn test_lru_cache_eviction() {
     // Test that cache eviction works by exceeding MAX_MEMO_CACHE_SIZE
     // Increased arena size to accommodate pack/unpack cons-list storage
-    let lisp: Lisp<20000> = Lisp::new();
+    // Further increased for cons cells now using 3 slots each
+    let lisp: Lisp<60000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (identity n) (if (= n 0) 0 (identity (- n 1))))").unwrap();
@@ -2474,7 +2476,8 @@ fn test_string_ci_equals() {
 
 #[test]
 fn test_iota_functions() {
-    let lisp: Lisp<20000> = Lisp::new();
+    // Increased for cons cells now using 3 slots each
+    let lisp: Lisp<60000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // iota1: simple count
@@ -2528,7 +2531,8 @@ fn test_list_accessors() {
 
 #[test]
 fn test_list_utilities() {
-    let lisp: Lisp<20000> = Lisp::new();
+    // Increased for cons cells now using 3 slots each
+    let lisp: Lisp<60000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // concatenate
@@ -2550,7 +2554,8 @@ fn test_list_utilities() {
 
 #[test]
 fn test_string_utilities() {
-    let lisp: Lisp<20000> = Lisp::new();
+    // Increased for cons cells now using 3 slots each
+    let lisp: Lisp<60000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // string-null?
@@ -2582,7 +2587,8 @@ fn test_string_map_and_for_each() {
 
 #[test]
 fn test_string_split() {
-    let lisp: Lisp<20000> = Lisp::new();
+    // Increased for cons cells now using 3 slots each
+    let lisp: Lisp<60000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // string-split
@@ -3169,9 +3175,8 @@ fn test_nested_stdlib_calls() {
     // This test verifies that stdlib functions work correctly when called
     // as arguments to other functions. This was a bug where `let` and other
     // forms called `eval_in_env` which reset the continuation stack.
-    // Note: Arena size is kept small (10000) to avoid stack overflow from
-    // stack-allocated arena in test threads.
-    let lisp: Lisp<10000> = Lisp::new();
+    // Increased for cons cells now using 3 slots each
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic nested stdlib call: (+ 1 (sqrt 4)) should return 3.0

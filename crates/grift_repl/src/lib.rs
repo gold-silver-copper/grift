@@ -88,7 +88,7 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Symbol(chars)) => {
             format_symbol(lisp, chars, buf);
         }
-        Ok(Value::Cons { .. }) => {
+        Ok(Value::Cons(_)) => {
             buf.push('(');
             format_list_contents(lisp, idx, buf, depth + 1);
             buf.push(')');
@@ -137,8 +137,9 @@ fn format_value_impl<const N: usize>(
             }
             buf.push('"');
         }
-        Ok(Value::Native { id, .. }) => {
+        Ok(Value::Native(_)) => {
             use std::fmt::Write;
+            let id = lisp.native_id(idx).unwrap_or(0);
             write!(buf, "#<native:{}>", id).unwrap();
         }
         Ok(Value::Ref(idx)) => {
@@ -171,11 +172,13 @@ fn format_list_contents<const N: usize>(
         
         match lisp.get(idx) {
             Ok(Value::Nil) => break,
-            Ok(Value::Cons { car, cdr }) => {
+            Ok(Value::Cons(_)) => {
                 if !first {
                     buf.push(' ');
                 }
                 first = false;
+                let car = lisp.car(idx).unwrap_or(ArenaIndex::NIL);
+                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NIL);
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
                 count += 1;
@@ -506,9 +509,9 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
     loop {
         match lisp.get(env) {
             Ok(Value::Nil) => return count,
-            Ok(Value::Cons { cdr, .. }) => {
+            Ok(Value::Cons(_)) => {
                 count += 1;
-                env = cdr;
+                env = lisp.cdr(env).unwrap_or(ArenaIndex::NIL);
             }
             _ => return count,
         }

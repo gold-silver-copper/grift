@@ -49,8 +49,8 @@ pub struct Lisp<const N: usize> {
     intern_table_slot: ArenaIndex,
 }
 
-/// Number of reserved slots in the arena (true, false, intern_table_ref)
-pub const RESERVED_SLOTS: usize = 3;
+/// Number of reserved slots in the arena (true, false, intern_table_data[2], intern_table_ref)
+pub const RESERVED_SLOTS: usize = 5;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
@@ -64,26 +64,33 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// # Panics
     /// 
-    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 3 slots
+    /// Panics if the arena capacity N < RESERVED_SLOTS, as we need at least 5 slots
     /// for the reserved singleton values and intern table reference cell.
     pub fn new() -> Self {
         const { assert!(N >= RESERVED_SLOTS, "Lisp arena must have capacity >= RESERVED_SLOTS for reserved slots") };
         
         let arena = Arena::new(Value::Nil);
         
-        // Pre-allocate reserved slots in order: True, False, InternTableRef
-        // These will be slots 0, 1, 2 respectively
+        // Pre-allocate reserved slots in order: True, False, InternTableData, InternTableRef
+        // These will be slots 0, 1, 2-3, 4 respectively
         // Nil is represented by ArenaIndex::NIL (usize::MAX) and doesn't need a slot
         let true_slot = arena.alloc(Value::True)
             .expect("Failed to pre-allocate reserved True slot during Lisp initialization");
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate reserved False slot during Lisp initialization");
         
-        // Pre-allocate intern table reference cell (slot 2)
+        // Pre-allocate intern table reference cell
+        // Cons cells now use contiguous storage: [Ref(car), Ref(cdr)]
         // This is a cons cell where car = intern table root (initially nil)
         // Using a cons cell as a "reference cell" allows updating via set()
         // instead of requiring RefCell for interior mutability
-        let intern_table_slot = arena.alloc(Value::Cons { car: ArenaIndex::NIL, cdr: ArenaIndex::NIL })
+        let cons_data = arena.alloc_contiguous(2, Value::Nil)
+            .expect("Failed to pre-allocate intern table cons data during Lisp initialization");
+        arena.set(cons_data, Value::Ref(ArenaIndex::NIL))
+            .expect("Failed to set intern table car during Lisp initialization");
+        arena.set(ArenaIndex::new(cons_data.raw() + 1), Value::Ref(ArenaIndex::NIL))
+            .expect("Failed to set intern table cdr during Lisp initialization");
+        let intern_table_slot = arena.alloc(Value::Cons(cons_data))
             .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
         
         Lisp {
@@ -189,9 +196,15 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a cons cell
+    /// 
+    /// Creates a contiguous block of 2 slots: [Ref(car), Ref(cdr)]
     #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Cons { car, cdr })
+        // Allocate 2 slots for [Ref(car), Ref(cdr)]
+        let data = self.arena.alloc_contiguous(2, Value::Nil)?;
+        self.arena.set(data, Value::Ref(car))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(cdr))?;
+        self.alloc(Value::Cons(data))
     }
     
     /// Get car of a cons cell
@@ -199,9 +212,15 @@ impl<const N: usize> Lisp<N> {
     /// In Scheme R7RS, car of an empty list is an error.
     #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.get(index)? {
-            Value::Cons { car, .. } => Ok(car),
-            // Scheme R7RS: car of empty list is an error
+        // Fast path: direct arena access without NIL check (cons is never NIL)
+        match self.arena.get(index)? {
+            Value::Cons(data) => {
+                // Direct read - we know layout is [Ref(car), Ref(cdr)]
+                match self.arena.get(data)? {
+                    Value::Ref(car) => Ok(car),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
             Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
@@ -212,12 +231,79 @@ impl<const N: usize> Lisp<N> {
     /// In Scheme R7RS, cdr of an empty list is an error.
     #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.get(index)? {
-            Value::Cons { cdr, .. } => Ok(cdr),
-            // Scheme R7RS: cdr of empty list is an error
+        // Fast path: direct arena access without NIL check (cons is never NIL)
+        match self.arena.get(index)? {
+            Value::Cons(data) => {
+                // Direct read - we know layout is [Ref(car), Ref(cdr)]
+                match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+                    Value::Ref(cdr) => Ok(cdr),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
             Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
+    }
+    
+    /// Get both car and cdr of a cons cell in one operation
+    /// 
+    /// More efficient than calling car() and cdr() separately when both are needed.
+    #[inline]
+    pub fn car_cdr(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        match self.arena.get(index)? {
+            Value::Cons(data) => {
+                // Read both in sequence - data layout is [Ref(car), Ref(cdr)]
+                let car = match self.arena.get(data)? {
+                    Value::Ref(car) => car,
+                    _ => return Err(ArenaError::InvalidIndex),
+                };
+                let cdr = match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+                    Value::Ref(cdr) => cdr,
+                    _ => return Err(ArenaError::InvalidIndex),
+                };
+                Ok((car, cdr))
+            }
+            Value::Nil => Err(ArenaError::InvalidIndex),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get car from a known Cons data pointer (internal use)
+    /// 
+    /// Caller must ensure `data` is a valid cons data pointer.
+    #[inline]
+    pub fn car_from_data(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(data)? {
+            Value::Ref(car) => Ok(car),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get cdr from a known Cons data pointer (internal use)
+    /// 
+    /// Caller must ensure `data` is a valid cons data pointer.
+    #[inline]
+    pub fn cdr_from_data(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+            Value::Ref(cdr) => Ok(cdr),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get both car and cdr from a known Cons data pointer (internal use)
+    /// 
+    /// Caller must ensure `data` is a valid cons data pointer.
+    #[inline]
+    pub fn car_cdr_from_data(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        let car = match self.arena.get(data)? {
+            Value::Ref(car) => car,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let cdr = match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+            Value::Ref(cdr) => cdr,
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        Ok((car, cdr))
     }
     
     /// Set car of a cons cell (mutation operation)
@@ -225,8 +311,8 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn set_car(&self, index: ArenaIndex, new_car: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
-            Value::Cons { cdr, .. } => {
-                self.set(index, Value::Cons { car: new_car, cdr })?;
+            Value::Cons(data) => {
+                self.arena.set(data, Value::Ref(new_car))?;
                 Ok(new_car)
             }
             _ => Err(ArenaError::InvalidIndex),
@@ -238,8 +324,8 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn set_cdr(&self, index: ArenaIndex, new_cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
-            Value::Cons { car, .. } => {
-                self.set(index, Value::Cons { car, cdr: new_cdr })?;
+            Value::Cons(data) => {
+                self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(new_cdr))?;
                 Ok(new_cdr)
             }
             _ => Err(ArenaError::InvalidIndex),
@@ -261,15 +347,13 @@ impl<const N: usize> Lisp<N> {
     
     /// Get the current intern table root (the actual alist)
     fn get_intern_table_root(&self) -> ArenaResult<ArenaIndex> {
-        match self.get(self.intern_table_slot)? {
-            Value::Cons { car, .. } => Ok(car),
-            _ => unreachable!("intern_table_slot should always be a Cons cell"),
-        }
+        self.car(self.intern_table_slot)
     }
     
     /// Set the intern table root (update the car of the reference cell)
     fn set_intern_table_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
-        self.set(self.intern_table_slot, Value::Cons { car: new_root, cdr: ArenaIndex::NIL })
+        self.set_car(self.intern_table_slot, new_root)?;
+        Ok(())
     }
     
     /// Look up a string in the intern table
@@ -280,9 +364,13 @@ impl<const N: usize> Lisp<N> {
         loop {
             match self.get(current)? {
                 Value::Nil => return Ok(None),
-                Value::Cons { car, cdr } => {
+                Value::Cons(_) => {
                     // car is (string_index . symbol_index)
-                    if let Value::Cons { car: entry_string, cdr: entry_symbol } = self.get(car)? {
+                    let car = self.car(current)?;
+                    let cdr = self.cdr(current)?;
+                    if let Value::Cons(_) = self.get(car)? {
+                        let entry_string = self.car(car)?;
+                        let entry_symbol = self.cdr(car)?;
                         if self.string_eq_contiguous(string_idx, entry_string)? {
                             return Ok(Some(entry_symbol));
                         }
@@ -392,9 +480,40 @@ impl<const N: usize> Lisp<N> {
     /// Native functions are Rust functions registered with the evaluator.
     /// The `id` is the index in the NativeRegistry, and `name_hash` is
     /// a simple hash for verification.
+    /// 
+    /// Creates a contiguous block of 2 slots: [Usize(id), Usize(name_hash)]
     #[inline]
     pub fn native(&self, id: usize, name_hash: usize) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Native { id, name_hash })
+        let data = self.arena.alloc_contiguous(2, Value::Nil)?;
+        self.arena.set(data, Value::Usize(id))?;
+        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Usize(name_hash))?;
+        self.alloc(Value::Native(data))
+    }
+    
+    /// Get the id from a native function
+    pub fn native_id(&self, native_idx: ArenaIndex) -> ArenaResult<usize> {
+        match self.get(native_idx)? {
+            Value::Native(data) => {
+                match self.arena.get(data)? {
+                    Value::Usize(id) => Ok(id),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get the name_hash from a native function
+    pub fn native_name_hash(&self, native_idx: ArenaIndex) -> ArenaResult<usize> {
+        match self.get(native_idx)? {
+            Value::Native(data) => {
+                match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
+                    Value::Usize(name_hash) => Ok(name_hash),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
     
     /// Allocate a lambda
@@ -445,9 +564,9 @@ impl<const N: usize> Lisp<N> {
         loop {
             match self.get(list)? {
                 Value::Nil => return Ok(len),
-                Value::Cons { cdr, .. } => {
+                Value::Cons(_) => {
                     len += 1;
-                    list = cdr;
+                    list = self.cdr(list)?;
                 }
                 _ => return Err(ArenaError::InvalidIndex),
             }
