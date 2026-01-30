@@ -1694,8 +1694,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check if more bindings
                 if self.lisp.get(remaining_bindings)?.is_nil() {
                     // All bindings evaluated - now create the new environment
+                    // First reverse the collected list to maintain original binding order
+                    // (bindings are collected in reverse order due to consing)
+                    let mut reversed = self.lisp.nil()?;
+                    let mut to_reverse = new_collected;
+                    loop {
+                        match self.lisp.get(to_reverse)? {
+                            Value::Nil => break,
+                            Value::Cons { car, cdr } => {
+                                reversed = self.lisp.cons(car, reversed)?;
+                                to_reverse = cdr;
+                            }
+                            _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                        }
+                    }
+                    
                     let mut new_env = original_env;
-                    let mut bindings_list = new_collected;
+                    let mut bindings_list = reversed;
                     loop {
                         match self.lisp.get(bindings_list)? {
                             Value::Nil => break,
