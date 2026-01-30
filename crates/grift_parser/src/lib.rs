@@ -35,10 +35,11 @@
 //! The Lisp singleton values (nil, true, false) are pre-allocated in reserved
 //! slots at initialization time.
 //!
-//! The first 6 slots of the arena are reserved:
-//! - Slot 0: `Value::True` - boolean true singleton
-//! - Slot 1: `Value::False` - boolean false singleton
-//! - Slot 2: `Value::Cons` - intern table reference cell
+//! The first 4 slots of the arena are reserved:
+//! - Slot 0: `Value::Nil` - empty list singleton
+//! - Slot 1: `Value::True` - boolean true singleton
+//! - Slot 2: `Value::False` - boolean false singleton
+//! - Slot 3: `Value::Cons` - intern table reference cell
 //!
 //! ## Pitfalls and Gotchas
 //!

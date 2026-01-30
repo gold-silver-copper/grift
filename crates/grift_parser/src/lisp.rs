@@ -20,10 +20,11 @@ use crate::value::{Value, Builtin, StdLib};
 /// 
 /// ## Reserved Slots
 /// 
-/// The first 3 slots of the arena are reserved for singleton values:
-/// - Slot 0: `Value::True` - boolean true (#t)
-/// - Slot 1: `Value::False` - boolean false (#f)
-/// - Slot 2: `Value::Cons` - intern table reference cell (car = intern table root)
+/// The first 4 slots of the arena are reserved for singleton values:
+/// - Slot 0: `Value::Nil` - empty list ()
+/// - Slot 1: `Value::True` - boolean true (#t)
+/// - Slot 2: `Value::False` - boolean false (#f)
+/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `true_val()` and `false_val()`. This optimization
@@ -45,7 +46,7 @@ pub struct Lisp<const N: usize> {
     true_slot: ArenaIndex,
     /// Pre-allocated False slot (always slot 2)
     false_slot: ArenaIndex,
-    /// Intern table reference cell (slots 3-5)
+    /// Intern table reference cell (slot 3)
     /// This is a cons cell where car = intern table root (alist)
     /// Using a cons cell avoids needing RefCell for interior mutability
     intern_table_slot: ArenaIndex,
