@@ -83,7 +83,7 @@ fn format_value_impl<const N: usize>(lisp: &Lisp<N>, idx: grift::ArenaIndex, buf
             buf.push_str("#\\");
             buf.push(c);
         }
-        Ok(Value::Cons { .. }) => {
+        Ok(Value::Cons(_)) => {
             buf.push('(');
             format_list(lisp, idx, buf, depth + 1);
             buf.push(')');
@@ -108,11 +108,17 @@ fn format_list<const N: usize>(lisp: &Lisp<N>, mut idx: grift::ArenaIndex, buf: 
     loop {
         match lisp.get(idx) {
             Ok(Value::Nil) => break,
-            Ok(Value::Cons { car, cdr }) => {
+            Ok(Value::Cons(_)) => {
                 if !first { buf.push(' '); }
                 first = false;
-                format_value_impl(lisp, car, buf, depth);
-                idx = cdr;
+                if let Ok(car) = lisp.car(idx) {
+                    format_value_impl(lisp, car, buf, depth);
+                }
+                if let Ok(cdr) = lisp.cdr(idx) {
+                    idx = cdr;
+                } else {
+                    break;
+                }
             }
             _ => {
                 buf.push_str(" . ");
