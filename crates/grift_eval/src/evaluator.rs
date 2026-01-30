@@ -242,6 +242,83 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = remaining; root_count += 1;
                     roots[root_count] = env; root_count += 1;
                 }
+                // New continuation types for fully trampolined evaluation
+                Cont::CaseKey { clauses, env } => {
+                    roots[root_count] = clauses; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::DoInit { remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var } => {
+                    roots[root_count] = remaining_bindings; root_count += 1;
+                    roots[root_count] = var_steps; root_count += 1;
+                    roots[root_count] = test_clause; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = loop_env; root_count += 1;
+                    roots[root_count] = original_env; root_count += 1;
+                    roots[root_count] = current_var; root_count += 1;
+                }
+                Cont::DoTestResult { var_steps, test_clause, body, loop_env } => {
+                    roots[root_count] = var_steps; root_count += 1;
+                    roots[root_count] = test_clause; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = loop_env; root_count += 1;
+                }
+                Cont::DoBody { remaining_body, var_steps, test_clause, body, loop_env } => {
+                    roots[root_count] = remaining_body; root_count += 1;
+                    roots[root_count] = var_steps; root_count += 1;
+                    roots[root_count] = test_clause; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = loop_env; root_count += 1;
+                }
+                Cont::DoStep { remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var } => {
+                    roots[root_count] = remaining_steps; root_count += 1;
+                    roots[root_count] = collected_vals; root_count += 1;
+                    roots[root_count] = var_steps; root_count += 1;
+                    roots[root_count] = test_clause; root_count += 1;
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = loop_env; root_count += 1;
+                    roots[root_count] = current_var; root_count += 1;
+                }
+                Cont::ApplyFirst { args_list_expr, env } => {
+                    roots[root_count] = args_list_expr; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::ApplySecond { func, env } => {
+                    roots[root_count] = func; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::ValuesCollect { remaining, collected, env } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = collected; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::DefineValue { name } => {
+                    roots[root_count] = name; root_count += 1;
+                }
+                Cont::SetValue { name, env } => {
+                    roots[root_count] = name; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::NativeArgsCollect { remaining, collected, env, .. } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = collected; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::QuasiquoteCar { cdr, env, .. } => {
+                    roots[root_count] = cdr; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::QuasiquoteCdr { car_val } => {
+                    roots[root_count] = car_val; root_count += 1;
+                }
+                Cont::QuasiquoteUnquoteWrap { .. } => {}
+                Cont::QuasiquoteNestedWrap => {}
+                Cont::QuasiquoteSplice { cdr, env, .. } => {
+                    roots[root_count] = cdr; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::QuasiquoteSpliceAppend { splice_val } => {
+                    roots[root_count] = splice_val; root_count += 1;
+                }
             }
         }
 
@@ -466,78 +543,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.trampoline(TrampolineState::Eval { expr, env })
     }
     
-    /// Evaluate an expression while preserving the current continuation stack.
-    ///
-    /// This is used for synchronous evaluation during internal forms like `let`,
-    /// `define`, etc., where we need to evaluate expressions without disturbing
-    /// the main continuation stack that will process the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns a StackOverflow error if the continuation stack depth exceeds
-    /// MAX_SAVE (32). This limit is sufficient for typical evaluation chains.
-    fn eval_preserving_stack(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // Save the current continuation stack state
-        // We need to preserve the outer continuations so the nested eval doesn't overwrite them
-        
-        let saved_depth = self.cont_depth;
-        
-        if saved_depth == 0 {
-            // No continuations to save - just reset and run
-            self.cont_depth = 0;
-            return self.trampoline(TrampolineState::Eval { expr, env });
-        }
-        
-        // Use a fixed-size buffer on the stack. We use two tiers:
-        // - Small (8 entries): for typical cases, minimizes stack usage
-        // - Large (32 entries): for deeper nesting, still fits in stack frame
-        // Note: This is a no_std environment, so heap allocation is not available.
-        const MAX_INLINE: usize = 8;
-        
-        if saved_depth <= MAX_INLINE {
-            // Small stack - save inline with a smaller array
-            let mut saved: [Cont; MAX_INLINE] = [Cont::Done; MAX_INLINE];
-            for i in 0..saved_depth {
-                saved[i] = self.cont_stack[i];
-            }
-            
-            self.cont_depth = 0;
-            let result = self.trampoline(TrampolineState::Eval { expr, env });
-            
-            // Always restore the continuation stack, even on error
-            for i in 0..saved_depth {
-                self.cont_stack[i] = saved[i];
-            }
-            self.cont_depth = saved_depth;
-            
-            result
-        } else {
-            // Large stack - use a larger fixed buffer
-            // This is rare and typically indicates deep nesting
-            const MAX_SAVE: usize = 32;
-            if saved_depth > MAX_SAVE {
-                return Err(EvalError::new(ErrorKind::StackOverflow)
-                    .with_message("continuation stack too deep for nested evaluation"));
-            }
-            
-            let mut saved: [Cont; MAX_SAVE] = [Cont::Done; MAX_SAVE];
-            for i in 0..saved_depth {
-                saved[i] = self.cont_stack[i];
-            }
-            
-            self.cont_depth = 0;
-            let result = self.trampoline(TrampolineState::Eval { expr, env });
-            
-            // Always restore the continuation stack, even on error
-            for i in 0..saved_depth {
-                self.cont_stack[i] = saved[i];
-            }
-            self.cont_depth = saved_depth;
-            
-            result
-        }
-    }
-    
     /// The main trampoline loop - processes states and continuations
     /// This is the ONLY place where looping happens - no Rust recursion!
     fn trampoline(&mut self, mut state: TrampolineState) -> EvalResult {
@@ -661,14 +666,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             // define
             if self.lisp.symbol_matches(car, "define")? {
-                let val = self.eval_define(cdr, env)?;
-                return Ok(TrampolineState::Return { val });
+                return self.eval_define(cdr, env);
             }
             
             // set! - mutate variable binding
             if self.lisp.symbol_matches(car, "set!")? {
-                let val = self.eval_set(cdr, env)?;
-                return Ok(TrampolineState::Return { val });
+                return self.eval_set(cdr, env);
             }
             
             // let - continuation-based evaluation
@@ -732,10 +735,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.step_eval_do(cdr, env);
             }
             
-            // quasiquote - template with unquote
+            // quasiquote - template with unquote (trampolined)
             if self.lisp.symbol_matches(car, "quasiquote")? {
-                let val = self.eval_quasiquote(self.lisp.car(cdr)?, env)?;
-                return Ok(TrampolineState::Return { val });
+                return self.eval_quasiquote(self.lisp.car(cdr)?, env);
             }
             
             // eval - continuation-based evaluation at runtime
@@ -754,8 +756,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             // values - return multiple values (as a special list)
             if self.lisp.symbol_matches(car, "values")? {
-                let vals = self.eval_values(cdr, env)?;
-                return Ok(TrampolineState::Return { val: vals });
+                return self.eval_values(cdr, env);
             }
         }
         
@@ -940,16 +941,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
                         self.pop_frame();
                         
-                        // Evaluate all arguments first
-                        let args = self.eval_args_list(args_expr, env)?;
-                        
-                        // Look up the native function and call it
-                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
-                            let result = native_fn(self.lisp, args)?;
-                            Ok(Some(TrampolineState::Return { val: result }))
+                        // If no args, call directly
+                        if self.lisp.get(args_expr)?.is_nil() {
+                            if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
+                                let nil = self.lisp.nil()?;
+                                let result = native_fn(self.lisp, nil)?;
+                                Ok(Some(TrampolineState::Return { val: result }))
+                            } else {
+                                Err(self.make_error(ErrorKind::NotAFunction, call_expr)
+                                    .with_message("native function not found"))
+                            }
                         } else {
-                            Err(self.make_error(ErrorKind::NotAFunction, call_expr)
-                                .with_message("native function not found"))
+                            // Evaluate arguments using continuation
+                            let first_expr = self.lisp.car(args_expr)?;
+                            let rest = self.lisp.cdr(args_expr)?;
+                            let nil = self.lisp.nil()?;
+                            
+                            self.push_cont(Cont::NativeArgsCollect { remaining: rest, collected: nil, id, env })?;
+                            Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
                     _ => {
@@ -1224,6 +1233,199 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
             }
+
+            // ================================================================
+            // New continuation types for fully trampolined evaluation
+            // ================================================================
+
+            Cont::CaseKey { clauses, env } => {
+                // val is the evaluated key - check clauses
+                self.step_return_case_key(val, clauses, env)
+            }
+
+            Cont::DoInit { remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var } => {
+                // val is the evaluated init expression - bind and continue
+                let extended_env = self.env_extend(loop_env, current_var, val)?;
+                self.step_return_do_init(remaining_bindings, var_steps, test_clause, body, extended_env, original_env)
+            }
+
+            Cont::DoTestResult { var_steps, test_clause, body, loop_env } => {
+                // val is the evaluated test result
+                if !self.is_false(val)? {
+                    // Test passed - evaluate result expressions
+                    let result_exprs = self.lisp.cdr(test_clause)?;
+                    if self.lisp.get(result_exprs)?.is_nil() {
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else {
+                        let state = self.step_eval_begin(result_exprs, loop_env)?;
+                        Ok(Some(state))
+                    }
+                } else {
+                    // Test failed - evaluate body for side effects, then steps
+                    if self.lisp.get(body)?.is_nil() {
+                        // No body - go straight to steps
+                        self.step_do_start_steps(var_steps, test_clause, body, loop_env)
+                    } else {
+                        // Evaluate body expressions
+                        let first_body = self.lisp.car(body)?;
+                        let rest_body = self.lisp.cdr(body)?;
+                        self.push_cont(Cont::DoBody { remaining_body: rest_body, var_steps, test_clause, body, loop_env })?;
+                        Ok(Some(TrampolineState::Eval { expr: first_body, env: loop_env }))
+                    }
+                }
+            }
+
+            Cont::DoBody { remaining_body, var_steps, test_clause, body, loop_env } => {
+                // val is discarded (body evaluated for side effects)
+                if self.lisp.get(remaining_body)?.is_nil() {
+                    // Body done - start evaluating step expressions
+                    self.step_do_start_steps(var_steps, test_clause, body, loop_env)
+                } else {
+                    // More body expressions
+                    let next_body = self.lisp.car(remaining_body)?;
+                    let rest_body = self.lisp.cdr(remaining_body)?;
+                    self.push_cont(Cont::DoBody { remaining_body: rest_body, var_steps, test_clause, body, loop_env })?;
+                    Ok(Some(TrampolineState::Eval { expr: next_body, env: loop_env }))
+                }
+            }
+
+            Cont::DoStep { remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var } => {
+                // val is the evaluated step expression - collect and continue
+                let new_collected = self.lisp.cons(current_var, val)?;
+                let new_collected = self.lisp.cons(new_collected, collected_vals)?;
+                
+                if self.lisp.get(remaining_steps)?.is_nil() {
+                    // All steps evaluated - update environment and loop
+                    let new_env = self.apply_do_step_values(loop_env, new_collected)?;
+                    // Continue to next iteration - evaluate test
+                    self.push_cont(Cont::DoTestResult { var_steps, test_clause, body, loop_env: new_env })?;
+                    let test = self.lisp.car(test_clause)?;
+                    Ok(Some(TrampolineState::Eval { expr: test, env: new_env }))
+                } else {
+                    // More steps to evaluate
+                    let next_pair = self.lisp.car(remaining_steps)?;
+                    let rest_steps = self.lisp.cdr(remaining_steps)?;
+                    let next_var = self.lisp.car(next_pair)?;
+                    let next_step = self.lisp.cdr(next_pair)?;
+                    
+                    self.push_cont(Cont::DoStep { 
+                        remaining_steps: rest_steps, collected_vals: new_collected, 
+                        var_steps, test_clause, body, loop_env, current_var: next_var 
+                    })?;
+                    Ok(Some(TrampolineState::Eval { expr: next_step, env: loop_env }))
+                }
+            }
+
+            Cont::ApplyFirst { args_list_expr, env } => {
+                // val is the evaluated function - now evaluate args list
+                self.push_cont(Cont::ApplySecond { func: val, env })?;
+                Ok(Some(TrampolineState::Eval { expr: args_list_expr, env }))
+            }
+
+            Cont::ApplySecond { func, env } => {
+                // val is the evaluated args list - perform application
+                let args_list = val;
+                let call_expr = self.lisp.cons(func, args_list)?;
+                self.push_frame(call_expr, func)?;
+                self.push_cont(Cont::ApplyForced { args_expr: args_list, env, call_expr })?;
+                Ok(Some(TrampolineState::Return { val: func }))
+            }
+
+            Cont::ValuesCollect { remaining, collected, env } => {
+                // val is an evaluated value - collect and continue
+                let new_collected = self.lisp.cons(val, collected)?;
+                
+                if self.lisp.get(remaining)?.is_nil() {
+                    // All values evaluated - build result list (reverse collected)
+                    let result = self.reverse_list(new_collected)?;
+                    Ok(Some(TrampolineState::Return { val: result }))
+                } else {
+                    // More values to evaluate
+                    let next_expr = self.lisp.car(remaining)?;
+                    let rest = self.lisp.cdr(remaining)?;
+                    self.push_cont(Cont::ValuesCollect { remaining: rest, collected: new_collected, env })?;
+                    Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                }
+            }
+
+            Cont::DefineValue { name } => {
+                // val is the evaluated value - define the binding
+                self.define(name, val)?;
+                Ok(Some(TrampolineState::Return { val: name }))
+            }
+
+            Cont::SetValue { name, env } => {
+                // val is the evaluated value - set! the binding
+                self.env_set(env, name, val)?;
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
+            Cont::NativeArgsCollect { remaining, collected, id, env } => {
+                // val is an evaluated argument - collect and continue
+                let new_collected = self.lisp.cons(val, collected)?;
+                
+                if self.lisp.get(remaining)?.is_nil() {
+                    // All args evaluated - call native function
+                    let args = self.reverse_list(new_collected)?;
+                    if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
+                        let result = native_fn(self.lisp, args)?;
+                        Ok(Some(TrampolineState::Return { val: result }))
+                    } else {
+                        Err(self.make_error(ErrorKind::NotAFunction, args)
+                            .with_message("native function not found"))
+                    }
+                } else {
+                    // More args to evaluate
+                    let next_expr = self.lisp.car(remaining)?;
+                    let rest = self.lisp.cdr(remaining)?;
+                    self.push_cont(Cont::NativeArgsCollect { remaining: rest, collected: new_collected, id, env })?;
+                    Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                }
+            }
+
+            Cont::QuasiquoteCar { cdr, depth, env } => {
+                // val is the evaluated car - now process cdr
+                let car_val = val;
+                self.push_cont(Cont::QuasiquoteCdr { car_val })?;
+                Ok(Some(self.step_quasiquote_trampoline(cdr, env, depth)?))
+            }
+
+            Cont::QuasiquoteCdr { car_val } => {
+                // val is the processed cdr - cons with car
+                let result = self.lisp.cons(car_val, val)?;
+                Ok(Some(TrampolineState::Return { val: result }))
+            }
+
+            Cont::QuasiquoteUnquoteWrap => {
+                // val is the inner processed value - wrap with unquote
+                let unquote_sym = self.lisp.symbol("unquote")?;
+                let nil = self.lisp.nil()?;
+                let inner_list = self.lisp.cons(val, nil)?;
+                let result = self.lisp.cons(unquote_sym, inner_list)?;
+                Ok(Some(TrampolineState::Return { val: result }))
+            }
+
+            Cont::QuasiquoteNestedWrap => {
+                // val is the inner processed value - wrap with quasiquote
+                let qq_sym = self.lisp.symbol("quasiquote")?;
+                let nil = self.lisp.nil()?;
+                let inner_list = self.lisp.cons(val, nil)?;
+                let result = self.lisp.cons(qq_sym, inner_list)?;
+                Ok(Some(TrampolineState::Return { val: result }))
+            }
+
+            Cont::QuasiquoteSplice { cdr, depth, env } => {
+                // val is the evaluated splice expression - process cdr then append
+                let splice_val = val;
+                self.push_cont(Cont::QuasiquoteSpliceAppend { splice_val })?;
+                Ok(Some(self.step_quasiquote_trampoline(cdr, env, depth)?))
+            }
+
+            Cont::QuasiquoteSpliceAppend { splice_val } => {
+                // val is the processed cdr - append splice_val with it
+                let result = self.append_lists(splice_val, val)?;
+                Ok(Some(TrampolineState::Return { val: result }))
+            }
         }
     }
 
@@ -1256,6 +1458,210 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Evaluate the test
         Ok(Some(TrampolineState::Eval { expr: test, env }))
+    }
+
+    // ========================================================================
+    // Helper functions for fully trampolined evaluation
+    // ========================================================================
+
+    /// Helper for case - check clauses after key is evaluated
+    fn step_return_case_key(&mut self, key: ArenaIndex, clauses: ArenaIndex, env: ArenaIndex) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        // Check each clause
+        let mut current = clauses;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    // No match found, return nil
+                    let nil = self.lisp.nil()?;
+                    return Ok(Some(TrampolineState::Return { val: nil }));
+                }
+                Value::Cons { car: clause, cdr: rest } => {
+                    let datums = self.lisp.car(clause)?;
+                    let body = self.lisp.cdr(clause)?;
+                    
+                    // Check for 'else' clause
+                    if self.lisp.symbol_matches(datums, "else").unwrap_or(false) {
+                        let state = self.step_eval_begin(body, env)?;
+                        return Ok(Some(state));
+                    }
+                    
+                    // Check if key matches any datum
+                    if case_matches(self.lisp, key, datums)? {
+                        let state = self.step_eval_begin(body, env)?;
+                        return Ok(Some(state));
+                    }
+                    
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, clauses)),
+            }
+        }
+    }
+
+    /// Helper for do - continue processing init bindings after one is evaluated
+    fn step_return_do_init(
+        &mut self, 
+        remaining_bindings: ArenaIndex, 
+        var_steps: ArenaIndex, 
+        test_clause: ArenaIndex, 
+        body: ArenaIndex, 
+        loop_env: ArenaIndex, 
+        original_env: ArenaIndex
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        if self.lisp.get(remaining_bindings)?.is_nil() {
+            // All bindings done - start the loop by evaluating the test
+            self.push_cont(Cont::DoTestResult { var_steps, test_clause, body, loop_env })?;
+            let test = self.lisp.car(test_clause)?;
+            Ok(Some(TrampolineState::Eval { expr: test, env: loop_env }))
+        } else {
+            // More bindings - get next binding
+            let binding = self.lisp.car(remaining_bindings)?;
+            let rest = self.lisp.cdr(remaining_bindings)?;
+            
+            let var = self.lisp.car(binding)?;
+            let init_rest = self.lisp.cdr(binding)?;
+            let init = self.lisp.car(init_rest)?;
+            let step_rest = self.lisp.cdr(init_rest)?;
+            let step = if self.lisp.get(step_rest)?.is_nil() {
+                var // No step, use variable itself
+            } else {
+                self.lisp.car(step_rest)?
+            };
+            
+            // Add (var . step) to var_steps
+            let var_step_pair = self.lisp.cons(var, step)?;
+            let new_var_steps = self.lisp.cons(var_step_pair, var_steps)?;
+            
+            // Push continuation and evaluate init
+            self.push_cont(Cont::DoInit { 
+                remaining_bindings: rest, 
+                var_steps: new_var_steps, 
+                test_clause, 
+                body, 
+                loop_env, 
+                original_env, 
+                current_var: var 
+            })?;
+            Ok(Some(TrampolineState::Eval { expr: init, env: original_env }))
+        }
+    }
+
+    /// Helper for do - start evaluating step expressions
+    fn step_do_start_steps(
+        &mut self,
+        var_steps: ArenaIndex,
+        test_clause: ArenaIndex,
+        body: ArenaIndex,
+        loop_env: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        if self.lisp.get(var_steps)?.is_nil() {
+            // No variables - just loop back to test
+            self.push_cont(Cont::DoTestResult { var_steps, test_clause, body, loop_env })?;
+            let test = self.lisp.car(test_clause)?;
+            Ok(Some(TrampolineState::Eval { expr: test, env: loop_env }))
+        } else {
+            // Start evaluating step expressions
+            // var_steps is a list of (var . step) pairs, we need to reverse it first
+            // since we built it in reverse order during init
+            let reversed = self.reverse_list(var_steps)?;
+            
+            let first_pair = self.lisp.car(reversed)?;
+            let rest_steps = self.lisp.cdr(reversed)?;
+            let first_var = self.lisp.car(first_pair)?;
+            let first_step = self.lisp.cdr(first_pair)?;
+            
+            let nil = self.lisp.nil()?;
+            self.push_cont(Cont::DoStep { 
+                remaining_steps: rest_steps, 
+                collected_vals: nil, 
+                var_steps: reversed,  // Use reversed for future iterations
+                test_clause, 
+                body, 
+                loop_env, 
+                current_var: first_var 
+            })?;
+            Ok(Some(TrampolineState::Eval { expr: first_step, env: loop_env }))
+        }
+    }
+
+    /// Helper for do - apply collected step values to create new environment
+    fn apply_do_step_values(&mut self, base_env: ArenaIndex, collected: ArenaIndex) -> EvalResult {
+        // collected is a list of ((var . val) ...) pairs in reverse order
+        let mut result_env = base_env;
+        let mut current = collected;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car: pair, cdr: rest } => {
+                    let var = self.lisp.car(pair)?;
+                    let val = self.lisp.cdr(pair)?;
+                    result_env = self.env_extend(result_env, var, val)?;
+                    current = rest;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+        
+        Ok(result_env)
+    }
+
+    /// Helper for quasiquote - trampolined processing
+    fn step_quasiquote_trampoline(&mut self, template: ArenaIndex, env: ArenaIndex, depth: u8) 
+        -> Result<TrampolineState, EvalError> 
+    {
+        match self.lisp.get(template)? {
+            Value::Cons { car, cdr } => {
+                // Check for unquote
+                if self.lisp.symbol_matches(car, "unquote").unwrap_or(false) {
+                    let inner_expr = self.lisp.car(cdr)?;
+                    if depth == 1 {
+                        // Evaluate the unquoted expression directly
+                        return Ok(TrampolineState::Eval { expr: inner_expr, env });
+                    } else {
+                        // Nested quasiquote - decrease depth and process
+                        self.push_cont(Cont::QuasiquoteUnquoteWrap)?;
+                        return self.step_quasiquote_trampoline(inner_expr, env, depth - 1);
+                    }
+                }
+                
+                // Check for unquote-splicing at top level
+                if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false) {
+                    if depth == 1 {
+                        // Return the evaluated list (caller handles splicing)
+                        let inner_expr = self.lisp.car(cdr)?;
+                        return Ok(TrampolineState::Eval { expr: inner_expr, env });
+                    }
+                }
+                
+                // Check for nested quasiquote
+                if self.lisp.symbol_matches(car, "quasiquote").unwrap_or(false) {
+                    self.push_cont(Cont::QuasiquoteNestedWrap)?;
+                    let inner_expr = self.lisp.car(cdr)?;
+                    return self.step_quasiquote_trampoline(inner_expr, env, depth + 1);
+                }
+                
+                // Check for unquote-splicing in car position (special handling)
+                if let Value::Cons { car: inner_car, cdr: inner_cdr } = self.lisp.get(car)? {
+                    if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
+                        // Splice the result into the list
+                        let splice_expr = self.lisp.car(inner_cdr)?;
+                        self.push_cont(Cont::QuasiquoteSplice { cdr, depth, env })?;
+                        return Ok(TrampolineState::Eval { expr: splice_expr, env });
+                    }
+                }
+                
+                // Recursively process car and cdr
+                self.push_cont(Cont::QuasiquoteCar { cdr, depth, env })?;
+                self.step_quasiquote_trampoline(car, env, depth)
+            }
+            _ => {
+                // Atoms are returned as-is
+                Ok(TrampolineState::Return { val: template })
+            }
+        }
     }
 
     /// Evaluate let using continuations (no Rust recursion)
@@ -2925,37 +3331,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let key_expr = self.lisp.car(args)?;
         let clauses = self.lisp.cdr(args)?;
         
-        // Evaluate the key expression
-        let key = self.eval_preserving_stack(key_expr, env)?;
+        // Push continuation to check clauses after key is evaluated
+        self.push_cont(Cont::CaseKey { clauses, env })?;
         
-        // Check each clause
-        let mut current = clauses;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // No match found, return nil
-                    let nil = self.lisp.nil()?;
-                    return Ok(TrampolineState::Return { val: nil });
-                }
-                Value::Cons { car: clause, cdr: rest } => {
-                    let datums = self.lisp.car(clause)?;
-                    let body = self.lisp.cdr(clause)?;
-                    
-                    // Check for 'else' clause
-                    if self.lisp.symbol_matches(datums, "else").unwrap_or(false) {
-                        return self.step_eval_begin(body, env);
-                    }
-                    
-                    // Check if key matches any datum
-                    if case_matches(self.lisp, key, datums)? {
-                        return self.step_eval_begin(body, env);
-                    }
-                    
-                    current = rest;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, clauses)),
-            }
-        }
+        // Evaluate the key expression
+        Ok(TrampolineState::Eval { expr: key_expr, env })
     }
     
     /// Evaluate do - iteration construct
@@ -2966,144 +3346,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let test_clause = self.lisp.car(rest)?;
         let body = self.lisp.cdr(rest)?;
         
-        // Initialize variables
-        let mut loop_env = env;
-        let mut var_info: [(ArenaIndex, ArenaIndex); 16] = [(ArenaIndex::NULL, ArenaIndex::NULL); 16]; // (var, step)
-        let mut var_count = 0;
-        
-        let mut current = bindings;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car: binding, cdr: rest } => {
-                    let var = self.lisp.car(binding)?;
-                    let init_rest = self.lisp.cdr(binding)?;
-                    let init = self.lisp.car(init_rest)?;
-                    let step_rest = self.lisp.cdr(init_rest)?;
-                    let step = if self.lisp.get(step_rest)?.is_nil() {
-                        var // No step, use variable itself
-                    } else {
-                        self.lisp.car(step_rest)?
-                    };
-                    
-                    let init_val = self.eval_preserving_stack(init, env)?;
-                    loop_env = self.env_extend(loop_env, var, init_val)?;
-                    
-                    if var_count >= 16 {
-                        return Err(self.make_error(ErrorKind::StackOverflow, bindings)
-                            .with_message("do: too many variables (max 16)"));
-                    }
-                    var_info[var_count] = (var, step);
-                    var_count += 1;
-                    
-                    current = rest;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
-            }
-        }
-        
-        // Iteration loop
-        loop {
-            // Evaluate test
+        // If no bindings, go straight to the loop
+        if self.lisp.get(bindings)?.is_nil() {
+            // No variables - just evaluate test
+            let nil = self.lisp.nil()?;
+            self.push_cont(Cont::DoTestResult { var_steps: nil, test_clause, body, loop_env: env })?;
             let test = self.lisp.car(test_clause)?;
-            let test_result = self.eval_preserving_stack(test, loop_env)?;
-            
-            if !self.is_false(test_result)? {
-                // Test passed - evaluate result expressions
-                let result_exprs = self.lisp.cdr(test_clause)?;
-                if self.lisp.get(result_exprs)?.is_nil() {
-                    return Ok(TrampolineState::Return { val: test_result });
-                } else {
-                    return self.step_eval_begin(result_exprs, loop_env);
-                }
-            }
-            
-            // Evaluate body (for side effects in non-pure case)
-            let mut body_cur = body;
-            loop {
-                match self.lisp.get(body_cur)? {
-                    Value::Nil => break,
-                    Value::Cons { car: expr, cdr: rest } => {
-                        self.eval_preserving_stack(expr, loop_env)?;
-                        body_cur = rest;
-                    }
-                    _ => break,
-                }
-            }
-            
-            // Evaluate step expressions and update variables
-            let mut new_vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
-            for i in 0..var_count {
-                new_vals[i] = self.eval_preserving_stack(var_info[i].1, loop_env)?;
-            }
-            
-            // Update environment with new values
-            for i in 0..var_count {
-                loop_env = self.env_extend(loop_env, var_info[i].0, new_vals[i])?;
-            }
+            return Ok(TrampolineState::Eval { expr: test, env });
         }
+        
+        // Get the first binding
+        let binding = self.lisp.car(bindings)?;
+        let rest_bindings = self.lisp.cdr(bindings)?;
+        
+        let var = self.lisp.car(binding)?;
+        let init_rest = self.lisp.cdr(binding)?;
+        let init = self.lisp.car(init_rest)?;
+        let step_rest = self.lisp.cdr(init_rest)?;
+        let step = if self.lisp.get(step_rest)?.is_nil() {
+            var // No step, use variable itself
+        } else {
+            self.lisp.car(step_rest)?
+        };
+        
+        // Build first (var . step) pair
+        let var_step_pair = self.lisp.cons(var, step)?;
+        let nil = self.lisp.nil()?;
+        let var_steps = self.lisp.cons(var_step_pair, nil)?;
+        
+        // Push continuation and evaluate first init
+        self.push_cont(Cont::DoInit { 
+            remaining_bindings: rest_bindings, 
+            var_steps, 
+            test_clause, 
+            body, 
+            loop_env: env,  // Will be extended after init is evaluated
+            original_env: env, 
+            current_var: var 
+        })?;
+        Ok(TrampolineState::Eval { expr: init, env })
     }
     
-    /// Evaluate quasiquote - template with unquote
-    fn eval_quasiquote(&mut self, template: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        self.eval_quasiquote_impl(template, env, 1)
-    }
-    
-    fn eval_quasiquote_impl(&mut self, template: ArenaIndex, env: ArenaIndex, depth: usize) -> EvalResult {
-        match self.lisp.get(template)? {
-            Value::Cons { car, cdr } => {
-                // Check for unquote
-                if self.lisp.symbol_matches(car, "unquote").unwrap_or(false) {
-                    if depth == 1 {
-                        // Evaluate the unquoted expression
-                        return self.eval_preserving_stack(self.lisp.car(cdr)?, env);
-                    } else {
-                        // Nested quasiquote - decrease depth
-                        let unquote_sym = self.lisp.symbol("unquote")?;
-                        let inner = self.eval_quasiquote_impl(self.lisp.car(cdr)?, env, depth - 1)?;
-                        let nil = self.lisp.nil()?;
-                        let inner_list = self.lisp.cons(inner, nil)?;
-                        return self.lisp.cons(unquote_sym, inner_list).map_err(Into::into);
-                    }
-                }
-                
-                // Check for unquote-splicing
-                if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false) {
-                    if depth == 1 {
-                        // Return the evaluated list (caller handles splicing)
-                        return self.eval_preserving_stack(self.lisp.car(cdr)?, env);
-                    }
-                }
-                
-                // Check for nested quasiquote
-                if self.lisp.symbol_matches(car, "quasiquote").unwrap_or(false) {
-                    let inner = self.eval_quasiquote_impl(self.lisp.car(cdr)?, env, depth + 1)?;
-                    let qq_sym = self.lisp.symbol("quasiquote")?;
-                    let nil = self.lisp.nil()?;
-                    let inner_list = self.lisp.cons(inner, nil)?;
-                    return self.lisp.cons(qq_sym, inner_list).map_err(Into::into);
-                }
-                
-                // Check for unquote-splicing in car position (special handling)
-                if let Value::Cons { car: inner_car, cdr: inner_cdr } = self.lisp.get(car)? {
-                    if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
-                        // Splice the result into the list
-                        let splice_val = self.eval_preserving_stack(self.lisp.car(inner_cdr)?, env)?;
-                        let rest = self.eval_quasiquote_impl(cdr, env, depth)?;
-                        return self.append_lists(splice_val, rest);
-                    }
-                }
-                
-                // Recursively process car and cdr
-                let new_car = self.eval_quasiquote_impl(car, env, depth)?;
-                let new_cdr = self.eval_quasiquote_impl(cdr, env, depth)?;
-                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
-            }
-            _ => {
-                // Atoms are returned as-is
-                Ok(template)
-            }
-        }
+    /// Evaluate quasiquote - template with unquote (trampolined version)
+    fn eval_quasiquote(&mut self, template: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        self.step_quasiquote_trampoline(template, env, 1)
     }
     
     /// Append two lists
@@ -3123,48 +3409,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let func_expr = self.lisp.car(args)?;
         let args_list_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
-        // Evaluate function and arguments list
-        let func = self.eval_preserving_stack(func_expr, env)?;
-        let args_list = self.eval_preserving_stack(args_list_expr, env)?;
+        // Push continuation to evaluate args_list after func is evaluated
+        self.push_cont(Cont::ApplyFirst { args_list_expr, env })?;
         
-        // Evaluate the application using the args list directly (already evaluated)
-        let call_expr = self.lisp.cons(func, args_list)?;
-        self.push_frame(call_expr, func)?;
-        self.push_cont(Cont::ApplyForced { args_expr: args_list, env, call_expr })?;
-        Ok(TrampolineState::Return { val: func })
+        // Evaluate function first
+        Ok(TrampolineState::Eval { expr: func_expr, env })
     }
     
-    /// Evaluate values - create a multi-value return
-    fn eval_values(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // Evaluate all arguments and return as a list
-        // Note: Limited to 16 values due to no_std constraints
-        let mut result = self.lisp.nil()?;
-        let mut current = args;
-        let mut vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
-        let mut count = 0;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car, cdr } => {
-                    if count >= 16 {
-                        return Err(self.make_error(ErrorKind::StackOverflow, args)
-                            .with_message("values: too many values (max 16)"));
-                    }
-                    vals[count] = self.eval_preserving_stack(car, env)?;
-                    count += 1;
-                    current = cdr;
-                }
-                _ => break,
-            }
+    /// Evaluate values - create a multi-value return (trampolined)
+    fn eval_values(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        if self.lisp.get(args)?.is_nil() {
+            // No values - return empty list
+            let nil = self.lisp.nil()?;
+            return Ok(TrampolineState::Return { val: nil });
         }
         
-        // Build result list in reverse
-        for i in (0..count).rev() {
-            result = self.lisp.cons(vals[i], result)?;
-        }
+        // Start evaluating first value
+        let first_expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let nil = self.lisp.nil()?;
         
-        Ok(result)
+        self.push_cont(Cont::ValuesCollect { remaining: rest, collected: nil, env })?;
+        Ok(TrampolineState::Eval { expr: first_expr, env })
     }
     
     /// Evaluate lambda
@@ -3183,8 +3449,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.lambda(params, body, env).map_err(Into::into)
     }
     
-    /// Evaluate define
-    fn eval_define(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
+    /// Evaluate define (trampolined)
+    fn eval_define(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let first = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         
@@ -3192,8 +3458,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // (define name value)
             Value::Symbol { .. } => {
                 let value_expr = self.lisp.car(rest)?;
-                let value = self.eval_preserving_stack(value_expr, env)?;
-                self.define(first, value)
+                // Push continuation and evaluate value
+                self.push_cont(Cont::DefineValue { name: first })?;
+                Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             // (define (name params...) body...) -> (define name (lambda (params...) body...))
             Value::Cons { car: name, cdr: params } => {
@@ -3205,23 +3472,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.cons(begin, body_list)?
                 };
                 let lambda = self.lisp.lambda(params, body, env)?;
-                self.define(name, lambda)
+                self.define(name, lambda)?;
+                Ok(TrampolineState::Return { val: name })
             }
             _ => Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
         }
     }
     
-    /// Evaluate (set! name value) - mutate an existing variable binding
-    fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
+    /// Evaluate (set! name value) - mutate an existing variable binding (trampolined)
+    fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         extract_args!(self, args, name, value_expr);
         
         // Verify name is a symbol
         match self.lisp.get(name)? {
             Value::Symbol { .. } => {
-                // Evaluate the value expression
-                let value = self.eval_preserving_stack(value_expr, env)?;
-                // Find and mutate the binding
-                self.env_set(env, name, value)
+                // Push continuation and evaluate value
+                self.push_cont(Cont::SetValue { name, env })?;
+                Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
         }
@@ -3230,45 +3497,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     // Helpers
     // ========================================================================
-    
-    /// Evaluate all arguments in a list (synchronously).
-    ///
-    /// This is used for native function calls where we need all arguments
-    /// evaluated before calling the Rust function.
-    ///
-    /// ITERATIVE implementation to avoid Rust stack overflow
-    fn eval_args_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        const MAX_ARGS: usize = 64;
-        let mut evaluated: [ArenaIndex; MAX_ARGS] = [ArenaIndex::NULL; MAX_ARGS];
-        let mut count = 0;
-        let mut current = list;
-        
-        // First pass: evaluate each argument
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { car, cdr } => {
-                    if count >= MAX_ARGS {
-                        return Err(self.make_error(ErrorKind::StackOverflow, list));
-                    }
-                    // Evaluate the expression
-                    let evaled = self.eval_preserving_stack(car, env)?;
-                    evaluated[count] = evaled;
-                    count += 1;
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
-            }
-        }
-        
-        // Second pass: build result list (backwards to preserve order)
-        let mut result = self.lisp.nil()?;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(evaluated[i], result)?;
-        }
-        
-        Ok(result)
-    }
     
     /// Count elements in a list
     fn count_list(&self, mut list: ArenaIndex) -> Result<usize, EvalError> {

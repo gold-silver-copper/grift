@@ -72,6 +72,73 @@ pub enum Cont {
 
     /// Processing begin expressions (non-tail)
     BeginSeq { remaining: ArenaIndex, env: ArenaIndex },
+
+    // ========================================================================
+    // Continuation types for fully trampolined evaluation
+    // (Replacing eval_preserving_stack)
+    // ========================================================================
+
+    /// After evaluating key for case, check clauses
+    CaseKey { clauses: ArenaIndex, env: ArenaIndex },
+
+    /// After evaluating a do init expression, bind and continue with remaining bindings
+    /// remaining_bindings: remaining ((var init step) ...) to process
+    /// var_steps: list of (var . step) pairs for iteration
+    /// test_clause: (test result ...)
+    /// body: body expressions
+    /// loop_env: environment being built
+    /// original_env: environment for evaluating init expressions
+    DoInit { remaining_bindings: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex,
+             body: ArenaIndex, loop_env: ArenaIndex, original_env: ArenaIndex, current_var: ArenaIndex },
+
+    /// After evaluating do test, decide to exit or continue
+    DoTestResult { var_steps: ArenaIndex, test_clause: ArenaIndex, body: ArenaIndex, loop_env: ArenaIndex },
+
+    /// Evaluate body expressions in do loop (for side effects)
+    DoBody { remaining_body: ArenaIndex, var_steps: ArenaIndex, test_clause: ArenaIndex, 
+             body: ArenaIndex, loop_env: ArenaIndex },
+
+    /// Evaluate step expressions in do loop
+    /// remaining_steps: remaining (var . step) pairs to evaluate
+    /// collected_vals: list of evaluated (var . val) pairs
+    DoStep { remaining_steps: ArenaIndex, collected_vals: ArenaIndex, var_steps: ArenaIndex, 
+             test_clause: ArenaIndex, body: ArenaIndex, loop_env: ArenaIndex, current_var: ArenaIndex },
+
+    /// After evaluating first arg for apply, evaluate second arg (args list)
+    ApplyFirst { args_list_expr: ArenaIndex, env: ArenaIndex },
+
+    /// After evaluating both args for apply, perform the application
+    ApplySecond { func: ArenaIndex, env: ArenaIndex },
+
+    /// Evaluate expressions for values, collecting results
+    ValuesCollect { remaining: ArenaIndex, collected: ArenaIndex, env: ArenaIndex },
+
+    /// After evaluating value for define
+    DefineValue { name: ArenaIndex },
+
+    /// After evaluating value for set!
+    SetValue { name: ArenaIndex, env: ArenaIndex },
+
+    /// Evaluate arguments for native function call
+    NativeArgsCollect { remaining: ArenaIndex, collected: ArenaIndex, id: usize, env: ArenaIndex },
+
+    /// After evaluating car in quasiquote, evaluate cdr
+    QuasiquoteCar { cdr: ArenaIndex, depth: u8, env: ArenaIndex },
+
+    /// After evaluating cdr in quasiquote, cons with car
+    QuasiquoteCdr { car_val: ArenaIndex },
+
+    /// After evaluating unquote in quasiquote at depth > 1, wrap with unquote symbol
+    QuasiquoteUnquoteWrap,
+
+    /// After evaluating inner in nested quasiquote, wrap with quasiquote symbol
+    QuasiquoteNestedWrap,
+
+    /// After evaluating unquote-splicing, append with rest
+    QuasiquoteSplice { cdr: ArenaIndex, depth: u8, env: ArenaIndex },
+
+    /// After evaluating cdr for splice, append with splice value
+    QuasiquoteSpliceAppend { splice_val: ArenaIndex },
 }
 
 /// Trampoline state - what we're currently doing
