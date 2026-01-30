@@ -3157,8 +3157,7 @@ fn test_vector_make_vector_negative_length() {
 // ═══════════════════════════════════════════════════════════════════════════
 // NESTED STDLIB CALL TESTS
 // Tests for nested stdlib function calls (issue: deeply nested stdlib calls)
-// NOTE: These tests require RUST_MIN_STACK=16777216 (16MB) to run due to
-// the recursive nature of eval_preserving_stack through the trampoline.
+// Tests that the continuation-based evaluation avoids Rust stack overflow.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -3168,6 +3167,12 @@ fn test_nested_stdlib_calls() {
     // forms called `eval_in_env` which reset the continuation stack.
     let lisp: Lisp<50000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define sqrt using Newton-Raphson method
+    // Note: math functions were removed from stdlib and need to be reimplemented
+    eval.eval_str("(define (abs x) (if (< x 0) (- 0 x) x))").unwrap();
+    eval.eval_str("(define (sqrt-iter guess x) (if (< (abs (- (* guess guess) x)) 0.001) guess (sqrt-iter (/ (+ guess (/ x guess)) 2) x)))").unwrap();
+    eval.eval_str("(define (sqrt x) (sqrt-iter 1.0 x))").unwrap();
     
     // Basic nested stdlib call: (+ 1 (sqrt 4)) should return 3.0
     let result = eval.eval_str("(+ 1 (sqrt 4))").unwrap();
