@@ -839,7 +839,7 @@ fn test_array_memory_layout() {
 
 #[test]
 fn test_array_type_name() {
-    let arr = Value::Array(ArenaIndex::NULL);
+    let arr = Value::Array(ArenaIndex::NIL);
     assert_eq!(arr.type_name(), "array");
 }
 
@@ -849,7 +849,7 @@ fn test_array_type_name() {
 
 #[test]
 fn test_string_type_name() {
-    let s = Value::String(ArenaIndex::NULL);
+    let s = Value::String(ArenaIndex::NIL);
     assert_eq!(s.type_name(), "string");
 }
 

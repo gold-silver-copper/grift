@@ -156,8 +156,8 @@ fn format_list_contents<const N: usize>(
                     buf.push(' ');
                 }
                 first = false;
-                let car = lisp.car(idx).unwrap_or(ArenaIndex::NULL);
-                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NULL);
+                let car = lisp.car(idx).unwrap_or(ArenaIndex::NIL);
+                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NIL);
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
                 count += 1;
@@ -213,7 +213,7 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
     // Additional context based on error type
     match err.kind {
         ErrorKind::UnboundVariable => {
-            if !err.expr.is_null() {
+            if !err.expr.is_nil() {
                 buf.push_str(": ");
                 format_value(lisp, err.expr, &mut buf);
             }
@@ -251,14 +251,14 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
             }
         }
         ErrorKind::UserError => {
-            if !err.expr.is_null() {
+            if !err.expr.is_nil() {
                 buf.push_str(": ");
                 format_value(lisp, err.expr, &mut buf);
             }
         }
         _ => {
             // Include expression if available
-            if !err.expr.is_null() && !matches!(err.kind, ErrorKind::OutOfMemory | ErrorKind::StackOverflow) {
+            if !err.expr.is_nil() && !matches!(err.kind, ErrorKind::OutOfMemory | ErrorKind::StackOverflow) {
                 buf.push_str(" in: ");
                 let mut expr_buf = String::new();
                 format_value(lisp, err.expr, &mut expr_buf);
@@ -289,7 +289,7 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
             use std::fmt::Write;
             write!(buf, "{}: ", err.backtrace_len - i).unwrap();
             
-            if !frame.func.is_null() {
+            if !frame.func.is_nil() {
                 let mut func_buf = String::new();
                 format_value(lisp, frame.func, &mut func_buf);
                 if func_buf.len() > 40 {
@@ -298,7 +298,7 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                 } else {
                     buf.push_str(&func_buf);
                 }
-            } else if !frame.expr.is_null() {
+            } else if !frame.expr.is_nil() {
                 let mut expr_buf = String::new();
                 format_value(lisp, frame.expr, &mut expr_buf);
                 if expr_buf.len() > 40 {
@@ -490,7 +490,7 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
             Ok(Value::Nil) => return count,
             Ok(Value::Cons(_)) => {
                 count += 1;
-                env = lisp.cdr(env).unwrap_or(ArenaIndex::NULL);
+                env = lisp.cdr(env).unwrap_or(ArenaIndex::NIL);
             }
             _ => return count,
         }

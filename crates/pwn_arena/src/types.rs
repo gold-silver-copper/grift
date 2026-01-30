@@ -24,12 +24,16 @@
 pub struct ArenaIndex(usize);
 
 impl ArenaIndex {
-    /// A placeholder "null" index used when no valid index is available.
+    /// The NIL index - points to slot 0 where `Value::Nil` is pre-allocated.
     ///
-    /// This can be used as a placeholder when an optional index is needed
-    /// but `Option<ArenaIndex>` is not desired. Note: this is NOT the Lisp nil
-    /// value - use `Lisp::nil()` for that.
-    pub const NULL: ArenaIndex = ArenaIndex(usize::MAX);
+    /// This constant is useful as:
+    /// - A default/placeholder value in arrays
+    /// - Direct access to the Lisp nil value without needing a `Lisp` reference
+    /// - A sentinel for "empty" or "none" in data structures
+    ///
+    /// Since slot 0 always contains `Value::Nil`, accessing this index via
+    /// `lisp.get(ArenaIndex::NIL)` returns `Value::Nil`.
+    pub const NIL: ArenaIndex = ArenaIndex(0);
 
     /// Create a new arena index with the given slot index.
     ///
@@ -50,17 +54,17 @@ impl ArenaIndex {
         self.0
     }
 
-    /// Check if this is the null placeholder index.
+    /// Check if this is the NIL index (slot 0).
     #[inline]
-    pub const fn is_null(self) -> bool {
-        self.0 == usize::MAX
+    pub const fn is_nil(self) -> bool {
+        self.0 == 0
     }
 }
 
 impl Default for ArenaIndex {
-    /// Returns [`ArenaIndex::NULL`].
+    /// Returns [`ArenaIndex::NIL`] (slot 0).
     fn default() -> Self {
-        Self::NULL
+        Self::NIL
     }
 }
 

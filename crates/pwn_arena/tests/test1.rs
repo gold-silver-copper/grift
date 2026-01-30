@@ -2710,15 +2710,15 @@ fn test_gc_stress_incremental_tree_building() {
 
 #[test]
 fn test_arena_index_null() {
-    let null_idx = ArenaIndex::NULL;
-    assert!(null_idx.is_null());
+    let null_idx = ArenaIndex::NIL;
+    assert!(null_idx.is_nil());
 
     let default_idx = ArenaIndex::default();
-    assert!(default_idx.is_null());
+    assert!(default_idx.is_nil());
     assert_eq!(null_idx, default_idx);
 
     let normal_idx = ArenaIndex::new(5);
-    assert!(!normal_idx.is_null());
+    assert!(!normal_idx.is_nil());
 }
 
 #[test]
@@ -2842,7 +2842,7 @@ fn test_allocated_indices() {
 
     // Rest should be NULL
     for i in 3..10 {
-        assert!(indices[i].is_null());
+        assert!(indices[i].is_nil());
     }
 }
 
@@ -3035,7 +3035,7 @@ fn test_gc_handles_many_children() {
     });
 
     // Create 20 leaf nodes
-    let mut leaves = [ArenaIndex::NULL; 20];
+    let mut leaves = [ArenaIndex::NIL; 20];
     for i in 0..20 {
         leaves[i] = arena
             .alloc(BigNode {
@@ -3088,7 +3088,7 @@ fn test_gc_with_null_roots() {
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
     
     // Use NULL indices in roots - they should be safely ignored
-    let stats = arena.collect_garbage(&[ArenaIndex::NULL, idx1, ArenaIndex::NULL]);
+    let stats = arena.collect_garbage(&[ArenaIndex::NIL, idx1, ArenaIndex::NIL]);
     
     // idx1 was preserved, idx2 was garbage
     assert_eq!(stats.marked, 1);
@@ -3391,7 +3391,7 @@ fn test_alloc_contiguous_fragmentation() {
     let arena: Arena<isize, 10> = Arena::new(0);
     
     // Allocate individual slots: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
-    let mut indices = [ArenaIndex::NULL; 10];
+    let mut indices = [ArenaIndex::NIL; 10];
     for i in 0..10 {
         indices[i] = arena.alloc(i as isize).unwrap();
     }

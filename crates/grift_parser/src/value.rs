@@ -774,7 +774,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // For non-empty arrays/strings, we need arena access to read the length.
                 // The basic trace just marks the data pointer; trace_with_arena handles
                 // the full tracing with element traversal.
-                if !data.is_null() {
+                if !data.is_nil() {
                     tracer(*data);
                 }
             }
@@ -786,7 +786,7 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Array(data) => {
                 // For non-empty arrays, trace the length header and all elements
                 // Empty arrays have data == NULL, so skip tracing
-                if !data.is_null() {
+                if !data.is_nil() {
                     // Trace the length header at data
                     tracer(*data);
                     
@@ -804,7 +804,7 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::String(data) => {
                 // For non-empty strings, trace the length header and all Char slots
                 // Empty strings have data == NULL, so skip tracing
-                if !data.is_null() {
+                if !data.is_nil() {
                     // Trace the length header at data
                     tracer(*data);
                     
