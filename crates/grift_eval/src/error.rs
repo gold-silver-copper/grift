@@ -64,8 +64,8 @@ pub struct StackFrame {
 impl Default for StackFrame {
     fn default() -> Self {
         StackFrame {
-            expr: ArenaIndex::NIL,
-            func: ArenaIndex::NIL,
+            expr: ArenaIndex::NULL,
+            func: ArenaIndex::NULL,
         }
     }
 }
@@ -132,7 +132,7 @@ impl EvalError {
         EvalError {
             kind,
             message: ErrorMessage::empty(),
-            expr: ArenaIndex::NIL,
+            expr: ArenaIndex::NULL,
             expected: None,
             got: None,
             expected_args: None,

@@ -107,8 +107,8 @@ fn format_list<const N: usize>(lisp: &Lisp<N>, mut idx: grift::ArenaIndex, buf: 
             Ok(Value::Cons(_)) => {
                 if !first { buf.push(' '); }
                 first = false;
-                let car = lisp.car(idx).unwrap_or(grift::ArenaIndex::NIL);
-                let cdr = lisp.cdr(idx).unwrap_or(grift::ArenaIndex::NIL);
+                let car = lisp.car(idx).unwrap_or(grift::ArenaIndex::NULL);
+                let cdr = lisp.cdr(idx).unwrap_or(grift::ArenaIndex::NULL);
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
             }

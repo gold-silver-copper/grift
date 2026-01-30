@@ -24,17 +24,12 @@
 pub struct ArenaIndex(usize);
 
 impl ArenaIndex {
-    /// A sentinel "null" index representing nil/empty list.
+    /// A placeholder "null" index used when no valid index is available.
     ///
     /// This can be used as a placeholder when an optional index is needed
-    /// but `Option<ArenaIndex>` is not desired.
-    pub const NIL: ArenaIndex = ArenaIndex(usize::MAX);
-    
-    /// A sentinel index representing the boolean true value.
-    pub const TRUE: ArenaIndex = ArenaIndex(usize::MAX - 1);
-    
-    /// A sentinel index representing the boolean false value.
-    pub const FALSE: ArenaIndex = ArenaIndex(usize::MAX - 2);
+    /// but `Option<ArenaIndex>` is not desired. Note: this is NOT the Lisp nil
+    /// value - use `Lisp::nil()` for that.
+    pub const NULL: ArenaIndex = ArenaIndex(usize::MAX);
 
     /// Create a new arena index with the given slot index.
     ///
@@ -55,36 +50,17 @@ impl ArenaIndex {
         self.0
     }
 
-    /// Check if this is the null/nil index.
+    /// Check if this is the null placeholder index.
     #[inline]
     pub const fn is_null(self) -> bool {
         self.0 == usize::MAX
     }
-    
-    /// Check if this is the true sentinel.
-    #[inline]
-    pub const fn is_true(self) -> bool {
-        self.0 == usize::MAX - 1
-    }
-    
-    /// Check if this is the false sentinel.
-    #[inline]
-    pub const fn is_false(self) -> bool {
-        self.0 == usize::MAX - 2
-    }
-    
-    /// Check if this is any sentinel value (NIL, TRUE, or FALSE).
-    /// Sentinel values don't correspond to actual arena slots.
-    #[inline]
-    pub const fn is_sentinel(self) -> bool {
-        self.0 >= usize::MAX - 2
-    }
 }
 
 impl Default for ArenaIndex {
-    /// Returns [`ArenaIndex::NIL`].
+    /// Returns [`ArenaIndex::NULL`].
     fn default() -> Self {
-        Self::NIL
+        Self::NULL
     }
 }
 

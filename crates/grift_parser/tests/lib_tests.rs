@@ -49,32 +49,31 @@ fn test_reserved_slots_have_correct_values() {
 fn test_reserved_slots_occupy_first_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // Nil, True, and False are all sentinel indices (not arena slots)
-    assert!(lisp.nil().unwrap().is_null());
-    assert_eq!(lisp.nil().unwrap().raw(), usize::MAX);
+    // Nil, True, and False are pre-allocated in the first slots
+    assert_eq!(lisp.nil().unwrap().raw(), 0);
+    assert_eq!(lisp.true_val().unwrap().raw(), 1);
+    assert_eq!(lisp.false_val().unwrap().raw(), 2);
     
-    // True and False are also sentinels
-    assert!(lisp.true_val().unwrap().is_true());
-    assert_eq!(lisp.true_val().unwrap().raw(), usize::MAX - 1);
-    assert!(lisp.false_val().unwrap().is_false());
-    assert_eq!(lisp.false_val().unwrap().raw(), usize::MAX - 2);
+    // Verify they contain the expected values
+    assert_eq!(lisp.get(lisp.nil().unwrap()).unwrap(), Value::Nil);
+    assert_eq!(lisp.get(lisp.true_val().unwrap()).unwrap(), Value::True);
+    assert_eq!(lisp.get(lisp.false_val().unwrap()).unwrap(), Value::False);
 }
 
 #[test]
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // After creating the Lisp context, 3 slots should be used
-    // (intern_table_data[2], intern_table_ref)
-    // nil, true, false are sentinel indices (not arena slots)
-    assert_eq!(lisp.arena().len(), 3);
+    // After creating the Lisp context, 6 slots should be used
+    // (nil, true, false, intern_table_data[2], intern_table_ref)
+    assert_eq!(lisp.arena().len(), 6);
     
     // Calling nil/true_val/false_val should NOT increase allocation count
-    // (they return sentinel indices, not arena allocations)
+    // (they return pre-allocated slots)
     let _ = lisp.nil();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 3);
+    assert_eq!(lisp.arena().len(), 6);
     
     // Calling many times should not increase count
     for _ in 0..100 {
@@ -82,7 +81,7 @@ fn test_reserved_slots_not_reallocated() {
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 3);
+    assert_eq!(lisp.arena().len(), 6);
 }
 
 #[test]
@@ -127,15 +126,14 @@ fn test_reserved_slots_survive_gc() {
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // First regular allocation should be at slot 3 (after reserved 0-2)
-    // Slots: 0-1=intern_table_data, 2=intern_table_ref
-    // (nil, true, false are sentinel indices, not slots)
+    // First regular allocation should be at slot 6 (after reserved 0-5)
+    // Slots: 0=nil, 1=true, 2=false, 3-4=intern_table_data, 5=intern_table_ref
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 3);
+    assert_eq!(num.raw(), 6);
     
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 4);
+    assert_eq!(num2.raw(), 7);
 }
 
 // ========================================================================
@@ -841,7 +839,7 @@ fn test_array_memory_layout() {
 
 #[test]
 fn test_array_type_name() {
-    let arr = Value::Array(ArenaIndex::NIL);
+    let arr = Value::Array(ArenaIndex::NULL);
     assert_eq!(arr.type_name(), "array");
 }
 
@@ -851,7 +849,7 @@ fn test_array_type_name() {
 
 #[test]
 fn test_string_type_name() {
-    let s = Value::String(ArenaIndex::NIL);
+    let s = Value::String(ArenaIndex::NULL);
     assert_eq!(s.type_name(), "string");
 }
 

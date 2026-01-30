@@ -48,12 +48,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
         let mut eval = Evaluator {
             lisp,
-            global_env: ArenaIndex::NIL,
+            global_env: ArenaIndex::NULL,
             call_stack: [StackFrame::default(); MAX_STACK_DEPTH],
             call_stack_depth: 0,
             cont_stack: [Cont::Done; MAX_CONT_DEPTH],
             cont_depth: 0,
-            data_stack: [ArenaIndex::NIL; MAX_DATA_STACK],
+            data_stack: [ArenaIndex::NULL; MAX_DATA_STACK],
             data_stack_top: 0,
             native_registry: NativeRegistry::new(),
         };
@@ -145,7 +145,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
         // Collect all roots: global env + current state + all ArenaIndex values in continuations
         const MAX_ROOTS: usize = 512;
-        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
+        let mut roots = [ArenaIndex::NULL; MAX_ROOTS];
         let mut root_count = 0;
         
         // Always include global env
@@ -217,7 +217,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 for j in 0..data_len {
                     let idx = self.data_stack[ds + j];
                     // Skip encoded builtins/raw usize values (they have very high values)
-                    // ArenaIndex::NIL is usize::MAX, real indices are < N
+                    // ArenaIndex::NULL is usize::MAX, real indices are < N
                     if idx.raw() < N && !idx.is_null() {
                         roots[root_count] = idx;
                         root_count += 1;

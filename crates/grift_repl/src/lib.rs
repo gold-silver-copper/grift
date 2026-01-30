@@ -156,8 +156,8 @@ fn format_list_contents<const N: usize>(
                     buf.push(' ');
                 }
                 first = false;
-                let car = lisp.car(idx).unwrap_or(ArenaIndex::NIL);
-                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NIL);
+                let car = lisp.car(idx).unwrap_or(ArenaIndex::NULL);
+                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NULL);
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
                 count += 1;
@@ -490,7 +490,7 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
             Ok(Value::Nil) => return count,
             Ok(Value::Cons(_)) => {
                 count += 1;
-                env = lisp.cdr(env).unwrap_or(ArenaIndex::NIL);
+                env = lisp.cdr(env).unwrap_or(ArenaIndex::NULL);
             }
             _ => return count,
         }
