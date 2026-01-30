@@ -195,13 +195,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Cont::LambdaFirstBind { param } => {
                     roots[root_count] = param; root_count += 1;
                 }
-                Cont::LambdaBindArg { remaining_exprs, eval_env, remaining_params, body, new_env, call_expr } => {
-                    roots[root_count] = remaining_exprs; root_count += 1;
-                    roots[root_count] = eval_env; root_count += 1;
-                    roots[root_count] = remaining_params; root_count += 1;
-                    roots[root_count] = body; root_count += 1;
-                    roots[root_count] = new_env; root_count += 1;
-                    roots[root_count] = call_expr; root_count += 1;
+                Cont::LambdaBindArg { data } => {
+                    // data is a cons-list: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . (call_expr . nil))))))
+                    // The entire list will be traced via the single ArenaIndex
+                    roots[root_count] = data; root_count += 1;
                 }
                 Cont::LetBinding { remaining_bindings, new_env, original_env, body, name } => {
                     roots[root_count] = remaining_bindings; root_count += 1;
@@ -222,7 +219,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = body; root_count += 1;
                     roots[root_count] = name; root_count += 1;
                 }
-                Cont::WhenUnless { body, env, .. } => {
+                Cont::When { body, env } => {
+                    roots[root_count] = body; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::Unless { body, env } => {
                     roots[root_count] = body; root_count += 1;
                     roots[root_count] = env; root_count += 1;
                 }
@@ -234,7 +235,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     roots[root_count] = remaining_clauses; root_count += 1;
                     roots[root_count] = env; root_count += 1;
                 }
-                Cont::AndOr { remaining, env, .. } => {
+                Cont::And { remaining, env } => {
+                    roots[root_count] = remaining; root_count += 1;
+                    roots[root_count] = env; root_count += 1;
+                }
+                Cont::Or { remaining, env } => {
                     roots[root_count] = remaining; root_count += 1;
                     roots[root_count] = env; root_count += 1;
                 }
@@ -698,7 +703,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "when")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                self.push_cont(Cont::WhenUnless { body, env, is_when: true })?;
+                self.push_cont(Cont::When { body, env })?;
                 return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
 
@@ -706,7 +711,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "unless")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                self.push_cont(Cont::WhenUnless { body, env, is_when: false })?;
+                self.push_cont(Cont::Unless { body, env })?;
                 return Ok(TrampolineState::Eval { expr: test_expr, env });
             }
 
@@ -868,11 +873,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            self.push_cont(Cont::LambdaBindArg {
-                                remaining_exprs: rest_exprs, eval_env: env,
-                                remaining_params: rest_params, body, 
-                                new_env: closure_env, call_expr
-                            })?;
+                            let data = self.pack_lambda_bind_arg(
+                                rest_exprs, env, rest_params, body, closure_env, call_expr
+                            )?;
+                            self.push_cont(Cont::LambdaBindArg { data })?;
                             // Push binding continuation for first param
                             self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
                             
@@ -926,11 +930,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            self.push_cont(Cont::LambdaBindArg {
-                                remaining_exprs: rest_exprs, eval_env: env,
-                                remaining_params: rest_params, body, 
-                                new_env: closure_env, call_expr
-                            })?;
+                            let data = self.pack_lambda_bind_arg(
+                                rest_exprs, env, rest_params, body, closure_env, call_expr
+                            )?;
+                            self.push_cont(Cont::LambdaBindArg { data })?;
                             // Push binding continuation for first param
                             self.push_cont(Cont::LambdaFirstBind { param: first_param })?;
                             
@@ -972,7 +975,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is evaluated first arg - bind to param
                 // Pop LambdaBindArg, extend env, push it back
                 let cont = self.pop_cont();
-                if let Cont::LambdaBindArg { remaining_exprs, eval_env, remaining_params, body, new_env, call_expr } = cont {
+                if let Cont::LambdaBindArg { data } = cont {
+                    // Unpack the cons-list
+                    let (remaining_exprs, eval_env, remaining_params, body, new_env, call_expr) = 
+                        self.unpack_lambda_bind_arg(data)?;
+                    
                     // Extend environment with binding
                     let extended_env = self.env_extend(new_env, param, val)?;
                     
@@ -997,11 +1004,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let rest_exprs = self.lisp.cdr(remaining_exprs)?;
                         
                         // Continue with remaining args
-                        self.push_cont(Cont::LambdaBindArg {
-                            remaining_exprs: rest_exprs, eval_env,
-                            remaining_params: rest_params, body,
-                            new_env: extended_env, call_expr
-                        })?;
+                        let new_data = self.pack_lambda_bind_arg(
+                            rest_exprs, eval_env, rest_params, body, extended_env, call_expr
+                        )?;
+                        self.push_cont(Cont::LambdaBindArg { data: new_data })?;
                         self.push_cont(Cont::LambdaFirstBind { param: next_param })?;
                         
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
@@ -1138,12 +1144,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Cont::WhenUnless { body, env, is_when } => {
+            Cont::When { body, env } => {
                 // val is the evaluated test result
                 let test_passed = !self.is_false(val)?;
-                let should_run = if is_when { test_passed } else { !test_passed };
 
-                if should_run {
+                if test_passed {
+                    // Evaluate body as begin
+                    let begin = self.lisp.symbol("begin")?;
+                    let new_expr = self.lisp.cons(begin, body)?;
+                    Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
+                } else {
+                    // Return unspecified value (nil)
+                    let nil = self.lisp.nil()?;
+                    Ok(Some(TrampolineState::Return { val: nil }))
+                }
+            }
+
+            Cont::Unless { body, env } => {
+                // val is the evaluated test result
+                let test_passed = !self.is_false(val)?;
+
+                if !test_passed {
                     // Evaluate body as begin
                     let begin = self.lisp.symbol("begin")?;
                     let new_expr = self.lisp.cons(begin, body)?;
@@ -1179,38 +1200,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Cont::AndOr { remaining, env, is_and } => {
+            Cont::And { remaining, env } => {
                 // val is the evaluated expression
-                if is_and {
-                    // and: if false, short-circuit and return #f
-                    if self.is_false(val)? {
-                        let false_val = self.lisp.boolean(false)?;
-                        Ok(Some(TrampolineState::Return { val: false_val }))
-                    } else if self.lisp.get(remaining)?.is_nil() {
-                        // Last expression - return its value
-                        Ok(Some(TrampolineState::Return { val }))
-                    } else {
-                        // More expressions - evaluate next
-                        let next_expr = self.lisp.car(remaining)?;
-                        let rest = self.lisp.cdr(remaining)?;
-                        self.push_cont(Cont::AndOr { remaining: rest, env, is_and: true })?;
-                        Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
-                    }
+                // and: if false, short-circuit and return #f
+                if self.is_false(val)? {
+                    let false_val = self.lisp.boolean(false)?;
+                    Ok(Some(TrampolineState::Return { val: false_val }))
+                } else if self.lisp.get(remaining)?.is_nil() {
+                    // Last expression - return its value
+                    Ok(Some(TrampolineState::Return { val }))
                 } else {
-                    // or: if truthy, short-circuit and return the value
-                    if !self.is_false(val)? {
-                        Ok(Some(TrampolineState::Return { val }))
-                    } else if self.lisp.get(remaining)?.is_nil() {
-                        // Last expression was false - return #f
-                        let false_val = self.lisp.boolean(false)?;
-                        Ok(Some(TrampolineState::Return { val: false_val }))
-                    } else {
-                        // More expressions - evaluate next
-                        let next_expr = self.lisp.car(remaining)?;
-                        let rest = self.lisp.cdr(remaining)?;
-                        self.push_cont(Cont::AndOr { remaining: rest, env, is_and: false })?;
-                        Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
-                    }
+                    // More expressions - evaluate next
+                    let next_expr = self.lisp.car(remaining)?;
+                    let rest = self.lisp.cdr(remaining)?;
+                    self.push_cont(Cont::And { remaining: rest, env })?;
+                    Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
+                }
+            }
+
+            Cont::Or { remaining, env } => {
+                // val is the evaluated expression
+                // or: if truthy, short-circuit and return the value
+                if !self.is_false(val)? {
+                    Ok(Some(TrampolineState::Return { val }))
+                } else if self.lisp.get(remaining)?.is_nil() {
+                    // Last expression was false - return #f
+                    let false_val = self.lisp.boolean(false)?;
+                    Ok(Some(TrampolineState::Return { val: false_val }))
+                } else {
+                    // More expressions - evaluate next
+                    let next_expr = self.lisp.car(remaining)?;
+                    let rest = self.lisp.cdr(remaining)?;
+                    self.push_cont(Cont::Or { remaining: rest, env })?;
+                    Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
@@ -1826,7 +1848,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(TrampolineState::Eval { expr: first_expr, env })
         } else {
             // Multiple expressions - push continuation
-            self.push_cont(Cont::AndOr { remaining: rest, env, is_and: true })?;
+            self.push_cont(Cont::And { remaining: rest, env })?;
             Ok(TrampolineState::Eval { expr: first_expr, env })
         }
     }
@@ -1847,7 +1869,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(TrampolineState::Eval { expr: first_expr, env })
         } else {
             // Multiple expressions - push continuation
-            self.push_cont(Cont::AndOr { remaining: rest, env, is_and: false })?;
+            self.push_cont(Cont::Or { remaining: rest, env })?;
             Ok(TrampolineState::Eval { expr: first_expr, env })
         }
     }
@@ -3524,6 +3546,40 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             result = self.lisp.cons(sym, result)?;
         }
         Ok(result)
+    }
+    
+    /// Pack LambdaBindArg data into a cons-list:
+    /// (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . (call_expr . nil))))))
+    fn pack_lambda_bind_arg(&self, remaining_exprs: ArenaIndex, eval_env: ArenaIndex,
+                            remaining_params: ArenaIndex, body: ArenaIndex,
+                            new_env: ArenaIndex, call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let nil = self.lisp.nil()?;
+        // Build from inside out
+        let inner = self.lisp.cons(call_expr, nil)?;
+        let inner = self.lisp.cons(new_env, inner)?;
+        let inner = self.lisp.cons(body, inner)?;
+        let inner = self.lisp.cons(remaining_params, inner)?;
+        let inner = self.lisp.cons(eval_env, inner)?;
+        let data = self.lisp.cons(remaining_exprs, inner)?;
+        Ok(data)
+    }
+    
+    /// Unpack LambdaBindArg data from a cons-list:
+    /// (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . (call_expr . nil))))))
+    fn unpack_lambda_bind_arg(&self, data: ArenaIndex) 
+        -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
+        let remaining_exprs = self.lisp.car(data)?;
+        let rest = self.lisp.cdr(data)?;
+        let eval_env = self.lisp.car(rest)?;
+        let rest = self.lisp.cdr(rest)?;
+        let remaining_params = self.lisp.car(rest)?;
+        let rest = self.lisp.cdr(rest)?;
+        let body = self.lisp.car(rest)?;
+        let rest = self.lisp.cdr(rest)?;
+        let new_env = self.lisp.car(rest)?;
+        let rest = self.lisp.cdr(rest)?;
+        let call_expr = self.lisp.car(rest)?;
+        Ok((remaining_exprs, eval_env, remaining_params, body, new_env, call_expr))
     }
     
     /// Convert a ParseError to EvalError with stdlib function name context
