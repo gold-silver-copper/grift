@@ -163,7 +163,7 @@ fn test_simple_fib_define() {
 
 #[test]
 fn test_auto_memoization_fibonacci() {
-    // NOTE: This test requires larger stack: RUST_MIN_STACK=8388608
+    // NOTE: This test requires larger stack: RUST_MIN_STACK=16777216
     // Fibonacci with double recursion tests automatic memoization
     let lisp: Lisp<10000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();

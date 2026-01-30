@@ -881,14 +881,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate an expression while preserving the current continuation stack.
     ///
-    /// This is used for synchronous evaluation during native function calls,
-    /// where we need to evaluate arguments without disturbing the main
-    /// continuation stack that will process the result.
+    /// This is used for synchronous evaluation during internal forms like `let`,
+    /// `define`, etc., where we need to evaluate expressions without disturbing
+    /// the main continuation stack that will process the result.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the continuation stack depth exceeds MAX_SAVE (64).
-    /// This limit is sufficient for typical native function call chains.
+    /// Returns a StackOverflow error if the continuation stack depth exceeds
+    /// MAX_SAVE (32). This limit is sufficient for typical evaluation chains.
     fn eval_preserving_stack(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
         // Save the current continuation stack state
         // We need to preserve the outer continuations so the nested eval doesn't overwrite them
@@ -901,9 +901,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.trampoline(TrampolineState::Eval { expr, env });
         }
         
-        // For small stacks, save inline. For larger stacks, we'll use heap
-        // but this is a no_std environment, so we use a fixed buffer
-        // The key insight: we only need to save what's actually used
+        // Use a fixed-size buffer on the stack. We use two tiers:
+        // - Small (8 entries): for typical cases, minimizes stack usage
+        // - Large (32 entries): for deeper nesting, still fits in stack frame
+        // Note: This is a no_std environment, so heap allocation is not available.
         const MAX_INLINE: usize = 8;
         
         if saved_depth <= MAX_INLINE {
@@ -916,7 +917,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.cont_depth = 0;
             let result = self.trampoline(TrampolineState::Eval { expr, env });
             
-            // Restore
+            // Always restore the continuation stack, even on error
             for i in 0..saved_depth {
                 self.cont_stack[i] = saved[i];
             }
@@ -940,7 +941,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.cont_depth = 0;
             let result = self.trampoline(TrampolineState::Eval { expr, env });
             
-            // Restore
+            // Always restore the continuation stack, even on error
             for i in 0..saved_depth {
                 self.cont_stack[i] = saved[i];
             }
