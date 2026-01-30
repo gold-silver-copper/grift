@@ -490,7 +490,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
-            Value::Array { .. } | Value::String { .. } | Value::Native { .. } => {
+            Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
+            Value::Ref(_) => {
                 Ok(TrampolineState::Return { val: expr })
             }
             

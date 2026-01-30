@@ -141,6 +141,10 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<native:{}>", id).unwrap();
         }
+        Ok(Value::Ref(idx)) => {
+            use std::fmt::Write;
+            write!(buf, "#<ref:{}>", idx.raw()).unwrap();
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

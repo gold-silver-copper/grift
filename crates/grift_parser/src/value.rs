@@ -538,6 +538,19 @@ pub enum Value {
         id: usize,          // Index in the NativeRegistry
         name_hash: usize,   // Hash for debugging/lookup verification
     },
+    
+    /// Raw arena index reference
+    /// 
+    /// Used internally for storing arena indices in contiguous blocks.
+    /// This allows other variants (like Cons) to store their references
+    /// in the arena rather than inline, enabling memory optimizations.
+    /// 
+    /// # Note
+    /// 
+    /// This is an internal implementation detail and should not be
+    /// exposed to Lisp code directly. It's traced by the GC like any
+    /// other reference.
+    Ref(ArenaIndex),
 }
 
 impl Value {
@@ -644,6 +657,12 @@ impl Value {
         matches!(self, Value::String { .. })
     }
     
+    /// Check if this value is a ref (internal arena index reference)
+    #[inline]
+    pub const fn is_ref(&self) -> bool {
+        matches!(self, Value::Ref(_))
+    }
+    
     /// Get the number value if this is an integer
     #[inline]
     pub const fn as_number(&self) -> Option<isize> {
@@ -681,6 +700,15 @@ impl Value {
         }
     }
     
+    /// Get the arena index if this is a ref
+    #[inline]
+    pub const fn as_ref(&self) -> Option<ArenaIndex> {
+        match self {
+            Value::Ref(idx) => Some(*idx),
+            _ => None,
+        }
+    }
+    
     /// Get a human-readable type name
     pub const fn type_name(&self) -> &'static str {
         match self {
@@ -697,6 +725,7 @@ impl Value {
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
             Value::String { .. } => "string",
+            Value::Ref(_) => "ref",
         }
     }
 }
@@ -709,6 +738,10 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
             Value::Native { .. } | Value::StdLib(_) => {
                 // No references
+            }
+            Value::Ref(idx) => {
+                // Trace the referenced value
+                tracer(*idx);
             }
             Value::Cons { car, cdr } => {
                 tracer(*car);

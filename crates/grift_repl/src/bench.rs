@@ -147,7 +147,7 @@ fn main() {
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
 
-    let lisp: Lisp<150000> = Lisp::new();
+    let lisp: Lisp<110000> = Lisp::new();
     let mut eval = match Evaluator::new(&lisp) {
         Ok(e) => e,
         Err(e) => {
