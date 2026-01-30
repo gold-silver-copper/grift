@@ -890,35 +890,64 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Panics if the continuation stack depth exceeds MAX_SAVE (64).
     /// This limit is sufficient for typical native function call chains.
     fn eval_preserving_stack(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // Save current continuation stack state
+        // Save the current continuation stack state
+        // We need to preserve the outer continuations so the nested eval doesn't overwrite them
+        
         let saved_depth = self.cont_depth;
         
-        // We need to save the actual continuations because the nested evaluation
-        // will overwrite them. We save them to a temporary buffer.
-        const MAX_SAVE: usize = 64;
-        assert!(
-            saved_depth <= MAX_SAVE,
-            "Continuation stack too deep for native function call (depth={}, max={})",
-            saved_depth, MAX_SAVE
-        );
-        
-        let mut saved_conts: [Cont; MAX_SAVE] = [Cont::Done; MAX_SAVE];
-        for i in 0..saved_depth {
-            saved_conts[i] = self.cont_stack[i];
+        if saved_depth == 0 {
+            // No continuations to save - just reset and run
+            self.cont_depth = 0;
+            return self.trampoline(TrampolineState::Eval { expr, env });
         }
         
-        // Reset for the nested evaluation
-        self.cont_depth = 0;
+        // For small stacks, save inline. For larger stacks, we'll use heap
+        // but this is a no_std environment, so we use a fixed buffer
+        // The key insight: we only need to save what's actually used
+        const MAX_INLINE: usize = 8;
         
-        let result = self.trampoline(TrampolineState::Eval { expr, env });
-        
-        // Restore the continuation stack
-        for i in 0..saved_depth {
-            self.cont_stack[i] = saved_conts[i];
+        if saved_depth <= MAX_INLINE {
+            // Small stack - save inline with a smaller array
+            let mut saved: [Cont; MAX_INLINE] = [Cont::Done; MAX_INLINE];
+            for i in 0..saved_depth {
+                saved[i] = self.cont_stack[i];
+            }
+            
+            self.cont_depth = 0;
+            let result = self.trampoline(TrampolineState::Eval { expr, env });
+            
+            // Restore
+            for i in 0..saved_depth {
+                self.cont_stack[i] = saved[i];
+            }
+            self.cont_depth = saved_depth;
+            
+            result
+        } else {
+            // Large stack - use a larger fixed buffer
+            // This is rare and typically indicates deep nesting
+            const MAX_SAVE: usize = 32;
+            if saved_depth > MAX_SAVE {
+                return Err(EvalError::new(ErrorKind::StackOverflow)
+                    .with_message("continuation stack too deep for nested evaluation"));
+            }
+            
+            let mut saved: [Cont; MAX_SAVE] = [Cont::Done; MAX_SAVE];
+            for i in 0..saved_depth {
+                saved[i] = self.cont_stack[i];
+            }
+            
+            self.cont_depth = 0;
+            let result = self.trampoline(TrampolineState::Eval { expr, env });
+            
+            // Restore
+            for i in 0..saved_depth {
+                self.cont_stack[i] = saved[i];
+            }
+            self.cont_depth = saved_depth;
+            
+            result
         }
-        self.cont_depth = saved_depth;
-        
-        result
     }
     
     /// The main trampoline loop - processes states and continuations
@@ -1082,7 +1111,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "when")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let test_result = self.eval_in_env(test_expr, env)?;
+                let test_result = self.eval_preserving_stack(test_expr, env)?;
                 if self.is_false(test_result)? {
                     // Test failed - return unspecified value (nil)
                     let nil = self.lisp.nil()?;
@@ -1098,7 +1127,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "unless")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
-                let test_result = self.eval_in_env(test_expr, env)?;
+                let test_result = self.eval_preserving_stack(test_expr, env)?;
                 if !self.is_false(test_result)? {
                     // Test is true (truthy) - skip body, return unspecified value (nil)
                     let nil = self.lisp.nil()?;
@@ -1159,7 +1188,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // eval - evaluate expression at runtime
             if self.lisp.symbol_matches(car, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
-                let evaluated_expr = self.eval_in_env(expr_to_eval, env)?;
+                let evaluated_expr = self.eval_preserving_stack(expr_to_eval, env)?;
                 // Evaluate the result in the global environment
                 return Ok(TrampolineState::Eval { expr: evaluated_expr, env: self.global_env });
             }
@@ -3341,7 +3370,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let clauses = self.lisp.cdr(args)?;
         
         // Evaluate the key expression
-        let key = self.eval_in_env(key_expr, env)?;
+        let key = self.eval_preserving_stack(key_expr, env)?;
         
         // Check each clause
         let mut current = clauses;
@@ -3461,7 +3490,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.lisp.car(step_rest)?
                     };
                     
-                    let init_val = self.eval_in_env(init, env)?;
+                    let init_val = self.eval_preserving_stack(init, env)?;
                     loop_env = self.env_extend(loop_env, var, init_val)?;
                     
                     if var_count >= 16 {
@@ -3481,7 +3510,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             // Evaluate test
             let test = self.lisp.car(test_clause)?;
-            let test_result = self.eval_in_env(test, loop_env)?;
+            let test_result = self.eval_preserving_stack(test, loop_env)?;
             
             if !self.is_false(test_result)? {
                 // Test passed - evaluate result expressions
@@ -3499,7 +3528,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(body_cur)? {
                     Value::Nil => break,
                     Value::Cons { car: expr, cdr: rest } => {
-                        self.eval_in_env(expr, loop_env)?;
+                        self.eval_preserving_stack(expr, loop_env)?;
                         body_cur = rest;
                     }
                     _ => break,
@@ -3509,7 +3538,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Evaluate step expressions and update variables
             let mut new_vals: [ArenaIndex; 16] = [ArenaIndex::NULL; 16];
             for i in 0..var_count {
-                new_vals[i] = self.eval_in_env(var_info[i].1, loop_env)?;
+                new_vals[i] = self.eval_preserving_stack(var_info[i].1, loop_env)?;
             }
             
             // Update environment with new values
@@ -3531,7 +3560,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.symbol_matches(car, "unquote").unwrap_or(false) {
                     if depth == 1 {
                         // Evaluate the unquoted expression
-                        return self.eval_in_env(self.lisp.car(cdr)?, env);
+                        return self.eval_preserving_stack(self.lisp.car(cdr)?, env);
                     } else {
                         // Nested quasiquote - decrease depth
                         let unquote_sym = self.lisp.symbol("unquote")?;
@@ -3546,7 +3575,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false) {
                     if depth == 1 {
                         // Return the evaluated list (caller handles splicing)
-                        return self.eval_in_env(self.lisp.car(cdr)?, env);
+                        return self.eval_preserving_stack(self.lisp.car(cdr)?, env);
                     }
                 }
                 
@@ -3563,7 +3592,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if let Value::Cons { car: inner_car, cdr: inner_cdr } = self.lisp.get(car)? {
                     if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
                         // Splice the result into the list
-                        let splice_val = self.eval_in_env(self.lisp.car(inner_cdr)?, env)?;
+                        let splice_val = self.eval_preserving_stack(self.lisp.car(inner_cdr)?, env)?;
                         let rest = self.eval_quasiquote_impl(cdr, env, depth)?;
                         return self.append_lists(splice_val, rest);
                     }
@@ -3599,8 +3628,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
         // Evaluate function and arguments list
-        let func = self.eval_in_env(func_expr, env)?;
-        let args_list = self.eval_in_env(args_list_expr, env)?;
+        let func = self.eval_preserving_stack(func_expr, env)?;
+        let args_list = self.eval_preserving_stack(args_list_expr, env)?;
         
         // Evaluate the application using the args list directly (already evaluated)
         let call_expr = self.lisp.cons(func, args_list)?;
@@ -3626,7 +3655,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         return Err(self.make_error(ErrorKind::StackOverflow, args)
                             .with_message("values: too many values (max 16)"));
                     }
-                    vals[count] = self.eval_in_env(car, env)?;
+                    vals[count] = self.eval_preserving_stack(car, env)?;
                     count += 1;
                     current = cdr;
                 }
@@ -3657,7 +3686,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Value::Cons { car: binding, cdr: rest } => {
                     let name = self.lisp.car(binding)?;
                     let value_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-                    let value = self.eval_in_env(value_expr, env)?; // Use original env
+                    let value = self.eval_preserving_stack(value_expr, env)?; // Use original env
                     new_env = self.env_extend(new_env, name, value)?;
                     current = rest;
                 }
@@ -3692,7 +3721,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Value::Cons { car: binding, cdr: rest } => {
                     let name = self.lisp.car(binding)?;
                     let value_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-                    let value = self.eval_in_env(value_expr, new_env)?; // Use NEW env
+                    let value = self.eval_preserving_stack(value_expr, new_env)?; // Use NEW env
                     new_env = self.env_extend(new_env, name, value)?;
                     current = rest;
                 }
@@ -3755,7 +3784,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Step 2: Evaluate all init expressions in the new environment (where all names are visible)
         // Then set! each variable to its computed value
         for i in 0..count {
-            let value = self.eval_in_env(init_exprs[i], new_env)?;
+            let value = self.eval_preserving_stack(init_exprs[i], new_env)?;
             self.env_set(new_env, names[i], value)?;
         }
         
@@ -3812,7 +3841,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Step 2: Evaluate and assign SEQUENTIALLY (this is the difference from letrec)
         for i in 0..count {
-            let value = self.eval_in_env(init_exprs[i], new_env)?;
+            let value = self.eval_preserving_stack(init_exprs[i], new_env)?;
             self.env_set(new_env, names[i], value)?;
         }
         
@@ -3852,7 +3881,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // (define name value)
             Value::Symbol { .. } => {
                 let value_expr = self.lisp.car(rest)?;
-                let value = self.eval_in_env(value_expr, env)?;
+                let value = self.eval_preserving_stack(value_expr, env)?;
                 self.define(first, value)
             }
             // (define (name params...) body...) -> (define name (lambda (params...) body...))
@@ -3879,7 +3908,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(name)? {
             Value::Symbol { .. } => {
                 // Evaluate the value expression
-                let value = self.eval_in_env(value_expr, env)?;
+                let value = self.eval_preserving_stack(value_expr, env)?;
                 // Find and mutate the binding
                 self.env_set(env, name, value)
             }
@@ -3914,7 +3943,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         return Err(self.make_error(ErrorKind::StackOverflow, list));
                     }
                     // Evaluate the expression
-                    let evaled = self.eval_in_env(car, env)?;
+                    let evaled = self.eval_preserving_stack(car, env)?;
                     evaluated[count] = evaled;
                     count += 1;
                     current = cdr;
