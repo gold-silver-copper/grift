@@ -476,22 +476,65 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Look up bytes directly in the intern table without allocating a string first.
+    /// 
+    /// This is an optimization for `symbol_from_bytes` - on cache hits, we avoid
+    /// allocating a string entirely by comparing the bytes directly against
+    /// the interned strings.
+    /// 
+    /// Returns Some(symbol_index) if found, None otherwise
+    fn intern_table_lookup_bytes(&self, bytes: &[u8]) -> ArenaResult<Option<ArenaIndex>> {
+        let mut current = self.get_intern_table_root()?;
+        
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons(_) => {
+                    // car is (string_index . symbol_index)
+                    let car = self.car(current)?;
+                    let cdr = self.cdr(current)?;
+                    if let Value::Cons(_) = self.get(car)? {
+                        let entry_string = self.car(car)?;
+                        let entry_symbol = self.cdr(car)?;
+                        // Compare bytes directly without allocating
+                        if self.string_matches_bytes(entry_string, bytes)? {
+                            return Ok(Some(entry_symbol));
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Err(ArenaError::InvalidIndex),
+            }
+        }
+    }
+    
     /// Create or retrieve an interned symbol from a string slice
     /// 
     /// The symbol's `chars` field points to a Value::String with the symbol name.
     /// 
     /// Symbol interning ensures the same symbol name always returns the same index.
     /// 
-    /// This provides ~44% memory savings compared to linked list representation.
+    /// This method is optimized to avoid allocation on cache hits by comparing
+    /// the input string directly against interned symbols before allocating.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        // Create string for the symbol name
+        // Fast path: check intern table by comparing bytes directly
+        // This avoids allocation entirely on cache hits
+        // Only works for ASCII symbols (which is typical for Lisp)
+        if name.is_ascii() {
+            if let Some(existing_symbol) = self.intern_table_lookup_bytes(name.as_bytes())? {
+                return Ok(existing_symbol);
+            }
+        }
+        
+        // Cache miss - need to create a new symbol
         let name_str = self.string(name)?;
         
-        // Check intern table
-        if let Some(existing_symbol) = self.intern_table_lookup(name_str)? {
-            // Free the string we just created since we're using the interned one
-            self.string_free(name_str)?;
-            return Ok(existing_symbol);
+        // Double-check for non-ASCII case (we may have skipped the fast path)
+        if !name.is_ascii() {
+            if let Some(existing_symbol) = self.intern_table_lookup(name_str)? {
+                self.string_free(name_str)?;
+                return Ok(existing_symbol);
+            }
         }
         
         // Not found - create new symbol
@@ -509,7 +552,17 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Create or retrieve an interned symbol from bytes (for parsing)
+    /// 
+    /// This method is optimized to avoid allocation on cache hits by comparing
+    /// the input bytes directly against interned strings before allocating.
     pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
+        // Fast path: check intern table by comparing bytes directly
+        // This avoids allocation entirely on cache hits
+        if let Some(existing_symbol) = self.intern_table_lookup_bytes(bytes)? {
+            return Ok(existing_symbol);
+        }
+        
+        // Cache miss - need to create a new symbol
         let char_count = bytes.len();
         
         // Create a Value::String for the symbol name
@@ -533,14 +586,7 @@ impl<const N: usize> Lisp<N> {
             self.alloc(Value::String(data))?
         };
         
-        // Check intern table
-        if let Some(existing_symbol) = self.intern_table_lookup(name_str)? {
-            // Free the string we just created since we're using the interned one
-            self.string_free(name_str)?;
-            return Ok(existing_symbol);
-        }
-        
-        // Not found - create new symbol
+        // Create new symbol
         let symbol = self.alloc(Value::Symbol(name_str))?;
         
         // Add to intern table: (name_str . symbol)
@@ -987,6 +1033,55 @@ impl<const N: usize> Lisp<N> {
         }
         
         Ok(true)
+    }
+    
+    /// Check if a string matches a byte slice directly.
+    /// 
+    /// This is an optimization for symbol interning - allows comparing
+    /// an interned string against input bytes without allocating a new string.
+    /// Assumes the bytes are ASCII (valid for Lisp symbols).
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the string index is invalid.
+    #[inline]
+    pub fn string_matches_bytes(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
+        match self.arena.get(str_idx)? {
+            Value::String(data) => {
+                // Handle empty string case
+                if data.is_nil() {
+                    return Ok(bytes.is_empty());
+                }
+                
+                // Get length from arena
+                let len = match self.arena.get(data)? {
+                    Value::Number(len) => len as usize,
+                    _ => return Err(ArenaError::InvalidIndex),
+                };
+                
+                // Quick length check
+                if len != bytes.len() {
+                    return Ok(false);
+                }
+                
+                // Compare each character
+                let base_idx = data.raw();
+                for (i, &byte) in bytes.iter().enumerate() {
+                    let char_slot = ArenaIndex::new(base_idx + 1 + i);
+                    match self.arena.get(char_slot)? {
+                        Value::Char(c) => {
+                            if c as u8 != byte {
+                                return Ok(false);
+                            }
+                        }
+                        _ => return Err(ArenaError::InvalidIndex),
+                    }
+                }
+                
+                Ok(true)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
     }
     
     /// Copy a string's contents to a byte buffer.
