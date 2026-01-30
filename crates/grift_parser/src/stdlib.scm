@@ -756,3 +756,217 @@
 ;;; (average lst) - Average of a list of numbers
 (define (average lst)
   (/ (sum lst) (length lst)))
+
+;;; ============================================================
+;;; Complex Numbers (R7RS Section 6.2.6)
+;;; Complex numbers are represented as tagged lists: (complex real imag)
+;;; ============================================================
+
+;;; (make-rectangular x1 x2) - Create complex from real and imaginary parts
+(define (make-rectangular x1 x2)
+  (list 'complex x1 x2))
+
+;;; (make-polar r theta) - Create complex from magnitude and angle
+(define (make-polar r theta)
+  (let ((c (cos theta))
+        (s (sin theta)))
+    (make-rectangular (* r c) (* r s))))
+
+;;; (complex-number? z) - Check if z is a complex number representation
+(define (complex-number? z)
+  (and (pair? z) 
+       (eq? (car z) 'complex)
+       (pair? (cdr z))
+       (pair? (cdr (cdr z)))))
+
+;;; (real-part z) - Get real part of complex number
+(define (real-part z)
+  (if (complex-number? z)
+      (car (cdr z))
+      (if (number? z) z (error "real-part: not a number"))))
+
+;;; (imag-part z) - Get imaginary part of complex number
+(define (imag-part z)
+  (if (complex-number? z)
+      (car (cdr (cdr z)))
+      (if (number? z) 0 (error "imag-part: not a number"))))
+
+;;; (magnitude z) - Get magnitude (absolute value) of complex number
+(define (magnitude z)
+  (if (complex-number? z)
+      (let ((re (real-part z))
+            (im (imag-part z)))
+        (sqrt (+ (* re re) (* im im))))
+      (if (number? z) (abs z) (error "magnitude: not a number"))))
+
+;;; (angle z) - Get angle (phase) of complex number
+(define (angle z)
+  (if (complex-number? z)
+      (atan2 (imag-part z) (real-part z))
+      (if (number? z)
+          (if (< z 0) (get-pi) 0)
+          (error "angle: not a number"))))
+
+;;; (complex-add z1 z2) - Add two complex numbers
+(define (complex-add z1 z2)
+  (make-rectangular (+ (real-part z1) (real-part z2))
+                    (+ (imag-part z1) (imag-part z2))))
+
+;;; (complex-sub z1 z2) - Subtract two complex numbers
+(define (complex-sub z1 z2)
+  (make-rectangular (- (real-part z1) (real-part z2))
+                    (- (imag-part z1) (imag-part z2))))
+
+;;; (complex-mul z1 z2) - Multiply two complex numbers
+(define (complex-mul z1 z2)
+  (let ((a (real-part z1))
+        (b (imag-part z1))
+        (c (real-part z2))
+        (d (imag-part z2)))
+    (make-rectangular (- (* a c) (* b d))
+                      (+ (* a d) (* b c)))))
+
+;;; (complex-div z1 z2) - Divide two complex numbers
+(define (complex-div z1 z2)
+  (let ((a (real-part z1))
+        (b (imag-part z1))
+        (c (real-part z2))
+        (d (imag-part z2))
+        (denom (+ (* c c) (* d d))))
+    (if (= denom 0)
+        (error "complex-div: division by zero")
+        (make-rectangular (/ (+ (* a c) (* b d)) denom)
+                          (/ (- (* b c) (* a d)) denom)))))
+
+;;; (complex-conjugate z) - Complex conjugate
+(define (complex-conjugate z)
+  (make-rectangular (real-part z) (- (imag-part z))))
+
+;;; (complex-exp z) - Complex exponential e^z
+(define (complex-exp z)
+  (let ((a (real-part z))
+        (b (imag-part z)))
+    (make-polar (exp a) b)))
+
+;;; (complex-log z) - Complex natural logarithm
+(define (complex-log z)
+  (make-rectangular (log (magnitude z)) (angle z)))
+
+;;; (complex-sqrt z) - Complex square root
+(define (complex-sqrt z)
+  (let ((r (magnitude z))
+        (theta (angle z)))
+    (make-polar (sqrt r) (/ theta 2))))
+
+;;; ============================================================
+;;; Fractions/Rationals (R7RS Section 6.2.6)
+;;; Fractions are represented as tagged lists: (fraction numerator denominator)
+;;; Automatically simplified to lowest terms
+;;; ============================================================
+
+;;; (make-fraction n d) - Create a fraction, automatically simplified
+(define (make-fraction n d)
+  (if (= d 0)
+      (error "make-fraction: denominator cannot be zero")
+      (let ((g (gcd (abs n) (abs d)))
+            (sign (if (< d 0) -1 1)))
+        (list 'fraction (* sign (/ n g)) (abs (/ d g))))))
+
+;;; (fraction? x) - Check if x is a fraction representation
+(define (fraction? x)
+  (and (pair? x)
+       (eq? (car x) 'fraction)
+       (pair? (cdr x))
+       (pair? (cdr (cdr x)))))
+
+;;; (numerator q) - Get numerator of a rational number
+(define (numerator q)
+  (cond
+   ((fraction? q) (car (cdr q)))
+   ((integer? q) q)
+   ((number? q) (inexact->exact q))
+   (else (error "numerator: not a rational number"))))
+
+;;; (denominator q) - Get denominator of a rational number
+(define (denominator q)
+  (cond
+   ((fraction? q) (car (cdr (cdr q))))
+   ((integer? q) 1)
+   ((number? q) 1)
+   (else (error "denominator: not a rational number"))))
+
+;;; (fraction->number f) - Convert fraction to number (float if not exact)
+(define (fraction->number f)
+  (if (fraction? f)
+      (let ((n (numerator f))
+            (d (denominator f)))
+        (if (= (modulo n d) 0)
+            (/ n d)
+            (/ (exact->inexact n) d)))
+      f))
+
+;;; (fraction-add f1 f2) - Add two fractions
+(define (fraction-add f1 f2)
+  (let ((n1 (numerator f1))
+        (d1 (denominator f1))
+        (n2 (numerator f2))
+        (d2 (denominator f2)))
+    (make-fraction (+ (* n1 d2) (* n2 d1)) (* d1 d2))))
+
+;;; (fraction-sub f1 f2) - Subtract two fractions
+(define (fraction-sub f1 f2)
+  (let ((n1 (numerator f1))
+        (d1 (denominator f1))
+        (n2 (numerator f2))
+        (d2 (denominator f2)))
+    (make-fraction (- (* n1 d2) (* n2 d1)) (* d1 d2))))
+
+;;; (fraction-mul f1 f2) - Multiply two fractions
+(define (fraction-mul f1 f2)
+  (make-fraction (* (numerator f1) (numerator f2))
+                 (* (denominator f1) (denominator f2))))
+
+;;; (fraction-div f1 f2) - Divide two fractions
+(define (fraction-div f1 f2)
+  (let ((n2 (numerator f2)))
+    (if (= n2 0)
+        (error "fraction-div: division by zero")
+        (make-fraction (* (numerator f1) (denominator f2))
+                       (* (denominator f1) n2)))))
+
+;;; (fraction-eq? f1 f2) - Compare two fractions for equality
+(define (fraction-eq? f1 f2)
+  (and (= (numerator f1) (numerator f2))
+       (= (denominator f1) (denominator f2))))
+
+;;; (fraction-lt? f1 f2) - Compare f1 < f2
+(define (fraction-lt? f1 f2)
+  (< (* (numerator f1) (denominator f2))
+     (* (numerator f2) (denominator f1))))
+
+;;; (fraction-le? f1 f2) - Compare f1 <= f2
+(define (fraction-le? f1 f2)
+  (or (fraction-eq? f1 f2) (fraction-lt? f1 f2)))
+
+;;; (fraction-gt? f1 f2) - Compare f1 > f2
+(define (fraction-gt? f1 f2)
+  (fraction-lt? f2 f1))
+
+;;; (fraction-ge? f1 f2) - Compare f1 >= f2
+(define (fraction-ge? f1 f2)
+  (or (fraction-eq? f1 f2) (fraction-gt? f1 f2)))
+
+;;; (fraction-negate f) - Negate a fraction
+(define (fraction-negate f)
+  (make-fraction (- (numerator f)) (denominator f)))
+
+;;; (fraction-reciprocal f) - Reciprocal (1/f)
+(define (fraction-reciprocal f)
+  (let ((n (numerator f)))
+    (if (= n 0)
+        (error "fraction-reciprocal: cannot take reciprocal of zero")
+        (make-fraction (denominator f) n))))
+
+;;; (fraction-abs f) - Absolute value of a fraction
+(define (fraction-abs f)
+  (make-fraction (abs (numerator f)) (denominator f)))

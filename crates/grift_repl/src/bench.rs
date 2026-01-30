@@ -933,10 +933,101 @@ fn main() {
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 13.1: Complex Numbers and Fractions
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 13.1: Complex Numbers and Fractions");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    results.push(run_bench(
+        "Create complex number x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(make-rectangular 3 4)",
+        None,
+    ));
+
+    // Define complex for reuse
+    let _ = eval_str(&lisp, &mut eval, "(define z1 (make-rectangular 3 4))");
+    let _ = eval_str(&lisp, &mut eval, "(define z2 (make-rectangular 1 2))");
+
+    results.push(run_bench(
+        "Complex addition x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(complex-add z1 z2)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Complex multiplication x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(complex-mul z1 z2)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Complex magnitude x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(magnitude z1)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Create fraction x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(make-fraction 6 4)",
+        None,
+    ));
+
+    // Define fractions for reuse
+    let _ = eval_str(&lisp, &mut eval, "(define f1 (make-fraction 1 2))");
+    let _ = eval_str(&lisp, &mut eval, "(define f2 (make-fraction 1 3))");
+
+    results.push(run_bench(
+        "Fraction addition x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(fraction-add f1 f2)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Fraction multiplication x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(fraction-mul f1 f2)",
+        None,
+    ));
+
+    results.push(run_bench(
+        "Fraction comparison x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(fraction-lt? f1 f2)",
+        None,
+    ));
+
+    // Clean up before next section
+    eval.gc();
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
     // SECTION 14: Garbage Collection
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 6: Garbage Collection");
+    println!("Section 14: Garbage Collection");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // GC stress test: allocate lots, then collect
@@ -968,6 +1059,133 @@ fn main() {
         "       Stats: marked={}, collected={}, total_before={}",
         stats.marked, stats.collected, stats.total_before
     );
+    println!();
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 14.1: GC On vs Off Performance Comparison
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 14.1: GC On vs Off Performance Comparison");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+    println!("Testing interpreter speed with automatic GC enabled vs disabled.");
+    println!("Manual GC is triggered after each test run regardless of setting.");
+    println!();
+
+    // Test with GC enabled (normal operation)
+    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    let gc_on_start = Instant::now();
+    
+    for _ in 0..50 {
+        let _ = eval_str(&lisp, &mut eval, "(map (lambda (x) (* x x)) (range 1 21))");
+    }
+    let gc_on_time = gc_on_start.elapsed();
+    eval.gc();
+    
+    // Test with GC disabled (batch operations)
+    let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
+    let gc_off_start = Instant::now();
+    
+    for _ in 0..50 {
+        let _ = eval_str(&lisp, &mut eval, "(map (lambda (x) (* x x)) (range 1 21))");
+    }
+    let gc_off_time = gc_off_start.elapsed();
+    
+    // Re-enable and manually collect
+    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    eval.gc();
+
+    println!("[INFO] Map over 20 elements x 50 iterations:");
+    println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_time, gc_on_time.as_nanos() as f64 / 50.0 / 1000.0);
+    println!("       GC disabled: {:?} ({:.2}µs/iter)", gc_off_time, gc_off_time.as_nanos() as f64 / 50.0 / 1000.0);
+    
+    let speedup = if gc_off_time.as_nanos() > 0 {
+        gc_on_time.as_nanos() as f64 / gc_off_time.as_nanos() as f64
+    } else {
+        1.0
+    };
+    
+    if gc_off_time < gc_on_time {
+        println!("       Speedup with GC disabled: {:.2}x faster", speedup);
+    } else {
+        println!("       Note: GC overhead minimal in this test ({:.2}x)", speedup);
+    }
+    println!();
+
+    // Allocation-heavy test
+    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    let gc_on_alloc_start = Instant::now();
+    
+    for i in 0..100 {
+        let _ = eval_str(&lisp, &mut eval, &format!("(list {} {} {} {} {} {} {} {})", i, i+1, i+2, i+3, i+4, i+5, i+6, i+7));
+    }
+    let gc_on_alloc_time = gc_on_alloc_start.elapsed();
+    eval.gc();
+    
+    let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
+    let gc_off_alloc_start = Instant::now();
+    
+    for i in 0..100 {
+        let _ = eval_str(&lisp, &mut eval, &format!("(list {} {} {} {} {} {} {} {})", i, i+1, i+2, i+3, i+4, i+5, i+6, i+7));
+    }
+    let gc_off_alloc_time = gc_off_alloc_start.elapsed();
+    
+    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    eval.gc();
+
+    println!("[INFO] Allocation-heavy (8-element lists) x 100 iterations:");
+    println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_alloc_time, gc_on_alloc_time.as_nanos() as f64 / 100.0 / 1000.0);
+    println!("       GC disabled: {:?} ({:.2}µs/iter)", gc_off_alloc_time, gc_off_alloc_time.as_nanos() as f64 / 100.0 / 1000.0);
+    
+    let alloc_speedup = if gc_off_alloc_time.as_nanos() > 0 {
+        gc_on_alloc_time.as_nanos() as f64 / gc_off_alloc_time.as_nanos() as f64
+    } else {
+        1.0
+    };
+    
+    if gc_off_alloc_time < gc_on_alloc_time {
+        println!("       Speedup with GC disabled: {:.2}x faster", alloc_speedup);
+    } else {
+        println!("       Note: GC overhead minimal in this test ({:.2}x)", alloc_speedup);
+    }
+    println!();
+
+    // Recursive test  
+    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    let gc_on_rec_start = Instant::now();
+    
+    for _ in 0..20 {
+        let _ = eval_str(&lisp, &mut eval, "(fib 12)");
+    }
+    let gc_on_rec_time = gc_on_rec_start.elapsed();
+    eval.gc();
+    
+    let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
+    let gc_off_rec_start = Instant::now();
+    
+    for _ in 0..20 {
+        let _ = eval_str(&lisp, &mut eval, "(fib 12)");
+    }
+    let gc_off_rec_time = gc_off_rec_start.elapsed();
+    
+    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    eval.gc();
+
+    println!("[INFO] Fibonacci(12) x 20 iterations (recursive):");
+    println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_rec_time, gc_on_rec_time.as_nanos() as f64 / 20.0 / 1000.0);
+    println!("       GC disabled: {:?} ({:.2}µs/iter)", gc_off_rec_time, gc_off_rec_time.as_nanos() as f64 / 20.0 / 1000.0);
+    
+    let rec_speedup = if gc_off_rec_time.as_nanos() > 0 {
+        gc_on_rec_time.as_nanos() as f64 / gc_off_rec_time.as_nanos() as f64
+    } else {
+        1.0
+    };
+    
+    if gc_off_rec_time < gc_on_rec_time {
+        println!("       Speedup with GC disabled: {:.2}x faster", rec_speedup);
+    } else {
+        println!("       Note: GC overhead minimal in this test ({:.2}x)", rec_speedup);
+    }
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
