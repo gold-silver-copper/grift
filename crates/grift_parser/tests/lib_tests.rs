@@ -63,25 +63,26 @@ fn test_reserved_slots_occupy_first_slots() {
 #[test]
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
-    
-    // After creating the Lisp context, 6 slots should be used
-    // (nil, true, false, intern_table_data[2], intern_table_ref)
-    assert_eq!(lisp.arena().len(), 6);
-    
+
+    // After creating the Lisp context, 4 slots should be used
+    // (nil, true, false, intern_table_cons)
+    // With inline cons, the intern table only needs 1 slot instead of 3
+    assert_eq!(lisp.arena().len(), 4);
+
     // Calling nil/true_val/false_val should NOT increase allocation count
     // (they return pre-allocated slots)
     let _ = lisp.nil();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 6);
-    
+    assert_eq!(lisp.arena().len(), 4);
+
     // Calling many times should not increase count
     for _ in 0..100 {
         let _ = lisp.nil();
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 6);
+    assert_eq!(lisp.arena().len(), 4);
 }
 
 #[test]
@@ -125,15 +126,16 @@ fn test_reserved_slots_survive_gc() {
 #[test]
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
-    
-    // First regular allocation should be at slot 6 (after reserved 0-5)
-    // Slots: 0=nil, 1=true, 2=false, 3-4=intern_table_data, 5=intern_table_ref
+
+    // First regular allocation should be at slot 4 (after reserved 0-3)
+    // Slots: 0=nil, 1=true, 2=false, 3=intern_table_cons
+    // With inline cons, the intern table only needs 1 slot
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 6);
-    
+    assert_eq!(num.raw(), 4);
+
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 7);
+    assert_eq!(num2.raw(), 5);
 }
 
 // ========================================================================
@@ -380,18 +382,18 @@ fn test_string_to_bytes_skips_non_ascii() {
 #[test]
 fn test_string_free() {
     let lisp: Lisp<100> = Lisp::new();
-    
+
     let initial_allocated = lisp.stats().allocated;
-    
+
     let hello = lisp.string("hello").unwrap();
     let after_alloc = lisp.stats().allocated;
-    
-    // Should have allocated 7 slots (1 length header + 5 chars + 1 String value)
-    assert_eq!(after_alloc - initial_allocated, 7);
-    
+
+    // With inline length: 5 chars + 1 String value = 6 slots (no length header)
+    assert_eq!(after_alloc - initial_allocated, 6);
+
     lisp.string_free(hello).unwrap();
     let after_free = lisp.stats().allocated;
-    
+
     // Should be back to initial
     assert_eq!(after_free, initial_allocated);
 }
@@ -419,20 +421,20 @@ fn test_string_multiple() {
 #[test]
 fn test_string_memory_layout() {
     let lisp: Lisp<1000> = Lisp::new();
-    
+
     let hello = lisp.string("hello").unwrap();
-    
-    // String value should be Value::String(data)
-    // With layout: data[0] = Number(len), data[1..] = Char values
+
+    // String value should be Value::String { len, data }
+    // With inline layout: len is stored in the Value, data points directly to first char
     match lisp.get(hello).unwrap() {
-        Value::String(data) => {
-            // Check length is stored at data[0]
-            assert_eq!(lisp.arena().get(data).unwrap(), Value::Number(5));
-            
-            // Data slots should contain Char values starting at data+1
-            let idx0 = lisp.arena().index_at_offset(data, 1).unwrap();
-            let idx1 = lisp.arena().index_at_offset(data, 2).unwrap();
-            
+        Value::String { len, data } => {
+            // Check length is stored inline
+            assert_eq!(len, 5);
+
+            // Data slots should contain Char values starting at data (no length header)
+            let idx0 = lisp.arena().index_at_offset(data, 0).unwrap();
+            let idx1 = lisp.arena().index_at_offset(data, 1).unwrap();
+
             assert_eq!(lisp.get(idx0).unwrap(), Value::Char('h'));
             assert_eq!(lisp.get(idx1).unwrap(), Value::Char('e'));
         }
@@ -806,14 +808,14 @@ fn test_array_len_on_non_array() {
 fn test_array_free() {
     let lisp: Lisp<1000> = Lisp::new();
     let nil = lisp.nil().unwrap();
-    
+
     let initial = lisp.arena().len();
-    
+
     let arr = lisp.make_array(5, nil).unwrap();
     let after_alloc = lisp.arena().len();
-    
-    // Array should have allocated: 1 length header + 5 data slots + 1 Array value = 7 slots
-    assert_eq!(after_alloc - initial, 7);
+
+    // With inline length: 5 data slots + 1 Array value = 6 slots (no length header)
+    assert_eq!(after_alloc - initial, 6);
     
     lisp.array_free(arr).unwrap();
     let after_free = lisp.arena().len();
@@ -826,20 +828,20 @@ fn test_array_free() {
 fn test_array_memory_layout() {
     let lisp: Lisp<1000> = Lisp::new();
     let nil = lisp.nil().unwrap();
-    
+
     let initial = lisp.arena().len();
-    
+
     // Create array of 10 elements
-    let arr = lisp.make_array(10, nil).unwrap();
-    
-    // Should use: 1 length header + 10 data slots + 1 Array value = 12 slots
+    let _arr = lisp.make_array(10, nil).unwrap();
+
+    // With inline length: 10 data slots + 1 Array value = 11 slots (no length header)
     let after = lisp.arena().len();
-    assert_eq!(after - initial, 12);
+    assert_eq!(after - initial, 11);
 }
 
 #[test]
 fn test_array_type_name() {
-    let arr = Value::Array(ArenaIndex::NIL);
+    let arr = Value::Array { len: 0, data: ArenaIndex::NIL };
     assert_eq!(arr.type_name(), "array");
 }
 
@@ -849,7 +851,7 @@ fn test_array_type_name() {
 
 #[test]
 fn test_string_type_name() {
-    let s = Value::String(ArenaIndex::NIL);
+    let s = Value::String { len: 0, data: ArenaIndex::NIL };
     assert_eq!(s.type_name(), "string");
 }
 
@@ -871,34 +873,40 @@ fn test_string_is_string_predicate() {
 #[test]
 fn test_string_and_array_consistent_layout() {
     // This test verifies that strings and arrays have consistent memory layouts:
-    // Both use Value::Type { data } with data pointing to [Number(len), elements...]
+    // Both use Value::Type { len, data } with inline length and data pointing to elements
     let lisp: Lisp<1000> = Lisp::new();
     let nil = lisp.nil().unwrap();
-    
+
     let initial = lisp.arena().len();
-    
+
     // Create a string with 5 characters
     let s = lisp.string("hello").unwrap();
     let after_string = lisp.arena().len();
-    
-    // String should use: 1 length header + 5 chars + 1 String value = 7 slots
-    assert_eq!(after_string - initial, 7);
-    
+
+    // With inline length: 5 chars + 1 String value = 6 slots (no length header)
+    assert_eq!(after_string - initial, 6);
+
     // Create an array with 5 elements
     let arr = lisp.make_array(5, nil).unwrap();
     let after_array = lisp.arena().len();
-    
-    // Array should use: 1 length header + 5 elements + 1 Array value = 7 slots
-    assert_eq!(after_array - after_string, 7);
-    
+
+    // With inline length: 5 elements + 1 Array value = 6 slots (no length header)
+    assert_eq!(after_array - after_string, 6);
+
     // Verify consistent structure
     match lisp.get(s).unwrap() {
-        Value::String(_) => assert_eq!(lisp.string_len(s).unwrap(), 5),
+        Value::String { len, .. } => {
+            assert_eq!(len, 5);
+            assert_eq!(lisp.string_len(s).unwrap(), 5);
+        }
         _ => panic!("Expected String"),
     }
-    
+
     match lisp.get(arr).unwrap() {
-        Value::Array(_) => assert_eq!(lisp.array_len(arr).unwrap(), 5),
+        Value::Array { len, .. } => {
+            assert_eq!(len, 5);
+            assert_eq!(lisp.array_len(arr).unwrap(), 5);
+        }
         _ => panic!("Expected Array"),
     }
 }

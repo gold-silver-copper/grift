@@ -52,8 +52,9 @@ pub struct Lisp<const N: usize> {
 }
 
 /// Number of reserved slots in the arena:
-/// - nil (1), true (1), false (1), intern_table_data (2), intern_table_ref (1)
-pub const RESERVED_SLOTS: usize = 6;
+/// - nil (1), true (1), false (1), intern_table_cons (1)
+/// With inline cons, we no longer need separate data slots for the intern table
+pub const RESERVED_SLOTS: usize = 4;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
@@ -77,16 +78,10 @@ impl<const N: usize> Lisp<N> {
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate False slot during Lisp initialization");
         
-        // Pre-allocate intern table reference cell (slots 3-4 for cons data, slot 5 for cons)
-        // Cons cells use contiguous storage: [Ref(car), Ref(cdr)]
+        // Pre-allocate intern table reference cell
         // This is a cons cell where car = intern table root (initially nil)
-        let cons_data = arena.alloc_contiguous(2, Value::Nil)
-            .expect("Failed to pre-allocate intern table cons data during Lisp initialization");
-        arena.set(cons_data, Value::Ref(nil_slot))
-            .expect("Failed to set intern table car during Lisp initialization");
-        arena.set(ArenaIndex::new(cons_data.raw() + 1), Value::Ref(nil_slot))
-            .expect("Failed to set intern table cdr during Lisp initialization");
-        let intern_table_slot = arena.alloc(Value::Cons(cons_data))
+        // With inline cons, no separate data slots are needed
+        let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
             .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
         
         Lisp {
@@ -178,117 +173,104 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a cons cell
-    /// 
-    /// Creates a contiguous block of 2 slots: [Ref(car), Ref(cdr)]
+    ///
+    /// Creates a Value::Cons with inline car and cdr.
+    /// This is more memory-efficient than the old layout (no arena slots needed).
     #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Allocate 2 slots for [Ref(car), Ref(cdr)]
-        let data = self.arena.alloc_contiguous(2, Value::Nil)?;
-        // Single borrow to set both
-        self.arena.set_contiguous2(data, Value::Ref(car), Value::Ref(cdr))?;
-        self.alloc(Value::Cons(data))
+        self.alloc(Value::Cons { car, cdr })
     }
-    
+
     /// Get car of a cons cell
-    /// 
+    ///
     /// In Scheme R7RS, car of an empty list is an error.
+    /// With inline storage, this is O(1) without arena lookup.
     #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Fast path: direct arena access without NIL check (cons is never NIL)
         match self.arena.get(index)? {
-            Value::Cons(data) => {
-                // Direct read - we know layout is [Ref(car), Ref(cdr)]
-                self.arena.get(data)?.as_ref().ok_or(ArenaError::InvalidIndex)
-            }
+            Value::Cons { car, .. } => Ok(car),
             Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Get cdr of a cons cell
-    /// 
+    ///
     /// In Scheme R7RS, cdr of an empty list is an error.
+    /// With inline storage, this is O(1) without arena lookup.
     #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Fast path: direct arena access without NIL check (cons is never NIL)
         match self.arena.get(index)? {
-            Value::Cons(data) => {
-                // Direct read - we know layout is [Ref(car), Ref(cdr)]
-                self.arena.get(ArenaIndex::new(data.raw() + 1))?.as_ref().ok_or(ArenaError::InvalidIndex)
-            }
+            Value::Cons { cdr, .. } => Ok(cdr),
             Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Get both car and cdr of a cons cell in one operation
-    /// 
-    /// More efficient than calling car() and cdr() separately when both are needed.
+    ///
+    /// With inline storage, this is O(1) with a single arena lookup.
     #[inline]
     pub fn car_cdr(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
         match self.arena.get(index)? {
-            Value::Cons(data) => {
-                // Single borrow to read both - data layout is [Ref(car), Ref(cdr)]
-                let (vcar, vcdr) = self.arena.get_contiguous2(data)?;
-                match (vcar.as_ref(), vcdr.as_ref()) {
-                    (Some(car), Some(cdr)) => Ok((car, cdr)),
-                    _ => Err(ArenaError::InvalidIndex),
-                }
-            }
+            Value::Cons { car, cdr } => Ok((car, cdr)),
             Value::Nil => Err(ArenaError::InvalidIndex),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
-    /// Get car from a known Cons data pointer (internal use)
-    /// 
-    /// Caller must ensure `data` is a valid cons data pointer.
+
+    /// Get car from a known Cons (internal use - for pattern matching optimization)
+    ///
+    /// When caller has already matched Value::Cons { car, cdr }, they can use
+    /// car directly. This method is kept for API compatibility but with inline
+    /// cons, the caller should prefer direct field access after pattern matching.
     #[inline]
-    pub fn car_from_data(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(data)?.as_ref().ok_or(ArenaError::InvalidIndex)
+    #[deprecated(note = "With inline Cons, use car() or pattern match directly")]
+    pub fn car_from_data(&self, cons_index: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car(cons_index)
     }
-    
-    /// Get cdr from a known Cons data pointer (internal use)
-    /// 
-    /// Caller must ensure `data` is a valid cons data pointer.
+
+    /// Get cdr from a known Cons (internal use - for pattern matching optimization)
+    ///
+    /// When caller has already matched Value::Cons { car, cdr }, they can use
+    /// cdr directly. This method is kept for API compatibility but with inline
+    /// cons, the caller should prefer direct field access after pattern matching.
     #[inline]
-    pub fn cdr_from_data(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(ArenaIndex::new(data.raw() + 1))?.as_ref().ok_or(ArenaError::InvalidIndex)
+    #[deprecated(note = "With inline Cons, use cdr() or pattern match directly")]
+    pub fn cdr_from_data(&self, cons_index: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cdr(cons_index)
     }
-    
-    /// Get both car and cdr from a known Cons data pointer (internal use)
-    /// 
-    /// Caller must ensure `data` is a valid cons data pointer.
-    /// Uses single RefCell borrow for efficiency.
+
+    /// Get both car and cdr from a known Cons (internal use)
+    ///
+    /// When caller has already matched Value::Cons { car, cdr }, they can use
+    /// the fields directly. This method is kept for API compatibility.
     #[inline]
-    pub fn car_cdr_from_data(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
-        let (vcar, vcdr) = self.arena.get_contiguous2(data)?;
-        match (vcar.as_ref(), vcdr.as_ref()) {
-            (Some(car), Some(cdr)) => Ok((car, cdr)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
+    #[deprecated(note = "With inline Cons, use car_cdr() or pattern match directly")]
+    pub fn car_cdr_from_data(&self, cons_index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        self.car_cdr(cons_index)
     }
-    
+
     /// Set car of a cons cell (mutation operation)
     /// Returns the new value on success
     #[inline]
     pub fn set_car(&self, index: ArenaIndex, new_car: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
-            Value::Cons(data) => {
-                self.arena.set(data, Value::Ref(new_car))?;
+            Value::Cons { cdr, .. } => {
+                self.arena.set(index, Value::Cons { car: new_car, cdr })?;
                 Ok(new_car)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Set cdr of a cons cell (mutation operation)
     /// Returns the new value on success
     #[inline]
     pub fn set_cdr(&self, index: ArenaIndex, new_cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
-            Value::Cons(data) => {
-                self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Ref(new_cdr))?;
+            Value::Cons { car, .. } => {
+                self.arena.set(index, Value::Cons { car, cdr: new_cdr })?;
                 Ok(new_cdr)
             }
             _ => Err(ArenaError::InvalidIndex),
@@ -454,15 +436,15 @@ impl<const N: usize> Lisp<N> {
     /// Returns Some(symbol_index) if found, None otherwise
     fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
         let mut current = self.get_intern_table_root()?;
-        
+
         loop {
             match self.get(current)? {
                 Value::Nil => return Ok(None),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     // car is (string_index . symbol_index)
                     let car = self.car(current)?;
                     let cdr = self.cdr(current)?;
-                    if let Value::Cons(_) = self.get(car)? {
+                    if let Value::Cons { .. } = self.get(car)? {
                         let entry_string = self.car(car)?;
                         let entry_symbol = self.cdr(car)?;
                         if self.string_eq_contiguous(string_idx, entry_string)? {
@@ -475,25 +457,25 @@ impl<const N: usize> Lisp<N> {
             }
         }
     }
-    
+
     /// Look up bytes directly in the intern table without allocating a string first.
-    /// 
+    ///
     /// This is an optimization for `symbol_from_bytes` - on cache hits, we avoid
     /// allocating a string entirely by comparing the bytes directly against
     /// the interned strings.
-    /// 
+    ///
     /// Returns Some(symbol_index) if found, None otherwise
     fn intern_table_lookup_bytes(&self, bytes: &[u8]) -> ArenaResult<Option<ArenaIndex>> {
         let mut current = self.get_intern_table_root()?;
-        
+
         loop {
             match self.get(current)? {
                 Value::Nil => return Ok(None),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     // car is (string_index . symbol_index)
                     let car = self.car(current)?;
                     let cdr = self.cdr(current)?;
-                    if let Value::Cons(_) = self.get(car)? {
+                    if let Value::Cons { .. } = self.get(car)? {
                         let entry_string = self.car(car)?;
                         let entry_symbol = self.cdr(car)?;
                         // Compare bytes directly without allocating
@@ -552,7 +534,7 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Create or retrieve an interned symbol from bytes (for parsing)
-    /// 
+    ///
     /// This method is optimized to avoid allocation on cache hits by comparing
     /// the input bytes directly against interned strings before allocating.
     pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
@@ -561,42 +543,39 @@ impl<const N: usize> Lisp<N> {
         if let Some(existing_symbol) = self.intern_table_lookup_bytes(bytes)? {
             return Ok(existing_symbol);
         }
-        
+
         // Cache miss - need to create a new symbol
         let char_count = bytes.len();
-        
-        // Create a Value::String for the symbol name
+
+        // Create a Value::String for the symbol name (new inline format)
         let name_str = if char_count == 0 {
-            // Empty string - data is NULL
-            self.alloc(Value::String(ArenaIndex::NIL))?
+            // Empty string - len=0, data=NIL
+            self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
         } else {
-            // Allocate contiguous block: 1 slot for length + char_count slots for chars
-            let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
-            
-            // Store length at data[0]
-            self.arena.set(data, Value::Number(char_count as isize))?;
-            
-            // Set characters in slots (starting at data+1)
+            // Allocate contiguous block for characters only (no length header)
+            let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+
+            // Set characters in slots (starting directly at data)
             for (i, &b) in bytes.iter().enumerate() {
-                let char_idx = self.arena.index_at_offset(data, 1 + i)?;
+                let char_idx = self.arena.index_at_offset(data, i)?;
                 self.arena.set(char_idx, Value::Char(b as char))?;
             }
-            
-            // Create the String value
-            self.alloc(Value::String(data))?
+
+            // Create the String value with inline length
+            self.alloc(Value::String { len: char_count, data })?
         };
-        
+
         // Create new symbol
         let symbol = self.alloc(Value::Symbol(name_str))?;
-        
+
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
         let current_table = self.get_intern_table_root()?;
         let new_table = self.cons(binding, current_table)?;
-        
+
         // Update intern table root
         self.set_intern_table_root(new_table)?;
-        
+
         Ok(symbol)
     }
     
@@ -620,61 +599,58 @@ impl<const N: usize> Lisp<N> {
     /// Native functions are Rust functions registered with the evaluator.
     /// The `id` is the index in the NativeRegistry, and `name_hash` is
     /// a simple hash for verification.
-    /// 
-    /// Creates a contiguous block of 2 slots: [Usize(id), Usize(name_hash)]
+    ///
+    /// With inline storage, no arena slots are needed for native function metadata.
     #[inline]
     pub fn native(&self, id: usize, name_hash: usize) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(2, Value::Nil)?;
-        self.arena.set(data, Value::Usize(id))?;
-        self.arena.set(ArenaIndex::new(data.raw() + 1), Value::Usize(name_hash))?;
-        self.alloc(Value::Native(data))
+        self.alloc(Value::Native { id, name_hash })
     }
-    
+
     /// Get the id from a native function
+    ///
+    /// With inline storage, this is O(1) without additional arena lookup.
+    #[inline]
     pub fn native_id(&self, native_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.get(native_idx)? {
-            Value::Native(data) => {
-                match self.arena.get(data)? {
-                    Value::Usize(id) => Ok(id),
-                    _ => Err(ArenaError::InvalidIndex),
-                }
-            }
+            Value::Native { id, .. } => Ok(id),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Get the name_hash from a native function
+    ///
+    /// With inline storage, this is O(1) without additional arena lookup.
+    #[inline]
     pub fn native_name_hash(&self, native_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.get(native_idx)? {
-            Value::Native(data) => {
-                match self.arena.get(ArenaIndex::new(data.raw() + 1))? {
-                    Value::Usize(name_hash) => Ok(name_hash),
-                    _ => Err(ArenaError::InvalidIndex),
-                }
-            }
+            Value::Native { name_hash, .. } => Ok(name_hash),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
     
     /// Allocate a lambda
-    /// 
-    /// Stores lambda data as a linked structure in the arena: `(params . (body . env))`
+    ///
+    /// Stores params inline and body/env as a cons cell.
+    /// This saves 3 arena slots compared to the old 3-slot contiguous layout,
+    /// while still keeping the body and env together (they're always accessed together).
     pub fn lambda(&self, params: ArenaIndex, body: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Store [params, body, env] contiguously (3 slots vs 6 for cons-list)
-        let data = self.pack_refs3(params, body, env)?;
-        self.alloc(Value::Lambda(data))
+        // Create a cons cell for (body . env)
+        let body_env = self.cons(body, env)?;
+        self.alloc(Value::Lambda { params, body_env })
     }
-    
+
     /// Extract parts from a lambda: (params, body, env)
-    /// 
-    /// Lambda data is stored as `[params, body, env]` in contiguous Ref slots.
+    ///
+    /// Lambda params is inline, body/env are in a cons cell.
+    /// With this layout, params access is O(1) and body/env access requires
+    /// one additional lookup into the cons cell.
     #[inline]
     pub fn lambda_parts(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let val = self.get(index)?;
-        match val {
-            Value::Lambda(data) => {
-                // data = [Ref(params), Ref(body), Ref(env)]
-                self.unpack_refs3(data)
+        match self.get(index)? {
+            Value::Lambda { params, body_env } => {
+                // body_env is a cons cell (body . env)
+                let (body, env) = self.car_cdr(body_env)?;
+                Ok((params, body, env))
             }
             _ => Err(ArenaError::InvalidIndex),
         }
@@ -698,9 +674,9 @@ impl<const N: usize> Lisp<N> {
         loop {
             match self.get(list)? {
                 Value::Nil => return Ok(len),
-                Value::Cons(_) => {
+                Value::Cons { cdr, .. } => {
                     len += 1;
-                    list = self.cdr(list)?;
+                    list = cdr;
                 }
                 _ => return Err(ArenaError::InvalidIndex),
             }
@@ -848,132 +824,113 @@ impl<const N: usize> Lisp<N> {
     // ========================================================================
     
     /// Allocate a string as contiguous Char values.
-    /// 
-    /// Returns a Value::String with data pointing to a contiguous block where:
-    /// - data[0] contains Value::Number(len)
-    /// - data[1..len+1] contains the characters
-    /// Empty strings have data == NULL.
-    /// 
+    ///
+    /// Returns a Value::String with length inline and data pointing directly
+    /// to the first character (no length header in arena).
+    /// Empty strings have len=0 and data=NIL.
+    ///
     /// # Memory Usage
-    /// 
-    /// Allocates 1 + s.chars().count() slots (length header + characters),
+    ///
+    /// Allocates s.chars().count() slots for characters,
     /// plus 1 slot for the String value itself.
-    /// 
+    /// This saves 1 slot compared to the old layout (no length header).
+    ///
     /// # Errors
-    /// 
-    /// Returns `ArenaError::OutOfMemory` if:
-    /// - No contiguous block is available
-    /// 
+    ///
+    /// Returns `ArenaError::OutOfMemory` if no contiguous block is available.
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use grift_parser::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let hello = lisp.string("hello").unwrap();
-    /// 
+    ///
     /// assert_eq!(lisp.string_len(hello).unwrap(), 5);
     /// assert_eq!(lisp.string_char_at(hello, 0).unwrap(), 'h');
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         let char_count = s.chars().count();
-        
+
         if char_count == 0 {
-            // Empty string - data is NULL
-            return self.alloc(Value::String(ArenaIndex::NIL));
+            // Empty string - len=0, data=NIL
+            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
         }
-        
-        // Allocate contiguous block: 1 slot for length + char_count slots for chars
-        let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
-        
-        // Store length at data[0]
-        self.arena.set(data, Value::Number(char_count as isize))?;
-        
-        // Set characters in slots (starting at data+1)
+
+        // Allocate contiguous block for characters only (no length header)
+        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+
+        // Set characters in slots (starting at data)
         for (i, c) in s.chars().enumerate() {
-            let char_idx = self.arena.index_at_offset(data, 1 + i)?;
+            let char_idx = self.arena.index_at_offset(data, i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
-        
-        // Create the String value pointing to the data
-        self.alloc(Value::String(data))
+
+        // Create the String value with inline length
+        self.alloc(Value::String { len: char_count, data })
     }
-    
+
     /// Allocate a string from a slice of chars.
-    /// 
+    ///
     /// Returns an ArenaIndex pointing to a Value::String.
     pub fn string_from_chars(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
         let char_count = chars.len();
-        
+
         if char_count == 0 {
-            // Empty string - data is NULL
-            return self.alloc(Value::String(ArenaIndex::NIL));
+            // Empty string - len=0, data=NIL
+            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
         }
-        
-        // Allocate contiguous block: 1 slot for length + char_count slots for chars
-        let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
-        
-        // Store length at data[0]
-        self.arena.set(data, Value::Number(char_count as isize))?;
-        
-        // Set characters in slots (starting at data+1)
+
+        // Allocate contiguous block for characters only (no length header)
+        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+
+        // Set characters in slots (starting at data)
         for (i, &c) in chars.iter().enumerate() {
-            let char_idx = self.arena.index_at_offset(data, 1 + i)?;
+            let char_idx = self.arena.index_at_offset(data, i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
-        
-        // Create the String value pointing to the data
-        self.alloc(Value::String(data))
+
+        // Create the String value with inline length
+        self.alloc(Value::String { len: char_count, data })
     }
-    
+
     /// Get the length of a string.
-    /// 
-    /// Returns O(1) since length is stored in the arena at data[0].
-    /// 
+    ///
+    /// Returns O(1) since length is stored inline in the Value.
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns `ArenaError::InvalidIndex` if the index doesn't point to
     /// a valid string.
+    #[inline]
     pub fn string_len(&self, str_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(str_idx)? {
-            Value::String(data) => {
-                if data.is_nil() {
-                    Ok(0)
-                } else {
-                    match self.arena.get(data)? {
-                        Value::Number(len) => Ok(len as usize),
-                        _ => Err(ArenaError::InvalidIndex),
-                    }
-                }
-            }
+            Value::String { len, .. } => Ok(len),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Get a character at the given index within a string.
-    /// 
+    ///
     /// Character indices are 0-based. Returns O(1) access.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns `ArenaError::InvalidIndex` if:
     /// - The string index is invalid
     /// - The character index is out of bounds
     /// - The slot doesn't contain a Char value
     pub fn string_char_at(&self, str_idx: ArenaIndex, char_index: usize) -> ArenaResult<char> {
         match self.arena.get(str_idx)? {
-            Value::String(data) => {
-                if data.is_nil() {
-                    return Err(ArenaError::InvalidIndex);
-                }
-                let len = match self.arena.get(data)? {
-                    Value::Number(len) => len as usize,
-                    _ => return Err(ArenaError::InvalidIndex),
-                };
+            Value::String { len, data } => {
                 if char_index >= len {
                     return Err(ArenaError::InvalidIndex);
                 }
-                // Characters start at data+1
-                let char_slot = self.arena.index_at_offset(data, 1 + char_index)?;
+                if data.is_nil() {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                // Characters start directly at data (no length header)
+                let char_slot = self.arena.index_at_offset(data, char_index)?;
                 match self.arena.get(char_slot)? {
                     Value::Char(c) => Ok(c),
                     _ => Err(ArenaError::InvalidIndex),
@@ -1036,38 +993,32 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Check if a string matches a byte slice directly.
-    /// 
+    ///
     /// This is an optimization for symbol interning - allows comparing
     /// an interned string against input bytes without allocating a new string.
     /// Assumes the bytes are ASCII (valid for Lisp symbols).
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the string index is invalid.
     #[inline]
     pub fn string_matches_bytes(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
         match self.arena.get(str_idx)? {
-            Value::String(data) => {
-                // Handle empty string case
-                if data.is_nil() {
-                    return Ok(bytes.is_empty());
-                }
-                
-                // Get length from arena
-                let len = match self.arena.get(data)? {
-                    Value::Number(len) => len as usize,
-                    _ => return Err(ArenaError::InvalidIndex),
-                };
-                
-                // Quick length check
+            Value::String { len, data } => {
+                // Quick length check (length is inline now)
                 if len != bytes.len() {
                     return Ok(false);
                 }
-                
-                // Compare each character
+
+                // Handle empty string case
+                if len == 0 {
+                    return Ok(bytes.is_empty());
+                }
+
+                // Compare each character (no length header, data starts at first char)
                 let base_idx = data.raw();
                 for (i, &byte) in bytes.iter().enumerate() {
-                    let char_slot = ArenaIndex::new(base_idx + 1 + i);
+                    let char_slot = ArenaIndex::new(base_idx + i);
                     match self.arena.get(char_slot)? {
                         Value::Char(c) => {
                             if c as u8 != byte {
@@ -1077,7 +1028,7 @@ impl<const N: usize> Lisp<N> {
                         _ => return Err(ArenaError::InvalidIndex),
                     }
                 }
-                
+
                 Ok(true)
             }
             _ => Err(ArenaError::InvalidIndex),
@@ -1119,21 +1070,16 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Free a string and all its character slots.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the string index is invalid.
     pub fn string_free(&self, str_idx: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(str_idx)? {
-            Value::String(data) => {
-                // Free the data slots (length header + characters)
-                if !data.is_nil() {
-                    let len = match self.arena.get(data)? {
-                        Value::Number(len) => len as usize,
-                        _ => return Err(ArenaError::InvalidIndex),
-                    };
-                    // Free 1 + len slots (length header + characters)
-                    self.arena.free_contiguous(data, 1 + len)?;
+            Value::String { len, data } => {
+                // Free the character slots (no length header with inline len)
+                if len > 0 && !data.is_nil() {
+                    self.arena.free_contiguous(data, len)?;
                 }
                 // Free the String value itself
                 self.arena.free(str_idx)
@@ -1145,154 +1091,132 @@ impl<const N: usize> Lisp<N> {
     // ========================================================================
     // Contiguous Array Storage
     // ========================================================================
-    // 
-    // Arrays are stored as Value::Array(data) pointing to a contiguous
-    // block in the arena with the following layout:
-    // [Number(len), elem1, elem2, ..., elemn]
-    // 
+    //
+    // Arrays are stored as Value::Array { len, data } with:
+    // - len: inline length (O(1) access without arena lookup)
+    // - data: points directly to the first element (no length header)
+    //
     // This provides:
     // - O(1) indexed access and mutation
-    // - O(1) length lookup (stored in the arena at data[0])
+    // - O(1) length lookup (inline in Value)
     // - Cache-friendly sequential access
-    // - Reduced Value enum size (no inline len field)
+    // - Saves 1 arena slot per array (no length header)
     // ========================================================================
-    
+
     /// Create an array with the given length, initialized with a default value.
-    /// 
-    /// The array stores `len` values contiguously in the arena with a length header.
-    /// 
+    ///
+    /// The array stores `len` values contiguously in the arena.
+    /// Length is stored inline in the Value (no arena overhead).
+    ///
     /// # Memory Usage
-    /// 
-    /// Allocates 1 + len slots (length header + elements), plus 1 slot for the Array value itself.
-    /// 
+    ///
+    /// Allocates len slots for elements, plus 1 slot for the Array value itself.
+    /// This saves 1 slot compared to the old layout (no length header).
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use grift_parser::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let arr = lisp.make_array(3, lisp.nil().unwrap()).unwrap();
-    /// 
+    ///
     /// assert_eq!(lisp.array_len(arr).unwrap(), 3);
     /// ```
     pub fn make_array(&self, len: usize, default: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if len == 0 {
-            // Empty array - data is NULL
-            return self.alloc(Value::Array(ArenaIndex::NIL));
+            // Empty array - len=0, data=NIL
+            return self.alloc(Value::Array { len: 0, data: ArenaIndex::NIL });
         }
-        
-        // Allocate contiguous block: 1 slot for length + len slots for elements
+
+        // Allocate contiguous block for elements only (no length header)
         let default_val = self.get(default)?;
-        let data = self.arena.alloc_contiguous(1 + len, default_val)?;
-        
-        // Store length at data[0]
-        self.arena.set(data, Value::Number(len as isize))?;
-        
-        // Elements are already initialized with default_val at data+1 through data+len
+        let data = self.arena.alloc_contiguous(len, default_val)?;
+
+        // Elements are already initialized with default_val
         // (alloc_contiguous initializes all slots with the provided value)
-        
-        // Create the Array value pointing to the data
-        self.alloc(Value::Array(data))
+
+        // Create the Array value with inline length
+        self.alloc(Value::Array { len, data })
     }
-    
+
     /// Get the length of an array.
-    /// 
-    /// Returns O(1) since length is stored in the arena at data[0].
-    /// 
+    ///
+    /// Returns O(1) since length is stored inline in the Value.
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns `ArenaError::InvalidIndex` if the index doesn't point to an array.
+    #[inline]
     pub fn array_len(&self, arr_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(arr_idx)? {
-            Value::Array(data) => {
-                if data.is_nil() {
-                    Ok(0)
-                } else {
-                    match self.arena.get(data)? {
-                        Value::Number(len) => Ok(len as usize),
-                        _ => Err(ArenaError::InvalidIndex),
-                    }
-                }
-            }
+            Value::Array { len, .. } => Ok(len),
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Get the element at the given index within an array.
-    /// 
+    ///
     /// Returns O(1) access via direct index calculation.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns `ArenaError::InvalidIndex` if:
     /// - The array index is invalid
     /// - The element index is out of bounds
     pub fn array_get(&self, arr_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
         match self.arena.get(arr_idx)? {
-            Value::Array(data) => {
-                if data.is_nil() {
-                    return Err(ArenaError::InvalidIndex);
-                }
-                let len = match self.arena.get(data)? {
-                    Value::Number(len) => len as usize,
-                    _ => return Err(ArenaError::InvalidIndex),
-                };
+            Value::Array { len, data } => {
                 if index >= len {
                     return Err(ArenaError::InvalidIndex);
                 }
-                // Elements start at data+1
-                self.arena.index_at_offset(data, 1 + index)
+                if data.is_nil() {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                // Elements start directly at data (no length header)
+                self.arena.index_at_offset(data, index)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Set the element at the given index within an array.
-    /// 
+    ///
     /// Returns O(1) mutation via direct index calculation.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns `ArenaError::InvalidIndex` if:
     /// - The array index is invalid
     /// - The element index is out of bounds
     pub fn array_set(&self, arr_idx: ArenaIndex, index: usize, value: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
-            Value::Array(data) => {
-                if data.is_nil() {
-                    return Err(ArenaError::InvalidIndex);
-                }
-                let len = match self.arena.get(data)? {
-                    Value::Number(len) => len as usize,
-                    _ => return Err(ArenaError::InvalidIndex),
-                };
+            Value::Array { len, data } => {
                 if index >= len {
                     return Err(ArenaError::InvalidIndex);
                 }
-                // Elements start at data+1
-                let elem_slot = self.arena.index_at_offset(data, 1 + index)?;
+                if data.is_nil() {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                // Elements start directly at data (no length header)
+                let elem_slot = self.arena.index_at_offset(data, index)?;
                 let val = self.get(value)?;
                 self.arena.set(elem_slot, val)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
     }
-    
+
     /// Free an array and all its element slots.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the array index is invalid.
     pub fn array_free(&self, arr_idx: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
-            Value::Array(data) => {
-                // Free the data slots (length header + elements)
-                if !data.is_nil() {
-                    let len = match self.arena.get(data)? {
-                        Value::Number(len) => len as usize,
-                        _ => return Err(ArenaError::InvalidIndex),
-                    };
-                    // Free 1 + len slots (length header + elements)
-                    self.arena.free_contiguous(data, 1 + len)?;
+            Value::Array { len, data } => {
+                // Free the element slots (no length header with inline len)
+                if len > 0 && !data.is_nil() {
+                    self.arena.free_contiguous(data, len)?;
                 }
                 // Free the Array value itself
                 self.arena.free(arr_idx)

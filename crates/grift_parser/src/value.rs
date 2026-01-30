@@ -425,76 +425,83 @@ macro_rules! define_stdlib {
 grift_macros::include_stdlib!("src/stdlib.scm");
 
 /// A Lisp value
+///
+/// # Memory Optimization
+///
+/// This enum inlines fixed-size data directly into variants to reduce
+/// arena indirection and improve cache locality:
+/// - Cons: car/cdr inlined (saves 2 arena slots per cons)
+/// - Lambda: params/body_env inlined (saves 3 slots per lambda)
+/// - Native: id/name_hash inlined (saves 2 slots per native)
+/// - String/Array: len/data inlined (saves 1 slot each, O(1) length)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// The empty list (NOT false - use False for that)
     Nil,
-    
+
     /// Boolean true (#t)
     True,
-    
+
     /// Boolean false (#f) - the ONLY false value
     False,
-    
+
     /// Integer number
     Number(isize),
-    
+
     /// Single character (used in strings and symbol storage)
     Char(char),
-    
-    /// Cons cell (pair)
-    /// 
-    /// Points to a contiguous block of 2 slots in the arena:
-    /// - Slot 0: `Ref(car)` - the first element
-    /// - Slot 1: `Ref(cdr)` - the rest of the list
-    /// 
+
+    /// Cons cell (pair) - inline car and cdr
+    ///
+    /// Stores both car and cdr directly in the enum variant.
+    /// This saves 2 arena slots per cons cell and enables O(1)
+    /// car/cdr access without arena lookup.
+    ///
     /// Use `Lisp::cons()`, `Lisp::car()`, `Lisp::cdr()` to create and access.
-    Cons(ArenaIndex),
-    
+    Cons { car: ArenaIndex, cdr: ArenaIndex },
+
     /// Symbol (contains a contiguous string)
     /// Points to a Value::String which contains the symbol name.
     /// The length is obtained from the String value, providing a single source of truth.
     Symbol(ArenaIndex),
-    
-    /// Lambda / closure (memory-optimized)
-    /// 
-    /// Lambda data is stored as contiguous Ref slots in the arena: `[params, body, env]`
+
+    /// Lambda / closure - inline params and body_env
+    ///
+    /// Stores params directly and body_env as a cons cell of (body . env).
+    /// This saves 3 arena slots per lambda compared to indirect storage.
     /// - `params`: List of parameter symbols
-    /// - `body`: Expression to evaluate  
-    /// - `env`: Captured environment (alist)
-    /// 
+    /// - `body_env`: ArenaIndex to a cons cell containing (body . env)
+    ///
     /// Use `Lisp::lambda()` to create and `Lisp::lambda_parts()` to extract.
-    Lambda(ArenaIndex),
-    
+    Lambda { params: ArenaIndex, body_env: ArenaIndex },
+
     /// Built-in function (optimized)
     Builtin(Builtin),
-    
+
     /// Standard library function (stored in static memory)
-    /// 
+    ///
     /// Unlike Lambda which stores code in the arena, StdLib references static
     /// function definitions. The function body is parsed on each call.
-    /// 
+    ///
     /// # Memory Efficiency
-    /// 
+    ///
     /// - Function definitions are in static memory (const strings)
     /// - No arena allocation for the function definition itself
     /// - Parsed AST is temporary and GC'd after evaluation
     StdLib(StdLib),
-    
-    /// Vector/Array (contiguous storage of values in the arena)
-    /// 
-    /// Vectors store values contiguously in the arena, similar to how symbols
-    /// store characters. This provides O(1) indexed access and mutation.
-    /// Used internally for R7RS vector operations (Section 6.8).
-    /// 
-    /// # Memory Layout
-    /// 
-    /// Points to a `Value::Number(len)` header followed by elements.
-    /// Elements are stored at data+1, data+2, ..., data+len.
-    /// Empty arrays have data == NULL (len=0).
-    /// 
+
+    /// Vector/Array - inline length and data pointer
+    ///
+    /// Stores length directly in the enum, with data pointing to
+    /// the first element (no length header in arena). This provides:
+    /// - O(1) length lookup without arena access
+    /// - O(1) indexed access via direct calculation
+    /// - Saves 1 arena slot per array (no length header)
+    ///
+    /// Empty arrays have len=0 and data=NIL.
+    ///
     /// # Example
-    /// 
+    ///
     /// ```lisp
     /// (define vec (make-vector 3 0))  ; Create vector of 3 zeros
     /// (vector-set! vec 1 42)          ; Set index 1 to 42
@@ -502,58 +509,55 @@ pub enum Value {
     /// (vector-length vec)             ; => 3
     /// #(1 2 3)                        ; Vector literal syntax
     /// ```
-    Array(ArenaIndex),
-    
-    /// String (contiguous storage of Char values in the arena)
-    /// 
-    /// Strings store characters contiguously in the arena, similar to vectors.
-    /// This provides O(1) indexed access and O(1) length lookup.
-    /// 
-    /// # Memory Layout
-    /// 
-    /// Points to a `Value::Number(len)` header followed by characters.
-    /// Characters are stored at data+1, data+2, ..., data+len.
-    /// Empty strings have data == NULL (len=0).
-    /// 
+    Array { len: usize, data: ArenaIndex },
+
+    /// String - inline length and data pointer
+    ///
+    /// Stores length directly in the enum, with data pointing to
+    /// the first character (no length header in arena). This provides:
+    /// - O(1) length lookup without arena access
+    /// - O(1) indexed access via direct calculation
+    /// - Saves 1 arena slot per string (no length header)
+    ///
+    /// Empty strings have len=0 and data=NIL.
+    ///
     /// # Example
-    /// 
+    ///
     /// ```lisp
     /// (string-length "hello")   ; => 5
     /// (string-ref "hello" 0)    ; => #\h
     /// ```
-    String(ArenaIndex),
-    
-    /// Native function (Rust function callable from Lisp)
+    String { len: usize, data: ArenaIndex },
+
+    /// Native function - inline id and name_hash
     ///
-    /// Native functions are registered at runtime and identified by their ID.
-    /// The actual function pointer is stored in the evaluator's NativeRegistry.
-    ///
-    /// Points to a contiguous block of 2 slots in the arena:
-    /// - Slot 0: `Usize(id)` - index into the NativeRegistry's entries array
-    /// - Slot 1: `Usize(name_hash)` - hash of the function name for quick comparison
-    Native(ArenaIndex),
-    
+    /// Stores id and name_hash directly in the enum variant.
+    /// This saves 2 arena slots per native function and enables
+    /// O(1) access to function metadata.
+    /// - `id`: index into the NativeRegistry's entries array
+    /// - `name_hash`: hash of the function name for quick comparison
+    Native { id: usize, name_hash: usize },
+
     /// Raw arena index reference
-    /// 
-    /// Used internally for storing arena indices in contiguous blocks.
-    /// This allows other variants (like Cons) to store their references
-    /// in the arena rather than inline, enabling memory optimizations.
-    /// 
+    ///
+    /// Used internally for storing arena indices in contiguous blocks
+    /// (e.g., continuation data, pack_refs methods).
+    ///
     /// # Note
-    /// 
+    ///
     /// This is an internal implementation detail and should not be
     /// exposed to Lisp code directly. It's traced by the GC like any
     /// other reference.
     Ref(ArenaIndex),
-    
+
     /// Unsigned integer (internal use)
-    /// 
+    ///
     /// Used for storing unsigned values like array lengths, indices,
     /// or other internal counters that need the full positive range
     /// of a machine word.
-    /// 
+    ///
     /// # Note
-    /// 
+    ///
     /// This is primarily an internal implementation detail. For user-facing
     /// integers, prefer `Number(isize)` which supports negative values.
     Usize(usize),
@@ -588,7 +592,7 @@ impl Value {
     /// Check if this value is an atom (not a cons cell)
     #[inline]
     pub const fn is_atom(&self) -> bool {
-        !matches!(self, Value::Cons(_))
+        !matches!(self, Value::Cons { .. })
     }
     
     /// Check if this value is a number
@@ -632,13 +636,13 @@ impl Value {
     /// Check if this value is a cons cell (pair)
     #[inline]
     pub const fn is_cons(&self) -> bool {
-        matches!(self, Value::Cons(_))
+        matches!(self, Value::Cons { .. })
     }
     
     /// Check if this value is a lambda
     #[inline]
     pub const fn is_lambda(&self) -> bool {
-        matches!(self, Value::Lambda(_))
+        matches!(self, Value::Lambda { .. })
     }
     
     /// Check if this value is a builtin
@@ -656,25 +660,25 @@ impl Value {
     /// Check if this value is a native (Rust) function
     #[inline]
     pub const fn is_native(&self) -> bool {
-        matches!(self, Value::Native(_))
+        matches!(self, Value::Native { .. })
     }
-    
+
     /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda(_) | Value::Builtin(_) | Value::StdLib(_) | Value::Native(_))
+        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
     }
-    
+
     /// Check if this value is an array
     #[inline]
     pub const fn is_array(&self) -> bool {
-        matches!(self, Value::Array(_))
+        matches!(self, Value::Array { .. })
     }
-    
+
     /// Check if this value is a string
     #[inline]
     pub const fn is_string(&self) -> bool {
-        matches!(self, Value::String(_))
+        matches!(self, Value::String { .. })
     }
     
     /// Check if this value is a ref (internal arena index reference)
@@ -723,14 +727,14 @@ impl Value {
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
             Value::Char(_) => "char",
-            Value::Cons(_) => "pair",
+            Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
-            Value::Lambda(_) => "procedure",
+            Value::Lambda { .. } => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
-            Value::Native(_) => "native",
-            Value::Array(_) => "array",
-            Value::String(_) => "string",
+            Value::Native { .. } => "native",
+            Value::Array { .. } => "array",
+            Value::String { .. } => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
         }
@@ -738,89 +742,76 @@ impl Value {
 }
 
 /// Implement Trace for GC support
+///
+/// With inlined fields, tracing is simpler and more efficient:
+/// - Cons: trace car and cdr directly (inline ArenaIndex fields)
+/// - Lambda: trace params and body_env directly (inline ArenaIndex fields)
+/// - Native: no tracing needed (only contains usize values)
+/// - String/Array: length is inline, trace data elements directly
 impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
-            Value::Nil | Value::True | Value::False | 
+            // Self-contained values with no references
+            Value::Nil | Value::True | Value::False |
             Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) => {
                 // No references
             }
+
+            // Native: inlined id and name_hash, no arena references
+            Value::Native { .. } => {
+                // No references to trace (id and name_hash are just usize)
+            }
+
+            // Ref: single arena reference
             Value::Ref(idx) => {
-                // Trace the referenced value
                 tracer(*idx);
             }
-            Value::Cons(data) => {
-                // data points to [Ref(car), Ref(cdr)], trace both slots
-                tracer(*data);
-                tracer(ArenaIndex::new(data.raw() + 1));
+
+            // Cons: inline car and cdr - trace both directly
+            Value::Cons { car, cdr } => {
+                tracer(*car);
+                tracer(*cdr);
             }
-            Value::Native(data) => {
-                // data points to [Usize(id), Usize(name_hash)], trace both slots
-                tracer(*data);
-                tracer(ArenaIndex::new(data.raw() + 1));
+
+            // Symbol: points to a Value::String
+            Value::Symbol(str_idx) => {
+                tracer(*str_idx);
             }
-            Value::Symbol(chars) => {
-                // chars points to a Value::String, which handles its own tracing
-                tracer(*chars);
+
+            // Lambda: inline params and body_env - trace both directly
+            Value::Lambda { params, body_env } => {
+                tracer(*params);
+                tracer(*body_env);
             }
-            Value::Lambda(data) => {
-                // data points to contiguous [Ref(params), Ref(body), Ref(env)] - trace all 3 slots
-                tracer(*data);
-                tracer(ArenaIndex::new(data.raw() + 1));
-                tracer(ArenaIndex::new(data.raw() + 2));
+
+            // Array: length is inline, trace all element slots
+            // Elements are stored contiguously starting at data
+            Value::Array { len, data } => {
+                if *len > 0 && !data.is_nil() {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        tracer(ArenaIndex::new(base_idx + i));
+                    }
+                }
             }
-            Value::Array(data) | Value::String(data) => {
-                // For non-empty arrays/strings, we need arena access to read the length.
-                // The basic trace just marks the data pointer; trace_with_arena handles
-                // the full tracing with element traversal.
-                if !data.is_nil() {
-                    tracer(*data);
+
+            // String: length is inline, trace all character slots
+            // Characters are stored contiguously starting at data
+            Value::String { len, data } => {
+                if *len > 0 && !data.is_nil() {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        tracer(ArenaIndex::new(base_idx + i));
+                    }
                 }
             }
         }
     }
-    
-    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &pwn_arena::Arena<Value, N>, mut tracer: F) {
-        match self {
-            Value::Array(data) => {
-                // For non-empty arrays, trace the length header and all elements
-                // Empty arrays have data == NULL, so skip tracing
-                if !data.is_nil() {
-                    // Trace the length header at data
-                    tracer(*data);
-                    
-                    // Read the length from the arena and trace all elements
-                    if let Ok(Value::Number(len)) = arena.get(*data) {
-                        let base_idx = data.raw();
-                        for i in 0..(len as usize) {
-                            // Elements are at data+1, data+2, ..., data+len
-                            let elem_idx = ArenaIndex::new(base_idx + 1 + i);
-                            tracer(elem_idx);
-                        }
-                    }
-                }
-            }
-            Value::String(data) => {
-                // For non-empty strings, trace the length header and all Char slots
-                // Empty strings have data == NULL, so skip tracing
-                if !data.is_nil() {
-                    // Trace the length header at data
-                    tracer(*data);
-                    
-                    // Read the length from the arena and trace all character slots
-                    if let Ok(Value::Number(len)) = arena.get(*data) {
-                        let base_idx = data.raw();
-                        for i in 0..(len as usize) {
-                            // Characters are at data+1, data+2, ..., data+len
-                            let char_idx = ArenaIndex::new(base_idx + 1 + i);
-                            tracer(char_idx);
-                        }
-                    }
-                }
-            }
-            // For all other types, delegate to the standard trace
-            _ => <Value as Trace<Value, N>>::trace(self, tracer),
-        }
+
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &pwn_arena::Arena<Value, N>, tracer: F) {
+        // With inlined lengths, we no longer need arena access to trace
+        // All information is available in the Value itself
+        <Value as Trace<Value, N>>::trace(self, tracer)
     }
 }

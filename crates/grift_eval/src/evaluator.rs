@@ -278,18 +278,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Look up a variable in an environment
     fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> EvalResult {
         let mut current = env;
-        
+
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
                     // Try global
                     return self.env_lookup_global(name);
                 }
-                Value::Cons(env_data) => {
-                    // Use car_cdr_from_data to avoid re-fetching the Cons
-                    let (car, cdr) = self.lisp.car_cdr_from_data(env_data)?;
-                    if let Value::Cons(binding_data) = self.lisp.get(car)? {
-                        let (bound_name, bound_value) = self.lisp.car_cdr_from_data(binding_data)?;
+                Value::Cons { car, cdr } => {
+                    // With inline cons, car/cdr are directly available
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
                         if self.lisp.symbol_eq(bound_name, name)? {
                             return Ok(bound_value);
                         }
@@ -300,21 +298,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
-    
+
     /// Look up in global environment only
     fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
         let mut current = self.global_env;
-        
+
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
                     return Err(self.make_error(ErrorKind::UnboundVariable, name));
                 }
-                Value::Cons(env_data) => {
-                    // Use car_cdr_from_data to avoid re-fetching the Cons
-                    let (car, cdr) = self.lisp.car_cdr_from_data(env_data)?;
-                    if let Value::Cons(binding_data) = self.lisp.get(car)? {
-                        let (bound_name, bound_value) = self.lisp.car_cdr_from_data(binding_data)?;
+                Value::Cons { car, cdr } => {
+                    // With inline cons, car/cdr are directly available
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
                         if self.lisp.symbol_eq(bound_name, name)? {
                             return Ok(bound_value);
                         }
@@ -325,7 +321,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
-    
+
     /// Set a variable in an environment (mutation operation)
     /// Searches both local and global environments
     /// Returns the new value on success
@@ -338,10 +334,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Not found in local env, try global
                     return self.env_set_global(name, value);
                 }
-                Value::Cons(env_data) => {
-                    let (car, cdr) = self.lisp.car_cdr_from_data(env_data)?;
-                    if let Value::Cons(binding_data) = self.lisp.get(car)? {
-                        let bound_name = self.lisp.car_from_data(binding_data)?;
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
                         if self.lisp.symbol_eq(bound_name, name)? {
                             // Found it - mutate the binding
                             self.lisp.set_cdr(car, value)?;
@@ -354,7 +348,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
-    
+
     /// Set a variable in global environment only
     fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         let mut current = self.global_env;
@@ -364,10 +358,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Not found anywhere - error
                     return Err(self.make_error(ErrorKind::UnboundVariable, name));
                 }
-                Value::Cons(env_data) => {
-                    let (car, cdr) = self.lisp.car_cdr_from_data(env_data)?;
-                    if let Value::Cons(binding_data) = self.lisp.get(car)? {
-                        let bound_name = self.lisp.car_from_data(binding_data)?;
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
                         if self.lisp.symbol_eq(bound_name, name)? {
                             // Found it - mutate the binding
                             self.lisp.set_cdr(car, value)?;
@@ -380,7 +372,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
-    
+
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         // Check if already defined and update
@@ -392,10 +384,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.global_env = self.env_extend(self.global_env, name, value)?;
                     return Ok(value);
                 }
-                Value::Cons(env_data) => {
-                    let (car, cdr) = self.lisp.car_cdr_from_data(env_data)?;
-                    if let Value::Cons(binding_data) = self.lisp.get(car)? {
-                        let bound_name = self.lisp.car_from_data(binding_data)?;
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
                         if self.lisp.symbol_eq(bound_name, name)? {
                             // Update existing
                             self.lisp.set_cdr(car, value)?;
@@ -526,8 +516,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
-            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda(_) |
-            Value::Array(_) | Value::String(_) | Value::Native(_) |
+            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
+            Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) => {
                 Ok(TrampolineState::Return { val: expr })
             }
@@ -539,7 +529,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // List - special form or function application
-            Value::Cons(_) => {
+            Value::Cons { .. } => {
                 let car = self.lisp.car(expr)?;
                 let cdr = self.lisp.cdr(expr)?;
                 self.step_eval_list(car, cdr, expr, env)
@@ -774,7 +764,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             self.apply_builtin_with_args(b, args_expr, env, call_expr)
                         }
                     }
-                    Value::Lambda(_) => {
+                    Value::Lambda { .. } => {
                         // Lambda: STRICT - evaluate args and bind directly to params
                         self.pop_frame();
                         
@@ -859,7 +849,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
-                    Value::Native(_) => {
+                    Value::Native { .. } => {
                         // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
                         self.pop_frame();
                         let id = self.lisp.native_id(val)?;
@@ -1448,7 +1438,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let nil = self.lisp.nil()?;
                     return Ok(Some(TrampolineState::Return { val: nil }));
                 }
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let clause = self.lisp.car(current)?;
                     let rest = self.lisp.cdr(current)?;
                     let datums = self.lisp.car(clause)?;
@@ -1556,7 +1546,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => break,
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let pair = self.lisp.car(current)?;
                     let rest = self.lisp.cdr(current)?;
                     let var = self.lisp.car(pair)?;
@@ -1576,7 +1566,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         -> Result<TrampolineState, EvalError> 
     {
         match self.lisp.get(template)? {
-            Value::Cons(_) => {
+            Value::Cons { .. } => {
                 let car = self.lisp.car(template)?;
                 let cdr = self.lisp.cdr(template)?;
                 // Check for unquote
@@ -1609,7 +1599,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // Check for unquote-splicing in car position (special handling)
-                if let Value::Cons(_) = self.lisp.get(car)? {
+                if let Value::Cons { .. } = self.lisp.get(car)? {
                     let inner_car = self.lisp.car(car)?;
                     let inner_cdr = self.lisp.cdr(car)?;
                     if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
@@ -1721,7 +1711,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => break,
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let binding = self.lisp.car(current)?;
                     let rest = self.lisp.cdr(current)?;
                     let name = self.lisp.car(binding)?;
@@ -1851,7 +1841,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(list)? {
                 Value::Nil => return Ok(result),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let car = self.lisp.car(list)?;
                     let cdr = self.lisp.cdr(list)?;
                     result = self.lisp.cons(car, result)?;
@@ -1880,7 +1870,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Car => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Cons(_) => self.lisp.car(arg).map_err(Into::into),
+                    Value::Cons { .. } => self.lisp.car(arg).map_err(Into::into),
                     // Scheme R7RS: car of empty list is an error
                     Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
                     _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
@@ -1890,7 +1880,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Cdr => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Cons(_) => self.lisp.cdr(arg).map_err(Into::into),
+                    Value::Cons { .. } => self.lisp.cdr(arg).map_err(Into::into),
                     // Scheme R7RS: cdr of empty list is an error
                     Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
                     _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
@@ -2066,7 +2056,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => return self.lisp.number(acc).map_err(Into::into),
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             let n = self.get_int(car, call_expr)?.abs();
@@ -2091,7 +2081,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => return self.lisp.number(acc).map_err(Into::into),
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             let b_abs = self.get_int(car, call_expr)?.abs();
@@ -2235,7 +2225,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 // Verify it's a pair
                 match self.lisp.get(pair)? {
-                    Value::Cons(_) => {
+                    Value::Cons { .. } => {
                         self.lisp.set_car(pair, value).map_err(Into::into)
                     }
                     _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
@@ -2248,7 +2238,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 // Verify it's a pair
                 match self.lisp.get(pair)? {
-                    Value::Cons(_) => {
+                    Value::Cons { .. } => {
                         self.lisp.set_cdr(pair, value).map_err(Into::into)
                     }
                     _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
@@ -2262,7 +2252,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Vectorp => {
                 // (vector? x) - check if x is a vector
                 let val = self.lisp.car(args)?;
-                let is_vector = matches!(self.lisp.get(val)?, Value::Array(_));
+                let is_vector = matches!(self.lisp.get(val)?, Value::Array { .. });
                 self.lisp.boolean(is_vector).map_err(Into::into)
             }
             
@@ -2294,7 +2284,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             count += 1;
                             current = self.lisp.cdr(current)?;
                         }
@@ -2322,7 +2312,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
-                    Value::Array(_) => {
+                    Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
                         self.lisp.number(len as isize).map_err(Into::into)
                     }
@@ -2340,7 +2330,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 
                 match self.lisp.get(vec)? {
-                    Value::Array(_) => {
+                    Value::Array { .. } => {
                         self.lisp.array_get(vec, index).map_err(Into::into)
                     }
                     _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -2357,7 +2347,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 
                 match self.lisp.get(vec)? {
-                    Value::Array(_) => {
+                    Value::Array { .. } => {
                         self.lisp.array_set(vec, index, value)?;
                         // R7RS: returns unspecified, we return the vector
                         Ok(vec)
@@ -2371,7 +2361,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
-                    Value::Array(_) => {
+                    Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
                         // Build list from end to front
                         let mut result = self.lisp.nil()?;
@@ -2395,7 +2385,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             count += 1;
                             current = self.lisp.cdr(current)?;
                         }
@@ -2423,7 +2413,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 extract_args!(self, args, vec, fill);
                 
                 match self.lisp.get(vec)? {
-                    Value::Array(_) => {
+                    Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
                         for i in 0..len {
                             self.lisp.array_set(vec, i, fill)?;
@@ -2440,7 +2430,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
-                    Value::Array(_) => {
+                    Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
                         // Create new vector with same length
                         let placeholder = self.lisp.number(0)?;
@@ -2589,7 +2579,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Stringp => {
                 // (string? obj) - Check if value is a string
-                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::String(_)))
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::String { .. }))
             }
             
             Builtin::MakeString => {
@@ -2627,7 +2617,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             if len >= MAX_STRING_LEN {
@@ -2647,7 +2637,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string-length string) - Get length
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
-                    Value::String(_) => {
+                    Value::String { .. } => {
                         let len = self.lisp.string_len(str_idx)?;
                         self.lisp.number(len as isize).map_err(Into::into)
                     }
@@ -2659,14 +2649,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string-ref string k) - Get character at index
                 extract_args!(self, args, str_idx, k_idx);
                 match self.lisp.get(str_idx)? {
-                    Value::String(data) => {
+                    Value::String { data, .. } => {
                         let k = self.get_int(k_idx, call_expr)?;
                         let len = self.lisp.string_len(str_idx)?;
                         if k < 0 || (k as usize) >= len {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         // Characters start at data+1
-                        let char_slot = self.lisp.arena_index_at_offset(data, 1 + k as usize)?;
+                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
                         match self.lisp.get(char_slot)? {
                             Value::Char(c) => self.lisp.char(c).map_err(Into::into),
                             _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -2685,7 +2675,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let char_arg = self.lisp.car(rest2)?;
                 
                 match self.lisp.get(str_idx)? {
-                    Value::String(data) => {
+                    Value::String { data, .. } => {
                         let k = self.get_int(k_idx, call_expr)?;
                         let len = self.lisp.string_len(str_idx)?;
                         if k < 0 || (k as usize) >= len {
@@ -2693,7 +2683,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         let c = self.get_char(char_arg, call_expr)?;
                         // Characters start at data+1
-                        let char_slot = self.lisp.arena_index_at_offset(data, 1 + k as usize)?;
+                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
                         self.lisp.set(char_slot, Value::Char(c))?;
                         // Return unspecified value (we use the string itself)
                         Ok(str_idx)
@@ -2732,23 +2722,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 const MAX_TOTAL_LEN: usize = 4096;
                 let mut chars = ['\0'; MAX_TOTAL_LEN];
                 let mut total_len = 0;
-                
+
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
-                                Value::String(data) => {
+                                Value::String { data, .. } => {
                                     let len = self.lisp.string_len(car)?;
                                     if total_len + len > MAX_TOTAL_LEN {
                                         return Err(self.make_error(ErrorKind::TypeError, call_expr));
                                     }
                                     for i in 0..len {
-                                        // Characters start at data+1
-                                        let char_slot = self.lisp.arena_index_at_offset(data, 1 + i)?;
+                                        // Characters start directly at data (no length header)
+                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
                                         match self.lisp.get(char_slot)? {
                                             Value::Char(c) => {
                                                 chars[total_len] = c;
@@ -2765,7 +2755,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
-                
+
                 self.lisp.string_from_chars(&chars[..total_len]).map_err(Into::into)
             }
             
@@ -2773,13 +2763,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string->list string) - Convert string to list of characters
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
-                    Value::String(data) => {
+                    Value::String { data, .. } => {
                         let len = self.lisp.string_len(str_idx)?;
                         let mut result = self.lisp.nil()?;
                         // Build list from end to start
                         for i in (0..len).rev() {
                             // Characters start at data+1
-                            let char_slot = self.lisp.arena_index_at_offset(data, 1 + i)?;
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => {
                                     let char_val = self.lisp.char(c)?;
@@ -2804,7 +2794,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
-                        Value::Cons(_) => {
+                        Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             if len >= MAX_STRING_LEN {
@@ -2830,7 +2820,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let end_idx = self.lisp.car(rest2)?;
                 
                 match self.lisp.get(str_idx)? {
-                    Value::String(data) => {
+                    Value::String { data, .. } => {
                         let len = self.lisp.string_len(str_idx)?;
                         let start = self.get_int(start_idx, call_expr)?;
                         let end = self.get_int(end_idx, call_expr)?;
@@ -2848,7 +2838,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         
                         for i in 0..sub_len {
                             // Characters start at data+1
-                            let char_slot = self.lisp.arena_index_at_offset(data, 1 + (start as usize) + i)?;
+                            let char_slot = self.lisp.arena_index_at_offset(data, (start as usize) + i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => chars[i] = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -2865,7 +2855,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (string-copy string) - Copy a string
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
-                    Value::String(data) => {
+                    Value::String { data, .. } => {
                         let len = self.lisp.string_len(str_idx)?;
                         const MAX_STRING_LEN: usize = 1024;
                         let mut chars = ['\0'; MAX_STRING_LEN];
@@ -2875,7 +2865,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         
                         for i in 0..len {
                             // Characters start at data+1
-                            let char_slot = self.lisp.arena_index_at_offset(data, 1 + i)?;
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => chars[i] = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
@@ -3025,7 +3015,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => return self.lisp.number(acc).map_err(Into::into),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let car = self.lisp.car(current)?;
                     let cdr = self.lisp.cdr(current)?;
                     let n = self.get_int(car, call_expr)?;
@@ -3068,7 +3058,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => return self.lisp.true_val().map_err(Into::into),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let car = self.lisp.car(current)?;
                     let cdr = self.lisp.cdr(current)?;
                     let c = self.get_char(car, call_expr)?;
@@ -3102,7 +3092,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => return self.lisp.true_val().map_err(Into::into),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     let car = self.lisp.car(current)?;
                     let cdr = self.lisp.cdr(current)?;
                     let ordering = self.compare_strings(prev_idx, car, call_expr)?;
@@ -3120,11 +3110,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Compare two strings lexicographically
     fn compare_strings(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
         let data_a = match self.lisp.get(a)? {
-            Value::String(data) => data,
+            Value::String { data, .. } => data,
             v => return Err(self.type_error(call_expr, "string", v.type_name())),
         };
         let data_b = match self.lisp.get(b)? {
-            Value::String(data) => data,
+            Value::String { data, .. } => data,
             v => return Err(self.type_error(call_expr, "string", v.type_name())),
         };
         
@@ -3229,7 +3219,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn append_lists(&self, a: ArenaIndex, b: ArenaIndex) -> EvalResult {
         match self.lisp.get(a)? {
             Value::Nil => Ok(b),
-            Value::Cons(_) => {
+            Value::Cons { .. } => {
                 let car = self.lisp.car(a)?;
                 let cdr = self.lisp.cdr(a)?;
                 let rest = self.append_lists(cdr, b)?;
@@ -3301,7 +3291,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             // (define (name params...) body...) -> (define name (lambda (params...) body...))
-            Value::Cons(_) => {
+            Value::Cons { .. } => {
                 let name = self.lisp.car(first)?;
                 let params = self.lisp.cdr(first)?;
                 let body_list = rest;
@@ -3345,7 +3335,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             match self.lisp.get(list)? {
                 Value::Nil => return Ok(count),
-                Value::Cons(_) => {
+                Value::Cons { .. } => {
                     count += 1;
                     list = self.lisp.cdr(list)?;
                 }
