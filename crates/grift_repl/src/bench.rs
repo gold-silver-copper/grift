@@ -979,6 +979,10 @@ fn main() {
     println!();
     println!("Testing interpreter speed with automatic GC enabled vs disabled.");
     println!("Manual GC is triggered after each test run regardless of setting.");
+    
+    // DEBUG: Check memory state
+    let s = lisp.stats();
+    println!("[DEBUG 14.1 start] Memory: {} / {} cells ({:.1}%)", s.allocated, s.capacity, s.usage_percent());
     println!();
 
     // Test with GC enabled (normal operation)
@@ -989,7 +993,12 @@ fn main() {
         let _ = eval_str(&lisp, &mut eval, "(map (lambda (x) (* x x)) (range 1 21))");
     }
     let gc_on_time = gc_on_start.elapsed();
-    eval.gc();
+    let gc_stats = eval.gc();
+    
+    // DEBUG: Check memory state
+    let s = lisp.stats();
+    println!("[DEBUG 14.1 after GC on test] Memory: {} / {} cells ({:.1}%), collected={}", 
+             s.allocated, s.capacity, s.usage_percent(), gc_stats.collected);
     
     // Test with GC disabled (batch operations)
     let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
@@ -1002,7 +1011,12 @@ fn main() {
     
     // Re-enable and manually collect
     let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
-    eval.gc();
+    let gc_stats = eval.gc();
+    
+    // DEBUG: Check memory state
+    let s = lisp.stats();
+    println!("[DEBUG 14.1 after GC off test] Memory: {} / {} cells ({:.1}%), collected={}", 
+             s.allocated, s.capacity, s.usage_percent(), gc_stats.collected);
 
     println!("[INFO] Map over 20 elements x 50 iterations:");
     println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_time, gc_on_time.as_nanos() as f64 / 50.0 / 1000.0);
@@ -1040,7 +1054,12 @@ fn main() {
     let gc_off_alloc_time = gc_off_alloc_start.elapsed();
     
     let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
-    eval.gc();
+    let gc_stats = eval.gc();
+    
+    // DEBUG: Check memory state
+    let s = lisp.stats();
+    println!("[DEBUG 14.1 after alloc test] Memory: {} / {} cells ({:.1}%), collected={}", 
+             s.allocated, s.capacity, s.usage_percent(), gc_stats.collected);
 
     println!("[INFO] Allocation-heavy (8-element lists) x 100 iterations:");
     println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_alloc_time, gc_on_alloc_time.as_nanos() as f64 / 100.0 / 1000.0);
@@ -1078,7 +1097,12 @@ fn main() {
     let gc_off_rec_time = gc_off_rec_start.elapsed();
     
     let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
-    eval.gc();
+    let gc_stats = eval.gc();
+
+    // DEBUG: Check memory state
+    let s = lisp.stats();
+    println!("[DEBUG 14.1 after fib test] Memory: {} / {} cells ({:.1}%), collected={}", 
+             s.allocated, s.capacity, s.usage_percent(), gc_stats.collected);
 
     println!("[INFO] Fibonacci(12) x 20 iterations (recursive):");
     println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_rec_time, gc_on_rec_time.as_nanos() as f64 / 20.0 / 1000.0);
@@ -1103,6 +1127,17 @@ fn main() {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Section 15: Parsing");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    
+    // DEBUG: Check memory state before parsing tests
+    let pre_parse_stats = lisp.stats();
+    println!("[DEBUG] Memory before parsing tests: {} / {} cells ({:.1}%)", 
+             pre_parse_stats.allocated, pre_parse_stats.capacity, pre_parse_stats.usage_percent());
+    
+    // Run GC and show state
+    let gc_stats = eval.gc();
+    let post_gc_stats = lisp.stats();
+    println!("[DEBUG] After GC: {} / {} cells ({:.1}%); collected={}",
+             post_gc_stats.allocated, post_gc_stats.capacity, post_gc_stats.usage_percent(), gc_stats.collected);
 
     results.push(run_bench(
         "Parse deeply nested x 100",
