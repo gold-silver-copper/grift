@@ -88,7 +88,7 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Symbol(chars)) => {
             format_symbol(lisp, chars, buf);
         }
-        Ok(Value::Cons { .. }) => {
+        Ok(Value::Cons(_)) => {
             buf.push('(');
             format_list_contents(lisp, idx, buf, depth + 1);
             buf.push(')');
@@ -137,9 +137,13 @@ fn format_value_impl<const N: usize>(
             }
             buf.push('"');
         }
-        Ok(Value::Native { id, .. }) => {
+        Ok(Value::Native(_)) => {
             use std::fmt::Write;
-            write!(buf, "#<native:{}>", id).unwrap();
+            if let Ok((id, _)) = lisp.native_parts(idx) {
+                write!(buf, "#<native:{}>", id).unwrap();
+            } else {
+                buf.push_str("#<native>");
+            }
         }
         Ok(Value::Ref(idx)) => {
             use std::fmt::Write;
@@ -171,13 +175,19 @@ fn format_list_contents<const N: usize>(
         
         match lisp.get(idx) {
             Ok(Value::Nil) => break,
-            Ok(Value::Cons { car, cdr }) => {
+            Ok(Value::Cons(_)) => {
                 if !first {
                     buf.push(' ');
                 }
                 first = false;
-                format_value_impl(lisp, car, buf, depth);
-                idx = cdr;
+                if let Ok(car) = lisp.car(idx) {
+                    format_value_impl(lisp, car, buf, depth);
+                }
+                if let Ok(cdr) = lisp.cdr(idx) {
+                    idx = cdr;
+                } else {
+                    break;
+                }
                 count += 1;
             }
             Ok(_) => {
@@ -506,9 +516,13 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
     loop {
         match lisp.get(env) {
             Ok(Value::Nil) => return count,
-            Ok(Value::Cons { cdr, .. }) => {
+            Ok(Value::Cons(_)) => {
                 count += 1;
-                env = cdr;
+                if let Ok(cdr) = lisp.cdr(env) {
+                    env = cdr;
+                } else {
+                    return count;
+                }
             }
             _ => return count,
         }
