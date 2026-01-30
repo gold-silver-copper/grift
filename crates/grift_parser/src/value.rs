@@ -445,24 +445,20 @@ pub enum Value {
     },
     
     /// Symbol (contains a contiguous string)
-    /// The `chars` field points to a Value::String which contains the symbol name.
+    /// Points to a Value::String which contains the symbol name.
     /// The length is obtained from the String value, providing a single source of truth.
-    Symbol {
-        chars: ArenaIndex,
-    },
+    Symbol(ArenaIndex),
     
     /// Lambda / closure (memory-optimized)
     /// 
-    /// To minimize enum size, lambda data is stored as a linked list in the arena:
-    /// `data` points to a cons cell `(params . (body . env))` where:
+    /// To minimize enum size, lambda data is stored as a linked list in the arena.
+    /// Points to a cons cell `(params . (body . env))` where:
     /// - `params`: List of parameter symbols
     /// - `body`: Expression to evaluate
     /// - `env`: Captured environment (alist)
     /// 
     /// Use `Lisp::lambda()` to create and `Lisp::lambda_parts()` to extract.
-    Lambda {
-        data: ArenaIndex,  // Points to (params . (body . env))
-    },
+    Lambda(ArenaIndex),
     
     /// Built-in function (optimized)
     Builtin(Builtin),
@@ -487,9 +483,9 @@ pub enum Value {
     /// 
     /// # Memory Layout
     /// 
-    /// - `data` points to a `Value::Number(len)` header followed by elements
-    /// - Elements are stored at data+1, data+2, ..., data+len
-    /// - Empty arrays have data == NULL (len=0)
+    /// Points to a `Value::Number(len)` header followed by elements.
+    /// Elements are stored at data+1, data+2, ..., data+len.
+    /// Empty arrays have data == NULL (len=0).
     /// 
     /// # Example
     /// 
@@ -500,9 +496,7 @@ pub enum Value {
     /// (vector-length vec)             ; => 3
     /// #(1 2 3)                        ; Vector literal syntax
     /// ```
-    Array {
-        data: ArenaIndex,  // Points to Number(len) header, elements follow at data+1
-    },
+    Array(ArenaIndex),
     
     /// String (contiguous storage of Char values in the arena)
     /// 
@@ -511,9 +505,9 @@ pub enum Value {
     /// 
     /// # Memory Layout
     /// 
-    /// - `data` points to a `Value::Number(len)` header followed by characters
-    /// - Characters are stored at data+1, data+2, ..., data+len
-    /// - Empty strings have data == NULL (len=0)
+    /// Points to a `Value::Number(len)` header followed by characters.
+    /// Characters are stored at data+1, data+2, ..., data+len.
+    /// Empty strings have data == NULL (len=0).
     /// 
     /// # Example
     /// 
@@ -521,9 +515,7 @@ pub enum Value {
     /// (string-length "hello")   ; => 5
     /// (string-ref "hello" 0)    ; => #\h
     /// ```
-    String {
-        data: ArenaIndex,  // Points to Number(len) header, chars follow at data+1
-    },
+    String(ArenaIndex),
     
     /// Native function (Rust function callable from Lisp)
     ///
@@ -618,7 +610,7 @@ impl Value {
     /// Check if this value is a symbol
     #[inline]
     pub const fn is_symbol(&self) -> bool {
-        matches!(self, Value::Symbol { .. })
+        matches!(self, Value::Symbol(_))
     }
     
     /// Check if this value is a cons cell (pair)
@@ -630,7 +622,7 @@ impl Value {
     /// Check if this value is a lambda
     #[inline]
     pub const fn is_lambda(&self) -> bool {
-        matches!(self, Value::Lambda { .. })
+        matches!(self, Value::Lambda(_))
     }
     
     /// Check if this value is a builtin
@@ -654,19 +646,19 @@ impl Value {
     /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
+        matches!(self, Value::Lambda(_) | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
     }
     
     /// Check if this value is an array
     #[inline]
     pub const fn is_array(&self) -> bool {
-        matches!(self, Value::Array { .. })
+        matches!(self, Value::Array(_))
     }
     
     /// Check if this value is a string
     #[inline]
     pub const fn is_string(&self) -> bool {
-        matches!(self, Value::String { .. })
+        matches!(self, Value::String(_))
     }
     
     /// Check if this value is a ref (internal arena index reference)
@@ -745,13 +737,13 @@ impl Value {
             Value::Float(_) => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
-            Value::Symbol { .. } => "symbol",
-            Value::Lambda { .. } => "procedure",
+            Value::Symbol(_) => "symbol",
+            Value::Lambda(_) => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
-            Value::Array { .. } => "array",
-            Value::String { .. } => "string",
+            Value::Array(_) => "array",
+            Value::String(_) => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
         }
@@ -775,15 +767,15 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*car);
                 tracer(*cdr);
             }
-            Value::Symbol { chars } => {
+            Value::Symbol(chars) => {
                 // chars points to a Value::String, which handles its own tracing
                 tracer(*chars);
             }
-            Value::Lambda { data } => {
+            Value::Lambda(data) => {
                 // data points to (params . (body . env)), trace the whole structure
                 tracer(*data);
             }
-            Value::Array { data } | Value::String { data } => {
+            Value::Array(data) | Value::String(data) => {
                 // For non-empty arrays/strings, we need arena access to read the length.
                 // The basic trace just marks the data pointer; trace_with_arena handles
                 // the full tracing with element traversal.
@@ -796,7 +788,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     
     fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &pwn_arena::Arena<Value, N>, mut tracer: F) {
         match self {
-            Value::Array { data } => {
+            Value::Array(data) => {
                 // For non-empty arrays, trace the length header and all elements
                 // Empty arrays have data == NULL, so skip tracing
                 if !data.is_null() {
@@ -814,7 +806,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                     }
                 }
             }
-            Value::String { data } => {
+            Value::String(data) => {
                 // For non-empty strings, trace the length header and all Char slots
                 // Empty strings have data == NULL, so skip tracing
                 if !data.is_null() {

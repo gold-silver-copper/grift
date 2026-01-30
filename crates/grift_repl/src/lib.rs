@@ -85,7 +85,7 @@ fn format_value_impl<const N: usize>(
                 _ => buf.push(c),
             }
         }
-        Ok(Value::Symbol { chars }) => {
+        Ok(Value::Symbol(chars)) => {
             format_symbol(lisp, chars, buf);
         }
         Ok(Value::Cons { .. }) => {
@@ -93,7 +93,7 @@ fn format_value_impl<const N: usize>(
             format_list_contents(lisp, idx, buf, depth + 1);
             buf.push(')');
         }
-        Ok(Value::Lambda { .. }) => {
+        Ok(Value::Lambda(_)) => {
             buf.push_str("#<lambda>");
         }
         Ok(Value::Builtin(b)) => {
@@ -106,7 +106,7 @@ fn format_value_impl<const N: usize>(
             buf.push_str(s.name());
             buf.push('>');
         }
-        Ok(Value::Array { .. }) => {
+        Ok(Value::Array(_)) => {
             // Format as R7RS vector literal: #(elem1 elem2 ...)
             buf.push_str("#(");
             let len = lisp.array_len(idx).unwrap_or(0);
@@ -120,7 +120,7 @@ fn format_value_impl<const N: usize>(
             }
             buf.push(')');
         }
-        Ok(Value::String { .. }) => {
+        Ok(Value::String(_)) => {
             // Format string like in many Lisps: "..."
             buf.push('"');
             let len = lisp.string_len(idx).unwrap_or(0);

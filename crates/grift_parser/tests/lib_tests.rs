@@ -416,10 +416,10 @@ fn test_string_memory_layout() {
     
     let hello = lisp.string("hello").unwrap();
     
-    // String value should be Value::String { data }
+    // String value should be Value::String(data)
     // With layout: data[0] = Number(len), data[1..] = Char values
     match lisp.get(hello).unwrap() {
-        Value::String { data } => {
+        Value::String(data) => {
             // Check length is stored at data[0]
             assert_eq!(lisp.arena().get(data).unwrap(), Value::Number(5));
             
@@ -430,7 +430,7 @@ fn test_string_memory_layout() {
             assert_eq!(lisp.get(idx0).unwrap(), Value::Char('h'));
             assert_eq!(lisp.get(idx1).unwrap(), Value::Char('e'));
         }
-        other => panic!("Expected Value::String, got {:?}", other),
+        _ => panic!("Expected Value::String"),
     }
 }
 
@@ -833,9 +833,7 @@ fn test_array_memory_layout() {
 
 #[test]
 fn test_array_type_name() {
-    let arr = Value::Array { 
-        data: ArenaIndex::NULL,
-    };
+    let arr = Value::Array(ArenaIndex::NULL);
     assert_eq!(arr.type_name(), "array");
 }
 
@@ -845,9 +843,7 @@ fn test_array_type_name() {
 
 #[test]
 fn test_string_type_name() {
-    let s = Value::String { 
-        data: ArenaIndex::NULL,
-    };
+    let s = Value::String(ArenaIndex::NULL);
     assert_eq!(s.type_name(), "string");
 }
 
@@ -891,12 +887,12 @@ fn test_string_and_array_consistent_layout() {
     
     // Verify consistent structure
     match lisp.get(s).unwrap() {
-        Value::String { .. } => assert_eq!(lisp.string_len(s).unwrap(), 5),
+        Value::String(_) => assert_eq!(lisp.string_len(s).unwrap(), 5),
         _ => panic!("Expected String"),
     }
     
     match lisp.get(arr).unwrap() {
-        Value::Array { .. } => assert_eq!(lisp.array_len(arr).unwrap(), 5),
+        Value::Array(_) => assert_eq!(lisp.array_len(arr).unwrap(), 5),
         _ => panic!("Expected Array"),
     }
 }

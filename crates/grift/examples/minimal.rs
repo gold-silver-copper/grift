@@ -88,7 +88,7 @@ fn format_value_impl<const N: usize>(lisp: &Lisp<N>, idx: grift::ArenaIndex, buf
             format_list(lisp, idx, buf, depth + 1);
             buf.push(')');
         }
-        Ok(Value::Lambda { .. }) => buf.push_str("#<lambda>"),
+        Ok(Value::Lambda(_)) => buf.push_str("#<lambda>"),
         Ok(Value::Builtin(b)) => {
             buf.push_str("#<builtin:");
             buf.push_str(b.name());

@@ -305,7 +305,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol { chars: name_str })?;
+        let symbol = self.alloc(Value::Symbol(name_str))?;
         
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
@@ -325,9 +325,7 @@ impl<const N: usize> Lisp<N> {
         // Create a Value::String for the symbol name
         let name_str = if char_count == 0 {
             // Empty string - data is NULL
-            self.alloc(Value::String { 
-                data: ArenaIndex::NULL,
-            })?
+            self.alloc(Value::String(ArenaIndex::NULL))?
         } else {
             // Allocate contiguous block: 1 slot for length + char_count slots for chars
             let data = self.arena.alloc_contiguous(1 + char_count, Value::Nil)?;
@@ -342,7 +340,7 @@ impl<const N: usize> Lisp<N> {
             }
             
             // Create the String value
-            self.alloc(Value::String { data })?
+            self.alloc(Value::String(data))?
         };
         
         // Check intern table
@@ -353,7 +351,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol { chars: name_str })?;
+        let symbol = self.alloc(Value::Symbol(name_str))?;
         
         // Add to intern table: (name_str . symbol)
         let binding = self.cons(name_str, symbol)?;
@@ -399,7 +397,7 @@ impl<const N: usize> Lisp<N> {
         let body_env = self.cons(body, env)?;
         // Build (params . (body . env))
         let data = self.cons(params, body_env)?;
-        self.alloc(Value::Lambda { data })
+        self.alloc(Value::Lambda(data))
     }
     
     /// Extract parts from a lambda: (params, body, env)
@@ -409,7 +407,7 @@ impl<const N: usize> Lisp<N> {
     pub fn lambda_parts(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
         let val = self.get(index)?;
         match val {
-            Value::Lambda { data } => {
+            Value::Lambda(data) => {
                 // data = (params . (body . env))
                 let params = self.car(data)?;
                 let body_env = self.cdr(data)?;
@@ -462,7 +460,7 @@ impl<const N: usize> Lisp<N> {
         let val_b = self.get(b)?;
         
         match (val_a, val_b) {
-            (Value::Symbol { chars: chars_a }, Value::Symbol { chars: chars_b }) => {
+            (Value::Symbol(chars_a), Value::Symbol(chars_b)) => {
                 self.string_eq_contiguous(chars_a, chars_b)
             }
             _ => Ok(false),
@@ -475,7 +473,7 @@ impl<const N: usize> Lisp<N> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol { chars } => self.string_matches(chars, name),
+            Value::Symbol(chars) => self.string_matches(chars, name),
             _ => Ok(false),
         }
     }
@@ -485,7 +483,7 @@ impl<const N: usize> Lisp<N> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol { chars } => self.string_to_bytes(chars, buf),
+            Value::Symbol(chars) => self.string_to_bytes(chars, buf),
             _ => Ok(0),
         }
     }
@@ -493,7 +491,7 @@ impl<const N: usize> Lisp<N> {
     /// Get the length of a symbol's name.
     pub fn symbol_len(&self, sym: ArenaIndex) -> ArenaResult<usize> {
         match self.get(sym)? {
-            Value::Symbol { chars } => self.string_len(chars),
+            Value::Symbol(chars) => self.string_len(chars),
             _ => Ok(0),
         }
     }
@@ -502,7 +500,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns None if the index is out of bounds or if the value is not a symbol
     pub fn symbol_char_at(&self, sym: ArenaIndex, index: usize) -> ArenaResult<Option<char>> {
         match self.get(sym)? {
-            Value::Symbol { chars } => {
+            Value::Symbol(chars) => {
                 let len = self.string_len(chars)?;
                 if index >= len {
                     Ok(None)
@@ -578,7 +576,7 @@ impl<const N: usize> Lisp<N> {
     // Contiguous String Storage
     // ========================================================================
     // 
-    // Strings are stored as Value::String { data } pointing to a contiguous
+    // Strings are stored as Value::String(data) pointing to a contiguous
     // block in the arena with the following layout:
     // [Number(len), Char(c1), Char(c2), ..., Char(cn)]
     // 
@@ -621,9 +619,7 @@ impl<const N: usize> Lisp<N> {
         
         if char_count == 0 {
             // Empty string - data is NULL
-            return self.alloc(Value::String { 
-                data: ArenaIndex::NULL,
-            });
+            return self.alloc(Value::String(ArenaIndex::NULL));
         }
         
         // Allocate contiguous block: 1 slot for length + char_count slots for chars
@@ -639,7 +635,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Create the String value pointing to the data
-        self.alloc(Value::String { data })
+        self.alloc(Value::String(data))
     }
     
     /// Allocate a string from a slice of chars.
@@ -650,9 +646,7 @@ impl<const N: usize> Lisp<N> {
         
         if char_count == 0 {
             // Empty string - data is NULL
-            return self.alloc(Value::String { 
-                data: ArenaIndex::NULL,
-            });
+            return self.alloc(Value::String(ArenaIndex::NULL));
         }
         
         // Allocate contiguous block: 1 slot for length + char_count slots for chars
@@ -668,7 +662,7 @@ impl<const N: usize> Lisp<N> {
         }
         
         // Create the String value pointing to the data
-        self.alloc(Value::String { data })
+        self.alloc(Value::String(data))
     }
     
     /// Get the length of a string.
@@ -681,7 +675,7 @@ impl<const N: usize> Lisp<N> {
     /// a valid string.
     pub fn string_len(&self, str_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(str_idx)? {
-            Value::String { data } => {
+            Value::String(data) => {
                 if data.is_null() {
                     Ok(0)
                 } else {
@@ -707,7 +701,7 @@ impl<const N: usize> Lisp<N> {
     /// - The slot doesn't contain a Char value
     pub fn string_char_at(&self, str_idx: ArenaIndex, char_index: usize) -> ArenaResult<char> {
         match self.arena.get(str_idx)? {
-            Value::String { data } => {
+            Value::String(data) => {
                 if data.is_null() {
                     return Err(ArenaError::InvalidIndex);
                 }
@@ -822,7 +816,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns an error if the string index is invalid.
     pub fn string_free(&self, str_idx: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(str_idx)? {
-            Value::String { data } => {
+            Value::String(data) => {
                 // Free the data slots (length header + characters)
                 if !data.is_null() {
                     let len = match self.arena.get(data)? {
@@ -843,7 +837,7 @@ impl<const N: usize> Lisp<N> {
     // Contiguous Array Storage
     // ========================================================================
     // 
-    // Arrays are stored as Value::Array { data } pointing to a contiguous
+    // Arrays are stored as Value::Array(data) pointing to a contiguous
     // block in the arena with the following layout:
     // [Number(len), elem1, elem2, ..., elemn]
     // 
@@ -874,9 +868,7 @@ impl<const N: usize> Lisp<N> {
     pub fn make_array(&self, len: usize, default: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if len == 0 {
             // Empty array - data is NULL
-            return self.alloc(Value::Array { 
-                data: ArenaIndex::NULL,
-            });
+            return self.alloc(Value::Array(ArenaIndex::NULL));
         }
         
         // Allocate contiguous block: 1 slot for length + len slots for elements
@@ -890,7 +882,7 @@ impl<const N: usize> Lisp<N> {
         // (alloc_contiguous initializes all slots with the provided value)
         
         // Create the Array value pointing to the data
-        self.alloc(Value::Array { data })
+        self.alloc(Value::Array(data))
     }
     
     /// Get the length of an array.
@@ -902,7 +894,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns `ArenaError::InvalidIndex` if the index doesn't point to an array.
     pub fn array_len(&self, arr_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data } => {
+            Value::Array(data) => {
                 if data.is_null() {
                     Ok(0)
                 } else {
@@ -927,7 +919,7 @@ impl<const N: usize> Lisp<N> {
     /// - The element index is out of bounds
     pub fn array_get(&self, arr_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data } => {
+            Value::Array(data) => {
                 if data.is_null() {
                     return Err(ArenaError::InvalidIndex);
                 }
@@ -956,7 +948,7 @@ impl<const N: usize> Lisp<N> {
     /// - The element index is out of bounds
     pub fn array_set(&self, arr_idx: ArenaIndex, index: usize, value: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data } => {
+            Value::Array(data) => {
                 if data.is_null() {
                     return Err(ArenaError::InvalidIndex);
                 }
@@ -983,7 +975,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns an error if the array index is invalid.
     pub fn array_free(&self, arr_idx: ArenaIndex) -> ArenaResult<()> {
         match self.arena.get(arr_idx)? {
-            Value::Array { data } => {
+            Value::Array(data) => {
                 // Free the data slots (length header + elements)
                 if !data.is_null() {
                     let len = match self.arena.get(data)? {
