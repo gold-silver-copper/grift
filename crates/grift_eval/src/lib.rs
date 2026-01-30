@@ -72,14 +72,12 @@ pub use native::{
 
 // Internal modules
 mod error;
-mod num;
 mod continuation;
 mod helpers;
 mod evaluator;
 
 // Public re-exports
 pub use error::{ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult};
-pub use num::Num;
 pub use evaluator::Evaluator;
 pub use continuation::{Cont, TrampolineState};
 

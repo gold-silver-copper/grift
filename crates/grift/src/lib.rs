@@ -101,8 +101,6 @@ pub mod eval {
     pub use grift_eval::{
         // Evaluator
         Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
-        // Numeric helpers
-        Num,
         // Native FFI
         FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
         extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
@@ -111,7 +109,6 @@ pub mod eval {
 
 pub use eval::{
     Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
-    Num,
     FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
     extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
 };

@@ -146,20 +146,17 @@
 ;;; (sign n) - Return -1, 0, or 1 based on sign of n
 (define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
 
-;;; (sqrt x) - Square root using Newton's method
-;;; Uses iterative refinement to find the square root
+;;; (sqrt x) - Integer square root using Newton's method
+;;; Returns the largest integer whose square is <= x
 (define (sqrt x)
-  (letrec ((improve (lambda (guess)
-                      (/ (+ guess (/ x guess)) 2.0)))
-           (good-enough? (lambda (guess)
-                           (< (abs (- (* guess guess) x)) 0.00001)))
-           (iter (lambda (guess)
-                   (if (good-enough? guess)
-                       guess
-                       (iter (improve guess))))))
-    (if (<= x 0)
-        0.0
-        (iter 1.0))))
+  (if (<= x 0)
+      0
+      (letrec ((iter (lambda (guess)
+                       (let ((next (/ (+ guess (/ x guess)) 2)))
+                         (if (>= next guess)
+                             guess
+                             (iter next))))))
+        (iter x))))
 
 ;;; (square x) - Return x squared
 (define (square x) (* x x))

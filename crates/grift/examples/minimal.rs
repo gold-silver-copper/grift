@@ -75,10 +75,6 @@ fn format_value_impl<const N: usize>(lisp: &Lisp<N>, idx: grift::ArenaIndex, buf
             use std::fmt::Write;
             write!(buf, "{}", n).unwrap();
         }
-        Ok(Value::Float(f)) => {
-            use std::fmt::Write;
-            write!(buf, "{}", f).unwrap();
-        }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
             buf.push(c);

@@ -2969,10 +2969,10 @@ fn test_doc_number_predicates() {
     assert!(eval_is_true(&lisp, &mut eval, "(odd? 5)"));
     assert!(eval_is_true(&lisp, &mut eval, "(even? 4)"));
     
-    // integer?/exact?/inexact?
+    // integer?/exact?/inexact? (no floats, all numbers are exact integers)
     assert!(eval_is_true(&lisp, &mut eval, "(integer? 5)"));
     assert!(eval_is_true(&lisp, &mut eval, "(exact? 5)"));
-    assert!(eval_is_true(&lisp, &mut eval, "(inexact? 3.14)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(inexact? 5)")); // All numbers are exact now
 }
 
 // ============================================================
@@ -3179,20 +3179,20 @@ fn test_nested_stdlib_calls() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Basic nested stdlib call: (+ 1 (sqrt 4)) should return 3.0
-    let result = eval.eval_str("(+ 1 (sqrt 4))").unwrap();
-    let val = lisp.get(result).unwrap().as_float().unwrap();
-    assert!((val - 3.0).abs() < 0.001, "Expected 3.0, got {}", val);
+    // Basic nested stdlib call: (+ 1 (abs -2)) should return 3
+    let result = eval.eval_str("(+ 1 (abs -2))").unwrap();
+    let val = lisp.get(result).unwrap().as_number().unwrap();
+    assert_eq!(val, 3);
     
     // Multiple nested stdlib calls
-    let result = eval.eval_str("(+ (sqrt 4) (sqrt 9))").unwrap();
-    let val = lisp.get(result).unwrap().as_float().unwrap();
-    assert!((val - 5.0).abs() < 0.001, "Expected 5.0, got {}", val);
+    let result = eval.eval_str("(+ (abs -2) (abs -3))").unwrap();
+    let val = lisp.get(result).unwrap().as_number().unwrap();
+    assert_eq!(val, 5);
     
     // Deeply nested stdlib calls
-    let result = eval.eval_str("(+ 1 (* 2 (sqrt 4)))").unwrap();
-    let val = lisp.get(result).unwrap().as_float().unwrap();
-    assert!((val - 5.0).abs() < 0.001, "Expected 5.0, got {}", val);
+    let result = eval.eval_str("(+ 1 (* 2 (abs -2)))").unwrap();
+    let val = lisp.get(result).unwrap().as_number().unwrap();
+    assert_eq!(val, 5);
 }
 
 #[test]

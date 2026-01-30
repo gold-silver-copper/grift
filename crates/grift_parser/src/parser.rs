@@ -531,7 +531,7 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
     
-    /// Parse a number (integer or float)
+    /// Parse an integer number
     fn parse_number<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         let negative = if self.peek() == Some(b'-') {
             self.advance();
@@ -540,7 +540,7 @@ impl<'a> Parser<'a> {
             false
         };
         
-        // Parse integer part
+        // Parse integer
         let mut int_value: isize = 0;
         
         while let Some(c) = self.peek() {
@@ -554,94 +554,10 @@ impl<'a> Parser<'a> {
             }
         }
         
-        // Check for decimal point or exponent
-        let is_float = matches!(self.peek(), Some(b'.') | Some(b'e') | Some(b'E'));
-        
-        if is_float {
-            // Parse as floating point
-            let mut float_value = int_value as f64;
-            
-            // Parse fractional part
-            if self.peek() == Some(b'.') {
-                self.advance();
-                let mut frac_mult = 0.1;
-                while let Some(c) = self.peek() {
-                    if c.is_ascii_digit() {
-                        self.advance();
-                        float_value += (c - b'0') as f64 * frac_mult;
-                        frac_mult *= 0.1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-            
-            // Parse exponent
-            if matches!(self.peek(), Some(b'e') | Some(b'E')) {
-                self.advance();
-                let exp_negative = match self.peek() {
-                    Some(b'-') => {
-                        self.advance();
-                        true
-                    }
-                    Some(b'+') => {
-                        self.advance();
-                        false
-                    }
-                    _ => false,
-                };
-                
-                let mut exp_value: i32 = 0;
-                while let Some(c) = self.peek() {
-                    if c.is_ascii_digit() {
-                        self.advance();
-                        exp_value = exp_value.saturating_mul(10).saturating_add((c - b'0') as i32);
-                    } else {
-                        break;
-                    }
-                }
-                
-                if exp_negative {
-                    exp_value = -exp_value;
-                }
-                
-                // Manual power of 10 calculation (no libm)
-                float_value = Self::multiply_by_pow10(float_value, exp_value);
-            }
-            
-            if negative {
-                float_value = -float_value;
-            }
-            
-            lisp.float(float_value).map_err(Into::into)
-        } else {
-            // Return as integer
-            if negative {
-                int_value = -int_value;
-            }
-            lisp.number(int_value).map_err(Into::into)
+        if negative {
+            int_value = -int_value;
         }
-    }
-    
-    /// Multiply a float by 10^exp without using libm
-    fn multiply_by_pow10(value: f64, exp: i32) -> f64 {
-        if exp == 0 {
-            return value;
-        }
-        
-        let mut result = value;
-        let mut e = exp.abs();
-        let mut multiplier = if exp > 0 { 10.0 } else { 0.1 };
-        
-        while e > 0 {
-            if e & 1 == 1 {
-                result *= multiplier;
-            }
-            multiplier *= multiplier;
-            e >>= 1;
-        }
-        
-        result
+        lisp.number(int_value).map_err(Into::into)
     }
     
     /// Parse a symbol
@@ -661,20 +577,6 @@ impl<'a> Parser<'a> {
         }
         
         let name = &buffer[..len];
-        
-        // Check for special float literals (R7RS)
-        // +nan.0, -nan.0, +inf.0, -inf.0
-        if len == 6 {
-            if name == b"+nan.0" || name == b"-nan.0" {
-                return lisp.float(f64::NAN).map_err(Into::into);
-            }
-            if name == b"+inf.0" {
-                return lisp.float(f64::INFINITY).map_err(Into::into);
-            }
-            if name == b"-inf.0" {
-                return lisp.float(f64::NEG_INFINITY).map_err(Into::into);
-            }
-        }
         
         // Note: In Scheme, nil is just a regular symbol.
         // The empty list is written as () or '() only.

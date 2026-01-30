@@ -436,11 +436,8 @@ pub enum Value {
     /// Boolean false (#f) - the ONLY false value
     False,
     
-    /// Integer number (exact)
+    /// Integer number
     Number(isize),
-    
-    /// Floating-point number (inexact)
-    Float(f64),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -594,22 +591,16 @@ impl Value {
         !matches!(self, Value::Cons(_))
     }
     
-    /// Check if this value is a number (integer or float)
+    /// Check if this value is a number
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Float(_))
+        matches!(self, Value::Number(_))
     }
     
     /// Check if this value is an integer
     #[inline]
     pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
-    }
-    
-    /// Check if this value is a float
-    #[inline]
-    pub const fn is_float(&self) -> bool {
-        matches!(self, Value::Float(_))
     }
     
     /// Extract ArenaIndex from a Ref value.
@@ -701,25 +692,6 @@ impl Value {
         }
     }
     
-    /// Get the float value if this is a float
-    #[inline]
-    pub const fn as_float(&self) -> Option<f64> {
-        match self {
-            Value::Float(f) => Some(*f),
-            _ => None,
-        }
-    }
-    
-    /// Get any numeric value as f64
-    #[inline]
-    pub const fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Number(n) => Some(*n as f64),
-            Value::Float(f) => Some(*f),
-            _ => None,
-        }
-    }
-    
     /// Get the char value if this is a char
     #[inline]
     pub const fn as_char(&self) -> Option<char> {
@@ -750,7 +722,6 @@ impl Value {
             Value::Nil => "nil",
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
-            Value::Float(_) => "number",
             Value::Char(_) => "char",
             Value::Cons(_) => "pair",
             Value::Symbol(_) => "symbol",
@@ -771,7 +742,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) => {
                 // No references
             }
