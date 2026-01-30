@@ -993,6 +993,7 @@ fn main() {
     
     // Test with GC disabled (batch operations)
     let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
+    
     let gc_off_start = Instant::now();
     
     for _ in 0..50 {
@@ -1000,8 +1001,11 @@ fn main() {
     }
     let gc_off_time = gc_off_start.elapsed();
     
-    // Re-enable and manually collect
-    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    // Re-enable GC and collect
+    // IMPORTANT: Enable GC directly on the arena, because eval_str needs
+    // to allocate memory for parsing. If the arena is full and GC is disabled,
+    // eval_str would fail trying to parse "(gc-enable)".
+    lisp.arena().set_gc_enabled(true);
     eval.gc();
 
     println!("[INFO] Map over 20 elements x 50 iterations:");
@@ -1039,7 +1043,8 @@ fn main() {
     }
     let gc_off_alloc_time = gc_off_alloc_start.elapsed();
     
-    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    // Re-enable GC and collect (see comment in map test above for explanation)
+    lisp.arena().set_gc_enabled(true);
     eval.gc();
 
     println!("[INFO] Allocation-heavy (8-element lists) x 100 iterations:");
@@ -1077,7 +1082,8 @@ fn main() {
     }
     let gc_off_rec_time = gc_off_rec_start.elapsed();
     
-    let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
+    // Re-enable GC and collect (see comment in map test above for explanation)
+    lisp.arena().set_gc_enabled(true);
     eval.gc();
 
     println!("[INFO] Fibonacci(12) x 20 iterations (recursive):");
