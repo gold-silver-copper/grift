@@ -146,6 +146,36 @@
 ;;; (sign n) - Return -1, 0, or 1 based on sign of n
 (define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
 
+;;; (sqrt x) - Square root using Newton's method
+;;; Uses iterative refinement to find the square root
+(define (sqrt x)
+  (letrec ((improve (lambda (guess)
+                      (/ (+ guess (/ x guess)) 2.0)))
+           (good-enough? (lambda (guess)
+                           (< (abs (- (* guess guess) x)) 0.00001)))
+           (iter (lambda (guess)
+                   (if (good-enough? guess)
+                       guess
+                       (iter (improve guess))))))
+    (if (<= x 0)
+        0.0
+        (iter 1.0))))
+
+;;; (square x) - Return x squared
+(define (square x) (* x x))
+
+;;; (cube x) - Return x cubed
+(define (cube x) (* x x x))
+
+;;; (sum lst) - Sum all elements in a list
+(define (sum lst) (fold + 0 lst))
+
+;;; (product lst) - Product of all elements in a list
+(define (product lst) (fold * 1 lst))
+
+;;; (average lst) - Average of all elements in a list
+(define (average lst) (/ (sum lst) (length lst)))
+
 ;;; ============================================================
 ;;; Additional R7RS List Functions (Section 6.4)
 ;;; ============================================================
