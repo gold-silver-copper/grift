@@ -83,6 +83,9 @@ mod macros;
 // Expansion module for hygienic macros
 pub mod expand;
 
+// Syntax-rules pattern matching and template substitution
+pub mod syntax_rules;
+
 // Public re-exports
 pub use error::{ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult};
 pub use evaluator::Evaluator;
@@ -97,4 +100,12 @@ pub use expand::{
     free_identifier_eq, bound_identifier_eq,
     syntax_is_list, syntax_list_length, syntax_car, syntax_cdr,
     syntax_to_vec, MAX_SYNTAX_LIST_LEN,
+};
+
+// Syntax-rules re-exports
+pub use syntax_rules::{
+    PatternBinding, PatternBindings, LiteralsSet,
+    SyntaxRulesTransformer,
+    match_pattern, substitute_template,
+    MAX_PATTERN_VARS, MAX_LITERALS, MAX_ELLIPSIS_DEPTH,
 };

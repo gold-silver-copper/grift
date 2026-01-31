@@ -220,11 +220,14 @@ Do not implement floats or other parts of numerical tower yet.
 - [x] Implement identifier operations (`is_identifier`, `identifier_symbol`, `free_identifier_eq`, `bound_identifier_eq`)
 - [x] Implement syntax list utilities (`syntax_car`, `syntax_cdr`, `syntax_to_vec`)
 
-#### 5.2 Syntax-Rules (Section 4.3.2)
-- [ ] Implement pattern matching for `syntax-rules` patterns
-- [ ] Implement template substitution with pattern variables
-- [ ] Implement ellipsis (`...`) handling in patterns and templates
-- [ ] Implement `_` wildcard and literal matching
+#### 5.2 Syntax-Rules (Section 4.3.2) ✅ COMPLETED
+- [x] Implement pattern matching for `syntax-rules` patterns
+- [x] Implement template substitution with pattern variables
+- [x] Implement ellipsis (`...`) handling in patterns and templates
+- [x] Implement `_` wildcard and literal matching
+- [x] Implement `SyntaxRulesTransformer` for compiled macros
+- [x] Implement `PatternBindings` for match results
+- [x] Implement `LiteralsSet` for literal identifiers
 
 #### 5.3 Macro Binding Forms
 - [ ] Implement `define-syntax` - Top-level syntax definitions
