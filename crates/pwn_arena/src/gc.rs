@@ -326,49 +326,24 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         result
     }
 
-    /// Allocate a value, running GC first if the arena is full.
+    /// Allocate a value (simple delegation to alloc).
     ///
-    /// If allocation fails due to `OutOfMemory`, this method runs garbage
-    /// collection with the provided roots and retries the allocation.
+    /// This method exists for API compatibility. GC policy should be handled
+    /// by the caller (e.g., the evaluator's trampoline), not the arena.
     ///
     /// # Errors
     ///
-    /// Returns `OutOfMemory` if allocation still fails after GC.
+    /// Returns `OutOfMemory` if the arena is full.
     ///
-    /// # Example
+    /// # Note
     ///
-    /// ```rust
-    /// use pwn_arena::{Arena, ArenaIndex, Trace};
-    ///
-    /// #[derive(Clone, Copy)]
-    /// struct Node(isize);
-    ///
-    /// impl<const N: usize> Trace<Node, N> for Node {
-    ///     fn trace<F: FnMut(ArenaIndex)>(&self, _: F) {}
-    /// }
-    ///
-    /// let arena: Arena<Node, 3> = Arena::new(Node(0));
-    ///
-    /// let root = arena.alloc(Node(1)).unwrap();
-    /// arena.alloc(Node(2)).unwrap(); // garbage
-    /// arena.alloc(Node(3)).unwrap(); // garbage
-    ///
-    /// // Arena is full, but alloc_or_gc will collect garbage first
-    /// let new_idx = arena.alloc_or_gc(Node(4), &[root]).unwrap();
-    /// assert_eq!(arena.len(), 2); // root + new_idx
-    /// ```
-    pub fn alloc_or_gc(&self, value: T, roots: &[ArenaIndex]) -> crate::ArenaResult<ArenaIndex>
+    /// The `roots` parameter is ignored - this method does NOT run GC.
+    /// Use `collect_garbage()` explicitly if you need GC.
+    #[inline]
+    pub fn alloc_or_gc(&self, value: T, _roots: &[ArenaIndex]) -> crate::ArenaResult<ArenaIndex>
     where
         T: Trace<T, N>,
     {
-        match self.alloc(value) {
-            Ok(idx) => Ok(idx),
-            Err(ArenaError::OutOfMemory) => {
-                // Run GC and retry
-                self.collect_garbage_unconditional(roots);
-                self.alloc(value)
-            }
-            Err(e) => Err(e),
-        }
+        self.alloc(value)
     }
 }

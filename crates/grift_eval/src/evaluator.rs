@@ -459,20 +459,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// The main trampoline loop - processes states and continuations
     /// This is the ONLY place where looping happens - no Rust recursion!
+    ///
+    /// GC Strategy: Aggressive periodic collection
+    /// - Checks memory pressure every GC_CHECK_INTERVAL steps
+    /// - Runs GC proactively when usage exceeds threshold
+    /// - Also handles OOM reactively as a fallback
     fn trampoline(&mut self, mut state: TrampolineState) -> EvalResult {
-        // Counter for periodic GC checks (every 2000 steps)
         let mut step_count: usize = 0;
-        const GC_CHECK_INTERVAL: usize = 2000;
-        const GC_THRESHOLD_PERCENT: usize = 85;
+        const GC_CHECK_INTERVAL: usize = 1000;
+        const GC_THRESHOLD_PERCENT: usize = 80;
         
         loop {
-            // Aggressive GC: Check memory usage periodically
+            // Aggressive periodic GC check
             step_count = step_count.wrapping_add(1);
             if step_count % GC_CHECK_INTERVAL == 0 {
                 let stats = self.lisp.stats();
-                let usage_percent = (stats.allocated * 100) / stats.capacity;
-                if usage_percent >= GC_THRESHOLD_PERCENT {
-                    // Memory is getting full - run GC (marking continuations AND current state as roots)
+                if stats.allocated * 100 / stats.capacity >= GC_THRESHOLD_PERCENT {
                     self.gc_with_state(&state);
                 }
             }
@@ -482,7 +484,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     match self.step_eval(expr, env) {
                         Ok(s) => s,
                         Err(e) if e.kind == ErrorKind::OutOfMemory => {
-                            // Auto-GC: Run GC and retry on out of memory
+                            // Fallback: run GC and retry once
                             self.gc_with_state(&state);
                             self.step_eval(expr, env)?
                         }
@@ -492,9 +494,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 TrampolineState::Return { val } => {
                     match self.step_return(val) {
                         Ok(Some(new_state)) => new_state,
-                        Ok(None) => return Ok(val), // Done!
+                        Ok(None) => return Ok(val),
                         Err(e) if e.kind == ErrorKind::OutOfMemory => {
-                            // Auto-GC: Run GC and retry on out of memory
+                            // Fallback: run GC and retry once
                             self.gc_with_state(&state);
                             match self.step_return(val)? {
                                 Some(new_state) => new_state,

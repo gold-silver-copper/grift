@@ -2989,8 +2989,13 @@ fn test_alloc_or_gc() {
     // Normal alloc would fail
     assert!(arena.alloc(Tree::Leaf(2)).is_err());
 
-    // But alloc_or_gc will run GC first
-    let new_idx = arena.alloc_or_gc(Tree::Leaf(2), &[root]).unwrap();
+    // alloc_or_gc no longer runs GC automatically - it's just an alloc
+    // The caller (e.g., evaluator) should handle GC policy
+    assert!(arena.alloc_or_gc(Tree::Leaf(2), &[root]).is_err());
+
+    // Explicitly run GC first, then alloc succeeds
+    arena.collect_garbage(&[root]);
+    let new_idx = arena.alloc(Tree::Leaf(2)).unwrap();
 
     // Should have collected garbage and allocated
     assert_eq!(arena.len(), 2);
