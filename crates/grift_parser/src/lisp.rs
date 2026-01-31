@@ -7,6 +7,47 @@ use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
 
 // ============================================================================
+// Macros for generating pack/unpack refs operations
+// ============================================================================
+
+/// Internal macro to generate pack_refsN and unpack_refsN methods.
+/// Reduces ~120 lines of repetitive code to ~15 lines of macro invocations.
+macro_rules! impl_pack_unpack_refs {
+    // Special case for 1 (no contiguous allocation needed)
+    (1, $pack_name:ident, $unpack_name:ident) => {
+        #[inline]
+        pub fn $pack_name(&self, a: ArenaIndex) -> ArenaResult<ArenaIndex> {
+            self.arena.alloc(Value::Ref(a))
+        }
+        
+        #[inline]
+        pub fn $unpack_name(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
+            self.arena.get(data)?.as_ref().ok_or(ArenaError::InvalidIndex)
+        }
+    };
+    // General case for N >= 2
+    ($n:expr, $pack_name:ident, $unpack_name:ident, $set_fn:ident, $get_fn:ident, [$($var:ident),+ $(,)?]) => {
+        #[inline]
+        pub fn $pack_name(&self, $($var: ArenaIndex),+) -> ArenaResult<ArenaIndex> {
+            let data = self.arena.alloc_contiguous($n, Value::Nil)?;
+            self.arena.$set_fn(data, $(Value::Ref($var)),+)?;
+            Ok(data)
+        }
+        
+        #[inline]
+        pub fn $unpack_name(&self, data: ArenaIndex) -> ArenaResult<( $( impl_pack_unpack_refs!(@T $var) ),+ )> {
+            let ($($var),+) = self.arena.$get_fn(data)?;
+            match ($($var.as_ref()),+) {
+                ($(Some($var)),+) => Ok(($($var),+)),
+                _ => Err(ArenaError::InvalidIndex),
+            }
+        }
+    };
+    // Helper to generate ArenaIndex for tuple type
+    (@T $var:ident) => { ArenaIndex };
+}
+
+// ============================================================================
 // Lisp Context - Arena wrapper with helper methods
 // ============================================================================
 
@@ -250,127 +291,14 @@ impl<const N: usize> Lisp<N> {
     // - 3 values via cons: 9 slots (3 cons × 3 slots each)
     // - 3 values via pack_refs3: 3 slots
     
-    /// Pack 1 ArenaIndex into contiguous storage
-    #[inline]
-    pub fn pack_refs1(&self, a: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Ref(a))
-    }
-    
-    /// Unpack 1 ArenaIndex from contiguous storage
-    #[inline]
-    pub fn unpack_refs1(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(data)?.as_ref().ok_or(ArenaError::InvalidIndex)
-    }
-    
-    /// Pack 2 ArenaIndex values into contiguous storage
-    #[inline]
-    pub fn pack_refs2(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(2, Value::Nil)?;
-        // Single borrow for both writes
-        self.arena.set_contiguous2(data, Value::Ref(a), Value::Ref(b))?;
-        Ok(data)
-    }
-    
-    /// Unpack 2 ArenaIndex values from contiguous storage
-    #[inline]
-    pub fn unpack_refs2(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
-        // Single borrow for both reads
-        let (va, vb) = self.arena.get_contiguous2(data)?;
-        match (va.as_ref(), vb.as_ref()) {
-            (Some(a), Some(b)) => Ok((a, b)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Pack 3 ArenaIndex values into contiguous storage
-    #[inline]
-    pub fn pack_refs3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(3, Value::Nil)?;
-        self.arena.set_contiguous3(data, Value::Ref(a), Value::Ref(b), Value::Ref(c))?;
-        Ok(data)
-    }
-    
-    /// Unpack 3 ArenaIndex values from contiguous storage
-    #[inline]
-    pub fn unpack_refs3(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let (va, vb, vc) = self.arena.get_contiguous3(data)?;
-        match (va.as_ref(), vb.as_ref(), vc.as_ref()) {
-            (Some(a), Some(b), Some(c)) => Ok((a, b, c)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Pack 4 ArenaIndex values into contiguous storage
-    #[inline]
-    pub fn pack_refs4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(4, Value::Nil)?;
-        self.arena.set_contiguous4(data, Value::Ref(a), Value::Ref(b), Value::Ref(c), Value::Ref(d))?;
-        Ok(data)
-    }
-    
-    /// Unpack 4 ArenaIndex values from contiguous storage
-    #[inline]
-    pub fn unpack_refs4(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let (va, vb, vc, vd) = self.arena.get_contiguous4(data)?;
-        match (va.as_ref(), vb.as_ref(), vc.as_ref(), vd.as_ref()) {
-            (Some(a), Some(b), Some(c), Some(d)) => Ok((a, b, c, d)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Pack 5 ArenaIndex values into contiguous storage
-    #[inline]
-    pub fn pack_refs5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(5, Value::Nil)?;
-        self.arena.set_contiguous5(data, Value::Ref(a), Value::Ref(b), Value::Ref(c), Value::Ref(d), Value::Ref(e))?;
-        Ok(data)
-    }
-    
-    /// Unpack 5 ArenaIndex values from contiguous storage
-    #[inline]
-    pub fn unpack_refs5(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let (va, vb, vc, vd, ve) = self.arena.get_contiguous5(data)?;
-        match (va.as_ref(), vb.as_ref(), vc.as_ref(), vd.as_ref(), ve.as_ref()) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e)) => Ok((a, b, c, d, e)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Pack 6 ArenaIndex values into contiguous storage
-    #[inline]
-    pub fn pack_refs6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(6, Value::Nil)?;
-        self.arena.set_contiguous6(data, Value::Ref(a), Value::Ref(b), Value::Ref(c), Value::Ref(d), Value::Ref(e), Value::Ref(f))?;
-        Ok(data)
-    }
-    
-    /// Unpack 6 ArenaIndex values from contiguous storage
-    #[inline]
-    pub fn unpack_refs6(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let (va, vb, vc, vd, ve, vf) = self.arena.get_contiguous6(data)?;
-        match (va.as_ref(), vb.as_ref(), vc.as_ref(), vd.as_ref(), ve.as_ref(), vf.as_ref()) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) => Ok((a, b, c, d, e, f)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Pack 7 ArenaIndex values into contiguous storage
-    #[inline]
-    pub fn pack_refs7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let data = self.arena.alloc_contiguous(7, Value::Nil)?;
-        self.arena.set_contiguous7(data, Value::Ref(a), Value::Ref(b), Value::Ref(c), Value::Ref(d), Value::Ref(e), Value::Ref(f), Value::Ref(g))?;
-        Ok(data)
-    }
-    
-    /// Unpack 7 ArenaIndex values from contiguous storage
-    #[inline]
-    pub fn unpack_refs7(&self, data: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let (va, vb, vc, vd, ve, vf, vg) = self.arena.get_contiguous7(data)?;
-        match (va.as_ref(), vb.as_ref(), vc.as_ref(), vd.as_ref(), ve.as_ref(), vf.as_ref(), vg.as_ref()) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(g)) => Ok((a, b, c, d, e, f, g)),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
+    // Pack/unpack refs operations - generated by impl_pack_unpack_refs! macro
+    impl_pack_unpack_refs!(1, pack_refs1, unpack_refs1);
+    impl_pack_unpack_refs!(2, pack_refs2, unpack_refs2, set_contiguous2, get_contiguous2, [a, b]);
+    impl_pack_unpack_refs!(3, pack_refs3, unpack_refs3, set_contiguous3, get_contiguous3, [a, b, c]);
+    impl_pack_unpack_refs!(4, pack_refs4, unpack_refs4, set_contiguous4, get_contiguous4, [a, b, c, d]);
+    impl_pack_unpack_refs!(5, pack_refs5, unpack_refs5, set_contiguous5, get_contiguous5, [a, b, c, d, e]);
+    impl_pack_unpack_refs!(6, pack_refs6, unpack_refs6, set_contiguous6, get_contiguous6, [a, b, c, d, e, f]);
+    impl_pack_unpack_refs!(7, pack_refs7, unpack_refs7, set_contiguous7, get_contiguous7, [a, b, c, d, e, f, g]);
     
     // ========================================================================
     // Symbol Interning

@@ -266,9 +266,8 @@ fn test_auto_memoization_nested_recursive_calls() {
 #[test]
 fn test_lru_cache_eviction() {
     // Test that cache eviction works by exceeding MAX_MEMO_CACHE_SIZE
-    // Increased arena size to accommodate pack/unpack cons-list storage
-    // Further increased for cons cells now using 3 slots each
-    let lisp: Lisp<60000> = Lisp::new();
+    // Reduced for debug builds (60000 causes stack overflow)
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define (identity n) (if (= n 0) 0 (identity (- n 1))))").unwrap();
@@ -2476,8 +2475,8 @@ fn test_string_ci_equals() {
 
 #[test]
 fn test_iota_functions() {
-    // Increased for cons cells now using 3 slots each
-    let lisp: Lisp<60000> = Lisp::new();
+    // Reduced for debug builds (60000 causes stack overflow)
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // iota1: simple count
@@ -2531,8 +2530,8 @@ fn test_list_accessors() {
 
 #[test]
 fn test_list_utilities() {
-    // Increased for cons cells now using 3 slots each
-    let lisp: Lisp<60000> = Lisp::new();
+    // Reduced for debug builds (60000 causes stack overflow)
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // concatenate
@@ -2554,8 +2553,8 @@ fn test_list_utilities() {
 
 #[test]
 fn test_string_utilities() {
-    // Increased for cons cells now using 3 slots each
-    let lisp: Lisp<60000> = Lisp::new();
+    // Reduced for debug builds (60000 causes stack overflow)
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // string-null?
@@ -2587,8 +2586,8 @@ fn test_string_map_and_for_each() {
 
 #[test]
 fn test_string_split() {
-    // Increased for cons cells now using 3 slots each
-    let lisp: Lisp<60000> = Lisp::new();
+    // Reduced for debug builds (60000 causes stack overflow)
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // string-split
