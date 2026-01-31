@@ -120,13 +120,11 @@ Current variant payloads:
 
 Specific optimizations:
 
-1. **Lambda** - Stores only a single `ArenaIndex` pointing to a linked structure `(params . (body . env))` in the arena. This reduces Lambda's payload from 24 bytes (3 × ArenaIndex) to 8 bytes (1 × ArenaIndex).
+1. **Lambda** - Stores `params` and `body_env` as two inline ArenaIndex fields. The `body_env` points to a cons cell `(body . env)` in the arena. This keeps the payload at 16 bytes (2 × ArenaIndex) while allowing direct access to params.
 
 2. **StdLib** - Uses a simple tuple variant `StdLib(StdLib)` with just the function enum. Function bodies are parsed on each call from static strings.
 
 3. **Array/String** - Store length inline in the Value variant for O(1) access. The `data` pointer points directly to the first element (no length header in arena). Empty arrays/strings have `len=0` and `data == NIL`.
-
-4. **Lambda** - Stores `params` and `body_env` inline. The `body_env` points to a cons cell `(body . env)`.
 
 This design optimizes for common operations (length queries, iteration) while keeping arena usage minimal.
 
@@ -247,32 +245,52 @@ enum TrampolineState {
     Return { val: ArenaIndex },
 }
 
+/// Continuations use a data stack pattern - each variant stores an offset (usize)
+/// into a separate data stack that holds ArenaIndex values.
 enum Cont {
     Done,
-    IfBranch { then_expr, else_expr, env },
-    ApplyArgs { args_expr, env, call_expr },
+    IfBranch(usize),           // Stack data: [then_expr, else_expr, env]
+    ApplyForced(usize),        // Stack data: [args_expr, env, call_expr]
+    BuiltinForceArg(usize),    // Stack data: [builtin, remaining_args, collected, call_expr, eval_env]
+    LetBinding(usize),         // Stack data: [remaining_bindings, new_env, original_env, body, name]
     // ... many more continuations
 }
 ```
+
+This data stack pattern avoids arena allocations for continuation data, improving GC performance.
 
 ### Evaluation Loop
 
 ```rust
 loop {
-    match state {
+    state = match state {
         Eval { expr, env } => {
             // Analyze expr, push continuations, set new state
+            self.step_eval(expr, env)?
         }
         Return { val } => {
             // Pop continuation and process
-            match self.pop_cont() {
-                Cont::Done => return Ok(val),
-                Cont::IfBranch { then_expr, else_expr, env } => {
-                    // Choose branch based on val
-                }
-                // ... handle other continuations
+            match self.step_return(val)? {
+                Some(new_state) => new_state,
+                None => return Ok(val),  // Cont::Done
             }
         }
+    };
+}
+```
+
+The `step_return` function pops the continuation and reads its data from the data stack:
+
+```rust
+fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
+    let cont = self.pop_cont();  // Also restores data stack
+    match cont {
+        Cont::Done => Ok(None),
+        Cont::IfBranch(data_start) => {
+            let (then_expr, else_expr, env) = self.read_data3(data_start);
+            // Choose branch based on val
+        }
+        // ... handle other continuations
     }
 }
 ```
