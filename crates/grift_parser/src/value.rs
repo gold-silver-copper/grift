@@ -408,6 +408,32 @@ pub enum Value {
     /// subset of (or equal to) the binding's scope set. The most specific
     /// binding (largest scope set) wins.
     Syntax { datum: ArenaIndex, scopes: ArenaIndex },
+    
+    /// Macro transformer (compiled syntax-rules)
+    /// 
+    /// A transformer is a compiled macro that can be applied to syntax objects.
+    /// It stores the literals, pattern-template rules, and definition environment
+    /// for hygienic expansion.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `literals`: A list of literal identifier symbols (matched literally in patterns)
+    /// - `rules`: A list of (pattern . template) pairs
+    /// - `def_env`: The environment where the macro was defined (for hygiene)
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// (define-syntax my-or
+    ///   (syntax-rules ()
+    ///     ((my-or) #f)
+    ///     ((my-or e) e)
+    ///     ((my-or e1 e2 ...) (let ((t e1)) (if t t (my-or e2 ...))))))
+    /// ```
+    /// 
+    /// The `syntax-rules` form compiles to a Transformer value which is then
+    /// bound to `my-or` in the environment.
+    Transformer { literals: ArenaIndex, rules: ArenaIndex, def_env: ArenaIndex },
 }
 
 impl Value {
@@ -573,6 +599,12 @@ impl Value {
         matches!(self, Value::Syntax { .. })
     }
     
+    /// Check if this value is a macro transformer
+    #[inline]
+    pub const fn is_transformer(&self) -> bool {
+        matches!(self, Value::Transformer { .. })
+    }
+    
     /// Get a human-readable type name
     pub const fn type_name(&self) -> &'static str {
         match self {
@@ -591,6 +623,7 @@ impl Value {
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
             Value::Syntax { .. } => "syntax",
+            Value::Transformer { .. } => "transformer",
         }
     }
 }
@@ -657,6 +690,12 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // Trace both the wrapped datum and the scope list
                 tracer(*datum);
                 tracer(*scopes);
+            }
+            Value::Transformer { literals, rules, def_env } => {
+                // Trace literals list, rules list, and definition environment
+                tracer(*literals);
+                tracer(*rules);
+                tracer(*def_env);
             }
         }
     }

@@ -326,87 +326,270 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(binding, env).map_err(Into::into)
     }
     
-    /// Look up a variable in an environment
+    /// Look up a variable in an environment with scope-aware resolution.
+    /// 
+    /// For hygienic macros, identifier resolution uses the "set of scopes" model:
+    /// - A reference matches a binding if `scopes(ref) ⊆ scopes(bind)`
+    /// - When multiple bindings match, the most specific (largest scope set) wins
+    /// 
+    /// This enables proper hygiene: macro-introduced identifiers have additional
+    /// scopes that prevent them from capturing user-defined variables.
     fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> EvalResult {
-        let mut current = env;
+        // Extract the symbol and scopes from the name
+        let (name_sym, name_scopes) = self.extract_identifier(name)?;
         
+        // Track the best match (most specific binding)
+        let mut best_match: Option<ArenaIndex> = None;
+        let mut best_scope_count: usize = 0;
+        
+        // Search local environment
+        let mut current = env;
         loop {
             match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Try global
-                    return self.env_lookup_global(name);
-                }
+                Value::Nil => break, // Done with local, try global
                 Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
+                        // Check if this binding matches
+                        if let Some(scope_count) = self.binding_matches(bound_name, name_sym, name_scopes)? {
+                            // This binding matches - check if it's more specific
+                            if best_match.is_none() || scope_count > best_scope_count {
+                                best_match = Some(bound_value);
+                                best_scope_count = scope_count;
+                            }
+                        }
                     }
                     current = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::Generic, name)),
             }
         }
+        
+        // Search global environment
+        current = self.global_env;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
+                        if let Some(scope_count) = self.binding_matches(bound_name, name_sym, name_scopes)? {
+                            if best_match.is_none() || scope_count > best_scope_count {
+                                best_match = Some(bound_value);
+                                best_scope_count = scope_count;
+                            }
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => break,
+            }
+        }
+        
+        best_match.ok_or_else(|| self.make_error(ErrorKind::UnboundVariable, name))
     }
     
-    /// Look up in global environment only
+    /// Extract the symbol and scopes from an identifier.
+    /// 
+    /// An identifier can be:
+    /// - A bare symbol (no scopes)
+    /// - A syntax object wrapping a symbol (has scopes)
+    #[inline]
+    fn extract_identifier(&self, name: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        match self.lisp.get(name)? {
+            Value::Symbol(_) => {
+                // Bare symbol - no scopes
+                let nil = self.lisp.nil()?;
+                Ok((name, nil))
+            }
+            Value::Syntax { datum, scopes } => {
+                // Syntax object - extract symbol and scopes
+                // The datum should be a symbol
+                let sym = self.lisp.syntax_datum(datum)?;
+                Ok((sym, scopes))
+            }
+            _ => {
+                // Not an identifier - treat as bare with no scopes
+                let nil = self.lisp.nil()?;
+                Ok((name, nil))
+            }
+        }
+    }
+    
+    /// Check if a binding matches a reference identifier.
+    /// 
+    /// Returns Some(scope_count) if the binding matches, None otherwise.
+    /// A binding matches if:
+    /// 1. The symbols are the same (by name)
+    /// 2. The **binding's** scopes are a subset of the **reference's** scopes
+    ///    (i.e., scopes(bind) ⊆ scopes(ref))
+    /// 
+    /// This is the key rule from "Binding as Sets of Scopes":
+    /// - Global bindings have empty scope sets, so they match any reference
+    /// - Local bindings have scopes, so they only match references with those scopes
+    /// - Macro-introduced bindings have introduction scopes that must be present
+    /// 
+    /// The scope_count is used to select the most specific binding (largest scope set).
+    #[inline]
+    fn binding_matches(
+        &self,
+        bound_name: ArenaIndex,
+        ref_sym: ArenaIndex,
+        ref_scopes: ArenaIndex,
+    ) -> Result<Option<usize>, EvalError> {
+        // Extract symbol and scopes from the bound name
+        let (bound_sym, bound_scopes) = self.extract_identifier(bound_name)?;
+        
+        // Check if symbols match
+        if !self.lisp.symbol_eq(bound_sym, ref_sym)? {
+            return Ok(None);
+        }
+        
+        // Check if binding scopes are a subset of reference scopes
+        // For the set-of-scopes model: bind matches ref if scopes(bind) ⊆ scopes(ref)
+        // 
+        // This means:
+        // - A binding with no scopes (global) matches any reference
+        // - A binding with scopes only matches references that have ALL those scopes
+        if !self.lisp.scopes_subset(bound_scopes, ref_scopes)? {
+            return Ok(None);
+        }
+        
+        // Match! Return the binding's scope count for specificity comparison
+        let scope_count = self.lisp.scopes_count(bound_scopes)?;
+        Ok(Some(scope_count))
+    }
+    
+    /// Look up in global environment only with scope-aware resolution.
+    #[allow(dead_code)]
     fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env;
+        let (name_sym, name_scopes) = self.extract_identifier(name)?;
         
+        let mut best_match: Option<ArenaIndex> = None;
+        let mut best_scope_count: usize = 0;
+        
+        let mut current = self.global_env;
         loop {
             match self.lisp.get(current)? {
-                Value::Nil => {
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
+                Value::Nil => break,
                 Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
+                        if let Some(scope_count) = self.binding_matches(bound_name, name_sym, name_scopes)? {
+                            if best_match.is_none() || scope_count > best_scope_count {
+                                best_match = Some(bound_value);
+                                best_scope_count = scope_count;
+                            }
+                        }
                     }
                     current = cdr;
                 }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+                _ => break,
             }
         }
+        
+        best_match.ok_or_else(|| self.make_error(ErrorKind::UnboundVariable, name))
     }
     
-    /// Set a variable in an environment (mutation operation)
-    /// Searches both local and global environments
-    /// Returns the new value on success
+    /// Set a variable in an environment (mutation operation) with scope-aware matching.
+    /// Searches both local and global environments for the most specific binding.
+    /// Returns the new value on success.
     fn env_set(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // First search local environment
+        let (name_sym, name_scopes) = self.extract_identifier(name)?;
+        
+        // Track the best match (most specific binding)
+        let mut best_binding: Option<ArenaIndex> = None;
+        let mut best_scope_count: usize = 0;
+        
+        // Search local environment
         let mut current = env;
         loop {
             match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found in local env, try global
-                    return self.env_set_global(name, value);
-                }
+                Value::Nil => break,
                 Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
+                        if let Some(scope_count) = self.binding_matches(bound_name, name_sym, name_scopes)? {
+                            if best_binding.is_none() || scope_count > best_scope_count {
+                                best_binding = Some(car);
+                                best_scope_count = scope_count;
+                            }
+                        }
                     }
                     current = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::Generic, name)),
             }
         }
+        
+        // Search global environment
+        current = self.global_env;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
+                        if let Some(scope_count) = self.binding_matches(bound_name, name_sym, name_scopes)? {
+                            if best_binding.is_none() || scope_count > best_scope_count {
+                                best_binding = Some(car);
+                                best_scope_count = scope_count;
+                            }
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => break,
+            }
+        }
+        
+        // Mutate the best matching binding
+        if let Some(binding) = best_binding {
+            self.lisp.set_cdr(binding, value)?;
+            Ok(value)
+        } else {
+            Err(self.make_error(ErrorKind::UnboundVariable, name))
+        }
     }
     
-    /// Set a variable in global environment only
+    /// Set a variable in global environment only with scope-aware matching.
+    #[allow(dead_code)]
     fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
+        let (name_sym, name_scopes) = self.extract_identifier(name)?;
+        
+        let mut best_binding: Option<ArenaIndex> = None;
+        let mut best_scope_count: usize = 0;
+        
+        let mut current = self.global_env;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
+                        if let Some(scope_count) = self.binding_matches(bound_name, name_sym, name_scopes)? {
+                            if best_binding.is_none() || scope_count > best_scope_count {
+                                best_binding = Some(car);
+                                best_scope_count = scope_count;
+                            }
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => break,
+            }
+        }
+        
+        if let Some(binding) = best_binding {
+            self.lisp.set_cdr(binding, value)?;
+            Ok(value)
+        } else {
+            Err(self.make_error(ErrorKind::UnboundVariable, name))
+        }
+    }
+    
+    /// Legacy: Set a variable in global environment (exact match by symbol).
+    /// Used by internal operations that don't need scope-aware lookup.
+    #[allow(dead_code)]
+    fn env_set_global_exact(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         let mut current = self.global_env;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
-                    // Not found anywhere - error
                     return Err(self.make_error(ErrorKind::UnboundVariable, name));
                 }
                 Value::Cons { car, cdr } => {
@@ -571,7 +754,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
-            Value::Ref(_) | Value::Usize(_) => {
+            Value::Ref(_) | Value::Usize(_) | Value::Transformer { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -603,16 +786,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let head = self.lisp.get(car)?;
         
-        // Check for special forms
-        if let Value::Symbol(_) = head {
+        // Extract the symbol for special form checking.
+        // This handles both bare symbols and syntax objects wrapping symbols
+        // (which can occur after macro expansion).
+        let car_sym = match head {
+            Value::Symbol(_) => car,
+            Value::Syntax { datum, .. } => {
+                // Get the underlying symbol
+                let inner = self.lisp.syntax_datum(datum)?;
+                if matches!(self.lisp.get(inner)?, Value::Symbol(_)) {
+                    inner
+                } else {
+                    car // Not a symbol, use original
+                }
+            }
+            _ => car,
+        };
+        
+        // Check for special forms using the extracted symbol
+        if matches!(self.lisp.get(car_sym)?, Value::Symbol(_)) {
             // quote
-            if self.lisp.symbol_matches(car, "quote")? {
+            if self.lisp.symbol_matches(car_sym, "quote")? {
                 let val = self.lisp.car(cdr)?;
                 return Ok(TrampolineState::Return { val });
             }
             
             // if - condition evaluated, then one branch selected
-            if self.lisp.symbol_matches(car, "if")? {
+            if self.lisp.symbol_matches(car_sym, "if")? {
                 let cond_expr = self.lisp.car(cdr)?;
                 let rest = self.lisp.cdr(cdr)?;
                 let then_expr = self.lisp.car(rest)?;
@@ -632,48 +832,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // cond - TCO in final clause
-            if self.lisp.symbol_matches(car, "cond")? {
+            if self.lisp.symbol_matches(car_sym, "cond")? {
                 return self.step_eval_cond(cdr, env);
             }
             
             // lambda
-            if self.lisp.symbol_matches(car, "lambda")? {
+            if self.lisp.symbol_matches(car_sym, "lambda")? {
                 let val = self.eval_lambda(cdr, env)?;
                 return Ok(TrampolineState::Return { val });
             }
             
             // define
-            if self.lisp.symbol_matches(car, "define")? {
+            if self.lisp.symbol_matches(car_sym, "define")? {
                 return self.eval_define(cdr, env);
             }
             
             // set! - mutate variable binding
-            if self.lisp.symbol_matches(car, "set!")? {
+            if self.lisp.symbol_matches(car_sym, "set!")? {
                 return self.eval_set(cdr, env);
             }
             
             // let - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "let")? {
+            if self.lisp.symbol_matches(car_sym, "let")? {
                 return self.step_eval_let(cdr, env);
             }
 
             // let* - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "let*")? {
+            if self.lisp.symbol_matches(car_sym, "let*")? {
                 return self.step_eval_let_star(cdr, env);
             }
 
             // letrec - continuation-based evaluation (R7RS Section 4.2.2)
-            if self.lisp.symbol_matches(car, "letrec")? {
+            if self.lisp.symbol_matches(car_sym, "letrec")? {
                 return self.step_eval_letrec(cdr, env);
             }
 
             // letrec* - continuation-based evaluation (R7RS Section 4.2.2)
-            if self.lisp.symbol_matches(car, "letrec*")? {
+            if self.lisp.symbol_matches(car_sym, "letrec*")? {
                 return self.step_eval_letrec(cdr, env); // Same as letrec for now
             }
 
             // when - continuation-based evaluation (R7RS Section 4.2.1)
-            if self.lisp.symbol_matches(car, "when")? {
+            if self.lisp.symbol_matches(car_sym, "when")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
                 let data_start = self.pack_when(body, env)?;
@@ -682,7 +882,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // unless - continuation-based evaluation (R7RS Section 4.2.1)
-            if self.lisp.symbol_matches(car, "unless")? {
+            if self.lisp.symbol_matches(car_sym, "unless")? {
                 let test_expr = self.lisp.car(cdr)?;
                 let body = self.lisp.cdr(cdr)?;
                 let data_start = self.pack_unless(body, env)?;
@@ -691,37 +891,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // begin - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "begin")? {
+            if self.lisp.symbol_matches(car_sym, "begin")? {
                 return self.step_eval_begin(cdr, env);
             }
 
             // and - continuation-based short circuit
-            if self.lisp.symbol_matches(car, "and")? {
+            if self.lisp.symbol_matches(car_sym, "and")? {
                 return self.step_eval_and(cdr, env);
             }
 
             // or - continuation-based short circuit
-            if self.lisp.symbol_matches(car, "or")? {
+            if self.lisp.symbol_matches(car_sym, "or")? {
                 return self.step_eval_or(cdr, env);
             }
             
             // case - pattern matching
-            if self.lisp.symbol_matches(car, "case")? {
+            if self.lisp.symbol_matches(car_sym, "case")? {
                 return self.step_eval_case(cdr, env);
             }
             
             // do - iteration construct
-            if self.lisp.symbol_matches(car, "do")? {
+            if self.lisp.symbol_matches(car_sym, "do")? {
                 return self.step_eval_do(cdr, env);
             }
             
             // quasiquote - template with unquote (trampolined)
-            if self.lisp.symbol_matches(car, "quasiquote")? {
+            if self.lisp.symbol_matches(car_sym, "quasiquote")? {
                 return self.eval_quasiquote(self.lisp.car(cdr)?, env);
             }
             
             // eval - continuation-based evaluation at runtime
-            if self.lisp.symbol_matches(car, "eval")? {
+            if self.lisp.symbol_matches(car_sym, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
                 // Push continuation to evaluate the result in global environment
                 let data_start = self.pack_eval_expr(self.global_env)?;
@@ -731,13 +931,49 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // apply - apply function to list of arguments
-            if self.lisp.symbol_matches(car, "apply")? {
+            if self.lisp.symbol_matches(car_sym, "apply")? {
                 return self.step_eval_apply(cdr, env);
             }
             
             // values - return multiple values (as a special list)
-            if self.lisp.symbol_matches(car, "values")? {
+            if self.lisp.symbol_matches(car_sym, "values")? {
                 return self.eval_values(cdr, env);
+            }
+            
+            // ================================================================
+            // Macro Binding Forms (R7RS Section 4.3)
+            // ================================================================
+            
+            // define-syntax - bind a transformer to a name
+            if self.lisp.symbol_matches(car_sym, "define-syntax")? {
+                return self.eval_define_syntax(cdr, env);
+            }
+            
+            // let-syntax - local syntax bindings with hygiene
+            if self.lisp.symbol_matches(car_sym, "let-syntax")? {
+                return self.eval_let_syntax(cdr, env);
+            }
+            
+            // letrec-syntax - recursive local syntax bindings
+            if self.lisp.symbol_matches(car_sym, "letrec-syntax")? {
+                return self.eval_letrec_syntax(cdr, env);
+            }
+            
+            // syntax-rules - create a transformer
+            if self.lisp.symbol_matches(car_sym, "syntax-rules")? {
+                return self.eval_syntax_rules(cdr, env);
+            }
+            
+            // syntax-error - signal a macro expansion error
+            if self.lisp.symbol_matches(car_sym, "syntax-error")? {
+                return self.eval_syntax_error(cdr);
+            }
+            
+            // Check if car_sym is a bound macro and expand it
+            if let Ok(val) = self.env_lookup(env, car_sym) {
+                if matches!(self.lisp.get(val)?, Value::Transformer { .. }) {
+                    return self.apply_macro(val, expr, env);
+                }
             }
         }
         
@@ -3311,6 +3547,289 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
+        }
+    }
+    
+    // ========================================================================
+    // Macro Binding Forms (R7RS Section 4.3)
+    // ========================================================================
+    
+    /// Evaluate (define-syntax name transformer)
+    /// 
+    /// Binds a transformer to a name in the global environment.
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// (define-syntax my-or
+    ///   (syntax-rules ()
+    ///     ((my-or) #f)
+    ///     ((my-or e) e)
+    ///     ((my-or e1 e2 ...) (let ((t e1)) (if t t (my-or e2 ...))))))
+    /// ```
+    fn eval_define_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let name = self.lisp.car(args)?;
+        let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+        
+        // Verify name is a symbol
+        if !matches!(self.lisp.get(name)?, Value::Symbol(_)) {
+            return Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name()));
+        }
+        
+        // Evaluate the transformer expression (should produce a Transformer value)
+        // For now, we evaluate it directly and bind it
+        // Push continuation to bind the result
+        let data_start = self.pack_define_value(name)?;
+        self.push_cont(Cont::DefineValue(data_start))?;
+        Ok(TrampolineState::Eval { expr: transformer_expr, env })
+    }
+    
+    /// Evaluate (syntax-rules (literals...) (pattern template)...)
+    /// 
+    /// Creates a transformer value.
+    fn eval_syntax_rules(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let literals_list = self.lisp.car(args)?;
+        let rules = self.lisp.cdr(args)?;
+        
+        // Create the transformer
+        let transformer = self.lisp.transformer(literals_list, rules, env)?;
+        
+        Ok(TrampolineState::Return { val: transformer })
+    }
+    
+    /// Evaluate (let-syntax ((name transformer)...) body...)
+    /// 
+    /// Creates local macro bindings with a fresh scope for hygiene.
+    fn eval_let_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body_list = self.lisp.cdr(args)?;
+        
+        // Create a fresh scope for the let-syntax body
+        let scope_id = self.fresh_scope();
+        
+        // Build body expression
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+        
+        // Process bindings: evaluate each transformer and extend environment
+        let mut new_env = env;
+        let mut current = bindings;
+        
+        while let Value::Cons { car: binding, cdr } = self.lisp.get(current)? {
+            let name = self.lisp.car(binding)?;
+            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+            
+            // Evaluate the transformer expression synchronously for now
+            // This is a simplification - ideally we'd use continuations
+            let transformer = self.eval_to_value(transformer_expr, env)?;
+            
+            // Verify it's a transformer
+            if !matches!(self.lisp.get(transformer)?, Value::Transformer { .. }) {
+                return Err(EvalError::new(ErrorKind::TypeError)
+                    .with_message("expected transformer"));
+            }
+            
+            // Extend environment with the binding
+            new_env = self.env_extend(new_env, name, transformer)?;
+            current = cdr;
+        }
+        
+        // Evaluate body in the extended environment
+        // Note: In a full implementation, we would apply scope_id to all identifiers
+        // in the body and remove it from any definitions that get spliced out.
+        // For now, we just evaluate in the extended environment.
+        let _ = scope_id; // Mark as used for future hygiene implementation
+        
+        Ok(TrampolineState::Eval { expr: body, env: new_env })
+    }
+    
+    /// Evaluate (letrec-syntax ((name transformer)...) body...)
+    /// 
+    /// Like let-syntax, but allows transformers to refer to each other.
+    fn eval_letrec_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let bindings = self.lisp.car(args)?;
+        let body_list = self.lisp.cdr(args)?;
+        
+        // Create a fresh scope for the letrec-syntax body
+        let scope_id = self.fresh_scope();
+        
+        // Build body expression
+        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+        
+        // First pass: extend environment with placeholders for all names
+        let mut new_env = env;
+        let nil = self.lisp.nil()?;
+        let mut names = [ArenaIndex::NIL; 32];
+        let mut name_count = 0;
+        
+        let mut current = bindings;
+        while let Value::Cons { car: binding, cdr } = self.lisp.get(current)? {
+            let name = self.lisp.car(binding)?;
+            if name_count < 32 {
+                names[name_count] = name;
+                name_count += 1;
+            }
+            new_env = self.env_extend(new_env, name, nil)?; // Placeholder
+            current = cdr;
+        }
+        
+        // Second pass: evaluate transformers in the extended environment and update bindings
+        let mut idx = 0;
+        current = bindings;
+        while let Value::Cons { car: binding, cdr } = self.lisp.get(current)? {
+            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+            
+            // Evaluate transformer in the environment with all names visible
+            let transformer = self.eval_to_value(transformer_expr, new_env)?;
+            
+            // Verify it's a transformer
+            if !matches!(self.lisp.get(transformer)?, Value::Transformer { .. }) {
+                return Err(EvalError::new(ErrorKind::TypeError)
+                    .with_message("expected transformer"));
+            }
+            
+            // Update the binding (mutate in place)
+            if idx < name_count {
+                self.env_set(new_env, names[idx], transformer)?;
+            }
+            
+            idx += 1;
+            current = cdr;
+        }
+        
+        let _ = scope_id; // Mark as used for future hygiene implementation
+        
+        // Evaluate body in the extended environment
+        Ok(TrampolineState::Eval { expr: body, env: new_env })
+    }
+    
+    /// Evaluate (syntax-error message ...)
+    /// 
+    /// Signals a macro expansion error with the given message.
+    fn eval_syntax_error(&mut self, args: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        // Build error message from arguments
+        let mut msg = [0u8; 256];
+        let prefix = b"syntax error: ";
+        let prefix_len = prefix.len().min(256);
+        msg[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
+        let mut pos = prefix_len;
+        
+        let mut current = args;
+        while let Value::Cons { car, cdr } = self.lisp.get(current)? {
+            // Try to convert argument to string representation
+            if let Value::String { len, data } = self.lisp.get(car)? {
+                let base = data.raw();
+                for i in 0..len {
+                    if pos >= 255 { break; }
+                    let char_idx = ArenaIndex::new(base + i);
+                    if let Ok(Value::Char(c)) = self.lisp.get(char_idx) {
+                        if c.is_ascii() {
+                            msg[pos] = c as u8;
+                            pos += 1;
+                        }
+                    }
+                }
+            }
+            current = cdr;
+        }
+        
+        // Create error message from bytes
+        let msg_str = core::str::from_utf8(&msg[..pos]).unwrap_or("syntax error");
+        Err(EvalError::new(ErrorKind::UserError)
+            .with_message(msg_str))
+    }
+    
+    /// Apply a macro transformer to an input form.
+    /// 
+    /// This is called when we detect that the car of an application is bound
+    /// to a transformer.
+    fn apply_macro(&mut self, transformer: ArenaIndex, input: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        use crate::syntax_rules::{match_pattern, substitute_template, LiteralsSet};
+        
+        let (literals_list, rules, _def_env) = match self.lisp.get(transformer)? {
+            Value::Transformer { literals, rules, def_env } => (literals, rules, def_env),
+            _ => return Err(EvalError::new(ErrorKind::TypeError)
+                .with_message("expected transformer")),
+        };
+        
+        // Build literals set
+        let mut literals = LiteralsSet::new();
+        let mut current = literals_list;
+        while let Value::Cons { car, cdr } = self.lisp.get(current)? {
+            if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
+                literals.add(car);
+            }
+            current = cdr;
+        }
+        
+        // Get a fresh introduction scope for hygiene
+        let intro_scope = self.fresh_scope();
+        
+        // Try each rule until one matches
+        let mut rule_current = rules;
+        while let Value::Cons { car: rule, cdr } = self.lisp.get(rule_current)? {
+            let pattern = self.lisp.car(rule)?;
+            let template = self.lisp.car(self.lisp.cdr(rule)?)?;
+            
+            // Try to match the input against this pattern
+            if let Some(bindings) = match_pattern(self.lisp, pattern, input, &literals, 0)? {
+                // Match succeeded - substitute template
+                let expanded = substitute_template(self.lisp, template, &bindings, intro_scope)?;
+                
+                // Evaluate the expanded form
+                return Ok(TrampolineState::Eval { expr: expanded, env });
+            }
+            
+            rule_current = cdr;
+        }
+        
+        // No rule matched
+        Err(EvalError::new(ErrorKind::UserError)
+            .with_message("no matching clause in syntax-rules"))
+    }
+    
+    /// Helper: evaluate an expression to a value (blocking).
+    /// 
+    /// This is used internally for macro-related operations where we need
+    /// the result synchronously. It runs the trampoline internally.
+    fn eval_to_value(&mut self, expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // Save continuation state
+        let saved_cont_depth = self.cont_depth;
+        let saved_data_top = self.data_stack_top;
+        
+        // Run the trampoline
+        let mut state = TrampolineState::Eval { expr, env };
+        
+        loop {
+            state = match state {
+                TrampolineState::Eval { expr, env } => self.step_eval(expr, env)?,
+                TrampolineState::Return { val } => {
+                    if self.cont_depth <= saved_cont_depth {
+                        // Restore state and return
+                        self.cont_depth = saved_cont_depth;
+                        self.data_stack_top = saved_data_top;
+                        return Ok(val);
+                    }
+                    match self.step_return(val)? {
+                        Some(s) => s,
+                        None => {
+                            // Continuation stack exhausted - return the value
+                            self.cont_depth = saved_cont_depth;
+                            self.data_stack_top = saved_data_top;
+                            return Ok(val);
+                        }
+                    }
+                }
+            };
         }
     }
     

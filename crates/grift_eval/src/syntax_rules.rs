@@ -617,7 +617,10 @@ fn substitute_template_impl<const N: usize>(
             }
             
             // Not a pattern variable - it's an introduced identifier
-            // Add the introduction scope
+            // Add the introduction scope for hygiene.
+            // With scope-aware lookup (Phase 5.4), this identifier will still
+            // resolve to the correct binding because scopes(ref) ⊆ scopes(bind)
+            // when the binding has no scopes (global bindings like 'if', 'let').
             add_scope_to_all(lisp, template, intro_scope)
         }
         

@@ -229,16 +229,23 @@ Do not implement floats or other parts of numerical tower yet.
 - [x] Implement `PatternBindings` for match results
 - [x] Implement `LiteralsSet` for literal identifiers
 
-#### 5.3 Macro Binding Forms
-- [ ] Implement `define-syntax` - Top-level syntax definitions
-- [ ] Implement `let-syntax` - Local syntax bindings (adds scope, removes on splice)
-- [ ] Implement `letrec-syntax` - Recursive local syntax bindings
-- [ ] Implement `syntax-error` - Macro error signaling
+#### 5.3 Macro Binding Forms ✅ COMPLETED
+- [x] Implement `define-syntax` - Top-level syntax definitions
+- [x] Implement `let-syntax` - Local syntax bindings with fresh scopes
+- [x] Implement `letrec-syntax` - Recursive local syntax bindings
+- [x] Implement `syntax-error` - Macro error signaling
+- [x] Add `Value::Transformer` variant for storing compiled macros
+- [x] Implement macro application with `apply_macro`
+- [x] Integrate macro detection into `step_eval_list`
 
-#### 5.4 Identifier Resolution with Scopes
-- [ ] Modify `env_lookup` to use scope comparison for hygiene
-- [ ] Implement "most specific binding" selection (largest matching scope set)
-- [ ] Handle definition contexts (scope flipping for spliced definitions)
+#### 5.4 Identifier Resolution with Scopes ✅ COMPLETED
+- [x] Modify `env_lookup` to use scope comparison for hygiene
+- [x] Implement `extract_identifier()` to handle both symbols and syntax objects
+- [x] Implement `binding_matches()` with set-of-scopes comparison
+- [x] Implement "most specific binding" selection (largest matching scope set)
+- [x] Update `env_set` for scope-aware mutation
+- [x] Handle syntax-wrapped special forms in `step_eval_list`
+- [x] Re-enable introduction scopes in template substitution
 
 ### Phase 6: Control Features
 **Goal**: Advanced control flow

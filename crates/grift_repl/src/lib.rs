@@ -140,6 +140,12 @@ fn format_value_impl<const N: usize>(
             }
             buf.push('>');
         }
+        Ok(Value::Transformer { rules, .. }) => {
+            // Display transformers showing the number of rules
+            let rule_count = lisp.list_len(rules).unwrap_or(0);
+            use std::fmt::Write;
+            write!(buf, "#<transformer rules:{}>", rule_count).unwrap();
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

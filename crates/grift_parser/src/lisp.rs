@@ -1251,6 +1251,63 @@ impl<const N: usize> Lisp<N> {
             }
         }
     }
+    
+    // ========================================================================
+    // Macro Transformers
+    // ========================================================================
+    
+    /// Create a macro transformer from syntax-rules.
+    /// 
+    /// A transformer contains:
+    /// - `literals`: List of identifiers to match literally in patterns
+    /// - `rules`: List of (pattern . template) pairs
+    /// - `def_env`: The environment where the macro was defined
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// (define-syntax my-or
+    ///   (syntax-rules ()
+    ///     ((my-or) #f)
+    ///     ((my-or e) e)
+    ///     ((my-or e1 e2 ...) (let ((t e1)) (if t t (my-or e2 ...))))))
+    /// ```
+    #[inline]
+    pub fn transformer(
+        &self, 
+        literals: ArenaIndex, 
+        rules: ArenaIndex, 
+        def_env: ArenaIndex
+    ) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Transformer { literals, rules, def_env })
+    }
+    
+    /// Extract the literals list from a transformer.
+    #[inline]
+    pub fn transformer_literals(&self, t: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(t)? {
+            Value::Transformer { literals, .. } => Ok(literals),
+            _ => self.nil(),
+        }
+    }
+    
+    /// Extract the rules list from a transformer.
+    #[inline]
+    pub fn transformer_rules(&self, t: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(t)? {
+            Value::Transformer { rules, .. } => Ok(rules),
+            _ => self.nil(),
+        }
+    }
+    
+    /// Extract the definition environment from a transformer.
+    #[inline]
+    pub fn transformer_def_env(&self, t: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(t)? {
+            Value::Transformer { def_env, .. } => Ok(def_env),
+            _ => self.nil(),
+        }
+    }
 }
 
 impl<const N: usize> Default for Lisp<N> {

@@ -3403,3 +3403,184 @@ fn test_size_check() {
     assert!(size_of::<Cont>() <= 16, "Cont enum grew beyond 16 bytes!");
     assert!(size_of::<ArenaIndex>() == 8, "ArenaIndex should be exactly 8 bytes");
 }
+
+// ============================================================================
+// Macro Tests (Phase 5.3)
+// ============================================================================
+
+#[test]
+fn test_syntax_rules_creates_transformer() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // syntax-rules should return a transformer
+    let result = eval.eval_str("(syntax-rules () ((foo x) x))").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::Transformer { .. }));
+}
+
+#[test]
+fn test_define_syntax_simple() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a simple identity macro
+    eval.eval_str("(define-syntax identity (syntax-rules () ((identity x) x)))").unwrap();
+    
+    // Use the macro
+    let result = eval.eval_str("(identity 42)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+}
+
+#[test]
+fn test_define_syntax_with_multiple_rules() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with multiple rules - using only pattern vars in template
+    // (no built-in forms that would need scope resolution)
+    eval.eval_str(r#"
+        (define-syntax swap
+          (syntax-rules ()
+            ((swap a b) (list b a))))
+    "#).unwrap();
+    
+    // Test
+    let result = eval.eval_str("(swap 1 2)").unwrap();
+    // Result should be (2 1)
+    let car = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(car).unwrap().as_number(), Some(2));
+}
+
+#[test]
+fn test_let_syntax() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Local macro with let-syntax
+    let result = eval.eval_str(r#"
+        (let-syntax ((double (syntax-rules () ((double x) (+ x x)))))
+          (double 21))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+}
+
+#[test]
+fn test_let_syntax_scoped() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Macro should not be visible outside let-syntax
+    eval.eval_str(r#"
+        (let-syntax ((local-macro (syntax-rules () ((local-macro) 1))))
+          (local-macro))
+    "#).unwrap();
+    
+    // Trying to use local-macro outside should fail (unbound)
+    let result = eval.eval_str("(local-macro)");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_letrec_syntax() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Recursive macro with letrec-syntax
+    let result = eval.eval_str(r#"
+        (letrec-syntax ((const (syntax-rules () ((const x) x))))
+          (const 99))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(99));
+}
+
+#[test]
+fn test_macro_with_literal() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Macro with literal keyword
+    eval.eval_str(r#"
+        (define-syntax my-cond
+          (syntax-rules (else)
+            ((my-cond (else result)) result)
+            ((my-cond (test result)) (if test result #f))))
+    "#).unwrap();
+    
+    // Test with else clause
+    let result = eval.eval_str("(my-cond (else 42))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    // Test with regular clause
+    let result2 = eval.eval_str("(my-cond (#t 99))").unwrap();
+    assert_eq!(lisp.get(result2).unwrap().as_number(), Some(99));
+}
+
+#[test]
+fn test_syntax_error() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // syntax-error should produce an error
+    let result = eval.eval_str(r#"(syntax-error "test error")"#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_macro_hygiene_basic() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test that macro-introduced identifiers resolve correctly
+    // This tests the set-of-scopes hygiene model
+    eval.eval_str(r#"
+        (define-syntax my-twice
+          (syntax-rules ()
+            ((my-twice e) (+ e e))))
+    "#).unwrap();
+    
+    // The 'e' in (+ e e) should resolve to the argument, not some outer 'e'
+    let result = eval.eval_str("(my-twice 21)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+}
+
+#[test]
+fn test_macro_with_nested_special_forms() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test macro that uses nested special forms (without ellipsis for now)
+    eval.eval_str(r#"
+        (define-syntax my-when
+          (syntax-rules ()
+            ((my-when test body)
+             (if test body #f))))
+    "#).unwrap();
+    
+    // Should work with special forms like 'if'
+    let result = eval.eval_str("(my-when #t 42)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    let result2 = eval.eval_str("(my-when #f 42)").unwrap();
+    assert!(matches!(lisp.get(result2).unwrap(), Value::False));
+}
+
+#[test]
+fn test_scope_aware_lookup() {
+    let lisp: Lisp<10000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test that scope-aware lookup works for introduced identifiers
+    // Global 'if' has empty scopes, macro-introduced 'if' has intro scopes
+    // Since {} ⊆ {intro}, the global 'if' should match
+    eval.eval_str(r#"
+        (define-syntax my-not
+          (syntax-rules ()
+            ((my-not x) (if x #f #t))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(my-not #t)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::False));
+    
+    let result2 = eval.eval_str("(my-not #f)").unwrap();
+    assert!(matches!(lisp.get(result2).unwrap(), Value::True));
+}

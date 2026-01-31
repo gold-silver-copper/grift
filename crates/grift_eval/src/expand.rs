@@ -124,7 +124,8 @@ pub fn datum_to_syntax<const N: usize>(
         
         // Procedures and internal values pass through
         Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) |
-        Value::Native { .. } | Value::Ref(_) | Value::Usize(_) => {
+        Value::Native { .. } | Value::Ref(_) | Value::Usize(_) |
+        Value::Transformer { .. } => {
             Ok(datum)
         }
     }
