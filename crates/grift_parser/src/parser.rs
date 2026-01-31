@@ -309,8 +309,8 @@ impl<'a> Parser<'a> {
         let vec = lisp.make_array(count, placeholder)?;
         
         // Fill in elements
-        for i in 0..count {
-            lisp.array_set(vec, i, elements[i])?;
+        for (i, &elem) in elements.iter().enumerate().take(count) {
+            lisp.array_set(vec, i, elem)?;
         }
         
         Ok(vec)
@@ -369,10 +369,10 @@ impl<'a> Parser<'a> {
                 // Check for hex character #\xNN...
                 if name.len() >= 2 && (name[0] == b'x' || name[0] == b'X') {
                     let hex_str = &name[1..];
-                    if let Some(code) = Self::parse_hex(hex_str) {
-                        if let Some(c) = char::from_u32(code) {
-                            return lisp.char(c).map_err(Into::into);
-                        }
+                    if let Some(code) = Self::parse_hex(hex_str)
+                        && let Some(c) = char::from_u32(code)
+                    {
+                        return lisp.char(c).map_err(Into::into);
                     }
                 }
                 Err(self.error(ParseErrorKind::InvalidCharLiteral))

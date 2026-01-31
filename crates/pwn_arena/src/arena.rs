@@ -201,7 +201,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let idx = arena.alloc(42).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 42);
     /// ```
-    #[must_use]
     pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
         let free_head = self.free_head.get();
 
@@ -260,7 +259,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
     #[inline]
-    #[must_use]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
         let idx = self.check_bounds(index)?;
 
@@ -823,8 +821,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
 
         // Check all free slots are in the free list
-        for i in 0..N {
-            if matches!(self.slots[i].get(), Slot::Free { .. }) && !visited[i] {
+        for (i, &was_visited) in visited.iter().enumerate().take(N) {
+            if matches!(self.slots[i].get(), Slot::Free { .. }) && !was_visited {
                 return false; // Free slot not in free list
             }
         }
@@ -894,10 +892,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     {
         let mut count = 0;
         for i in 0..N {
-            if let Slot::Occupied { value } = self.slots[i].get() {
-                if predicate(&value) {
-                    count += 1;
-                }
+            if let Slot::Occupied { value } = self.slots[i].get()
+                && predicate(&value)
+            {
+                count += 1;
             }
         }
         count
@@ -909,10 +907,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         F: Fn(&T) -> bool,
     {
         for idx in 0..N {
-            if let Slot::Occupied { value } = self.slots[idx].get() {
-                if predicate(&value) {
-                    return Some((ArenaIndex::new(idx), value));
-                }
+            if let Slot::Occupied { value } = self.slots[idx].get()
+                && predicate(&value)
+            {
+                return Some((ArenaIndex::new(idx), value));
             }
         }
 
@@ -935,10 +933,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         F: Fn(&T) -> bool,
     {
         for i in 0..N {
-            if let Slot::Occupied { value } = self.slots[i].get() {
-                if !predicate(&value) {
-                    return false;
-                }
+            if let Slot::Occupied { value } = self.slots[i].get()
+                && !predicate(&value)
+            {
+                return false;
             }
         }
 

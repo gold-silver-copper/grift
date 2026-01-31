@@ -78,8 +78,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
                     }
 
                     // Process the batch - mark and push to stack
-                    for i in 0..batch_count {
-                        let idx = batch[i];
+                    for &idx in batch.iter().take(batch_count) {
                         // Check marked again: trace could yield duplicates, or another
                         // batch entry could have already marked this index
                         if !marked[idx] {
@@ -108,13 +107,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let mut collected = 0;
 
         // Single-pass sweep: iterate once and free immediately
-        for idx in 0..N {
-            let should_free = matches!(self.slots[idx].get(), Slot::Occupied { .. }) && !marked[idx];
+        for (idx, &is_marked) in marked.iter().enumerate().take(N) {
+            let should_free = matches!(self.slots[idx].get(), Slot::Occupied { .. }) && !is_marked;
 
-            if should_free {
-                if self.free(ArenaIndex::new(idx)).is_ok() {
-                    collected += 1;
-                }
+            if should_free && self.free(ArenaIndex::new(idx)).is_ok() {
+                collected += 1;
             }
         }
 

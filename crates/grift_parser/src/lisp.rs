@@ -161,12 +161,6 @@ impl<const N: usize> Lisp<N> {
         self.alloc(Value::Number(n))
     }
     
-    /// Allocate an unsigned integer (internal use)
-    #[inline]
-    pub fn usize_val(&self, n: usize) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Usize(n))
-    }
-    
     /// Allocate a character
     #[inline]
     pub fn char(&self, c: char) -> ArenaResult<ArenaIndex> {
@@ -472,21 +466,21 @@ impl<const N: usize> Lisp<N> {
         // Fast path: check intern table by comparing bytes directly
         // This avoids allocation entirely on cache hits
         // Only works for ASCII symbols (which is typical for Lisp)
-        if name.is_ascii() {
-            if let Some(existing_symbol) = self.intern_table_lookup_bytes(name.as_bytes())? {
-                return Ok(existing_symbol);
-            }
+        if name.is_ascii()
+            && let Some(existing_symbol) = self.intern_table_lookup_bytes(name.as_bytes())?
+        {
+            return Ok(existing_symbol);
         }
         
         // Cache miss - need to create a new symbol
         let name_str = self.string(name)?;
         
         // Double-check for non-ASCII case (we may have skipped the fast path)
-        if !name.is_ascii() {
-            if let Some(existing_symbol) = self.intern_table_lookup(name_str)? {
-                self.string_free(name_str)?;
-                return Ok(existing_symbol);
-            }
+        if !name.is_ascii()
+            && let Some(existing_symbol) = self.intern_table_lookup(name_str)?
+        {
+            self.string_free(name_str)?;
+            return Ok(existing_symbol);
         }
         
         // Not found - create new symbol

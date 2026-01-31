@@ -181,10 +181,10 @@ fn parse_lisp_file(content: &str) -> Vec<StdlibEntry> {
         let def_trimmed = def_line.trim();
         
         // Parse (define (name params...) body)
-        if def_trimmed.starts_with("(define") {
-            if let Some(entry) = parse_define(def_trimmed, doc, &mut lines) {
-                entries.push(entry);
-            }
+        if def_trimmed.starts_with("(define")
+            && let Some(entry) = parse_define(def_trimmed, doc, &mut lines)
+        {
+            entries.push(entry);
         }
     }
     

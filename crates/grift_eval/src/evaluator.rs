@@ -287,10 +287,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 Value::Cons { car, cdr } => {
                     // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            return Ok(bound_value);
-                        }
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        return Ok(bound_value);
                     }
                     current = cdr;
                 }
@@ -310,10 +310,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 Value::Cons { car, cdr } => {
                     // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            return Ok(bound_value);
-                        }
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        return Ok(bound_value);
                     }
                     current = cdr;
                 }
@@ -335,12 +335,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.env_set_global(name, value);
                 }
                 Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            // Found it - mutate the binding
-                            self.lisp.set_cdr(car, value)?;
-                            return Ok(value);
-                        }
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        // Found it - mutate the binding
+                        self.lisp.set_cdr(car, value)?;
+                        return Ok(value);
                     }
                     current = cdr;
                 }
@@ -359,12 +359,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return Err(self.make_error(ErrorKind::UnboundVariable, name));
                 }
                 Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            // Found it - mutate the binding
-                            self.lisp.set_cdr(car, value)?;
-                            return Ok(value);
-                        }
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        // Found it - mutate the binding
+                        self.lisp.set_cdr(car, value)?;
+                        return Ok(value);
                     }
                     current = cdr;
                 }
@@ -385,12 +385,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return Ok(value);
                 }
                 Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)? {
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            // Update existing
-                            self.lisp.set_cdr(car, value)?;
-                            return Ok(value);
-                        }
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        // Update existing
+                        self.lisp.set_cdr(car, value)?;
+                        return Ok(value);
                     }
                     current = cdr;
                 }
@@ -1583,12 +1583,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // Check for unquote-splicing at top level
-                if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false) {
-                    if depth == 1 {
-                        // Return the evaluated list (caller handles splicing)
-                        let inner_expr = self.lisp.car(cdr)?;
-                        return Ok(TrampolineState::Eval { expr: inner_expr, env });
-                    }
+                if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false)
+                    && depth == 1
+                {
+                    // Return the evaluated list (caller handles splicing)
+                    let inner_expr = self.lisp.car(cdr)?;
+                    return Ok(TrampolineState::Eval { expr: inner_expr, env });
                 }
                 
                 // Check for nested quasiquote
@@ -2602,9 +2602,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
                 }
                 let mut chars = ['\0'; MAX_MAKE_STRING_LEN];
-                for i in 0..len {
-                    chars[i] = fill;
-                }
+                chars[..len].fill(fill);
                 self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
             }
             

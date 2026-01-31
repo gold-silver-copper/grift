@@ -239,10 +239,10 @@ impl<const N: usize> NativeRegistry<N> {
     /// Returns None if the function is not registered.
     pub fn lookup(&self, name: &str) -> Option<NativeFn<N>> {
         for entry in &self.entries[..self.count] {
-            if let Some(e) = entry {
-                if e.name == name {
-                    return Some(e.func);
-                }
+            if let Some(e) = entry
+                && e.name == name
+            {
+                return Some(e.func);
             }
         }
         None
