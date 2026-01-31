@@ -3,7 +3,7 @@
 //! This module contains the mark-and-sweep garbage collection logic
 //! for the arena allocator.
 
-use crate::{Arena, ArenaIndex, ArenaError, GcStats};
+use crate::{Arena, ArenaIndex, GcStats};
 use crate::types::Slot;
 use crate::traits::Trace;
 

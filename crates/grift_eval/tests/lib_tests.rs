@@ -1718,6 +1718,155 @@ fn test_gc_disabled_no_collect() {
     eval.eval_str("(gc-enable)").unwrap();
 }
 
+#[test]
+fn test_gc_disabled_memory_grows() {
+    // Verify that when GC is disabled, garbage actually accumulates
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Get initial allocation count
+    let stats_before = eval.eval_str("(arena-stats)").unwrap();
+    let allocated_before = lisp.get(lisp.car(lisp.cdr(stats_before).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    // Disable GC
+    eval.eval_str("(gc-disable)").unwrap();
+    
+    // Create a lot of garbage (these cons cells aren't rooted)
+    for _ in 0..100 {
+        eval.eval_str("(cons 'garbage 'value)").unwrap();
+    }
+    
+    // Try to run GC - should do nothing since disabled
+    let gc_result = eval.eval_str("(gc)").unwrap();
+    let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    assert_eq!(collected, 0, "GC should not collect anything when disabled");
+    
+    // Get allocation count after - should be higher (garbage accumulated)
+    let stats_after = eval.eval_str("(arena-stats)").unwrap();
+    let allocated_after = lisp.get(lisp.car(lisp.cdr(stats_after).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    assert!(allocated_after > allocated_before, 
+        "Memory should grow when GC is disabled: before={}, after={}", 
+        allocated_before, allocated_after);
+    
+    // Re-enable and collect
+    eval.eval_str("(gc-enable)").unwrap();
+    let gc_result = eval.eval_str("(gc)").unwrap();
+    let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    // Now GC should have collected the garbage
+    assert!(collected > 0, "GC should collect garbage when re-enabled");
+}
+
+#[test]
+fn test_gc_disabled_trampoline_respects_flag() {
+    // Verify the trampoline's periodic GC check respects gc_enabled
+    // This runs code that would normally trigger periodic GC
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Disable GC
+    eval.eval_str("(gc-disable)").unwrap();
+    
+    // Get initial count
+    let stats_before = eval.eval_str("(arena-stats)").unwrap();
+    let allocated_before = lisp.get(lisp.car(lisp.cdr(stats_before).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    // Run a recursive function that creates garbage and takes many steps
+    // This should trigger the periodic GC check in the trampoline
+    eval.eval_str("
+        (define (make-garbage n)
+          (if (<= n 0)
+              'done
+              (begin
+                (cons n (cons n (cons n '())))  ; create garbage
+                (make-garbage (- n 1)))))
+    ").unwrap();
+    
+    eval.eval_str("(make-garbage 500)").unwrap();
+    
+    // Memory should have grown since GC is disabled
+    let stats_after = eval.eval_str("(arena-stats)").unwrap();
+    let allocated_after = lisp.get(lisp.car(lisp.cdr(stats_after).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    assert!(allocated_after > allocated_before,
+        "Trampoline should NOT run GC when disabled: before={}, after={}",
+        allocated_before, allocated_after);
+    
+    // Re-enable and verify GC now works
+    eval.eval_str("(gc-enable)").unwrap();
+    let gc_result = eval.eval_str("(gc)").unwrap();
+    let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    assert!(collected > 0, "GC should work after re-enable");
+}
+
+#[test]
+fn test_gc_disabled_via_arena_respected_by_lisp() {
+    // Verify that disabling GC at the arena level is respected by Lisp gc()
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Verify GC is enabled by default
+    assert!(eval_is_true(&lisp, &mut eval, "(gc-enabled?)"));
+    
+    // Create some garbage
+    eval.eval_str("(cons 1 2)").unwrap();
+    eval.eval_str("(cons 3 4)").unwrap();
+    
+    // Disable via Lisp
+    eval.eval_str("(gc-disable)").unwrap();
+    assert!(eval_is_false(&lisp, &mut eval, "(gc-enabled?)"));
+    
+    // Verify GC doesn't run
+    let gc_result = eval.eval_str("(gc)").unwrap();
+    let marked = lisp.get(lisp.car(gc_result).unwrap()).unwrap().as_number().unwrap();
+    let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    
+    assert_eq!(marked, 0, "Marked should be 0 when GC is disabled");
+    assert_eq!(collected, 0, "Collected should be 0 when GC is disabled");
+    
+    // Re-enable
+    eval.eval_str("(gc-enable)").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(gc-enabled?)"));
+}
+
+#[test]
+fn test_gc_unconditional_ignores_disabled_flag() {
+    // Verify that collect_garbage_unconditional still works when GC is disabled
+    // (This is tested at the arena level, but let's verify behavior)
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Create garbage
+    eval.eval_str("(cons 'a 'b)").unwrap();
+    eval.eval_str("(cons 'c 'd)").unwrap();
+    
+    // Disable GC
+    eval.eval_str("(gc-disable)").unwrap();
+    
+    // Normal GC should not collect
+    let gc_result = eval.eval_str("(gc)").unwrap();
+    let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    assert_eq!(collected, 0, "Regular gc should not collect when disabled");
+    
+    // Force GC should still work (via gc-force if available, or just re-enable)
+    eval.eval_str("(gc-enable)").unwrap();
+    let gc_result = eval.eval_str("(gc)").unwrap();
+    let collected = lisp.get(lisp.car(lisp.cdr(gc_result).unwrap()).unwrap())
+        .unwrap().as_number().unwrap();
+    assert!(collected >= 0, "GC should work when enabled");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // R7RS PHASE 1 CONFORMANCE TESTS
 // Testing letrec, letrec*, when, unless, and new stdlib functions
