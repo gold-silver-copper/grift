@@ -6,6 +6,8 @@ This document provides a comprehensive plan for implementing R7RS-compliant `syn
 
 The implementation uses **Kohlbecker hygiene with three paint contexts** — a minimal, correct approach that requires no gensyms, syntax objects, or phase separation.
 
+**Key architectural decision**: Symbols carry paint inline (`Symbol { name, paint }`) rather than using a separate wrapper type. This requires removing symbol interning as a prerequisite.
+
 ---
 
 ## Part 1: Theoretical Foundation
@@ -58,32 +60,9 @@ With three contexts:
 
 ## Part 2: Data Structure Changes
 
-### 2.1 Painted Symbol Representation
+### 2.1 Symbol Representation with Inline Paint
 
-**Option A: New Value Variant (Recommended)**
-
-Add a new `Value` variant for painted symbols:
-
-```rust
-pub enum Value {
-    // ... existing variants ...
-
-    /// Painted symbol for hygienic macros
-    /// - symbol: ArenaIndex to the underlying Symbol
-    /// - paint: usize identifier for the paint context
-    PaintedSymbol { symbol: ArenaIndex, paint: usize },
-}
-```
-
-**Rationale**:
-- Preserves backward compatibility (unpainted symbols still work)
-- Maintains the 24-byte Value invariant (2 × usize)
-- Allows gradual migration
-- Paint 0 symbols can remain as regular `Symbol` (optimization)
-
-**Alternative Option B: Inline Paint in Symbol**
-
-Modify the Symbol representation to always include paint:
+Modify the Symbol variant to carry paint inline:
 
 ```rust
 // Change from:
@@ -93,17 +72,36 @@ Symbol(ArenaIndex),  // Points to String
 Symbol { name: ArenaIndex, paint: usize },  // Points to String + paint
 ```
 
-**Trade-offs**:
-- Simpler conceptually
-- Breaks symbol interning (same name, different paint = different symbol)
-- All code paths must handle paint
-- Still fits 24-byte invariant
+**Properties**:
+- Every symbol carries its paint context
+- Same name with different paint = different identifiers
+- Fits 24-byte Value invariant (1 ArenaIndex + 1 usize = 16 bytes payload)
+- Conceptually simple: all symbols are painted, period
 
-**Recommendation**: Option A (PaintedSymbol variant) for cleaner separation and backward compatibility during development.
+**Implications**:
+- Symbol interning must be removed (same name, different paint = different symbols)
+- All symbol-handling code must be updated
+- `eq?` on symbols now compares both name AND paint
+- `symbol_matches` helper needs updating for name-only comparisons
 
-### 2.2 Paint Counter
+### 2.2 Why Remove Symbol Interning?
 
-Add a global paint counter to the evaluator:
+With inline paint:
+- `'foo` (paint 0) and `'foo` (paint 1) are **different symbols**
+- Interning assumes same name → same ArenaIndex
+- This assumption breaks with painted symbols
+- Attempting to keep interning would require a `(name, paint) → ArenaIndex` table
+- Simpler to just remove interning entirely
+
+**Performance impact**: Minimal for typical Scheme programs. Interning primarily helps with:
+- `eq?` on symbols (now requires string comparison OR paint-aware lookup)
+- Memory for repeated symbols (now each occurrence is separate)
+
+For a macro-enabled interpreter, correctness matters more than micro-optimizations.
+
+### 2.3 Paint Counter
+
+Add a paint counter to the evaluator:
 
 ```rust
 pub struct Evaluator<'a, const N: usize> {
@@ -123,7 +121,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 }
 ```
 
-### 2.3 Macro Value Type
+### 2.4 Macro Value Type
 
 Add a new Value variant for compiled macros:
 
@@ -133,8 +131,7 @@ pub enum Value {
 
     /// Compiled syntax-rules macro transformer
     /// - def_paint: The paint assigned at definition time
-    /// - literals: ArenaIndex to list of literal identifiers
-    /// - rules: ArenaIndex to list of (pattern . template) pairs
+    /// - data: ArenaIndex to cons cell (literals . rules)
     Macro { def_paint: usize, data: ArenaIndex },
 }
 ```
@@ -151,31 +148,81 @@ All identifiers parsed from user input get paint 0:
 
 ```rust
 // In parser.rs, when creating symbols:
-pub fn parse_symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-    // For now, all parsed symbols have implicit paint 0
-    // The evaluator treats Symbol as paint 0
-    self.lisp.symbol(name)
+fn parse_symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+    self.lisp.symbol_with_paint(name, 0)  // User code = paint 0
 }
 ```
 
-No parser changes needed initially — unpainted `Symbol` is treated as paint 0 by convention.
+### 3.2 New Symbol Creation API
 
-### 3.2 Syntax-Rules Parsing
+```rust
+impl<const N: usize> Lisp<N> {
+    /// Create a symbol with explicit paint
+    pub fn symbol_with_paint(&self, name: &str, paint: usize) -> ArenaResult<ArenaIndex> {
+        let name_str = self.string(name)?;
+        self.alloc(Value::Symbol { name: name_str, paint })
+    }
+
+    /// Create a symbol with paint 0 (convenience for user code)
+    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        self.symbol_with_paint(name, 0)
+    }
+
+    /// Get the name string from a symbol (ignoring paint)
+    pub fn symbol_name(&self, sym: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(sym)? {
+            Value::Symbol { name, .. } => Ok(name),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Get name and paint from a symbol
+    pub fn symbol_parts(&self, sym: ArenaIndex) -> ArenaResult<(ArenaIndex, usize)> {
+        match self.get(sym)? {
+            Value::Symbol { name, paint } => Ok((name, paint)),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Check if symbol name matches a string (ignores paint)
+    pub fn symbol_matches(&self, sym: ArenaIndex, target: &str) -> ArenaResult<bool> {
+        let name = self.symbol_name(sym)?;
+        self.string_eq_str(name, target)
+    }
+
+    /// Check if two symbols have the same name (ignores paint)
+    pub fn symbol_name_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        let name_a = self.symbol_name(a)?;
+        let name_b = self.symbol_name(b)?;
+        self.string_eq(name_a, name_b)
+    }
+
+    /// Check if two symbols are identical (same name AND paint)
+    pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        match (self.get(a)?, self.get(b)?) {
+            (Value::Symbol { name: na, paint: pa },
+             Value::Symbol { name: nb, paint: pb }) => {
+                Ok(pa == pb && self.string_eq(na, nb)?)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Create a copy of a symbol with different paint
+    pub fn repaint_symbol(&self, sym: ArenaIndex, new_paint: usize) -> ArenaResult<ArenaIndex> {
+        let name = self.symbol_name(sym)?;
+        self.alloc(Value::Symbol { name, paint: new_paint })
+    }
+}
+```
+
+### 3.3 Syntax-Rules Parsing
 
 The `syntax-rules` form is recognized by the evaluator, not the parser. The parser treats it as a regular list structure:
 
 ```scheme
 (syntax-rules (<literal>*)
   (<pattern> <template>)*)
-```
-
-Parsed as:
-```
-(syntax-rules
-  (<literal-list>)
-  (<rule-1>)
-  (<rule-2>)
-  ...)
 ```
 
 ---
@@ -219,7 +266,7 @@ fn eval_define_syntax(&mut self, args: ArenaIndex, env: ArenaIndex)
     // Compile the transformer (must be syntax-rules)
     let macro_val = self.compile_syntax_rules(transformer_expr, def_paint)?;
 
-    // Bind in environment
+    // Bind in environment (name keeps its original paint for lookup)
     self.define(name, macro_val, env)?;
 
     Ok(TrampolineState::Return { val: name })
@@ -245,8 +292,7 @@ fn compile_syntax_rules(&mut self, expr: ArenaIndex, def_paint: usize)
     let rules = self.lisp.cdr(rest)?;     // List of (pattern template) pairs
 
     // Repaint all identifiers in the rules with def_paint
-    // (except pattern variables, which are identified during pattern analysis)
-    let painted_rules = self.repaint_rules(rules, def_paint)?;
+    let painted_rules = self.repaint_tree(rules, def_paint)?;
 
     // Create the Macro value
     let data = self.lisp.cons(literals, painted_rules)?;
@@ -257,24 +303,11 @@ fn compile_syntax_rules(&mut self, expr: ArenaIndex, def_paint: usize)
 ### 4.4 Repainting at Definition Time
 
 ```rust
-fn repaint_rules(&self, rules: ArenaIndex, paint: usize)
-    -> ArenaResult<ArenaIndex>
-{
-    // Recursively walk the rules structure and repaint all symbols
-    self.repaint_tree(rules, paint)
-}
-
-fn repaint_tree(&self, expr: ArenaIndex, paint: usize)
-    -> ArenaResult<ArenaIndex>
-{
+fn repaint_tree(&self, expr: ArenaIndex, paint: usize) -> ArenaResult<ArenaIndex> {
     match self.lisp.get(expr)? {
-        Value::Symbol(_) => {
-            // Repaint this symbol
-            self.lisp.alloc(Value::PaintedSymbol { symbol: expr, paint })
-        }
-        Value::PaintedSymbol { symbol, .. } => {
-            // Already painted - repaint with new paint
-            self.lisp.alloc(Value::PaintedSymbol { symbol, paint })
+        Value::Symbol { name, .. } => {
+            // Repaint this symbol with new paint
+            self.lisp.alloc(Value::Symbol { name, paint })
         }
         Value::Cons { car, cdr } => {
             let new_car = self.repaint_tree(car, paint)?;
@@ -297,11 +330,11 @@ fn step_eval_list(&mut self, car: ArenaIndex, cdr: ArenaIndex, expr: ArenaIndex,
     // ... existing special form checks ...
 
     // Check if head resolves to a macro
-    if let Value::Symbol(_) | Value::PaintedSymbol { .. } = self.lisp.get(car)? {
+    if let Value::Symbol { .. } = self.lisp.get(car)? {
         if let Ok(macro_val) = self.env_lookup(env, car) {
             if let Value::Macro { def_paint, data } = self.lisp.get(macro_val)? {
                 // Expand the macro and evaluate the result
-                let expanded = self.expand_macro(expr, def_paint, data, env)?;
+                let expanded = self.expand_macro(expr, def_paint, data)?;
                 return Ok(TrampolineState::Eval { expr: expanded, env });
             }
         }
@@ -314,7 +347,7 @@ fn step_eval_list(&mut self, car: ArenaIndex, cdr: ArenaIndex, expr: ArenaIndex,
 ### 4.6 Macro Expansion
 
 ```rust
-fn expand_macro(&mut self, form: ArenaIndex, def_paint: usize, data: ArenaIndex, env: ArenaIndex)
+fn expand_macro(&mut self, form: ArenaIndex, def_paint: usize, data: ArenaIndex)
     -> Result<ArenaIndex, EvalError>
 {
     // Allocate fresh paint for this expansion
@@ -372,6 +405,11 @@ An identifier in a pattern is a **pattern variable** if:
 
 ```rust
 fn is_pattern_variable(&self, id: ArenaIndex, literals: ArenaIndex) -> ArenaResult<bool> {
+    // Must be a symbol
+    if !matches!(self.lisp.get(id)?, Value::Symbol { .. }) {
+        return Ok(false);
+    }
+
     // Check if it's the ellipsis
     if self.lisp.symbol_matches(id, "...")? {
         return Ok(false);
@@ -382,11 +420,11 @@ fn is_pattern_variable(&self, id: ArenaIndex, literals: ArenaIndex) -> ArenaResu
         return Ok(false);
     }
 
-    // Check if it's in the literals list
+    // Check if it's in the literals list (by name)
     let mut current = literals;
     while !self.lisp.get(current)?.is_nil() {
         let lit = self.lisp.car(current)?;
-        if self.symbol_name_eq(id, lit)? {
+        if self.lisp.symbol_name_eq(id, lit)? {
             return Ok(false);
         }
         current = self.lisp.cdr(current)?;
@@ -401,7 +439,7 @@ fn is_pattern_variable(&self, id: ArenaIndex, literals: ArenaIndex) -> ArenaResu
 ```rust
 struct PatternBindings {
     /// Map from pattern variable name to matched value
-    /// Using a simple alist stored in arena
+    /// Using a simple alist stored in arena: ((name . value) ...)
     bindings: ArenaIndex,
     /// Map from pattern variable name to list of matched values (for ellipsis)
     ellipsis_bindings: ArenaIndex,
@@ -431,28 +469,22 @@ fn match_pattern_impl(&self, form: ArenaIndex, pattern: ArenaIndex,
     -> Result<bool, EvalError>
 {
     match (self.lisp.get(form)?, self.lisp.get(pattern)?) {
-        // Pattern variable - bind to form
-        (_, Value::Symbol(_) | Value::PaintedSymbol { .. })
-            if self.is_pattern_variable(pattern, literals)? =>
-        {
+        // Pattern variable - bind to form (preserving form's paint)
+        (_, Value::Symbol { .. }) if self.is_pattern_variable(pattern, literals)? => {
             self.add_binding(bindings, pattern, form)?;
             Ok(true)
         }
 
         // Wildcard - matches anything, no binding
-        (_, Value::Symbol(_) | Value::PaintedSymbol { .. })
-            if self.lisp.symbol_matches(pattern, "_")? =>
-        {
+        (_, Value::Symbol { .. }) if self.lisp.symbol_matches(pattern, "_")? => {
             Ok(true)
         }
 
-        // Literal - must match by name
-        (Value::Symbol(_) | Value::PaintedSymbol { .. },
-         Value::Symbol(_) | Value::PaintedSymbol { .. })
+        // Literal - must match by name (paint doesn't matter for literals)
+        (Value::Symbol { .. }, Value::Symbol { .. })
             if !self.is_pattern_variable(pattern, literals)? =>
         {
-            // Match by name only (paint doesn't matter for literals)
-            self.symbol_name_eq(form, pattern)
+            self.lisp.symbol_name_eq(form, pattern)
         }
 
         // List patterns
@@ -483,29 +515,34 @@ fn match_pattern_impl(&self, form: ArenaIndex, pattern: ArenaIndex,
 ### 5.4 Ellipsis Matching
 
 ```rust
+fn has_ellipsis(&self, list: ArenaIndex) -> ArenaResult<bool> {
+    if self.lisp.get(list)?.is_nil() {
+        return Ok(false);
+    }
+    let first = self.lisp.car(list)?;
+    if let Value::Symbol { .. } = self.lisp.get(first)? {
+        return self.lisp.symbol_matches(first, "...");
+    }
+    Ok(false)
+}
+
 fn match_ellipsis(&self, form: ArenaIndex, pattern: ArenaIndex,
                   literals: ArenaIndex, bindings: &mut PatternBindings)
     -> Result<bool, EvalError>
 {
-    // Pattern is (pat-before... ellipsis-pattern ... pat-after...)
-    // For simplicity, we handle the common case: (pat ... ) at end
+    // Pattern is (stuff... ellipsis-pat ...)
+    // For simplicity, handle common case: single element before ...
 
-    let pat_head = self.lisp.car(pattern)?;
-    let pat_rest = self.lisp.cdr(pattern)?;
-
-    // Get the ellipsis pattern and remaining pattern
-    let ellipsis_pat = self.lisp.car(pat_rest)?;
-    let after_ellipsis = self.lisp.cdr(pat_rest)?;  // Should have ... then maybe more
-
-    // For now, require ellipsis is followed only by ... symbol
-    // This handles (pat ...) but not (pat ... more-stuff)
+    let pat_list = self.lisp.cdr(pattern)?;  // Skip macro name in pattern
+    let ellipsis_pat = self.lisp.car(pat_list)?;
 
     // Collect pattern variables in the ellipsis pattern
     let vars = self.collect_pattern_vars(ellipsis_pat, literals)?;
 
-    // Match zero or more repetitions
-    let mut current_form = form;
-    let mut repetitions: Vec<ArenaIndex> = Vec::new();  // Temp storage for matches
+    // Match zero or more repetitions from form
+    let form_list = self.lisp.cdr(form)?;  // Skip macro name in form
+    let mut current_form = form_list;
+    let mut all_matches: Vec<ArenaIndex> = Vec::new();
 
     while !self.lisp.get(current_form)?.is_nil() {
         let form_elem = self.lisp.car(current_form)?;
@@ -519,20 +556,54 @@ fn match_ellipsis(&self, form: ArenaIndex, pattern: ArenaIndex,
             break;
         }
 
-        repetitions.push(temp_bindings.bindings);
+        all_matches.push(temp_bindings.bindings);
         current_form = self.lisp.cdr(current_form)?;
     }
 
-    // Store the collected matches for each variable
-    for var in vars {
-        let values: Vec<ArenaIndex> = repetitions.iter()
-            .filter_map(|b| self.lookup_binding(*b, var).ok())
-            .collect();
-        let value_list = self.list_from_vec(&values)?;
-        self.add_ellipsis_binding(bindings, var, value_list)?;
+    // Store collected matches for each pattern variable
+    let mut var_cursor = vars;
+    while !self.lisp.get(var_cursor)?.is_nil() {
+        let var = self.lisp.car(var_cursor)?;
+        let var_name = self.lisp.symbol_name(var)?;
+
+        // Collect all values for this variable across iterations
+        let mut values = self.lisp.nil()?;
+        for match_bindings in all_matches.iter().rev() {
+            if let Some(val) = self.lookup_in_bindings(*match_bindings, var_name)? {
+                values = self.lisp.cons(val, values)?;
+            }
+        }
+
+        self.add_ellipsis_binding(bindings, var, values)?;
+        var_cursor = self.lisp.cdr(var_cursor)?;
     }
 
     Ok(true)
+}
+
+fn collect_pattern_vars(&self, pattern: ArenaIndex, literals: ArenaIndex)
+    -> Result<ArenaIndex, EvalError>
+{
+    let mut vars = self.lisp.nil()?;
+
+    fn collect_impl(this: &Self, pat: ArenaIndex, lits: ArenaIndex, vars: &mut ArenaIndex)
+        -> Result<(), EvalError>
+    {
+        match this.lisp.get(pat)? {
+            Value::Symbol { .. } if this.is_pattern_variable(pat, lits)? => {
+                *vars = this.lisp.cons(pat, *vars)?;
+            }
+            Value::Cons { car, cdr } => {
+                collect_impl(this, car, lits, vars)?;
+                collect_impl(this, cdr, lits, vars)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    collect_impl(self, pattern, literals, &mut vars)?;
+    Ok(vars)
 }
 ```
 
@@ -548,26 +619,17 @@ fn expand_template(&self, template: ArenaIndex, bindings: &PatternBindings,
     -> Result<ArenaIndex, EvalError>
 {
     match self.lisp.get(template)? {
-        // Symbol - check if pattern variable or introduced identifier
-        Value::Symbol(_) => {
-            // Unpainted symbol from template - this shouldn't happen after repainting
-            // but handle it: treat as def_paint
-            if let Some(val) = self.lookup_pattern_binding(bindings, template)? {
-                Ok(val)  // Pattern variable - preserve input paint
-            } else {
-                // Introduced identifier - repaint with use_paint
-                self.lisp.alloc(Value::PaintedSymbol { symbol: template, paint: use_paint })
-            }
-        }
-
-        Value::PaintedSymbol { symbol, paint } => {
-            if let Some(val) = self.lookup_pattern_binding(bindings, template)? {
-                Ok(val)  // Pattern variable - preserve input paint
+        Value::Symbol { name, paint } => {
+            // Check if this is a pattern variable (by name)
+            if let Some(val) = self.lookup_pattern_binding(bindings, name)? {
+                // Pattern variable - return matched value (preserves input paint)
+                Ok(val)
             } else if paint == def_paint {
-                Ok(template)  // Definition-site identifier - keep def_paint
+                // Definition-site identifier - keep def_paint
+                Ok(template)
             } else {
-                // Repaint with use_paint
-                self.lisp.alloc(Value::PaintedSymbol { symbol, paint: use_paint })
+                // Other identifier - repaint with use_paint
+                self.lisp.alloc(Value::Symbol { name, paint: use_paint })
             }
         }
 
@@ -575,7 +637,8 @@ fn expand_template(&self, template: ArenaIndex, bindings: &PatternBindings,
         Value::Cons { car, cdr } => {
             // Check for ellipsis
             if self.is_ellipsis_template(cdr)? {
-                return self.expand_ellipsis_template(car, bindings, def_paint, use_paint);
+                let expanded_list = self.expand_ellipsis_template(car, cdr, bindings, def_paint, use_paint)?;
+                return Ok(expanded_list);
             }
 
             let expanded_car = self.expand_template(car, bindings, def_paint, use_paint)?;
@@ -587,28 +650,71 @@ fn expand_template(&self, template: ArenaIndex, bindings: &PatternBindings,
         _ => Ok(template)
     }
 }
+
+fn lookup_pattern_binding(&self, bindings: &PatternBindings, name: ArenaIndex)
+    -> Result<Option<ArenaIndex>, EvalError>
+{
+    // First check regular bindings
+    if let Some(val) = self.lookup_in_bindings(bindings.bindings, name)? {
+        return Ok(Some(val));
+    }
+    Ok(None)
+}
+
+fn lookup_in_bindings(&self, alist: ArenaIndex, name: ArenaIndex)
+    -> Result<Option<ArenaIndex>, EvalError>
+{
+    let mut current = alist;
+    while !self.lisp.get(current)?.is_nil() {
+        let pair = self.lisp.car(current)?;
+        let (bound_sym, bound_val) = self.lisp.car_cdr(pair)?;
+        let bound_name = self.lisp.symbol_name(bound_sym)?;
+
+        if self.lisp.string_eq(name, bound_name)? {
+            return Ok(Some(bound_val));
+        }
+        current = self.lisp.cdr(current)?;
+    }
+    Ok(None)
+}
 ```
 
 ### 6.2 Ellipsis Template Expansion
 
 ```rust
-fn expand_ellipsis_template(&self, pattern: ArenaIndex, bindings: &PatternBindings,
+fn is_ellipsis_template(&self, cdr: ArenaIndex) -> ArenaResult<bool> {
+    if self.lisp.get(cdr)?.is_nil() {
+        return Ok(false);
+    }
+    let first = self.lisp.car(cdr)?;
+    if let Value::Symbol { .. } = self.lisp.get(first)? {
+        return self.lisp.symbol_matches(first, "...");
+    }
+    Ok(false)
+}
+
+fn expand_ellipsis_template(&self, pattern: ArenaIndex, rest: ArenaIndex,
+                            bindings: &PatternBindings,
                             def_paint: usize, use_paint: usize)
     -> Result<ArenaIndex, EvalError>
 {
-    // Find pattern variables in the ellipsis template
-    let vars = self.collect_pattern_vars_in_template(pattern)?;
+    // rest is (... maybe-more-stuff)
+    // For now, assume ... is at the end
 
-    // Get the number of repetitions from the first ellipsis-bound variable
+    // Find pattern variables in the ellipsis template
+    let vars = self.collect_template_vars(pattern)?;
+
+    // Get repetition count from first ellipsis-bound variable
     let first_var = self.lisp.car(vars)?;
-    let repetition_values = self.lookup_ellipsis_binding(bindings, first_var)?;
+    let first_name = self.lisp.symbol_name(first_var)?;
+    let repetition_values = self.lookup_ellipsis_values(bindings, first_name)?;
+    let count = self.list_length(repetition_values)?;
 
     // Build output list
     let mut result = self.lisp.nil()?;
-    let count = self.list_length(repetition_values)?;
 
     for i in (0..count).rev() {
-        // Create bindings for this iteration
+        // Create iteration bindings: for each ellipsis var, get the i-th value
         let iter_bindings = self.make_iteration_bindings(bindings, vars, i)?;
 
         // Expand template with iteration bindings
@@ -616,7 +722,50 @@ fn expand_ellipsis_template(&self, pattern: ArenaIndex, bindings: &PatternBindin
         result = self.lisp.cons(expanded, result)?;
     }
 
+    // Continue expanding the rest (after ...)
+    let after_ellipsis = self.lisp.cdr(rest)?;
+    if !self.lisp.get(after_ellipsis)?.is_nil() {
+        let expanded_rest = self.expand_template(after_ellipsis, bindings, def_paint, use_paint)?;
+        result = self.append_lists(result, expanded_rest)?;
+    }
+
     Ok(result)
+}
+
+fn lookup_ellipsis_values(&self, bindings: &PatternBindings, name: ArenaIndex)
+    -> Result<ArenaIndex, EvalError>
+{
+    self.lookup_in_bindings(bindings.ellipsis_bindings, name)?
+        .ok_or_else(|| self.make_error(ErrorKind::UnboundVariable, name))
+}
+
+fn make_iteration_bindings(&self, bindings: &PatternBindings, vars: ArenaIndex, index: usize)
+    -> Result<PatternBindings, EvalError>
+{
+    let mut new_bindings = self.lisp.nil()?;
+
+    let mut var_cursor = vars;
+    while !self.lisp.get(var_cursor)?.is_nil() {
+        let var = self.lisp.car(var_cursor)?;
+        let var_name = self.lisp.symbol_name(var)?;
+
+        // Get the list of values for this variable
+        let values = self.lookup_ellipsis_values(bindings, var_name)?;
+
+        // Get the i-th value
+        let value = self.list_ref(values, index)?;
+
+        // Add to new bindings
+        let pair = self.lisp.cons(var, value)?;
+        new_bindings = self.lisp.cons(pair, new_bindings)?;
+
+        var_cursor = self.lisp.cdr(var_cursor)?;
+    }
+
+    Ok(PatternBindings {
+        bindings: new_bindings,
+        ellipsis_bindings: self.lisp.nil()?,  // No nested ellipsis for now
+    })
 }
 ```
 
@@ -629,76 +778,45 @@ fn expand_ellipsis_template(&self, pattern: ArenaIndex, bindings: &PatternBindin
 Modify `env_lookup` to handle painted symbols:
 
 ```rust
-fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> EvalResult {
-    let (name_str, name_paint) = self.get_symbol_name_and_paint(name)?;
+fn env_lookup(&self, env: ArenaIndex, name_sym: ArenaIndex) -> EvalResult {
+    let (name_str, name_paint) = self.lisp.symbol_parts(name_sym)?;
 
     let mut current = env;
     loop {
         match self.lisp.get(current)? {
             Value::Nil => {
-                // Try global with same paint check
-                return self.env_lookup_global_painted(name_str, name_paint);
+                // Try global with fallback
+                return self.env_lookup_global_with_fallback(name_str, name_paint);
             }
             Value::Cons { car, cdr } => {
-                if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
-                    let (bound_str, bound_paint) = self.get_symbol_name_and_paint(bound_name)?;
+                if let Value::Cons { car: bound_sym, cdr: bound_value } = self.lisp.get(car)? {
+                    let (bound_name, bound_paint) = self.lisp.symbol_parts(bound_sym)?;
 
                     // Match by BOTH name AND paint
-                    if self.lisp.symbol_name_eq(name_str, bound_str)?
-                        && name_paint == bound_paint
-                    {
+                    if self.lisp.string_eq(name_str, bound_name)? && name_paint == bound_paint {
                         return Ok(bound_value);
                     }
                 }
                 current = cdr;
             }
-            _ => return Err(self.make_error(ErrorKind::Generic, name)),
+            _ => return Err(self.make_error(ErrorKind::Generic, name_sym)),
         }
     }
 }
-
-fn get_symbol_name_and_paint(&self, sym: ArenaIndex) -> ArenaResult<(ArenaIndex, usize)> {
-    match self.lisp.get(sym)? {
-        Value::Symbol(name) => Ok((sym, 0)),  // Unpainted = paint 0
-        Value::PaintedSymbol { symbol, paint } => Ok((symbol, paint)),
-        _ => Err(ArenaError::InvalidIndex),
-    }
-}
 ```
 
-### 7.2 Global Environment with Paint
-
-The global environment needs to store bindings with paint. For primitives and stdlib:
+### 7.2 Global Environment with Paint Fallback
 
 ```rust
-fn init_global_env(&mut self) -> Result<(), EvalError> {
-    // Builtins get paint 0 (available to user code)
-    for &builtin in Builtin::ALL {
-        let name = self.lisp.symbol(builtin.name())?;  // paint 0 implicit
-        let val = self.lisp.builtin(builtin)?;
-        self.global_env = self.env_extend(self.global_env, name, val)?;
-    }
-
-    // ... same for stdlib ...
-}
-```
-
-This means user code (paint 0) can access builtins. Macro definitions can also access them because they look up with their def_paint first, then fall back.
-
-### 7.3 Fallback Lookup for Macro-Introduced Identifiers
-
-When a macro introduces an identifier like `if`, it has `def_paint`. But we want it to find the global `if` (paint 0). Solution:
-
-```rust
-fn env_lookup_painted(&self, env: ArenaIndex, name_str: ArenaIndex, paint: usize)
+fn env_lookup_global_with_fallback(&self, name_str: ArenaIndex, paint: usize)
     -> EvalResult
 {
-    // First try exact match (name + paint)
-    if let Ok(val) = self.env_lookup_exact(env, name_str, paint) {
+    // First try exact match (name + paint) in global env
+    if let Ok(val) = self.env_lookup_global_exact(name_str, paint) {
         return Ok(val);
     }
 
-    // For non-zero paint, fall back to paint 0 in global env only
+    // For non-zero paint, fall back to paint 0 in global env
     // This allows macro-introduced identifiers to find global bindings
     if paint != 0 {
         if let Ok(val) = self.env_lookup_global_exact(name_str, 0) {
@@ -706,11 +824,46 @@ fn env_lookup_painted(&self, env: ArenaIndex, name_str: ArenaIndex, paint: usize
         }
     }
 
+    Err(self.make_error(ErrorKind::UnboundVariable, /* reconstruct symbol */))
+}
+
+fn env_lookup_global_exact(&self, name_str: ArenaIndex, paint: usize) -> EvalResult {
+    let mut current = self.global_env;
+    while !self.lisp.get(current)?.is_nil() {
+        let pair = self.lisp.car(current)?;
+        let (bound_sym, bound_val) = self.lisp.car_cdr(pair)?;
+        let (bound_name, bound_paint) = self.lisp.symbol_parts(bound_sym)?;
+
+        if self.lisp.string_eq(name_str, bound_name)? && paint == bound_paint {
+            return Ok(bound_val);
+        }
+        current = self.lisp.cdr(current)?;
+    }
     Err(self.make_error(ErrorKind::UnboundVariable, name_str))
 }
 ```
 
-This is the key insight: definition-site identifiers (paint_def) can find global bindings (paint 0), but user bindings (paint 0) cannot accidentally shadow them because the macro's identifiers have different paint.
+### 7.3 Global Environment Initialization
+
+```rust
+fn init_global_env(&mut self) -> Result<(), EvalError> {
+    // Builtins get paint 0 (available to user code and macros via fallback)
+    for &builtin in Builtin::ALL {
+        let name = self.lisp.symbol_with_paint(builtin.name(), 0)?;
+        let val = self.lisp.builtin(builtin)?;
+        self.global_env = self.env_extend(self.global_env, name, val)?;
+    }
+
+    // Same for stdlib
+    for &stdlib_fn in StdLib::ALL {
+        let name = self.lisp.symbol_with_paint(stdlib_fn.name(), 0)?;
+        let val = self.lisp.stdlib(stdlib_fn)?;
+        self.global_env = self.env_extend(self.global_env, name, val)?;
+    }
+
+    Ok(())
+}
+```
 
 ---
 
@@ -743,17 +896,16 @@ With this implementation:
 ```
 
 Expansion trace:
-1. `define-syntax` assigns `paint_def = 1` to swap!
-2. `let`, `temp`, `set!` in template get paint 1
-3. User code has `temp`, `x`, `y` with paint 0
+1. `define-syntax` assigns `paint_def = 1` to swap!'s template
+2. In template: `let` (paint 1), `temp` (paint 1), `set!` (paint 1)
+3. User code: `temp` (paint 0), `x` (paint 0), `y` (paint 0)
 4. `(swap! x y)` triggers expansion with `paint_use = 2`
-5. Pattern matching: `a` → `x` (paint 0), `b` → `y` (paint 0)
+5. Pattern matching: `a` binds to `x` (paint 0), `b` binds to `y` (paint 0)
 6. Template expansion:
-   - `let` stays paint 1 (def_paint)
-   - `temp` in `(let ((temp a))` stays paint 1
+   - `let` stays paint 1 (def_paint) → finds global `let` via fallback
+   - `temp` stays paint 1 → creates new binding with paint 1
    - `a` expands to `x` (paint 0 preserved)
-   - `set!` stays paint 1
-   - etc.
+   - `set!` stays paint 1 → finds global `set!` via fallback
 7. Result: macro's `temp` (paint 1) ≠ user's `temp` (paint 0)
 
 ---
@@ -766,6 +918,7 @@ Expansion trace:
 4. **No phase separation** — Single evaluation phase
 5. **Limited ellipsis** — Only `...` at end of patterns, not nested
 6. **No `syntax-error`** — Macro errors are generic
+7. **No symbol interning** — Each symbol allocation is independent
 
 These are acceptable for R5RS-level macro support.
 
@@ -850,38 +1003,124 @@ These should remain as evaluator-handled special forms:
 - **`set!`** — Mutation
 - **`begin`** — Can become macro but simpler as special form
 - **`quasiquote`** — Complex nested evaluation
-- **`letrec`** — Complex binding semantics
+- **`letrec`** — Complex binding semantics (needed for bootstrapping)
 - **`do`** — Complex iteration, keep for now
 
 ### 10.3 Migration Strategy
 
-1. **Phase 1**: Implement `syntax-rules` with all infrastructure
-2. **Phase 2**: Add macro versions of `when`, `unless`, `and`, `or`
-3. **Phase 3**: Test extensively, compare with special form versions
-4. **Phase 4**: Remove special form versions, use macros exclusively
-5. **Phase 5**: Add `cond` and `case` as macros
-6. **Phase 6**: Add `let` and `let*` as macros (optional, may keep special forms for performance)
+1. **Phase 0**: Remove symbol interning
+2. **Phase 1**: Implement `syntax-rules` with all infrastructure
+3. **Phase 2**: Add macro versions of `when`, `unless`, `and`, `or`
+4. **Phase 3**: Test extensively, compare with special form versions
+5. **Phase 4**: Remove special form versions, use macros exclusively
+6. **Phase 5**: Add `cond` and `case` as macros
+7. **Phase 6**: Add `let` and `let*` as macros (optional)
 
 ---
 
 ## Part 11: Implementation Phases
 
-### Phase 1: Foundation (Core Infrastructure)
+### Phase 0: Remove Symbol Interning
+
+**Rationale**: With inline paint, symbol interning no longer makes sense. Same name with different paint must produce different symbols.
 
 **Files to modify:**
-- `crates/grift_parser/src/value.rs` — Add `PaintedSymbol` and `Macro` variants
-- `crates/grift_eval/src/evaluator.rs` — Add paint counter, symbol paint handling
-- `crates/grift_parser/src/lisp.rs` — Add helpers for painted symbols
+- `crates/grift_parser/src/value.rs` — Change Symbol variant
+- `crates/grift_parser/src/lisp.rs` — Remove intern table, update symbol creation
+- `crates/grift_eval/src/evaluator.rs` — Update symbol comparisons
 
 **Tasks:**
-1. Add `Value::PaintedSymbol { symbol, paint }` variant
-2. Add `Value::Macro { def_paint, data }` variant
-3. Implement `Trace` for new variants
-4. Add `next_paint` counter to Evaluator
-5. Implement `get_symbol_name_and_paint()` helper
-6. Implement `repaint_tree()` for repainting expressions
 
-**Estimated LOC:** ~150
+1. **Change Symbol variant**:
+   ```rust
+   // From:
+   Symbol(ArenaIndex),
+
+   // To:
+   Symbol { name: ArenaIndex, paint: usize },
+   ```
+
+2. **Remove intern table infrastructure**:
+   - Remove reserved slot 3 usage for intern table
+   - Remove `intern_table_lookup()` and related methods
+   - Remove `intern_table_lookup_bytes()`
+   - Remove `get_intern_table_root()` / `set_intern_table_root()`
+
+3. **Update symbol creation**:
+   ```rust
+   // Remove interning logic from:
+   pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex>
+   pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex>
+
+   // Replace with direct allocation:
+   pub fn symbol_with_paint(&self, name: &str, paint: usize) -> ArenaResult<ArenaIndex> {
+       let name_str = self.string(name)?;
+       self.alloc(Value::Symbol { name: name_str, paint })
+   }
+
+   pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+       self.symbol_with_paint(name, 0)
+   }
+   ```
+
+4. **Add symbol helper methods**:
+   ```rust
+   pub fn symbol_name(&self, sym: ArenaIndex) -> ArenaResult<ArenaIndex>
+   pub fn symbol_paint(&self, sym: ArenaIndex) -> ArenaResult<usize>
+   pub fn symbol_parts(&self, sym: ArenaIndex) -> ArenaResult<(ArenaIndex, usize)>
+   pub fn symbol_name_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool>
+   pub fn repaint_symbol(&self, sym: ArenaIndex, paint: usize) -> ArenaResult<ArenaIndex>
+   ```
+
+5. **Update eq? semantics**:
+   - `eq?` on symbols now compares both name AND paint
+   - For backward compatibility, may need a `symbol-name=?` procedure
+
+6. **Update Trace implementation** for GC:
+   ```rust
+   Value::Symbol { name, .. } => {
+       // Trace the name string
+       mark(name);
+   }
+   ```
+
+7. **Update parser** to use paint 0:
+   ```rust
+   // In parse_atom or wherever symbols are created:
+   self.lisp.symbol_with_paint(name, 0)
+   ```
+
+8. **Update all symbol_matches calls** — these should still work since they compare by name only
+
+**Estimated LOC changes:**
+- Removals: ~80 lines (intern table code)
+- Additions: ~50 lines (new helpers)
+- Modifications: ~30 lines (scattered updates)
+- **Net: -30 to 0 lines**
+
+**Testing:**
+- All existing tests should pass (symbols with paint 0 behave like before)
+- `(eq? 'foo 'foo)` may now return `#f` if symbols aren't the same allocation
+- Add test for `symbol_name_eq` helper
+
+---
+
+### Phase 1: Foundation (Macro Infrastructure)
+
+**Files to modify:**
+- `crates/grift_parser/src/value.rs` — Add `Macro` variant
+- `crates/grift_eval/src/evaluator.rs` — Add paint counter, repaint_tree
+
+**Tasks:**
+1. Add `Value::Macro { def_paint: usize, data: ArenaIndex }` variant
+2. Implement `Trace` for Macro variant
+3. Add `next_paint: usize` field to Evaluator (initialize to 1)
+4. Implement `alloc_paint()` method
+5. Implement `repaint_tree()` for repainting expressions
+
+**Estimated LOC:** ~80
+
+---
 
 ### Phase 2: Macro Definition
 
@@ -892,24 +1131,28 @@ These should remain as evaluator-handled special forms:
 1. Add `define-syntax` recognition in `step_eval_list`
 2. Implement `eval_define_syntax()`
 3. Implement `compile_syntax_rules()`
-4. Implement `repaint_rules()` for definition-time repainting
 
-**Estimated LOC:** ~100
+**Estimated LOC:** ~80
+
+---
 
 ### Phase 3: Pattern Matching
 
 **Files to modify:**
-- `crates/grift_eval/src/evaluator.rs` or new module `crates/grift_eval/src/macros.rs`
+- `crates/grift_eval/src/evaluator.rs` or new `crates/grift_eval/src/macros.rs`
 
 **Tasks:**
 1. Define `PatternBindings` structure
 2. Implement `is_pattern_variable()`
 3. Implement `match_pattern()` — main entry point
 4. Implement `match_pattern_impl()` — recursive matcher
-5. Implement `match_ellipsis()` — ellipsis handling
-6. Add binding management helpers
+5. Implement `has_ellipsis()` and `match_ellipsis()`
+6. Implement `collect_pattern_vars()`
+7. Add binding management helpers
 
 **Estimated LOC:** ~200
+
+---
 
 ### Phase 4: Template Expansion
 
@@ -918,11 +1161,14 @@ These should remain as evaluator-handled special forms:
 
 **Tasks:**
 1. Implement `expand_template()` — main expansion
-2. Implement ellipsis template expansion
-3. Implement binding lookup during expansion
-4. Implement use_paint assignment
+2. Implement `is_ellipsis_template()`
+3. Implement `expand_ellipsis_template()`
+4. Implement binding lookup helpers
+5. Implement `make_iteration_bindings()`
 
 **Estimated LOC:** ~150
+
+---
 
 ### Phase 5: Environment Integration
 
@@ -930,27 +1176,32 @@ These should remain as evaluator-handled special forms:
 - `crates/grift_eval/src/evaluator.rs` — Modify env_lookup
 
 **Tasks:**
-1. Modify `env_lookup()` to check paint
-2. Implement fallback to global paint 0
-3. Update `env_extend()` if needed
-4. Ensure macro application calls expand first
+1. Modify `env_lookup()` to use `symbol_parts()` and check paint
+2. Implement `env_lookup_global_with_fallback()`
+3. Implement `env_lookup_global_exact()`
+4. Add macro application in `step_eval_list`
 
-**Estimated LOC:** ~50
+**Estimated LOC:** ~60
+
+---
 
 ### Phase 6: Testing
 
-**Files to modify:**
+**Files to create/modify:**
 - `crates/grift_eval/tests/macro_tests.rs` (new)
 
 **Tasks:**
 1. Basic macro definition and expansion tests
 2. Hygiene tests (user shadowing doesn't break macros)
-3. Pattern matching tests
-4. Ellipsis tests
+3. Pattern variable binding tests
+4. Ellipsis matching and expansion tests
 5. Nested macro tests
-6. Error case tests
+6. Literal identifier tests
+7. Error case tests
 
 **Estimated LOC:** ~300 (tests)
+
+---
 
 ### Phase 7: Special Form Migration
 
@@ -962,7 +1213,7 @@ These should remain as evaluator-handled special forms:
 1. Define `when`, `unless` as macros
 2. Define `and`, `or` as macros
 3. Test against previous special form behavior
-4. Remove special form handlers
+4. Remove special form handlers from evaluator
 5. Optionally migrate `cond`, `let`, `let*`
 
 **Estimated LOC:** ~50 (macros) + removal of ~100 lines
@@ -971,18 +1222,19 @@ These should remain as evaluator-handled special forms:
 
 ## Part 12: Total Effort Estimate
 
-| Phase | Description | LOC |
-|-------|-------------|-----|
-| 1 | Foundation | ~150 |
-| 2 | Macro Definition | ~100 |
-| 3 | Pattern Matching | ~200 |
-| 4 | Template Expansion | ~150 |
-| 5 | Environment Integration | ~50 |
-| 6 | Testing | ~300 |
-| 7 | Special Form Migration | ~50 new, -100 removed |
-| **Total** | | **~800-900 new lines** |
+| Phase | Description | LOC Change |
+|-------|-------------|------------|
+| 0 | Remove Symbol Interning | ~-30 to 0 |
+| 1 | Foundation | ~+80 |
+| 2 | Macro Definition | ~+80 |
+| 3 | Pattern Matching | ~+200 |
+| 4 | Template Expansion | ~+150 |
+| 5 | Environment Integration | ~+60 |
+| 6 | Testing | ~+300 |
+| 7 | Special Form Migration | ~+50, -100 |
+| **Total** | | **~700-800 new lines** |
 
-Special form migration will remove more code than it adds, resulting in a net simplification.
+The removal of interning and special form migration results in a net code reduction in core logic, offset by new macro infrastructure.
 
 ---
 
@@ -1034,6 +1286,16 @@ Special form migration will remove more code than it adds, resulting in a net si
 (my-list 1 2 3)  ; Must return (1 2 3)
 ```
 
+5. **Literals work:**
+```scheme
+(define-syntax my-cond
+  (syntax-rules (else)
+    ((my-cond (else result)) result)
+    ((my-cond (test result)) (if test result #f))))
+
+(my-cond (else 'default))  ; Must return 'default
+```
+
 ---
 
 ## Appendix A: R7RS Compliance Notes
@@ -1050,30 +1312,81 @@ Our implementation satisfies these requirements through the three-context paint 
 
 ---
 
-## Appendix B: Alternative Approaches Considered
+## Appendix B: Symbol Interning Removal Details
+
+### Current Interning Implementation
+
+The current implementation uses an association list stored in reserved arena slot 3:
+
+```rust
+// Reserved slots:
+// 0: Nil
+// 1: True
+// 2: False
+// 3: Intern table root (cons cell)
+
+// Intern table structure: ((name1 . symbol1) (name2 . symbol2) ...)
+```
+
+### Why Interning is Incompatible with Painted Symbols
+
+1. **Identity assumption**: Interning assumes `(eq? 'foo 'foo) => #t` because both resolve to the same ArenaIndex
+
+2. **With paint**: `'foo` with paint 0 and `'foo` with paint 1 must be different symbols for hygiene
+
+3. **Interning + paint** would require a `(name, paint) → ArenaIndex` mapping, which:
+   - Grows unboundedly as new paints are allocated
+   - Provides no benefit (we don't need fast identity comparison across paints)
+   - Complicates the implementation
+
+4. **Clean solution**: Remove interning entirely. Symbol comparison becomes structural (string comparison + paint comparison).
+
+### Impact on eq?
+
+After removing interning:
+
+```scheme
+(eq? 'foo 'foo)  ; May return #f (different allocations)
+(eqv? 'foo 'foo) ; Returns #t (same name, same paint)
+(equal? 'foo 'foo) ; Returns #t
+```
+
+This is actually more correct — `eq?` tests identity (same object), not equality. Two separately allocated symbols with the same name are equal but not identical.
+
+For backward compatibility, ensure `eqv?` and `equal?` compare symbols by name+paint.
+
+---
+
+## Appendix C: Alternative Approaches Considered
+
+### PaintedSymbol Variant (Option A)
+- Add a separate `PaintedSymbol { symbol, paint }` variant
+- Keep `Symbol(ArenaIndex)` for unpainted (paint 0) symbols
+- Allows gradual migration
+- **Rejected**: Two representations for symbols is confusing; all code must handle both cases
 
 ### Gensym-Based Approach
 - Generate unique symbols for introduced bindings
 - Simpler conceptually but breaks lexical scoping intuition
 - Doesn't properly handle definition-site identifiers
-- Rejected: less principled than paint
+- **Rejected**: Less principled than paint
 
 ### Syntax Objects (Racket-style)
 - Wrap every expression with metadata
 - Full phase separation
 - Maximum flexibility
-- Rejected: overkill for R5RS-level macros, much more complex
+- **Rejected**: Overkill for R5RS-level macros, much more complex
 
 ### Sets of Scopes (Racket 2.0)
 - Most sophisticated approach
 - Handles macro-generating macros correctly
-- Rejected: far too complex for our needs
+- **Rejected**: Far too complex for our needs
 
-The three-context paint model is the minimal correct solution for our requirements.
+The inline paint model with three contexts is the minimal correct solution for our requirements.
 
 ---
 
-## Appendix C: References
+## Appendix D: References
 
 - [Kohlbecker et al., "Hygienic Macro Expansion"](https://dl.acm.org/doi/10.1145/319838.319859) (1986)
 - [R7RS Specification, Section 4.3](https://small.r7rs.org/)
