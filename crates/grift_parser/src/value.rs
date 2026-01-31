@@ -365,11 +365,32 @@ pub enum Value {
     /// The actual function pointer is stored in the evaluator's NativeRegistry.
     ///
     /// # Memory Savings
-    /// 
+    ///
     /// Previously: 1 slot for Native + 2 slots for [Usize(id), Usize(name_hash)] = 3 slots
     /// Now: 1 slot for Native with inline id/name_hash = 1 slot (saves 2 slots)
     Native { id: usize, name_hash: usize },
-    
+
+    /// Compiled syntax-rules macro transformer
+    ///
+    /// Stores a hygienic macro definition with:
+    /// - `def_paint`: The paint value assigned at definition time
+    /// - `data`: ArenaIndex pointing to (literals . rules) where:
+    ///   - literals: List of literal identifiers for pattern matching
+    ///   - rules: List of (pattern . template) pairs
+    ///
+    /// The def_paint is used during expansion to identify which identifiers
+    /// came from the macro definition vs the expansion site.
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (define-syntax when
+    ///   (syntax-rules ()
+    ///     ((when test body ...)
+    ///      (if test (begin body ...) #f))))
+    /// ```
+    Macro { def_paint: usize, data: ArenaIndex },
+
     /// Raw arena index reference
     /// 
     /// Used internally for storing arena indices in contiguous blocks.
@@ -495,7 +516,13 @@ impl Value {
     pub const fn is_native(&self) -> bool {
         matches!(self, Value::Native { .. })
     }
-    
+
+    /// Check if this value is a macro transformer
+    #[inline]
+    pub const fn is_macro(&self) -> bool {
+        matches!(self, Value::Macro { .. })
+    }
+
     /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
     #[inline]
     pub const fn is_procedure(&self) -> bool {
@@ -566,6 +593,7 @@ impl Value {
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
+            Value::Macro { .. } => "macro",
             Value::Array { .. } => "array",
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
@@ -597,6 +625,10 @@ impl<const N: usize> Trace<Value, N> for Value {
             }
             Value::Native { .. } => {
                 // id and name_hash are inline usize values, no arena references to trace
+            }
+            Value::Macro { data, .. } => {
+                // def_paint is inline, only trace data (points to (literals . rules))
+                tracer(*data);
             }
             Value::Symbol { name, .. } => {
                 // name points to a Value::String, which handles its own tracing

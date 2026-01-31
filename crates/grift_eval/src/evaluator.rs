@@ -41,6 +41,8 @@ pub struct Evaluator<'a, const N: usize> {
     data_stack_top: usize,
     /// Native function registry
     native_registry: NativeRegistry<N>,
+    /// Next paint value for macro hygiene (starts at 1, paint 0 = user code)
+    next_paint: usize,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -56,6 +58,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             data_stack: [ArenaIndex::NIL; MAX_DATA_STACK],
             data_stack_top: 0,
             native_registry: NativeRegistry::new(),
+            next_paint: 1, // Start at 1; paint 0 is reserved for user code
         };
         
         // Initialize global environment with builtins
@@ -263,7 +266,52 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.make_error(ErrorKind::WrongArgCount, expr)
             .with_args(expected, got)
     }
-    
+
+    // ========================================================================
+    // Macro Hygiene Infrastructure
+    // ========================================================================
+
+    /// Allocate a fresh paint value for macro hygiene.
+    ///
+    /// Each call returns a unique paint value that can be used to distinguish
+    /// identifiers introduced at different macro definition or expansion sites.
+    ///
+    /// - Paint 0 is reserved for user code (parsed input)
+    /// - Paint 1+ is allocated for macro definitions and expansions
+    #[inline]
+    pub fn alloc_paint(&mut self) -> usize {
+        let paint = self.next_paint;
+        self.next_paint += 1;
+        paint
+    }
+
+    /// Recursively repaint all symbols in an expression tree.
+    ///
+    /// This is used during macro definition to assign the definition-site paint
+    /// to all identifiers in the macro's pattern and template.
+    ///
+    /// - Symbols get repainted with the new paint value
+    /// - Cons cells are recursively traversed
+    /// - Other values (numbers, strings, etc.) pass through unchanged
+    pub fn repaint_tree(&self, expr: ArenaIndex, paint: usize) -> EvalResult {
+        match self.lisp.get(expr)? {
+            Value::Symbol { name, .. } => {
+                // Repaint this symbol with the new paint
+                self.lisp.alloc(Value::Symbol { name, paint }).map_err(Into::into)
+            }
+            Value::Cons { car, cdr } => {
+                // Recursively repaint car and cdr
+                let new_car = self.repaint_tree(car, paint)?;
+                let new_cdr = self.repaint_tree(cdr, paint)?;
+                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+            }
+            _ => {
+                // Numbers, strings, booleans, etc. - return unchanged
+                Ok(expr)
+            }
+        }
+    }
+
     // ========================================================================
     // Environment Management
     // ========================================================================
@@ -516,11 +564,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         match val {
             // Self-evaluating values
-            Value::Nil | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | 
+            Value::Nil | Value::True | Value::False |
+            Value::Number(_) | Value::Char(_) |
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
-            Value::Ref(_) | Value::Usize(_) => {
+            Value::Macro { .. } | Value::Ref(_) | Value::Usize(_) => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
