@@ -385,6 +385,29 @@ pub enum Value {
     /// This is primarily an internal implementation detail. For user-facing
     /// integers, prefer `Number(isize)` which supports negative values.
     Usize(usize),
+    
+    /// Syntax object for hygienic macro expansion (set-of-scopes)
+    /// 
+    /// A syntax object wraps a datum (any Lisp value) with lexical context
+    /// information. This enables hygienic macro expansion by tracking which
+    /// scopes are associated with each identifier.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `datum`: The underlying value (symbol, list, etc.)
+    /// - `scopes`: A list of scope IDs (each scope is a unique usize)
+    /// 
+    /// # Usage
+    /// 
+    /// During macro expansion:
+    /// 1. Input forms are wrapped in syntax objects with their original scopes
+    /// 2. Macro expansion adds new scopes to introduced identifiers
+    /// 3. Identifier resolution compares scope sets to find bindings
+    /// 
+    /// A reference matches a binding if the reference's scope set is a
+    /// subset of (or equal to) the binding's scope set. The most specific
+    /// binding (largest scope set) wins.
+    Syntax { datum: ArenaIndex, scopes: ArenaIndex },
 }
 
 impl Value {
@@ -544,6 +567,12 @@ impl Value {
         }
     }
     
+    /// Check if this value is a syntax object
+    #[inline]
+    pub const fn is_syntax(&self) -> bool {
+        matches!(self, Value::Syntax { .. })
+    }
+    
     /// Get a human-readable type name
     pub const fn type_name(&self) -> &'static str {
         match self {
@@ -561,6 +590,7 @@ impl Value {
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
+            Value::Syntax { .. } => "syntax",
         }
     }
 }
@@ -622,6 +652,11 @@ impl<const N: usize> Trace<Value, N> for Value {
                         tracer(char_idx);
                     }
                 }
+            }
+            Value::Syntax { datum, scopes } => {
+                // Trace both the wrapped datum and the scope list
+                tracer(*datum);
+                tracer(*scopes);
             }
         }
     }

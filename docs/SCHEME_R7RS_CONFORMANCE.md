@@ -100,6 +100,7 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 
 #### 1.4 Numerical Tower (Section 6.2)
 **Status**: Integers only. No floating-point support.
+Do not implement floats or other parts of numerical tower yet.
 
 - [x] Integer arithmetic works correctly
 - [x] `exact?` always returns #t (all numbers are exact integers)
@@ -198,14 +199,41 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [ ] Implement `let-values` / `let*-values` - Bind multiple values
 - [ ] Implement `define-values` - Define multiple values
 
-### Phase 5: Hygienic Macros
-**Goal**: R7RS-compliant macro system
+### Phase 5: Hygienic Macros (Set-of-Scopes)
+**Goal**: R7RS-compliant macro system using the "set of scopes" hygiene model
 
-#### 5.1 Syntax-Rules (Section 4.3.2)
-- [ ] Implement `syntax-rules` - Pattern-based macros
-- [ ] Implement `let-syntax` / `letrec-syntax` - Local syntax bindings
+#### 5.0 Syntax Infrastructure ✅ COMPLETED
+- [x] Add `Value::Syntax { datum, scopes }` variant for syntax objects
+- [x] Implement `Lisp::syntax()` - Create syntax objects
+- [x] Implement `Lisp::syntax_datum()` / `syntax_scopes()` - Extract components
+- [x] Implement `Lisp::syntax_add_scope()` - Add scope to syntax object
+- [x] Implement `Lisp::syntax_remove_scope()` - Remove scope (for definition contexts)
+- [x] Implement `Lisp::syntax_flip_scope()` - Toggle scope (add if absent, remove if present)
+- [x] Implement `Lisp::scopes_subset()` - Check if scope set A ⊆ B (for identifier resolution)
+- [x] Implement GC tracing for syntax objects
+
+#### 5.1 Expansion Phase (Next)
+- [ ] Add scope counter to evaluator for generating unique scope IDs
+- [ ] Create expansion phase that runs before evaluation
+- [ ] Implement `datum->syntax` / `syntax->datum` conversion
+- [ ] Implement syntax object traversal (wrap/unwrap lists recursively)
+
+#### 5.2 Syntax-Rules (Section 4.3.2)
+- [ ] Implement pattern matching for `syntax-rules` patterns
+- [ ] Implement template substitution with pattern variables
+- [ ] Implement ellipsis (`...`) handling in patterns and templates
+- [ ] Implement `_` wildcard and literal matching
+
+#### 5.3 Macro Binding Forms
 - [ ] Implement `define-syntax` - Top-level syntax definitions
+- [ ] Implement `let-syntax` - Local syntax bindings (adds scope, removes on splice)
+- [ ] Implement `letrec-syntax` - Recursive local syntax bindings
 - [ ] Implement `syntax-error` - Macro error signaling
+
+#### 5.4 Identifier Resolution with Scopes
+- [ ] Modify `env_lookup` to use scope comparison for hygiene
+- [ ] Implement "most specific binding" selection (largest matching scope set)
+- [ ] Handle definition contexts (scope flipping for spliced definitions)
 
 ### Phase 6: Control Features
 **Goal**: Advanced control flow

@@ -363,6 +363,62 @@ The stdlib is defined in `stdlib.scm` and processed by the `include_stdlib!` mac
 
 Note: The shorthand syntax (`` ` `` for quasiquote, `,` for unquote) is not currently supported in the parser.
 
+## Hygienic Macros (Set-of-Scopes)
+
+This implementation uses the **set-of-scopes** model for macro hygiene, as developed for Racket by Matthew Flatt.
+
+### Syntax Objects
+
+A syntax object wraps a Lisp value with lexical scope information:
+
+```rust
+Value::Syntax { 
+    datum: ArenaIndex,   // The underlying value (symbol, list, etc.)
+    scopes: ArenaIndex,  // List of scope IDs (integers)
+}
+```
+
+### How Set-of-Scopes Works
+
+1. **Scope Creation**: Each binding context (let, lambda, macro expansion) creates a new unique scope ID.
+
+2. **Scope Addition**: When an identifier passes through a binding form, the form's scope is added to the identifier's scope set.
+
+3. **Identifier Resolution**: A reference matches a binding if the reference's scopes are a **subset** of the binding's scopes. The most specific binding (largest matching scope set) wins.
+
+4. **Scope Flipping**: For definition contexts (like `let-syntax` bodies that splice definitions out), scopes may be "flipped" (toggled) rather than simply added.
+
+### Helper Functions
+
+```rust
+// Create syntax object
+lisp.syntax(datum, scopes)
+
+// Extract components
+lisp.syntax_datum(stx)    // Get wrapped value
+lisp.syntax_scopes(stx)   // Get scope set
+
+// Scope manipulation
+lisp.syntax_add_scope(stx, scope_id)     // Add scope
+lisp.syntax_remove_scope(stx, scope_id)  // Remove scope
+lisp.syntax_flip_scope(stx, scope_id)    // Toggle scope
+
+// Resolution
+lisp.scopes_subset(a, b)  // Check if scope set A ⊆ B
+```
+
+### Why Set-of-Scopes?
+
+Compared to traditional "marks and renames" hygiene:
+
+| Aspect | Marks & Renames | Set of Scopes |
+|--------|-----------------|---------------|
+| Edge cases | Some known failures | More robust |
+| Definition contexts | Tricky | Handled via scope flipping |
+| Theoretical basis | Ad-hoc rules | Uniform model |
+
+For typical macros, both work equally well. Set-of-scopes handles more edge cases, particularly around local macros in definition contexts.
+
 ## Garbage Collection Integration
 
 ### GC Roots

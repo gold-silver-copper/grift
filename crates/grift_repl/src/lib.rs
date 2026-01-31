@@ -129,6 +129,17 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<usize:{}>", n).unwrap();
         }
+        Ok(Value::Syntax { datum, scopes }) => {
+            // Display syntax objects showing the wrapped datum and scope count
+            buf.push_str("#<syntax:");
+            format_value_impl(lisp, datum, buf, depth + 1);
+            let scope_count = lisp.scopes_count(scopes).unwrap_or(0);
+            if scope_count > 0 {
+                use std::fmt::Write;
+                write!(buf, " scopes:{}", scope_count).unwrap();
+            }
+            buf.push('>');
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

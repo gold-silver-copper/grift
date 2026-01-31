@@ -536,6 +536,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let cdr = self.lisp.cdr(expr)?;
                 self.step_eval_list(car, cdr, expr, env)
             }
+            
+            // Syntax object - unwrap and evaluate the datum
+            // Note: In the future, macro expansion will process syntax objects
+            // before evaluation. For now, we simply unwrap and evaluate.
+            Value::Syntax { datum, .. } => {
+                self.step_eval(datum, env)
+            }
         }
     }
     

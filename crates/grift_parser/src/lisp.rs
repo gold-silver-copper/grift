@@ -1064,6 +1064,193 @@ impl<const N: usize> Lisp<N> {
             _ => Err(ArenaError::InvalidIndex),
         }
     }
+    
+    // ========================================================================
+    // Syntax Objects (Set-of-Scopes Hygiene)
+    // ========================================================================
+    //
+    // Syntax objects wrap Lisp values with lexical scope information for
+    // hygienic macro expansion. Each syntax object has:
+    // - datum: The underlying Lisp value (symbol, list, number, etc.)
+    // - scopes: A list of scope IDs (each scope is a unique identifier)
+    //
+    // In the set-of-scopes model:
+    // - Each binding context (let, lambda, macro expansion) creates a new scope
+    // - Scopes are added to syntax objects as they pass through binding forms
+    // - An identifier reference matches a binding if the reference's scope set
+    //   is a subset of the binding's scope set
+    // - The most specific binding (largest matching scope set) wins
+    // ========================================================================
+    
+    /// Create a syntax object wrapping a datum with the given scopes.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `datum` - The Lisp value to wrap (symbol, list, etc.)
+    /// * `scopes` - A list of scope IDs (each a Number value)
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use grift_parser::Lisp;
+    /// let lisp = Lisp::<1000>::new();
+    /// let sym = lisp.symbol("foo").unwrap();
+    /// let empty_scopes = lisp.nil().unwrap();
+    /// let stx = lisp.syntax(sym, empty_scopes).unwrap();
+    /// ```
+    #[inline]
+    pub fn syntax(&self, datum: ArenaIndex, scopes: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Syntax { datum, scopes })
+    }
+    
+    /// Extract the datum from a syntax object.
+    /// 
+    /// If the value is not a syntax object, returns the value unchanged.
+    /// This allows code to work uniformly with both syntax objects and raw values.
+    #[inline]
+    pub fn syntax_datum(&self, stx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(stx)? {
+            Value::Syntax { datum, .. } => Ok(datum),
+            _ => Ok(stx), // Not a syntax object, return as-is
+        }
+    }
+    
+    /// Extract the scopes from a syntax object.
+    /// 
+    /// Returns nil if the value is not a syntax object.
+    #[inline]
+    pub fn syntax_scopes(&self, stx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(stx)? {
+            Value::Syntax { scopes, .. } => Ok(scopes),
+            _ => self.nil(), // Not a syntax object, return empty scopes
+        }
+    }
+    
+    /// Add a scope to a syntax object, returning a new syntax object.
+    /// 
+    /// If the value is not a syntax object, wraps it first.
+    /// The scope is represented as a Number value.
+    pub fn syntax_add_scope(&self, stx: ArenaIndex, scope_id: isize) -> ArenaResult<ArenaIndex> {
+        let (datum, scopes) = match self.get(stx)? {
+            Value::Syntax { datum, scopes } => (datum, scopes),
+            _ => (stx, self.nil()?), // Wrap non-syntax value
+        };
+        
+        // Add scope to front of scope list
+        let scope_val = self.number(scope_id)?;
+        let new_scopes = self.cons(scope_val, scopes)?;
+        
+        self.syntax(datum, new_scopes)
+    }
+    
+    /// Remove a scope from a syntax object (for scope flipping in definition contexts).
+    /// 
+    /// Returns a new syntax object with the scope removed from its scope set.
+    /// If the scope is not present, returns the syntax object unchanged.
+    pub fn syntax_remove_scope(&self, stx: ArenaIndex, scope_id: isize) -> ArenaResult<ArenaIndex> {
+        let (datum, scopes) = match self.get(stx)? {
+            Value::Syntax { datum, scopes } => (datum, scopes),
+            _ => return Ok(stx), // Not a syntax object, return as-is
+        };
+        
+        // Filter out the scope from the list
+        let new_scopes = self.scope_list_remove(scopes, scope_id)?;
+        self.syntax(datum, new_scopes)
+    }
+    
+    /// Flip a scope (add if absent, remove if present) on a syntax object.
+    /// 
+    /// This operation is used for definition contexts where scopes need
+    /// to be toggled rather than simply added.
+    pub fn syntax_flip_scope(&self, stx: ArenaIndex, scope_id: isize) -> ArenaResult<ArenaIndex> {
+        let (datum, scopes) = match self.get(stx)? {
+            Value::Syntax { datum, scopes } => (datum, scopes),
+            _ => (stx, self.nil()?), // Wrap non-syntax value
+        };
+        
+        let new_scopes = if self.scope_list_contains(scopes, scope_id)? {
+            self.scope_list_remove(scopes, scope_id)?
+        } else {
+            let scope_val = self.number(scope_id)?;
+            self.cons(scope_val, scopes)?
+        };
+        
+        self.syntax(datum, new_scopes)
+    }
+    
+    /// Check if a scope list contains a given scope ID.
+    fn scope_list_contains(&self, scopes: ArenaIndex, scope_id: isize) -> ArenaResult<bool> {
+        let mut current = scopes;
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(false),
+                Value::Cons { car, cdr } => {
+                    if let Value::Number(n) = self.get(car)? {
+                        if n == scope_id {
+                            return Ok(true);
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Ok(false),
+            }
+        }
+    }
+    
+    /// Remove a scope ID from a scope list, returning a new list.
+    fn scope_list_remove(&self, scopes: ArenaIndex, scope_id: isize) -> ArenaResult<ArenaIndex> {
+        match self.get(scopes)? {
+            Value::Nil => self.nil(),
+            Value::Cons { car, cdr } => {
+                let rest = self.scope_list_remove(cdr, scope_id)?;
+                if let Value::Number(n) = self.get(car)? {
+                    if n == scope_id {
+                        return Ok(rest); // Skip this scope
+                    }
+                }
+                self.cons(car, rest)
+            }
+            _ => self.nil(),
+        }
+    }
+    
+    /// Check if scope set A is a subset of scope set B.
+    /// 
+    /// Used for identifier resolution: a reference with scopes A matches
+    /// a binding with scopes B if A ⊆ B.
+    pub fn scopes_subset(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        let mut current = a;
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(true), // Empty set is subset of everything
+                Value::Cons { car, cdr } => {
+                    if let Value::Number(scope_id) = self.get(car)? {
+                        if !self.scope_list_contains(b, scope_id)? {
+                            return Ok(false);
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Ok(true),
+            }
+        }
+    }
+    
+    /// Count the number of scopes in a scope set.
+    pub fn scopes_count(&self, scopes: ArenaIndex) -> ArenaResult<usize> {
+        let mut count = 0;
+        let mut current = scopes;
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(count),
+                Value::Cons { cdr, .. } => {
+                    count += 1;
+                    current = cdr;
+                }
+                _ => return Ok(count),
+            }
+        }
+    }
 }
 
 impl<const N: usize> Default for Lisp<N> {
