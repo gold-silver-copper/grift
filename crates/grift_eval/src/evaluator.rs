@@ -350,12 +350,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Look up in global environment only
     fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
         let mut current = self.global_env;
-        
+
+        // First, try exact match (same name AND same paint)
         loop {
             match self.lisp.get(current)? {
-                Value::Nil => {
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
+                Value::Nil => break,
                 Value::Cons { car, cdr } => {
                     // With inline cons, we get car and cdr directly
                     if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
@@ -368,6 +367,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Err(self.make_error(ErrorKind::Generic, name)),
             }
         }
+
+        // If exact match failed and the symbol has non-zero paint (from macro expansion),
+        // try looking up by name only (ignoring paint) as a fallback for global bindings.
+        // This allows macro-introduced references to globals like '+' to resolve.
+        if let Value::Symbol { paint, .. } = self.lisp.get(name)? {
+            if paint != 0 {
+                current = self.global_env;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { car, cdr } => {
+                            if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
+                                // Compare names only, ignoring paint
+                                if self.lisp.symbol_name_eq(bound_name, name)? {
+                                    return Ok(bound_value);
+                                }
+                            }
+                            current = cdr;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        }
+
+        Err(self.make_error(ErrorKind::UnboundVariable, name))
     }
     
     /// Set a variable in an environment (mutation operation)
@@ -729,8 +754,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "values")? {
                 return self.eval_values(cdr, env);
             }
+
+            // define-syntax - macro definition (R7RS Section 4.3.2)
+            if self.lisp.symbol_matches(car, "define-syntax")? {
+                return self.eval_define_syntax(cdr, env);
+            }
         }
-        
+
+        // Check if head resolves to a macro - must evaluate head first for non-symbol case
+        if let Value::Symbol { .. } = self.lisp.get(car)? {
+            if let Ok(macro_val) = self.env_lookup(env, car) {
+                if let Value::Macro { def_paint, data } = self.lisp.get(macro_val)? {
+                    // Expand the macro and evaluate the result
+                    let expanded = self.expand_macro(cdr, def_paint, data)?;
+                    return Ok(TrampolineState::Eval { expr: expanded, env });
+                }
+            }
+        }
+
         // Function application - HYBRID EVALUATION
         self.push_frame(expr, car)?;
         
@@ -3303,7 +3344,584 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
         }
     }
-    
+
+    // ========================================================================
+    // Macro Support (R7RS Section 4.3)
+    // ========================================================================
+
+    /// Evaluate (define-syntax name transformer-spec)
+    ///
+    /// Creates a macro binding in the global environment.
+    /// The transformer-spec must be a syntax-rules form.
+    fn eval_define_syntax(&mut self, args: ArenaIndex, _env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        // (define-syntax name (syntax-rules ...))
+        let name = self.lisp.car(args)?;
+        let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+
+        // Verify name is a symbol
+        if !matches!(self.lisp.get(name)?, Value::Symbol { .. }) {
+            return Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name()));
+        }
+
+        // Allocate fresh paint for this macro definition
+        let def_paint = self.alloc_paint();
+
+        // Compile the transformer (must be syntax-rules)
+        let macro_val = self.compile_syntax_rules(transformer_expr, def_paint)?;
+
+        // Bind in global environment
+        self.define(name, macro_val)?;
+
+        Ok(TrampolineState::Return { val: name })
+    }
+
+    /// Compile a syntax-rules form into a Macro value.
+    ///
+    /// Syntax: (syntax-rules (literals...) (pattern template) ...)
+    ///
+    /// The patterns and templates are repainted with def_paint to mark them
+    /// as belonging to this macro definition (for hygiene).
+    fn compile_syntax_rules(&mut self, expr: ArenaIndex, def_paint: usize) -> EvalResult {
+        // (syntax-rules (literals...) (pattern template)...)
+
+        // Verify head is 'syntax-rules'
+        let head = self.lisp.car(expr)?;
+        if !self.lisp.symbol_matches(head, "syntax-rules")? {
+            return Err(self.make_error(ErrorKind::Generic, expr));
+        }
+
+        let rest = self.lisp.cdr(expr)?;
+        let literals = self.lisp.car(rest)?;  // List of literal identifiers
+        let rules = self.lisp.cdr(rest)?;     // List of (pattern template) pairs
+
+        // Validate literals is a list (nil or cons)
+        if !matches!(self.lisp.get(literals)?, Value::Nil | Value::Cons { .. }) {
+            return Err(self.type_error(literals, "list", self.lisp.get(literals)?.type_name()));
+        }
+
+        // Repaint all identifiers in the rules with def_paint
+        // This marks them as "definition-site" identifiers for hygiene
+        let painted_rules = self.repaint_tree(rules, def_paint)?;
+
+        // Also repaint the literals (they need to match at the definition site paint)
+        let painted_literals = self.repaint_tree(literals, def_paint)?;
+
+        // Create the Macro value: data = (literals . rules)
+        let data = self.lisp.cons(painted_literals, painted_rules)?;
+        self.lisp.alloc(Value::Macro { def_paint, data }).map_err(Into::into)
+    }
+
+    /// Expand a macro application.
+    ///
+    /// Given the arguments to a macro call, find a matching pattern
+    /// and expand the corresponding template.
+    ///
+    /// The expansion uses three-context hygiene:
+    /// - Paint 0: user code (the arguments)
+    /// - def_paint: macro definition (patterns and template code)
+    /// - exp_paint: fresh paint for introduced identifiers
+    fn expand_macro(&mut self, args: ArenaIndex, def_paint: usize, data: ArenaIndex) -> EvalResult {
+        // data = (literals . rules) where rules = ((pattern template) ...)
+        let literals = self.lisp.car(data)?;
+        let rules = self.lisp.cdr(data)?;
+
+        // Allocate fresh paint for this expansion
+        let exp_paint = self.alloc_paint();
+
+        // Try each rule until one matches
+        let mut current_rule = rules;
+        while !self.lisp.get(current_rule)?.is_nil() {
+            let rule = self.lisp.car(current_rule)?;
+            let pattern = self.lisp.car(rule)?;
+            let template = self.lisp.car(self.lisp.cdr(rule)?)?;
+
+            // The pattern has form (_ <pattern-parts>...) where _ is the macro name
+            // We match against the cdr of the pattern (the parts after the macro name)
+            let pattern_parts = self.lisp.cdr(pattern)?;
+
+            // Try to match the arguments against the pattern
+            if let Ok(bindings) = self.match_pattern(args, pattern_parts, literals, def_paint) {
+                // Match succeeded! Expand the template with the bindings
+                return self.expand_template(template, bindings, def_paint, exp_paint);
+            }
+
+            current_rule = self.lisp.cdr(current_rule)?;
+        }
+
+        // No pattern matched
+        Err(self.make_error(ErrorKind::Generic, args))
+    }
+
+    /// Match arguments against a pattern, returning bindings on success.
+    ///
+    /// Returns a list of (pattern-var . value) pairs, or an error if no match.
+    fn match_pattern(
+        &self,
+        args: ArenaIndex,
+        pattern: ArenaIndex,
+        literals: ArenaIndex,
+        def_paint: usize,
+    ) -> EvalResult {
+        // Start with empty bindings
+        let bindings = self.lisp.nil()?;
+        self.match_pattern_rec(args, pattern, literals, def_paint, bindings)
+    }
+
+    /// Recursive helper for pattern matching.
+    fn match_pattern_rec(
+        &self,
+        expr: ArenaIndex,
+        pattern: ArenaIndex,
+        literals: ArenaIndex,
+        def_paint: usize,
+        bindings: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(pattern)? {
+            // Pattern variable - bind it to the expression
+            Value::Symbol { name, paint } if paint == def_paint => {
+                // Check if this is a literal
+                if self.is_literal(name, literals)? {
+                    // Literal must match exactly (name-only comparison)
+                    if let Value::Symbol { name: expr_name, .. } = self.lisp.get(expr)? {
+                        if self.lisp.string_eq_contiguous(name, expr_name)? {
+                            return Ok(bindings);
+                        }
+                    }
+                    // Literal didn't match
+                    return Err(self.make_error(ErrorKind::Generic, pattern));
+                }
+
+                // Check for underscore (wildcard) - matches anything, no binding
+                if self.lisp.string_matches(name, "_")? {
+                    return Ok(bindings);
+                }
+
+                // Check for ellipsis - handled by parent
+                if self.lisp.string_matches(name, "...")? {
+                    return Err(self.make_error(ErrorKind::Generic, pattern));
+                }
+
+                // Regular pattern variable - add binding
+                let binding = self.lisp.cons(pattern, expr)?;
+                self.lisp.cons(binding, bindings).map_err(Into::into)
+            }
+
+            // Pattern list - must match structurally
+            Value::Cons { car: pcar, cdr: pcdr } => {
+                // Check for ellipsis pattern (something ...)
+                if !self.lisp.get(pcdr)?.is_nil() {
+                    let next = self.lisp.car(pcdr)?;
+                    if let Value::Symbol { name, .. } = self.lisp.get(next)? {
+                        if self.lisp.string_matches(name, "...")? {
+                            // Ellipsis pattern - match zero or more
+                            return self.match_ellipsis(expr, pcar, self.lisp.cdr(pcdr)?, literals, def_paint, bindings);
+                        }
+                    }
+                }
+
+                // Regular list - expr must be a cons cell
+                if let Value::Cons { car: ecar, cdr: ecdr } = self.lisp.get(expr)? {
+                    // Match car recursively
+                    let bindings = self.match_pattern_rec(ecar, pcar, literals, def_paint, bindings)?;
+                    // Match cdr recursively
+                    self.match_pattern_rec(ecdr, pcdr, literals, def_paint, bindings)
+                } else {
+                    Err(self.make_error(ErrorKind::Generic, pattern))
+                }
+            }
+
+            // Nil pattern - must match nil
+            Value::Nil => {
+                if self.lisp.get(expr)?.is_nil() {
+                    Ok(bindings)
+                } else {
+                    Err(self.make_error(ErrorKind::Generic, pattern))
+                }
+            }
+
+            // Other values (numbers, strings, etc.) - must be equal
+            _ => {
+                if self.values_equal(pattern, expr)? {
+                    Ok(bindings)
+                } else {
+                    Err(self.make_error(ErrorKind::Generic, pattern))
+                }
+            }
+        }
+    }
+
+    /// Check if a name is in the literals list.
+    fn is_literal(&self, name: ArenaIndex, literals: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = literals;
+        while let Value::Cons { car, cdr } = self.lisp.get(current)? {
+            if let Value::Symbol { name: lit_name, .. } = self.lisp.get(car)? {
+                if self.lisp.string_eq_contiguous(name, lit_name)? {
+                    return Ok(true);
+                }
+            }
+            current = cdr;
+        }
+        Ok(false)
+    }
+
+    /// Check if two values are equal (for pattern matching).
+    fn values_equal(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+        match (self.lisp.get(a)?, self.lisp.get(b)?) {
+            (Value::Nil, Value::Nil) => Ok(true),
+            (Value::True, Value::True) => Ok(true),
+            (Value::False, Value::False) => Ok(true),
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Char(x), Value::Char(y)) => Ok(x == y),
+            (Value::String { .. }, Value::String { .. }) => {
+                self.lisp.string_eq_contiguous(a, b).map_err(Into::into)
+            }
+            (Value::Symbol { name: na, paint: pa }, Value::Symbol { name: nb, paint: pb }) => {
+                Ok(pa == pb && self.lisp.string_eq_contiguous(na, nb)?)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Match an ellipsis pattern (pat ...) against remaining elements.
+    ///
+    /// Collects all matches into lists for each pattern variable.
+    fn match_ellipsis(
+        &self,
+        expr: ArenaIndex,
+        subpattern: ArenaIndex,
+        rest_pattern: ArenaIndex,
+        literals: ArenaIndex,
+        def_paint: usize,
+        bindings: ArenaIndex,
+    ) -> EvalResult {
+        // Collect pattern variables from the subpattern
+        let pattern_vars = self.collect_pattern_vars(subpattern, literals)?;
+
+        // Initialize empty lists for each pattern variable
+        let mut var_lists = self.lisp.nil()?;
+        {
+            let mut pv = pattern_vars;
+            while let Value::Cons { car, cdr } = self.lisp.get(pv)? {
+                let nil = self.lisp.nil()?;
+                let entry = self.lisp.cons(car, nil)?;
+                var_lists = self.lisp.cons(entry, var_lists)?;
+                pv = cdr;
+            }
+        }
+
+        // Match as many elements as possible
+        let mut current = expr;
+        while let Value::Cons { car, cdr } = self.lisp.get(current)? {
+            // Try matching the rest pattern first (for proper termination)
+            if !self.lisp.get(rest_pattern)?.is_nil() {
+                if self.match_pattern_rec(current, rest_pattern, literals, def_paint, bindings).is_ok() {
+                    break;
+                }
+            }
+
+            // Match element against subpattern
+            let empty_bindings = self.lisp.nil()?;
+            let match_bindings = self.match_pattern_rec(car, subpattern, literals, def_paint, empty_bindings)?;
+
+            // Append matched values to var_lists
+            var_lists = self.append_to_var_lists(var_lists, match_bindings)?;
+
+            current = cdr;
+        }
+
+        // Reverse each list in var_lists and add to bindings
+        let mut result_bindings = bindings;
+        let mut vl = var_lists;
+        while let Value::Cons { car: entry, cdr } = self.lisp.get(vl)? {
+            let var = self.lisp.car(entry)?;
+            let values = self.lisp.cdr(entry)?;
+            let reversed = self.reverse_list(values)?;
+            let binding = self.lisp.cons(var, reversed)?;
+            result_bindings = self.lisp.cons(binding, result_bindings)?;
+            vl = cdr;
+        }
+
+        // Match the rest pattern against remaining expression
+        if !self.lisp.get(rest_pattern)?.is_nil() {
+            self.match_pattern_rec(current, rest_pattern, literals, def_paint, result_bindings)
+        } else if !self.lisp.get(current)?.is_nil() {
+            // Extra elements with no rest pattern
+            Err(self.make_error(ErrorKind::Generic, current))
+        } else {
+            Ok(result_bindings)
+        }
+    }
+
+    /// Collect pattern variables from a pattern.
+    fn collect_pattern_vars(&self, pattern: ArenaIndex, literals: ArenaIndex) -> EvalResult {
+        let mut vars = self.lisp.nil()?;
+        self.collect_pattern_vars_rec(pattern, literals, &mut vars)?;
+        Ok(vars)
+    }
+
+    fn collect_pattern_vars_rec(&self, pattern: ArenaIndex, literals: ArenaIndex, vars: &mut ArenaIndex) -> Result<(), EvalError> {
+        match self.lisp.get(pattern)? {
+            Value::Symbol { name, .. } => {
+                // Skip _ and ... and literals
+                if !self.lisp.string_matches(name, "_")?
+                    && !self.lisp.string_matches(name, "...")?
+                    && !self.is_literal(name, literals)?
+                {
+                    *vars = self.lisp.cons(pattern, *vars)?;
+                }
+            }
+            Value::Cons { car, cdr } => {
+                self.collect_pattern_vars_rec(car, literals, vars)?;
+                self.collect_pattern_vars_rec(cdr, literals, vars)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Append values from match_bindings to the corresponding lists in var_lists.
+    fn append_to_var_lists(&self, var_lists: ArenaIndex, match_bindings: ArenaIndex) -> EvalResult {
+        let mut result = self.lisp.nil()?;
+        let mut vl = var_lists;
+
+        while let Value::Cons { car: entry, cdr } = self.lisp.get(vl)? {
+            let var = self.lisp.car(entry)?;
+            let values = self.lisp.cdr(entry)?;
+
+            // Find the binding for this var
+            let mut mb = match_bindings;
+            let mut found_val = self.lisp.nil()?;
+            while let Value::Cons { car: binding, cdr: rest } = self.lisp.get(mb)? {
+                let bvar = self.lisp.car(binding)?;
+                if self.lisp.symbol_eq(var, bvar)? {
+                    found_val = self.lisp.cdr(binding)?;
+                    break;
+                }
+                mb = rest;
+            }
+
+            // Prepend to values list
+            let new_values = self.lisp.cons(found_val, values)?;
+            let new_entry = self.lisp.cons(var, new_values)?;
+            result = self.lisp.cons(new_entry, result)?;
+            vl = cdr;
+        }
+
+        // Reverse to maintain order
+        self.reverse_list(result)
+    }
+
+    /// Expand a template with bindings, applying hygiene.
+    ///
+    /// - Pattern variables are replaced with their bound values
+    /// - Identifiers from the macro definition keep def_paint
+    /// - Identifiers introduced by the expansion get exp_paint
+    fn expand_template(
+        &self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        def_paint: usize,
+        exp_paint: usize,
+    ) -> EvalResult {
+        self.expand_template_rec(template, bindings, def_paint, exp_paint)
+    }
+
+    fn expand_template_rec(
+        &self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        def_paint: usize,
+        exp_paint: usize,
+    ) -> EvalResult {
+        match self.lisp.get(template)? {
+            // Symbol - check if it's a pattern variable or template identifier
+            Value::Symbol { .. } => {
+                // Check if this is a bound pattern variable
+                let mut mb = bindings;
+                while let Value::Cons { car: binding, cdr } = self.lisp.get(mb)? {
+                    let bvar = self.lisp.car(binding)?;
+                    if self.lisp.symbol_eq(template, bvar)? {
+                        // Return the bound value
+                        return Ok(self.lisp.cdr(binding)?);
+                    }
+                    mb = cdr;
+                }
+
+                // Not a pattern variable - keep the template symbol as-is.
+                // This preserves def_paint for macro-introduced identifiers.
+                // When evaluated, env_lookup will handle paint-aware lookup with
+                // fallback to paint-0 globals.
+                Ok(template)
+            }
+
+            // List - handle ellipsis and recurse
+            Value::Cons { car, cdr } => {
+                // Check for ellipsis
+                if !self.lisp.get(cdr)?.is_nil() {
+                    let next = self.lisp.car(cdr)?;
+                    if let Value::Symbol { name, .. } = self.lisp.get(next)? {
+                        if self.lisp.string_matches(name, "...")? {
+                            // Ellipsis expansion
+                            return self.expand_ellipsis(car, self.lisp.cdr(cdr)?, bindings, def_paint, exp_paint);
+                        }
+                    }
+                }
+
+                // Regular cons - expand both parts
+                let expanded_car = self.expand_template_rec(car, bindings, def_paint, exp_paint)?;
+                let expanded_cdr = self.expand_template_rec(cdr, bindings, def_paint, exp_paint)?;
+                self.lisp.cons(expanded_car, expanded_cdr).map_err(Into::into)
+            }
+
+            // Other values - return as-is
+            _ => Ok(template),
+        }
+    }
+
+    /// Expand an ellipsis template.
+    fn expand_ellipsis(
+        &self,
+        subtemplate: ArenaIndex,
+        rest_template: ArenaIndex,
+        bindings: ArenaIndex,
+        def_paint: usize,
+        exp_paint: usize,
+    ) -> EvalResult {
+        // Find pattern variables in the subtemplate that have list bindings
+        let ellipsis_vars = self.find_ellipsis_vars(subtemplate, bindings)?;
+
+        if self.lisp.get(ellipsis_vars)?.is_nil() {
+            // No ellipsis variables - just expand once
+            let expanded = self.expand_template_rec(subtemplate, bindings, def_paint, exp_paint)?;
+            let rest = self.expand_template_rec(rest_template, bindings, def_paint, exp_paint)?;
+            return self.lisp.cons(expanded, rest).map_err(Into::into);
+        }
+
+        // Get the length of the first list
+        let first_var = self.lisp.car(ellipsis_vars)?;
+        let first_values = self.lookup_binding(first_var, bindings)?;
+        let len = self.list_length(first_values)?;
+
+        // Build result list by iterating
+        let mut result = self.expand_template_rec(rest_template, bindings, def_paint, exp_paint)?;
+
+        for i in (0..len).rev() {
+            // Create bindings for this iteration
+            let iter_bindings = self.make_iteration_bindings(bindings, ellipsis_vars, i)?;
+            let expanded = self.expand_template_rec(subtemplate, iter_bindings, def_paint, exp_paint)?;
+            result = self.lisp.cons(expanded, result)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Find pattern variables in template that have list bindings (for ellipsis).
+    fn find_ellipsis_vars(&self, template: ArenaIndex, bindings: ArenaIndex) -> EvalResult {
+        let mut vars = self.lisp.nil()?;
+        self.find_ellipsis_vars_rec(template, bindings, &mut vars)?;
+        Ok(vars)
+    }
+
+    fn find_ellipsis_vars_rec(&self, template: ArenaIndex, bindings: ArenaIndex, vars: &mut ArenaIndex) -> Result<(), EvalError> {
+        match self.lisp.get(template)? {
+            Value::Symbol { .. } => {
+                // Check if this symbol is bound to a list
+                let mut mb = bindings;
+                while let Value::Cons { car: binding, cdr } = self.lisp.get(mb)? {
+                    let bvar = self.lisp.car(binding)?;
+                    if self.lisp.symbol_eq(template, bvar)? {
+                        let val = self.lisp.cdr(binding)?;
+                        // Check if the value is a proper list (ellipsis binding)
+                        // A list is nil or cons
+                        if let Value::Cons { .. } = self.lisp.get(val)? {
+                            // Add to vars if not already there
+                            if !self.contains_symbol(*vars, template)? {
+                                *vars = self.lisp.cons(template, *vars)?;
+                            }
+                        }
+                        break;
+                    }
+                    mb = cdr;
+                }
+            }
+            Value::Cons { car, cdr } => {
+                self.find_ellipsis_vars_rec(car, bindings, vars)?;
+                self.find_ellipsis_vars_rec(cdr, bindings, vars)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn contains_symbol(&self, list: ArenaIndex, sym: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = list;
+        while let Value::Cons { car, cdr } = self.lisp.get(current)? {
+            if self.lisp.symbol_eq(car, sym)? {
+                return Ok(true);
+            }
+            current = cdr;
+        }
+        Ok(false)
+    }
+
+    fn lookup_binding(&self, var: ArenaIndex, bindings: ArenaIndex) -> EvalResult {
+        let mut mb = bindings;
+        while let Value::Cons { car: binding, cdr } = self.lisp.get(mb)? {
+            let bvar = self.lisp.car(binding)?;
+            if self.lisp.symbol_eq(var, bvar)? {
+                return Ok(self.lisp.cdr(binding)?);
+            }
+            mb = cdr;
+        }
+        Err(self.make_error(ErrorKind::Generic, var))
+    }
+
+    fn list_length(&self, list: ArenaIndex) -> Result<usize, EvalError> {
+        let mut len = 0;
+        let mut current = list;
+        while let Value::Cons { cdr, .. } = self.lisp.get(current)? {
+            len += 1;
+            current = cdr;
+        }
+        Ok(len)
+    }
+
+    /// Create bindings for the i-th iteration of ellipsis expansion.
+    fn make_iteration_bindings(&self, bindings: ArenaIndex, ellipsis_vars: ArenaIndex, idx: usize) -> EvalResult {
+        let mut result = bindings;
+
+        // For each ellipsis var, replace its list binding with the i-th element
+        let mut ev = ellipsis_vars;
+        while let Value::Cons { car: var, cdr } = self.lisp.get(ev)? {
+            let values = self.lookup_binding(var, bindings)?;
+            let value = self.list_ref(values, idx)?;
+
+            // Add new binding (shadowing the old one)
+            let binding = self.lisp.cons(var, value)?;
+            result = self.lisp.cons(binding, result)?;
+
+            ev = cdr;
+        }
+
+        Ok(result)
+    }
+
+    fn list_ref(&self, list: ArenaIndex, idx: usize) -> EvalResult {
+        let mut current = list;
+        for _ in 0..idx {
+            if let Value::Cons { cdr, .. } = self.lisp.get(current)? {
+                current = cdr;
+            } else {
+                return Err(self.make_error(ErrorKind::Generic, list));
+            }
+        }
+        if let Value::Cons { car, .. } = self.lisp.get(current)? {
+            Ok(car)
+        } else {
+            Err(self.make_error(ErrorKind::Generic, list))
+        }
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
