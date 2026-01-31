@@ -99,7 +99,7 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [x] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
 
 #### 1.4 Numerical Tower (Section 6.2)
-**Status**: Integers only. No floating-point support.
+**Status**: Integers only. No floating-point support. Do not implement numerical tower at this time.
 
 - [x] Integer arithmetic works correctly
 - [x] `exact?` always returns #t (all numbers are exact integers)
