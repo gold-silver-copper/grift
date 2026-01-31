@@ -107,7 +107,18 @@ pub enum Value {
 
 ### Memory Optimization
 
-The `Value` enum has been optimized to minimize its size:
+The `Value` enum has been optimized to minimize its size.
+
+**IMPORTANT INVARIANT**: No `Value` variant should store more than **two `ArenaIndex`-sized (usize) fields**. This keeps the enum at a fixed 24 bytes (1 discriminant + 2 usizes) on 64-bit systems, ensuring cache-friendly memory layout and predictable performance. If you need to store more data, use indirection through the arena (e.g., `Lambda` stores `body_env` as a cons cell `(body . env)` rather than three separate fields).
+
+Current variant payloads:
+- `Cons { car, cdr }` — 2 ArenaIndex ✓
+- `Lambda { params, body_env }` — 2 ArenaIndex ✓  
+- `Array { len, data }` — 1 usize + 1 ArenaIndex ✓
+- `String { len, data }` — 1 usize + 1 ArenaIndex ✓
+- `Native { id, name_hash }` — 2 usize ✓
+
+Specific optimizations:
 
 1. **Lambda** - Stores only a single `ArenaIndex` pointing to a linked structure `(params . (body . env))` in the arena. This reduces Lambda's payload from 24 bytes (3 × ArenaIndex) to 8 bytes (1 × ArenaIndex).
 
@@ -354,14 +365,17 @@ The stdlib is defined in `stdlib.scm` and processed by the `include_stdlib!` mac
 
 ```lisp
 (define x 5)
-(quasiquote (a b (unquote x)))  ; => (a b 5)
+`(a b ,x)           ; => (a b 5)
+`(1 ,@'(2 3) 4)     ; => (1 2 3 4)
 ```
 
-- `(quasiquote ...)` - Return structure mostly unevaluated
-- `(unquote ...)` - Evaluate this sub-expression
-- `(unquote-splicing ...)` - Splice list into surrounding list
+| Syntax | Long Form | Description |
+|--------|-----------|-------------|
+| `` `expr `` | `(quasiquote expr)` | Return structure mostly unevaluated |
+| `,expr` | `(unquote expr)` | Evaluate this sub-expression |
+| `,@expr` | `(unquote-splicing expr)` | Evaluate and splice list into surrounding list |
 
-Note: The shorthand syntax (`` ` `` for quasiquote, `,` for unquote) is not currently supported in the parser.
+Both the shorthand syntax (`` ` ``, `,`, `,@`) and the long form (`quasiquote`, `unquote`, `unquote-splicing`) are supported.
 
 ## Garbage Collection Integration
 
@@ -419,16 +433,14 @@ In this Lisp, only `#f` is false. The empty list `'()` is truthy:
 (if #f 'yes 'no)    ; => no (only #f is false)
 ```
 
-### 2. Quasiquote Requires Full Syntax
+### 2. Nested Quasiquote Semantics
 
-The shorthand syntax (`` ` `` and `,`) is not currently supported. Use the full form:
+Nested quasiquotes follow standard Scheme semantics where the depth counter determines which unquotes are evaluated:
 
 ```lisp
-; Use this:
-(quasiquote (a b (unquote x)))
-
-; Not this (currently unsupported):
-; `(a b ,x)
+(define x 5)
+`(a `(b ,x))        ; => (a (quasiquote (b (unquote x)))) - inner ,x NOT evaluated
+`(a `(b ,,x))       ; => (a (quasiquote (b (unquote 5)))) - outer unquote evaluates x
 ```
 
 ### 3. Intern Table is Always Reachable
