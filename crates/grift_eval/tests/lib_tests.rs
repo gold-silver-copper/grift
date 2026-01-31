@@ -3872,27 +3872,39 @@ fn test_quasiquote_with_conditionals() {
 // ============================================================================
 
 /// Test: Reserved arena slots (LISP_ARCHITECTURE.md)
-/// Slots 0-3 are reserved: Nil, True, False, Intern table
+/// Slots 0-2 are reserved: Nil, True, False
+/// Note: Symbol interning was removed to support hygienic macros with paint.
 #[test]
 fn test_doc_reserved_slots() {
     let lisp: Lisp<1000> = Lisp::new();
-    
+
     // Slot 0 should be Nil
     let nil = lisp.nil().unwrap();
     assert!(lisp.get(nil).unwrap().is_nil());
-    
+
     // Slot 1 should be True
     let true_val = lisp.true_val().unwrap();
     assert!(lisp.get(true_val).unwrap().is_true());
-    
+
     // Slot 2 should be False
     let false_val = lisp.false_val().unwrap();
     assert!(lisp.get(false_val).unwrap().is_false());
-    
-    // Verify singleton identity: same symbol returns same index
+
+    // Symbols are no longer interned (each allocation is independent)
+    // but symbols with same name and paint should compare equal
     let foo1 = lisp.symbol("foo").unwrap();
     let foo2 = lisp.symbol("foo").unwrap();
-    assert_eq!(foo1, foo2, "Interned symbols should have same index");
+    assert!(lisp.symbol_eq(foo1, foo2).unwrap(), "Symbols with same name and paint should be equal");
+    assert!(lisp.symbol_name_eq(foo1, foo2).unwrap(), "Symbols with same name should match by name");
+
+    // Different names should not be equal
+    let bar = lisp.symbol("bar").unwrap();
+    assert!(!lisp.symbol_eq(foo1, bar).unwrap(), "Different symbols should not be equal");
+
+    // Same name, different paint should not be equal
+    let foo_painted = lisp.symbol_with_paint("foo", 1).unwrap();
+    assert!(!lisp.symbol_eq(foo1, foo_painted).unwrap(), "Same name, different paint should not be equal");
+    assert!(lisp.symbol_name_eq(foo1, foo_painted).unwrap(), "Same name should still match by name");
 }
 
 /// Test: Only #f is false (README.md, LISP_ARCHITECTURE.md)

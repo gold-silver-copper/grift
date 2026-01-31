@@ -65,7 +65,7 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
         (Value::False, Value::False) => Ok(true),
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
-        (Value::Symbol(_), Value::Symbol(_)) => lisp.symbol_eq(a, b).map_err(Into::into),
+        (Value::Symbol { .. }, Value::Symbol { .. }) => lisp.symbol_eq(a, b).map_err(Into::into),
         (Value::Cons { .. }, Value::Cons { .. }) => {
             // Recursively check car and cdr
             let car_a = lisp.car(a)?;
@@ -96,7 +96,7 @@ pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex
         (Value::False, Value::False) => Ok(true),
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
-        (Value::Symbol(_), Value::Symbol(_)) => {
+        (Value::Symbol { .. }, Value::Symbol { .. }) => {
             lisp.symbol_eq(a, b).map_err(Into::into)
         }
         (Value::Cons { .. }, Value::Cons { .. }) => {

@@ -13,33 +13,32 @@ use crate::value::{Value, Builtin, StdLib};
 // ============================================================================
 
 /// A Lisp execution context wrapping an arena
-/// 
+///
 /// ## Nil Value
-/// 
+///
 /// The Lisp singleton values (nil, true, false) are pre-allocated in reserved slots
 /// at initialization time. This avoids allocation overhead and ensures consistent
 /// identity for these commonly-used values.
-/// 
+///
 /// ## Reserved Slots
-/// 
-/// The first 4 slots of the arena are reserved for singleton values:
+///
+/// The first 3 slots of the arena are reserved for singleton values:
 /// - Slot 0: `Value::Nil` - empty list ()
 /// - Slot 1: `Value::True` - boolean true (#t)
 /// - Slot 2: `Value::False` - boolean false (#f)
-/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
-/// 
+///
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `true_val()` and `false_val()`. This optimization
 /// avoids allocating new slots for these frequently-used values.
-/// 
-/// ## Symbol Interning
-/// 
-/// All symbols are interned in an association list stored in the arena.
-/// The `intern_table_slot` field points to a cons cell whose car is the alist 
-/// of `(string_index . symbol_index)` pairs. The cons cell is used as a 
-/// "reference cell" to allow updating the intern table without RefCell.
-/// When creating a symbol, we first check if it already exists in the table.
-/// This ensures that the same symbol name always returns the same index.
+///
+/// ## Symbols and Paint
+///
+/// Symbols carry a `paint` field for hygienic macro expansion. User code symbols
+/// get paint 0, while macro-introduced symbols get fresh paint values. This enables
+/// Kohlbecker-style hygiene without symbol interning.
+///
+/// Note: Symbol interning was removed to support painted symbols. Two symbols with
+/// the same name but different paint are distinct identifiers.
 pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
     /// Pre-allocated Nil slot (always slot 0)
@@ -48,31 +47,26 @@ pub struct Lisp<const N: usize> {
     true_slot: ArenaIndex,
     /// Pre-allocated False slot (always slot 2)
     false_slot: ArenaIndex,
-    /// Intern table reference cell (slot 3)
-    /// This is a cons cell where car = intern table root (alist)
-    /// Using a cons cell avoids needing RefCell for interior mutability
-    intern_table_slot: ArenaIndex,
 }
 
 /// Number of reserved slots in the arena:
-/// - nil (1), true (1), false (1), intern_table_cons (1)
-/// Note: With inline cons, we no longer need separate data slots for the intern table
-pub const RESERVED_SLOTS: usize = 4;
+/// - nil (1), true (1), false (1)
+pub const RESERVED_SLOTS: usize = 3;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
-    /// 
-    /// Pre-allocates reserved slots for nil, true, false, and the intern table.
+    ///
+    /// Pre-allocates reserved slots for nil, true, and false.
     /// These slots are never freed and provide O(1) access to common values.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if the arena capacity N < RESERVED_SLOTS.
     pub fn new() -> Self {
         const { assert!(N >= RESERVED_SLOTS, "Lisp arena must have capacity >= RESERVED_SLOTS for reserved slots") };
-        
+
         let arena = Arena::new(Value::Nil);
-        
+
         // Pre-allocate singleton values (slots 0, 1, 2)
         let nil_slot = arena.alloc(Value::Nil)
             .expect("Failed to pre-allocate Nil slot during Lisp initialization");
@@ -80,19 +74,12 @@ impl<const N: usize> Lisp<N> {
             .expect("Failed to pre-allocate True slot during Lisp initialization");
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate False slot during Lisp initialization");
-        
-        // Pre-allocate intern table reference cell (slot 3)
-        // With inline cons, we don't need separate data slots
-        // This is a cons cell where car = intern table root (initially nil)
-        let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
-            .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
-        
+
         Lisp {
             arena,
             nil_slot,
             true_slot,
             false_slot,
-            intern_table_slot,
         }
     }
     
@@ -262,144 +249,52 @@ impl<const N: usize> Lisp<N> {
     impl_pack_unpack_refs!(7, pack_refs7, unpack_refs7, set_contiguous7, get_contiguous7, [a, b, c, d, e, f, g]);
     
     // ========================================================================
-    // Symbol Interning
+    // Symbol Creation (with Paint for Hygiene)
     // ========================================================================
-    
-    /// Get the intern table root (for GC roots)
-    /// 
-    /// The intern table is stored in the car of the intern_table_slot cons cell.
-    pub fn intern_table(&self) -> ArenaIndex {
-        // intern_table_slot always exists and is slot 3
-        // Its car contains the actual intern table root
-        self.intern_table_slot
-    }
-    
-    /// Get the current intern table root (the actual alist)
-    fn get_intern_table_root(&self) -> ArenaResult<ArenaIndex> {
-        self.car(self.intern_table_slot)
-    }
-    
-    /// Set the intern table root (update the car of the reference cell)
-    fn set_intern_table_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
-        self.set_car(self.intern_table_slot, new_root)?;
-        Ok(())
-    }
-    
-    /// Look up a string in the intern table
-    /// Returns Some(symbol_index) if found, None otherwise
-    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
-        let mut current = self.get_intern_table_root()?;
-        
-        loop {
-            match self.get(current)? {
-                Value::Nil => return Ok(None),
-                Value::Cons { .. } => {
-                    // car is (string_index . symbol_index)
-                    let car = self.car(current)?;
-                    let cdr = self.cdr(current)?;
-                    if let Value::Cons { .. } = self.get(car)? {
-                        let entry_string = self.car(car)?;
-                        let entry_symbol = self.cdr(car)?;
-                        if self.string_eq_contiguous(string_idx, entry_string)? {
-                            return Ok(Some(entry_symbol));
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-        }
-    }
-    
-    /// Look up bytes directly in the intern table without allocating a string first.
-    /// 
-    /// This is an optimization for `symbol_from_bytes` - on cache hits, we avoid
-    /// allocating a string entirely by comparing the bytes directly against
-    /// the interned strings.
-    /// 
-    /// Returns Some(symbol_index) if found, None otherwise
-    fn intern_table_lookup_bytes(&self, bytes: &[u8]) -> ArenaResult<Option<ArenaIndex>> {
-        let mut current = self.get_intern_table_root()?;
-        
-        loop {
-            match self.get(current)? {
-                Value::Nil => return Ok(None),
-                Value::Cons { .. } => {
-                    // car is (string_index . symbol_index)
-                    let car = self.car(current)?;
-                    let cdr = self.cdr(current)?;
-                    if let Value::Cons { .. } = self.get(car)? {
-                        let entry_string = self.car(car)?;
-                        let entry_symbol = self.cdr(car)?;
-                        // Compare bytes directly without allocating
-                        if self.string_matches_bytes(entry_string, bytes)? {
-                            return Ok(Some(entry_symbol));
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-        }
-    }
-    
-    /// Create or retrieve an interned symbol from a string slice
-    /// 
-    /// The symbol's `chars` field points to a Value::String with the symbol name.
-    /// 
-    /// Symbol interning ensures the same symbol name always returns the same index.
-    /// 
-    /// This method is optimized to avoid allocation on cache hits by comparing
-    /// the input string directly against interned symbols before allocating.
-    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        // Fast path: check intern table by comparing bytes directly
-        // This avoids allocation entirely on cache hits
-        // Only works for ASCII symbols (which is typical for Lisp)
-        if name.is_ascii()
-            && let Some(existing_symbol) = self.intern_table_lookup_bytes(name.as_bytes())?
-        {
-            return Ok(existing_symbol);
-        }
-        
-        // Cache miss - need to create a new symbol
+
+    /// Create a symbol with explicit paint value.
+    ///
+    /// This is the primary symbol creation method. The paint field enables
+    /// hygienic macro expansion:
+    /// - paint 0: User code (parsed input)
+    /// - paint > 0: Macro-introduced identifiers
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift_parser::Lisp;
+    /// let lisp = Lisp::<1000>::new();
+    ///
+    /// // User code symbol (paint 0)
+    /// let user_x = lisp.symbol_with_paint("x", 0).unwrap();
+    ///
+    /// // Macro-introduced symbol (paint 1)
+    /// let macro_x = lisp.symbol_with_paint("x", 1).unwrap();
+    ///
+    /// // Same name, different paint = different identifiers
+    /// assert!(!lisp.symbol_eq(user_x, macro_x).unwrap());
+    /// assert!(lisp.symbol_name_eq(user_x, macro_x).unwrap());
+    /// ```
+    pub fn symbol_with_paint(&self, name: &str, paint: usize) -> ArenaResult<ArenaIndex> {
         let name_str = self.string(name)?;
-        
-        // Double-check for non-ASCII case (we may have skipped the fast path)
-        if !name.is_ascii()
-            && let Some(existing_symbol) = self.intern_table_lookup(name_str)?
-        {
-            self.string_free(name_str)?;
-            return Ok(existing_symbol);
-        }
-        
-        // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol(name_str))?;
-        
-        // Add to intern table: (name_str . symbol)
-        let binding = self.cons(name_str, symbol)?;
-        let current_table = self.get_intern_table_root()?;
-        let new_table = self.cons(binding, current_table)?;
-        
-        // Update intern table root
-        self.set_intern_table_root(new_table)?;
-        
-        Ok(symbol)
+        self.alloc(Value::Symbol { name: name_str, paint })
     }
-    
-    /// Create or retrieve an interned symbol from bytes (for parsing)
-    /// 
-    /// This method is optimized to avoid allocation on cache hits by comparing
-    /// the input bytes directly against interned strings before allocating.
-    pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
-        // Fast path: check intern table by comparing bytes directly
-        // This avoids allocation entirely on cache hits
-        if let Some(existing_symbol) = self.intern_table_lookup_bytes(bytes)? {
-            return Ok(existing_symbol);
-        }
-        
-        // Cache miss - need to create a new symbol
+
+    /// Create a symbol with paint 0 (user code).
+    ///
+    /// This is a convenience method for creating symbols from user input.
+    /// Equivalent to `symbol_with_paint(name, 0)`.
+    #[inline]
+    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        self.symbol_with_paint(name, 0)
+    }
+
+    /// Create a symbol from bytes with explicit paint value.
+    ///
+    /// Used primarily by the parser for efficiency.
+    pub fn symbol_from_bytes_with_paint(&self, bytes: &[u8], paint: usize) -> ArenaResult<ArenaIndex> {
         let char_count = bytes.len();
-        
+
         // Create a Value::String for the symbol name (with inline length)
         let name_str = if char_count == 0 {
             // Empty string - len=0, data is NIL
@@ -407,29 +302,77 @@ impl<const N: usize> Lisp<N> {
         } else {
             // Allocate contiguous block for chars only (no length header)
             let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
-            
+
             // Set characters in slots (starting at data)
             for (i, &b) in bytes.iter().enumerate() {
                 let char_idx = self.arena.index_at_offset(data, i)?;
                 self.arena.set(char_idx, Value::Char(b as char))?;
             }
-            
+
             // Create the String value with inline length
             self.alloc(Value::String { len: char_count, data })?
         };
-        
-        // Create new symbol
-        let symbol = self.alloc(Value::Symbol(name_str))?;
-        
-        // Add to intern table: (name_str . symbol)
-        let binding = self.cons(name_str, symbol)?;
-        let current_table = self.get_intern_table_root()?;
-        let new_table = self.cons(binding, current_table)?;
-        
-        // Update intern table root
-        self.set_intern_table_root(new_table)?;
-        
-        Ok(symbol)
+
+        // Create symbol with the specified paint
+        self.alloc(Value::Symbol { name: name_str, paint })
+    }
+
+    /// Create a symbol from bytes with paint 0 (user code).
+    ///
+    /// This is a convenience method for the parser.
+    /// Equivalent to `symbol_from_bytes_with_paint(bytes, 0)`.
+    #[inline]
+    pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
+        self.symbol_from_bytes_with_paint(bytes, 0)
+    }
+
+    /// Get the name (String index) from a symbol.
+    ///
+    /// Returns the ArenaIndex pointing to the symbol's name string.
+    #[inline]
+    pub fn symbol_name(&self, sym: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(sym)? {
+            Value::Symbol { name, .. } => Ok(name),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Get the paint value from a symbol.
+    #[inline]
+    pub fn symbol_paint(&self, sym: ArenaIndex) -> ArenaResult<usize> {
+        match self.get(sym)? {
+            Value::Symbol { paint, .. } => Ok(paint),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Get both name and paint from a symbol.
+    #[inline]
+    pub fn symbol_parts(&self, sym: ArenaIndex) -> ArenaResult<(ArenaIndex, usize)> {
+        match self.get(sym)? {
+            Value::Symbol { name, paint } => Ok((name, paint)),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Create a copy of a symbol with a different paint value.
+    ///
+    /// The name string is shared (same ArenaIndex), only paint changes.
+    /// Used during macro expansion to repaint identifiers.
+    #[inline]
+    pub fn repaint_symbol(&self, sym: ArenaIndex, new_paint: usize) -> ArenaResult<ArenaIndex> {
+        let name = self.symbol_name(sym)?;
+        self.alloc(Value::Symbol { name, paint: new_paint })
+    }
+
+    /// Check if two symbols have the same name (ignoring paint).
+    ///
+    /// This is used for pattern matching in macros where we care about
+    /// the identifier name but not its hygiene context.
+    pub fn symbol_name_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        let name_a = self.symbol_name(a)?;
+        let name_b = self.symbol_name(b)?;
+        self.string_eq_contiguous(name_a, name_b)
     }
     
     /// Allocate a builtin function
@@ -530,98 +473,101 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Check if two symbols are equal.
-    /// 
-    /// Symbols are compared by their underlying string content.
+    /// Check if two symbols are fully equal (same name AND same paint).
+    ///
+    /// For hygienic macros, two symbols with the same name but different paint
+    /// are considered different identifiers. Use `symbol_name_eq` to compare
+    /// only by name.
     #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index means same symbol
         if a == b {
             return Ok(true);
         }
-        
+
         let val_a = self.get(a)?;
         let val_b = self.get(b)?;
-        
+
         match (val_a, val_b) {
-            (Value::Symbol(chars_a), Value::Symbol(chars_b)) => {
-                self.string_eq_contiguous(chars_a, chars_b)
+            (Value::Symbol { name: name_a, paint: paint_a },
+             Value::Symbol { name: name_b, paint: paint_b }) => {
+                // Must have same paint AND same name
+                if paint_a != paint_b {
+                    return Ok(false);
+                }
+                self.string_eq_contiguous(name_a, name_b)
             }
             _ => Ok(false),
         }
     }
     
-    /// Check if a symbol matches a string.
+    /// Check if a symbol's name matches a string (ignores paint).
+    ///
+    /// This is used for special form detection in the evaluator.
     #[inline]
-    pub fn symbol_matches(&self, sym: ArenaIndex, name: &str) -> ArenaResult<bool> {
-        let val = self.get(sym)?;
-        
-        match val {
-            Value::Symbol(chars) => self.string_matches(chars, name),
+    pub fn symbol_matches(&self, sym: ArenaIndex, target: &str) -> ArenaResult<bool> {
+        match self.get(sym)? {
+            Value::Symbol { name, .. } => self.string_matches(name, target),
             _ => Ok(false),
         }
     }
     
     /// Extract symbol name to a fixed buffer.
     pub fn symbol_to_bytes(&self, sym: ArenaIndex, buf: &mut [u8]) -> ArenaResult<usize> {
-        let val = self.get(sym)?;
-        
-        match val {
-            Value::Symbol(chars) => self.string_to_bytes(chars, buf),
+        match self.get(sym)? {
+            Value::Symbol { name, .. } => self.string_to_bytes(name, buf),
             _ => Ok(0),
         }
     }
-    
+
     /// Get the length of a symbol's name.
     pub fn symbol_len(&self, sym: ArenaIndex) -> ArenaResult<usize> {
         match self.get(sym)? {
-            Value::Symbol(chars) => self.string_len(chars),
+            Value::Symbol { name, .. } => self.string_len(name),
             _ => Ok(0),
         }
     }
-    
-    /// Get a character at a specific index within a symbol's name
-    /// Returns None if the index is out of bounds or if the value is not a symbol
+
+    /// Get a character at a specific index within a symbol's name.
+    /// Returns None if the index is out of bounds or if the value is not a symbol.
     pub fn symbol_char_at(&self, sym: ArenaIndex, index: usize) -> ArenaResult<Option<char>> {
         match self.get(sym)? {
-            Value::Symbol(chars) => {
-                let len = self.string_len(chars)?;
+            Value::Symbol { name, .. } => {
+                let len = self.string_len(name)?;
                 if index >= len {
                     Ok(None)
                 } else {
-                    Ok(Some(self.string_char_at(chars, index)?))
+                    Ok(Some(self.string_char_at(name, index)?))
                 }
             }
             _ => Ok(None),
         }
     }
     
-    /// Run garbage collection with intern table as an additional root
-    /// 
-    /// The intern table reference cell (slot 3) is always included as a GC root
-    /// to prevent interned symbols from being collected. The intern table is
-    /// stored as a cons cell whose car points to the alist of interned symbols.
-    /// 
+    /// Run garbage collection.
+    ///
+    /// The reserved slots (nil, true, false) are always included as GC roots.
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if the number of roots exceeds the internal limit (512 roots).
     /// This limit is chosen to balance stack usage in no_std environments
     /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
-        // Create a new roots array with reserved slots and intern table included
+        // Create a new roots array with reserved slots included
         // Using const-sized array to avoid alloc in no_std
         // 512 roots should be sufficient for most programs while keeping
         // stack usage reasonable (~8KB on 64-bit systems)
         const MAX_ROOTS: usize = 512;
-        
+
         // Panic if too many roots - this indicates a programming error
-        // Account for 4 reserved roots (nil, true, false, intern_table)
-        assert!(roots.len() < MAX_ROOTS - 4, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 4 - 1);
-        
+        // Account for 3 reserved roots (nil, true, false)
+        assert!(roots.len() < MAX_ROOTS - 3,
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 3 - 1);
+
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
-        
+
         // Add reserved slots as roots to prevent them from being collected
         all_roots[root_count] = self.nil_slot;
         root_count += 1;
@@ -629,19 +575,13 @@ impl<const N: usize> Lisp<N> {
         root_count += 1;
         all_roots[root_count] = self.false_slot;
         root_count += 1;
-        
-        // Add intern table reference cell as root
-        // This is a cons cell whose car is the intern table alist
-        // Tracing from this cell will reach all interned symbols
-        all_roots[root_count] = self.intern_table_slot;
-        root_count += 1;
-        
+
         // Copy provided roots
         for &root in roots {
             all_roots[root_count] = root;
             root_count += 1;
         }
-        
+
         self.arena.collect_garbage(&all_roots[..root_count])
     }
     
