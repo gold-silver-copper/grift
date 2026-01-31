@@ -80,7 +80,21 @@ mod evaluator;
 #[macro_use]
 mod macros;
 
+// Expansion module for hygienic macros
+pub mod expand;
+
 // Public re-exports
 pub use error::{ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult};
 pub use evaluator::Evaluator;
 pub use continuation::{Cont, TrampolineState};
+
+// Expansion re-exports
+pub use expand::{
+    ScopeCounter, ExpandResult,
+    datum_to_syntax, syntax_to_datum,
+    add_scope_to_all, remove_scope_from_all, flip_scope_on_all,
+    is_identifier, identifier_symbol,
+    free_identifier_eq, bound_identifier_eq,
+    syntax_is_list, syntax_list_length, syntax_car, syntax_cdr,
+    syntax_to_vec, MAX_SYNTAX_LIST_LEN,
+};

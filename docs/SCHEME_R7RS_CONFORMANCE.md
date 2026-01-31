@@ -212,11 +212,13 @@ Do not implement floats or other parts of numerical tower yet.
 - [x] Implement `Lisp::scopes_subset()` - Check if scope set A ⊆ B (for identifier resolution)
 - [x] Implement GC tracing for syntax objects
 
-#### 5.1 Expansion Phase (Next)
-- [ ] Add scope counter to evaluator for generating unique scope IDs
-- [ ] Create expansion phase that runs before evaluation
-- [ ] Implement `datum->syntax` / `syntax->datum` conversion
-- [ ] Implement syntax object traversal (wrap/unwrap lists recursively)
+#### 5.1 Expansion Phase ✅ COMPLETED
+- [x] Add scope counter to evaluator for generating unique scope IDs
+- [x] Create `expand.rs` module with expansion infrastructure
+- [x] Implement `datum_to_syntax` / `syntax_to_datum` conversion
+- [x] Implement syntax object traversal (`add_scope_to_all`, `remove_scope_from_all`, `flip_scope_on_all`)
+- [x] Implement identifier operations (`is_identifier`, `identifier_symbol`, `free_identifier_eq`, `bound_identifier_eq`)
+- [x] Implement syntax list utilities (`syntax_car`, `syntax_cdr`, `syntax_to_vec`)
 
 #### 5.2 Syntax-Rules (Section 4.3.2)
 - [ ] Implement pattern matching for `syntax-rules` patterns

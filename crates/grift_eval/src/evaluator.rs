@@ -13,6 +13,7 @@ use crate::helpers::{
     gcd_helper, int_pow, equal_recursive, case_matches,
 };
 use crate::native::{NativeRegistry, NativeFn, simple_hash};
+use crate::expand::ScopeCounter;
 
 // Re-export macros from lib.rs (they're defined there)
 use crate::{extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_int_identity, builtin_div_op};
@@ -41,6 +42,11 @@ pub struct Evaluator<'a, const N: usize> {
     data_stack_top: usize,
     /// Native function registry
     native_registry: NativeRegistry<N>,
+    /// Scope counter for hygienic macro expansion
+    /// 
+    /// Each binding context (let, lambda, macro expansion) requests a fresh
+    /// scope ID from this counter to ensure macro hygiene.
+    scope_counter: ScopeCounter,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -56,6 +62,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             data_stack: [ArenaIndex::NIL; MAX_DATA_STACK],
             data_stack_top: 0,
             native_registry: NativeRegistry::new(),
+            scope_counter: ScopeCounter::new(),
         };
         
         // Initialize global environment with builtins
@@ -134,6 +141,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get a reference to the native function registry.
     pub fn native_registry(&self) -> &NativeRegistry<N> {
         &self.native_registry
+    }
+    
+    // ========================================================================
+    // Scope Management for Hygienic Macros
+    // ========================================================================
+    
+    /// Generate a fresh scope ID for a new binding context.
+    /// 
+    /// Each binding context (let, lambda, macro expansion) should call this
+    /// to get a unique scope ID for hygiene tracking.
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use grift_eval::{Lisp, Evaluator};
+    /// 
+    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let mut eval = Evaluator::new(&lisp).unwrap();
+    /// 
+    /// let scope1 = eval.fresh_scope();
+    /// let scope2 = eval.fresh_scope();
+    /// assert_ne!(scope1, scope2);
+    /// ```
+    #[inline]
+    pub fn fresh_scope(&mut self) -> isize {
+        self.scope_counter.fresh()
+    }
+    
+    /// Get the current scope counter value (for debugging).
+    #[inline]
+    pub fn current_scope_id(&self) -> isize {
+        self.scope_counter.current()
+    }
+    
+    /// Get a reference to the scope counter.
+    #[inline]
+    pub fn scope_counter(&self) -> &ScopeCounter {
+        &self.scope_counter
+    }
+    
+    /// Get a mutable reference to the scope counter.
+    #[inline]
+    pub fn scope_counter_mut(&mut self) -> &mut ScopeCounter {
+        &mut self.scope_counter
     }
     
     /// Run GC with current roots (global env only)
