@@ -307,6 +307,12 @@ pub enum Value {
     /// - No arena allocation for the function definition itself
     /// - Parsed AST is temporary and GC'd after evaluation
     StdLib(StdLib),
+
+    /// Compiled syntax-rules macro transformer
+    ///
+    /// - `def_paint`: Paint assigned at macro definition time
+    /// - `data`: ArenaIndex to cons cell (literals . rules)
+    Macro { def_paint: usize, data: ArenaIndex },
     
     /// Vector/Array with inline length and data pointer
     /// 
@@ -565,6 +571,7 @@ impl Value {
             Value::Lambda { .. } => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
+            Value::Macro { .. } => "macro",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
             Value::String { .. } => "string",
@@ -597,6 +604,10 @@ impl<const N: usize> Trace<Value, N> for Value {
             }
             Value::Native { .. } => {
                 // id and name_hash are inline usize values, no arena references to trace
+            }
+            Value::Macro { data, .. } => {
+                // data points to (literals . rules)
+                tracer(*data);
             }
             Value::Symbol { name, .. } => {
                 // name points to a Value::String, which handles its own tracing

@@ -29,6 +29,8 @@ pub struct Evaluator<'a, const N: usize> {
     pub(crate) lisp: &'a Lisp<N>,
     /// Global environment
     global_env: ArenaIndex,
+    /// Next paint value to allocate (paint 0 reserved for user code)
+    next_paint: usize,
     /// Call stack for error reporting
     call_stack: [StackFrame; MAX_STACK_DEPTH],
     call_stack_depth: usize,
@@ -43,12 +45,18 @@ pub struct Evaluator<'a, const N: usize> {
     native_registry: NativeRegistry<N>,
 }
 
+struct PatternBindings {
+    bindings: ArenaIndex,
+    ellipsis_bindings: ArenaIndex,
+}
+
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
         let mut eval = Evaluator {
             lisp,
             global_env: ArenaIndex::NIL,
+            next_paint: 1,
             call_stack: [StackFrame::default(); MAX_STACK_DEPTH],
             call_stack_depth: 0,
             cont_stack: [Cont::Done; MAX_CONT_DEPTH],
@@ -62,7 +70,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         eval.global_env = lisp.nil()?;
         
         for &builtin in Builtin::ALL {
-            let name = lisp.symbol(builtin.name())?;
+            let name = lisp.symbol_with_paint(builtin.name(), 0)?;
             let val = lisp.builtin(builtin)?;
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
         }
@@ -70,7 +78,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Register standard library functions
         // These are stored in static memory and parsed on-demand
         for &stdlib in StdLib::ALL {
-            let name = lisp.symbol(stdlib.name())?;
+            let name = lisp.symbol_with_paint(stdlib.name(), 0)?;
             let val = lisp.stdlib(stdlib)?;
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
         }
@@ -134,6 +142,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get a reference to the native function registry.
     pub fn native_registry(&self) -> &NativeRegistry<N> {
         &self.native_registry
+    }
+
+    /// Allocate a fresh paint value for macro hygiene.
+    #[inline]
+    fn alloc_paint(&mut self) -> usize {
+        let paint = self.next_paint;
+        self.next_paint = self.next_paint.wrapping_add(1);
+        paint
     }
     
     /// Run GC with current roots (global env only)
@@ -277,20 +293,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Look up a variable in an environment
     fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> EvalResult {
+        let (name_str, name_paint) = self.lisp.symbol_parts(name)?;
         let mut current = env;
         
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
                     // Try global
-                    return self.env_lookup_global(name);
+                    return self.env_lookup_global_with_fallback(name_str, name_paint);
                 }
                 Value::Cons { car, cdr } => {
                     // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
+                        let (bound_str, bound_paint) = self.lisp.symbol_parts(bound_name)?;
+                        if self.lisp.string_eq_contiguous(name_str, bound_str)? && name_paint == bound_paint {
+                            return Ok(bound_value);
+                        }
                     }
                     current = cdr;
                 }
@@ -300,24 +318,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Look up in global environment only
-    fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
+    fn env_lookup_global_with_fallback(&self, name_str: ArenaIndex, paint: usize) -> EvalResult {
+        if let Ok(val) = self.env_lookup_global_exact(name_str, paint) {
+            return Ok(val);
+        }
+        if paint != 0 {
+            if let Ok(val) = self.env_lookup_global_exact(name_str, 0) {
+                return Ok(val);
+            }
+        }
+        Err(self.make_error(ErrorKind::UnboundVariable, name_str))
+    }
+
+    fn env_lookup_global_exact(&self, name_str: ArenaIndex, paint: usize) -> EvalResult {
         let mut current = self.global_env;
-        
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
+                    return Err(self.make_error(ErrorKind::UnboundVariable, name_str));
                 }
                 Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)? {
+                        let (bound_str, bound_paint) = self.lisp.symbol_parts(bound_name)?;
+                        if self.lisp.string_eq_contiguous(name_str, bound_str)? && paint == bound_paint {
+                            return Ok(bound_value);
+                        }
                     }
                     current = cdr;
                 }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+                _ => return Err(self.make_error(ErrorKind::Generic, name_str)),
             }
         }
     }
@@ -520,6 +549,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
+            Value::Macro { .. } |
             Value::Ref(_) | Value::Usize(_) => {
                 Ok(TrampolineState::Return { val: expr })
             }
@@ -587,6 +617,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // define
             if self.lisp.symbol_matches(car, "define")? {
                 return self.eval_define(cdr, env);
+            }
+
+            // define-syntax
+            if self.lisp.symbol_matches(car, "define-syntax")? {
+                return self.eval_define_syntax(cdr, env);
             }
             
             // set! - mutate variable binding
@@ -684,6 +719,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Function application - HYBRID EVALUATION
+        if let Value::Symbol { .. } = self.lisp.get(car)? {
+            if let Ok(macro_val) = self.env_lookup(env, car) {
+                if let Value::Macro { def_paint, data } = self.lisp.get(macro_val)? {
+                    let expanded = self.expand_macro(expr, def_paint, data)?;
+                    return Ok(TrampolineState::Eval { expr: expanded, env });
+                }
+            }
+        }
         self.push_frame(expr, car)?;
         
         // Push continuation: after evaluating func, apply it
