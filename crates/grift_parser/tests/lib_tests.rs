@@ -63,25 +63,25 @@ fn test_reserved_slots_occupy_first_slots() {
 #[test]
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
-    
-    // After creating the Lisp context, 4 slots should be used
-    // (nil, true, false, intern_table_cons) - with inline cons, no separate data slots needed
-    assert_eq!(lisp.arena().len(), 4);
-    
+
+    // After creating the Lisp context, 3 slots should be used
+    // (nil, true, false) - intern table was removed to support painted symbols
+    assert_eq!(lisp.arena().len(), 3);
+
     // Calling nil/true_val/false_val should NOT increase allocation count
     // (they return pre-allocated slots)
     let _ = lisp.nil();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 4);
-    
+    assert_eq!(lisp.arena().len(), 3);
+
     // Calling many times should not increase count
     for _ in 0..100 {
         let _ = lisp.nil();
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 4);
+    assert_eq!(lisp.arena().len(), 3);
 }
 
 #[test]
@@ -125,15 +125,15 @@ fn test_reserved_slots_survive_gc() {
 #[test]
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
-    
-    // First regular allocation should be at slot 4 (after reserved 0-3)
-    // Slots: 0=nil, 1=true, 2=false, 3=intern_table_cons (with inline car/cdr)
+
+    // First regular allocation should be at slot 3 (after reserved 0-2)
+    // Slots: 0=nil, 1=true, 2=false (intern table was removed)
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 4);
-    
+    assert_eq!(num.raw(), 3);
+
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 5);
+    assert_eq!(num2.raw(), 4);
 }
 
 // ========================================================================
@@ -523,81 +523,135 @@ fn test_set_cdr_on_non_pair_fails() {
 }
 
 // ========================================================================
-// Symbol Interning Tests
+// Symbol Tests (interning was removed to support hygienic macros with paint)
 // ========================================================================
 
 #[test]
-fn test_symbol_interning_same_name_returns_same_index() {
+fn test_symbols_with_same_name_are_equal() {
     let lisp: Lisp<1000> = Lisp::new();
-    
+
     let sym1 = lisp.symbol("foo").unwrap();
     let sym2 = lisp.symbol("foo").unwrap();
     let sym3 = lisp.symbol("foo").unwrap();
-    
-    // Same symbol name should return the same index
-    assert_eq!(sym1, sym2);
-    assert_eq!(sym2, sym3);
+
+    // Same symbol name and paint should be equal (via symbol_eq)
+    // Note: indices may differ since interning was removed
+    assert!(lisp.symbol_eq(sym1, sym2).unwrap());
+    assert!(lisp.symbol_eq(sym2, sym3).unwrap());
+    assert!(lisp.symbol_name_eq(sym1, sym2).unwrap());
 }
 
 #[test]
-fn test_symbol_interning_different_names_return_different_indices() {
+fn test_symbols_with_different_names_are_not_equal() {
     let lisp: Lisp<1000> = Lisp::new();
-    
+
     let foo = lisp.symbol("foo").unwrap();
     let bar = lisp.symbol("bar").unwrap();
     let baz = lisp.symbol("baz").unwrap();
-    
-    // Different symbol names should return different indices
-    assert_ne!(foo, bar);
-    assert_ne!(bar, baz);
-    assert_ne!(foo, baz);
+
+    // Different symbol names should not be equal
+    assert!(!lisp.symbol_eq(foo, bar).unwrap());
+    assert!(!lisp.symbol_eq(bar, baz).unwrap());
+    assert!(!lisp.symbol_eq(foo, baz).unwrap());
+    assert!(!lisp.symbol_name_eq(foo, bar).unwrap());
 }
 
 #[test]
-fn test_symbol_interning_from_bytes() {
+fn test_symbol_from_bytes_creates_equal_symbol() {
     let lisp: Lisp<1000> = Lisp::new();
-    
+
     let sym1 = lisp.symbol("test").unwrap();
     let sym2 = lisp.symbol_from_bytes(b"test").unwrap();
-    
-    // Same content should return the same symbol
-    assert_eq!(sym1, sym2);
+
+    // Same content should create equal symbols (via symbol_eq)
+    assert!(lisp.symbol_eq(sym1, sym2).unwrap());
+    assert!(lisp.symbol_name_eq(sym1, sym2).unwrap());
 }
 
 #[test]
-fn test_symbol_interning_preserves_content() {
+fn test_symbol_preserves_content() {
     let lisp: Lisp<1000> = Lisp::new();
-    
+
     let sym = lisp.symbol("hello").unwrap();
-    
+
     // The symbol should still match its name
     assert!(lisp.symbol_matches(sym, "hello").unwrap());
     assert!(!lisp.symbol_matches(sym, "world").unwrap());
 }
 
 #[test]
-fn test_intern_table_is_gc_root() {
+fn test_symbols_with_different_paint_are_not_equal() {
     let lisp: Lisp<1000> = Lisp::new();
-    
-    // Create some interned symbols
+
+    // Create symbols with same name but different paint
+    let sym_paint0 = lisp.symbol_with_paint("foo", 0).unwrap();
+    let sym_paint1 = lisp.symbol_with_paint("foo", 1).unwrap();
+    let sym_paint2 = lisp.symbol_with_paint("foo", 2).unwrap();
+
+    // Same name, different paint should NOT be equal via symbol_eq
+    assert!(!lisp.symbol_eq(sym_paint0, sym_paint1).unwrap());
+    assert!(!lisp.symbol_eq(sym_paint1, sym_paint2).unwrap());
+
+    // But they should be equal via symbol_name_eq (ignores paint)
+    assert!(lisp.symbol_name_eq(sym_paint0, sym_paint1).unwrap());
+    assert!(lisp.symbol_name_eq(sym_paint1, sym_paint2).unwrap());
+}
+
+#[test]
+fn test_symbol_paint_accessors() {
+    let lisp: Lisp<1000> = Lisp::new();
+
+    let sym = lisp.symbol_with_paint("test", 42).unwrap();
+
+    // Should be able to retrieve paint value
+    assert_eq!(lisp.symbol_paint(sym).unwrap(), 42);
+
+    // symbol_parts should return both name and paint
+    let (name, paint) = lisp.symbol_parts(sym).unwrap();
+    assert_eq!(paint, 42);
+    assert!(lisp.string_matches(name, "test").unwrap());
+}
+
+#[test]
+fn test_repaint_symbol() {
+    let lisp: Lisp<1000> = Lisp::new();
+
+    let sym = lisp.symbol_with_paint("test", 0).unwrap();
+    let repainted = lisp.repaint_symbol(sym, 5).unwrap();
+
+    // Name should be the same
+    assert!(lisp.symbol_name_eq(sym, repainted).unwrap());
+
+    // Paint should be different
+    assert_eq!(lisp.symbol_paint(sym).unwrap(), 0);
+    assert_eq!(lisp.symbol_paint(repainted).unwrap(), 5);
+
+    // They should not be equal via symbol_eq
+    assert!(!lisp.symbol_eq(sym, repainted).unwrap());
+}
+
+#[test]
+fn test_symbols_require_explicit_gc_roots() {
+    let lisp: Lisp<1000> = Lisp::new();
+
+    // Create some symbols
     let sym1 = lisp.symbol("a").unwrap();
     let sym2 = lisp.symbol("b").unwrap();
     let sym3 = lisp.symbol("c").unwrap();
-    
+
     // Create some garbage
     for i in 0..50 {
         let _ = lisp.number(i);
     }
-    
-    // Run GC with no explicit roots
-    let empty_roots: &[ArenaIndex] = &[];
-    lisp.gc(empty_roots);
-    
-    // Interned symbols should still be accessible
+
+    // Run GC WITH the symbols as explicit roots
+    lisp.gc(&[sym1, sym2, sym3]);
+
+    // Symbols should still be accessible
     assert!(lisp.get(sym1).is_ok());
     assert!(lisp.get(sym2).is_ok());
     assert!(lisp.get(sym3).is_ok());
-    
+
     // And should still match their names
     assert!(lisp.symbol_matches(sym1, "a").unwrap());
     assert!(lisp.symbol_matches(sym2, "b").unwrap());

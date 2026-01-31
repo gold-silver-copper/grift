@@ -64,8 +64,8 @@ fn format_value_impl<const N: usize>(
                 _ => buf.push(c),
             }
         }
-        Ok(Value::Symbol(chars)) => {
-            format_symbol(lisp, chars, buf);
+        Ok(Value::Symbol { name, .. }) => {
+            format_symbol(lisp, name, buf);
         }
         Ok(Value::Cons { .. }) => {
             buf.push('(');

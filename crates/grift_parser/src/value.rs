@@ -266,10 +266,19 @@ pub enum Value {
     /// Use `Lisp::cons()`, `Lisp::car()`, `Lisp::cdr()` to create and access.
     Cons { car: ArenaIndex, cdr: ArenaIndex },
     
-    /// Symbol (contains a contiguous string)
-    /// Points to a Value::String which contains the symbol name.
-    /// The length is obtained from the String value, providing a single source of truth.
-    Symbol(ArenaIndex),
+    /// Symbol with hygiene paint for macro expansion
+    ///
+    /// - `name`: Points to a Value::String containing the symbol name
+    /// - `paint`: Hygiene context (0 = user code, >0 = macro context)
+    ///
+    /// The paint field enables Kohlbecker-style hygienic macro expansion:
+    /// - User code gets paint 0 at parse time
+    /// - Macro definitions get a fresh paint at define-syntax time
+    /// - Macro expansions get a fresh paint per invocation
+    ///
+    /// Two symbols with the same name but different paint are distinct identifiers,
+    /// preventing accidental variable capture in macros.
+    Symbol { name: ArenaIndex, paint: usize },
     
     /// Lambda / closure with inline params and body_env indices
     /// 
@@ -454,7 +463,7 @@ impl Value {
     /// Check if this value is a symbol
     #[inline]
     pub const fn is_symbol(&self) -> bool {
-        matches!(self, Value::Symbol(_))
+        matches!(self, Value::Symbol { .. })
     }
     
     /// Check if this value is a cons cell (pair)
@@ -552,7 +561,7 @@ impl Value {
             Value::Number(_) => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
-            Value::Symbol(_) => "symbol",
+            Value::Symbol { .. } => "symbol",
             Value::Lambda { .. } => "procedure",
             Value::Builtin(_) => "procedure",
             Value::StdLib(_) => "procedure",
@@ -589,9 +598,10 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Native { .. } => {
                 // id and name_hash are inline usize values, no arena references to trace
             }
-            Value::Symbol(chars) => {
-                // chars points to a Value::String, which handles its own tracing
-                tracer(*chars);
+            Value::Symbol { name, .. } => {
+                // name points to a Value::String, which handles its own tracing
+                // paint is inline and doesn't need tracing
+                tracer(*name);
             }
             Value::Lambda { params, body_env } => {
                 // params and body_env are inline ArenaIndex - trace both

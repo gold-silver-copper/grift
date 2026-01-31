@@ -525,7 +525,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // Symbol - variable lookup
-            Value::Symbol(_) => {
+            Value::Symbol { .. } => {
                 let val = self.env_lookup(env, expr)?;
                 Ok(TrampolineState::Return { val })
             }
@@ -546,7 +546,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let head = self.lisp.get(car)?;
         
         // Check for special forms
-        if let Value::Symbol(_) = head {
+        if let Value::Symbol { .. } = head {
             // quote
             if self.lisp.symbol_matches(car, "quote")? {
                 let val = self.lisp.car(cdr)?;
@@ -1910,7 +1910,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::False, Value::False) => true,
                     (Value::Number(x), Value::Number(y)) => x == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
-                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
                     _ => a == b,
                 };
                 
@@ -1930,7 +1930,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::False, Value::False) => true,
                     (Value::Number(x), Value::Number(y)) => x == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
-                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
                     _ => a == b,
                 };
                 
@@ -2905,7 +2905,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::False, Value::False) => true,
                     (Value::Number(x), Value::Number(y)) => x == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
-                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    (Value::Symbol { .. }, Value::Symbol { .. }) => self.lisp.symbol_eq(a, b)?,
                     _ => a == b,
                 };
                 
@@ -3214,7 +3214,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         match self.lisp.get(first)? {
             // (define name value)
-            Value::Symbol(_) => {
+            Value::Symbol { .. } => {
                 let value_expr = self.lisp.car(rest)?;
                 // Push continuation and evaluate value
                 let data_start = self.pack_define_value(first)?;
@@ -3246,7 +3246,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Verify name is a symbol
         match self.lisp.get(name)? {
-            Value::Symbol(_) => {
+            Value::Symbol { .. } => {
                 // Push continuation and evaluate value
                 let data_start = self.pack_set_value(name, env)?;
                 self.push_cont(Cont::SetValue(data_start))?;
