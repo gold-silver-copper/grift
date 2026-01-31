@@ -2,50 +2,11 @@
 //!
 //! This module contains the `Lisp<N>` struct and all its methods for managing
 //! Lisp values in the arena.
+//!
+//! Note: The `impl_pack_unpack_refs!` macro has been moved to `src/macros.rs`.
 
 use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
-
-// ============================================================================
-// Macros for generating pack/unpack refs operations
-// ============================================================================
-
-/// Internal macro to generate pack_refsN and unpack_refsN methods.
-/// Reduces ~120 lines of repetitive code to ~15 lines of macro invocations.
-macro_rules! impl_pack_unpack_refs {
-    // Special case for 1 (no contiguous allocation needed)
-    (1, $pack_name:ident, $unpack_name:ident) => {
-        #[inline]
-        pub fn $pack_name(&self, a: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            self.arena.alloc(Value::Ref(a))
-        }
-        
-        #[inline]
-        pub fn $unpack_name(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            self.arena.get(data)?.as_ref().ok_or(ArenaError::InvalidIndex)
-        }
-    };
-    // General case for N >= 2
-    ($n:expr, $pack_name:ident, $unpack_name:ident, $set_fn:ident, $get_fn:ident, [$($var:ident),+ $(,)?]) => {
-        #[inline]
-        pub fn $pack_name(&self, $($var: ArenaIndex),+) -> ArenaResult<ArenaIndex> {
-            let data = self.arena.alloc_contiguous($n, Value::Nil)?;
-            self.arena.$set_fn(data, $(Value::Ref($var)),+)?;
-            Ok(data)
-        }
-        
-        #[inline]
-        pub fn $unpack_name(&self, data: ArenaIndex) -> ArenaResult<( $( impl_pack_unpack_refs!(@T $var) ),+ )> {
-            let ($($var),+) = self.arena.$get_fn(data)?;
-            match ($($var.as_ref()),+) {
-                ($(Some($var)),+) => Ok(($($var),+)),
-                _ => Err(ArenaError::InvalidIndex),
-            }
-        }
-    };
-    // Helper to generate ArenaIndex for tuple type
-    (@T $var:ident) => { ArenaIndex };
-}
 
 // ============================================================================
 // Lisp Context - Arena wrapper with helper methods

@@ -61,6 +61,10 @@
 
 pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
+// Macros module (must be declared before other modules that use the macros)
+#[macro_use]
+mod macros;
+
 mod value;
 mod lisp;
 mod parser;
