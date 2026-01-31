@@ -129,6 +129,10 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<usize:{}>", n).unwrap();
         }
+        Ok(Value::Macro { def_paint, .. }) => {
+            use std::fmt::Write;
+            write!(buf, "#<macro:paint={}>", def_paint).unwrap();
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }
