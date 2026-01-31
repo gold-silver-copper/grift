@@ -442,6 +442,6 @@ StdLib functions parse their body from static strings on each call. This means r
 ## Performance Considerations
 
 1. **Use tail recursion** - Proper TCO means tail calls don't consume stack
-2. **Batch allocations** - GC runs when explicitly triggered or when `alloc_or_gc` is used
+2. **GC is automatic** - The evaluator runs GC periodically when memory pressure is high
 3. **Disable GC for batch ops** - `(gc-disable)` during many allocations, then `(gc-enable)` and `(gc)`
 4. **Prefer builtins** - Builtins are faster than equivalent lambdas

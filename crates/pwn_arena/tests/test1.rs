@@ -2975,7 +2975,7 @@ fn test_arena_stats_methods() {
 }
 
 #[test]
-fn test_alloc_or_gc() {
+fn test_alloc_then_gc_then_alloc() {
     let arena: Arena<Tree, 5> = Arena::new(Tree::Leaf(0));
 
     let root = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -2986,12 +2986,8 @@ fn test_alloc_or_gc() {
 
     assert!(arena.is_full());
 
-    // Normal alloc would fail
+    // Alloc fails when full
     assert!(arena.alloc(Tree::Leaf(2)).is_err());
-
-    // alloc_or_gc no longer runs GC automatically - it's just an alloc
-    // The caller (e.g., evaluator) should handle GC policy
-    assert!(arena.alloc_or_gc(Tree::Leaf(2), &[root]).is_err());
 
     // Explicitly run GC first, then alloc succeeds
     arena.collect_garbage(&[root]);
@@ -3004,7 +3000,7 @@ fn test_alloc_or_gc() {
 }
 
 #[test]
-fn test_alloc_or_gc_still_fails() {
+fn test_gc_cannot_help_when_all_reachable() {
     let arena: Arena<Tree, 3> = Arena::new(Tree::Leaf(0));
 
     // Fill with non-garbage
@@ -3013,7 +3009,11 @@ fn test_alloc_or_gc_still_fails() {
     let r3 = arena.alloc(Tree::Leaf(3)).unwrap();
 
     // All are roots, so GC won't help
-    let result = arena.alloc_or_gc(Tree::Leaf(4), &[r1, r2, r3]);
+    let stats = arena.collect_garbage(&[r1, r2, r3]);
+    assert_eq!(stats.collected, 0);
+    
+    // Still can't alloc
+    let result = arena.alloc(Tree::Leaf(4));
     assert_eq!(result, Err(ArenaError::OutOfMemory));
 }
 
@@ -3313,9 +3313,9 @@ fn test_gc_at_max_capacity_boundary() {
     assert_eq!(arena.len(), 4);
 }
 
-/// Test alloc_or_gc boundary: GC doesn't help (all reachable)
+/// Test GC boundary: GC doesn't help when all reachable
 #[test]
-fn test_alloc_or_gc_when_gc_cannot_help() {
+fn test_gc_ineffective_when_all_reachable() {
     let arena: Arena<Tree, 3> = Arena::new(Tree::Leaf(0));
     
     // Fill arena with all reachable values
@@ -3324,9 +3324,11 @@ fn test_alloc_or_gc_when_gc_cannot_help() {
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
     
     // All roots, so nothing can be collected
-    let result = arena.alloc_or_gc(Tree::Leaf(3), &[idx0, idx1, idx2]);
+    let stats = arena.collect_garbage(&[idx0, idx1, idx2]);
+    assert_eq!(stats.collected, 0);
     
     // Should still fail since GC couldn't free anything
+    let result = arena.alloc(Tree::Leaf(3));
     assert_eq!(result, Err(ArenaError::OutOfMemory));
     assert_eq!(arena.len(), 3);
 }

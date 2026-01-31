@@ -645,10 +645,6 @@ impl<const N: usize> Lisp<N> {
         self.arena.collect_garbage(&all_roots[..root_count])
     }
     
-    /// Allocate with GC on failure
-    pub fn alloc_or_gc(&self, value: Value, roots: &[ArenaIndex]) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc_or_gc(value, roots)
-    }
     
     /// Get arena stats
     pub fn stats(&self) -> pwn_arena::ArenaStats {

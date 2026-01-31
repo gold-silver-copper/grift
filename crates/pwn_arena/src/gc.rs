@@ -325,25 +325,4 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         self.set_gc_enabled(was_enabled);
         result
     }
-
-    /// Allocate a value (simple delegation to alloc).
-    ///
-    /// This method exists for API compatibility. GC policy should be handled
-    /// by the caller (e.g., the evaluator's trampoline), not the arena.
-    ///
-    /// # Errors
-    ///
-    /// Returns `OutOfMemory` if the arena is full.
-    ///
-    /// # Note
-    ///
-    /// The `roots` parameter is ignored - this method does NOT run GC.
-    /// Use `collect_garbage()` explicitly if you need GC.
-    #[inline]
-    pub fn alloc_or_gc(&self, value: T, _roots: &[ArenaIndex]) -> crate::ArenaResult<ArenaIndex>
-    where
-        T: Trace<T, N>,
-    {
-        self.alloc(value)
-    }
 }
