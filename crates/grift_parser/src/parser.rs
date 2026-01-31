@@ -580,21 +580,35 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(b'.') => {
+                    // Check if this is a symbol like `...` (ellipsis) or a dotted pair
+                    // If the next character continues the symbol, parse as symbol
+                    if let Some(next) = self.peek_next() {
+                        if Self::is_symbol_char(next) {
+                            // This is a symbol starting with `.` (like `...`)
+                            if count >= MAX_LIST_DEPTH {
+                                return Err(self.error(ParseErrorKind::OutOfMemory));
+                            }
+                            elements[count] = self.parse_symbol(lisp)?;
+                            count += 1;
+                            continue;
+                        }
+                    }
+
                     // Dotted pair: (a . b)
                     self.advance();
                     self.skip_whitespace();
-                    
+
                     if count == 0 {
                         return Err(self.error(ParseErrorKind::UnexpectedChar('.')));
                     }
-                    
+
                     let cdr = self.parse(lisp)?;
                     self.skip_whitespace();
-                    
+
                     if self.advance() != Some(b')') {
                         return Err(self.error(ParseErrorKind::UnmatchedParen));
                     }
-                    
+
                     // Build the dotted list
                     let mut result = cdr;
                     for i in (0..count).rev() {

@@ -4116,9 +4116,127 @@ fn test_macro_hygiene_no_capture() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "temp"), 999); // User's temp unchanged
 }
 
-/// Test: Macro with ellipsis pattern (TODO: ellipsis needs more work)
+/// Test: Debug - examine macro structure
 #[test]
-#[ignore]  // Ellipsis patterns need additional implementation work
+fn test_macro_debug_structure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Define a simple macro
+    eval.eval_str("(define-syntax wrap
+        (syntax-rules ()
+            ((_ x ...) 42)))").unwrap();
+
+    // Get the macro value
+    let macro_val = eval.eval_str("wrap").unwrap();
+    println!("Macro value: {:?}", lisp.get(macro_val).unwrap());
+
+    // Get the data
+    if let Value::Macro { def_paint, data } = lisp.get(macro_val).unwrap() {
+        println!("def_paint: {}", def_paint);
+        println!("data: {:?}", lisp.get(data).unwrap());
+
+        // data should be (literals . rules)
+        let literals = lisp.car(data).unwrap();
+        let rules = lisp.cdr(data).unwrap();
+        println!("literals: {:?}", lisp.get(literals).unwrap());
+        println!("rules: {:?}", lisp.get(rules).unwrap());
+
+        // First rule
+        let rule = lisp.car(rules).unwrap();
+        println!("rule: {:?}", lisp.get(rule).unwrap());
+
+        // Pattern and template
+        let pattern = lisp.car(rule).unwrap();
+        let template_cons = lisp.cdr(rule).unwrap();
+        let template = lisp.car(template_cons).unwrap();
+        println!("pattern: {:?}", lisp.get(pattern).unwrap());
+        println!("template: {:?}", lisp.get(template).unwrap());
+
+        // Pattern structure: (_ x ...)
+        // Pattern should be a cons: (_ . (x . (... . ())))
+        let pat_car = lisp.car(pattern).unwrap();
+        let pat_cdr = lisp.cdr(pattern).unwrap();
+        println!("pattern car (_): {:?}", lisp.get(pat_car).unwrap());
+        println!("pattern cdr (x ...): {:?}", lisp.get(pat_cdr).unwrap());
+
+        // (x ...) should be a cons: (x . (... . ()))
+        if !lisp.get(pat_cdr).unwrap().is_nil() {
+            let x_sym = lisp.car(pat_cdr).unwrap();
+            let rest = lisp.cdr(pat_cdr).unwrap();
+            println!("x sym: {:?}", lisp.get(x_sym).unwrap());
+            println!("rest (... . ()): {:?}", lisp.get(rest).unwrap());
+
+            // (... . ()) should have car = ...
+            if !lisp.get(rest).unwrap().is_nil() {
+                let ellipsis = lisp.car(rest).unwrap();
+                println!("ellipsis sym: {:?}", lisp.get(ellipsis).unwrap());
+
+                // Check if it's the ... symbol
+                if let Value::Symbol { name, paint } = lisp.get(ellipsis).unwrap() {
+                    println!("ellipsis name idx: {:?}, paint: {}", name, paint);
+                    let is_ellipsis = lisp.string_matches(name, "...").unwrap();
+                    println!("is_ellipsis: {}", is_ellipsis);
+                }
+            }
+        }
+    }
+}
+
+/// Test: Simplest possible ellipsis - match empty
+#[test]
+fn test_macro_ellipsis_empty() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Macro that just wraps args in a list
+    eval.eval_str("(define-syntax wrap
+        (syntax-rules ()
+            ((_ x ...) '(wrapped))))").unwrap();
+
+    // Call with no args - should work
+    let result = eval.eval_str("(wrap)");
+    assert!(result.is_ok(), "Empty ellipsis failed: {:?}", result);
+}
+
+/// Test: Ellipsis with single element
+#[test]
+fn test_macro_ellipsis_single() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Macro that just returns a constant (ignores args)
+    eval.eval_str("(define-syntax const42
+        (syntax-rules ()
+            ((_ x ...) 42)))").unwrap();
+
+    // Call with one arg
+    let result = eval.eval_str("(const42 1)");
+    assert!(result.is_ok(), "Single element ellipsis failed: {:?}", result);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(const42 1)"), 42);
+}
+
+/// Test: Simple ellipsis - just capture and return first element
+#[test]
+fn test_macro_ellipsis_simple() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // First test: define the macro
+    let result = eval.eval_str("(define-syntax my-list
+        (syntax-rules ()
+            ((_ x ...) (list x ...))))");
+    assert!(result.is_ok(), "Failed to define macro: {:?}", result);
+
+    // Second test: try to use it
+    let result = eval.eval_str("(my-list 1 2 3)");
+    if let Err(e) = &result {
+        panic!("Macro expansion failed: {:?}", e);
+    }
+}
+
+/// Test: Macro with ellipsis pattern
+#[test]
 fn test_macro_ellipsis() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -4132,9 +4250,8 @@ fn test_macro_ellipsis() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (my-list 1 2 3)))"), 2);
 }
 
-/// Test: let macro implementation (TODO: ellipsis needs more work)
+/// Test: let macro implementation
 #[test]
-#[ignore]  // Ellipsis patterns need additional implementation work
 fn test_macro_let_implementation() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
