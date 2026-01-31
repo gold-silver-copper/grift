@@ -229,6 +229,38 @@ impl<'a> Parser<'a> {
                 lisp.cons(quote_sym, quoted).map_err(Into::into)
             }
             
+            Some(b'`') => {
+                // Quasiquote: `x -> (quasiquote x)
+                self.advance();
+                let expr = self.parse(lisp)?;
+                let quasiquote_sym = lisp.symbol("quasiquote")?;
+                let nil = lisp.nil()?;
+                let quoted = lisp.cons(expr, nil)?;
+                lisp.cons(quasiquote_sym, quoted).map_err(Into::into)
+            }
+            
+            Some(b',') => {
+                // Unquote: ,x -> (unquote x)
+                // Unquote-splicing: ,@x -> (unquote-splicing x)
+                self.advance();
+                if self.peek() == Some(b'@') {
+                    // ,@ -> unquote-splicing
+                    self.advance();
+                    let expr = self.parse(lisp)?;
+                    let unquote_splicing_sym = lisp.symbol("unquote-splicing")?;
+                    let nil = lisp.nil()?;
+                    let quoted = lisp.cons(expr, nil)?;
+                    lisp.cons(unquote_splicing_sym, quoted).map_err(Into::into)
+                } else {
+                    // , -> unquote
+                    let expr = self.parse(lisp)?;
+                    let unquote_sym = lisp.symbol("unquote")?;
+                    let nil = lisp.nil()?;
+                    let quoted = lisp.cons(expr, nil)?;
+                    lisp.cons(unquote_sym, quoted).map_err(Into::into)
+                }
+            }
+            
             Some(b'#') => self.parse_hash_literal(lisp),
             
             Some(c) if c.is_ascii_digit() => self.parse_number(lisp),

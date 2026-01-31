@@ -3403,3 +3403,461 @@ fn test_size_check() {
     assert!(size_of::<Cont>() <= 16, "Cont enum grew beyond 16 bytes!");
     assert!(size_of::<ArenaIndex>() == 8, "ArenaIndex should be exactly 8 bytes");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUASIQUOTE READER SYNTAX TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Tests for ` (quasiquote), , (unquote), and ,@ (unquote-splicing) reader syntax
+
+#[test]
+fn test_quasiquote_reader_syntax_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // `x should be equivalent to (quasiquote x)
+    // Basic literal quasiquote - no evaluation, just quoted
+    let result = eval.eval_str("`42").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number().unwrap(), 42);
+    
+    // List quasiquote without unquote - same as quote
+    let result = eval.eval_str("`(a b c)").unwrap();
+    assert!(lisp.get(result).unwrap().is_cons());
+}
+
+#[test]
+fn test_quasiquote_reader_with_unquote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 42)").unwrap();
+    
+    // `(a b ,x) should give (a b 42)
+    let result = eval.eval_str("`(a b ,x)").unwrap();
+    let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 42);
+}
+
+#[test]
+fn test_quasiquote_reader_with_expression_unquote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 5)").unwrap();
+    
+    // `(1 ,(+ x 3) 10) should give (1 8 10)
+    let result = eval.eval_str("`(1 ,(+ x 3) 10)").unwrap();
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(second).unwrap().as_number().unwrap(), 8);
+}
+
+#[test]
+fn test_quasiquote_reader_multiple_unquotes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define a 1)").unwrap();
+    eval.eval_str("(define b 2)").unwrap();
+    eval.eval_str("(define c 3)").unwrap();
+    
+    // `(,a ,b ,c) should give (1 2 3)
+    let result = eval.eval_str("`(,a ,b ,c)").unwrap();
+    let first = lisp.car(result).unwrap();
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    
+    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(second).unwrap().as_number().unwrap(), 2);
+    assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 3);
+}
+
+#[test]
+fn test_unquote_splicing_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define lst '(2 3 4))").unwrap();
+    
+    // `(1 ,@lst 5) should give (1 2 3 4 5)
+    let result = eval.eval_str("`(1 ,@lst 5)").unwrap();
+    
+    // Check: (1 2 3 4 5)
+    let n1 = lisp.car(result).unwrap();
+    let n2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let n3 = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    let n4 = lisp.car(lisp.cdr(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap()).unwrap();
+    let n5 = lisp.car(lisp.cdr(lisp.cdr(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap()).unwrap()).unwrap();
+    
+    assert_eq!(lisp.get(n1).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(n2).unwrap().as_number().unwrap(), 2);
+    assert_eq!(lisp.get(n3).unwrap().as_number().unwrap(), 3);
+    assert_eq!(lisp.get(n4).unwrap().as_number().unwrap(), 4);
+    assert_eq!(lisp.get(n5).unwrap().as_number().unwrap(), 5);
+}
+
+#[test]
+fn test_unquote_splicing_at_start() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define xs '(a b))").unwrap();
+    
+    // `(,@xs c d) should give (a b c d)
+    let result = eval.eval_str("`(,@xs c d)").unwrap();
+    
+    // Check that result is a 4-element list
+    let mut count = 0;
+    let mut current = result;
+    loop {
+        match lisp.get(current).unwrap() {
+            Value::Nil => break,
+            Value::Cons { cdr, .. } => {
+                count += 1;
+                current = cdr;
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+    assert_eq!(count, 4);
+}
+
+#[test]
+fn test_unquote_splicing_empty_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define empty '())").unwrap();
+    
+    // `(1 ,@empty 2) should give (1 2) - empty list contributes nothing
+    let result = eval.eval_str("`(1 ,@empty 2)").unwrap();
+    
+    let n1 = lisp.car(result).unwrap();
+    let n2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let tail = lisp.cdr(lisp.cdr(result).unwrap()).unwrap();
+    
+    assert_eq!(lisp.get(n1).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(n2).unwrap().as_number().unwrap(), 2);
+    assert!(lisp.get(tail).unwrap().is_nil());
+}
+
+#[test]
+fn test_unquote_splicing_with_computed_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ,@(list 1 2 3) - evaluate (list 1 2 3) then splice
+    let result = eval.eval_str("`(a ,@(list 1 2 3) b)").unwrap();
+    
+    // Should be (a 1 2 3 b) - 5 elements
+    let mut count = 0;
+    let mut current = result;
+    loop {
+        match lisp.get(current).unwrap() {
+            Value::Nil => break,
+            Value::Cons { cdr, .. } => {
+                count += 1;
+                current = cdr;
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+    assert_eq!(count, 5);
+}
+
+#[test]
+fn test_quasiquote_nested_lists() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 10)").unwrap();
+    
+    // `((a ,x) (b ,(+ x 1))) should give ((a 10) (b 11))
+    let result = eval.eval_str("`((a ,x) (b ,(+ x 1)))").unwrap();
+    
+    // First inner list
+    let first_list = lisp.car(result).unwrap();
+    let first_second = lisp.car(lisp.cdr(first_list).unwrap()).unwrap();
+    assert_eq!(lisp.get(first_second).unwrap().as_number().unwrap(), 10);
+    
+    // Second inner list
+    let second_list = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let second_second = lisp.car(lisp.cdr(second_list).unwrap()).unwrap();
+    assert_eq!(lisp.get(second_second).unwrap().as_number().unwrap(), 11);
+}
+
+#[test]
+fn test_quasiquote_deeply_nested_unquote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define val 99)").unwrap();
+    
+    // `(a (b (c ,val))) - unquote in deeply nested structure
+    let result = eval.eval_str("`(a (b (c ,val)))").unwrap();
+    
+    // Navigate to val: cdr -> car -> cdr -> car -> cdr -> car
+    let inner1 = lisp.car(lisp.cdr(result).unwrap()).unwrap(); // (b (c 99))
+    let inner2 = lisp.car(lisp.cdr(inner1).unwrap()).unwrap(); // (c 99)
+    let inner_val = lisp.car(lisp.cdr(inner2).unwrap()).unwrap(); // 99
+    
+    assert_eq!(lisp.get(inner_val).unwrap().as_number().unwrap(), 99);
+}
+
+#[test]
+fn test_quasiquote_mixed_quote_and_unquote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 5)").unwrap();
+    
+    // `(a 'b ,x) - mix of literal, quoted symbol, and unquoted value
+    let result = eval.eval_str("`(a 'b ,x)").unwrap();
+    
+    // Third element should be 5 (from ,x)
+    let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    assert_eq!(lisp.get(third).unwrap().as_number().unwrap(), 5);
+}
+
+#[test]
+fn test_quasiquote_equivalence_to_long_form() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define n 7)").unwrap();
+    
+    // Short form
+    let short = eval.eval_str("`(a ,n b)").unwrap();
+    
+    // Long form (explicit quasiquote/unquote)
+    let long = eval.eval_str("(quasiquote (a (unquote n) b))").unwrap();
+    
+    // Both should produce (a 7 b)
+    let short_second = lisp.car(lisp.cdr(short).unwrap()).unwrap();
+    let long_second = lisp.car(lisp.cdr(long).unwrap()).unwrap();
+    
+    assert_eq!(lisp.get(short_second).unwrap().as_number().unwrap(), 7);
+    assert_eq!(lisp.get(long_second).unwrap().as_number().unwrap(), 7);
+}
+
+#[test]
+fn test_quasiquote_in_function_body() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Function that builds a list using quasiquote
+    eval.eval_str("(define (make-pair a b) `(,a . ,b))").unwrap();
+    
+    let result = eval.eval_str("(make-pair 1 2)").unwrap();
+    
+    // Should be (1 . 2) - a dotted pair
+    let car = lisp.car(result).unwrap();
+    let cdr = lisp.cdr(result).unwrap();
+    
+    assert_eq!(lisp.get(car).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(cdr).unwrap().as_number().unwrap(), 2);
+}
+
+#[test]
+fn test_quasiquote_function_building_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Function that builds a wrapped expression
+    eval.eval_str("(define (wrap-in-if test body) `(if ,test ,body #f))").unwrap();
+    
+    let result = eval.eval_str("(wrap-in-if '#t '(+ 1 2))").unwrap();
+    
+    // Should produce (if #t (+ 1 2) #f)
+    // Check that first element is 'if' symbol
+    let first = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(first, "if").unwrap());
+}
+
+#[test]
+fn test_nested_quasiquote_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 10)").unwrap();
+    
+    // `` `,,x `` (nested quasiquote with unquote)
+    // At outer level, inner quasiquote is processed
+    // The inner ,x at depth 2 stays as ,x (decremented to depth 1)
+    // This is tricky - ``,x evaluates the outer quasiquote, which should
+    // return `(quasiquote ,10) where the ,10 is unquoted at the outer level
+    
+    // Actually simpler test: nested quasiquote without inner unquote
+    let result = eval.eval_str("``(a b c)").unwrap();
+    
+    // Should return (quasiquote (a b c))
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "quasiquote").unwrap());
+}
+
+#[test]
+fn test_multiple_splices() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define xs '(1 2))").unwrap();
+    eval.eval_str("(define ys '(3 4))").unwrap();
+    
+    // `(,@xs ,@ys) should give (1 2 3 4)
+    let result = eval.eval_str("`(,@xs ,@ys)").unwrap();
+    
+    // Count elements
+    let mut count = 0;
+    let mut current = result;
+    loop {
+        match lisp.get(current).unwrap() {
+            Value::Nil => break,
+            Value::Cons { cdr, .. } => {
+                count += 1;
+                current = cdr;
+            }
+            _ => panic!("Expected list"),
+        }
+    }
+    assert_eq!(count, 4);
+}
+
+#[test]
+fn test_quasiquote_preserves_structure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pure quasiquote (no unquotes) should act like quote
+    let quoted = eval.eval_str("'(a (b c) d)").unwrap();
+    let quasiquoted = eval.eval_str("`(a (b c) d)").unwrap();
+    
+    // Both should be structurally equal
+    // Check that they have the same shape
+    fn count_elements<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> usize {
+        let mut count = 0;
+        let mut current = idx;
+        loop {
+            match lisp.get(current).unwrap() {
+                Value::Nil => return count,
+                Value::Cons { cdr, .. } => {
+                    count += 1;
+                    current = cdr;
+                }
+                _ => return count,
+            }
+        }
+    }
+    
+    assert_eq!(count_elements(&lisp, quoted), count_elements(&lisp, quasiquoted));
+}
+
+#[test]
+fn test_quasiquote_with_lambda() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Build a lambda expression using quasiquote
+    eval.eval_str("(define body '(+ x 1))").unwrap();
+    
+    let result = eval.eval_str("`(lambda (x) ,body)").unwrap();
+    
+    // Should produce (lambda (x) (+ x 1))
+    let first = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(first, "lambda").unwrap());
+}
+
+#[test]
+fn test_quasiquote_code_generation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Use quasiquote to generate code, then evaluate it
+    eval.eval_str("(define op '+)").unwrap();
+    eval.eval_str("(define a 10)").unwrap();
+    eval.eval_str("(define b 20)").unwrap();
+    
+    // Build (+ 10 20) and evaluate it
+    let result = eval.eval_str("(eval `(,op ,a ,b))").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number().unwrap(), 30);
+}
+
+#[test]
+fn test_quasiquote_symbols_stay_symbols() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Symbols inside quasiquote stay as symbols (not looked up)
+    let result = eval.eval_str("`(define x 5)").unwrap();
+    
+    let first = lisp.car(result).unwrap();
+    assert!(lisp.get(first).unwrap().is_symbol());
+    assert!(lisp.symbol_matches(first, "define").unwrap());
+}
+
+#[test]
+fn test_quasiquote_with_vectors() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 42)").unwrap();
+    
+    // Quasiquote containing a vector (the vector itself should be quoted)
+    let result = eval.eval_str("`(#(1 2 3) ,x)").unwrap();
+    
+    // First element should be a vector
+    let first = lisp.car(result).unwrap();
+    assert!(lisp.get(first).unwrap().is_array());
+    
+    // Second element should be 42
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(second).unwrap().as_number().unwrap(), 42);
+}
+
+#[test]
+fn test_quasiquote_dotted_pairs() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 1)").unwrap();
+    eval.eval_str("(define y 2)").unwrap();
+    
+    // `(,x . ,y) should produce (1 . 2)
+    let result = eval.eval_str("`(,x . ,y)").unwrap();
+    
+    let car = lisp.car(result).unwrap();
+    let cdr = lisp.cdr(result).unwrap();
+    
+    assert_eq!(lisp.get(car).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.get(cdr).unwrap().as_number().unwrap(), 2);
+}
+
+#[test]
+fn test_quasiquote_splice_only_in_list_context() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Splice at start of list
+    eval.eval_str("(define items '(a b c))").unwrap();
+    
+    let result = eval.eval_str("`(,@items)").unwrap();
+    
+    // Should be (a b c) - the items are spliced
+    let first = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(first, "a").unwrap());
+}
+
+#[test]
+fn test_quasiquote_with_conditionals() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Build conditional expressions
+    let result = eval.eval_str("`(if #t ,(+ 1 2) ,(+ 3 4))").unwrap();
+    
+    // Should be (if #t 3 7)
+    let then_val = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    let else_val = lisp.car(lisp.cdr(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap()).unwrap();
+    
+    assert_eq!(lisp.get(then_val).unwrap().as_number().unwrap(), 3);
+    assert_eq!(lisp.get(else_val).unwrap().as_number().unwrap(), 7);
+}
