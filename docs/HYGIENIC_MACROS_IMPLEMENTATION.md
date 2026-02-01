@@ -65,7 +65,7 @@ The following changes were made as part of Phase 6:
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
 2. Some complex ellipsis patterns in nested contexts may have edge cases
 3. `letrec-syntax` is not yet implemented
-4. `case` and `do` remain as special forms (complex macro patterns needed for these)
+4. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
 
 ### Testing
 
