@@ -374,19 +374,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         literals: ArenaIndex,
         bindings: ArenaIndex,
     ) -> Result<Option<ArenaIndex>, EvalError> {
-        // Check if expression is a list
-        if !matches!(self.lisp.get(expr)?, Value::Cons { .. }) {
-            return Ok(None);
-        }
-
         let pat_car = self.lisp.car(pattern)?;
         let pat_cdr = self.lisp.cdr(pattern)?;
 
-        // Check for ellipsis: (subpat ... . rest)
+        // Check for ellipsis FIRST - ellipsis can match empty lists
+        // (subpat ... . rest) or (subpat . ...)
         if self.has_ellipsis(pat_cdr)? {
             return self.match_ellipsis_pattern(
                 pat_car, pat_cdr, expr, literals, bindings
             );
+        }
+        
+        // For non-ellipsis patterns, expression must be a non-empty list
+        if !matches!(self.lisp.get(expr)?, Value::Cons { .. }) {
+            return Ok(None);
         }
 
         // Regular list: match car and cdr
@@ -618,13 +619,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<(), EvalError> {
         match self.lisp.get(template)? {
             Value::Symbol(_) => {
-                // Check if this symbol is bound to a list
+                // Check if this symbol is bound to a list (including empty list)
+                // An ellipsis variable can be bound to:
+                // - Cons (non-empty list) - from one or more matches
+                // - Nil (empty list) - from zero matches
                 if let Some(val) = self.bindings_lookup(bindings, template)? {
-                    if matches!(self.lisp.get(val)?, Value::Cons { .. }) {
-                        // Add to result if not already there
-                        if self.bindings_lookup(*result, template)?.is_none() {
-                            *result = self.lisp.cons(template, *result)?;
+                    match self.lisp.get(val)? {
+                        Value::Cons { .. } | Value::Nil => {
+                            // Add to result if not already there
+                            if self.bindings_lookup(*result, template)?.is_none() {
+                                *result = self.lisp.cons(template, *result)?;
+                            }
                         }
+                        _ => {}
                     }
                 }
                 Ok(())
