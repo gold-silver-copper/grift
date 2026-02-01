@@ -64,29 +64,11 @@ pub enum Cont {
     /// Stack data: [remaining_bindings, new_env, body, name] (4 elements)
     LetrecInit(usize),
 
-    /// After evaluating test in when, decide whether to run body
-    /// Stack data: [body, env] (2 elements)
-    When(usize),
-
-    /// After evaluating test in unless, decide whether to run body
-    /// Stack data: [body, env] (2 elements)
-    Unless(usize),
+    // Note: When, Unless, CondTest, And, Or removed - now handled by macros
 
     /// After evaluating expr in eval special form
     /// Stack data: [env] (1 element)
     EvalExpr(usize),
-
-    /// After evaluating cond test clause
-    /// Stack data: [then_exprs, remaining_clauses, env] (3 elements)
-    CondTest(usize),
-
-    /// Processing and short-circuit evaluation
-    /// Stack data: [remaining, env] (2 elements)
-    And(usize),
-
-    /// Processing or short-circuit evaluation
-    /// Stack data: [remaining, env] (2 elements)
-    Or(usize),
 
     /// Processing begin expressions (non-tail)
     /// Stack data: [remaining, env] (2 elements)
@@ -179,10 +161,6 @@ impl Cont {
             Cont::DefineValue(_) => 1,
             Cont::QuasiquoteCdr(_) => 1,
             Cont::QuasiquoteSpliceAppend(_) => 1,
-            Cont::When(_) => 2,
-            Cont::Unless(_) => 2,
-            Cont::And(_) => 2,
-            Cont::Or(_) => 2,
             Cont::BeginSeq(_) => 2,
             Cont::CaseKey(_) => 2,
             Cont::ApplyFirst(_) => 2,
@@ -191,7 +169,6 @@ impl Cont {
             Cont::ApplyForced(_) => 3,
             Cont::IfBranch(_) => 3,
             Cont::BinaryBuiltinSecond(_) => 3,
-            Cont::CondTest(_) => 3,
             Cont::ValuesCollect(_) => 3,
             Cont::QuasiquoteCar(_) => 3,
             Cont::QuasiquoteSplice(_) => 3,
