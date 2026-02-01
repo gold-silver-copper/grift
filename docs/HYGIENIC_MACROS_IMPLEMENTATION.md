@@ -2,7 +2,7 @@
 
 ## Implementation Progress
 
-**Status: Phase 1-6 Complete (Foundation through Cleanup)**
+**Status: Phase 1-7 Complete (Foundation through Evaluation-Time Macros)**
 
 ### Completed Work
 
@@ -14,21 +14,22 @@
 | Phase 4 | Expander Integration | ✅ Complete |
 | Phase 5 | Standard Macros | ✅ Complete |
 | Phase 6 | Cleanup | ✅ Complete |
+| Phase 7 | Evaluation-Time Macro Expansion | ✅ Complete |
 
 ### Files Modified/Created
 
 - `crates/grift_parser/src/value.rs` - Added `SyntaxRules` variant to `Value` enum
 - `crates/grift_parser/src/lisp.rs` - Added `syntax_rules()`, `syntax_rules_parts()`, and `eqv()` methods
 - `crates/grift_eval/src/evaluator/mod.rs` - Added `macro_env` and `gensym_counter` fields
-- `crates/grift_eval/src/evaluator/core.rs` - Modified `eval()` to expand macros, added macro loading, removed redundant special form handlers for macro-based forms
-- `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added macro expansion to stdlib function parsing
-- `crates/grift_eval/src/evaluator/expand.rs` - **NEW** - Complete macro expansion system
-- `crates/grift_eval/src/continuation.rs` - Removed When, Unless, CondTest, And, Or continuation types
-- `crates/grift_parser/src/macros.scm` - **NEW** - Standard macro definitions
+- `crates/grift_eval/src/evaluator/core.rs` - Modified `eval()` for evaluation-time macro expansion, removed redundant special form handlers
+- `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added internal define support to lambda
+- `crates/grift_eval/src/evaluator/expand.rs` - Complete macro expansion system
+- `crates/grift_eval/src/continuation.rs` - Removed unused continuation types (When, Unless, CondTest, And, Or, LetBinding, LetStarBinding, LetrecInit)
+- `crates/grift_parser/src/macros.scm` - Standard macro definitions including `letrec` and `letrec*`
 
 ### Working Features
 
-- `define-syntax` for defining macros
+- `define-syntax` for defining macros (now processed during evaluation)
 - `syntax-rules` pattern language with:
   - Pattern variables
   - Literal keywords
@@ -36,8 +37,43 @@
   - Ellipsis `...` for repetition
 - `let-syntax` for local macro definitions
 - Hygiene via gensym for lambda parameters
-- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `delay`
-- Stdlib functions properly expand macros in their bodies
+- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `let`, `let*`, `letrec`, `letrec*`, `delay`
+- Lambda supports internal `define` forms (R7RS compliant)
+
+### Phase 7: Evaluation-Time Macro Expansion
+
+The macro system was refactored from a two-phase (expand-then-eval) model to an integrated evaluation model where macros are expanded during evaluation.
+
+#### Architectural Changes
+
+**Previous flow:**
+```
+User code → expand() [macros run here] → eval() [special forms only]
+```
+
+**New flow:**
+```
+User code → eval() [macros + primitives run here]
+```
+
+#### Key Implementation Details
+
+1. **Macro lookup in evaluation loop**: The `step_eval_list` function now checks for macro invocations BEFORE checking for special forms. When a macro is found, it's expanded and the result is re-evaluated.
+
+2. **`define-syntax` as evaluation-time operation**: Macros can now be defined during evaluation via `step_eval_define_syntax`, not just during a pre-processing phase.
+
+3. **`let-syntax` as evaluation-time operation**: Local macro bindings work during evaluation via `step_eval_let_syntax`.
+
+4. **Internal define support in lambda**: Lambda bodies can now contain `define` forms at the start, which are automatically transformed to `letrec` semantics per R7RS.
+
+5. **Binding forms as macros**: `let`, `let*`, `letrec`, and `letrec*` are now implemented as macros in `macros.scm`, with the corresponding special forms and continuations removed.
+
+#### Benefits
+
+- Simpler evaluator with fewer special cases
+- Macros are first-class participants in the evaluation process
+- More faithful to R7RS semantics
+- Enables future implementation of more derived forms as macros
 
 ### Phase 6 Cleanup Details
 
@@ -47,28 +83,26 @@ The following changes were made as part of Phase 6:
    - `when`, `unless` - now handled by macros
    - `and`, `or` - now handled by macros
    - `cond` - now handled by macro
+   - `let`, `let*`, `letrec`, `letrec*` - now handled by macros
 
 2. **Removed continuation types from continuation.rs:**
    - `When`, `Unless`, `CondTest`, `And`, `Or`
+   - `LetBinding`, `LetStarBinding`, `LetrecInit`
    - Corresponding pack/unpack methods removed
 
 3. **Removed step_eval_* functions from forms.rs:**
    - `step_eval_and`, `step_eval_or`, `step_eval_cond_cont`
+   - `step_eval_let`, `step_eval_let_star`, `step_eval_letrec`
    - Related continuation handlers
-
-4. **Fixed stdlib function macro expansion:**
-   - Stdlib functions now have their bodies expanded with macros at parse time
-   - This enables stdlib functions to use `and`, `or`, `cond`, etc.
 
 ### Known Limitations
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
-2. ~~**Nested ellipsis pattern bug**: Fixed!~~ Previously, patterns like `((name val) ...)` didn't correctly extract all elements. 
-   **This bug has been fixed** - see "Fix for Nested Ellipsis Bug" section below.
-3. `letrec-syntax` is not yet implemented
-4. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
-5. **Named let** is not supported by the `let` macro; the special form handles it
-6. `letrec` and `letrec*` remain as special forms (not yet converted to macros)
+2. `letrec-syntax` is not yet implemented
+3. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
+4. **Named let** is not supported by the `let` macro (would need additional pattern)
+5. `let-values` and `let*-values` not yet implemented
+6. **`let-syntax` scoping**: Local macro bindings from `let-syntax` currently leak beyond their intended scope (bindings are not properly restored after body evaluation)
 
 ### Testing
 
@@ -76,12 +110,13 @@ All existing tests pass with the macro system enabled. Standard macros are loade
 
 ### Recent Changes
 
-1. **FIXED: Nested ellipsis pattern bug**: The parser was incorrectly treating `...` within lists as a 
-   dotted pair indicator instead of the ellipsis symbol. This caused patterns like `((a) ...)` to fail.
-   The fix was in the parser to correctly identify multi-dot symbols like `...`.
-2. **Fixed lambda parameter substitution bug**: Pattern variables in lambda parameter lists 
-   are now correctly substituted (was returning the pattern variable symbol instead of the bound value).
-3. **Added `let` and `let*` macros**: These can now use standard R7RS patterns with the ellipsis bug fixed.
+1. **Evaluation-time macro expansion**: Macros are now expanded during evaluation rather than in a pre-processing phase.
+2. **Internal define support**: Lambda bodies now support internal definitions per R7RS, transformed to `letrec`.
+3. **`letrec` and `letrec*` as macros**: These binding forms now use a two-phase macro that:
+   - Phase 1 (`%letrec-names`): Creates all bindings with `#f` values
+   - Phase 2 (`%letrec-inits`): Assigns all init expressions in order
+   This ensures all names are visible to all init expressions for mutual recursion.
+4. **Removed binding form special forms**: `let`, `let*`, `letrec`, `letrec*` special form handlers removed since macros take precedence.
 
 ---
 
