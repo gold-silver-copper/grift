@@ -2,7 +2,7 @@
 
 ## Implementation Progress
 
-**Status: Phase 1-5 Complete (Foundation through Standard Macros)**
+**Status: Phase 1-6 Complete (Foundation through Cleanup)**
 
 ### Completed Work
 
@@ -13,17 +13,18 @@
 | Phase 3 | Template Transcription | ✅ Complete |
 | Phase 4 | Expander Integration | ✅ Complete |
 | Phase 5 | Standard Macros | ✅ Complete |
-| Phase 6 | Cleanup | 🔄 In Progress |
+| Phase 6 | Cleanup | ✅ Complete |
 
 ### Files Modified/Created
 
 - `crates/grift_parser/src/value.rs` - Added `SyntaxRules` variant to `Value` enum
 - `crates/grift_parser/src/lisp.rs` - Added `syntax_rules()`, `syntax_rules_parts()`, and `eqv()` methods
 - `crates/grift_eval/src/evaluator/mod.rs` - Added `macro_env` and `gensym_counter` fields
-- `crates/grift_eval/src/evaluator/core.rs` - Modified `eval()` to expand macros, added macro loading
+- `crates/grift_eval/src/evaluator/core.rs` - Modified `eval()` to expand macros, added macro loading, removed redundant special form handlers for macro-based forms
+- `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added macro expansion to stdlib function parsing
 - `crates/grift_eval/src/evaluator/expand.rs` - **NEW** - Complete macro expansion system
+- `crates/grift_eval/src/continuation.rs` - Removed When, Unless, CondTest, And, Or continuation types
 - `crates/grift_parser/src/macros.scm` - **NEW** - Standard macro definitions
-- `crates/grift_repl/src/lib.rs` - Added SyntaxRules formatting
 
 ### Working Features
 
@@ -36,12 +37,35 @@
 - `let-syntax` for local macro definitions
 - Hygiene via gensym for lambda parameters
 - Standard macros: `when`, `unless`, `and`, `or`, `cond`, `delay`
+- Stdlib functions properly expand macros in their bodies
+
+### Phase 6 Cleanup Details
+
+The following changes were made as part of Phase 6:
+
+1. **Removed special form handlers from core.rs:**
+   - `when`, `unless` - now handled by macros
+   - `and`, `or` - now handled by macros
+   - `cond` - now handled by macro
+
+2. **Removed continuation types from continuation.rs:**
+   - `When`, `Unless`, `CondTest`, `And`, `Or`
+   - Corresponding pack/unpack methods removed
+
+3. **Removed step_eval_* functions from forms.rs:**
+   - `step_eval_and`, `step_eval_or`, `step_eval_cond_cont`
+   - Related continuation handlers
+
+4. **Fixed stdlib function macro expansion:**
+   - Stdlib functions now have their bodies expanded with macros at parse time
+   - This enables stdlib functions to use `and`, `or`, `cond`, etc.
 
 ### Known Limitations
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
 2. Some complex ellipsis patterns in nested contexts may have edge cases
 3. `letrec-syntax` is not yet implemented
+4. `case` and `do` remain as special forms (complex macro patterns needed for these)
 
 ### Testing
 

@@ -96,9 +96,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // StdLib: Parse body and params on each call
                         self.pop_frame();
                         
-                        // Parse body and create param list
-                        let body = parse(self.lisp, s.body())
+                        // Parse body and expand macros
+                        let parsed_body = parse(self.lisp, s.body())
                             .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        // Expand macros in the body
+                        let body = self.expand(parsed_body)?;
                         let params = self.make_stdlib_param_list(s.params())?;
                         
                         // Use the global env for stdlib functions (they're defined at top level)
@@ -338,104 +340,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Cont::When(data_start) => {
-                let (body, env) = self.unpack_when(data_start);
-                // val is the evaluated test result
-                let test_passed = !self.is_false(val)?;
-
-                if test_passed {
-                    // Evaluate body as begin
-                    let begin = self.lisp.symbol("begin")?;
-                    let new_expr = self.lisp.cons(begin, body)?;
-                    Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
-                } else {
-                    // Return unspecified value (nil)
-                    let nil = self.lisp.nil()?;
-                    Ok(Some(TrampolineState::Return { val: nil }))
-                }
-            }
-
-            Cont::Unless(data_start) => {
-                let (body, env) = self.unpack_unless(data_start);
-                // val is the evaluated test result
-                let test_passed = !self.is_false(val)?;
-
-                if !test_passed {
-                    // Evaluate body as begin
-                    let begin = self.lisp.symbol("begin")?;
-                    let new_expr = self.lisp.cons(begin, body)?;
-                    Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
-                } else {
-                    // Return unspecified value (nil)
-                    let nil = self.lisp.nil()?;
-                    Ok(Some(TrampolineState::Return { val: nil }))
-                }
-            }
+            // Note: When, Unless, CondTest, And, Or continuations removed
+            // These forms are now handled by macros during expansion
 
             Cont::EvalExpr(data_start) => {
                 let env = self.unpack_eval_expr(data_start);
                 // val is the evaluated expression - now evaluate it
                 Ok(Some(TrampolineState::Eval { expr: val, env }))
-            }
-
-            Cont::CondTest(data_start) => {
-                let (then_exprs, remaining_clauses, env) = self.unpack_cond_test(data_start);
-                // val is the evaluated test
-                if !self.is_false(val)? {
-                    // Test passed - evaluate body expressions
-                    if self.lisp.get(then_exprs)?.is_nil() {
-                        // No body - return the test value itself (cond => behavior)
-                        Ok(Some(TrampolineState::Return { val }))
-                    } else {
-                        // Evaluate body as begin
-                        let begin = self.lisp.symbol("begin")?;
-                        let new_expr = self.lisp.cons(begin, then_exprs)?;
-                        Ok(Some(TrampolineState::Eval { expr: new_expr, env }))
-                    }
-                } else {
-                    // Test failed - try remaining clauses
-                    self.step_eval_cond_cont(remaining_clauses, env)
-                }
-            }
-
-            Cont::And(data_start) => {
-                let (remaining, env) = self.unpack_and(data_start);
-                // val is the evaluated expression
-                // and: if false, short-circuit and return #f
-                if self.is_false(val)? {
-                    let false_val = self.lisp.boolean(false)?;
-                    Ok(Some(TrampolineState::Return { val: false_val }))
-                } else if self.lisp.get(remaining)?.is_nil() {
-                    // Last expression - return its value
-                    Ok(Some(TrampolineState::Return { val }))
-                } else {
-                    // More expressions - evaluate next
-                    let next_expr = self.lisp.car(remaining)?;
-                    let rest = self.lisp.cdr(remaining)?;
-                    let data_start = self.pack_and(rest, env)?;
-                    self.push_cont(Cont::And(data_start))?;
-                    Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
-                }
-            }
-
-            Cont::Or(data_start) => {
-                let (remaining, env) = self.unpack_or(data_start);
-                // val is the evaluated expression
-                // or: if truthy, short-circuit and return the value
-                if !self.is_false(val)? {
-                    Ok(Some(TrampolineState::Return { val }))
-                } else if self.lisp.get(remaining)?.is_nil() {
-                    // Last expression was false - return #f
-                    let false_val = self.lisp.boolean(false)?;
-                    Ok(Some(TrampolineState::Return { val: false_val }))
-                } else {
-                    // More expressions - evaluate next
-                    let next_expr = self.lisp.car(remaining)?;
-                    let rest = self.lisp.cdr(remaining)?;
-                    let data_start = self.pack_or(rest, env)?;
-                    self.push_cont(Cont::Or(data_start))?;
-                    Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
-                }
             }
 
             Cont::BeginSeq(data_start) => {
@@ -677,37 +588,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Helper for cond continuation - process remaining clauses
-    pub(super) fn step_eval_cond_cont(&mut self, clauses: ArenaIndex, env: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
-        if self.lisp.get(clauses)?.is_nil() {
-            // No more clauses - return unspecified (nil)
-            let nil = self.lisp.nil()?;
-            return Ok(Some(TrampolineState::Return { val: nil }));
-        }
-
-        let clause = self.lisp.car(clauses)?;
-        let rest_clauses = self.lisp.cdr(clauses)?;
-        let test = self.lisp.car(clause)?;
-        let then_exprs = self.lisp.cdr(clause)?;
-
-        // Check for else clause
-        if self.lisp.symbol_matches(test, "else")? {
-            if self.lisp.get(then_exprs)?.is_nil() {
-                let nil = self.lisp.nil()?;
-                return Ok(Some(TrampolineState::Return { val: nil }));
-            }
-            let begin = self.lisp.symbol("begin")?;
-            let new_expr = self.lisp.cons(begin, then_exprs)?;
-            return Ok(Some(TrampolineState::Eval { expr: new_expr, env }));
-        }
-
-        // Push continuation for after evaluating test
-        let data_start = self.pack_cond_test(then_exprs, rest_clauses, env)?;
-        self.push_cont(Cont::CondTest(data_start))?;
-
-        // Evaluate the test
-        Ok(Some(TrampolineState::Eval { expr: test, env }))
-    }
+    // Note: step_eval_cond_cont removed - cond is now handled by macros
 
     // ========================================================================
     // Helper functions for fully trampolined evaluation
@@ -1047,50 +928,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Evaluate and using continuations (no Rust recursion)
-    pub(super) fn step_eval_and(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        if self.lisp.get(exprs)?.is_nil() {
-            // (and) with no args returns #t
-            let true_val = self.lisp.boolean(true)?;
-            return Ok(TrampolineState::Return { val: true_val });
-        }
-
-        let first_expr = self.lisp.car(exprs)?;
-        let rest = self.lisp.cdr(exprs)?;
-
-        if self.lisp.get(rest)?.is_nil() {
-            // Single expression - evaluate it (its value is the result)
-            Ok(TrampolineState::Eval { expr: first_expr, env })
-        } else {
-            // Multiple expressions - push continuation
-            let data_start = self.pack_and(rest, env)?;
-            self.push_cont(Cont::And(data_start))?;
-            Ok(TrampolineState::Eval { expr: first_expr, env })
-        }
-    }
-
-    /// Evaluate or using continuations (no Rust recursion)
-    pub(super) fn step_eval_or(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        if self.lisp.get(exprs)?.is_nil() {
-            // (or) with no args returns #f
-            let false_val = self.lisp.boolean(false)?;
-            return Ok(TrampolineState::Return { val: false_val });
-        }
-
-        let first_expr = self.lisp.car(exprs)?;
-        let rest = self.lisp.cdr(exprs)?;
-
-        if self.lisp.get(rest)?.is_nil() {
-            // Single expression - evaluate it (its value is the result)
-            Ok(TrampolineState::Eval { expr: first_expr, env })
-        } else {
-            // Multiple expressions - push continuation
-            let data_start = self.pack_or(rest, env)?;
-            self.push_cont(Cont::Or(data_start))?;
-            Ok(TrampolineState::Eval { expr: first_expr, env })
-        }
-    }
-
+    // Note: step_eval_and and step_eval_or removed - and/or are now handled by macros
 
     pub(super) fn step_eval_case(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let key_expr = self.lisp.car(args)?;

@@ -192,12 +192,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::LetBinding(data_start) |
                     Cont::LetStarBinding(data_start) |
                     Cont::LetrecInit(data_start) |
-                    Cont::When(data_start) |
-                    Cont::Unless(data_start) |
                     Cont::EvalExpr(data_start) |
-                    Cont::CondTest(data_start) |
-                    Cont::And(data_start) |
-                    Cont::Or(data_start) |
                     Cont::BeginSeq(data_start) |
                     Cont::CaseKey(data_start) |
                     Cont::DoInit(data_start) |
@@ -595,11 +590,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Ok(TrampolineState::Eval { expr: cond_expr, env });
             }
             
-            // cond - TCO in final clause
-            if self.lisp.symbol_matches(car, "cond")? {
-                return self.step_eval_cond(cdr, env);
-            }
-            
             // lambda
             if self.lisp.symbol_matches(car, "lambda")? {
                 let val = self.eval_lambda(cdr, env)?;
@@ -636,38 +626,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.step_eval_letrec(cdr, env); // Same as letrec for now
             }
 
-            // when - continuation-based evaluation (R7RS Section 4.2.1)
-            if self.lisp.symbol_matches(car, "when")? {
-                let test_expr = self.lisp.car(cdr)?;
-                let body = self.lisp.cdr(cdr)?;
-                let data_start = self.pack_when(body, env)?;
-                self.push_cont(Cont::When(data_start))?;
-                return Ok(TrampolineState::Eval { expr: test_expr, env });
-            }
-
-            // unless - continuation-based evaluation (R7RS Section 4.2.1)
-            if self.lisp.symbol_matches(car, "unless")? {
-                let test_expr = self.lisp.car(cdr)?;
-                let body = self.lisp.cdr(cdr)?;
-                let data_start = self.pack_unless(body, env)?;
-                self.push_cont(Cont::Unless(data_start))?;
-                return Ok(TrampolineState::Eval { expr: test_expr, env });
-            }
-
             // begin - continuation-based evaluation
             if self.lisp.symbol_matches(car, "begin")? {
                 return self.step_eval_begin(cdr, env);
             }
 
-            // and - continuation-based short circuit
-            if self.lisp.symbol_matches(car, "and")? {
-                return self.step_eval_and(cdr, env);
-            }
-
-            // or - continuation-based short circuit
-            if self.lisp.symbol_matches(car, "or")? {
-                return self.step_eval_or(cdr, env);
-            }
+            // Note: when, unless, and, or, cond are now macros and
+            // are expanded before evaluation, so they never reach here.
             
             // case - pattern matching
             if self.lisp.symbol_matches(car, "case")? {
@@ -716,37 +681,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(TrampolineState::Eval { expr: car, env })
     }
     
-    /// Evaluate cond using continuations
-    pub(super) fn step_eval_cond(&mut self, clauses: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        if self.lisp.get(clauses)?.is_nil() {
-            // No clauses - return unspecified (nil)
-            let nil = self.lisp.nil()?;
-            return Ok(TrampolineState::Return { val: nil });
-        }
-
-        let clause = self.lisp.car(clauses)?;
-        let rest_clauses = self.lisp.cdr(clauses)?;
-        let test = self.lisp.car(clause)?;
-        let then_exprs = self.lisp.cdr(clause)?;
-
-        // Check for else clause
-        if self.lisp.symbol_matches(test, "else")? {
-            if self.lisp.get(then_exprs)?.is_nil() {
-                let nil = self.lisp.nil()?;
-                return Ok(TrampolineState::Return { val: nil });
-            }
-            let begin = self.lisp.symbol("begin")?;
-            let new_expr = self.lisp.cons(begin, then_exprs)?;
-            return Ok(TrampolineState::Eval { expr: new_expr, env });
-        }
-
-        // Push continuation for after evaluating test
-        let data_start = self.pack_cond_test(then_exprs, rest_clauses, env)?;
-        self.push_cont(Cont::CondTest(data_start))?;
-
-        // Evaluate the test
-        Ok(TrampolineState::Eval { expr: test, env })
-    }
+    // Note: step_eval_cond removed - cond is now handled by macros
     
     // ========================================================================
     // Helpers
@@ -864,10 +799,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_quasiquote_splice_append / unpack_quasiquote_splice_append => [splice_val];
         
         // 2-field continuations
-        pack_when / unpack_when => [body, env];
-        pack_unless / unpack_unless => [body, env];
-        pack_and / unpack_and => [remaining, env];
-        pack_or / unpack_or => [remaining, env];
         pack_begin_seq / unpack_begin_seq => [remaining, env];
         pack_case_key / unpack_case_key => [clauses, env];
         pack_apply_first / unpack_apply_first => [args_list_expr, env];
@@ -877,7 +808,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // 3-field continuations
         pack_apply_forced / unpack_apply_forced => [args_expr, env, call_expr];
         pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
-        pack_cond_test / unpack_cond_test => [then_exprs, remaining_clauses, env];
         pack_values_collect / unpack_values_collect => [remaining, collected, env];
         
         // 4-field continuations
