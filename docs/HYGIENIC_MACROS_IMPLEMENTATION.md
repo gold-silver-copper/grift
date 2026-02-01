@@ -63,9 +63,13 @@ The following changes were made as part of Phase 6:
 ### Known Limitations
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
-2. Some complex ellipsis patterns in nested contexts may have edge cases
+2. **Nested ellipsis pattern bug**: Patterns like `((name val) ...)` don't correctly extract all elements. 
+   Only the first element is correctly extracted; subsequent elements retain the full structure instead of 
+   being deconstructed. This prevents implementing `let`, `let*`, `letrec` as macros until the bug is fixed.
+   - See detailed analysis below in "Phase 7: Binding Form Macros"
 3. `letrec-syntax` is not yet implemented
 4. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
+5. `let`, `let*`, `letrec`, `letrec*` remain as special forms due to the nested ellipsis bug
 
 ### Testing
 
@@ -1494,6 +1498,85 @@ crates/
 3. Update tests
 4. Performance testing
 5. Documentation
+
+### Phase 7: Binding Form Macros (Blocked - needs bug fix)
+
+**Status: In Progress - Blocked by nested ellipsis bug**
+
+The goal of this phase is to replace `let`, `let*`, `letrec`, and `letrec*` special forms with macro-based implementations. This would complete the R7RS macro-based derived forms.
+
+#### Intended Macro Definitions
+
+Based on R7RS Appendix A.3, the macros would be:
+
+```scheme
+;; Basic let
+(define-syntax let
+  (syntax-rules ()
+    ((let () body1 body2 ...)
+     (begin body1 body2 ...))
+    ((let ((name val) ...) body1 body2 ...)
+     ((lambda (name ...) body1 body2 ...) val ...))
+    ;; Named let
+    ((let tag ((name val) ...) body1 body2 ...)
+     (letrec ((tag (lambda (name ...) body1 body2 ...)))
+       (tag val ...)))))
+
+;; let*
+(define-syntax let*
+  (syntax-rules ()
+    ((let* () body1 body2 ...)
+     (let () body1 body2 ...))
+    ((let* ((name1 val1) (name2 val2) ...) body1 body2 ...)
+     (let ((name1 val1))
+       (let* ((name2 val2) ...) body1 body2 ...)))))
+```
+
+#### Blocker: Nested Ellipsis Pattern Bug
+
+When attempting to implement these macros, a bug was discovered in the ellipsis pattern matching for nested structures.
+
+**Bug Description:**
+
+For a pattern like `((name val) ...)` matching against `((x 5) (y 6) (z 7))`:
+
+- **Expected**: `name → (x y z)`, `val → (5 6 7)`
+- **Actual**: `name → (x (y 6) (z 7))`, `val → (5 (y 6) (z 7))`
+
+Only the first element is correctly extracted. Subsequent elements retain their full structure instead of being deconstructed.
+
+**Symptoms:**
+
+1. `(let ((x 5) (y 6)) (+ x y))` fails with "no matching syntax-rules clause"
+2. Custom test macros show incorrect binding values:
+   ```scheme
+   (define-syntax test-mac 
+     (syntax-rules () 
+       ((test-mac ((a) ...) body) 
+        (quote (a ...)))))
+   (test-mac ((1) (2) (3)) 42)
+   ;; Expected: (1 2 3)
+   ;; Actual: (1 (2) (3))
+   ```
+
+**Root Cause Analysis:**
+
+The bug appears to be in `match_ellipsis_pattern` or `merge_ellipsis_bindings` in `expand.rs`. Despite extensive debugging, the exact cause was not identified. The pattern matching loop appears to:
+
+1. Correctly extract the first element on the first iteration
+2. On subsequent iterations, either:
+   - Pass the wrong element to `match_pattern`, OR
+   - Merge the bindings incorrectly
+
+**Workaround:**
+
+The binding forms (`let`, `let*`, `letrec`, `letrec*`) remain implemented as special forms in `core.rs` and `forms.rs`. This is functionally correct but prevents the full macro-based implementation goal.
+
+**Future Work:**
+
+1. Add debug tracing to `match_ellipsis_pattern` to trace the exact values at each step
+2. Create unit tests for the pattern matching functions in isolation
+3. Compare against a reference implementation (e.g., Chibi Scheme or Guile)
 
 ---
 
