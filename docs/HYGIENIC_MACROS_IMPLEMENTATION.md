@@ -252,15 +252,17 @@ The following changes were made as part of Phase 6:
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
 2. `letrec-syntax` is not yet implemented
-3. `let-values` and `let*-values` not yet implemented
-4. `quasiquote` remains as a special form (requires evaluation during transcription)
+3. `let-values` and `let*-values` not yet implemented (requires `call-with-values` primitive)
+4. `quasiquote` remains as a special form (requires runtime evaluation during expansion; would need `syntax-case` for macro implementation)
 
 ### Future Work
 
 1. **psyntax support**: The user has expressed interest in adding psyntax (portable syntax-case) support in the future
-2. **`let-values` and `let*-values`**: R7RS multiple value binding forms
-3. **`define-values`**: Define multiple values at once
-4. **`syntax-case`**: Procedural macros for more complex transformations
+2. **`call-with-values` primitive**: Required for implementing `let-values`, `let*-values`, and `define-values`
+3. **`let-values` and `let*-values`**: R7RS multiple value binding forms (requires `call-with-values`)
+4. **`define-values`**: Define multiple values at once (requires `call-with-values`)
+5. **`syntax-case`**: Procedural macros for more complex transformations
+6. **`quasiquote` as macro**: Would require `syntax-case` for proper depth tracking
 
 ### Testing
 

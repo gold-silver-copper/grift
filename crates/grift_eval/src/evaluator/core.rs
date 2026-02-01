@@ -797,7 +797,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // 3-field continuations
         pack_apply_forced / unpack_apply_forced => [args_expr, env, call_expr];
         pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
-        pack_values_collect / unpack_values_collect => [remaining, collected, env]
+        pack_values_collect / unpack_values_collect => [remaining, collected, env];
         
         // Note: pack_do_test_result, pack_do_body, pack_do_init, pack_do_step removed - do is now handled by macros (Phase 9)
         // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros

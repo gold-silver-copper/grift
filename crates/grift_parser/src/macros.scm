@@ -246,6 +246,21 @@
      (%do-vars bindings () () test (result ...) body ...))))
 
 ;; ============================================================
+;; Quasiquote
+;; ============================================================
+
+;; NOTE: Quasiquote remains as a built-in special form.
+;;
+;; Implementing quasiquote as a pure syntax-rules macro is complex because
+;; it requires arbitrary recursion into list structures with depth tracking.
+;; A full macro implementation would require either:
+;; - syntax-case (for procedural macros), or
+;; - A very complex set of mutually recursive helper macros
+;;
+;; For future work, psyntax support would enable a proper quasiquote macro.
+;; Until then, the built-in quasiquote special form handles this correctly.
+
+;; ============================================================
 ;; Delayed Evaluation
 ;; ============================================================
 
