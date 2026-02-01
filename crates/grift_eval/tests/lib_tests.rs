@@ -4024,3 +4024,24 @@ fn test_doc_car_cdr_compositions() {
     let _result = eval.eval_str("(cddr nested)").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (car (cddr nested)))"), 5);
 }
+
+// Test for nested ellipsis pattern matching bug
+#[test]
+fn test_nested_ellipsis_bug() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test: Nested ellipsis - this reveals the bug
+    eval.eval_str("(define-syntax nest-test (syntax-rules () ((nest-test ((a) ...)) (quote (a ...)))))").unwrap();
+    let result = eval.eval_str("(nest-test ((1) (2) (3)))").unwrap();
+    
+    // Expected: (1 2 3)
+    // Actual bug: (1 (2) (3))
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(first).unwrap().as_number(), Some(1), "First element should be 1");
+    
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    // This assertion currently fails because second is (2) not 2
+    assert_eq!(lisp.get(second).unwrap().as_number(), Some(2), 
+        "Second element should be 2, not (2) - nested ellipsis bug");
+}
