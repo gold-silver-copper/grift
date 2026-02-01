@@ -4,6 +4,301 @@
 //! - Argument extraction from Lisp lists
 //! - Builtin predicate and operation helpers
 //! - Native function registration
+//! - Continuation data pack/unpack generation
+
+// ============================================================================
+// Continuation Data Pack/Unpack Macros
+// ============================================================================
+
+/// Generate pack/unpack function pairs for continuation data storage.
+///
+/// This macro generates functions for storing and retrieving `ArenaIndex` values
+/// from the evaluator's data stack, eliminating boilerplate for each continuation type.
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// define_cont_pack_unpack! {
+///     pack_name / unpack_name => [field1, field2, ...];
+///     // more definitions...
+/// }
+/// ```
+///
+/// # Example
+///
+/// ```rust,ignore
+/// define_cont_pack_unpack! {
+///     pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
+///     pack_and / unpack_and => [remaining, env];
+/// }
+/// ```
+///
+/// Generates:
+/// - `fn pack_if_branch(&mut self, then_expr: ArenaIndex, else_expr: ArenaIndex, env: ArenaIndex) -> Result<usize, EvalError>`
+/// - `fn unpack_if_branch(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex)`
+/// - etc.
+#[macro_export]
+macro_rules! define_cont_pack_unpack {
+    // Entry point - process each definition
+    ($($pack_name:ident / $unpack_name:ident => [$($field:ident),+ $(,)?]);+ $(;)?) => {
+        $(
+            $crate::define_cont_pack_unpack!(@impl $pack_name, $unpack_name, [$($field),+]);
+        )+
+    };
+
+    // 1 field
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data: [", stringify!($f1), "]")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> ArenaIndex {
+            self.read_data1(data_start)
+        }
+    };
+
+    // 2 fields
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data: [", stringify!($f1), ", ", stringify!($f2), "]")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1, $f2])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+            self.read_data2(data_start)
+        }
+    };
+
+    // 3 fields
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data: [", stringify!($f1), ", ", stringify!($f2), ", ", stringify!($f3), "]")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1, $f2, $f3])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+            self.read_data3(data_start)
+        }
+    };
+
+    // 4 fields
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1, $f2, $f3, $f4])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+            self.read_data4(data_start)
+        }
+    };
+
+    // 5 fields
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident, $f5:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1, $f2, $f3, $f4, $f5])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+            self.read_data5(data_start)
+        }
+    };
+
+    // 6 fields
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident, $f5:ident, $f6:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex, $f6: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1, $f2, $f3, $f4, $f5, $f6])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+            self.read_data6(data_start)
+        }
+    };
+
+    // 7 fields
+    (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident, $f5:ident, $f6:ident, $f7:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data")]
+        #[inline]
+        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex, $f6: ArenaIndex, $f7: ArenaIndex) -> Result<usize, EvalError> {
+            self.push_data(&[$f1, $f2, $f3, $f4, $f5, $f6, $f7])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+            self.read_data7(data_start)
+        }
+    };
+}
+
+/// Generate pack/unpack pairs where the first field is a `Builtin`.
+///
+/// The Builtin is encoded via `Self::encode_builtin()` on pack and
+/// decoded via `Self::decode_builtin()` on unpack.
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// define_cont_pack_unpack_builtin_first! {
+///     pack_name / unpack_name => builtin_field, [arena_fields...];
+/// }
+/// ```
+///
+/// # Example
+///
+/// ```rust,ignore
+/// define_cont_pack_unpack_builtin_first! {
+///     pack_builtin_force_arg / unpack_builtin_force_arg =>
+///         builtin, [remaining_args, collected, call_expr, eval_env];
+/// }
+/// ```
+#[macro_export]
+macro_rules! define_cont_pack_unpack_builtin_first {
+    // Entry point
+    ($($pack_name:ident / $unpack_name:ident => $builtin:ident, [$($field:ident),* $(,)?]);+ $(;)?) => {
+        $(
+            $crate::define_cont_pack_unpack_builtin_first!(@impl $pack_name, $unpack_name, $builtin, [$($field),*]);
+        )+
+    };
+
+    // Builtin + 2 ArenaIndex fields (total 3)
+    (@impl $pack_name:ident, $unpack_name:ident, $builtin:ident, [$f1:ident, $f2:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data (Builtin first)")]
+        #[inline]
+        fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex) -> Result<usize, EvalError> {
+            let builtin_encoded = Self::encode_builtin($builtin);
+            self.push_data(&[builtin_encoded, $f1, $f2])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex) {
+            let (b, f1, f2) = self.read_data3(data_start);
+            (Self::decode_builtin(b), f1, f2)
+        }
+    };
+
+    // Builtin + 3 ArenaIndex fields (total 4)
+    (@impl $pack_name:ident, $unpack_name:ident, $builtin:ident, [$f1:ident, $f2:ident, $f3:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data (Builtin first)")]
+        #[inline]
+        fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex) -> Result<usize, EvalError> {
+            let builtin_encoded = Self::encode_builtin($builtin);
+            self.push_data(&[builtin_encoded, $f1, $f2, $f3])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex) {
+            let (b, f1, f2, f3) = self.read_data4(data_start);
+            (Self::decode_builtin(b), f1, f2, f3)
+        }
+    };
+
+    // Builtin + 4 ArenaIndex fields (total 5)
+    (@impl $pack_name:ident, $unpack_name:ident, $builtin:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data (Builtin first)")]
+        #[inline]
+        fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex) -> Result<usize, EvalError> {
+            let builtin_encoded = Self::encode_builtin($builtin);
+            self.push_data(&[builtin_encoded, $f1, $f2, $f3, $f4])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+            let (b, f1, f2, f3, f4) = self.read_data5(data_start);
+            (Self::decode_builtin(b), f1, f2, f3, f4)
+        }
+    };
+}
+
+/// Generate pack/unpack pairs with a `usize` field at a specific position.
+///
+/// The usize is encoded via `ArenaIndex::new()` on pack and decoded via `.raw()` on unpack.
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// define_cont_pack_unpack_with_usize! {
+///     pack_name / unpack_name => [before_fields...], usize_field, [after_fields...];
+/// }
+/// ```
+///
+/// # Example
+///
+/// ```rust,ignore
+/// define_cont_pack_unpack_with_usize! {
+///     pack_native_args_collect / unpack_native_args_collect =>
+///         [remaining, collected], id, [env];
+///     pack_quasiquote_car / unpack_quasiquote_car =>
+///         [cdr], depth, [env];
+/// }
+/// ```
+#[macro_export]
+macro_rules! define_cont_pack_unpack_with_usize {
+    // Entry point
+    ($($pack_name:ident / $unpack_name:ident => [$($before:ident),*], $usize_field:ident, [$($after:ident),*]);+ $(;)?) => {
+        $(
+            $crate::define_cont_pack_unpack_with_usize!(@impl $pack_name, $unpack_name, [$($before),*], $usize_field, [$($after),*]);
+        )+
+    };
+
+    // [1 before], usize, [1 after] = 3 total
+    (@impl $pack_name:ident, $unpack_name:ident, [$b1:ident], $usize_field:ident, [$a1:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data (with usize)")]
+        #[inline]
+        fn $pack_name(&mut self, $b1: ArenaIndex, $usize_field: usize, $a1: ArenaIndex) -> Result<usize, EvalError> {
+            let usize_encoded = ArenaIndex::new($usize_field);
+            self.push_data(&[$b1, usize_encoded, $a1])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, usize, ArenaIndex) {
+            let (b1, u, a1) = self.read_data3(data_start);
+            (b1, u.raw(), a1)
+        }
+    };
+
+    // [2 before], usize, [1 after] = 4 total
+    (@impl $pack_name:ident, $unpack_name:ident, [$b1:ident, $b2:ident], $usize_field:ident, [$a1:ident]) => {
+        #[doc = concat!("Pack ", stringify!($pack_name), " data (with usize)")]
+        #[inline]
+        fn $pack_name(&mut self, $b1: ArenaIndex, $b2: ArenaIndex, $usize_field: usize, $a1: ArenaIndex) -> Result<usize, EvalError> {
+            let usize_encoded = ArenaIndex::new($usize_field);
+            self.push_data(&[$b1, $b2, usize_encoded, $a1])
+        }
+
+        #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
+        #[inline]
+        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, usize, ArenaIndex) {
+            let (b1, b2, u, a1) = self.read_data4(data_start);
+            (b1, b2, u.raw(), a1)
+        }
+    };
+}
 
 // ============================================================================
 // Helper Macros for Code Deduplication
