@@ -789,6 +789,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Transcribe lambda, renaming parameters for hygiene
+    /// 
+    /// This function needs to:
+    /// 1. First transcribe the params list using normal transcription (handles ellipsis properly)
+    /// 2. Then identify any macro-introduced symbols in the transcribed params and gensym them
     fn transcribe_lambda(
         &mut self,
         args: ArenaIndex,
@@ -796,12 +800,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
-        let params = self.lisp.car(args)?;
+        let params_template = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
 
-        // Rename each introduced parameter
-        let (new_params, new_renames) = self.rename_introduced_params(
-            params, bindings, renames
+        // First, transcribe the params list using normal template transcription
+        // This properly handles ellipsis patterns like (vars ...) -> (n acc)
+        let transcribed_params = self.transcribe_template(params_template, bindings, renames, def_env)?;
+        
+        // Now walk through transcribed params and identify which are macro-introduced
+        // (symbols that weren't in the original bindings and need gensym for hygiene)
+        let (new_params, new_renames) = self.identify_and_rename_introduced_params(
+            transcribed_params, bindings, renames
         )?;
 
         // Transcribe body with extended renames
@@ -812,8 +821,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(lambda_sym, inner).map_err(Into::into)
     }
 
-    /// Rename parameters that are introduced by the macro (not from pattern)
-    fn rename_introduced_params(
+    /// Identify and rename symbols in transcribed params that were introduced by the macro
+    /// 
+    /// After transcription, params is a list of actual symbols. We need to check each one
+    /// to see if it was in the original pattern bindings (user-provided) or if it's 
+    /// a macro-introduced symbol that needs gensym for hygiene.
+    fn identify_and_rename_introduced_params(
         &mut self,
         params: ArenaIndex,
         bindings: ArenaIndex,
@@ -826,12 +839,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let param = self.lisp.car(current)?;
 
-            // Check if this param is from a pattern variable
-            let new_param = if let Some(bound_val) = self.bindings_lookup(bindings, param)? {
-                // From pattern - substitute with the bound value
-                bound_val
+            // Check if this param came from a pattern variable value
+            // by checking if it appears as a value in any of the bindings
+            let is_from_pattern = self.symbol_appears_in_binding_values(param, bindings)?;
+
+            let new_param = if is_from_pattern {
+                // User-provided name - keep as is
+                param
             } else {
-                // Introduced by macro - generate fresh name
+                // Macro-introduced - generate fresh name for hygiene
                 let fresh = self.gensym_simple()?;
                 new_renames = self.rename_extend(new_renames, param, fresh)?;
                 fresh
@@ -843,6 +859,40 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         let new_params = self.reverse_list(new_params)?;
         Ok((new_params, new_renames))
+    }
+
+    /// Check if a symbol appears in any binding value (including inside lists)
+    fn symbol_appears_in_binding_values(
+        &self,
+        sym: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> Result<bool, EvalError> {
+        let mut current = bindings;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let pair = self.lisp.car(current)?;
+            let val = self.lisp.cdr(pair)?;
+            if self.symbol_appears_in(sym, val)? {
+                return Ok(true);
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        Ok(false)
+    }
+
+    /// Check if a symbol appears in an expression (recursively)
+    fn symbol_appears_in(&self, sym: ArenaIndex, expr: ArenaIndex) -> Result<bool, EvalError> {
+        match self.lisp.get(expr)? {
+            Value::Symbol(_) => self.symbols_eq(sym, expr),
+            Value::Cons { .. } => {
+                let car = self.lisp.car(expr)?;
+                let cdr = self.lisp.cdr(expr)?;
+                if self.symbol_appears_in(sym, car)? {
+                    return Ok(true);
+                }
+                self.symbol_appears_in(sym, cdr)
+            }
+            _ => Ok(false),
+        }
     }
 }
 

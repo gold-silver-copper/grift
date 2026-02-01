@@ -22,17 +22,40 @@
 ;; Binding Forms (let, let*)
 ;; ============================================================
 
+;; Helper for named let - extract values from bindings and build the call
+(define-syntax %named-let-values
+  (syntax-rules ()
+    ((%named-let-values loop () (vals ...))
+     (loop vals ...))
+    ((%named-let-values loop ((var val) . rest) (vals ...))
+     (%named-let-values loop rest (vals ... val)))))
+
+;; Helper for named let - extract variable names from bindings and build lambda
+(define-syntax %named-let-build
+  (syntax-rules ()
+    ((%named-let-build loop () (vars ...) bindings body ...)
+     (letrec ((loop (lambda (vars ...) body ...)))
+       (%named-let-values loop bindings ())))
+    ((%named-let-build loop ((var val) . rest) (vars ...) bindings body ...)
+     (%named-let-build loop rest (vars ... var) bindings body ...))))
+
 ;; let - using recursive approach to avoid nested ellipsis bug
-;; Note: Named let is not supported by this macro; use the special form.
+;; Supports both regular let and named let forms.
+;; Pattern order matters: more specific patterns first.
 (define-syntax let
   (syntax-rules ()
     ;; Empty bindings - just evaluate body
     ((let () body ...)
      (begin body ...))
-    ;; One or more bindings - use dotted pair matching to process one at a time
-    ((let (first-binding . rest-bindings) body ...)
-     (%let-binding first-binding 
-       (let rest-bindings body ...)))))
+    ;; Regular let with one or more bindings - list as first arg after let
+    ;; This must come before named-let because ((first-binding . rest)) is more specific
+    ((let ((var val) . rest) body ...)
+     (%let-binding (var val) 
+       (let rest body ...)))
+    ;; Named let: (let name bindings body ...)
+    ;; name must be a symbol (not a list), followed by bindings
+    ((let loop bindings body ...)
+     (%named-let-build loop bindings () bindings body ...))))
 
 ;; let* - sequential binding (each binding can refer to previous ones)
 ;; Uses recursive self-reference (let* calls let*) to ensure each binding
