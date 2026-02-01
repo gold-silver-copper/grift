@@ -612,9 +612,7 @@ impl<const N: usize> Lisp<N> {
             (Value::False, Value::False) => Ok(true),
             (Value::Number(n1), Value::Number(n2)) => Ok(n1 == n2),
             (Value::Char(c1), Value::Char(c2)) => Ok(c1 == c2),
-            (Value::Symbol(chars_a), Value::Symbol(chars_b)) => {
-                self.string_eq_contiguous(chars_a, chars_b)
-            }
+            (Value::Symbol(_), Value::Symbol(_)) => self.symbol_eq(a, b),
             _ => Ok(false),
         }
     }

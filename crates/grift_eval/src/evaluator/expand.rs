@@ -466,8 +466,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let acc_list = self.lisp.cdr(acc_pair)?;
             
             // Find this var's value in elem_bindings
-            let val = self.bindings_lookup(elem_bindings, var)?
-                .unwrap_or(self.lisp.nil()?);
+            let val = match self.bindings_lookup(elem_bindings, var)? {
+                Some(v) => v,
+                None => self.lisp.nil()?,
+            };
             
             // Prepend to accumulator (we'll reverse at the end)
             let new_acc_list = self.lisp.cons(val, acc_list)?;
@@ -1055,3 +1057,4 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(expanded_first, expanded_rest).map_err(Into::into)
     }
 }
+

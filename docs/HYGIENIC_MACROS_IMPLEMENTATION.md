@@ -1,5 +1,54 @@
 # Hygienic Macros Implementation Plan
 
+## Implementation Progress
+
+**Status: Phase 1-5 Complete (Foundation through Standard Macros)**
+
+### Completed Work
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | Foundation (Data Structures, Gensym) | ✅ Complete |
+| Phase 2 | Pattern Matching | ✅ Complete |
+| Phase 3 | Template Transcription | ✅ Complete |
+| Phase 4 | Expander Integration | ✅ Complete |
+| Phase 5 | Standard Macros | ✅ Complete |
+| Phase 6 | Cleanup | 🔄 In Progress |
+
+### Files Modified/Created
+
+- `crates/grift_parser/src/value.rs` - Added `SyntaxRules` variant to `Value` enum
+- `crates/grift_parser/src/lisp.rs` - Added `syntax_rules()`, `syntax_rules_parts()`, and `eqv()` methods
+- `crates/grift_eval/src/evaluator/mod.rs` - Added `macro_env` and `gensym_counter` fields
+- `crates/grift_eval/src/evaluator/core.rs` - Modified `eval()` to expand macros, added macro loading
+- `crates/grift_eval/src/evaluator/expand.rs` - **NEW** - Complete macro expansion system
+- `crates/grift_parser/src/macros.scm` - **NEW** - Standard macro definitions
+- `crates/grift_repl/src/lib.rs` - Added SyntaxRules formatting
+
+### Working Features
+
+- `define-syntax` for defining macros
+- `syntax-rules` pattern language with:
+  - Pattern variables
+  - Literal keywords
+  - Wildcard `_`
+  - Ellipsis `...` for repetition
+- `let-syntax` for local macro definitions
+- Hygiene via gensym for lambda parameters
+- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `delay`
+
+### Known Limitations
+
+1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
+2. Some complex ellipsis patterns in nested contexts may have edge cases
+3. `letrec-syntax` is not yet implemented
+
+### Testing
+
+All existing tests pass with the macro system enabled. Standard macros are loaded at evaluator initialization.
+
+---
+
 ## Overview
 
 This document describes the implementation of hygienic macros for Grift, based on the

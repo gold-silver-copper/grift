@@ -4,7 +4,7 @@
 //! stack management, trampoline loop, and basic evaluation steps.
 
 use grift_parser::{
-    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, ParseError, ParseErrorKind,
+    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
 };
 
 use crate::error::{
@@ -18,6 +18,9 @@ use crate::{
 };
 
 use super::Evaluator;
+
+/// Standard macro definitions (loaded at startup)
+const STANDARD_MACROS: &str = include_str!("../../../grift_parser/src/macros.scm");
 
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
@@ -59,7 +62,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Note: In Scheme, only #t and #f are the booleans. 
         // 'true' and 'false' are NOT predefined aliases.
         
+        // Load standard macros
+        eval.load_standard_macros()?;
+        
         Ok(eval)
+    }
+    
+    /// Load standard macro definitions from macros.scm
+    fn load_standard_macros(&mut self) -> Result<(), EvalError> {
+        let forms = parse_all(self.lisp, STANDARD_MACROS)?;
+        let mut current = forms;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let form = self.lisp.car(current)?;
+            // expand() handles define-syntax by adding to macro_env
+            self.expand(form)?;
+            current = self.lisp.cdr(current)?;
+        }
+        Ok(())
     }
     
     /// Get the Lisp context
