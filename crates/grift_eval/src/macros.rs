@@ -50,13 +50,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data: [", stringify!($f1), "]")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> ArenaIndex {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> ArenaIndex {
             self.read_data1(data_start)
         }
     };
@@ -65,13 +65,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data: [", stringify!($f1), ", ", stringify!($f2), "]")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1, $f2])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex) {
             self.read_data2(data_start)
         }
     };
@@ -80,13 +80,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data: [", stringify!($f1), ", ", stringify!($f2), ", ", stringify!($f3), "]")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1, $f2, $f3])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
             self.read_data3(data_start)
         }
     };
@@ -95,13 +95,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1, $f2, $f3, $f4])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
             self.read_data4(data_start)
         }
     };
@@ -110,13 +110,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident, $f5:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1, $f2, $f3, $f4, $f5])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
             self.read_data5(data_start)
         }
     };
@@ -125,13 +125,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident, $f5:ident, $f6:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex, $f6: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex, $f6: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1, $f2, $f3, $f4, $f5, $f6])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
             self.read_data6(data_start)
         }
     };
@@ -140,13 +140,13 @@ macro_rules! define_cont_pack_unpack {
     (@impl $pack_name:ident, $unpack_name:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident, $f5:ident, $f6:ident, $f7:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data")]
         #[inline]
-        fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex, $f6: ArenaIndex, $f7: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex, $f5: ArenaIndex, $f6: ArenaIndex, $f7: ArenaIndex) -> Result<usize, EvalError> {
             self.push_data(&[$f1, $f2, $f3, $f4, $f5, $f6, $f7])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
             self.read_data7(data_start)
         }
     };
@@ -186,14 +186,14 @@ macro_rules! define_cont_pack_unpack_builtin_first {
     (@impl $pack_name:ident, $unpack_name:ident, $builtin:ident, [$f1:ident, $f2:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data (Builtin first)")]
         #[inline]
-        fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex) -> Result<usize, EvalError> {
             let builtin_encoded = Self::encode_builtin($builtin);
             self.push_data(&[builtin_encoded, $f1, $f2])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex) {
             let (b, f1, f2) = self.read_data3(data_start);
             (Self::decode_builtin(b), f1, f2)
         }
@@ -203,14 +203,14 @@ macro_rules! define_cont_pack_unpack_builtin_first {
     (@impl $pack_name:ident, $unpack_name:ident, $builtin:ident, [$f1:ident, $f2:ident, $f3:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data (Builtin first)")]
         #[inline]
-        fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex) -> Result<usize, EvalError> {
             let builtin_encoded = Self::encode_builtin($builtin);
             self.push_data(&[builtin_encoded, $f1, $f2, $f3])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex) {
             let (b, f1, f2, f3) = self.read_data4(data_start);
             (Self::decode_builtin(b), f1, f2, f3)
         }
@@ -220,14 +220,14 @@ macro_rules! define_cont_pack_unpack_builtin_first {
     (@impl $pack_name:ident, $unpack_name:ident, $builtin:ident, [$f1:ident, $f2:ident, $f3:ident, $f4:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data (Builtin first)")]
         #[inline]
-        fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $builtin: Builtin, $f1: ArenaIndex, $f2: ArenaIndex, $f3: ArenaIndex, $f4: ArenaIndex) -> Result<usize, EvalError> {
             let builtin_encoded = Self::encode_builtin($builtin);
             self.push_data(&[builtin_encoded, $f1, $f2, $f3, $f4])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (Builtin, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
             let (b, f1, f2, f3, f4) = self.read_data5(data_start);
             (Self::decode_builtin(b), f1, f2, f3, f4)
         }
@@ -269,14 +269,14 @@ macro_rules! define_cont_pack_unpack_with_usize {
     (@impl $pack_name:ident, $unpack_name:ident, [$b1:ident], $usize_field:ident, [$a1:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data (with usize)")]
         #[inline]
-        fn $pack_name(&mut self, $b1: ArenaIndex, $usize_field: usize, $a1: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $b1: ArenaIndex, $usize_field: usize, $a1: ArenaIndex) -> Result<usize, EvalError> {
             let usize_encoded = ArenaIndex::new($usize_field);
             self.push_data(&[$b1, usize_encoded, $a1])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, usize, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, usize, ArenaIndex) {
             let (b1, u, a1) = self.read_data3(data_start);
             (b1, u.raw(), a1)
         }
@@ -286,14 +286,14 @@ macro_rules! define_cont_pack_unpack_with_usize {
     (@impl $pack_name:ident, $unpack_name:ident, [$b1:ident, $b2:ident], $usize_field:ident, [$a1:ident]) => {
         #[doc = concat!("Pack ", stringify!($pack_name), " data (with usize)")]
         #[inline]
-        fn $pack_name(&mut self, $b1: ArenaIndex, $b2: ArenaIndex, $usize_field: usize, $a1: ArenaIndex) -> Result<usize, EvalError> {
+        pub(super) fn $pack_name(&mut self, $b1: ArenaIndex, $b2: ArenaIndex, $usize_field: usize, $a1: ArenaIndex) -> Result<usize, EvalError> {
             let usize_encoded = ArenaIndex::new($usize_field);
             self.push_data(&[$b1, $b2, usize_encoded, $a1])
         }
 
         #[doc = concat!("Unpack ", stringify!($unpack_name), " data")]
         #[inline]
-        fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, usize, ArenaIndex) {
+        pub(super) fn $unpack_name(&self, data_start: usize) -> (ArenaIndex, ArenaIndex, usize, ArenaIndex) {
             let (b1, b2, u, a1) = self.read_data4(data_start);
             (b1, b2, u.raw(), a1)
         }
