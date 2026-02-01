@@ -194,11 +194,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::LambdaBindArg(data_start) |
                     Cont::EvalExpr(data_start) |
                     Cont::BeginSeq(data_start) |
-                    Cont::CaseKey(data_start) |
-                    Cont::DoInit(data_start) |
-                    Cont::DoTestResult(data_start) |
-                    Cont::DoBody(data_start) |
-                    Cont::DoStep(data_start) |
+                    // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
                     Cont::ApplyFirst(data_start) |
                     Cont::ApplySecond(data_start) |
                     Cont::ValuesCollect(data_start) |
@@ -631,15 +627,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Note: when, unless, and, or, cond are now macros and
             // are expanded during evaluation, so they never reach here.
             
-            // case - pattern matching
-            if self.lisp.symbol_matches(car, "case")? {
-                return self.step_eval_case(cdr, env);
-            }
-            
-            // do - iteration construct
-            if self.lisp.symbol_matches(car, "do")? {
-                return self.step_eval_do(cdr, env);
-            }
+            // Note: case and do are now macros (Phase 9)
+            // and are expanded during evaluation, so they never reach here.
             
             // quasiquote - template with unquote (trampolined)
             if self.lisp.symbol_matches(car, "quasiquote")? {
@@ -763,7 +752,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5])
     }
     
+    /// Note: No longer used since do is now a macro (Phase 9), but kept for potential future use.
     #[inline]
+    #[allow(dead_code)]
     pub(super) fn read_data7(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
         (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5], self.data_stack[start + 6])
     }
@@ -798,7 +789,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // 2-field continuations
         pack_begin_seq / unpack_begin_seq => [remaining, env];
-        pack_case_key / unpack_case_key => [clauses, env];
+        // Note: pack_case_key removed - case is now handled by macros (Phase 9)
         pack_apply_first / unpack_apply_first => [args_list_expr, env];
         pack_apply_second / unpack_apply_second => [func, env];
         pack_set_value / unpack_set_value => [name, env];
@@ -808,20 +799,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
         pack_values_collect / unpack_values_collect => [remaining, collected, env];
         
-        // 4-field continuations
+        // Note: pack_do_test_result, pack_do_body, pack_do_init, pack_do_step removed - do is now handled by macros (Phase 9)
         // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros
-        pack_do_test_result / unpack_do_test_result => [var_steps, test_clause, body, loop_env];
-        
-        // 5-field continuations
         // Note: pack_let_binding removed - now handled by macros
-        pack_do_body / unpack_do_body => [remaining_body, var_steps, test_clause, body, loop_env];
-        
-        // 6-field continuations
-        pack_lambda_bind_arg / unpack_lambda_bind_arg => [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr];
-        
-        // 7-field continuations
-        pack_do_init / unpack_do_init => [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var];
-        pack_do_step / unpack_do_step => [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var]
+    }
+
+    // ========================================================================
+    // Generated pack/unpack functions for 6-field lambda binding continuation
+    // ========================================================================
+    
+    define_cont_pack_unpack! {
+        pack_lambda_bind_arg / unpack_lambda_bind_arg => [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]
     }
 
     // ========================================================================
