@@ -4049,8 +4049,6 @@ fn test_nested_ellipsis_bug() {
 // Test to check what the pattern variable is bound to
 #[test]
 fn test_check_pattern_binding_value() {
-    
-    
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -4120,8 +4118,6 @@ fn test_symbol_interning() {
 /// Test nested ellipsis with single-element inner pattern
 #[test]
 fn test_nested_ellipsis_single_var() {
-    
-    
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -4153,8 +4149,6 @@ fn test_nested_ellipsis_single_var() {
 /// Test nested ellipsis with multiple pattern variables
 #[test]
 fn test_nested_ellipsis_multiple_vars() {
-    
-    
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
