@@ -2,6 +2,47 @@
 ;;;
 ;;; These macros are loaded at startup and provide standard R7RS-compatible
 ;;; macro-based implementations of common forms.
+;;;
+;;; Note: Due to a bug in nested ellipsis pattern matching (see 
+;;; HYGIENIC_MACROS_IMPLEMENTATION.md Phase 7), we use recursive 
+;;; implementations for binding forms instead of the standard R7RS patterns.
+
+;; ============================================================
+;; Internal Helpers
+;; ============================================================
+
+;; Helper macro for processing a single binding
+;; Transforms ((name val) body...) into ((lambda (name) body...) val)
+(define-syntax %let-binding
+  (syntax-rules ()
+    ((%let-binding (name val) body ...)
+     ((lambda (name) body ...) val))))
+
+;; ============================================================
+;; Binding Forms (let, let*)
+;; ============================================================
+
+;; let - using recursive approach to avoid nested ellipsis bug
+;; Note: Named let is not supported by this macro; use the special form.
+(define-syntax let
+  (syntax-rules ()
+    ;; Empty bindings - just evaluate body
+    ((let () body ...)
+     (begin body ...))
+    ;; One or more bindings - use dotted pair matching to process one at a time
+    ((let (first-binding . rest-bindings) body ...)
+     (%let-binding first-binding 
+       (let rest-bindings body ...)))))
+
+;; let* - sequential binding (each binding can refer to previous ones)
+;; Same implementation as let since each binding is processed individually
+(define-syntax let*
+  (syntax-rules ()
+    ((let* () body ...)
+     (begin body ...))
+    ((let* (first-binding . rest-bindings) body ...)
+     (%let-binding first-binding
+       (let* rest-bindings body ...)))))
 
 ;; ============================================================
 ;; Conditionals

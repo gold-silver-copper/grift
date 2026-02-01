@@ -786,9 +786,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let param = self.lisp.car(current)?;
 
             // Check if this param is from a pattern variable
-            let new_param = if self.bindings_lookup(bindings, param)?.is_some() {
-                // From pattern - use as-is (already substituted)
-                param
+            let new_param = if let Some(bound_val) = self.bindings_lookup(bindings, param)? {
+                // From pattern - substitute with the bound value
+                bound_val
             } else {
                 // Introduced by macro - generate fresh name
                 let fresh = self.gensym_simple()?;
