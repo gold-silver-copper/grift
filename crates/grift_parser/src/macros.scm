@@ -46,6 +46,56 @@
        (let* rest-bindings body ...)))))
 
 ;; ============================================================
+;; Recursive Binding Forms (letrec, letrec*)
+;; ============================================================
+
+;; Two-phase helper for letrec:
+;; Phase 1: Create all bindings with undefined values
+;; Phase 2: Set all bindings to their init values
+
+;; Helper to create all undefined bindings first
+(define-syntax %letrec-names
+  (syntax-rules ()
+    ;; No more bindings - now do the assignments
+    ((%letrec-names () bindings body)
+     (%letrec-inits bindings body))
+    ;; Create binding for first name, recurse for rest
+    ((%letrec-names ((name init) . rest) bindings body)
+     (let ((name #f))
+       (%letrec-names rest bindings body)))))
+
+;; Helper to assign all values after all names are bound
+(define-syntax %letrec-inits
+  (syntax-rules ()
+    ;; No more bindings - evaluate body
+    ((%letrec-inits () body)
+     body)
+    ;; Assign first binding, recurse for rest
+    ((%letrec-inits ((name init) . rest) body)
+     (begin
+       (set! name init)
+       (%letrec-inits rest body)))))
+
+;; letrec - mutually recursive local bindings
+;; All variables are visible to all init expressions.
+(define-syntax letrec
+  (syntax-rules ()
+    ((letrec () body ...)
+     (begin body ...))
+    ((letrec bindings body ...)
+     (%letrec-names bindings bindings (begin body ...)))))
+
+;; letrec* - sequential recursive local bindings  
+;; Like letrec, but evaluates init expressions left-to-right.
+;; In our implementation, this is the same as letrec.
+(define-syntax letrec*
+  (syntax-rules ()
+    ((letrec* () body ...)
+     (begin body ...))
+    ((letrec* bindings body ...)
+     (%letrec-names bindings bindings (begin body ...)))))
+
+;; ============================================================
 ;; Conditionals
 ;; ============================================================
 

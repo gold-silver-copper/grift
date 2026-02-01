@@ -52,18 +52,7 @@ pub enum Cont {
     /// Stack data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr] (6 elements)
     LambdaBindArg(usize),
 
-    /// After evaluating a let binding value, extend env and continue with remaining bindings
-    /// Stack data: [remaining_bindings, new_env, original_env, body, name] (5 elements)
-    LetBinding(usize),
-
-    /// After evaluating a let* binding value, extend env and continue
-    /// Stack data: [remaining_bindings, new_env, body, name] (4 elements)
-    LetStarBinding(usize),
-
-    /// After evaluating a letrec init expression, set! the variable and continue
-    /// Stack data: [remaining_bindings, new_env, body, name] (4 elements)
-    LetrecInit(usize),
-
+    // Note: LetBinding, LetStarBinding, LetrecInit removed - now handled by macros
     // Note: When, Unless, CondTest, And, Or removed - now handled by macros
 
     /// After evaluating expr in eval special form
@@ -173,12 +162,9 @@ impl Cont {
             Cont::QuasiquoteCar(_) => 3,
             Cont::QuasiquoteSplice(_) => 3,
             Cont::BinaryBuiltinFirst(_) => 4,
-            Cont::LetStarBinding(_) => 4,
-            Cont::LetrecInit(_) => 4,
             Cont::DoTestResult(_) => 4,
             Cont::NativeArgsCollect(_) => 4,
             Cont::BuiltinForceArg(_) => 5,
-            Cont::LetBinding(_) => 5,
             Cont::DoBody(_) => 5,
             Cont::LambdaBindArg(_) => 6,
             Cont::DoInit(_) => 7,

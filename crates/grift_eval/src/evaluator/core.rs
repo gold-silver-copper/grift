@@ -69,13 +69,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Load standard macro definitions from macros.scm
+    /// 
+    /// These are evaluated (not just expanded) since define-syntax
+    /// is now handled during evaluation.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
         let forms = parse_all(self.lisp, STANDARD_MACROS)?;
         let mut current = forms;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let form = self.lisp.car(current)?;
-            // expand() handles define-syntax by adding to macro_env
-            self.expand(form)?;
+            // Evaluate the form - define-syntax is handled during evaluation
+            self.eval(form)?;
             current = self.lisp.cdr(current)?;
         }
         Ok(())
@@ -189,9 +192,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::BinaryBuiltinSecond(data_start) |
                     Cont::LambdaFirstBind(data_start) |
                     Cont::LambdaBindArg(data_start) |
-                    Cont::LetBinding(data_start) |
-                    Cont::LetStarBinding(data_start) |
-                    Cont::LetrecInit(data_start) |
                     Cont::EvalExpr(data_start) |
                     Cont::BeginSeq(data_start) |
                     Cont::CaseKey(data_start) |
@@ -437,22 +437,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate an expression (entry point)
     /// 
-    /// 1. Expand all macros in the expression
-    /// 2. Evaluate the expanded expression
+    /// Macros are now expanded during evaluation (not pre-processed).
+    /// This enables evaluation-time macro expansion per the R7RS model.
     pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
-        // First, expand macros
-        let expanded = self.expand(expr)?;
-        
         // Reset continuation stack and data stack
         self.cont_depth = 0;
         self.data_stack_top = 0;
-        // Start evaluation
-        self.trampoline(TrampolineState::Eval { expr: expanded, env: self.global_env })
+        // Start evaluation - macros are expanded on-demand during eval
+        self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
     
     /// Evaluate an already-expanded expression (internal)
     /// 
-    /// This skips macro expansion. Use `eval()` for normal evaluation.
+    /// This is now equivalent to `eval()` since macro expansion 
+    /// happens during evaluation. Kept for API compatibility.
     pub fn eval_expanded(&mut self, expr: ArenaIndex) -> EvalResult {
         // Reset continuation stack and data stack
         self.cont_depth = 0;
@@ -466,12 +464,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This is public so the REPL can evaluate expressions for display
     pub fn eval_in_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // First, expand macros
-        let expanded = self.expand(expr)?;
-        
-        // Reset continuation stack and run
+        // Reset continuation stack and run - macros expanded during eval
         self.cont_depth = 0;
-        self.trampoline(TrampolineState::Eval { expr: expanded, env })
+        self.data_stack_top = 0;
+        self.trampoline(TrampolineState::Eval { expr, env })
     }
     
     /// The main trampoline loop - processes states and continuations
@@ -562,12 +558,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let head = self.lisp.get(car)?;
         
-        // Check for special forms
+        // Check for special forms and macros
         if let Value::Symbol(_) = head {
+            // Check for macro invocation first (evaluation-time expansion)
+            if let Some(transformer) = self.lookup_macro(car)? {
+                let expanded = self.apply_macro(transformer, expr)?;
+                // Continue evaluating the expanded form
+                return Ok(TrampolineState::Eval { expr: expanded, env });
+            }
+            
             // quote
             if self.lisp.symbol_matches(car, "quote")? {
                 let val = self.lisp.car(cdr)?;
                 return Ok(TrampolineState::Return { val });
+            }
+            
+            // define-syntax - add macro to environment
+            if self.lisp.symbol_matches(car, "define-syntax")? {
+                return self.step_eval_define_syntax(cdr, env);
+            }
+            
+            // let-syntax - local macro bindings
+            if self.lisp.symbol_matches(car, "let-syntax")? {
+                return self.step_eval_let_syntax(cdr, env);
             }
             
             // if - condition evaluated, then one branch selected
@@ -606,25 +619,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.eval_set(cdr, env);
             }
             
-            // let - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "let")? {
-                return self.step_eval_let(cdr, env);
-            }
-
-            // let* - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "let*")? {
-                return self.step_eval_let_star(cdr, env);
-            }
-
-            // letrec - continuation-based evaluation (R7RS Section 4.2.2)
-            if self.lisp.symbol_matches(car, "letrec")? {
-                return self.step_eval_letrec(cdr, env);
-            }
-
-            // letrec* - continuation-based evaluation (R7RS Section 4.2.2)
-            if self.lisp.symbol_matches(car, "letrec*")? {
-                return self.step_eval_letrec(cdr, env); // Same as letrec for now
-            }
+            // Note: let, let*, letrec, letrec* are now macros and
+            // are expanded during evaluation, so they never reach here.
 
             // begin - continuation-based evaluation
             if self.lisp.symbol_matches(car, "begin")? {
@@ -632,7 +628,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // Note: when, unless, and, or, cond are now macros and
-            // are expanded before evaluation, so they never reach here.
+            // are expanded during evaluation, so they never reach here.
             
             // case - pattern matching
             if self.lisp.symbol_matches(car, "case")? {
@@ -811,12 +807,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_values_collect / unpack_values_collect => [remaining, collected, env];
         
         // 4-field continuations
-        pack_let_star_binding / unpack_let_star_binding => [remaining_bindings, new_env, body, name];
-        pack_letrec_init / unpack_letrec_init => [remaining_bindings, new_env, body, name];
+        // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros
         pack_do_test_result / unpack_do_test_result => [var_steps, test_clause, body, loop_env];
         
         // 5-field continuations
-        pack_let_binding / unpack_let_binding => [remaining_bindings, new_env, original_env, body, name];
+        // Note: pack_let_binding removed - now handled by macros
         pack_do_body / unpack_do_body => [remaining_body, var_steps, test_clause, body, loop_env];
         
         // 6-field continuations
