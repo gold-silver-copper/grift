@@ -69,13 +69,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Load standard macro definitions from macros.scm
+    /// 
+    /// These are evaluated (not just expanded) since define-syntax
+    /// is now handled during evaluation.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
         let forms = parse_all(self.lisp, STANDARD_MACROS)?;
         let mut current = forms;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let form = self.lisp.car(current)?;
-            // expand() handles define-syntax by adding to macro_env
-            self.expand(form)?;
+            // Evaluate the form - define-syntax is handled during evaluation
+            self.eval(form)?;
             current = self.lisp.cdr(current)?;
         }
         Ok(())
@@ -437,22 +440,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate an expression (entry point)
     /// 
-    /// 1. Expand all macros in the expression
-    /// 2. Evaluate the expanded expression
+    /// Macros are now expanded during evaluation (not pre-processed).
+    /// This enables evaluation-time macro expansion per the R7RS model.
     pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
-        // First, expand macros
-        let expanded = self.expand(expr)?;
-        
         // Reset continuation stack and data stack
         self.cont_depth = 0;
         self.data_stack_top = 0;
-        // Start evaluation
-        self.trampoline(TrampolineState::Eval { expr: expanded, env: self.global_env })
+        // Start evaluation - macros are expanded on-demand during eval
+        self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
     
     /// Evaluate an already-expanded expression (internal)
     /// 
-    /// This skips macro expansion. Use `eval()` for normal evaluation.
+    /// This is now equivalent to `eval()` since macro expansion 
+    /// happens during evaluation. Kept for API compatibility.
     pub fn eval_expanded(&mut self, expr: ArenaIndex) -> EvalResult {
         // Reset continuation stack and data stack
         self.cont_depth = 0;
@@ -466,12 +467,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This is public so the REPL can evaluate expressions for display
     pub fn eval_in_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // First, expand macros
-        let expanded = self.expand(expr)?;
-        
-        // Reset continuation stack and run
+        // Reset continuation stack and run - macros expanded during eval
         self.cont_depth = 0;
-        self.trampoline(TrampolineState::Eval { expr: expanded, env })
+        self.data_stack_top = 0;
+        self.trampoline(TrampolineState::Eval { expr, env })
     }
     
     /// The main trampoline loop - processes states and continuations
@@ -562,12 +561,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let head = self.lisp.get(car)?;
         
-        // Check for special forms
+        // Check for special forms and macros
         if let Value::Symbol(_) = head {
+            // Check for macro invocation first (evaluation-time expansion)
+            if let Some(transformer) = self.lookup_macro(car)? {
+                let expanded = self.apply_macro(transformer, expr)?;
+                // Continue evaluating the expanded form
+                return Ok(TrampolineState::Eval { expr: expanded, env });
+            }
+            
             // quote
             if self.lisp.symbol_matches(car, "quote")? {
                 let val = self.lisp.car(cdr)?;
                 return Ok(TrampolineState::Return { val });
+            }
+            
+            // define-syntax - add macro to environment
+            if self.lisp.symbol_matches(car, "define-syntax")? {
+                return self.step_eval_define_syntax(cdr, env);
+            }
+            
+            // let-syntax - local macro bindings
+            if self.lisp.symbol_matches(car, "let-syntax")? {
+                return self.step_eval_let_syntax(cdr, env);
             }
             
             // if - condition evaluated, then one branch selected

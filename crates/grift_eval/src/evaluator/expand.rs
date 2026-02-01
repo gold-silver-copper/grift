@@ -930,7 +930,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Look up macro in macro environment
-    fn lookup_macro(&self, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
+    pub(super) fn lookup_macro(&self, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         if !matches!(self.lisp.get(name)?, Value::Symbol(_)) {
             return Ok(None);
         }
@@ -949,7 +949,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Apply a macro transformer to an expression
-    fn apply_macro(
+    pub(super) fn apply_macro(
         &mut self,
         transformer: ArenaIndex,
         expr: ArenaIndex,
@@ -1003,7 +1003,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Parse a transformer expression (syntax-rules ...)
-    fn parse_transformer(&self, expr: ArenaIndex) -> EvalResult {
+    pub(super) fn parse_transformer(&self, expr: ArenaIndex) -> EvalResult {
         let head = self.lisp.car(expr)?;
 
         if !self.lisp.symbol_matches(head, "syntax-rules")? {
