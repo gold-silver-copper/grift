@@ -63,10 +63,8 @@ The following changes were made as part of Phase 6:
 ### Known Limitations
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
-2. **Nested ellipsis pattern bug**: Patterns like `((name val) ...)` don't correctly extract all elements. 
-   Only the first element is correctly extracted; subsequent elements retain the full structure instead of 
-   being deconstructed. **Workaround**: Use recursive macro patterns with dotted pairs instead.
-   - See detailed analysis below in "Phase 7: Binding Form Macros"
+2. ~~**Nested ellipsis pattern bug**: Fixed!~~ Previously, patterns like `((name val) ...)` didn't correctly extract all elements. 
+   **This bug has been fixed** - see "Fix for Nested Ellipsis Bug" section below.
 3. `letrec-syntax` is not yet implemented
 4. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
 5. **Named let** is not supported by the `let` macro; the special form handles it
@@ -78,11 +76,12 @@ All existing tests pass with the macro system enabled. Standard macros are loade
 
 ### Recent Changes
 
-1. **Fixed lambda parameter substitution bug**: Pattern variables in lambda parameter lists 
+1. **FIXED: Nested ellipsis pattern bug**: The parser was incorrectly treating `...` within lists as a 
+   dotted pair indicator instead of the ellipsis symbol. This caused patterns like `((a) ...)` to fail.
+   The fix was in the parser to correctly identify multi-dot symbols like `...`.
+2. **Fixed lambda parameter substitution bug**: Pattern variables in lambda parameter lists 
    are now correctly substituted (was returning the pattern variable symbol instead of the bound value).
-2. **Added `let` and `let*` macros**: These use a recursive approach with dotted pair patterns
-   to work around the nested ellipsis bug.
-3. **Added `%let-binding` helper macro**: Internal macro for transforming single bindings.
+3. **Added `let` and `let*` macros**: These can now use standard R7RS patterns with the ellipsis bug fixed.
 
 ---
 
@@ -1508,15 +1507,26 @@ crates/
 4. Performance testing
 5. Documentation
 
-### Phase 7: Binding Form Macros (Partial - workaround applied)
+### Phase 7: Binding Form Macros (COMPLETE - Bug Fixed!)
 
-**Status: Partially Complete - `let` and `let*` implemented using workaround**
+**Status: Complete - Nested ellipsis bug has been fixed!**
 
-The goal of this phase is to replace `let`, `let*`, `letrec`, and `letrec*` special forms with macro-based implementations. This would complete the R7RS macro-based derived forms.
+The nested ellipsis bug has been resolved. Standard R7RS patterns now work correctly:
 
-#### Implemented Workaround
+```scheme
+;; Standard R7RS let pattern now works!
+(define-syntax my-let
+  (syntax-rules ()
+    ((my-let ((name val) ...) body ...)
+     ((lambda (name ...) body ...) val ...))))
 
-Due to the nested ellipsis pattern bug, we use a recursive approach with dotted pair patterns instead of the standard R7RS patterns:
+;; Example usage:
+(my-let ((x 1) (y 2) (z 3)) (+ x y z))  ;; → 6
+```
+
+#### Previous Workaround (No Longer Needed)
+
+The recursive workaround with dotted pair patterns is no longer required, but is kept for reference:
 
 ```scheme
 ;; Helper macro for single binding
@@ -1574,47 +1584,105 @@ This fix was essential for `%let-binding` to work correctly.
 
 #### Original Blocker: Nested Ellipsis Pattern Bug
 
-When attempting to implement using standard R7RS patterns, a bug was discovered in the ellipsis pattern matching for nested structures.
+## Fix for Nested Ellipsis Bug (RESOLVED)
 
-**Bug Description:**
+The nested ellipsis pattern matching bug has been **fixed**.
+
+### Bug Description
 
 For a pattern like `((name val) ...)` matching against `((x 5) (y 6) (z 7))`:
 
 - **Expected**: `name → (x y z)`, `val → (5 6 7)`
-- **Actual**: `name → (x (y 6) (z 7))`, `val → (5 (y 6) (z 7))`
+- **Actual (before fix)**: `name → (x (y 6) (z 7))`, `val → (5 (y 6) (z 7))`
 
-Only the first element `(x 5)` is correctly deconstructed (producing `name=x`, `val=5`). 
-Subsequent elements like `(y 6)` and `(z 7)` are captured as whole lists instead of being 
-deconstructed, resulting in lists containing a mix of extracted values and full structures.
+Only the first element `(x 5)` was correctly deconstructed. Subsequent elements were captured as whole lists.
 
-**Symptoms:**
+### Root Cause
 
-1. `(let ((x 5) (y 6)) (+ x y))` fails with "no matching syntax-rules clause"
-2. Custom test macros show incorrect binding values:
-   ```scheme
-   (define-syntax test-mac 
-     (syntax-rules () 
-       ((test-mac ((a) ...) body) 
-        (quote (a ...)))))
-   (test-mac ((1) (2) (3)) 42)
-   ;; Expected: (1 2 3)
-   ;; Actual: (1 (2) (3))
-   ```
+The bug was in the **parser**, not the pattern matcher!
 
-**Root Cause Analysis:**
+When parsing `(a ...)`, the parser was treating the first `.` as a **dotted pair indicator**, resulting in:
+- Parsed as: `(a . ..)` - an improper list with cdr being the symbol `..` (TWO dots)
+- Should be: `(a ...)` - a proper list with second element being `...` (THREE dots)
 
-The bug appears to be in `match_ellipsis_pattern` or `merge_ellipsis_bindings` in `expand.rs`. Despite extensive debugging, the exact cause was not identified. The pattern matching loop appears to:
+The parser's `parse_list` function had this logic:
+```rust
+Some(b'.') => {
+    // Dotted pair: (a . b)
+    self.advance();
+    let cdr = self.parse(lisp)?;  // Parses ".." as the cdr!
+    ...
+}
+```
 
-1. Correctly extract the first element on the first iteration
-2. On subsequent iterations, either:
-   - Pass the wrong element to `match_pattern`, OR
-   - Merge the bindings incorrectly
+When it saw `.` in `(a ...)`, it consumed the first dot and parsed `..` as the cdr, resulting in an improper list.
 
-**Future Work:**
+### The Fix
 
-1. Add debug tracing to `match_ellipsis_pattern` to trace the exact values at each step
-2. Create unit tests for the pattern matching functions in isolation
-3. Compare against a reference implementation (e.g., Chibi Scheme or Guile)
+**1. Parser Fix (`parser.rs`):**
+
+Check if the `.` is followed by more symbol characters (like `..` for `...`). If so, parse it as a symbol rather than a dotted pair indicator:
+
+```rust
+Some(b'.') => {
+    // Check if this is a symbol starting with . (like ...) 
+    // or a dotted pair indicator
+    let next_char = self.peek_at(self.pos + 1);
+    let is_dotted_pair = matches!(next_char, None | Some(b' ') | Some(b')') ...);
+    
+    if is_dotted_pair {
+        // Handle dotted pair: (a . b)
+    } else {
+        // Parse as symbol: (a ...)
+        elements[count] = self.parse_symbol(lisp)?;
+    }
+}
+```
+
+**2. Pattern Matcher Updates (`expand.rs`):**
+
+While investigating, we also improved the pattern matcher to handle both forms:
+- `(a ...)` parsed as proper list `(a . (... . ()))`  
+- `(a . ...)` parsed as improper list (legacy format)
+
+The `has_ellipsis` function now checks both cases:
+```rust
+fn has_ellipsis(&self, pat_cdr: ArenaIndex) -> Result<bool, EvalError> {
+    match self.lisp.get(pat_cdr)? {
+        Value::Cons { .. } => {
+            // Case 1: (... . rest) - proper list with ... as first element
+            let first = self.lisp.car(pat_cdr)?;
+            self.lisp.symbol_matches(first, "...")
+        }
+        Value::Symbol(_) => {
+            // Case 2: ... as symbol (improper list cdr)
+            self.lisp.symbol_matches(pat_cdr, "...")
+        }
+        _ => Ok(false),
+    }
+}
+```
+
+**3. Zero-match ellipsis fix:**
+
+Also fixed the case where ellipsis matches zero elements. The `match_list_pattern` now checks for ellipsis *before* requiring the expression to be a non-empty list.
+
+### Test Results
+
+After the fix:
+```scheme
+(define-syntax test-mac 
+  (syntax-rules () 
+    ((test-mac ((a) ...) body) 
+     (quote (a ...)))))
+(test-mac ((1) (2) (3)) 42)
+;; Now correctly returns: (1 2 3)
+
+;; Zero-match case works too:
+(define-syntax zero-or-more (syntax-rules () ((zero-or-more a ...) (quote (a ...)))))
+(zero-or-more)  ;; Returns ()
+(zero-or-more 1 2 3)  ;; Returns (1 2 3)
+```
 
 ---
 

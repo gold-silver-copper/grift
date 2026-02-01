@@ -4024,3 +4024,222 @@ fn test_doc_car_cdr_compositions() {
     let _result = eval.eval_str("(cddr nested)").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(car (car (cddr nested)))"), 5);
 }
+
+// Test for nested ellipsis pattern matching bug
+#[test]
+fn test_nested_ellipsis_bug() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test: Nested ellipsis - this reveals the bug
+    eval.eval_str("(define-syntax nest-test (syntax-rules () ((nest-test ((a) ...)) (quote (a ...)))))").unwrap();
+    let result = eval.eval_str("(nest-test ((1) (2) (3)))").unwrap();
+    
+    // Expected: (1 2 3)
+    // Actual bug: (1 (2) (3))
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(first).unwrap().as_number(), Some(1), "First element should be 1");
+    
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    // This assertion currently fails because second is (2) not 2
+    assert_eq!(lisp.get(second).unwrap().as_number(), Some(2), 
+        "Second element should be 2, not (2) - nested ellipsis bug");
+}
+
+// Test to check what the pattern variable is bound to
+#[test]
+fn test_check_pattern_binding_value() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test with three elements to see the pattern
+    eval.eval_str("(define-syntax test3 (syntax-rules () ((test3 ((a) ...)) (quote (a ...)))))").unwrap();
+    let result = eval.eval_str("(test3 ((1) (2) (3)))").unwrap();
+    
+    eprintln!("Result for ((1) (2) (3)):");
+    let mut curr = result;
+    let mut idx = 0;
+    while let Value::Cons { .. } = lisp.get(curr).unwrap() {
+        let elem = lisp.car(curr).unwrap();
+        eprintln!("  [{}] = {:?}", idx, lisp.get(elem));
+        curr = lisp.cdr(curr).unwrap();
+        idx += 1;
+    }
+    
+    // Expected: (1 2 3)
+    // Bug: (1 (2) (3))
+    
+    // Check - first should be 1, second should be 2, third should be 3
+    let v1 = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1), "First should be 1");
+    
+    let v2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    
+    // This is where the bug is
+    match lisp.get(v2).unwrap() {
+        Value::Number(n) => assert_eq!(n, 2, "Second should be 2"),
+        Value::Cons { .. } => {
+            // Bug: v2 is (2) instead of 2
+            let inner = lisp.car(v2).unwrap();
+            eprintln!("BUG: Second element is ({:?}) instead of just the number", lisp.get(inner).unwrap().as_number());
+            panic!("Nested ellipsis bug: second element should be 2, not (2)");
+        }
+        other => panic!("Unexpected: {:?}", other),
+    }
+}
+
+// Check if symbol interning is working
+#[test]
+fn test_symbol_interning() {
+    let lisp: Lisp<20000> = Lisp::new();
+    
+    // Create symbol 'a' multiple times
+    let a1 = lisp.symbol("a").unwrap();
+    let a2 = lisp.symbol("a").unwrap();
+    let a3 = lisp.symbol("a").unwrap();
+    
+    eprintln!("a1 = {:?}", a1);
+    eprintln!("a2 = {:?}", a2);
+    eprintln!("a3 = {:?}", a3);
+    
+    // They should all be the same arena index
+    assert_eq!(a1, a2, "Symbols should be interned to same index");
+    assert_eq!(a2, a3, "Symbols should be interned to same index");
+    
+    // Also check symbol_eq
+    assert!(lisp.symbol_eq(a1, a2).unwrap());
+    assert!(lisp.symbol_eq(a2, a3).unwrap());
+}
+
+// ============================================================================
+// Comprehensive tests for nested ellipsis pattern matching
+// ============================================================================
+
+/// Test nested ellipsis with single-element inner pattern
+#[test]
+fn test_nested_ellipsis_single_var() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pattern ((a) ...) matches ((1) (2) (3)) and binds a to (1 2 3)
+    eval.eval_str("(define-syntax extract (syntax-rules () ((extract ((a) ...)) (quote (a ...)))))").unwrap();
+    
+    // Single element
+    let result = eval.eval_str("(extract ((1)))").unwrap();
+    let v1 = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1));
+    
+    // Two elements
+    let result = eval.eval_str("(extract ((1) (2)))").unwrap();
+    let v1 = lisp.car(result).unwrap();
+    let v2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(v2).unwrap().as_number(), Some(2));
+    
+    // Three elements
+    let result = eval.eval_str("(extract ((1) (2) (3)))").unwrap();
+    let v1 = lisp.car(result).unwrap();
+    let v2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let v3 = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(v2).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(v3).unwrap().as_number(), Some(3));
+}
+
+/// Test nested ellipsis with multiple pattern variables
+#[test]
+fn test_nested_ellipsis_multiple_vars() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pattern ((a b) ...) matches ((1 2) (3 4)) and binds:
+    // a to (1 3), b to (2 4)
+    eval.eval_str("(define-syntax pair-extract (syntax-rules () ((pair-extract ((a b) ...)) (quote ((a ...) (b ...))))))").unwrap();
+    
+    let result = eval.eval_str("(pair-extract ((1 2) (3 4)))").unwrap();
+    
+    // First element should be (1 3)
+    let first = lisp.car(result).unwrap();
+    let a1 = lisp.car(first).unwrap();
+    let a2 = lisp.car(lisp.cdr(first).unwrap()).unwrap();
+    assert_eq!(lisp.get(a1).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(a2).unwrap().as_number(), Some(3));
+    
+    // Second element should be (2 4)
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let b1 = lisp.car(second).unwrap();
+    let b2 = lisp.car(lisp.cdr(second).unwrap()).unwrap();
+    assert_eq!(lisp.get(b1).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(b2).unwrap().as_number(), Some(4));
+}
+
+/// Test ellipsis with proper let-style binding pattern
+#[test]
+fn test_let_style_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test the nested ellipsis pattern for extracting names and values
+    // This is the core pattern that let macros need
+    eval.eval_str("(define-syntax extract-bindings (syntax-rules () ((extract-bindings ((name val) ...)) (quote ((name ...) (val ...))))))").unwrap();
+    
+    // Single binding: ((x 1)) -> ((x) (1))
+    let result = eval.eval_str("(extract-bindings ((x 1)))").unwrap();
+    let names = lisp.car(result).unwrap();
+    let vals = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let name = lisp.car(names).unwrap();
+    let val = lisp.car(vals).unwrap();
+    assert!(lisp.symbol_matches(name, "x").unwrap());
+    assert_eq!(lisp.get(val).unwrap().as_number(), Some(1));
+    
+    // Multiple bindings: ((a 10) (b 20)) -> ((a b) (10 20))
+    let result = eval.eval_str("(extract-bindings ((a 10) (b 20)))").unwrap();
+    let names = lisp.car(result).unwrap();
+    let vals = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let n1 = lisp.car(names).unwrap();
+    let n2 = lisp.car(lisp.cdr(names).unwrap()).unwrap();
+    let v1 = lisp.car(vals).unwrap();
+    let v2 = lisp.car(lisp.cdr(vals).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(n1, "a").unwrap());
+    assert!(lisp.symbol_matches(n2, "b").unwrap());
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(10));
+    assert_eq!(lisp.get(v2).unwrap().as_number(), Some(20));
+}
+
+/// Test parsing of ellipsis as a proper list element
+#[test]
+fn test_ellipsis_parsing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // (a ...) should be a proper list with ... as second element
+    let result = eval.eval_str("(list? '(a ...))").unwrap();
+    assert!(lisp.get(result).unwrap().is_true(), "(a ...) should be a proper list");
+    
+    // The second element should be the symbol ...
+    let result = eval.eval_str("(cadr '(a ...))").unwrap();
+    assert!(lisp.symbol_matches(result, "...").unwrap());
+    
+    // ((a) ...) should also be a proper list
+    let result = eval.eval_str("(list? '((a) ...))").unwrap();
+    assert!(lisp.get(result).unwrap().is_true(), "((a) ...) should be a proper list");
+}
+
+/// Test empty ellipsis match
+#[test]
+fn test_empty_ellipsis() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Matching zero elements with ellipsis
+    eval.eval_str("(define-syntax zero-or-more (syntax-rules () ((zero-or-more a ...) (quote (a ...)))))").unwrap();
+    
+    // Empty: should produce empty list
+    let result = eval.eval_str("(zero-or-more)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil(), "zero-or-more with no args should be ()");
+    
+    // One element
+    let result = eval.eval_str("(zero-or-more 1)").unwrap();
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(first).unwrap().as_number(), Some(1));
+}

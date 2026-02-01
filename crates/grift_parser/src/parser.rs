@@ -580,27 +580,51 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(b'.') => {
-                    // Dotted pair: (a . b)
-                    self.advance();
-                    self.skip_whitespace();
+                    // Could be:
+                    // 1. Dotted pair indicator: (a . b) - single dot followed by whitespace
+                    // 2. Symbol starting with dot: ... or .foo
                     
-                    if count == 0 {
-                        return Err(self.error(ParseErrorKind::UnexpectedChar('.')));
+                    // Peek ahead to check
+                    let next_pos = self.pos + 1;
+                    let is_dotted_pair = if next_pos < self.input.len() {
+                        let next_char = self.input[next_pos];
+                        // It's a dotted pair if the next char is whitespace or )
+                        WHITESPACE_TABLE[next_char as usize] || next_char == b')'
+                    } else {
+                        // End of input after dot - treat as dotted pair
+                        true
+                    };
+                    
+                    if is_dotted_pair {
+                        // Dotted pair: (a . b)
+                        self.advance(); // consume the dot
+                        self.skip_whitespace();
+                        
+                        if count == 0 {
+                            return Err(self.error(ParseErrorKind::UnexpectedChar('.')));
+                        }
+                        
+                        let cdr = self.parse(lisp)?;
+                        self.skip_whitespace();
+                        
+                        if self.advance() != Some(b')') {
+                            return Err(self.error(ParseErrorKind::UnmatchedParen));
+                        }
+                        
+                        // Build the dotted list
+                        let mut result = cdr;
+                        for i in (0..count).rev() {
+                            result = lisp.cons(elements[i], result)?;
+                        }
+                        return Ok(result);
+                    } else {
+                        // Symbol starting with dot (like ... or .foo)
+                        if count >= MAX_LIST_DEPTH {
+                            return Err(self.error(ParseErrorKind::OutOfMemory));
+                        }
+                        elements[count] = self.parse_symbol(lisp)?;
+                        count += 1;
                     }
-                    
-                    let cdr = self.parse(lisp)?;
-                    self.skip_whitespace();
-                    
-                    if self.advance() != Some(b')') {
-                        return Err(self.error(ParseErrorKind::UnmatchedParen));
-                    }
-                    
-                    // Build the dotted list
-                    let mut result = cdr;
-                    for i in (0..count).rev() {
-                        result = lisp.cons(elements[i], result)?;
-                    }
-                    return Ok(result);
                 }
                 Some(_) => {
                     if count >= MAX_LIST_DEPTH {
