@@ -890,29 +890,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Convenience
     // ========================================================================
     
+    /// Maximum number of GC retry attempts for memory-related errors
+    const MAX_GC_RETRIES: usize = 3;
+    
     /// Evaluate a string
     pub fn eval_str(&mut self, input: &str) -> EvalResult {
-        // Try to parse, with auto-GC retry on out of memory (up to 3 times)
-        let expr = match parse(self.lisp, input) {
-            Ok(e) => e,
-            Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => {
-                // Auto-GC: Run GC and retry parsing (up to 2 more times)
-                for _ in 0..2 {
-                    self.gc();
-                    match parse(self.lisp, input) {
-                        Ok(e) => return self.eval_with_gc_retry(e, input),
-                        Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => continue,
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                // Final attempt after last GC
-                self.gc();
-                parse(self.lisp, input)?
-            }
-            Err(e) => return Err(e.into()),
-        };
+        // Try to parse with auto-GC retry on out of memory
+        // Attempts: 1 initial + up to MAX_GC_RETRIES retries after GC
+        let expr = self.parse_with_gc_retry(input)?;
         
+        // Try to evaluate with auto-GC retry on out of memory
         self.eval_with_gc_retry(expr, input)
+    }
+    
+    /// Parse an input string with auto-GC retry on out of memory
+    fn parse_with_gc_retry(&mut self, input: &str) -> EvalResult {
+        for attempt in 0..=Self::MAX_GC_RETRIES {
+            match parse(self.lisp, input) {
+                Ok(e) => return Ok(e),
+                Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => {
+                    if attempt < Self::MAX_GC_RETRIES {
+                        self.gc();
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        // This is unreachable, but the compiler doesn't know that
+        Err(EvalError::new(ErrorKind::OutOfMemory))
     }
     
     /// Evaluate an expression with auto-GC retry on out of memory
@@ -921,9 +928,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(result) => Ok(result),
             Err(e) if matches!(e.kind, ErrorKind::OutOfMemory) => {
                 // Auto-GC: Run GC and retry evaluation
+                // Only one retry since eval failures are less common than parse failures
                 self.gc();
-                // Re-parse after GC since the old expr may be garbage collected
-                let expr = parse(self.lisp, input)?;
+                // Re-parse after GC since the old expr may have been garbage collected
+                let expr = self.parse_with_gc_retry(input)?;
                 self.eval(expr)
             }
             Err(e) => Err(e),

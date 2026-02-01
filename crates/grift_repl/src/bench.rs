@@ -12,6 +12,10 @@ use grift_parser::Lisp;
 use grift_repl::format_value;
 use std::time::{Duration, Instant};
 
+/// Number of iterations between periodic garbage collection during benchmarks.
+/// This prevents arena exhaustion during memory-intensive tests.
+const GC_INTERVAL: usize = 50;
+
 /// Result of a single benchmark
 struct BenchResult {
     name: String,
@@ -94,8 +98,8 @@ fn run_bench<const N: usize>(
     let mut peak_allocated = initial_allocated;
 
     for i in 0..iterations {
-        // Run periodic GC every 50 iterations to prevent arena exhaustion
-        if i > 0 && i % 50 == 0 {
+        // Run periodic GC to prevent arena exhaustion during heavy iteration
+        if i > 0 && i % GC_INTERVAL == 0 {
             eval.gc();
         }
         
