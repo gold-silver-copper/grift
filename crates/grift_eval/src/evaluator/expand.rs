@@ -206,9 +206,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Check if pattern cdr starts with ellipsis
     fn has_ellipsis(&self, pat_cdr: ArenaIndex) -> Result<bool, EvalError> {
         match self.lisp.get(pat_cdr)? {
+            // Case 1: pat_cdr is a list starting with ...
+            // Pattern like: (a ... rest) parsed as (a . (... . rest))
             Value::Cons { .. } => {
                 let first = self.lisp.car(pat_cdr)?;
                 self.lisp.symbol_matches(first, "...").map_err(Into::into)
+            }
+            // Case 2: pat_cdr IS the ellipsis symbol itself
+            // Pattern like: (a ...) parsed as improper list (a . ...)
+            Value::Symbol(_) => {
+                self.lisp.symbol_matches(pat_cdr, "...").map_err(Into::into)
             }
             _ => Ok(false),
         }
@@ -223,7 +230,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check for ellipsis which consumes variable number of elements
                 if self.has_ellipsis(cdr)? {
                     // Pattern with ellipsis: element before ... is repeated
-                    let rest = self.lisp.cdr(cdr)?;
+                    // Get rest pattern (nil if cdr is just the symbol ...)
+                    let rest = match self.lisp.get(cdr)? {
+                        Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr
+                        Value::Cons { .. } => self.lisp.cdr(cdr)?,  // (... . rest)
+                        _ => self.lisp.nil()?,
+                    };
                     return self.pattern_min_length(rest, literals);
                 }
                 // Regular element: 1 + rest
@@ -266,13 +278,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let car = self.lisp.car(pattern)?;
                 let cdr = self.lisp.cdr(pattern)?;
                 self.collect_pattern_vars_into(car, literals, vars)?;
-                // Skip ellipsis symbol
-                if let Value::Cons { .. } = self.lisp.get(cdr)? {
-                    let first = self.lisp.car(cdr)?;
-                    if self.lisp.symbol_matches(first, "...")? {
-                        let rest = self.lisp.cdr(cdr)?;
-                        return self.collect_pattern_vars_into(rest, literals, vars);
+                
+                // Handle ellipsis - two cases:
+                // 1. cdr is the symbol ... (improper list like (a . ...))
+                // 2. cdr is a list starting with ... (like (a ... rest))
+                match self.lisp.get(cdr)? {
+                    Value::Symbol(_) if self.lisp.symbol_matches(cdr, "...")? => {
+                        // Case 1: cdr IS the ellipsis symbol - no more vars to collect
+                        return Ok(());
                     }
+                    Value::Cons { .. } => {
+                        let first = self.lisp.car(cdr)?;
+                        if self.lisp.symbol_matches(first, "...")? {
+                            // Case 2: cdr starts with ... - skip it and process rest
+                            let rest = self.lisp.cdr(cdr)?;
+                            return self.collect_pattern_vars_into(rest, literals, vars);
+                        }
+                    }
+                    _ => {}
                 }
                 self.collect_pattern_vars_into(cdr, literals, vars)
             }
@@ -382,13 +405,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn match_ellipsis_pattern(
         &self,
         sub_pattern: ArenaIndex,
-        pat_cdr: ArenaIndex,      // (... . rest)
+        pat_cdr: ArenaIndex,      // (... . rest) or just the symbol ...
         expr: ArenaIndex,
         literals: ArenaIndex,
         bindings: ArenaIndex,
     ) -> Result<Option<ArenaIndex>, EvalError> {
         // Get the rest pattern after ...
-        let rest_pattern = self.lisp.cdr(pat_cdr)?;
+        // If pat_cdr is the symbol ... itself (improper list), there's no rest pattern
+        // If pat_cdr is (... . rest), get the rest
+        let rest_pattern = match self.lisp.get(pat_cdr)? {
+            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr - no rest
+            Value::Cons { .. } => self.lisp.cdr(pat_cdr)?,  // (... . rest) - get rest
+            _ => self.lisp.nil()?,
+        };
 
         // Count how many elements the rest pattern needs
         let rest_len = self.pattern_min_length(rest_pattern, literals)?;
@@ -655,11 +684,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Transcribe ellipsis template: (subtempl ... . rest)
+    /// Transcribe ellipsis template: (subtempl ... . rest) or (subtempl . ...)
     fn transcribe_ellipsis(
         &mut self,
         sub_template: ArenaIndex,
-        template_cdr: ArenaIndex,   // (... . rest)
+        template_cdr: ArenaIndex,   // (... . rest) or just the symbol ...
         bindings: ArenaIndex,
         renames: ArenaIndex,
         def_env: ArenaIndex,
@@ -667,12 +696,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Find pattern variables with ellipsis bindings in sub_template
         let ellipsis_vars = self.find_ellipsis_vars(sub_template, bindings)?;
 
+        // Get rest template after ellipsis (nil if template_cdr is just ...)
+        let rest = match self.lisp.get(template_cdr)? {
+            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr - no rest
+            Value::Cons { .. } => self.lisp.cdr(template_cdr)?,  // (... . rest) - get rest
+            _ => self.lisp.nil()?,
+        };
+
         if self.lisp.get(ellipsis_vars)?.is_nil() {
             // No ellipsis vars - transcribe once
             let transcribed = self.transcribe_template(
                 sub_template, bindings, renames, def_env
             )?;
-            let rest = self.lisp.cdr(template_cdr)?;
             let rest_transcribed = self.transcribe_template(
                 rest, bindings, renames, def_env
             )?;
@@ -696,8 +731,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             result = self.lisp.cons(transcribed, result)?;
         }
 
-        // Transcribe and append rest
-        let rest = self.lisp.cdr(template_cdr)?;
+        // Transcribe and append rest (if any)
         if !self.lisp.get(rest)?.is_nil() {
             let rest_transcribed = self.transcribe_template(
                 rest, bindings, renames, def_env

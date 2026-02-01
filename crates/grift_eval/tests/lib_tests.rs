@@ -4045,3 +4045,70 @@ fn test_nested_ellipsis_bug() {
     assert_eq!(lisp.get(second).unwrap().as_number(), Some(2), 
         "Second element should be 2, not (2) - nested ellipsis bug");
 }
+
+// Test to check what the pattern variable is bound to
+#[test]
+fn test_check_pattern_binding_value() {
+    use grift_parser::Value;
+    
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test with three elements to see the pattern
+    eval.eval_str("(define-syntax test3 (syntax-rules () ((test3 ((a) ...)) (quote (a ...)))))").unwrap();
+    let result = eval.eval_str("(test3 ((1) (2) (3)))").unwrap();
+    
+    eprintln!("Result for ((1) (2) (3)):");
+    let mut curr = result;
+    let mut idx = 0;
+    while let Value::Cons { .. } = lisp.get(curr).unwrap() {
+        let elem = lisp.car(curr).unwrap();
+        eprintln!("  [{}] = {:?}", idx, lisp.get(elem));
+        curr = lisp.cdr(curr).unwrap();
+        idx += 1;
+    }
+    
+    // Expected: (1 2 3)
+    // Bug: (1 (2) (3))
+    
+    // Check - first should be 1, second should be 2, third should be 3
+    let v1 = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1), "First should be 1");
+    
+    let v2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    
+    // This is where the bug is
+    match lisp.get(v2).unwrap() {
+        Value::Number(n) => assert_eq!(n, 2, "Second should be 2"),
+        Value::Cons { .. } => {
+            // Bug: v2 is (2) instead of 2
+            let inner = lisp.car(v2).unwrap();
+            eprintln!("BUG: Second element is ({:?}) instead of just the number", lisp.get(inner).unwrap().as_number());
+            panic!("Nested ellipsis bug: second element should be 2, not (2)");
+        }
+        other => panic!("Unexpected: {:?}", other),
+    }
+}
+
+// Check if symbol interning is working
+#[test]
+fn test_symbol_interning() {
+    let lisp: Lisp<20000> = Lisp::new();
+    
+    // Create symbol 'a' multiple times
+    let a1 = lisp.symbol("a").unwrap();
+    let a2 = lisp.symbol("a").unwrap();
+    let a3 = lisp.symbol("a").unwrap();
+    
+    eprintln!("a1 = {:?}", a1);
+    eprintln!("a2 = {:?}", a2);
+    eprintln!("a3 = {:?}", a3);
+    
+    // They should all be the same arena index
+    assert_eq!(a1, a2, "Symbols should be interned to same index");
+    assert_eq!(a2, a3, "Symbols should be interned to same index");
+    
+    // Also check symbol_eq
+    assert!(lisp.symbol_eq(a1, a2).unwrap());
+    assert!(lisp.symbol_eq(a2, a3).unwrap());
+}
