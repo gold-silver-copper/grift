@@ -35,7 +35,8 @@
        (let rest-bindings body ...)))))
 
 ;; let* - sequential binding (each binding can refer to previous ones)
-;; Same implementation as let since each binding is processed individually
+;; Uses recursive self-reference (let* calls let*) to ensure each binding
+;; is in scope for subsequent bindings. This matches R7RS semantics.
 (define-syntax let*
   (syntax-rules ()
     ((let* () body ...)

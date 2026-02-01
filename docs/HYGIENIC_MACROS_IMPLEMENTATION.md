@@ -1583,7 +1583,9 @@ For a pattern like `((name val) ...)` matching against `((x 5) (y 6) (z 7))`:
 - **Expected**: `name → (x y z)`, `val → (5 6 7)`
 - **Actual**: `name → (x (y 6) (z 7))`, `val → (5 (y 6) (z 7))`
 
-Only the first element is correctly extracted. Subsequent elements retain their full structure instead of being deconstructed.
+Only the first element `(x 5)` is correctly deconstructed (producing `name=x`, `val=5`). 
+Subsequent elements like `(y 6)` and `(z 7)` are captured as whole lists instead of being 
+deconstructed, resulting in lists containing a mix of extracted values and full structures.
 
 **Symptoms:**
 
