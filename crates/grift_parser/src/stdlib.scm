@@ -16,8 +16,11 @@
 ;;; (fold f acc lst) - Left fold over lst
 (define (fold f acc lst) (if (null? lst) acc (fold f (f acc (car lst)) (cdr lst))))
 
-;;; (length lst) - Return length of lst
-(define (length lst) (if (null? lst) 0 (+ 1 (length (cdr lst)))))
+;;; (length lst) - Return length of lst (tail-recursive)
+(define (length lst)
+  (define (length-iter lst acc)
+    (if (null? lst) acc (length-iter (cdr lst) (+ acc 1))))
+  (length-iter lst 0))
 
 ;;; (append a b) - Concatenate two lists
 (define (append a b) (if (null? a) b (cons (car a) (append (cdr a) b))))

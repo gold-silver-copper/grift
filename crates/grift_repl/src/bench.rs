@@ -12,6 +12,10 @@ use grift_parser::Lisp;
 use grift_repl::format_value;
 use std::time::{Duration, Instant};
 
+/// Number of iterations between periodic garbage collection during benchmarks.
+/// This prevents arena exhaustion during memory-intensive tests.
+const GC_INTERVAL: usize = 50;
+
 /// Result of a single benchmark
 struct BenchResult {
     name: String,
@@ -61,7 +65,15 @@ fn eval_str<const N: usize>(
             format_value(lisp, idx, &mut buf);
             Ok(buf)
         }
-        Err(e) => Err(format!("Error: {:?}", e.kind)),
+        Err(e) => {
+            // Include more details about the error
+            let parse_info = if let Some(ref pe) = e.parse_error {
+                format!(" (parse: {:?} at {}:{})", pe.kind, pe.loc.line, pe.loc.column)
+            } else {
+                String::new()
+            };
+            Err(format!("Error: {:?}{}", e.kind, parse_info))
+        }
     }
 }
 
@@ -85,7 +97,12 @@ fn run_bench<const N: usize>(
     let initial_allocated = lisp.stats().allocated;
     let mut peak_allocated = initial_allocated;
 
-    for _ in 0..iterations {
+    for i in 0..iterations {
+        // Run periodic GC to prevent arena exhaustion during heavy iteration
+        if i > 0 && i % GC_INTERVAL == 0 {
+            eval.gc();
+        }
+        
         match eval_str(lisp, eval, code) {
             Ok(r) => {
                 last_result = r;
