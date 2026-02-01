@@ -892,16 +892,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate a string
     pub fn eval_str(&mut self, input: &str) -> EvalResult {
-        // Try to parse, with auto-GC retry on out of memory
+        // Try to parse, with auto-GC retry on out of memory (up to 3 times)
         let expr = match parse(self.lisp, input) {
             Ok(e) => e,
             Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => {
-                // Auto-GC: Run GC and retry parsing
+                // Auto-GC: Run GC and retry parsing (up to 2 more times)
+                for _ in 0..2 {
+                    self.gc();
+                    match parse(self.lisp, input) {
+                        Ok(e) => return self.eval_with_gc_retry(e, input),
+                        Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => continue,
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                // Final attempt after last GC
                 self.gc();
                 parse(self.lisp, input)?
             }
             Err(e) => return Err(e.into()),
         };
-        self.eval(expr)
+        
+        self.eval_with_gc_retry(expr, input)
+    }
+    
+    /// Evaluate an expression with auto-GC retry on out of memory
+    fn eval_with_gc_retry(&mut self, expr: ArenaIndex, input: &str) -> EvalResult {
+        match self.eval(expr) {
+            Ok(result) => Ok(result),
+            Err(e) if matches!(e.kind, ErrorKind::OutOfMemory) => {
+                // Auto-GC: Run GC and retry evaluation
+                self.gc();
+                // Re-parse after GC since the old expr may be garbage collected
+                let expr = parse(self.lisp, input)?;
+                self.eval(expr)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
