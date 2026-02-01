@@ -2,7 +2,7 @@
 
 ## Implementation Progress
 
-**Status: Phase 1-7 Complete (Foundation through Evaluation-Time Macros)**
+**Status: Phase 1-8 Complete (Foundation through Bug Fixes)**
 
 ### Completed Work
 
@@ -15,6 +15,7 @@
 | Phase 5 | Standard Macros | ✅ Complete |
 | Phase 6 | Cleanup | ✅ Complete |
 | Phase 7 | Evaluation-Time Macro Expansion | ✅ Complete |
+| Phase 8 | Bug Fixes (let-syntax scoping, named let) | ✅ Complete |
 
 ### Files Modified/Created
 
@@ -22,10 +23,10 @@
 - `crates/grift_parser/src/lisp.rs` - Added `syntax_rules()`, `syntax_rules_parts()`, and `eqv()` methods
 - `crates/grift_eval/src/evaluator/mod.rs` - Added `macro_env` and `gensym_counter` fields
 - `crates/grift_eval/src/evaluator/core.rs` - Modified `eval()` for evaluation-time macro expansion, removed redundant special form handlers
-- `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added internal define support to lambda
-- `crates/grift_eval/src/evaluator/expand.rs` - Complete macro expansion system
-- `crates/grift_eval/src/continuation.rs` - Removed unused continuation types (When, Unless, CondTest, And, Or, LetBinding, LetStarBinding, LetrecInit)
-- `crates/grift_parser/src/macros.scm` - Standard macro definitions including `letrec` and `letrec*`
+- `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added internal define support to lambda, added LetSyntaxBody continuation handler
+- `crates/grift_eval/src/evaluator/expand.rs` - Complete macro expansion system, fixed lambda param transcription for ellipsis patterns
+- `crates/grift_eval/src/continuation.rs` - Removed unused continuation types, added LetSyntaxBody continuation
+- `crates/grift_parser/src/macros.scm` - Standard macro definitions including `letrec`, `letrec*`, and named `let`
 
 ### Working Features
 
@@ -35,10 +36,83 @@
   - Literal keywords
   - Wildcard `_`
   - Ellipsis `...` for repetition
-- `let-syntax` for local macro definitions
+- `let-syntax` for local macro definitions (with proper scoping)
 - Hygiene via gensym for lambda parameters
-- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `let`, `let*`, `letrec`, `letrec*`, `delay`
+- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `let` (including named let), `let*`, `letrec`, `letrec*`, `delay`
 - Lambda supports internal `define` forms (R7RS compliant)
+
+### Phase 8: Bug Fixes
+
+#### Fix 1: `let-syntax` Scoping
+
+**Problem**: Local macro bindings from `let-syntax` leaked beyond their intended scope. After evaluating the body of a `let-syntax` form, the macro bindings remained in effect.
+
+**Solution**: Added a `LetSyntaxBody` continuation that saves the macro environment before extending it with local bindings. After the body is evaluated, the continuation handler restores the original macro environment.
+
+**Changes**:
+- `crates/grift_eval/src/continuation.rs`: Added `LetSyntaxBody(usize)` variant
+- `crates/grift_eval/src/evaluator/forms.rs`: Modified `step_eval_let_syntax` to save macro_env and push `LetSyntaxBody` continuation before evaluating body; added continuation handler to restore macro_env
+- `crates/grift_eval/src/evaluator/core.rs`: Added `LetSyntaxBody` to continuation data_start extraction match
+
+**Example** (now works correctly):
+```scheme
+(begin 
+  (let-syntax ((foo (syntax-rules () ((foo x) (+ x 10))))) 
+    (foo 5))  ; Returns 15
+  (foo 7))    ; Error: unbound variable foo (as expected)
+```
+
+#### Fix 2: Named Let Support
+
+**Problem**: The `let` macro did not support the named let form `(let name ((var val) ...) body ...)`.
+
+**Solution**: Extended the `let` macro with a new pattern to recognize named let and transform it appropriately. Also fixed the lambda transcription code to properly handle ellipsis patterns in parameter lists.
+
+**Macro Changes** (`macros.scm`):
+```scheme
+;; Helper for named let - extract values from bindings and build the call
+(define-syntax %named-let-values
+  (syntax-rules ()
+    ((%named-let-values loop () (vals ...))
+     (loop vals ...))
+    ((%named-let-values loop ((var val) . rest) (vals ...))
+     (%named-let-values loop rest (vals ... val)))))
+
+;; Helper for named let - extract variable names from bindings and build lambda
+(define-syntax %named-let-build
+  (syntax-rules ()
+    ((%named-let-build loop () (vars ...) bindings body ...)
+     (letrec ((loop (lambda (vars ...) body ...)))
+       (%named-let-values loop bindings ())))
+    ((%named-let-build loop ((var val) . rest) (vars ...) bindings body ...)
+     (%named-let-build loop rest (vars ... var) bindings body ...))))
+
+;; let - supports both regular and named let
+(define-syntax let
+  (syntax-rules ()
+    ((let () body ...)
+     (begin body ...))
+    ((let ((var val) . rest) body ...)
+     (%let-binding (var val) 
+       (let rest body ...)))
+    ((let loop bindings body ...)
+     (%named-let-build loop bindings () bindings body ...))))
+```
+
+**Expander Changes** (`expand.rs`):
+- Rewrote `transcribe_lambda` to first transcribe the params list using normal template transcription (which handles ellipsis properly), then identify and rename only truly macro-introduced symbols.
+- Added `identify_and_rename_introduced_params` function to walk transcribed params and check which came from pattern variable values vs. which were macro-introduced.
+- Added `symbol_appears_in_binding_values` and `symbol_appears_in` helper functions for checking if a symbol appears in binding values.
+
+**Example** (now works):
+```scheme
+;; Factorial using named let
+(let loop ((n 5) (acc 1))
+  (if (<= n 1) 
+      acc 
+      (loop (- n 1) (* acc n))))
+; => 120
+```
 
 ### Phase 7: Evaluation-Time Macro Expansion
 
@@ -100,9 +174,7 @@ The following changes were made as part of Phase 6:
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
 2. `letrec-syntax` is not yet implemented
 3. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
-4. **Named let** is not supported by the `let` macro (would need additional pattern)
-5. `let-values` and `let*-values` not yet implemented
-6. **`let-syntax` scoping**: Local macro bindings from `let-syntax` currently leak beyond their intended scope (bindings are not properly restored after body evaluation)
+4. `let-values` and `let*-values` not yet implemented
 
 ### Testing
 
@@ -110,13 +182,14 @@ All existing tests pass with the macro system enabled. Standard macros are loade
 
 ### Recent Changes
 
-1. **Evaluation-time macro expansion**: Macros are now expanded during evaluation rather than in a pre-processing phase.
-2. **Internal define support**: Lambda bodies now support internal definitions per R7RS, transformed to `letrec`.
-3. **`letrec` and `letrec*` as macros**: These binding forms now use a two-phase macro that:
+1. **Phase 8 Bug Fixes**: Fixed `let-syntax` scoping and added named let support.
+2. **Evaluation-time macro expansion**: Macros are now expanded during evaluation rather than in a pre-processing phase.
+3. **Internal define support**: Lambda bodies now support internal definitions per R7RS, transformed to `letrec`.
+4. **`letrec` and `letrec*` as macros**: These binding forms now use a two-phase macro that:
    - Phase 1 (`%letrec-names`): Creates all bindings with `#f` values
    - Phase 2 (`%letrec-inits`): Assigns all init expressions in order
    This ensures all names are visible to all init expressions for mutual recursion.
-4. **Removed binding form special forms**: `let`, `let*`, `letrec`, `letrec*` special form handlers removed since macros take precedence.
+5. **Removed binding form special forms**: `let`, `let*`, `letrec`, `letrec*` special form handlers removed since macros take precedence.
 
 ---
 

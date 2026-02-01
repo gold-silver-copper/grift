@@ -208,7 +208,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::QuasiquoteCar(data_start) |
                     Cont::QuasiquoteCdr(data_start) |
                     Cont::QuasiquoteSplice(data_start) |
-                    Cont::QuasiquoteSpliceAppend(data_start) => data_start,
+                    Cont::QuasiquoteSpliceAppend(data_start) |
+                    Cont::LetSyntaxBody(data_start) => data_start,
                 };
                 // Add all ArenaIndex values from this continuation's data to roots
                 for j in 0..data_len {
@@ -793,6 +794,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_define_value / unpack_define_value => [name];
         pack_quasiquote_cdr / unpack_quasiquote_cdr => [car_val];
         pack_quasiquote_splice_append / unpack_quasiquote_splice_append => [splice_val];
+        pack_let_syntax_body / unpack_let_syntax_body => [saved_macro_env];
         
         // 2-field continuations
         pack_begin_seq / unpack_begin_seq => [remaining, env];

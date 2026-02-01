@@ -511,6 +511,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let result = self.append_lists(splice_val, val)?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
+
+            Cont::LetSyntaxBody(data_start) => {
+                // Restore macro environment after let-syntax body evaluation
+                let saved_macro_env = self.unpack_let_syntax_body(data_start);
+                self.macro_env = saved_macro_env;
+                // Return the value from the body
+                Ok(Some(TrampolineState::Return { val }))
+            }
         }
     }
 
@@ -1037,13 +1045,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate (let-syntax ((name transformer) ...) body ...) at evaluation time
     /// 
     /// Creates local macro bindings for the duration of the body.
-    /// 
-    /// NOTE: This is a simplified implementation. The macro bindings will remain
-    /// in effect after the body returns (they "leak"). A full implementation would
-    /// need a continuation to restore the macro environment after body evaluation.
+    /// After body evaluation, the macro environment is restored via the 
+    /// LetSyntaxBody continuation.
     pub(super) fn step_eval_let_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let bindings = self.lisp.car(args)?;
         let body_list = self.lisp.cdr(args)?;
+        
+        // Save current macro environment for restoration after body
+        let saved_macro_env = self.macro_env;
         
         // Add local macro bindings
         let mut current = bindings;
@@ -1067,8 +1076,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.lisp.cons(begin, body_list)?
         };
         
+        // Push continuation to restore macro environment after body evaluation
+        let data_start = self.pack_let_syntax_body(saved_macro_env)?;
+        self.push_cont(Cont::LetSyntaxBody(data_start))?;
+        
         // Evaluate body with extended macro environment
-        // Note: The macro bindings will persist after body returns (known limitation)
         Ok(TrampolineState::Eval { expr: body, env })
     }
 }

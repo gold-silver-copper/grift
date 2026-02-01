@@ -134,6 +134,10 @@ pub enum Cont {
     /// After evaluating cdr for splice, append with splice value
     /// Stack data: [splice_val] (1 element)
     QuasiquoteSpliceAppend(usize),
+
+    /// After evaluating let-syntax body, restore macro environment
+    /// Stack data: [saved_macro_env] (1 element)
+    LetSyntaxBody(usize),
 }
 
 impl Cont {
@@ -150,6 +154,7 @@ impl Cont {
             Cont::DefineValue(_) => 1,
             Cont::QuasiquoteCdr(_) => 1,
             Cont::QuasiquoteSpliceAppend(_) => 1,
+            Cont::LetSyntaxBody(_) => 1,
             Cont::BeginSeq(_) => 2,
             Cont::CaseKey(_) => 2,
             Cont::ApplyFirst(_) => 2,
