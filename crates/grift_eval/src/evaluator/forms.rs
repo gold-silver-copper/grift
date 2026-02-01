@@ -263,82 +263,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::LetBinding(data_start) => {
-                let (remaining_bindings, new_env, original_env, body, name) = self.unpack_let_binding(data_start);
-                // val is the evaluated value for the current binding
-                // Extend environment with the binding
-                let extended_env = self.env_extend(new_env, name, val)?;
-
-                // Check for more bindings
-                if self.lisp.get(remaining_bindings)?.is_nil() {
-                    // All bindings done - evaluate body in extended environment
-                    Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
-                } else {
-                    // More bindings - get next binding
-                    let next_binding = self.lisp.car(remaining_bindings)?;
-                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
-                    let next_name = self.lisp.car(next_binding)?;
-                    let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
-
-                    // Push continuation for after evaluating this binding
-                    let data_start = self.pack_let_binding(rest_bindings, extended_env, original_env, body, next_name)?;
-                    self.push_cont(Cont::LetBinding(data_start))?;
-
-                    // Evaluate the value expression in the ORIGINAL environment
-                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: original_env }))
-                }
-            }
-
-            Cont::LetStarBinding(data_start) => {
-                let (remaining_bindings, new_env, body, name) = self.unpack_let_star_binding(data_start);
-                // val is the evaluated value for the current binding
-                // Extend environment with the binding
-                let extended_env = self.env_extend(new_env, name, val)?;
-
-                // Check for more bindings
-                if self.lisp.get(remaining_bindings)?.is_nil() {
-                    // All bindings done - evaluate body in extended environment
-                    Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
-                } else {
-                    // More bindings - get next binding
-                    let next_binding = self.lisp.car(remaining_bindings)?;
-                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
-                    let next_name = self.lisp.car(next_binding)?;
-                    let next_value_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
-
-                    // Push continuation for after evaluating this binding
-                    let data_start = self.pack_let_star_binding(rest_bindings, extended_env, body, next_name)?;
-                    self.push_cont(Cont::LetStarBinding(data_start))?;
-
-                    // Evaluate the value expression in the NEW (extended) environment
-                    Ok(Some(TrampolineState::Eval { expr: next_value_expr, env: extended_env }))
-                }
-            }
-
-            Cont::LetrecInit(data_start) => {
-                let (remaining_bindings, new_env, body, name) = self.unpack_letrec_init(data_start);
-                // val is the evaluated init expression - set! the variable
-                self.env_set(new_env, name, val)?;
-
-                // Check for more bindings
-                if self.lisp.get(remaining_bindings)?.is_nil() {
-                    // All inits done - evaluate body
-                    Ok(Some(TrampolineState::Eval { expr: body, env: new_env }))
-                } else {
-                    // More bindings - get next binding
-                    let next_binding = self.lisp.car(remaining_bindings)?;
-                    let rest_bindings = self.lisp.cdr(remaining_bindings)?;
-                    let next_name = self.lisp.car(next_binding)?;
-                    let next_init_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
-
-                    // Push continuation for after evaluating this init
-                    let data_start = self.pack_letrec_init(rest_bindings, new_env, body, next_name)?;
-                    self.push_cont(Cont::LetrecInit(data_start))?;
-
-                    // Evaluate the init expression in the letrec environment
-                    Ok(Some(TrampolineState::Eval { expr: next_init_expr, env: new_env }))
-                }
-            }
+            // Note: LetBinding, LetStarBinding, LetrecInit handlers removed
+            // These forms are now handled by macros during evaluation
 
             // Note: When, Unless, CondTest, And, Or continuations removed
             // These forms are now handled by macros during expansion
@@ -792,119 +718,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Evaluate let using continuations (no Rust recursion)
-    pub(super) fn step_eval_let(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let bindings = self.lisp.car(args)?;
-        let body_list = self.lisp.cdr(args)?;
-
-        // Build body expression
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
-
-        // If no bindings, just evaluate body
-        if self.lisp.get(bindings)?.is_nil() {
-            return Ok(TrampolineState::Eval { expr: body, env });
-        }
-
-        // Get first binding
-        let first_binding = self.lisp.car(bindings)?;
-        let rest_bindings = self.lisp.cdr(bindings)?;
-        let name = self.lisp.car(first_binding)?;
-        let value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
-
-        // Push continuation for after evaluating this binding
-        let data_start = self.pack_let_binding(rest_bindings, env, env, body, name)?;
-        self.push_cont(Cont::LetBinding(data_start))?;
-
-        // Evaluate the first value expression in the original environment
-        Ok(TrampolineState::Eval { expr: value_expr, env })
-    }
-
-    /// Evaluate let* using continuations (no Rust recursion)
-    pub(super) fn step_eval_let_star(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let bindings = self.lisp.car(args)?;
-        let body_list = self.lisp.cdr(args)?;
-
-        // Build body expression
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
-
-        // If no bindings, just evaluate body
-        if self.lisp.get(bindings)?.is_nil() {
-            return Ok(TrampolineState::Eval { expr: body, env });
-        }
-
-        // Get first binding
-        let first_binding = self.lisp.car(bindings)?;
-        let rest_bindings = self.lisp.cdr(bindings)?;
-        let name = self.lisp.car(first_binding)?;
-        let value_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
-
-        // Push continuation for after evaluating this binding
-        let data_start = self.pack_let_star_binding(rest_bindings, env, body, name)?;
-        self.push_cont(Cont::LetStarBinding(data_start))?;
-
-        // Evaluate the first value expression
-        Ok(TrampolineState::Eval { expr: value_expr, env })
-    }
-
-    /// Evaluate letrec/letrec* using continuations (no Rust recursion)
-    pub(super) fn step_eval_letrec(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let bindings = self.lisp.car(args)?;
-        let body_list = self.lisp.cdr(args)?;
-
-        // Build body expression
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
-
-        // If no bindings, just evaluate body
-        if self.lisp.get(bindings)?.is_nil() {
-            return Ok(TrampolineState::Eval { expr: body, env });
-        }
-
-        // First, create environment with all names bound to nil
-        let mut new_env = env;
-        let mut current = bindings;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { .. } => {
-                    let binding = self.lisp.car(current)?;
-                    let rest = self.lisp.cdr(current)?;
-                    let name = self.lisp.car(binding)?;
-                    let undefined = self.lisp.nil()?;
-                    new_env = self.env_extend(new_env, name, undefined)?;
-                    current = rest;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, bindings)),
-            }
-        }
-
-        // Now start evaluating init expressions
-        let first_binding = self.lisp.car(bindings)?;
-        let rest_bindings = self.lisp.cdr(bindings)?;
-        let name = self.lisp.car(first_binding)?;
-        let init_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
-
-        // Push continuation for after evaluating this init
-        let data_start = self.pack_letrec_init(rest_bindings, new_env, body, name)?;
-        self.push_cont(Cont::LetrecInit(data_start))?;
-
-        // Evaluate the init expression in the new environment (where all names are visible)
-        Ok(TrampolineState::Eval { expr: init_expr, env: new_env })
-    }
+    // Note: step_eval_let, step_eval_let_star, step_eval_letrec removed
+    // These forms are now handled by macros during evaluation
 
     /// Evaluate begin using continuations (no Rust recursion)
     pub(super) fn step_eval_begin(&mut self, exprs: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
@@ -1036,19 +851,118 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate lambda
+    /// 
+    /// Supports R7RS internal definitions: `define` forms at the start of the body
+    /// are transformed to `letrec` semantics.
     pub(super) fn eval_lambda(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
         let params = self.lisp.car(args)?;
         let body_list = self.lisp.cdr(args)?;
         
-        // Wrap body in begin if multiple expressions
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
+        // Check for internal defines and transform to letrec
+        let body = self.transform_internal_defines(body_list)?;
         
         self.lisp.lambda(params, body, env).map_err(Into::into)
+    }
+    
+    /// Transform internal defines at the start of a body to letrec
+    /// 
+    /// (define a 1) (define b 2) expr... -> (letrec ((a 1) (b 2)) expr...)
+    fn transform_internal_defines(&self, body_list: ArenaIndex) -> EvalResult {
+        // Collect internal defines
+        let mut defines = self.lisp.nil()?;
+        let mut remaining = body_list;
+        
+        loop {
+            if self.lisp.get(remaining)?.is_nil() {
+                break;
+            }
+            
+            let expr = self.lisp.car(remaining)?;
+            
+            // Check if this is a define form
+            if let Value::Cons { .. } = self.lisp.get(expr)? {
+                let head = self.lisp.car(expr)?;
+                if let Value::Symbol(_) = self.lisp.get(head)? {
+                    if self.lisp.symbol_matches(head, "define")? {
+                        // Extract name and value from define
+                        let define_args = self.lisp.cdr(expr)?;
+                        let first = self.lisp.car(define_args)?;
+                        let rest = self.lisp.cdr(define_args)?;
+                        
+                        let binding = match self.lisp.get(first)? {
+                            // (define name value)
+                            Value::Symbol(_) => {
+                                let name = first;
+                                let value = self.lisp.car(rest)?;
+                                // Create binding (name value)
+                                let val_list = self.lisp.cons(value, self.lisp.nil()?)?;
+                                self.lisp.cons(name, val_list)?
+                            }
+                            // (define (name params...) body...) -> (name (lambda (params...) body...))
+                            Value::Cons { .. } => {
+                                let name = self.lisp.car(first)?;
+                                let lambda_params = self.lisp.cdr(first)?;
+                                let lambda_body_list = rest;
+                                
+                                // Build (lambda (params...) body...)
+                                // We need to handle internal defines recursively
+                                let lambda_body = self.transform_internal_defines(lambda_body_list)?;
+                                let lambda_sym = self.lisp.symbol("lambda")?;
+                                let lambda_body_cell = self.lisp.cons(lambda_body, self.lisp.nil()?)?;
+                                let lambda_with_params = self.lisp.cons(lambda_params, lambda_body_cell)?;
+                                let lambda_expr = self.lisp.cons(lambda_sym, lambda_with_params)?;
+                                
+                                // Create binding (name (lambda ...))
+                                let val_list = self.lisp.cons(lambda_expr, self.lisp.nil()?)?;
+                                self.lisp.cons(name, val_list)?
+                            }
+                            _ => break, // Not a valid define, stop collecting
+                        };
+                        
+                        // Prepend to defines list (will reverse later)
+                        defines = self.lisp.cons(binding, defines)?;
+                        remaining = self.lisp.cdr(remaining)?;
+                        continue;
+                    }
+                }
+            }
+            
+            // Not a define form, stop collecting
+            break;
+        }
+        
+        // If no internal defines, just process the body normally
+        if self.lisp.get(defines)?.is_nil() {
+            // Wrap body in begin if multiple expressions
+            if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
+                return self.lisp.car(body_list).map_err(Into::into);
+            } else {
+                let begin = self.lisp.symbol("begin")?;
+                return self.lisp.cons(begin, body_list).map_err(Into::into);
+            }
+        }
+        
+        // Reverse defines to maintain definition order
+        let bindings = self.reverse_list(defines)?;
+        
+        // Build body expression from remaining forms
+        let body_expr = if self.lisp.get(remaining)?.is_nil() {
+            // No body after defines - R7RS says this is an error, but we'll return nil
+            self.lisp.nil()?
+        } else if self.lisp.get(self.lisp.cdr(remaining)?)?.is_nil() {
+            // Single expression
+            self.lisp.car(remaining)?
+        } else {
+            // Multiple expressions - wrap in begin
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, remaining)?
+        };
+        
+        // Build (letrec ((name1 val1) (name2 val2) ...) body)
+        let letrec_sym = self.lisp.symbol("letrec")?;
+        let body_cell = self.lisp.cons(body_expr, self.lisp.nil()?)?;
+        let bindings_and_body = self.lisp.cons(bindings, body_cell)?;
+        self.lisp.cons(letrec_sym, bindings_and_body).map_err(Into::into)
     }
     
     /// Evaluate define (trampolined)

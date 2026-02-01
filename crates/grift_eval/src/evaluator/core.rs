@@ -192,9 +192,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::BinaryBuiltinSecond(data_start) |
                     Cont::LambdaFirstBind(data_start) |
                     Cont::LambdaBindArg(data_start) |
-                    Cont::LetBinding(data_start) |
-                    Cont::LetStarBinding(data_start) |
-                    Cont::LetrecInit(data_start) |
                     Cont::EvalExpr(data_start) |
                     Cont::BeginSeq(data_start) |
                     Cont::CaseKey(data_start) |
@@ -622,25 +619,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.eval_set(cdr, env);
             }
             
-            // let - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "let")? {
-                return self.step_eval_let(cdr, env);
-            }
-
-            // let* - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "let*")? {
-                return self.step_eval_let_star(cdr, env);
-            }
-
-            // letrec - continuation-based evaluation (R7RS Section 4.2.2)
-            if self.lisp.symbol_matches(car, "letrec")? {
-                return self.step_eval_letrec(cdr, env);
-            }
-
-            // letrec* - continuation-based evaluation (R7RS Section 4.2.2)
-            if self.lisp.symbol_matches(car, "letrec*")? {
-                return self.step_eval_letrec(cdr, env); // Same as letrec for now
-            }
+            // Note: let, let*, letrec, letrec* are now macros and
+            // are expanded during evaluation, so they never reach here.
 
             // begin - continuation-based evaluation
             if self.lisp.symbol_matches(car, "begin")? {
@@ -648,7 +628,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // Note: when, unless, and, or, cond are now macros and
-            // are expanded before evaluation, so they never reach here.
+            // are expanded during evaluation, so they never reach here.
             
             // case - pattern matching
             if self.lisp.symbol_matches(car, "case")? {
@@ -827,12 +807,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_values_collect / unpack_values_collect => [remaining, collected, env];
         
         // 4-field continuations
-        pack_let_star_binding / unpack_let_star_binding => [remaining_bindings, new_env, body, name];
-        pack_letrec_init / unpack_letrec_init => [remaining_bindings, new_env, body, name];
+        // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros
         pack_do_test_result / unpack_do_test_result => [var_steps, test_clause, body, loop_env];
         
         // 5-field continuations
-        pack_let_binding / unpack_let_binding => [remaining_bindings, new_env, original_env, body, name];
+        // Note: pack_let_binding removed - now handled by macros
         pack_do_body / unpack_do_body => [remaining_body, var_steps, test_clause, body, loop_env];
         
         // 6-field continuations
