@@ -823,7 +823,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Identify and rename symbols in transcribed params that were introduced by the macro
     /// 
-    /// After transcription, params is a list of actual symbols. We need to check each one
+    /// # Arguments
+    /// 
+    /// * `params` - Already transcribed parameter list (e.g., `(n acc)` after expanding `(vars ...)`)
+    /// * `bindings` - Original pattern variable bindings from macro matching
+    /// * `renames` - Current rename environment
+    /// 
+    /// After transcription, `params` is a list of actual symbols. We need to check each one
     /// to see if it was in the original pattern bindings (user-provided) or if it's 
     /// a macro-introduced symbol that needs gensym for hygiene.
     fn identify_and_rename_introduced_params(
