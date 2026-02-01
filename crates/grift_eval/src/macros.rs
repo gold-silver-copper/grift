@@ -409,6 +409,144 @@ macro_rules! builtin_char_cmp {
     }};
 }
 
+/// Macro for unary integer operations.
+///
+/// Extracts one integer argument, applies a transformation, and returns a number.
+///
+/// # Example
+/// 
+/// `builtin_unary_int!(self, args, call_expr, |n| n.abs())` returns absolute value.
+#[macro_export]
+macro_rules! builtin_unary_int {
+    ($self:expr, $args:expr, $call_expr:expr, $op:expr) => {{
+        let n = $self.get_int($self.lisp.car($args)?, $call_expr)?;
+        $self.lisp.number($op(n)).map_err(Into::into)
+    }};
+}
+
+/// Macro for binary integer operations.
+///
+/// Extracts two integer arguments, applies a transformation, and returns a number.
+///
+/// # Example
+/// 
+/// `builtin_binary_int!(self, args, call_expr, |a, b| a.saturating_add(b))` adds two numbers.
+#[macro_export]
+macro_rules! builtin_binary_int {
+    ($self:expr, $args:expr, $call_expr:expr, $op:expr) => {{
+        let a = $self.get_int($self.lisp.car($args)?, $call_expr)?;
+        let b = $self.get_int($self.lisp.car($self.lisp.cdr($args)?)?, $call_expr)?;
+        $self.lisp.number($op(a, b)).map_err(Into::into)
+    }};
+}
+
+/// Macro for unary char-to-integer conversion.
+///
+/// Extracts one character argument and returns its Unicode code point as a number.
+#[macro_export]
+macro_rules! builtin_char_to_int {
+    ($self:expr, $args:expr, $call_expr:expr) => {{
+        let c = $self.get_char($self.lisp.car($args)?, $call_expr)?;
+        $self.lisp.number(c as isize).map_err(Into::into)
+    }};
+}
+
+/// Macro for unary character transformation.
+///
+/// Extracts one character argument, applies ASCII transformation, and returns a char.
+///
+/// # Example
+/// 
+/// `builtin_char_transform!(self, args, call_expr, 'a', 'z', b'a', b'A')` does uppercase.
+#[macro_export]
+macro_rules! builtin_char_transform {
+    ($self:expr, $args:expr, $call_expr:expr, $from_low:expr, $from_high:expr, $from_base:expr, $to_base:expr) => {{
+        let c = $self.get_char($self.lisp.car($args)?, $call_expr)?;
+        let result = if c >= $from_low && c <= $from_high {
+            ((c as u8) - $from_base + $to_base) as char
+        } else {
+            c
+        };
+        $self.lisp.char(result).map_err(Into::into)
+    }};
+}
+
+/// Macro for char predicates that check a character property.
+///
+/// Extracts one character argument and returns boolean based on predicate.
+///
+/// # Example
+/// 
+/// `builtin_char_pred!(self, args, call_expr, |c| c.is_ascii_alphabetic())` checks alphabetic.
+#[macro_export]
+macro_rules! builtin_char_pred {
+    ($self:expr, $args:expr, $call_expr:expr, $pred:expr) => {{
+        let c = $self.get_char($self.lisp.car($args)?, $call_expr)?;
+        $self.lisp.boolean($pred(c)).map_err(Into::into)
+    }};
+}
+
+/// Macro for type-checking unary operations.
+///
+/// Extracts one argument, checks its type, applies operation if type matches.
+/// Returns type error if type doesn't match.
+///
+/// # Example
+/// 
+/// `builtin_typed_unary!(self, args, call_expr, String { len, data } => { ... })` 
+#[macro_export]
+macro_rules! builtin_typed_unary {
+    ($self:expr, $args:expr, $call_expr:expr, $pattern:pat => $body:expr, $expected:expr) => {{
+        let arg = $self.lisp.car($args)?;
+        match $self.lisp.get(arg)? {
+            $pattern => $body,
+            v => Err($self.type_error($call_expr, $expected, v.type_name())),
+        }
+    }};
+}
+
+/// Macro for binary integer comparison (returns boolean).
+///
+/// Used in apply_binary_builtin for comparison operations.
+#[macro_export]
+macro_rules! binary_int_cmp {
+    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $cmp:expr) => {{
+        let x = $self.get_int($a, $call_expr)?;
+        let y = $self.get_int($b, $call_expr)?;
+        $self.lisp.boolean($cmp(x, y)).map_err(Into::into)
+    }};
+}
+
+/// Macro for binary integer arithmetic (returns number).
+///
+/// Used in apply_binary_builtin for arithmetic operations.
+#[macro_export]
+macro_rules! binary_int_op {
+    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $op:expr) => {{
+        let x = $self.get_int($a, $call_expr)?;
+        let y = $self.get_int($b, $call_expr)?;
+        match $op(x, y) {
+            Some(n) => $self.lisp.number(n).map_err(Into::into),
+            None => Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr)),
+        }
+    }};
+}
+
+/// Macro for binary division operations with zero check.
+///
+/// Used in apply_binary_builtin for div/mod/rem operations.
+#[macro_export]
+macro_rules! binary_div_op {
+    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $op:expr) => {{
+        let x = $self.get_int($a, $call_expr)?;
+        let y = $self.get_int($b, $call_expr)?;
+        if y == 0 {
+            return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+        }
+        $self.lisp.number($op(x, y)).map_err(Into::into)
+    }};
+}
+
 // ============================================================================
 // Macro for Native Function Definition
 // ============================================================================
