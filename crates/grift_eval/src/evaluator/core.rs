@@ -32,10 +32,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             data_stack: [ArenaIndex::NIL; MAX_DATA_STACK],
             data_stack_top: 0,
             native_registry: NativeRegistry::new(),
+            macro_env: ArenaIndex::NIL,
+            gensym_counter: 0,
         };
         
         // Initialize global environment with builtins
         eval.global_env = lisp.nil()?;
+        
+        // Initialize macro environment
+        eval.macro_env = lisp.nil()?;
         
         for &builtin in Builtin::ALL {
             let name = lisp.symbol(builtin.name())?;
@@ -114,18 +119,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Run GC with current roots (global env only)
     pub fn gc(&self) -> GcStats {
-        self.lisp.gc(&[self.global_env])
+        self.lisp.gc(&[self.global_env, self.macro_env])
     }
     
     /// Run GC during evaluation - marks continuation stack AND current state as roots
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
-        // Collect all roots: global env + current state + all ArenaIndex values in continuations
+        // Collect all roots: global env + macro env + current state + all ArenaIndex values in continuations
         const MAX_ROOTS: usize = 512;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
-        // Always include global env
+        // Always include global env and macro env
         roots[root_count] = self.global_env;
+        root_count += 1;
+        roots[root_count] = self.macro_env;
         root_count += 1;
         
         // Include current state
@@ -415,7 +422,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     
     /// Evaluate an expression (entry point)
+    /// 
+    /// 1. Expand all macros in the expression
+    /// 2. Evaluate the expanded expression
     pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
+        // First, expand macros
+        let expanded = self.expand(expr)?;
+        
+        // Reset continuation stack and data stack
+        self.cont_depth = 0;
+        self.data_stack_top = 0;
+        // Start evaluation
+        self.trampoline(TrampolineState::Eval { expr: expanded, env: self.global_env })
+    }
+    
+    /// Evaluate an already-expanded expression (internal)
+    /// 
+    /// This skips macro expansion. Use `eval()` for normal evaluation.
+    pub fn eval_expanded(&mut self, expr: ArenaIndex) -> EvalResult {
         // Reset continuation stack and data stack
         self.cont_depth = 0;
         self.data_stack_top = 0;
@@ -428,9 +452,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This is public so the REPL can evaluate expressions for display
     pub fn eval_in_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        // First, expand macros
+        let expanded = self.expand(expr)?;
+        
         // Reset continuation stack and run
         self.cont_depth = 0;
-        self.trampoline(TrampolineState::Eval { expr, env })
+        self.trampoline(TrampolineState::Eval { expr: expanded, env })
     }
     
     /// The main trampoline loop - processes states and continuations
@@ -496,7 +523,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
-            Value::Ref(_) | Value::Usize(_) => {
+            Value::Ref(_) | Value::Usize(_) | Value::SyntaxRules { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             

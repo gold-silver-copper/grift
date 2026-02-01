@@ -385,6 +385,38 @@ pub enum Value {
     /// This is primarily an internal implementation detail. For user-facing
     /// integers, prefer `Number(isize)` which supports negative values.
     Usize(usize),
+    
+    /// Syntax-rules macro transformer
+    ///
+    /// Stores a compiled macro with literals, rules, and definition environment.
+    /// Following the same 2-index constraint as Lambda, we pack fields into cons cells.
+    ///
+    /// # Memory Layout
+    ///
+    /// - `literals`: ArenaIndex to list of literal keyword symbols
+    /// - `rules_env`: ArenaIndex to cons cell (rules . definition_env)
+    ///   - car: list of (pattern . template) pairs
+    ///   - cdr: environment where macro was defined (for hygiene)
+    ///
+    /// This matches Lambda's layout: 2 inline ArenaIndex fields = 1 arena slot.
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (define-syntax when
+    ///   (syntax-rules ()
+    ///     ((when test body ...)
+    ///      (if test (begin body ...)))))
+    /// ```
+    ///
+    /// Stored as:
+    /// - literals: ()
+    /// - rules_env: (rules_list . global_env)
+    ///   where rules_list = (((when test body ...) . (if test (begin body ...))))
+    SyntaxRules {
+        literals: ArenaIndex,   // list of literal keyword symbols
+        rules_env: ArenaIndex,  // cons cell: (rules . definition_env)
+    },
 }
 
 impl Value {
@@ -561,7 +593,14 @@ impl Value {
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
+            Value::SyntaxRules { .. } => "syntax-rules",
         }
+    }
+    
+    /// Check if this value is a syntax-rules transformer
+    #[inline]
+    pub const fn is_syntax_rules(&self) -> bool {
+        matches!(self, Value::SyntaxRules { .. })
     }
 }
 
@@ -598,6 +637,12 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // body_env points to a cons cell (body . env)
                 tracer(*params);
                 tracer(*body_env);
+            }
+            Value::SyntaxRules { literals, rules_env } => {
+                // literals and rules_env are inline ArenaIndex - trace both
+                // rules_env points to a cons cell (rules . definition_env)
+                tracer(*literals);
+                tracer(*rules_env);
             }
             Value::Array { len, data } => {
                 // For non-empty arrays, trace all elements

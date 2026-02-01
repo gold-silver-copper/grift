@@ -503,6 +503,48 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Create a syntax-rules macro transformer
+    ///
+    /// Packs rules and definition_env into a cons cell to maintain
+    /// the 2-index constraint (matching Lambda's layout).
+    ///
+    /// # Arguments
+    ///
+    /// * `literals` - List of literal keywords that must match exactly
+    /// * `rules` - List of (pattern . template) pairs
+    /// * `definition_env` - Environment where macro was defined
+    pub fn syntax_rules(
+        &self,
+        literals: ArenaIndex,
+        rules: ArenaIndex,
+        definition_env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        // Pack rules and env into cons cell: (rules . definition_env)
+        let rules_env = self.cons(rules, definition_env)?;
+        self.arena.alloc(Value::SyntaxRules {
+            literals,
+            rules_env,
+        })
+    }
+
+    /// Extract parts from a SyntaxRules value
+    ///
+    /// Returns (literals, rules, definition_env) unpacked from the internal structure.
+    pub fn syntax_rules_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::SyntaxRules { literals, rules_env } => {
+                // Unpack (rules . definition_env)
+                let rules = self.car(rules_env)?;
+                let definition_env = self.cdr(rules_env)?;
+                Ok((literals, rules, definition_env))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Build a list from an iterator of indices
     pub fn list<I: IntoIterator<Item = ArenaIndex>>(&self, items: I) -> ArenaResult<ArenaIndex>
     where
@@ -544,6 +586,32 @@ impl<const N: usize> Lisp<N> {
         let val_b = self.get(b)?;
         
         match (val_a, val_b) {
+            (Value::Symbol(chars_a), Value::Symbol(chars_b)) => {
+                self.string_eq_contiguous(chars_a, chars_b)
+            }
+            _ => Ok(false),
+        }
+    }
+    
+    /// Check if two values are eqv? (Scheme eqv? predicate)
+    /// 
+    /// Returns true if values are identical or have the same primitive value.
+    #[inline]
+    pub fn eqv(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        // Fast path: same index
+        if a == b {
+            return Ok(true);
+        }
+        
+        let val_a = self.get(a)?;
+        let val_b = self.get(b)?;
+        
+        match (val_a, val_b) {
+            (Value::Nil, Value::Nil) => Ok(true),
+            (Value::True, Value::True) => Ok(true),
+            (Value::False, Value::False) => Ok(true),
+            (Value::Number(n1), Value::Number(n2)) => Ok(n1 == n2),
+            (Value::Char(c1), Value::Char(c2)) => Ok(c1 == c2),
             (Value::Symbol(chars_a), Value::Symbol(chars_b)) => {
                 self.string_eq_contiguous(chars_a, chars_b)
             }

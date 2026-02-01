@@ -129,6 +129,9 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "#<usize:{}>", n).unwrap();
         }
+        Ok(Value::SyntaxRules { .. }) => {
+            buf.push_str("#<syntax-rules>");
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }
