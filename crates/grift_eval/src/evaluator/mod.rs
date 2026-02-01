@@ -1,13 +1,15 @@
 //! Main evaluator implementation.
 //!
-//! This module is split into three files:
+//! This module is split into four files:
 //! - `core.rs`: Core evaluation logic (constructor, GC, environment, trampoline)
 //! - `builtins.rs`: Builtin function implementations
 //! - `forms.rs`: Special form handling (continuations, let, case, do, etc.)
+//! - `expand.rs`: Macro expansion (define-syntax, syntax-rules)
 
 mod core;
 mod builtins;
 mod forms;
+mod expand;
 
 use grift_parser::{ArenaIndex, Lisp};
 
@@ -39,4 +41,9 @@ pub struct Evaluator<'a, const N: usize> {
     data_stack_top: usize,
     /// Native function registry
     native_registry: NativeRegistry<N>,
+    /// Macro environment - stores (name . SyntaxRules) bindings
+    /// Separate from value environment to allow shadowing
+    macro_env: ArenaIndex,
+    /// Counter for generating unique symbols (gensym)
+    gensym_counter: usize,
 }
