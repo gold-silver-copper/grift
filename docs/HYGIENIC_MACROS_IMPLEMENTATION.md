@@ -63,13 +63,26 @@ The following changes were made as part of Phase 6:
 ### Known Limitations
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
-2. Some complex ellipsis patterns in nested contexts may have edge cases
+2. **Nested ellipsis pattern bug**: Patterns like `((name val) ...)` don't correctly extract all elements. 
+   Only the first element is correctly extracted; subsequent elements retain the full structure instead of 
+   being deconstructed. **Workaround**: Use recursive macro patterns with dotted pairs instead.
+   - See detailed analysis below in "Phase 7: Binding Form Macros"
 3. `letrec-syntax` is not yet implemented
 4. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
+5. **Named let** is not supported by the `let` macro; the special form handles it
+6. `letrec` and `letrec*` remain as special forms (not yet converted to macros)
 
 ### Testing
 
 All existing tests pass with the macro system enabled. Standard macros are loaded at evaluator initialization.
+
+### Recent Changes
+
+1. **Fixed lambda parameter substitution bug**: Pattern variables in lambda parameter lists 
+   are now correctly substituted (was returning the pattern variable symbol instead of the bound value).
+2. **Added `let` and `let*` macros**: These use a recursive approach with dotted pair patterns
+   to work around the nested ellipsis bug.
+3. **Added `%let-binding` helper macro**: Internal macro for transforming single bindings.
 
 ---
 
@@ -1494,6 +1507,114 @@ crates/
 3. Update tests
 4. Performance testing
 5. Documentation
+
+### Phase 7: Binding Form Macros (Partial - workaround applied)
+
+**Status: Partially Complete - `let` and `let*` implemented using workaround**
+
+The goal of this phase is to replace `let`, `let*`, `letrec`, and `letrec*` special forms with macro-based implementations. This would complete the R7RS macro-based derived forms.
+
+#### Implemented Workaround
+
+Due to the nested ellipsis pattern bug, we use a recursive approach with dotted pair patterns instead of the standard R7RS patterns:
+
+```scheme
+;; Helper macro for single binding
+(define-syntax %let-binding
+  (syntax-rules ()
+    ((%let-binding (name val) body ...)
+     ((lambda (name) body ...) val))))
+
+;; Recursive let using dotted pair pattern
+(define-syntax let
+  (syntax-rules ()
+    ((let () body ...)
+     (begin body ...))
+    ((let (first-binding . rest-bindings) body ...)
+     (%let-binding first-binding 
+       (let rest-bindings body ...)))))
+
+;; let* - same approach
+(define-syntax let*
+  (syntax-rules ()
+    ((let* () body ...)
+     (begin body ...))
+    ((let* (first-binding . rest-bindings) body ...)
+     (%let-binding first-binding
+       (let* rest-bindings body ...)))))
+```
+
+This works because:
+1. Dotted pair patterns `(first . rest)` correctly match the first element and remaining list
+2. Each binding is processed individually through `%let-binding`
+3. Recursive expansion handles multiple bindings
+
+#### Bug Fix: Lambda Parameter Substitution
+
+During implementation, a bug was discovered in `rename_introduced_params` where pattern variables in lambda parameter lists were not being substituted. The fix:
+
+```rust
+// Before (buggy):
+let new_param = if self.bindings_lookup(bindings, param)?.is_some() {
+    param  // Wrong: returns the pattern variable symbol
+} else { ... }
+
+// After (fixed):
+let new_param = if let Some(bound_val) = self.bindings_lookup(bindings, param)? {
+    bound_val  // Correct: returns the bound value
+} else { ... }
+```
+
+This fix was essential for `%let-binding` to work correctly.
+
+#### Remaining Work
+
+1. **Named let**: Not supported by macro, still uses special form
+2. **letrec/letrec***: Still use special forms (need set! in macro expansion)
+
+#### Original Blocker: Nested Ellipsis Pattern Bug
+
+When attempting to implement using standard R7RS patterns, a bug was discovered in the ellipsis pattern matching for nested structures.
+
+**Bug Description:**
+
+For a pattern like `((name val) ...)` matching against `((x 5) (y 6) (z 7))`:
+
+- **Expected**: `name → (x y z)`, `val → (5 6 7)`
+- **Actual**: `name → (x (y 6) (z 7))`, `val → (5 (y 6) (z 7))`
+
+Only the first element `(x 5)` is correctly deconstructed (producing `name=x`, `val=5`). 
+Subsequent elements like `(y 6)` and `(z 7)` are captured as whole lists instead of being 
+deconstructed, resulting in lists containing a mix of extracted values and full structures.
+
+**Symptoms:**
+
+1. `(let ((x 5) (y 6)) (+ x y))` fails with "no matching syntax-rules clause"
+2. Custom test macros show incorrect binding values:
+   ```scheme
+   (define-syntax test-mac 
+     (syntax-rules () 
+       ((test-mac ((a) ...) body) 
+        (quote (a ...)))))
+   (test-mac ((1) (2) (3)) 42)
+   ;; Expected: (1 2 3)
+   ;; Actual: (1 (2) (3))
+   ```
+
+**Root Cause Analysis:**
+
+The bug appears to be in `match_ellipsis_pattern` or `merge_ellipsis_bindings` in `expand.rs`. Despite extensive debugging, the exact cause was not identified. The pattern matching loop appears to:
+
+1. Correctly extract the first element on the first iteration
+2. On subsequent iterations, either:
+   - Pass the wrong element to `match_pattern`, OR
+   - Merge the bindings incorrectly
+
+**Future Work:**
+
+1. Add debug tracing to `match_ellipsis_pattern` to trace the exact values at each step
+2. Create unit tests for the pattern matching functions in isolation
+3. Compare against a reference implementation (e.g., Chibi Scheme or Guile)
 
 ---
 
