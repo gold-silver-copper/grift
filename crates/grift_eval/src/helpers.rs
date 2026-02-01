@@ -82,6 +82,8 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
 }
 
 /// Check if two values are structurally equal (for case matching)
+/// Note: No longer used since case is now a macro (Phase 9), but kept for potential future use.
+#[allow(dead_code)]
 pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
     if a == b {
         return Ok(true);
@@ -116,6 +118,8 @@ pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex
 }
 
 /// Check if key matches any datum in the list
+/// Note: No longer used since case is now a macro (Phase 9), but kept for potential future use.
+#[allow(dead_code)]
 pub fn case_matches<const N: usize>(lisp: &Lisp<N>, key: ArenaIndex, datums: ArenaIndex) -> Result<bool, EvalError> {
     let mut current = datums;
     loop {

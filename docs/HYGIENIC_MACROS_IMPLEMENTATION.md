@@ -2,7 +2,7 @@
 
 ## Implementation Progress
 
-**Status: Phase 1-8 Complete (Foundation through Bug Fixes)**
+**Status: Phase 1-9 Complete (Foundation through Remaining Special Forms)**
 
 ### Completed Work
 
@@ -16,6 +16,7 @@
 | Phase 6 | Cleanup | ✅ Complete |
 | Phase 7 | Evaluation-Time Macro Expansion | ✅ Complete |
 | Phase 8 | Bug Fixes (let-syntax scoping, named let) | ✅ Complete |
+| Phase 9 | Replace case and do with macros | ✅ Complete |
 
 ### Files Modified/Created
 
@@ -26,7 +27,7 @@
 - `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added internal define support to lambda, added LetSyntaxBody continuation handler
 - `crates/grift_eval/src/evaluator/expand.rs` - Complete macro expansion system, fixed lambda param transcription for ellipsis patterns
 - `crates/grift_eval/src/continuation.rs` - Removed unused continuation types, added LetSyntaxBody continuation
-- `crates/grift_parser/src/macros.scm` - Standard macro definitions including `letrec`, `letrec*`, and named `let`
+- `crates/grift_parser/src/macros.scm` - Standard macro definitions including `letrec`, `letrec*`, named `let`, `case`, and `do`
 
 ### Working Features
 
@@ -38,8 +39,85 @@
   - Ellipsis `...` for repetition
 - `let-syntax` for local macro definitions (with proper scoping)
 - Hygiene via gensym for lambda parameters
-- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `let` (including named let), `let*`, `letrec`, `letrec*`, `delay`
+- Standard macros: `when`, `unless`, `and`, `or`, `cond`, `case`, `do`, `let` (including named let), `let*`, `letrec`, `letrec*`, `delay`
 - Lambda supports internal `define` forms (R7RS compliant)
+
+### Phase 9: Replace case and do with macros
+
+**Summary**: Replaced the remaining complex special forms `case` and `do` with macro-based implementations.
+
+#### `case` Macro
+
+The `case` form is now implemented as a macro that expands to nested `if` expressions using `memv` for membership testing:
+
+```scheme
+(define-syntax case
+  (syntax-rules (else)
+    ((case key (else result ...))
+     (begin result ...))
+    ((case key)
+     (if #f #f))
+    ((case key ((datum ...) result ...) (else else-result ...))
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (begin else-result ...)))
+    ((case key ((datum ...) result ...))
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (if #f #f)))
+    ((case key ((datum ...) result ...) clause ... (else else-result ...))
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (case key clause ... (else else-result ...))))
+    ((case key ((datum ...) result ...) clause ...)
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (case key clause ...)))))
+```
+
+#### `do` Macro
+
+The `do` iteration form is implemented using helper macros that extract variable names/inits and step expressions, then build a named let:
+
+```scheme
+(define-syntax %do-vars
+  (syntax-rules ()
+    ((%do-vars () (pairs ...) (steps ...) test result body ...)
+     (%do-run (pairs ...) (steps ...) test result body ...))
+    ((%do-vars ((var init step) . rest) (pairs ...) (steps ...) test result body ...)
+     (%do-vars rest (pairs ... (var init)) (steps ... step) test result body ...))
+    ((%do-vars ((var init) . rest) (pairs ...) (steps ...) test result body ...)
+     (%do-vars rest (pairs ... (var init)) (steps ... var) test result body ...))))
+
+(define-syntax %do-run
+  (syntax-rules ()
+    ((%do-run (bindings ...) (steps ...) test (result ...) body ...)
+     (let %do-loop (bindings ...)
+       (if test
+           (begin (if #f #f) result ...)
+           (begin
+             body ...
+             (%do-loop steps ...)))))))
+
+(define-syntax do
+  (syntax-rules ()
+    ((do bindings (test result ...) body ...)
+     (%do-vars bindings () () test (result ...) body ...))))
+```
+
+#### Changes Made
+
+1. **Added macros to `macros.scm`**: Added `case`, `do`, `%do-vars`, and `%do-run` macro definitions
+2. **Removed special form handlers**: Removed `step_eval_case` and `step_eval_do` from `forms.rs`
+3. **Removed continuations**: Removed `CaseKey`, `DoInit`, `DoTestResult`, `DoBody`, `DoStep` from `continuation.rs`
+4. **Removed pack/unpack methods**: Removed related continuation pack/unpack methods from `core.rs`
+5. **Updated documentation**: Updated comments throughout codebase
+
+#### Benefits
+
+- **Simplified evaluator**: Removed ~150 lines of Rust code for case/do special form handling
+- **Consistent implementation**: All derived forms now use the same macro mechanism
+- **Extensibility**: Users can easily modify or extend these forms
 
 ### Phase 8: Bug Fixes
 
@@ -167,14 +245,22 @@ The following changes were made as part of Phase 6:
 3. **Removed step_eval_* functions from forms.rs:**
    - `step_eval_and`, `step_eval_or`, `step_eval_cond_cont`
    - `step_eval_let`, `step_eval_let_star`, `step_eval_letrec`
+   - `step_eval_case`, `step_eval_do` (Phase 9)
    - Related continuation handlers
 
 ### Known Limitations
 
 1. The `=>` clause in `cond` is not yet implemented (simplified for initial release)
 2. `letrec-syntax` is not yet implemented
-3. `case` and `do` remain as special forms (require complex ellipsis patterns - future work)
-4. `let-values` and `let*-values` not yet implemented
+3. `let-values` and `let*-values` not yet implemented
+4. `quasiquote` remains as a special form (requires evaluation during transcription)
+
+### Future Work
+
+1. **psyntax support**: The user has expressed interest in adding psyntax (portable syntax-case) support in the future
+2. **`let-values` and `let*-values`**: R7RS multiple value binding forms
+3. **`define-values`**: Define multiple values at once
+4. **`syntax-case`**: Procedural macros for more complex transformations
 
 ### Testing
 
@@ -182,14 +268,15 @@ All existing tests pass with the macro system enabled. Standard macros are loade
 
 ### Recent Changes
 
-1. **Phase 8 Bug Fixes**: Fixed `let-syntax` scoping and added named let support.
-2. **Evaluation-time macro expansion**: Macros are now expanded during evaluation rather than in a pre-processing phase.
-3. **Internal define support**: Lambda bodies now support internal definitions per R7RS, transformed to `letrec`.
-4. **`letrec` and `letrec*` as macros**: These binding forms now use a two-phase macro that:
+1. **Phase 9 case/do macros**: Replaced `case` and `do` special forms with macro implementations
+2. **Phase 8 Bug Fixes**: Fixed `let-syntax` scoping and added named let support.
+3. **Evaluation-time macro expansion**: Macros are now expanded during evaluation rather than in a pre-processing phase.
+4. **Internal define support**: Lambda bodies now support internal definitions per R7RS, transformed to `letrec`.
+5. **`letrec` and `letrec*` as macros**: These binding forms now use a two-phase macro that:
    - Phase 1 (`%letrec-names`): Creates all bindings with `#f` values
    - Phase 2 (`%letrec-inits`): Assigns all init expressions in order
    This ensures all names are visible to all init expressions for mutual recursion.
-5. **Removed binding form special forms**: `let`, `let*`, `letrec`, `letrec*` special form handlers removed since macros take precedence.
+6. **Removed binding form special forms**: `let`, `let*`, `letrec`, `letrec*` special form handlers removed since macros take precedence.
 
 ---
 
@@ -1896,6 +1983,8 @@ fn test_standard_library_with_macros() {
 2. **No identifier macros**: Can't make a symbol expand to something else
 3. **No `syntax-parameterize`**: No hygiene-bending utilities
 4. **Single expansion phase**: No separate visit/expand phases
+5. **`quasiquote` still a special form**: Requires evaluation during transcription
+6. **No `let-values` / `let*-values`**: Multiple value binding forms not yet implemented
 
 These limitations are acceptable for R7RS-small compatibility and can be addressed in future versions if needed.
 
@@ -1904,7 +1993,9 @@ These limitations are acceptable for R7RS-small compatibility and can be address
 ## Appendix C: Future Enhancements
 
 1. **Source locations**: Track macro expansion origin for error messages
-2. **`syntax-case`**: Add procedural macro support
+2. **`syntax-case`**: Add procedural macro support (psyntax)
 3. **Syntax objects**: Wrap expressions with metadata
 4. **Module system**: Per-module macro environments
 5. **Macro debugging**: Expansion tracing/stepping
+6. **`let-values` / `let*-values`**: Add multiple value binding forms as macros
+7. **`quasiquote` as macro**: Replace quasiquote special form with macro (requires careful handling)

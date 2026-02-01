@@ -167,6 +167,85 @@
      #f)))
 
 ;; ============================================================
+;; case - Pattern matching on values
+;; ============================================================
+
+;; case - match key against datum lists using eqv?
+;; Pattern: (case key ((datum ...) result ...) ... (else result ...))
+(define-syntax case
+  (syntax-rules (else)
+    ;; Base case: just else
+    ((case key (else result ...))
+     (begin result ...))
+    ;; No else and no clauses - return unspecified
+    ((case key)
+     (if #f #f))
+    ;; Single clause with else after
+    ((case key ((datum ...) result ...) (else else-result ...))
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (begin else-result ...)))
+    ;; Single clause without else
+    ((case key ((datum ...) result ...))
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (if #f #f)))
+    ;; Multiple clauses with else
+    ((case key ((datum ...) result ...) clause ... (else else-result ...))
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (case key clause ... (else else-result ...))))
+    ;; Multiple clauses without else
+    ((case key ((datum ...) result ...) clause ...)
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (case key clause ...)))))
+
+;; ============================================================
+;; do - Iteration construct
+;; ============================================================
+
+;; do uses a simpler recursive approach:
+;; 1. Extract bindings into (var init) pairs for named let
+;; 2. Extract step expressions for the recursive call
+;; 
+;; Uses two helpers:
+;; %do-extract-vars - builds (var init) pairs
+;; %do-extract-steps - builds step expressions for recursive call
+
+;; Helper to extract var/init pairs for named let bindings
+;; Also collects step expressions
+(define-syntax %do-vars
+  (syntax-rules ()
+    ;; Base case - no more bindings
+    ((%do-vars () (pairs ...) (steps ...) test result body ...)
+     (%do-run (pairs ...) (steps ...) test result body ...))
+    ;; Binding with step
+    ((%do-vars ((var init step) . rest) (pairs ...) (steps ...) test result body ...)
+     (%do-vars rest (pairs ... (var init)) (steps ... step) test result body ...))
+    ;; Binding without step (step = var)
+    ((%do-vars ((var init) . rest) (pairs ...) (steps ...) test result body ...)
+     (%do-vars rest (pairs ... (var init)) (steps ... var) test result body ...))))
+
+;; Helper to run the do loop using named let
+(define-syntax %do-run
+  (syntax-rules ()
+    ((%do-run (bindings ...) (steps ...) test (result ...) body ...)
+     (let %do-loop (bindings ...)
+       (if test
+           (begin (if #f #f) result ...)
+           (begin
+             body ...
+             (%do-loop steps ...)))))))
+
+;; do - iteration with variable bindings
+;; Pattern: (do ((var init step) ...) (test result ...) body ...)
+(define-syntax do
+  (syntax-rules ()
+    ((do bindings (test result ...) body ...)
+     (%do-vars bindings () () test (result ...) body ...))))
+
+;; ============================================================
 ;; Delayed Evaluation
 ;; ============================================================
 

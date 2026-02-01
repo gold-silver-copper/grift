@@ -67,25 +67,7 @@ pub enum Cont {
     // Continuation types for fully trampolined evaluation
     // ========================================================================
 
-    /// After evaluating key for case, check clauses
-    /// Stack data: [clauses, env] (2 elements)
-    CaseKey(usize),
-
-    /// After evaluating a do init expression, bind and continue with remaining bindings
-    /// Stack data: [remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var] (7 elements)
-    DoInit(usize),
-
-    /// After evaluating do test, decide to exit or continue
-    /// Stack data: [var_steps, test_clause, body, loop_env] (4 elements)
-    DoTestResult(usize),
-
-    /// Evaluate body expressions in do loop (for side effects)
-    /// Stack data: [remaining_body, var_steps, test_clause, body, loop_env] (5 elements)
-    DoBody(usize),
-
-    /// Evaluate step expressions in do loop
-    /// Stack data: [remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var] (7 elements)
-    DoStep(usize),
+    // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
 
     /// After evaluating first arg for apply, evaluate second arg (args list)
     /// Stack data: [args_list_expr, env] (2 elements)
@@ -156,7 +138,7 @@ impl Cont {
             Cont::QuasiquoteSpliceAppend(_) => 1,
             Cont::LetSyntaxBody(_) => 1,
             Cont::BeginSeq(_) => 2,
-            Cont::CaseKey(_) => 2,
+            // Note: CaseKey removed
             Cont::ApplyFirst(_) => 2,
             Cont::ApplySecond(_) => 2,
             Cont::SetValue(_) => 2,
@@ -167,13 +149,12 @@ impl Cont {
             Cont::QuasiquoteCar(_) => 3,
             Cont::QuasiquoteSplice(_) => 3,
             Cont::BinaryBuiltinFirst(_) => 4,
-            Cont::DoTestResult(_) => 4,
+            // Note: DoTestResult removed
             Cont::NativeArgsCollect(_) => 4,
             Cont::BuiltinForceArg(_) => 5,
-            Cont::DoBody(_) => 5,
+            // Note: DoBody removed
             Cont::LambdaBindArg(_) => 6,
-            Cont::DoInit(_) => 7,
-            Cont::DoStep(_) => 7,
+            // Note: DoInit, DoStep removed
         }
     }
 }

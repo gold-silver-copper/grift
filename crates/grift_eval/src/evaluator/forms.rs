@@ -1,13 +1,14 @@
 //! Special form handling for the evaluator.
 //!
 //! Contains step_return (continuation handling) and all step_eval_* forms
-//! (let, let*, letrec, begin, and, or, case, do, quasiquote, apply, values, etc.)
+//! (begin, quasiquote, apply, values, etc.)
+//!
+//! Note: let, let*, letrec, letrec*, and, or, cond, case, do are now handled by macros.
 
 use grift_parser::{ArenaIndex, Value, parse};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
 use crate::continuation::{Cont, TrampolineState};
-use crate::helpers::case_matches;
 use crate::extract_args;
 
 use super::Evaluator;
@@ -301,89 +302,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // New continuation types for fully trampolined evaluation
             // ================================================================
 
-            Cont::CaseKey(data_start) => {
-                let (clauses, env) = self.unpack_case_key(data_start);
-                // val is the evaluated key - check clauses
-                self.step_return_case_key(val, clauses, env)
-            }
-
-            Cont::DoInit(data_start) => {
-                let (remaining_bindings, var_steps, test_clause, body, loop_env, original_env, current_var) = self.unpack_do_init(data_start);
-                // val is the evaluated init expression - bind and continue
-                let extended_env = self.env_extend(loop_env, current_var, val)?;
-                self.step_return_do_init(remaining_bindings, var_steps, test_clause, body, extended_env, original_env)
-            }
-
-            Cont::DoTestResult(data_start) => {
-                let (var_steps, test_clause, body, loop_env) = self.unpack_do_test_result(data_start);
-                // val is the evaluated test result
-                if !self.is_false(val)? {
-                    // Test passed - evaluate result expressions
-                    let result_exprs = self.lisp.cdr(test_clause)?;
-                    if self.lisp.get(result_exprs)?.is_nil() {
-                        Ok(Some(TrampolineState::Return { val }))
-                    } else {
-                        let state = self.step_eval_begin(result_exprs, loop_env)?;
-                        Ok(Some(state))
-                    }
-                } else {
-                    // Test failed - evaluate body for side effects, then steps
-                    if self.lisp.get(body)?.is_nil() {
-                        // No body - go straight to steps
-                        self.step_do_start_steps(var_steps, test_clause, body, loop_env)
-                    } else {
-                        // Evaluate body expressions
-                        let first_body = self.lisp.car(body)?;
-                        let rest_body = self.lisp.cdr(body)?;
-                        let data_start = self.pack_do_body(rest_body, var_steps, test_clause, body, loop_env)?;
-                        self.push_cont(Cont::DoBody(data_start))?;
-                        Ok(Some(TrampolineState::Eval { expr: first_body, env: loop_env }))
-                    }
-                }
-            }
-
-            Cont::DoBody(data_start) => {
-                let (remaining_body, var_steps, test_clause, body, loop_env) = self.unpack_do_body(data_start);
-                // val is discarded (body evaluated for side effects)
-                if self.lisp.get(remaining_body)?.is_nil() {
-                    // Body done - start evaluating step expressions
-                    self.step_do_start_steps(var_steps, test_clause, body, loop_env)
-                } else {
-                    // More body expressions
-                    let next_body = self.lisp.car(remaining_body)?;
-                    let rest_body = self.lisp.cdr(remaining_body)?;
-                    let data_start = self.pack_do_body(rest_body, var_steps, test_clause, body, loop_env)?;
-                    self.push_cont(Cont::DoBody(data_start))?;
-                    Ok(Some(TrampolineState::Eval { expr: next_body, env: loop_env }))
-                }
-            }
-
-            Cont::DoStep(data_start) => {
-                let (remaining_steps, collected_vals, var_steps, test_clause, body, loop_env, current_var) = self.unpack_do_step(data_start);
-                // val is the evaluated step expression - collect and continue
-                let new_collected = self.lisp.cons(current_var, val)?;
-                let new_collected = self.lisp.cons(new_collected, collected_vals)?;
-                
-                if self.lisp.get(remaining_steps)?.is_nil() {
-                    // All steps evaluated - update environment and loop
-                    let new_env = self.apply_do_step_values(loop_env, new_collected)?;
-                    // Continue to next iteration - evaluate test
-                    let data_start = self.pack_do_test_result(var_steps, test_clause, body, new_env)?;
-                    self.push_cont(Cont::DoTestResult(data_start))?;
-                    let test = self.lisp.car(test_clause)?;
-                    Ok(Some(TrampolineState::Eval { expr: test, env: new_env }))
-                } else {
-                    // More steps to evaluate
-                    let next_pair = self.lisp.car(remaining_steps)?;
-                    let rest_steps = self.lisp.cdr(remaining_steps)?;
-                    let next_var = self.lisp.car(next_pair)?;
-                    let next_step = self.lisp.cdr(next_pair)?;
-                    
-                    let data_start = self.pack_do_step(rest_steps, new_collected, var_steps, test_clause, body, loop_env, next_var)?;
-                    self.push_cont(Cont::DoStep(data_start))?;
-                    Ok(Some(TrampolineState::Eval { expr: next_step, env: loop_env }))
-                }
-            }
+            // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
 
             Cont::ApplyFirst(data_start) => {
                 let (args_list_expr, env) = self.unpack_apply_first(data_start);
@@ -528,141 +447,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Helper functions for fully trampolined evaluation
     // ========================================================================
 
-    /// Helper for case - check clauses after key is evaluated
-    pub(super) fn step_return_case_key(&mut self, key: ArenaIndex, clauses: ArenaIndex, env: ArenaIndex) 
-        -> Result<Option<TrampolineState>, EvalError> 
-    {
-        // Check each clause
-        let mut current = clauses;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // No match found, return nil
-                    let nil = self.lisp.nil()?;
-                    return Ok(Some(TrampolineState::Return { val: nil }));
-                }
-                Value::Cons { .. } => {
-                    let clause = self.lisp.car(current)?;
-                    let rest = self.lisp.cdr(current)?;
-                    let datums = self.lisp.car(clause)?;
-                    let body = self.lisp.cdr(clause)?;
-                    
-                    // Check for 'else' clause
-                    if self.lisp.symbol_matches(datums, "else").unwrap_or(false) {
-                        let state = self.step_eval_begin(body, env)?;
-                        return Ok(Some(state));
-                    }
-                    
-                    // Check if key matches any datum
-                    if case_matches(self.lisp, key, datums)? {
-                        let state = self.step_eval_begin(body, env)?;
-                        return Ok(Some(state));
-                    }
-                    
-                    current = rest;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, clauses)),
-            }
-        }
-    }
-
-    /// Helper for do - continue processing init bindings after one is evaluated
-    pub(super) fn step_return_do_init(
-        &mut self, 
-        remaining_bindings: ArenaIndex, 
-        var_steps: ArenaIndex, 
-        test_clause: ArenaIndex, 
-        body: ArenaIndex, 
-        loop_env: ArenaIndex, 
-        original_env: ArenaIndex
-    ) -> Result<Option<TrampolineState>, EvalError> {
-        if self.lisp.get(remaining_bindings)?.is_nil() {
-            // All bindings done - start the loop by evaluating the test
-            let data_start = self.pack_do_test_result(var_steps, test_clause, body, loop_env)?;
-            self.push_cont(Cont::DoTestResult(data_start))?;
-            let test = self.lisp.car(test_clause)?;
-            Ok(Some(TrampolineState::Eval { expr: test, env: loop_env }))
-        } else {
-            // More bindings - get next binding
-            let binding = self.lisp.car(remaining_bindings)?;
-            let rest = self.lisp.cdr(remaining_bindings)?;
-            
-            let var = self.lisp.car(binding)?;
-            let init_rest = self.lisp.cdr(binding)?;
-            let init = self.lisp.car(init_rest)?;
-            let step_rest = self.lisp.cdr(init_rest)?;
-            let step = if self.lisp.get(step_rest)?.is_nil() {
-                var // No step, use variable itself
-            } else {
-                self.lisp.car(step_rest)?
-            };
-            
-            // Add (var . step) to var_steps
-            let var_step_pair = self.lisp.cons(var, step)?;
-            let new_var_steps = self.lisp.cons(var_step_pair, var_steps)?;
-            
-            // Push continuation and evaluate init
-            let data_start = self.pack_do_init(rest, new_var_steps, test_clause, body, loop_env, original_env, var)?;
-            self.push_cont(Cont::DoInit(data_start))?;
-            Ok(Some(TrampolineState::Eval { expr: init, env: original_env }))
-        }
-    }
-
-    /// Helper for do - start evaluating step expressions
-    pub(super) fn step_do_start_steps(
-        &mut self,
-        var_steps: ArenaIndex,
-        test_clause: ArenaIndex,
-        body: ArenaIndex,
-        loop_env: ArenaIndex,
-    ) -> Result<Option<TrampolineState>, EvalError> {
-        if self.lisp.get(var_steps)?.is_nil() {
-            // No variables - just loop back to test
-            let data_start = self.pack_do_test_result(var_steps, test_clause, body, loop_env)?;
-            self.push_cont(Cont::DoTestResult(data_start))?;
-            let test = self.lisp.car(test_clause)?;
-            Ok(Some(TrampolineState::Eval { expr: test, env: loop_env }))
-        } else {
-            // Start evaluating step expressions
-            // var_steps is a list of (var . step) pairs, we need to reverse it first
-            // since we built it in reverse order during init
-            let reversed = self.reverse_list(var_steps)?;
-            
-            let first_pair = self.lisp.car(reversed)?;
-            let rest_steps = self.lisp.cdr(reversed)?;
-            let first_var = self.lisp.car(first_pair)?;
-            let first_step = self.lisp.cdr(first_pair)?;
-            
-            let nil = self.lisp.nil()?;
-            let data_start = self.pack_do_step(rest_steps, nil, reversed, test_clause, body, loop_env, first_var)?;
-            self.push_cont(Cont::DoStep(data_start))?;
-            Ok(Some(TrampolineState::Eval { expr: first_step, env: loop_env }))
-        }
-    }
-
-    /// Helper for do - apply collected step values to create new environment
-    pub(super) fn apply_do_step_values(&mut self, base_env: ArenaIndex, collected: ArenaIndex) -> EvalResult {
-        // collected is a list of ((var . val) ...) pairs in reverse order
-        let mut result_env = base_env;
-        let mut current = collected;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => break,
-                Value::Cons { .. } => {
-                    let pair = self.lisp.car(current)?;
-                    let rest = self.lisp.cdr(current)?;
-                    let var = self.lisp.car(pair)?;
-                    let val = self.lisp.cdr(pair)?;
-                    result_env = self.env_extend(result_env, var, val)?;
-                    current = rest;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-            }
-        }
-        
-        Ok(result_env)
-    }
+    // Note: step_return_case_key, step_return_do_init, step_do_start_steps,
+    // and apply_do_step_values removed - case and do are now handled by macros (Phase 9)
 
     /// Helper for quasiquote - trampolined processing
     pub(super) fn step_quasiquote_trampoline(&mut self, template: ArenaIndex, env: ArenaIndex, depth: usize) 
@@ -752,61 +538,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     // Note: step_eval_and and step_eval_or removed - and/or are now handled by macros
-
-    pub(super) fn step_eval_case(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let key_expr = self.lisp.car(args)?;
-        let clauses = self.lisp.cdr(args)?;
-        
-        // Push continuation to check clauses after key is evaluated
-        let data_start = self.pack_case_key(clauses, env)?;
-        self.push_cont(Cont::CaseKey(data_start))?;
-        
-        // Evaluate the key expression
-        Ok(TrampolineState::Eval { expr: key_expr, env })
-    }
-    
-    /// Evaluate do - iteration construct
-    /// (do ((var init step) ...) (test result ...) body ...)
-    pub(super) fn step_eval_do(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let bindings = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        let test_clause = self.lisp.car(rest)?;
-        let body = self.lisp.cdr(rest)?;
-        
-        // If no bindings, go straight to the loop
-        if self.lisp.get(bindings)?.is_nil() {
-            // No variables - just evaluate test
-            let nil = self.lisp.nil()?;
-            let data_start = self.pack_do_test_result(nil, test_clause, body, env)?;
-            self.push_cont(Cont::DoTestResult(data_start))?;
-            let test = self.lisp.car(test_clause)?;
-            return Ok(TrampolineState::Eval { expr: test, env });
-        }
-        
-        // Get the first binding
-        let binding = self.lisp.car(bindings)?;
-        let rest_bindings = self.lisp.cdr(bindings)?;
-        
-        let var = self.lisp.car(binding)?;
-        let init_rest = self.lisp.cdr(binding)?;
-        let init = self.lisp.car(init_rest)?;
-        let step_rest = self.lisp.cdr(init_rest)?;
-        let step = if self.lisp.get(step_rest)?.is_nil() {
-            var // No step, use variable itself
-        } else {
-            self.lisp.car(step_rest)?
-        };
-        
-        // Build first (var . step) pair
-        let var_step_pair = self.lisp.cons(var, step)?;
-        let nil = self.lisp.nil()?;
-        let var_steps = self.lisp.cons(var_step_pair, nil)?;
-        
-        // Push continuation and evaluate first init
-        let data_start = self.pack_do_init(rest_bindings, var_steps, test_clause, body, env, env, var)?;
-        self.push_cont(Cont::DoInit(data_start))?;
-        Ok(TrampolineState::Eval { expr: init, env })
-    }
+    // Note: step_eval_case and step_eval_do removed - case and do are now handled by macros (Phase 9)
     
     /// Evaluate quasiquote - template with unquote (trampolined version)
     pub(super) fn eval_quasiquote(&mut self, template: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
