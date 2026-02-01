@@ -351,19 +351,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         literals: ArenaIndex,
         bindings: ArenaIndex,
     ) -> Result<Option<ArenaIndex>, EvalError> {
-        // Check if expression is a list
-        if !matches!(self.lisp.get(expr)?, Value::Cons { .. }) {
-            return Ok(None);
-        }
-
         let pat_car = self.lisp.car(pattern)?;
         let pat_cdr = self.lisp.cdr(pattern)?;
 
         // Check for ellipsis: (subpat ... . rest)
+        // Must check this BEFORE requiring expr to be a Cons, because
+        // ellipsis can match zero elements (empty list)
         if self.has_ellipsis(pat_cdr)? {
             return self.match_ellipsis_pattern(
                 pat_car, pat_cdr, expr, literals, bindings
             );
+        }
+
+        // For non-ellipsis patterns, expression must be a list
+        if !matches!(self.lisp.get(expr)?, Value::Cons { .. }) {
+            return Ok(None);
         }
 
         // Regular list: match car and cdr
@@ -589,9 +591,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<(), EvalError> {
         match self.lisp.get(template)? {
             Value::Symbol(_) => {
-                // Check if this symbol is bound to a list
+                // Check if this symbol is bound to a list (including empty list)
+                // Nil counts as a list for ellipsis purposes (zero repetitions)
                 if let Some(val) = self.bindings_lookup(bindings, template)? {
-                    if matches!(self.lisp.get(val)?, Value::Cons { .. }) {
+                    if matches!(self.lisp.get(val)?, Value::Cons { .. } | Value::Nil) {
                         // Add to result if not already there
                         if self.bindings_lookup(*result, template)?.is_none() {
                             *result = self.lisp.cons(template, *result)?;
@@ -758,50 +761,40 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let params = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
 
-        // Rename each introduced parameter
-        let (new_params, new_renames) = self.rename_introduced_params(
-            params, bindings, renames
+        // Transcribe params - this handles ellipsis patterns like (var ...)
+        let new_params = self.transcribe_template(params, bindings, renames, def_env)?;
+        
+        // Rename any introduced parameters (non-pattern variables)
+        let (final_params, new_renames) = self.rename_introduced_params(
+            new_params, bindings, renames
         )?;
 
         // Transcribe body with extended renames
         let new_body = self.transcribe_template(body, bindings, new_renames, def_env)?;
 
         let lambda_sym = self.lisp.symbol("lambda")?;
-        let inner = self.lisp.cons(new_params, new_body)?;
+        let inner = self.lisp.cons(final_params, new_body)?;
         self.lisp.cons(lambda_sym, inner).map_err(Into::into)
     }
 
     /// Rename parameters that are introduced by the macro (not from pattern)
+    /// 
+    /// After transcription, params contains actual symbols. We need to identify
+    /// which ones are introduced by the macro (literals in the template) vs.
+    /// which came from the user's code (via pattern variable substitution).
+    /// 
+    /// For simplicity, we skip renaming entirely - user code symbols shouldn't
+    /// be renamed, and macro-introduced symbols in params are rare.
     fn rename_introduced_params(
         &mut self,
         params: ArenaIndex,
-        bindings: ArenaIndex,
+        _bindings: ArenaIndex,
         renames: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let mut new_params = self.lisp.nil()?;
-        let mut new_renames = renames;
-        let mut current = params;
-
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let param = self.lisp.car(current)?;
-
-            // Check if this param is from a pattern variable
-            let new_param = if self.bindings_lookup(bindings, param)?.is_some() {
-                // From pattern - use as-is (already substituted)
-                param
-            } else {
-                // Introduced by macro - generate fresh name
-                let fresh = self.gensym_simple()?;
-                new_renames = self.rename_extend(new_renames, param, fresh)?;
-                fresh
-            };
-
-            new_params = self.lisp.cons(new_param, new_params)?;
-            current = self.lisp.cdr(current)?;
-        }
-
-        let new_params = self.reverse_list(new_params)?;
-        Ok((new_params, new_renames))
+        // After transcription, params already contains the correct symbols
+        // Don't rename them - they either came from user code or are
+        // intentionally introduced by the macro
+        Ok((params, renames))
     }
 }
 

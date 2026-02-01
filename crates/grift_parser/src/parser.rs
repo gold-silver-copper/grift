@@ -168,6 +168,11 @@ impl<'a> Parser<'a> {
         self.input.get(self.pos + 1).copied()
     }
     
+    /// Peek at a character at a specific offset from current position
+    fn peek_at(&self, offset: usize) -> Option<u8> {
+        self.input.get(self.pos + offset).copied()
+    }
+    
     /// Advance and return the current character
     fn advance(&mut self) -> Option<u8> {
         let c = self.peek()?;
@@ -580,27 +585,39 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(b'.') => {
-                    // Dotted pair: (a . b)
-                    self.advance();
-                    self.skip_whitespace();
-                    
-                    if count == 0 {
-                        return Err(self.error(ParseErrorKind::UnexpectedChar('.')));
+                    // Check if this is the ellipsis symbol (...) or a dotted pair (a . b)
+                    // Dotted pair: single dot followed by whitespace or close paren after element
+                    // Ellipsis: multiple dots (like ...)
+                    if self.peek_at(1) == Some(b'.') {
+                        // This is ... (ellipsis) - parse as a symbol
+                        if count >= MAX_LIST_DEPTH {
+                            return Err(self.error(ParseErrorKind::OutOfMemory));
+                        }
+                        elements[count] = self.parse(lisp)?;
+                        count += 1;
+                    } else {
+                        // Dotted pair: (a . b)
+                        self.advance();
+                        self.skip_whitespace();
+                        
+                        if count == 0 {
+                            return Err(self.error(ParseErrorKind::UnexpectedChar('.')));
+                        }
+                        
+                        let cdr = self.parse(lisp)?;
+                        self.skip_whitespace();
+                        
+                        if self.advance() != Some(b')') {
+                            return Err(self.error(ParseErrorKind::UnmatchedParen));
+                        }
+                        
+                        // Build the dotted list
+                        let mut result = cdr;
+                        for i in (0..count).rev() {
+                            result = lisp.cons(elements[i], result)?;
+                        }
+                        return Ok(result);
                     }
-                    
-                    let cdr = self.parse(lisp)?;
-                    self.skip_whitespace();
-                    
-                    if self.advance() != Some(b')') {
-                        return Err(self.error(ParseErrorKind::UnmatchedParen));
-                    }
-                    
-                    // Build the dotted list
-                    let mut result = cdr;
-                    for i in (0..count).rev() {
-                        result = lisp.cons(elements[i], result)?;
-                    }
-                    return Ok(result);
                 }
                 Some(_) => {
                     if count >= MAX_LIST_DEPTH {
