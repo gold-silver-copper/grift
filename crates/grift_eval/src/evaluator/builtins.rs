@@ -1,0 +1,1188 @@
+//! Builtin function implementations for the evaluator.
+//!
+//! Contains apply_builtin, apply_binary_builtin, and related helper functions
+//! for numeric operations, comparisons, and string/char operations.
+
+use grift_parser::{ArenaIndex, Value, Builtin};
+
+use crate::error::{ErrorKind, EvalError, EvalResult};
+use crate::continuation::{Cont, TrampolineState, is_binary_builtin};
+use crate::helpers::{gcd_helper, int_pow, equal_recursive};
+use crate::{
+    extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_int_identity, builtin_div_op,
+    builtin_unary_int, builtin_char_to_int, builtin_char_transform,
+    binary_int_cmp, binary_int_op, binary_div_op,
+};
+
+use super::Evaluator;
+
+impl<'a, const N: usize> Evaluator<'a, N> {
+    pub(super) fn apply_builtin_with_args(&mut self, builtin: Builtin, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        // Get first arg expression
+        let first_arg = self.lisp.car(args_expr)?;
+        let rest_args = self.lisp.cdr(args_expr)?;
+        
+        // Check for binary builtins optimization
+        if is_binary_builtin(builtin) {
+            // Check if exactly 2 args
+            if !self.lisp.get(rest_args)?.is_nil() {
+                let second_arg_expr = self.lisp.car(rest_args)?;
+                let third_check = self.lisp.cdr(rest_args)?;
+                if self.lisp.get(third_check)?.is_nil() {
+                    // Exactly 2 args - use optimized binary path
+                    // Evaluate second arg expr (store for later), then evaluate first
+                    let data_start = self.pack_binary_builtin_first(builtin, second_arg_expr, call_expr, env)?;
+                    self.push_cont(Cont::BinaryBuiltinFirst(data_start))?;
+                    return Ok(Some(TrampolineState::Eval { expr: first_arg, env }));
+                }
+            }
+        }
+        
+        // General case: collect args and apply
+        let nil = self.lisp.nil()?;
+        let data_start = self.pack_builtin_force_arg(builtin, rest_args, nil, call_expr, env)?;
+        self.push_cont(Cont::BuiltinForceArg(data_start))?;
+        
+        Ok(Some(TrampolineState::Eval { expr: first_arg, env }))
+    }
+    
+    /// Reverse a list (used for BuiltinForceArg fallback path)
+    pub(super) fn reverse_list(&self, mut list: ArenaIndex) -> EvalResult {
+        let mut result = self.lisp.nil()?;
+        loop {
+            match self.lisp.get(list)? {
+                Value::Nil => return Ok(result),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(list)?;
+                    let cdr = self.lisp.cdr(list)?;
+                    result = self.lisp.cons(car, result)?;
+                    list = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
+            }
+        }
+    }
+    
+    /// Apply a builtin function (trampolined version)
+    /// Arguments are already evaluated in strict mode
+    pub(super) fn apply_builtin_trampolined(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
+        -> Result<TrampolineState, EvalError> 
+    {
+        // In strict evaluation, args are already evaluated values
+        let result = self.apply_builtin(builtin, args, call_expr)?;
+        Ok(TrampolineState::Return { val: result })
+    }
+    
+    /// Apply a builtin with already-evaluated arguments
+    pub(super) fn apply_builtin(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
+        -> EvalResult 
+    {
+        match builtin {
+            Builtin::Car => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Cons { .. } => self.lisp.car(arg).map_err(Into::into),
+                    // Scheme R7RS: car of empty list is an error
+                    Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
+                    _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::Cdr => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Cons { .. } => self.lisp.cdr(arg).map_err(Into::into),
+                    // Scheme R7RS: cdr of empty list is an error
+                    Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
+                    _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::Cons => {
+                extract_args!(self, args, a, b);
+                self.lisp.cons(a, b).map_err(Into::into)
+            }
+            
+            Builtin::List => Ok(args),
+            
+            // Scheme-compliant equality predicates
+            Builtin::EqP => {
+                // eq? - tests whether two objects are the same object
+                extract_args!(self, args, a, b);
+                
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                
+                let eq = match (val_a, val_b) {
+                    (Value::Nil, Value::Nil) => true,
+                    (Value::True, Value::True) => true,
+                    (Value::False, Value::False) => true,
+                    (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Char(x), Value::Char(y)) => x == y,
+                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    _ => a == b,
+                };
+                
+                self.lisp.boolean(eq).map_err(Into::into)
+            }
+            
+            Builtin::EqvP => {
+                // eqv? - tests value equivalence (same as eq? for most types in our impl)
+                extract_args!(self, args, a, b);
+                
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                
+                let eqv = match (val_a, val_b) {
+                    (Value::Nil, Value::Nil) => true,
+                    (Value::True, Value::True) => true,
+                    (Value::False, Value::False) => true,
+                    (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Char(x), Value::Char(y)) => x == y,
+                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    _ => a == b,
+                };
+                
+                self.lisp.boolean(eqv).map_err(Into::into)
+            }
+            
+            Builtin::EqualP => {
+                // equal? - tests structural equality recursively
+                let result = equal_recursive(self.lisp, self.lisp.car(args)?, self.lisp.car(self.lisp.cdr(args)?)?)?;
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            
+            Builtin::Null => builtin_unary_pred!(self, args, |v: Value| v.is_nil()),
+            
+            Builtin::Pairp => builtin_unary_pred!(self, args, |v: Value| v.is_cons()),
+            
+            Builtin::Numberp => builtin_unary_pred!(self, args, |v: Value| v.is_number()),
+            
+            Builtin::Booleanp => builtin_unary_pred!(self, args, |v: Value| v.is_boolean()),
+            
+            Builtin::Procedurep => builtin_unary_pred!(self, args, |v: Value| v.is_procedure()),
+            
+            Builtin::Symbolp => builtin_unary_pred!(self, args, |v: Value| v.is_symbol()),
+            
+            Builtin::Not => builtin_unary_pred!(self, args, |v: Value| v.is_false()),
+            
+            Builtin::Add => self.numeric_fold(args, 0, 
+                |a, b| a.checked_add(b), 
+                call_expr),
+            
+            Builtin::Sub => {
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    // Unary minus
+                    self.lisp.number(-first).map_err(Into::into)
+                } else {
+                    self.numeric_fold(rest, first, 
+                        |a, b| a.checked_sub(b), 
+                        call_expr)
+                }
+            }
+            
+            Builtin::Mul => self.numeric_fold(args, 1, 
+                |a, b| a.checked_mul(b), 
+                call_expr),
+            
+            Builtin::Div => {
+                // Integer division
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold(rest, first, 
+                    |a, b| if b == 0 { None } else { a.checked_div(b) },
+                    call_expr)
+            }
+            
+            // Division operations with zero check - generated by builtin_div_op! macro
+            // Scheme modulo: result has the sign of the divisor
+            Builtin::Modulo => builtin_div_op!(self, args, call_expr, |a, b| ((a % b) + b) % b),
+            // Scheme remainder: result has the sign of the dividend
+            Builtin::Remainder => builtin_div_op!(self, args, call_expr, |a, b| a % b),
+            // Integer quotient (truncated towards zero)
+            Builtin::Quotient => builtin_div_op!(self, args, call_expr, |a, b| a / b),
+            
+            Builtin::Abs => builtin_unary_int!(self, args, call_expr, |n: isize| n.abs()),
+            
+            Builtin::Max => {
+                // Maximum of one or more numbers
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold(rest, first, 
+                    |a, b| Some(if a > b { a } else { b }),
+                    call_expr)
+            }
+            
+            Builtin::Min => {
+                // Minimum of one or more numbers
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                self.numeric_fold(rest, first,
+                    |a, b| Some(if a < b { a } else { b }),
+                    call_expr)
+            }
+            
+            Builtin::Gcd => {
+                // Greatest common divisor (integers only)
+                // gcd() with no args returns 0, gcd(n) returns |n|
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(0).map_err(Into::into);
+                }
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?.abs();
+                let rest = self.lisp.cdr(args)?;
+                let mut acc = first;
+                let mut current = rest;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => return self.lisp.number(acc).map_err(Into::into),
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            let n = self.get_int(car, call_expr)?.abs();
+                            acc = gcd_helper(acc, n);
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+            }
+            
+            Builtin::Lcm => {
+                // Least common multiple (integers only)
+                // lcm() with no args returns 1, lcm(n) returns |n|
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(1).map_err(Into::into);
+                }
+                let first = self.get_int(self.lisp.car(args)?, call_expr)?.abs();
+                let rest = self.lisp.cdr(args)?;
+                let mut acc = first;
+                let mut current = rest;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => return self.lisp.number(acc).map_err(Into::into),
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            let b_abs = self.get_int(car, call_expr)?.abs();
+                            if acc == 0 || b_abs == 0 {
+                                acc = 0;
+                            } else {
+                                let g = gcd_helper(acc, b_abs);
+                                acc = (acc / g).saturating_mul(b_abs);
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+            }
+            
+            Builtin::Expt => {
+                // Exponentiation: (expt base power)
+                let base = self.get_int(self.lisp.car(args)?, call_expr)?;
+                let power = self.get_int(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                
+                if power < 0 {
+                    // Negative integer exponent - error for integer-only mode
+                    if base == 0 {
+                        return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                    }
+                    // Return 0 for |base| > 1, 1 for |base| == 1
+                    let result = if base.abs() == 1 { 1 } else { 0 };
+                    self.lisp.number(result).map_err(Into::into)
+                } else {
+                    let result = int_pow(base, power as usize);
+                    self.lisp.number(result).map_err(Into::into)
+                }
+            }
+            
+            Builtin::Square => builtin_unary_int!(self, args, call_expr, |n: isize| n.saturating_mul(n)),
+            
+            // Numeric predicates - generated by builtin_numeric_pred! macro
+            Builtin::Zerop => builtin_numeric_pred!(self, args, call_expr, |n| n == 0),
+            Builtin::Positivep => builtin_numeric_pred!(self, args, call_expr, |n| n > 0),
+            Builtin::Negativep => builtin_numeric_pred!(self, args, call_expr, |n| n < 0),
+            Builtin::Oddp => builtin_numeric_pred!(self, args, call_expr, |n| n % 2 != 0),
+            Builtin::Evenp => builtin_numeric_pred!(self, args, call_expr, |n| n % 2 == 0),
+            
+            // All numbers are integers and exact in this implementation
+            Builtin::Integerp => builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Number(_))),
+            Builtin::Exactp => builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Number(_))),
+            Builtin::ExactIntegerp => builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Number(_))),
+            
+            Builtin::Inexactp => {
+                // No inexact numbers - always false for valid numbers, error for non-numbers
+                let val = self.lisp.car(args)?;
+                match self.lisp.get(val)? {
+                    Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+            
+            // Rounding operations (identity for integers) - generated by builtin_int_identity! macro
+            Builtin::Floor => builtin_int_identity!(self, args, call_expr),
+            Builtin::Ceiling => builtin_int_identity!(self, args, call_expr),
+            Builtin::Truncate => builtin_int_identity!(self, args, call_expr),
+            Builtin::Round => builtin_int_identity!(self, args, call_expr),
+            
+            Builtin::Lt => self.compare_numbers(args, |a, b| a < b, call_expr),
+            Builtin::Gt => self.compare_numbers(args, |a, b| a > b, call_expr),
+            Builtin::Le => self.compare_numbers(args, |a, b| a <= b, call_expr),
+            Builtin::Ge => self.compare_numbers(args, |a, b| a >= b, call_expr),
+            Builtin::NumEq => self.compare_numbers(args, |a, b| a == b, call_expr),
+            
+            Builtin::Display => {
+                Ok(self.lisp.car(args)?)
+            }
+            
+            Builtin::Newline => {
+                self.lisp.nil().map_err(Into::into)
+            }
+            
+            Builtin::Error => {
+                let msg = self.lisp.car(args)?;
+                Err(self.make_error(ErrorKind::UserError, msg))
+            }
+            
+            Builtin::SetCar => {
+                // (set-car! pair value) - mutate the car of a cons cell
+                extract_args!(self, args, pair, value);
+                
+                // Verify it's a pair
+                match self.lisp.get(pair)? {
+                    Value::Cons { .. } => {
+                        self.lisp.set_car(pair, value).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
+                }
+            }
+            
+            Builtin::SetCdr => {
+                // (set-cdr! pair value) - mutate the cdr of a cons cell
+                extract_args!(self, args, pair, value);
+                
+                // Verify it's a pair
+                match self.lisp.get(pair)? {
+                    Value::Cons { .. } => {
+                        self.lisp.set_cdr(pair, value).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
+                }
+            }
+            
+            // ============================================================
+            // Vector operations (R7RS Section 6.8)
+            // ============================================================
+            
+            Builtin::Vectorp => {
+                // (vector? x) - check if x is a vector
+                let val = self.lisp.car(args)?;
+                let is_vector = matches!(self.lisp.get(val)?, Value::Array { .. });
+                self.lisp.boolean(is_vector).map_err(Into::into)
+            }
+            
+            Builtin::MakeVector => {
+                // (make-vector k) or (make-vector k fill) - create a vector
+                let len_val = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                
+                let len = match self.lisp.get(len_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                // Default fill is 0 (unspecified in R7RS, we use 0)
+                let fill = if self.lisp.get(rest)?.is_nil() {
+                    self.lisp.number(0)?
+                } else {
+                    self.lisp.car(rest)?
+                };
+                
+                self.lisp.make_array(len, fill).map_err(Into::into)
+            }
+            
+            Builtin::Vector => {
+                // (vector obj ...) - create vector from arguments
+                // First count the arguments (args is always a proper list from evaluator)
+                let mut count = 0usize;
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            count += 1;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => break, // Should not happen for function args
+                    }
+                }
+                
+                // Create vector with placeholder
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                
+                // Fill in the elements
+                current = args;
+                for i in 0..count {
+                    let val = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, val)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                
+                Ok(vec)
+            }
+            
+            Builtin::VectorLength => {
+                // (vector-length vec) - get length of vector
+                let vec = self.lisp.car(args)?;
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
+                        self.lisp.number(len as isize).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorRef => {
+                // (vector-ref vec k) - get element at index k
+                extract_args!(self, args, vec, index_val);
+                
+                let index = match self.lisp.get(index_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        self.lisp.array_get(vec, index).map_err(Into::into)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorSet => {
+                // (vector-set! vec k obj) - set element at index k
+                extract_args!(self, args, vec, index_val, value);
+                
+                let index = match self.lisp.get(index_val)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        self.lisp.array_set(vec, index, value)?;
+                        // R7RS: returns unspecified, we return the vector
+                        Ok(vec)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorToList => {
+                // (vector->list vec) - convert vector to list
+                let vec = self.lisp.car(args)?;
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
+                        // Build list from end to front
+                        let mut result = self.lisp.nil()?;
+                        for i in (0..len).rev() {
+                            let elem = self.lisp.array_get(vec, i)?;
+                            result = self.lisp.cons(elem, result)?;
+                        }
+                        Ok(result)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::ListToVector => {
+                // (list->vector lst) - convert list to vector
+                let lst = self.lisp.car(args)?;
+                
+                // First count the list elements, validating it's a proper list
+                let mut count = 0usize;
+                let mut current = lst;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            count += 1;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                }
+                
+                // Create vector with placeholder
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                
+                // Fill in the elements
+                current = lst;
+                for i in 0..count {
+                    let val = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, val)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                
+                Ok(vec)
+            }
+            
+            Builtin::VectorFill => {
+                // (vector-fill! vec fill) - fill vector with value
+                extract_args!(self, args, vec, fill);
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
+                        for i in 0..len {
+                            self.lisp.array_set(vec, i, fill)?;
+                        }
+                        // R7RS: returns unspecified, we return the vector
+                        Ok(vec)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::VectorCopy => {
+                // (vector-copy vec) - copy a vector
+                let vec = self.lisp.car(args)?;
+                
+                match self.lisp.get(vec)? {
+                    Value::Array { .. } => {
+                        let len = self.lisp.array_len(vec)?;
+                        // Create new vector with same length
+                        let placeholder = self.lisp.number(0)?;
+                        let new_vec = self.lisp.make_array(len, placeholder)?;
+                        
+                        // Copy elements
+                        for i in 0..len {
+                            let elem = self.lisp.array_get(vec, i)?;
+                            self.lisp.array_set(new_vec, i, elem)?;
+                        }
+                        
+                        Ok(new_vec)
+                    }
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                }
+            }
+            
+            Builtin::Gc => {
+                // (gc) - Manually trigger garbage collection
+                // Returns a list: (marked collected total-before)
+                // Built right-to-left since cons prepends
+                let stats = self.gc();
+                let marked = self.lisp.number(stats.marked as isize)?;
+                let collected = self.lisp.number(stats.collected as isize)?;
+                let total_before = self.lisp.number(stats.total_before as isize)?;
+                let nil = self.lisp.nil()?;
+                let list = self.lisp.cons(total_before, nil)?;
+                let list = self.lisp.cons(collected, list)?;
+                let list = self.lisp.cons(marked, list)?;
+                Ok(list)
+            }
+            
+            Builtin::GcEnable => {
+                // (gc-enable) - Enable automatic garbage collection
+                self.lisp.arena().set_gc_enabled(true);
+                self.lisp.true_val().map_err(Into::into)
+            }
+            
+            Builtin::GcDisable => {
+                // (gc-disable) - Disable automatic garbage collection
+                self.lisp.arena().set_gc_enabled(false);
+                self.lisp.false_val().map_err(Into::into)
+            }
+            
+            Builtin::GcEnabledP => {
+                // (gc-enabled?) - Check if GC is enabled
+                let enabled = self.lisp.arena().is_gc_enabled();
+                self.lisp.boolean(enabled).map_err(Into::into)
+            }
+            
+            Builtin::ArenaStats => {
+                // (arena-stats) - Get arena statistics
+                // Returns a list: (capacity allocated free usage-percent)
+                let stats = self.lisp.stats();
+                let capacity = self.lisp.number(stats.capacity as isize)?;
+                let allocated = self.lisp.number(stats.allocated as isize)?;
+                let free = self.lisp.number(stats.free as isize)?;
+                let usage = self.lisp.number(stats.usage_percent() as isize)?;
+                let nil = self.lisp.nil()?;
+                let list = self.lisp.cons(usage, nil)?;
+                let list = self.lisp.cons(free, list)?;
+                let list = self.lisp.cons(allocated, list)?;
+                let list = self.lisp.cons(capacity, list)?;
+                Ok(list)
+            }
+            
+            // ============================================================
+            // Character operations (R7RS Section 6.6)
+            // ============================================================
+            
+            Builtin::Charp => {
+                // (char? obj) - Check if value is a character
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Char(_)))
+            }
+            
+            Builtin::CharEq => {
+                // (char=? char1 char2 ...) - Character equality
+                self.char_chain_compare(args, |a, b| a == b, call_expr)
+            }
+            
+            Builtin::CharLt => {
+                // (char<? char1 char2 ...) - Monotonically increasing
+                self.char_chain_compare(args, |a, b| a < b, call_expr)
+            }
+            
+            Builtin::CharGt => {
+                // (char>? char1 char2 ...) - Monotonically decreasing
+                self.char_chain_compare(args, |a, b| a > b, call_expr)
+            }
+            
+            Builtin::CharLe => {
+                // (char<=? char1 char2 ...) - Monotonically non-decreasing
+                self.char_chain_compare(args, |a, b| a <= b, call_expr)
+            }
+            
+            Builtin::CharGe => {
+                // (char>=? char1 char2 ...) - Monotonically non-increasing
+                self.char_chain_compare(args, |a, b| a >= b, call_expr)
+            }
+            
+            Builtin::CharToInteger => builtin_char_to_int!(self, args, call_expr),
+            
+            Builtin::IntegerToChar => {
+                // (integer->char n) - Convert Unicode code point to char
+                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if n < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                match char::from_u32(n as u32) {
+                    Some(c) => self.lisp.char(c).map_err(Into::into),
+                    None => Err(self.type_error(call_expr, "valid Unicode code point", "invalid code point")),
+                }
+            }
+            
+            Builtin::CharUpcase => builtin_char_transform!(self, args, call_expr, 'a', 'z', b'a', b'A'),
+            Builtin::CharDowncase => builtin_char_transform!(self, args, call_expr, 'A', 'Z', b'A', b'a'),
+            
+            // ============================================================
+            // String operations (R7RS Section 6.7)
+            // ============================================================
+            
+            Builtin::Stringp => {
+                // (string? obj) - Check if value is a string
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::String { .. }))
+            }
+            
+            Builtin::MakeString => {
+                // (make-string k) or (make-string k char)
+                let k = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let rest = self.lisp.cdr(args)?;
+                let fill = if self.lisp.get(rest)?.is_nil() {
+                    ' ' // Default fill character
+                } else {
+                    self.get_char(self.lisp.car(rest)?, call_expr)?
+                };
+                
+                // Create string of k characters
+                const MAX_MAKE_STRING_LEN: usize = 1024;
+                let len = k as usize;
+                if len > MAX_MAKE_STRING_LEN {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                let mut chars = ['\0'; MAX_MAKE_STRING_LEN];
+                chars[..len].fill(fill);
+                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+            }
+            
+            Builtin::String => {
+                // (string char ...) - Create string from characters
+                const MAX_STRING_LEN: usize = 1024;
+                let mut chars = ['\0'; MAX_STRING_LEN];
+                let mut len = 0;
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            if len >= MAX_STRING_LEN {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            chars[len] = self.get_char(car, call_expr)?;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+            }
+            
+            Builtin::StringLength => {
+                // (string-length string) - Get length
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { .. } => {
+                        let len = self.lisp.string_len(str_idx)?;
+                        self.lisp.number(len as isize).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringRef => {
+                // (string-ref string k) - Get character at index
+                extract_args!(self, args, str_idx, k_idx);
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 || (k as usize) >= len {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        // Characters start at data (no header with inline length)
+                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        match self.lisp.get(char_slot)? {
+                            Value::Char(c) => self.lisp.char(c).map_err(Into::into),
+                            _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringSet => {
+                // (string-set! string k char) - Set character at index
+                let str_idx = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let k_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let char_arg = self.lisp.car(rest2)?;
+                
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 || (k as usize) >= len {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let c = self.get_char(char_arg, call_expr)?;
+                        // Characters start at data (no header with inline length)
+                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        self.lisp.set(char_slot, Value::Char(c))?;
+                        // Return unspecified value (we use the string itself)
+                        Ok(str_idx)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringEq => {
+                // (string=? string1 string2 ...) - String equality
+                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
+            }
+            
+            Builtin::StringLt => {
+                // (string<? string1 string2 ...) - Monotonically increasing
+                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
+            }
+            
+            Builtin::StringGt => {
+                // (string>? string1 string2 ...) - Monotonically decreasing
+                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
+            }
+            
+            Builtin::StringLe => {
+                // (string<=? string1 string2 ...) - Monotonically non-decreasing
+                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
+            }
+            
+            Builtin::StringGe => {
+                // (string>=? string1 string2 ...) - Monotonically non-increasing
+                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
+            }
+            
+            Builtin::StringAppend => {
+                // (string-append string ...) - Concatenate strings
+                const MAX_TOTAL_LEN: usize = 4096;
+                let mut chars = ['\0'; MAX_TOTAL_LEN];
+                let mut total_len = 0;
+                
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            match self.lisp.get(car)? {
+                                Value::String { len, data } => {
+                                    if total_len + len > MAX_TOTAL_LEN {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    for i in 0..len {
+                                        // Characters start at data (no header with inline length)
+                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                        match self.lisp.get(char_slot)? {
+                                            Value::Char(c) => {
+                                                chars[total_len] = c;
+                                                total_len += 1;
+                                            }
+                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                                        }
+                                    }
+                                }
+                                v => return Err(self.type_error(call_expr, "string", v.type_name())),
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                
+                self.lisp.string_from_chars(&chars[..total_len]).map_err(Into::into)
+            }
+            
+            Builtin::StringToList => {
+                // (string->list string) - Convert string to list of characters
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let mut result = self.lisp.nil()?;
+                        // Build list from end to start
+                        for i in (0..len).rev() {
+                            // Characters start at data (no header with inline length)
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => {
+                                    let char_val = self.lisp.char(c)?;
+                                    result = self.lisp.cons(char_val, result)?;
+                                }
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::ListToString => {
+                // (list->string list) - Convert list of characters to string
+                const MAX_STRING_LEN: usize = 1024;
+                let mut chars = ['\0'; MAX_STRING_LEN];
+                let mut len = 0;
+                
+                let mut current = self.lisp.car(args)?;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            if len >= MAX_STRING_LEN {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            chars[len] = self.get_char(car, call_expr)?;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                
+                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+            }
+            
+            Builtin::Substring => {
+                // (substring string start end) - Extract substring
+                let str_idx = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let start_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let end_idx = self.lisp.car(rest2)?;
+                
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let start = self.get_int(start_idx, call_expr)?;
+                        let end = self.get_int(end_idx, call_expr)?;
+                        
+                        if start < 0 || end < 0 || (start as usize) > len || (end as usize) > len || start > end {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        let sub_len = (end - start) as usize;
+                        const MAX_SUBSTRING_LEN: usize = 1024;
+                        let mut chars = ['\0'; MAX_SUBSTRING_LEN];
+                        if sub_len > MAX_SUBSTRING_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        for i in 0..sub_len {
+                            // Characters start at data (no header with inline length)
+                            let char_slot = self.lisp.arena_index_at_offset(data, (start as usize) + i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => chars[i] = c,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        
+                        self.lisp.string_from_chars(&chars[..sub_len]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringCopy => {
+                // (string-copy string) - Copy a string
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        const MAX_STRING_LEN: usize = 1024;
+                        let mut chars = ['\0'; MAX_STRING_LEN];
+                        if len > MAX_STRING_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        for i in 0..len {
+                            // Characters start at data (no header with inline length)
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => chars[i] = c,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        
+                        self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+        }
+    }
+    
+    /// OPTIMIZED: Apply binary builtin directly without list allocation
+    pub(super) fn apply_binary_builtin(&mut self, builtin: Builtin, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) 
+        -> EvalResult 
+    {
+        match builtin {
+            // Arithmetic with overflow check
+            Builtin::Add => binary_int_op!(self, a, b, call_expr, |x: isize, y: isize| x.checked_add(y)),
+            Builtin::Sub => binary_int_op!(self, a, b, call_expr, |x: isize, y: isize| x.checked_sub(y)),
+            Builtin::Mul => binary_int_op!(self, a, b, call_expr, |x: isize, y: isize| x.checked_mul(y)),
+            
+            // Division operations with zero check
+            Builtin::Div => binary_div_op!(self, a, b, call_expr, |x, y| x / y),
+            Builtin::Modulo => binary_div_op!(self, a, b, call_expr, |x, y| ((x % y) + y) % y),
+            Builtin::Remainder => binary_div_op!(self, a, b, call_expr, |x, y| x % y),
+            
+            // Comparisons
+            Builtin::Lt => binary_int_cmp!(self, a, b, call_expr, |x, y| x < y),
+            Builtin::Gt => binary_int_cmp!(self, a, b, call_expr, |x, y| x > y),
+            Builtin::Le => binary_int_cmp!(self, a, b, call_expr, |x, y| x <= y),
+            Builtin::Ge => binary_int_cmp!(self, a, b, call_expr, |x, y| x >= y),
+            Builtin::NumEq => binary_int_cmp!(self, a, b, call_expr, |x, y| x == y),
+            Builtin::EqP | Builtin::EqvP => {
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                
+                let eq = match (val_a, val_b) {
+                    (Value::Nil, Value::Nil) => true,
+                    (Value::True, Value::True) => true,
+                    (Value::False, Value::False) => true,
+                    (Value::Number(x), Value::Number(y)) => x == y,
+                    (Value::Char(x), Value::Char(y)) => x == y,
+                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    _ => a == b,
+                };
+                
+                self.lisp.boolean(eq).map_err(Into::into)
+            }
+            Builtin::Cons => {
+                self.lisp.cons(a, b).map_err(Into::into)
+            }
+            // For other builtins, fall back to list-based approach
+            _ => {
+                let rest = self.lisp.cons(b, self.lisp.nil()?)?;
+                let args = self.lisp.cons(a, rest)?;
+                self.apply_builtin(builtin, args, call_expr)
+            }
+        }
+    }
+    
+    /// Get integer from already-evaluated value
+    pub(super) fn get_int(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<isize, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Number(n) => Ok(n),
+            v => Err(self.type_error(call_expr, "integer", v.type_name())),
+        }
+    }
+    
+    /// Get character from already-evaluated value
+    pub(super) fn get_char(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<char, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Char(c) => Ok(c),
+            v => Err(self.type_error(call_expr, "char", v.type_name())),
+        }
+    }
+    
+    /// Numeric fold with already-evaluated integer args
+    pub(super) fn numeric_fold<F>(&self, args: ArenaIndex, init: isize, int_f: F, call_expr: ArenaIndex) -> EvalResult
+    where 
+        F: Fn(isize, isize) -> Option<isize>,
+    {
+        let mut acc = init;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.number(acc).map_err(Into::into),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    let n = self.get_int(car, call_expr)?;
+                    acc = match int_f(acc, n) {
+                        Some(r) => r,
+                        None => return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                    };
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+    
+    /// Compare two integer numbers
+    pub(super) fn compare_numbers<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
+    where F: Fn(isize, isize) -> bool
+    {
+        let a = self.get_int(self.lisp.car(args)?, call_expr)?;
+        let b = self.get_int(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+    }
+    
+    /// Helper for character chain comparisons (char=?, char<?, etc.)
+    pub(super) fn char_chain_compare<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex) -> EvalResult
+    where
+        F: Fn(char, char) -> bool
+    {
+        // Need at least 2 arguments
+        let first = self.get_char(self.lisp.car(args)?, call_expr)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest)?.is_nil() {
+            return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+        }
+        
+        let mut prev = first;
+        let mut current = rest;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    let c = self.get_char(car, call_expr)?;
+                    if !compare_fn(prev, c) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev = c;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+    
+    /// Helper for string chain comparisons (string=?, string<?, etc.)
+    pub(super) fn string_chain_compare<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex) -> EvalResult
+    where
+        F: Fn(core::cmp::Ordering) -> bool
+    {
+        // Need at least 2 arguments
+        let first_idx = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest)?.is_nil() {
+            return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+        }
+        
+        let mut prev_idx = first_idx;
+        let mut current = rest;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    let ordering = self.compare_strings(prev_idx, car, call_expr)?;
+                    if !compare_fn(ordering) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev_idx = car;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+    
+    /// Compare two strings lexicographically
+    pub(super) fn compare_strings(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
+        let (len_a, data_a) = match self.lisp.get(a)? {
+            Value::String { len, data } => (len, data),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        let (len_b, data_b) = match self.lisp.get(b)? {
+            Value::String { len, data } => (len, data),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        
+        let min_len = if len_a < len_b { len_a } else { len_b };
+        
+        for i in 0..min_len {
+            // Characters start at data (no header with inline length)
+            let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
+            let char_a = match self.lisp.get(slot_a)? {
+                Value::Char(c) => c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            };
+            let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
+            let char_b = match self.lisp.get(slot_b)? {
+                Value::Char(c) => c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            };
+            
+            if char_a < char_b {
+                return Ok(core::cmp::Ordering::Less);
+            } else if char_a > char_b {
+                return Ok(core::cmp::Ordering::Greater);
+            }
+        }
+        
+        // All compared characters are equal, compare lengths
+        if len_a < len_b {
+            Ok(core::cmp::Ordering::Less)
+        } else if len_a > len_b {
+            Ok(core::cmp::Ordering::Greater)
+        } else {
+            Ok(core::cmp::Ordering::Equal)
+        }
+    }
+}
