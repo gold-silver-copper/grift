@@ -4243,3 +4243,20 @@ fn test_empty_ellipsis() {
     let first = lisp.car(result).unwrap();
     assert_eq!(lisp.get(first).unwrap().as_number(), Some(1));
 }
+
+#[test]
+fn check_eval_error_size() {
+    use core::mem::size_of;
+    use grift_eval::{EvalError, ErrorKind, ErrorMessage, StackFrame};
+    use grift_eval::ParseError;
+    
+    println!("\n=== Current Type Sizes ===");
+    println!("EvalError:        {} bytes", size_of::<EvalError>());
+    println!("ErrorKind:        {} bytes", size_of::<ErrorKind>());
+    println!("ErrorMessage:     {} bytes", size_of::<ErrorMessage>());
+    println!("StackFrame:       {} bytes", size_of::<StackFrame>());
+    println!("ParseError:       {} bytes", size_of::<ParseError>());
+    println!("Option<ParseError>: {} bytes", size_of::<Option<ParseError>>());
+    println!("Option<&str>:     {} bytes", size_of::<Option<&'static str>>());
+    println!("Option<usize>:    {} bytes", size_of::<Option<usize>>());
+}
