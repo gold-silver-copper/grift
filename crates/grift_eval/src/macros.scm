@@ -1,3 +1,7 @@
+;;; NOTICE: This file is duplicated from grift_parser/src/macros.scm
+;;; When making changes to macros, update BOTH files to keep them in sync.
+;;; This duplication is necessary for cargo publish to work correctly.
+;;;
 ;;; Standard Scheme Macros for Grift
 ;;;
 ;;; These macros are loaded at startup and provide standard R7RS-compatible
