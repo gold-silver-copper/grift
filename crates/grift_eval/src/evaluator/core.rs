@@ -20,6 +20,11 @@ use crate::{
 use super::Evaluator;
 
 /// Standard macro definitions (loaded at startup)
+/// 
+/// NOTE: This file is duplicated from grift_parser/src/macros.scm. When cargo packages
+/// a crate for publishing, it only includes files within the crate directory, so we
+/// cannot use include_str! with a relative path to another crate. The macros.scm file
+/// is copied here to ensure it's included in the published package.
 const STANDARD_MACROS: &str = include_str!("../macros.scm");
 
 impl<'a, const N: usize> Evaluator<'a, N> {
