@@ -19,7 +19,7 @@ use crate::{Arena, ArenaIndex, ArenaResult};
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
+/// use grift_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -57,7 +57,7 @@ pub trait ArenaDelete<T: Copy, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
+/// use grift_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -95,7 +95,7 @@ pub trait ArenaCopy<T: Copy, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{Arena, ArenaIndex, Trace};
+/// use grift_arena::{Arena, ArenaIndex, Trace};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {

@@ -1,8 +1,0 @@
-[package]
-name = "pwn_arena"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "A minimal no_std, no_alloc arena allocator with garbage collection"
-
-[dependencies]

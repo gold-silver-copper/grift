@@ -1,6 +1,6 @@
 # Lisp Implementation Architecture
 
-This document describes the architecture, design decisions, and implementation details of the Lisp interpreter built on `pwn_arena`.
+This document describes the architecture, design decisions, and implementation details of the Lisp interpreter built on `grift_arena`.
 
 ## Overview
 
@@ -17,13 +17,13 @@ This is a classic Lisp implementation with modern features:
 
 ```
 crates/
-├── pwn_arena/       # Arena allocator (no_std, no_alloc)
+├── grift_arena/       # Arena allocator (no_std, no_alloc)
 ├── grift_parser/    # Parser, Value type, builtins (no_std)
 ├── grift_eval/      # Evaluator with trampolined TCO (no_std)
 ├── grift_repl/      # REPL with I/O (uses std)
 ├── grift_macros/    # Proc macros for stdlib generation
 ├── grift/           # Unified re-export crate (no_std by default, std feature optional)
-└── pwn_arena_embedded/  # Embedded examples
+└── grift_arena_embedded/  # Hardware access for embedded targets
 ```
 
 ### Dependency Graph
@@ -47,7 +47,7 @@ crates/
                              │
                              ▼
                     ┌───────────────┐
-                    │   pwn_arena   │
+                    │  grift_arena  │
                     │ (no_std, no_alloc)
                     └───────────────┘
                              ▲

@@ -1,4 +1,4 @@
-# Cargo configuration for pwn_arena
+# Cargo configuration for Grift Scheme interpreter
 
 # Increase stack size for tests to handle deep recursion
 # The default Rust stack size is 2MB (8MB on main thread)

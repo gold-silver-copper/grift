@@ -3,7 +3,11 @@ name = "grift_macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Procedural macros for grift_parser standard library"
+description = "Procedural macros for Grift Scheme standard library"
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift_macros"
+keywords = ["macros", "proc-macro", "lisp", "scheme"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

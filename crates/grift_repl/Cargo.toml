@@ -3,7 +3,11 @@ name = "grift_repl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "REPL for the grift Lisp language"
+description = "REPL for the Grift Scheme language"
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift_repl"
+keywords = ["repl", "lisp", "scheme", "interpreter"]
+categories = ["development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "grift"
@@ -14,7 +18,7 @@ name = "grift-bench"
 path = "src/bench.rs"
 
 [dependencies]
-pwn_arena = { version = "0.1.1", path = "../pwn_arena" }
-grift_parser = { version = "0.1.1", path = "../grift_parser" }
-grift_eval = { version = "0.1.1", path = "../grift_eval" }
-pwn_arena_embedded = { version = "0.1.1", path = "../pwn_arena_embedded" }
+grift_arena = { version = "1.2.0", path = "../grift_arena" }
+grift_parser = { version = "1.2.0", path = "../grift_parser" }
+grift_eval = { version = "1.2.0", path = "../grift_eval" }
+grift_arena_embedded = { version = "1.2.0", path = "../grift_arena_embedded" }

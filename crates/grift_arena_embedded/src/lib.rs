@@ -1,6 +1,6 @@
-//! # PWN Arena Embedded
+//! # Grift Arena Embedded
 //!
-//! Embedded-specific features for the pwn_arena Lisp interpreter.
+//! Embedded-specific features for the Grift Scheme interpreter.
 //!
 //! This crate provides native Rust functions for:
 //! - Hardware register access (read/write)
@@ -18,7 +18,7 @@
 //!
 //! ```rust
 //! use grift_eval::{Lisp, Evaluator};
-//! use pwn_arena_embedded::register_embedded_natives;
+//! use grift_arena_embedded::register_embedded_natives;
 //!
 //! let lisp: Lisp<10000> = Lisp::new();
 //! let mut eval = Evaluator::new(&lisp).unwrap();
@@ -299,7 +299,7 @@ register_native!(native_bit_insert, (value: isize, insert: isize, start: isize, 
 
 // ```rust
 // use grift_eval::{Lisp, Evaluator};
-// use pwn_arena_embedded::register_embedded_natives;
+// use grift_arena_embedded::register_embedded_natives;
 
 // let lisp: Lisp<10000> = Lisp::new();
 // let mut eval = Evaluator::new(&lisp).unwrap();
