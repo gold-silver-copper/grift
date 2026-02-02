@@ -135,13 +135,7 @@ pub(crate) const FREE_LIST_END: usize = usize::MAX;
 #[doc(hidden)]
 pub enum Slot<T: Copy> {
     /// Free slot containing index of the next free slot (or FREE_LIST_END).
-    Free { 
-        /// Index of the next free slot in the free list
-        next_free: usize 
-    },
+    Free { next_free: usize },
     /// Occupied slot containing the stored value.
-    Occupied { 
-        /// The stored value
-        value: T 
-    },
+    Occupied { value: T },
 }
