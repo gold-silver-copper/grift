@@ -143,7 +143,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::{Arena, ArenaIndex, Trace};
+    /// use grift_arena::{Arena, ArenaIndex, Trace};
     ///
     /// #[derive(Clone, Copy)]
     /// struct Node {
@@ -225,7 +225,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::{Arena, ArenaIndex, Trace};
+    /// use grift_arena::{Arena, ArenaIndex, Trace};
     ///
     /// #[derive(Clone, Copy)]
     /// struct Leaf(isize);

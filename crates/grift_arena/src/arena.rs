@@ -57,7 +57,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 100> = Arena::new(0);
     /// ```
@@ -98,7 +98,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 100> = Arena::new(0);
     ///
@@ -122,7 +122,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 100> = Arena::new(0);
     ///
@@ -199,7 +199,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
@@ -297,7 +297,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
@@ -400,7 +400,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
@@ -450,7 +450,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// arena.alloc(1).unwrap();
@@ -773,7 +773,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     /// 
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     /// 
     /// let arena: Arena<isize, 100> = Arena::new(0);
     /// 
@@ -819,7 +819,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     /// 
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     /// 
     /// let arena: Arena<isize, 100> = Arena::new(0);
     /// let start = arena.alloc_contiguous(3, 0).unwrap();
@@ -856,7 +856,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     /// 
     /// ```rust
-    /// use pwn_arena::Arena;
+    /// use grift_arena::Arena;
     /// 
     /// let arena: Arena<isize, 100> = Arena::new(0);
     /// let start = arena.alloc_contiguous(5, 0).unwrap();

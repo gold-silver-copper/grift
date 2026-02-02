@@ -12,16 +12,16 @@ This is a Rust workspace containing a minimal Lisp implementation (named "grift"
 
 | Crate | `#![no_std]` | Can use `std` | Can use `alloc` |
 |-------|--------------|---------------|-----------------|
-| `pwn_arena` | ✅ Required | ❌ No | ❌ No |
+| `grift_arena` | ✅ Required | ❌ No | ❌ No |
 | `grift_parser` | ✅ Required | ❌ No | ❌ No |
 | `grift_eval` | ✅ Required | ❌ No | ❌ No |
 | `grift_repl` | ❌ Not required | ✅ Yes | ✅ Yes |
 
 ### Code Guidelines
 
-1. **No heap allocation in core crates** - The `pwn_arena`, `grift_parser`, and `grift_eval` crates must not use `Vec`, `String`, `Box`, or any other heap-allocated types.
+1. **No heap allocation in core crates** - The `grift_arena`, `grift_parser`, and `grift_eval` crates must not use `Vec`, `String`, `Box`, or any other heap-allocated types.
 
-2. **Use the arena allocator** - All dynamic data structures must use `pwn_arena` for allocation.
+2. **Use the arena allocator** - All dynamic data structures must use `grift_arena` for allocation.
 
 3. **Core library only** - Use `core::` instead of `std::` in no_std crates (e.g., `core::cell::Cell`, `core::option::Option`).
 

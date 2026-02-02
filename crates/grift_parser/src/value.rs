@@ -4,7 +4,7 @@
 //!
 //! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
 
-use pwn_arena::{ArenaIndex, Trace};
+use grift_arena::{ArenaIndex, Trace};
 
 // Define all built-in functions using the macro.
 // To add a new builtin, add an entry here and implement its evaluation in grift_eval.
@@ -671,7 +671,7 @@ impl<const N: usize> Trace<Value, N> for Value {
         }
     }
     
-    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &pwn_arena::Arena<Value, N>, tracer: F) {
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &grift_arena::Arena<Value, N>, tracer: F) {
         // With inline length fields, we no longer need arena access for tracing.
         // Simply delegate to the standard trace method.
         <Value as Trace<Value, N>>::trace(self, tracer)

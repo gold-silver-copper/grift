@@ -126,8 +126,14 @@ pub(crate) const FREE_LIST_END: usize = usize::MAX;
 ///
 /// Each slot is either free (storing the next free slot index) or
 /// occupied (storing the actual value).
+///
+/// # Note
+///
+/// This type is public to support the [`ArenaStorage`](crate::ArenaStorage) trait,
+/// but is considered an implementation detail and should not be used directly.
 #[derive(Clone, Copy)]
-pub(crate) enum Slot<T: Copy> {
+#[doc(hidden)]
+pub enum Slot<T: Copy> {
     /// Free slot containing index of the next free slot (or FREE_LIST_END).
     Free { next_free: usize },
     /// Occupied slot containing the stored value.
