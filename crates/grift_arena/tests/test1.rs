@@ -1,6 +1,6 @@
 // tests/arena_tests.rs
 
-use pwn_arena::{Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
+use grift_arena::{Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
 // ============================================================================
 // Basic Functionality Tests

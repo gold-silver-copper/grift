@@ -752,13 +752,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5])
     }
     
-    /// Note: No longer used since do is now a macro (Phase 9), but kept for potential future use.
-    #[inline]
-    #[allow(dead_code)]
-    pub(super) fn read_data7(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5], self.data_stack[start + 6])
-    }
-    
     /// Encode Builtin as ArenaIndex (store discriminant as raw usize)
     #[inline]
     pub(super) fn encode_builtin(builtin: Builtin) -> ArenaIndex {

@@ -1,12 +1,12 @@
 //! # Embedded Hardware Access Example
 //!
-//! This example demonstrates how to use the pwn_arena_embedded crate
+//! This example demonstrates how to use the grift_arena_embedded crate
 //! to access simulated hardware registers and memory from Lisp code.
 //!
 //! Run with: `cargo run --example embedded_hardware`
 
 use grift_eval::{Lisp, Evaluator};
-use pwn_arena_embedded::{register_embedded_natives, reset_mock_hardware};
+use grift_arena_embedded::{register_embedded_natives, reset_mock_hardware};
 
 fn main() {
     println!("=== Embedded Hardware Access Example ===\n");

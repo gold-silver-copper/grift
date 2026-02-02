@@ -6,6 +6,8 @@
 //! - [`Trace`] - Garbage collection tracing
 
 use crate::{Arena, ArenaIndex, ArenaResult};
+use crate::storage::ArenaStorage;
+use crate::generic_arena::GenericArena;
 
 // ============================================================================
 // Recursive Deletion Support
@@ -19,7 +21,7 @@ use crate::{Arena, ArenaIndex, ArenaResult};
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
+/// use grift_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -45,6 +47,14 @@ pub trait ArenaDelete<T: Copy, const N: usize> {
     fn delete_recursive(&self, arena: &Arena<T, N>) -> ArenaResult<()>;
 }
 
+/// Generic trait for types that can be recursively deleted from any arena storage.
+///
+/// This is the generic version of [`ArenaDelete`] that works with any storage backend.
+pub trait GenericArenaDelete<T: Copy, S: ArenaStorage<T>> {
+    /// Recursively delete this value and any children from the arena.
+    fn delete_recursive(&self, arena: &GenericArena<T, S>) -> ArenaResult<()>;
+}
+
 // ============================================================================
 // Copy Support
 // ============================================================================
@@ -57,7 +67,7 @@ pub trait ArenaDelete<T: Copy, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
+/// use grift_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -83,6 +93,14 @@ pub trait ArenaCopy<T: Copy, const N: usize> {
     fn copy_deep(&self, arena: &Arena<T, N>) -> ArenaResult<T>;
 }
 
+/// Generic trait for types that can be deep-copied within any arena storage.
+///
+/// This is the generic version of [`ArenaCopy`] that works with any storage backend.
+pub trait GenericArenaCopy<T: Copy, S: ArenaStorage<T>> {
+    /// Create a deep copy of this value in the arena.
+    fn copy_deep(&self, arena: &GenericArena<T, S>) -> ArenaResult<T>;
+}
+
 // ============================================================================
 // Garbage Collection Support
 // ============================================================================
@@ -95,7 +113,7 @@ pub trait ArenaCopy<T: Copy, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{Arena, ArenaIndex, Trace};
+/// use grift_arena::{Arena, ArenaIndex, Trace};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
