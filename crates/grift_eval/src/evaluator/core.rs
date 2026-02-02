@@ -484,7 +484,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             step_count = step_count.wrapping_add(1);
             if step_count % GC_CHECK_INTERVAL == 0 {
                 let stats = self.lisp.stats();
-                if stats.allocated * 100 / stats.capacity >= GC_THRESHOLD_PERCENT {
+                // Compare allocated >= capacity * threshold / 100 to avoid overflow
+                if stats.allocated >= stats.capacity * GC_THRESHOLD_PERCENT / 100 {
                     self.gc_with_state(&state);
                 }
             }
@@ -902,7 +903,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // This prevents garbage accumulation across multiple eval_str calls
         // Running GC at the start (not end) ensures we don't collect the result
         let stats = self.lisp.stats();
-        if stats.allocated * 100 / stats.capacity >= Self::GC_USAGE_THRESHOLD {
+        // Compare allocated >= capacity * threshold / 100 to avoid overflow
+        if stats.allocated >= stats.capacity * Self::GC_USAGE_THRESHOLD / 100 {
             self.gc();
         }
         
