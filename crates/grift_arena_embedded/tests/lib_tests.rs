@@ -1,4 +1,4 @@
-use pwn_arena_embedded::*;
+use grift_arena_embedded::*;
 use grift_eval::{Lisp, Evaluator};
 
 #[test]

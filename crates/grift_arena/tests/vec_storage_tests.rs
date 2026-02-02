@@ -4,7 +4,7 @@
 
 #![cfg(feature = "std")]
 
-use pwn_arena::{GenericArena, VecStorage, ArenaError};
+use grift_arena::{GenericArena, VecStorage, ArenaError};
 
 #[test]
 fn test_vec_storage_basic_allocation() {

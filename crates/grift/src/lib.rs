@@ -12,6 +12,7 @@
 //! - **Proper tail-call optimization** — Via trampolining
 //! - **Lexical closures** — First-class functions with captured environments
 //! - **R7RS-inspired** — Scheme semantics with only `#f` as false
+//! - **Pluggable storage** — Fixed-size arrays (no-std) or Vec (std feature)
 //!
 //! ## Quick Start
 //!
@@ -25,6 +26,23 @@
 //! // Evaluate expressions
 //! let result = eval.eval_str("(+ 1 2 3)").unwrap();
 //! assert!(matches!(lisp.get(result), Ok(Value::Number(6))));
+//! ```
+//!
+//! ## Vec-backed Storage (std feature)
+//!
+//! With the `std` feature enabled, you can use `VecStorage` for dynamic
+//! capacity at runtime. This is useful when you don't know the arena size
+//! at compile time:
+//!
+//! ```rust,ignore
+//! use grift::arena::{GenericArena, VecStorage};
+//!
+//! // Create storage with runtime-determined capacity
+//! let storage = VecStorage::<isize>::with_capacity(50000);
+//! let arena: GenericArena<isize, VecStorage<isize>> = GenericArena::with_storage(storage);
+//!
+//! let idx = arena.alloc(42).unwrap();
+//! assert_eq!(arena.get(idx).unwrap(), 42);
 //! ```
 //!
 //! ## Optional REPL
@@ -47,7 +65,7 @@
 //!
 //! This crate re-exports the complete Grift stack:
 //!
-//! - [`pwn_arena`] — Arena allocator with GC
+//! - [`grift_arena`] — Arena allocator with GC
 //! - [`grift_parser`] — Lexer, parser, and value types
 //! - [`grift_eval`] — Trampolined evaluator
 //! - [`grift_repl`] — Interactive REPL (behind `std` feature)
@@ -57,18 +75,29 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 // ============================================================================
-// Core Re-exports from pwn_arena
+// Core Re-exports from grift_arena
 // ============================================================================
 
 /// Arena allocator and garbage collection primitives.
 pub mod arena {
-    pub use pwn_arena::{
+    pub use grift_arena::{
         Arena, ArenaIndex, ArenaError, ArenaResult,
         GcStats, Trace,
+        // Generic arena types
+        GenericArena, GenericArenaIterator, ArenaStorage, ArrayStorage,
     };
+    
+    // Vec-backed storage (requires std feature)
+    #[cfg(feature = "std")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+    pub use grift_arena::VecStorage;
 }
 
 pub use arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats, Trace};
+pub use arena::{GenericArena, GenericArenaIterator, ArenaStorage, ArrayStorage};
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use arena::VecStorage;
 
 // ============================================================================
 // Parser Re-exports from grift_parser

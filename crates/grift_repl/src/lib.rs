@@ -332,7 +332,7 @@ pub fn run_repl<const N: usize>() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     
-    println!("Grift Lisp (pwn_arena)");
+    println!("Grift Lisp (grift_arena)");
     println!("========================");
     println!("Features: TCO, strict (call-by-value), full mutation, rich errors");
     println!("Truthiness: only #f is false (nil/'() are truthy!)");

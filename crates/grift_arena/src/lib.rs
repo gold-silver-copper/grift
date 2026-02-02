@@ -42,7 +42,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use pwn_arena::{Arena, ArenaIndex};
+//! use grift_arena::{Arena, ArenaIndex};
 //!
 //! #[derive(Clone, Copy, Debug, PartialEq)]
 //! enum Node {

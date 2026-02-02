@@ -213,7 +213,7 @@ Grift is built as a stack of focused crates:
 ├─────────────────────────────────────────────────────────┤
 │  grift_repl [std]  │  grift_eval  │  grift_parser       │
 ├────────────────────┴───────────────┴────────────────────┤
-│  pwn_arena (no_std arena allocator with GC)             │
+│  grift_arena (no_std arena allocator with GC)             │
 └─────────────────────────────────────────────────────────┘
 ```
 

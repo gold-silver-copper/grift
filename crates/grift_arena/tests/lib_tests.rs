@@ -1,4 +1,4 @@
-use pwn_arena::*;
+use grift_arena::*;
 
 #[test]
 fn test_basic_allocation() {
