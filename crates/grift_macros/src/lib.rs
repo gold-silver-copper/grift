@@ -282,7 +282,12 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
     
     // Remove the trailing ')' that closes the define
     // Use strip_suffix for safe string manipulation
-    let body = body_trimmed.strip_suffix(')').unwrap_or(body_trimmed).trim().to_string();
+    let raw_body = body_trimmed.strip_suffix(')').unwrap_or(body_trimmed).trim();
+
+    // Wrap body in (begin ...) to handle multiple expressions properly.
+    // Scheme lambda bodies with internal defines need an implicit begin.
+    // e.g., (define (f x) (define y 1) (+ x y)) has two expressions that need begin.
+    let body = format!("(begin {})", raw_body);
     
     // Generate variant name from function name
     let variant_name = to_pascal_case(&name);
