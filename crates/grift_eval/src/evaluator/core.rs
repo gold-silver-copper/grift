@@ -476,8 +476,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// - Also handles OOM reactively as a fallback
     fn trampoline(&mut self, mut state: TrampolineState) -> EvalResult {
         let mut step_count: usize = 0;
-        const GC_CHECK_INTERVAL: usize = 1000;
-        const GC_THRESHOLD_PERCENT: usize = 80;
+        const GC_CHECK_INTERVAL: usize = 500;
+        const GC_THRESHOLD_PERCENT: usize = 60;
         
         loop {
             // Aggressive periodic GC check
@@ -893,8 +893,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Maximum number of GC retry attempts for memory-related errors
     const MAX_GC_RETRIES: usize = 3;
     
+    /// Memory usage threshold (percentage) above which GC runs before eval_str
+    const GC_USAGE_THRESHOLD: usize = 50;
+    
     /// Evaluate a string
     pub fn eval_str(&mut self, input: &str) -> EvalResult {
+        // Auto-GC before evaluation: run GC if memory usage exceeds threshold
+        // This prevents garbage accumulation across multiple eval_str calls
+        // Running GC at the start (not end) ensures we don't collect the result
+        let stats = self.lisp.stats();
+        if stats.allocated * 100 / stats.capacity >= Self::GC_USAGE_THRESHOLD {
+            self.gc();
+        }
+        
         // Try to parse with auto-GC retry on out of memory
         // Attempts: 1 initial + up to MAX_GC_RETRIES retries after GC
         let expr = self.parse_with_gc_retry(input)?;
