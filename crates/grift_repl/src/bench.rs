@@ -6,15 +6,15 @@
 //!
 //! This runs various stress tests on the Lisp interpreter to measure performance
 //! and verify correctness under load.
+//!
+//! Note: The evaluator's automatic GC handles memory management without manual
+//! intervention. GC runs automatically after eval_str when memory usage exceeds
+//! the threshold, and during evaluation when memory pressure is detected.
 
 use grift_eval::Evaluator;
 use grift_parser::Lisp;
 use grift_repl::format_value;
 use std::time::{Duration, Instant};
-
-/// Number of iterations between periodic garbage collection during benchmarks.
-/// This prevents arena exhaustion during memory-intensive tests.
-const GC_INTERVAL: usize = 50;
 
 /// Result of a single benchmark
 struct BenchResult {
@@ -77,7 +77,7 @@ fn eval_str<const N: usize>(
     }
 }
 
-/// Run a simple timed benchmark with GC after completion
+/// Run a simple timed benchmark (GC handled automatically by evaluator)
 fn run_bench<const N: usize>(
     name: &str,
     lisp: &Lisp<N>,
@@ -97,12 +97,7 @@ fn run_bench<const N: usize>(
     let initial_allocated = lisp.stats().allocated;
     let mut peak_allocated = initial_allocated;
 
-    for i in 0..iterations {
-        // Run periodic GC to prevent arena exhaustion during heavy iteration
-        if i > 0 && i % GC_INTERVAL == 0 {
-            eval.gc();
-        }
-        
+    for _ in 0..iterations {
         match eval_str(lisp, eval, code) {
             Ok(r) => {
                 last_result = r;
@@ -121,9 +116,6 @@ fn run_bench<const N: usize>(
     }
 
     let duration = start.elapsed();
-    
-    // Run GC after each test to clean up
-    eval.gc();
     
     let final_allocated = lisp.stats().allocated;
     let _peak_delta = peak_allocated.saturating_sub(initial_allocated);
@@ -238,8 +230,6 @@ fn main() {
         None,
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -342,8 +332,6 @@ fn main() {
         Some("done"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -393,8 +381,6 @@ fn main() {
         None,
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -440,8 +426,6 @@ fn main() {
         Some("11"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -492,8 +476,6 @@ fn main() {
         Some("60"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -575,8 +557,6 @@ fn main() {
         Some("10"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -618,8 +598,6 @@ fn main() {
         None,
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -656,8 +634,6 @@ fn main() {
         Some("other"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -730,8 +706,6 @@ fn main() {
         Some("#t"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -822,8 +796,6 @@ fn main() {
         None,
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -837,8 +809,6 @@ fn main() {
     // Hygienic macros via syntax-rules will be implemented in a future phase.
     println!("  (Skipped - defmacro/gensym removed for Scheme conformance)");
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -875,8 +845,6 @@ fn main() {
         Some("42"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -945,8 +913,6 @@ fn main() {
         Some("45"),
     ));
 
-    // Clean up before next section
-    eval.gc();
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
