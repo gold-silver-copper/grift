@@ -14,6 +14,7 @@
 //! - **O(1) allocation**: Free-list based allocation and deallocation
 //! - **Mark-and-sweep GC**: Trait-based garbage collection via [`Trace`]
 //! - **Zero dependencies**: Only uses `core::cell::Cell`
+//! - **Pluggable storage**: Use fixed-size arrays (no-std) or `Vec` (std feature)
 //!
 //! ## Module Organization
 //!
@@ -21,10 +22,22 @@
 //!
 //! - [`types`] - Core types: `ArenaIndex`, `ArenaError`, `ArenaResult`
 //! - [`arena`] - Main `Arena` struct and core operations
+//! - [`storage`] - Storage backends: `ArenaStorage` trait, `ArrayStorage`, `VecStorage`
+//! - [`generic_arena`] - Generic arena that works with any storage backend
 //! - [`traits`] - Extension traits: `ArenaDelete`, `ArenaCopy`, `Trace`
 //! - [`gc`] - Garbage collection implementation
 //! - [`iter`] - Iterator support
 //! - [`stats`] - Statistics types: `ArenaStats`, `GcStats`
+//!
+//! ## Storage Backends
+//!
+//! The arena supports different storage backends via the [`ArenaStorage`] trait:
+//!
+//! - **`ArrayStorage<T, N>`**: Fixed-size array storage (default, no-std compatible)
+//! - **`VecStorage<T>`**: Vector-based storage (requires `std` feature)
+//!
+//! The original `Arena<T, N>` type is a convenience alias for the fixed-size case.
+//! For dynamic storage, use `GenericArena<T, VecStorage<T>>`.
 //!
 //! ## Example
 //!
@@ -61,6 +74,8 @@
 mod macros;
 
 pub mod types;
+pub mod storage;
+pub mod generic_arena;
 pub mod traits;
 pub mod stats;
 pub mod arena;
@@ -74,11 +89,20 @@ pub mod gc;
 // Core types
 pub use types::{ArenaIndex, ArenaError, ArenaResult};
 
-// Arena struct
+// Arena struct (backward compatible)
 pub use arena::Arena;
+
+// Generic arena
+pub use generic_arena::{GenericArena, GenericArenaIterator};
+
+// Storage backends
+pub use storage::{ArenaStorage, ArrayStorage};
+#[cfg(feature = "std")]
+pub use storage::VecStorage;
 
 // Traits
 pub use traits::{ArenaDelete, ArenaCopy, Trace};
+pub use traits::{GenericArenaDelete, GenericArenaCopy};
 
 // Statistics
 pub use stats::{ArenaStats, GcStats};
