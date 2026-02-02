@@ -158,7 +158,7 @@ pub trait Trace<T: Copy, const N: usize> {
     /// Call `tracer` once for each `ArenaIndex` field in this value.
     /// The GC uses this to discover the object graph.
     fn trace<F: FnMut(ArenaIndex)>(&self, tracer: F);
-    
+
     /// Trace with arena access for types that store metadata in the arena.
     ///
     /// Some types (like arrays/strings that store their length in the arena)
@@ -168,6 +168,54 @@ pub trait Trace<T: Copy, const N: usize> {
     /// The default implementation just calls `trace()`.
     #[inline]
     fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &Arena<T, N>, tracer: F) {
+        self.trace(tracer)
+    }
+}
+
+/// Generic trait for types that can be traced by the garbage collector.
+///
+/// This is the storage-agnostic version of [`Trace`] that works with any
+/// arena storage backend via [`GenericArena`].
+///
+/// # Example
+///
+/// ```rust
+/// use grift_arena::{GenericArena, VecStorage, ArenaIndex, GenericTrace};
+///
+/// #[derive(Clone, Copy)]
+/// enum Tree {
+///     Leaf(isize),
+///     Branch(ArenaIndex, ArenaIndex),
+/// }
+///
+/// impl<S: grift_arena::ArenaStorage<Tree>> GenericTrace<Tree, S> for Tree {
+///     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
+///         match *self {
+///             Tree::Leaf(_) => {}
+///             Tree::Branch(left, right) => {
+///                 tracer(left);
+///                 tracer(right);
+///             }
+///         }
+///     }
+/// }
+/// ```
+pub trait GenericTrace<T: Copy, S: ArenaStorage<T>> {
+    /// Trace all `ArenaIndex` references contained in this value.
+    ///
+    /// Call `tracer` once for each `ArenaIndex` field in this value.
+    /// The GC uses this to discover the object graph.
+    fn trace<F: FnMut(ArenaIndex)>(&self, tracer: F);
+
+    /// Trace with arena access for types that store metadata in the arena.
+    ///
+    /// Some types (like arrays/strings that store their length in the arena)
+    /// need to read from the arena during tracing to determine how many
+    /// elements to trace. Override this method for such types.
+    ///
+    /// The default implementation just calls `trace()`.
+    #[inline]
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &GenericArena<T, S>, tracer: F) {
         self.trace(tracer)
     }
 }

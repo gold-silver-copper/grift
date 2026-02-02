@@ -12,6 +12,10 @@
 
 use grift_arena::{Arena, GenericArena, VecStorage, ArenaIndex};
 use grift_parser::Value;
+
+// Value implements both Trace<Value, N> and GenericTrace<Value, S>
+// This allows GC to work with both ArrayStorage and VecStorage
+// (GenericTrace is used implicitly through trait bounds on collect_garbage)
 use std::time::{Duration, Instant};
 
 /// Result of a single benchmark comparing both storage backends
@@ -558,29 +562,25 @@ fn main() {
     println!("Section 6: Garbage Collection");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Note: GC is only available for ArrayStorage (Arena<T, N>) because it uses
-    // fixed-size arrays [bool; N] for mark bitmaps. GenericArena with VecStorage
-    // would need a Vec-based GC implementation.
-    println!();
-    println!("Note: GC benchmarks only run for ArrayStorage.");
-    println!("      GenericArena<VecStorage> does not yet implement collect_garbage.");
-    println!("      (Would require Vec-based mark bitmap implementation)");
-    println!();
-
-    // Test GC with moderate garbage (ArrayStorage only)
+    // Test GC with moderate garbage
     {
         let array_arena: Arena<Value, CAPACITY> = Arena::new(Value::Nil);
+        let vec_storage = VecStorage::<Value>::with_capacity(CAPACITY);
+        let vec_arena: GenericArena<Value, VecStorage<Value>> = GenericArena::with_storage(vec_storage);
 
         // Create some values, keeping only a few as roots
         let root_a = array_arena.alloc(Value::Number(1)).unwrap();
+        let root_v = vec_arena.alloc(Value::Number(1)).unwrap();
 
         // Allocate garbage
         for i in 0..500 {
             let _ = array_arena.alloc(Value::Number(i as isize));
+            let _ = vec_arena.alloc(Value::Number(i as isize));
         }
 
-        println!("Running: GC with moderate garbage x 20 (ArrayStorage only)...");
+        println!("Running: GC with moderate garbage x 20...");
         println!("       Pre-GC array allocated: {}", array_arena.len());
+        println!("       Pre-GC vec allocated:   {}", vec_arena.len());
 
         let array_start = Instant::now();
         for _ in 0..20 {
@@ -588,41 +588,56 @@ fn main() {
         }
         let array_duration = array_start.elapsed();
 
-        println!("       Post-GC array allocated: {}", array_arena.len());
+        let vec_start = Instant::now();
+        for _ in 0..20 {
+            vec_arena.collect_garbage(&[root_v]);
+        }
+        let vec_duration = vec_start.elapsed();
 
-        // For comparison, record Vec as N/A
+        println!("       Post-GC array allocated: {}", array_arena.len());
+        println!("       Post-GC vec allocated:   {}", vec_arena.len());
+
         results.push(BenchResult {
-            name: "GC with moderate garbage x 20 (ArrayStorage only)".to_string(),
+            name: "GC with moderate garbage x 20".to_string(),
             array_duration,
-            vec_duration: Duration::ZERO,
+            vec_duration,
             iterations: 20,
             passed: true,
-            note: Some("VecStorage GC not implemented".to_string()),
+            note: None,
         });
     }
 
-    // Test GC with linked structures (Cons cells) - ArrayStorage only
+    // Test GC with linked structures (Cons cells)
     {
         let array_arena: Arena<Value, CAPACITY> = Arena::new(Value::Nil);
+        let vec_storage = VecStorage::<Value>::with_capacity(CAPACITY);
+        let vec_arena: GenericArena<Value, VecStorage<Value>> = GenericArena::with_storage(vec_storage);
 
         // Build a linked list of 100 elements (root)
         let nil_a = array_arena.alloc(Value::Nil).unwrap();
+        let nil_v = vec_arena.alloc(Value::Nil).unwrap();
 
         let mut list_a = nil_a;
+        let mut list_v = nil_v;
 
         for i in 0..100 {
             let num_a = array_arena.alloc(Value::Number(i as isize)).unwrap();
+            let num_v = vec_arena.alloc(Value::Number(i as isize)).unwrap();
             list_a = array_arena.alloc(Value::Cons { car: num_a, cdr: list_a }).unwrap();
+            list_v = vec_arena.alloc(Value::Cons { car: num_v, cdr: list_v }).unwrap();
         }
 
         // Create garbage (another 200 cons cells not reachable)
         for i in 0..200 {
             let num_a = array_arena.alloc(Value::Number(i as isize)).unwrap();
+            let num_v = vec_arena.alloc(Value::Number(i as isize)).unwrap();
             let _ = array_arena.alloc(Value::Cons { car: num_a, cdr: nil_a });
+            let _ = vec_arena.alloc(Value::Cons { car: num_v, cdr: nil_v });
         }
 
-        println!("Running: GC with linked structures x 20 (ArrayStorage only)...");
+        println!("Running: GC with linked structures x 20...");
         println!("       Pre-GC array allocated: {}", array_arena.len());
+        println!("       Pre-GC vec allocated:   {}", vec_arena.len());
 
         let array_start = Instant::now();
         for _ in 0..20 {
@@ -630,15 +645,22 @@ fn main() {
         }
         let array_duration = array_start.elapsed();
 
+        let vec_start = Instant::now();
+        for _ in 0..20 {
+            vec_arena.collect_garbage(&[list_v, nil_v]);
+        }
+        let vec_duration = vec_start.elapsed();
+
         println!("       Post-GC array allocated: {}", array_arena.len());
+        println!("       Post-GC vec allocated:   {}", vec_arena.len());
 
         results.push(BenchResult {
-            name: "GC with linked structures x 20 (ArrayStorage only)".to_string(),
+            name: "GC with linked structures x 20".to_string(),
             array_duration,
-            vec_duration: Duration::ZERO,
+            vec_duration,
             iterations: 20,
             passed: true,
-            note: Some("VecStorage GC not implemented".to_string()),
+            note: None,
         });
     }
 
@@ -861,14 +883,17 @@ fn main() {
         });
     }
 
-    // Heavy GC workload (ArrayStorage only)
+    // Heavy GC workload
     {
         let array_arena: Arena<Value, CAPACITY> = Arena::new(Value::Nil);
+        let vec_storage = VecStorage::<Value>::with_capacity(CAPACITY);
+        let vec_arena: GenericArena<Value, VecStorage<Value>> = GenericArena::with_storage(vec_storage);
 
         let nil_a = array_arena.alloc(Value::Nil).unwrap();
+        let nil_v = vec_arena.alloc(Value::Nil).unwrap();
 
         // Keep building lists and GC'ing
-        println!("Running: Repeated allocation + GC cycles x 50 (ArrayStorage only)...");
+        println!("Running: Repeated allocation + GC cycles x 50...");
 
         let array_start = Instant::now();
         for _ in 0..50 {
@@ -883,13 +908,24 @@ fn main() {
         }
         let array_duration = array_start.elapsed();
 
+        let vec_start = Instant::now();
+        for _ in 0..50 {
+            let mut list = nil_v;
+            for i in 0..100 {
+                let num = vec_arena.alloc(Value::Number(i)).unwrap();
+                list = vec_arena.alloc(Value::Cons { car: num, cdr: list }).unwrap();
+            }
+            vec_arena.collect_garbage(&[list, nil_v]);
+        }
+        let vec_duration = vec_start.elapsed();
+
         results.push(BenchResult {
-            name: "Repeated allocation + GC cycles x 50 (ArrayStorage only)".to_string(),
+            name: "Repeated allocation + GC cycles x 50".to_string(),
             array_duration,
-            vec_duration: Duration::ZERO,
+            vec_duration,
             iterations: 50,
             passed: true,
-            note: Some("100 cons cells per cycle, VecStorage GC not implemented".to_string()),
+            note: Some("100 cons cells per cycle".to_string()),
         });
     }
 

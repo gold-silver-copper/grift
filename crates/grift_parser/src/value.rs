@@ -677,3 +677,62 @@ impl<const N: usize> Trace<Value, N> for Value {
         <Value as Trace<Value, N>>::trace(self, tracer)
     }
 }
+
+/// Implement GenericTrace for GC support with any storage backend.
+///
+/// This is the storage-agnostic version that works with VecStorage and other backends.
+impl<S: grift_arena::ArenaStorage<Value>> grift_arena::GenericTrace<Value, S> for Value {
+    fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
+        match self {
+            Value::Nil | Value::True | Value::False |
+            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::StdLib(_) | Value::Usize(_) => {
+                // No references
+            }
+            Value::Ref(idx) => {
+                tracer(*idx);
+            }
+            Value::Cons { car, cdr } => {
+                tracer(*car);
+                tracer(*cdr);
+            }
+            Value::Native { .. } => {
+                // id and name_hash are inline usize values, no arena references
+            }
+            Value::Symbol(chars) => {
+                tracer(*chars);
+            }
+            Value::Lambda { params, body_env } => {
+                tracer(*params);
+                tracer(*body_env);
+            }
+            Value::SyntaxRules { literals, rules_env } => {
+                tracer(*literals);
+                tracer(*rules_env);
+            }
+            Value::Array { len, data } => {
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        let elem_idx = ArenaIndex::new(base_idx + i);
+                        tracer(elem_idx);
+                    }
+                }
+            }
+            Value::String { len, data } => {
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        let char_idx = ArenaIndex::new(base_idx + i);
+                        tracer(char_idx);
+                    }
+                }
+            }
+        }
+    }
+
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &grift_arena::GenericArena<Value, S>, tracer: F) {
+        // With inline length fields, we no longer need arena access for tracing.
+        <Value as grift_arena::GenericTrace<Value, S>>::trace(self, tracer)
+    }
+}

@@ -102,7 +102,7 @@ pub use storage::VecStorage;
 
 // Traits
 pub use traits::{ArenaDelete, ArenaCopy, Trace};
-pub use traits::{GenericArenaDelete, GenericArenaCopy};
+pub use traits::{GenericArenaDelete, GenericArenaCopy, GenericTrace};
 
 // Statistics
 pub use stats::{ArenaStats, GcStats};
