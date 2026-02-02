@@ -4264,8 +4264,8 @@ fn check_eval_error_size() {
     // Previous size was 440 bytes, now reduced to ~88 bytes (80% reduction)
     let error_size = size_of::<EvalError>();
     assert!(
-        error_size <= 128,
-        "EvalError is {} bytes, expected <= 128 bytes for stack efficiency",
+        error_size <= 96,
+        "EvalError is {} bytes, expected <= 96 bytes for stack efficiency",
         error_size
     );
     

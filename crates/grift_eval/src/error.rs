@@ -110,7 +110,7 @@ impl ArgCountInfo {
 ///
 /// # Size Optimization
 ///
-/// This struct is kept small (~56 bytes on 64-bit) to minimize stack usage:
+/// This struct is kept small (~88 bytes on 64-bit) to minimize stack usage:
 /// - No inline backtrace array (saves ~256 bytes)
 /// - Static string messages instead of inline buffers (saves ~56 bytes)
 /// - Compact arg count representation (saves ~24 bytes)
@@ -211,6 +211,8 @@ pub type EvalResult = Result<ArenaIndex, EvalError>;
 /// Fixed-size message buffer for no_std - DEPRECATED
 /// 
 /// Kept for backwards compatibility. New code should use `&'static str` directly.
+/// 
+/// **Note**: Fields are now private. Use `from_str()` to create and `as_str()` to read.
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorMessage {
     buf: [u8; 64],
