@@ -27,7 +27,7 @@
 - `crates/grift_eval/src/evaluator/forms.rs` - Removed step_eval_* and continuation handlers for macro-based forms, added internal define support to lambda, added LetSyntaxBody continuation handler
 - `crates/grift_eval/src/evaluator/expand.rs` - Complete macro expansion system, fixed lambda param transcription for ellipsis patterns
 - `crates/grift_eval/src/continuation.rs` - Removed unused continuation types, added LetSyntaxBody continuation
-- `crates/grift_parser/src/macros.scm` - Standard macro definitions including `letrec`, `letrec*`, named `let`, `case`, and `do`
+- `crates/grift_eval/src/evaluator/macros.scm` - Standard macro definitions including `letrec`, `letrec*`, named `let`, `case`, and `do`
 
 ### Working Features
 
@@ -1417,7 +1417,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
         // Standard macros defined in Scheme
-        const STANDARD_MACROS: &str = include_str!("../../grift_parser/src/macros.scm");
+        const STANDARD_MACROS: &str = include_str!("macros.scm");
 
         // Parse and expand each definition
         // (They define-syntax themselves into macro_env)
@@ -1449,7 +1449,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
 ## Part 7: Standard Macros
 
-Create `crates/grift_parser/src/macros.scm`:
+Create `crates/grift_eval/src/evaluator/macros.scm`:
 
 ```scheme
 ;;; Standard Scheme Macros for Grift
@@ -1638,7 +1638,6 @@ crates/
 ├── grift_parser/src/
 │   ├── value.rs              # Add SyntaxRules variant
 │   ├── lisp.rs               # Add syntax_rules() constructor
-│   ├── macros.scm            # Standard macro definitions (NEW)
 │   └── lib.rs                # Export new types
 │
 ├── grift_eval/src/
@@ -1648,7 +1647,8 @@ crates/
 │   │   ├── forms.rs          # Remove derived forms (Phase 2)
 │   │   ├── expand.rs         # Macro expander (NEW)
 │   │   ├── pattern.rs        # Pattern matching (NEW)
-│   │   └── transcribe.rs     # Template transcription (NEW)
+│   │   ├── transcribe.rs     # Template transcription (NEW)
+│   │   └── macros.scm        # Standard macro definitions (NEW)
 │   ├── continuation.rs       # (unchanged initially)
 │   └── lib.rs                # Re-export expander
 ```
