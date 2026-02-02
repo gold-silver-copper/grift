@@ -8,8 +8,8 @@ use grift_parser::{
 };
 
 use crate::error::{
-    ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult,
-    MAX_STACK_DEPTH, MAX_BACKTRACE,
+    ErrorKind, StackFrame, EvalError, EvalResult,
+    MAX_STACK_DEPTH,
 };
 use crate::continuation::{Cont, TrampolineState, MAX_CONT_DEPTH, MAX_DATA_STACK};
 use crate::native::{NativeRegistry, NativeFn, simple_hash};
@@ -245,7 +245,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(crate) fn make_error(&self, kind: ErrorKind, expr: ArenaIndex) -> EvalError {
         EvalError::new(kind)
             .with_expr(expr)
-            .with_backtrace(&self.call_stack, self.call_stack_depth)
     }
     
     pub(crate) fn type_error(&self, expr: ArenaIndex, expected: &'static str, got: &'static str) -> EvalError {
@@ -839,44 +838,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             [cdr], depth, [env]
     }
     
-    /// Convert a ParseError to EvalError with stdlib function name context
-    pub(super) fn parse_error_to_eval(&self, err: ParseError, expr: ArenaIndex, func_name: &str) -> EvalError {
-        // Build a more descriptive message including the function name
-        // We build it manually since we're in no_std
-        let mut msg = ErrorMessage::empty();
-        let prefix = "stdlib ";
-        let suffix = " parse error";
-        
-        // Copy prefix
-        let prefix_bytes = prefix.as_bytes();
-        let prefix_len = prefix_bytes.len().min(64);
-        msg.buf[..prefix_len].copy_from_slice(&prefix_bytes[..prefix_len]);
-        let mut pos = prefix_len;
-        
-        // Copy function name
-        let name_bytes = func_name.as_bytes();
-        let name_len = name_bytes.len().min(64 - pos);
-        msg.buf[pos..pos + name_len].copy_from_slice(&name_bytes[..name_len]);
-        pos += name_len;
-        
-        // Copy suffix
-        let suffix_bytes = suffix.as_bytes();
-        let suffix_len = suffix_bytes.len().min(64 - pos);
-        msg.buf[pos..pos + suffix_len].copy_from_slice(&suffix_bytes[..suffix_len]);
-        pos += suffix_len;
-        
-        msg.len = pos;
-        
+    /// Convert a ParseError to EvalError with expression context
+    /// 
+    /// Note: In the optimized EvalError, we use static messages only.
+    /// The function name context is available from the expression itself.
+    pub(super) fn parse_error_to_eval(&self, err: ParseError, expr: ArenaIndex, _func_name: &str) -> EvalError {
         EvalError {
             kind: ErrorKind::Parse,
-            message: msg,
             expr,
+            message: "stdlib parse error",
             expected: None,
             got: None,
-            expected_args: None,
-            got_args: None,
-            backtrace: [StackFrame::default(); MAX_BACKTRACE],
-            backtrace_len: 0,
+            arg_info: None,
             parse_error: Some(err),
         }
     }
