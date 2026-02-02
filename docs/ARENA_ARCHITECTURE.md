@@ -1,10 +1,10 @@
 # Arena Allocator Architecture
 
-This document describes the architecture, design decisions, and implementation details of the `pwn_arena` arena allocator.
+This document describes the architecture, design decisions, and implementation details of the `grift_arena` arena allocator.
 
 ## Overview
 
-`pwn_arena` is a fixed-size, `no_std`, `no_alloc` arena allocator designed for use in embedded systems, WebAssembly, and other environments where heap allocation is unavailable or undesirable.
+`grift_arena` is a fixed-size, `no_std`, `no_alloc` arena allocator designed for use in embedded systems, WebAssembly, and other environments where heap allocation is unavailable or undesirable.
 
 ## Core Design Principles
 

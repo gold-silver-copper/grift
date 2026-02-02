@@ -69,11 +69,11 @@ Grift Lisp
 ```toml
 # Minimal no_std usage (default)
 [dependencies]
-grift = "0.1"
+grift = "1.2"
 
 # With REPL support
 [dependencies]
-grift = { version = "0.1", features = ["std"] }
+grift = { version = "1.2", features = ["std"] }
 ```
 
 ## 🎯 Features
@@ -213,7 +213,7 @@ Grift is built as a stack of focused crates:
 ├─────────────────────────────────────────────────────────┤
 │  grift_repl [std]  │  grift_eval  │  grift_parser       │
 ├────────────────────┴───────────────┴────────────────────┤
-│  pwn_arena (no_std arena allocator with GC)             │
+│  grift_arena (no_std arena allocator with GC)           │
 └─────────────────────────────────────────────────────────┘
 ```
 

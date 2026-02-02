@@ -5,7 +5,7 @@
 //!
 //! Note: The `impl_pack_unpack_refs!` macro has been moved to `src/macros.rs`.
 
-use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
+use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
 
 // ============================================================================
@@ -713,7 +713,7 @@ impl<const N: usize> Lisp<N> {
     
     
     /// Get arena stats
-    pub fn stats(&self) -> pwn_arena::ArenaStats {
+    pub fn stats(&self) -> grift_arena::ArenaStats {
         self.arena.stats()
     }
     

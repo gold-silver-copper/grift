@@ -33,7 +33,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! grift = { version = "0.1", features = ["std"] }
+//! grift = { version = "1.2", features = ["std"] }
 //! ```
 //!
 //! Then run:
@@ -47,7 +47,7 @@
 //!
 //! This crate re-exports the complete Grift stack:
 //!
-//! - [`pwn_arena`] — Arena allocator with GC
+//! - [`grift_arena`] — Arena allocator with GC
 //! - [`grift_parser`] — Lexer, parser, and value types
 //! - [`grift_eval`] — Trampolined evaluator
 //! - [`grift_repl`] — Interactive REPL (behind `std` feature)
@@ -57,12 +57,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 // ============================================================================
-// Core Re-exports from pwn_arena
+// Core Re-exports from grift_arena
 // ============================================================================
 
 /// Arena allocator and garbage collection primitives.
 pub mod arena {
-    pub use pwn_arena::{
+    pub use grift_arena::{
         Arena, ArenaIndex, ArenaError, ArenaResult,
         GcStats, Trace,
     };

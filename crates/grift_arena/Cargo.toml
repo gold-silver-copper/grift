@@ -1,0 +1,12 @@
+[package]
+name = "grift_arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A minimal no_std, no_alloc arena allocator with garbage collection for the Grift Scheme interpreter"
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift_arena"
+keywords = ["arena", "allocator", "no_std", "embedded", "gc"]
+categories = ["no-std", "embedded", "memory-management"]
+
+[dependencies]

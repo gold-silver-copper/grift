@@ -2,7 +2,7 @@
 //!
 //! This module contains the parser state machine and related error types.
 
-use pwn_arena::{ArenaIndex, ArenaError};
+use grift_arena::{ArenaIndex, ArenaError};
 use crate::Lisp;
 
 // ============================================================================

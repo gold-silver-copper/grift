@@ -1,6 +1,6 @@
 # Scheme R7RS Conformance Work
 
-This document provides guidance for continuing work on Scheme R7RS conformance for the pwn_arena Lisp implementation.
+This document provides guidance for continuing work on Scheme R7RS conformance for the Grift Scheme implementation.
 
 ## Reference Specification
 

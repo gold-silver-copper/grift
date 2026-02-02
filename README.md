@@ -14,7 +14,7 @@ cargo install grift --features std
 
 # Or add to your Cargo.toml for library use (no_std by default)
 [dependencies]
-grift = "0.1"
+grift = "1.2"
 ```
 
 ## 🚀 Quick Start
@@ -64,11 +64,12 @@ This repository contains:
 | Crate | Description | `no_std` |
 |-------|-------------|----------|
 | **`grift`** | Unified re-export crate (primary entry point) | ✅ default |
-| **`pwn_arena`** | Arena allocator with mark-and-sweep GC | ✅ |
+| **`grift_arena`** | Arena allocator with mark-and-sweep GC | ✅ |
 | **`grift_parser`** | Lisp parser with symbol interning | ✅ |
 | **`grift_eval`** | Trampolined evaluator with proper TCO | ✅ |
 | **`grift_repl`** | Interactive REPL | ❌ (uses std) |
 | **`grift_macros`** | Proc macros for stdlib generation | N/A |
+| **`grift_arena_embedded`** | Hardware access for embedded targets | ✅ |
 
 ## ✨ Lisp Features
 
@@ -290,11 +291,12 @@ The standard library is defined as static Lisp code, parsed on-demand:
 grift/
 ├── crates/
 │   ├── grift/           # Unified re-export crate (primary entry point)
-│   ├── pwn_arena/       # Core arena allocator (no_std, no_alloc)
+│   ├── grift_arena/     # Core arena allocator (no_std, no_alloc)
 │   ├── grift_parser/    # Lisp parser and value types (no_std)
 │   ├── grift_eval/      # Trampolined evaluator (no_std)
 │   ├── grift_repl/      # Interactive REPL (uses std for I/O)
-│   └── grift_macros/    # Proc macros for stdlib generation
+│   ├── grift_macros/    # Proc macros for stdlib generation
+│   └── grift_arena_embedded/  # Hardware access for embedded targets
 ├── docs/
 │   ├── ARENA_ARCHITECTURE.md
 │   ├── LISP_ARCHITECTURE.md

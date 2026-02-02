@@ -1,0 +1,20 @@
+[package]
+name = "grift_arena_embedded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Embedded-specific features for the Grift Scheme interpreter, including hardware register and memory access"
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift_arena_embedded"
+keywords = ["embedded", "lisp", "scheme", "no_std", "hardware"]
+categories = ["no-std", "embedded", "hardware-support"]
+
+[dependencies]
+grift_arena = { version = "1.2.0", path = "../grift_arena" }
+grift_parser = { version = "1.2.0", path = "../grift_parser" }
+grift_eval = { version = "1.2.0", path = "../grift_eval" }
+
+[features]
+default = []
+# Enable std for testing/simulation on host machines
+std = []
