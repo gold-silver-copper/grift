@@ -228,9 +228,9 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
             }
         }
         ErrorKind::WrongArgCount => {
-            if let (Some(expected), Some(got)) = (err.expected_args(), err.got_args()) {
+            if let Some(info) = &err.arg_info {
                 use std::fmt::Write;
-                write!(buf, ": expected {} arguments, got {}", expected, got).unwrap();
+                write!(buf, ": expected {} arguments, got {}", info.expected, info.got).unwrap();
             }
         }
         ErrorKind::Parse => {

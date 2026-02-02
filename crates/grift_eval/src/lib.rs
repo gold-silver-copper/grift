@@ -81,6 +81,6 @@ mod evaluator;
 mod macros;
 
 // Public re-exports
-pub use error::{ErrorKind, ErrorMessage, StackFrame, EvalError, EvalResult, ArgCountInfo};
+pub use error::{ErrorKind, StackFrame, EvalError, EvalResult, ArgCountInfo};
 pub use evaluator::Evaluator;
 pub use continuation::{Cont, TrampolineState};

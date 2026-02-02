@@ -3,7 +3,7 @@
 //! # Design Goals
 //!
 //! This module is optimized for `no_std` environments with minimal stack usage.
-//! The `EvalError` struct is kept small (~56 bytes) to avoid bloating every
+//! The `EvalError` struct is kept small (~88 bytes) to avoid bloating every
 //! `Result<ArenaIndex, EvalError>` on the stack.
 //!
 //! ## Key Optimizations
@@ -165,16 +165,6 @@ impl EvalError {
         self
     }
     
-    /// Legacy compatibility: return expected args count
-    pub fn expected_args(&self) -> Option<usize> {
-        self.arg_info.map(|info| info.expected as usize)
-    }
-    
-    /// Legacy compatibility: return got args count
-    pub fn got_args(&self) -> Option<usize> {
-        self.arg_info.map(|info| info.got as usize)
-    }
-    
     /// Create an EvalError from a ParseError with expression context
     pub fn from_parse_error(e: ParseError, expr: ArenaIndex) -> Self {
         let mut err = EvalError::new(ErrorKind::Parse);
@@ -203,43 +193,3 @@ impl From<ParseError> for EvalError {
 
 /// Result type for evaluation
 pub type EvalResult = Result<ArenaIndex, EvalError>;
-
-// =============================================================================
-// Legacy compatibility types
-// =============================================================================
-
-/// Fixed-size message buffer for no_std - DEPRECATED
-/// 
-/// Kept for backwards compatibility. New code should use `&'static str` directly.
-/// 
-/// **Note**: Fields are now private. Use `from_str()` to create and `as_str()` to read.
-#[derive(Debug, Clone, Copy)]
-pub struct ErrorMessage {
-    buf: [u8; 64],
-    len: usize,
-}
-
-impl ErrorMessage {
-    pub const fn empty() -> Self {
-        ErrorMessage { buf: [0; 64], len: 0 }
-    }
-    
-    pub fn from_str(s: &str) -> Self {
-        let mut msg = ErrorMessage::empty();
-        let bytes = s.as_bytes();
-        let len = bytes.len().min(64);
-        msg.buf[..len].copy_from_slice(&bytes[..len]);
-        msg.len = len;
-        msg
-    }
-    
-    pub fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
-    }
-}
-
-impl Default for ErrorMessage {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
