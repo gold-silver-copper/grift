@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "grift-bench"
 path = "src/bench.rs"
 
+[[bin]]
+name = "grift-vec-bench"
+path = "src/vec_bench.rs"
+
 [[example]]
 name = "vec_storage"
 path = "examples/vec_storage.rs"
