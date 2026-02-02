@@ -1,4 +1,4 @@
-//! # PWN Arena Embedded
+//! # Grift Arena Embedded
 //!
 //! Embedded-specific features for the grift_arena Lisp interpreter.
 //!
