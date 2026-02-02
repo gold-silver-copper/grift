@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/pwn_arena",
+    "crates/grift_arena",
     "crates/grift_macros",
     "crates/grift_parser",
     "crates/grift_eval",
     "crates/grift_repl",
     "crates/grift",
-    "crates/pwn_arena_embedded",
+    "crates/grift_arena_embedded",
 ]
 
 [workspace.package]

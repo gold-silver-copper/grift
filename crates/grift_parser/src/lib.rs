@@ -9,7 +9,7 @@
 //!
 //! - Symbols use contiguous string storage for memory efficiency
 //! - Symbol interning ensures the same symbol name returns the same index
-//! - All values are stored in a `pwn_arena` arena
+//! - All values are stored in a `grift_arena` arena
 //! - Supports garbage collection via the `Trace` trait
 //! - Explicit boolean values (#t, #f) separate from nil/empty list
 //! - **Strict evaluation** - All arguments are evaluated before function application (call-by-value)
@@ -59,7 +59,7 @@
 //! - Recursive stdlib functions work via the global environment
 //! - Errors in static source strings are only caught at runtime
 
-pub use pwn_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
+pub use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
 // Macros module (must be declared before other modules that use the macros)
 #[macro_use]

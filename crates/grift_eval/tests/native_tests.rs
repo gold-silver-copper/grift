@@ -1,6 +1,6 @@
 use grift_eval::native::*;
 use grift_eval::{Lisp, register_native};
-use pwn_arena::{ArenaIndex, ArenaResult};
+use grift_arena::{ArenaIndex, ArenaResult};
 
 #[test]
 fn test_from_lisp_isize() {

@@ -64,7 +64,7 @@ This repository contains:
 | Crate | Description | `no_std` |
 |-------|-------------|----------|
 | **`grift`** | Unified re-export crate (primary entry point) | ✅ default |
-| **`pwn_arena`** | Arena allocator with mark-and-sweep GC | ✅ |
+| **`grift_arena`** | Arena allocator with mark-and-sweep GC | ✅ |
 | **`grift_parser`** | Lisp parser with symbol interning | ✅ |
 | **`grift_eval`** | Trampolined evaluator with proper TCO | ✅ |
 | **`grift_repl`** | Interactive REPL | ❌ (uses std) |
@@ -290,7 +290,7 @@ The standard library is defined as static Lisp code, parsed on-demand:
 grift/
 ├── crates/
 │   ├── grift/           # Unified re-export crate (primary entry point)
-│   ├── pwn_arena/       # Core arena allocator (no_std, no_alloc)
+│   ├── grift_arena/       # Core arena allocator (no_std, no_alloc)
 │   ├── grift_parser/    # Lisp parser and value types (no_std)
 │   ├── grift_eval/      # Trampolined evaluator (no_std)
 │   ├── grift_repl/      # Interactive REPL (uses std for I/O)

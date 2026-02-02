@@ -23,7 +23,7 @@ use crate::traits::{GenericArenaDelete, GenericArenaCopy};
 /// # Example
 ///
 /// ```rust
-/// use pwn_arena::{GenericArena, ArrayStorage};
+/// use grift_arena::{GenericArena, ArrayStorage};
 ///
 /// let arena: GenericArena<isize, ArrayStorage<isize, 100>> = GenericArena::new(0);
 /// let idx = arena.alloc(42).unwrap();

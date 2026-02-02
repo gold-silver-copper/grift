@@ -604,7 +604,7 @@ macro_rules! binary_div_op {
 ///
 /// ```rust
 /// use grift_eval::{Lisp, ArenaIndex, ArenaResult, FromLisp};
-/// use pwn_arena::ArenaResult as PwnResult;
+/// use grift_arena::ArenaResult as PwnResult;
 ///
 /// fn my_custom_fn<const N: usize>(
 ///     lisp: &Lisp<N>,
