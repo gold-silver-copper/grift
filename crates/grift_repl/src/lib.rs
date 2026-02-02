@@ -228,9 +228,9 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
             }
         }
         ErrorKind::WrongArgCount => {
-            if let (Some(expected), Some(got)) = (err.expected_args, err.got_args) {
+            if let Some(info) = &err.arg_info {
                 use std::fmt::Write;
-                write!(buf, ": expected {} arguments, got {}", expected, got).unwrap();
+                write!(buf, ": expected {} arguments, got {}", info.expected, info.got).unwrap();
             }
         }
         ErrorKind::Parse => {
@@ -277,44 +277,14 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
     }
     
     // Custom message if present
-    let msg = err.message.as_str();
+    let msg = err.message;
     if !msg.is_empty() {
         buf.push_str("\n  ");
         buf.push_str(msg);
     }
     
-    // Stack trace
-    if err.backtrace_len > 0 {
-        buf.push_str("\n\nStack trace (most recent call first):");
-        for i in (0..err.backtrace_len).rev() {
-            let frame = &err.backtrace[i];
-            buf.push_str("\n  ");
-            use std::fmt::Write;
-            write!(buf, "{}: ", err.backtrace_len - i).unwrap();
-            
-            if !frame.func.is_nil() {
-                let mut func_buf = String::new();
-                format_value(lisp, frame.func, &mut func_buf);
-                if func_buf.len() > 40 {
-                    buf.push_str(&func_buf[..37]);
-                    buf.push_str("...");
-                } else {
-                    buf.push_str(&func_buf);
-                }
-            } else if !frame.expr.is_nil() {
-                let mut expr_buf = String::new();
-                format_value(lisp, frame.expr, &mut expr_buf);
-                if expr_buf.len() > 40 {
-                    buf.push_str(&expr_buf[..37]);
-                    buf.push_str("...");
-                } else {
-                    buf.push_str(&expr_buf);
-                }
-            } else {
-                buf.push_str("<unknown>");
-            }
-        }
-    }
+    // Note: Stack traces are no longer embedded in EvalError for efficiency.
+    // The evaluator maintains its own call stack which can be accessed separately.
     
     buf
 }

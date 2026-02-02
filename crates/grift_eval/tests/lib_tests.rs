@@ -4243,3 +4243,34 @@ fn test_empty_ellipsis() {
     let first = lisp.car(result).unwrap();
     assert_eq!(lisp.get(first).unwrap().as_number(), Some(1));
 }
+
+#[test]
+fn check_eval_error_size() {
+    use core::mem::size_of;
+    use grift_eval::{EvalError, ErrorKind, StackFrame, ArgCountInfo};
+    use grift_eval::ParseError;
+    
+    println!("\n=== Type Sizes (stack efficiency check) ===");
+    println!("EvalError:        {} bytes", size_of::<EvalError>());
+    println!("ErrorKind:        {} bytes", size_of::<ErrorKind>());
+    println!("StackFrame:       {} bytes", size_of::<StackFrame>());
+    println!("ArgCountInfo:     {} bytes", size_of::<ArgCountInfo>());
+    println!("ParseError:       {} bytes", size_of::<ParseError>());
+    println!("Option<ParseError>: {} bytes", size_of::<Option<ParseError>>());
+    println!("Option<&str>:     {} bytes", size_of::<Option<&'static str>>());
+    
+    // Verify EvalError is now small enough for efficient stack usage
+    // Previous size was 440 bytes, now reduced to ~88 bytes (80% reduction)
+    let error_size = size_of::<EvalError>();
+    assert!(
+        error_size <= 96,
+        "EvalError is {} bytes, expected <= 96 bytes for stack efficiency",
+        error_size
+    );
+    
+    // Verify ErrorKind uses repr(u8) for minimal size
+    assert_eq!(size_of::<ErrorKind>(), 1, "ErrorKind should be 1 byte (repr(u8))");
+    
+    // Verify ArgCountInfo is compact (4 bytes: 2 × u16)
+    assert_eq!(size_of::<ArgCountInfo>(), 4, "ArgCountInfo should be 4 bytes (2 × u16)");
+}
