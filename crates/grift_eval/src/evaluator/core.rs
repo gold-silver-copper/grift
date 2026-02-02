@@ -20,7 +20,7 @@ use crate::{
 use super::Evaluator;
 
 /// Standard macro definitions (loaded at startup)
-const STANDARD_MACROS: &str = include_str!("../../../grift_parser/src/macros.scm");
+const STANDARD_MACROS: &str = include_str!("../macros.scm");
 
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
