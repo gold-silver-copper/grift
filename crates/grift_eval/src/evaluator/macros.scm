@@ -260,19 +260,69 @@
 ;; Quasiquote
 ;; ============================================================
 
-;; NOTE: Quasiquote remains as a built-in special form.
+;; NOTE: Quasiquote is implemented as a built-in special form for performance.
 ;;
-;; While procedural macros are now supported (define-syntax with lambda),
-;; quasiquote is kept as a special form because:
-;; 1. The current implementation is highly optimized using trampolines
-;; 2. A macro implementation would require helper functions at expansion time
-;; 3. The special form handles all edge cases including deeply nested qq/unquote
+;; The special form uses trampolined evaluation which is highly optimized.
+;; Below is an alternative procedural macro implementation that demonstrates
+;; how quasiquote CAN be implemented using syntax-case with depth tracking.
 ;;
-;; Procedural macros ARE available for user-defined transformations:
-;;   (define-syntax my-macro
-;;     (lambda (x)
-;;       (syntax-case x ()
-;;         ((_ args ...) (syntax expanded-form)))))
+;; The macro uses Peano numerals to track nesting depth at expansion time:
+;;   z = depth 0, (d z) = depth 1, (d (d z)) = depth 2, etc.
+;;
+;; This implementation is provided for educational purposes and to complete
+;; the procedural macro infrastructure. The special form remains the primary
+;; implementation due to its performance characteristics.
+
+;; Alternative procedural macro implementation of quasiquote
+;; Uncomment to use instead of the special form:
+
+;; (define-syntax quasiquote
+;;   (lambda (stx)
+;;     (syntax-case stx ()
+;;       ((_ template)
+;;        (syntax (%qq-expand template (d z)))))))
+
+;; Helper macro for quasiquote expansion with depth tracking
+;; Depth is tracked using Peano numerals: z=0, (d z)=1, (d (d z))=2, etc.
+(define-syntax %qq-expand
+  (lambda (stx)
+    (syntax-case stx (unquote unquote-splicing quasiquote d z)
+      ;; At depth 1 (d z), unquote evaluates the expression
+      ((_ (unquote e) (d z))
+       (syntax e))
+      ;; At depth > 1, unquote decrements depth and wraps result
+      ((_ (unquote e) (d (d deeper)))
+       (syntax (list 'unquote (%qq-expand e (d deeper)))))
+      
+      ;; Nested quasiquote - increment depth
+      ((_ (quasiquote inner) depth)
+       (syntax (list 'quasiquote (%qq-expand inner (d depth)))))
+      
+      ;; List where car is (unquote-splicing e) at depth 1 - use append
+      ((_ ((unquote-splicing e) . rest) (d z))
+       (syntax (append e (%qq-expand rest (d z)))))
+      ;; List where car is (unquote-splicing e) at depth > 1 - keep structure
+      ((_ ((unquote-splicing e) . rest) (d (d deeper)))
+       (syntax (cons (list 'unquote-splicing (%qq-expand e (d deeper)))
+                     (%qq-expand rest (d (d deeper))))))
+      
+      ;; List where car is (unquote e) at depth 1 - evaluate and cons
+      ((_ ((unquote e) . rest) (d z))
+       (syntax (cons e (%qq-expand rest (d z)))))
+      ;; List where car is (unquote e) at depth > 1 - keep structure
+      ((_ ((unquote e) . rest) (d (d deeper)))
+       (syntax (cons (list 'unquote (%qq-expand e (d deeper)))
+                     (%qq-expand rest (d (d deeper))))))
+      
+      ;; General list - recurse on both car and cdr
+      ((_ (a . rest) depth)
+       (syntax (cons (%qq-expand a depth) (%qq-expand rest depth))))
+      ;; Empty list
+      ((_ () depth)
+       (syntax '()))
+      ;; Atom - quote it
+      ((_ atom depth)
+       (syntax 'atom)))))
 
 ;; ============================================================
 ;; Delayed Evaluation

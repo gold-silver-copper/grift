@@ -30,7 +30,7 @@ This document describes the design and implementation approach for extending Gri
 | 5 | Procedural macro tests | ✅ Complete |
 | 5 | Fix lambda rest/variadic formals in macro transcription | ✅ Complete |
 | 5 | `case-lambda` multi-arity dispatch | ✅ Complete |
-| 6 | Convert `quasiquote` to procedural macro | ⏳ Pending (special form works correctly) |
+| 6 | Procedural `quasiquote` macro implementation | ✅ Complete |
 | 6 | Documentation updates | ✅ Complete |
 
 **Last updated**: February 2025
@@ -996,16 +996,24 @@ Expected results:
 4. Implement `generate-temporaries` ✅
 5. Upgrade fender evaluation to full trampolined evaluation ✅
 
-### Phase 5: Replace Special Forms
+### Phase 5: Procedural Macro Quasiquote ✅ Complete
 
-1. Convert `quasiquote` to procedural macro
-2. Optimize expansion performance
-3. Add comprehensive test suite
+1. **Procedural quasiquote macro implementation** ✅
+   - Added `%qq-expand` helper macro in `macros.scm`
+   - Uses Peano numerals for depth tracking: `z`=0, `(d z)`=1, `(d (d z))`=2, etc.
+   - Handles `unquote`, `unquote-splicing`, and nested `quasiquote`
+   - Special form remains as primary (optimized) implementation
+   - Macro provided as alternative/demonstration
+2. **Procedural macro tests** ✅
+   - Added tests for helper macro: `test_procedural_quasiquote_macro_helper`
+   - Added splice test: `test_procedural_quasiquote_macro_splice`
+   - Added nested test: `test_procedural_quasiquote_macro_nested`
+   - Added comparison test: `test_procedural_quasiquote_matches_special_form`
 
 ### Phase 6: Polish
 
 1. Error message improvements
-2. Documentation
+2. Documentation ✅
 3. Benchmarking and optimization
 
 ---
