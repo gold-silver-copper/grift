@@ -434,16 +434,44 @@
 (define (tenth lst) (cadr (cddddr (cddddr lst))))
 
 ;;; (take-right lst k) - Return the last k elements of lst
+;;; Uses lag-pointer technique: O(n) single traversal instead of O(n) for length + O(n) for drop
 (define (take-right lst k)
-  (drop (- (length lst) k) lst))
+  (define (advance p count)
+    (if (= count 0)
+        p
+        (if (null? p)
+            '()
+            (advance (cdr p) (- count 1)))))
+  (define (walk lead lag)
+    (if (null? lead)
+        lag
+        (walk (cdr lead) (cdr lag))))
+  (let ((lead (advance lst k)))
+    (if (null? lead)
+        lst
+        (walk lead lst))))
 
 ;;; (drop-right lst k) - Return all but the last k elements
+;;; Uses lag-pointer technique: O(n) single traversal, tail-recursive with accumulator
 (define (drop-right lst k)
-  (take lst (- (length lst) k)))
+  (define (advance p count)
+    (if (= count 0)
+        p
+        (if (null? p)
+            '()
+            (advance (cdr p) (- count 1)))))
+  (define (walk lead lag acc)
+    (if (null? lead)
+        (reverse acc)
+        (walk (cdr lead) (cdr lag) (cons (car lag) acc))))
+  (let ((lead (advance lst k)))
+    (if (null? lead)
+        '()
+        (walk lead lst '()))))
 
 ;;; (split-at lst k) - Split list at position k, returns (take . drop)
 (define (split-at lst k)
-  (cons (take lst k) (drop lst k)))
+  (cons (take k lst) (drop k lst)))
 
 ;;; (concatenate lsts) - Append all lists in lsts
 (define (concatenate lsts)
