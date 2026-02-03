@@ -319,31 +319,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Returns true if the variable exists, false otherwise.
     /// This is used to determine if a variable binding shadows a macro.
     pub(super) fn is_variable_bound(&self, env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
-        let mut current = env;
-        
-        // Check local environment
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Reached end of local env, check global
-                    break;
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, cdr: _ } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(true);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
+        // Check local environment first
+        if self.env_contains(env, name)? {
+            return Ok(true);
         }
         
         // Check global environment
-        current = self.global_env;
+        self.env_contains(self.global_env, name)
+    }
+    
+    /// Helper to check if a name exists in a specific environment chain
+    fn env_contains(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
         loop {
-            match self.lisp.get(current)? {
+            match self.lisp.get(env)? {
                 Value::Nil => {
                     return Ok(false);
                 }
@@ -353,7 +341,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     {
                         return Ok(true);
                     }
-                    current = cdr;
+                    env = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::Generic, name)),
             }
