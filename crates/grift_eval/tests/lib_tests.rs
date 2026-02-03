@@ -620,6 +620,7 @@ fn test_petrofsky_let() {
     // The Petrofsky let test: ensures named-let doesn't introduce the loop name
     // too early in the scope. The initializer (- 1) should call the subtraction
     // function from outer scope, not the named-let loop function.
+    // Reference: http://web.archive.org/web/20070626123636/http://www.paulgraham.com/arcchallenge.html
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -627,9 +628,14 @@ fn test_petrofsky_let() {
     // NOT 1 (which would happen if - was bound to the loop before evaluating (- 1))
     assert_eq!(eval_to_num(&lisp, &mut eval, "(let - ((n (- 1))) n)"), -1);
     
-    // Additional tests with builtin function names as loop names
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(let + ((x 5) (y 3)) (- x y))"), 2);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(let * ((a 10) (b 2)) (+ a b))"), 12);
+    // Additional edge case: using builtin name as loop, but with recursion
+    // The initializer (+ 2 3) uses outer +, but body uses loop + recursively
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let + ((n (+ 2 3))) (if (= n 0) 100 (+ (- n 1))))"), 100);
+    
+    // Another case with * - initializer uses outer *, body uses loop *
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(let * ((x (* 2 3))) (if (= x 0) 42 (* (- x 1))))"), 42);
 }
 
 #[test]
