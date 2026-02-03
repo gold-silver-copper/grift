@@ -1918,10 +1918,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let params = self.lisp.car(rest)?;
         let body_list = self.lisp.cdr(rest)?;
         
-        // Wrap body in begin if multiple expressions
-        let body = if self.list_length(body_list)? == 1 {
-            self.lisp.car(body_list)?
+        // Check if body is a single expression (cdr is nil) or multiple
+        // This is more efficient than calling list_length which traverses the whole list
+        let first_body = self.lisp.car(body_list)?;
+        let rest_body = self.lisp.cdr(body_list)?;
+        
+        let body = if self.lisp.get(rest_body)?.is_nil() {
+            // Single expression - use directly
+            first_body
         } else {
+            // Multiple expressions - wrap in begin
             let begin = self.lisp.symbol("begin")?;
             self.lisp.cons(begin, body_list)?
         };
