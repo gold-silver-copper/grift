@@ -1478,6 +1478,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.eval_let_for_expansion(cdr, env);
                 }
                 
+                // Check for with-syntax (binds evaluated expressions to pattern variables)
+                if self.lisp.symbol_matches(car, "with-syntax")? {
+                    return self.eval_with_syntax_for_expansion(cdr, env);
+                }
+                
                 // Function call - evaluate car and args, then apply
                 let func = self.eval_for_macro_expansion(car, env)?;
                 let args = self.eval_args_for_expansion(cdr, env)?;
@@ -1900,6 +1905,56 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             current = self.lisp.cdr(current)?;
         }
+        
+        // Evaluate body
+        self.eval_begin_for_expansion(body, extended_env)
+    }
+    
+    /// Evaluate with-syntax for expansion
+    /// 
+    /// (with-syntax ((pattern expr) ...) body ...)
+    /// 
+    /// Each expr is evaluated in the current environment (which includes pattern
+    /// variables from syntax-case), and the result is bound to the pattern variable.
+    /// Unlike let, with-syntax also updates the #:pattern-bindings so that (syntax ...)
+    /// can access the bound variables during template transcription. Without this update,
+    /// syntax templates would fail to find the with-syntax bound variables.
+    fn eval_with_syntax_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        let bindings_expr = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Get existing pattern bindings
+        let existing_pattern_bindings = self.get_pattern_bindings_from_env_expansion(env)?;
+        
+        // Evaluate all binding values and build new pattern bindings
+        let mut extended_env = env;
+        let mut new_pattern_bindings = existing_pattern_bindings;
+        let mut current = bindings_expr;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            let name = self.lisp.car(binding)?;
+            let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+            let val = self.eval_for_macro_expansion(val_expr, env)?;
+            
+            // Add to environment
+            let pair = self.lisp.cons(name, val)?;
+            extended_env = self.lisp.cons(pair, extended_env)?;
+            
+            // Also add to pattern bindings for (syntax ...) to use
+            new_pattern_bindings = self.lisp.cons(pair, new_pattern_bindings)?;
+            
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Update the #:pattern-bindings in the environment
+        let key = self.lisp.symbol("#:pattern-bindings")?;
+        let binding_pair = self.lisp.cons(key, new_pattern_bindings)?;
+        extended_env = self.lisp.cons(binding_pair, extended_env)?;
         
         // Evaluate body
         self.eval_begin_for_expansion(body, extended_env)

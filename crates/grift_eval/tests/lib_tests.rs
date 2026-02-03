@@ -5480,6 +5480,86 @@ fn test_with_syntax_empty() {
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
 }
 
+/// Test with-syntax with syntax template substitution
+#[test]
+fn test_with_syntax_in_procedural_macro() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a procedural macro that uses with-syntax to compute a value
+    eval.eval_str(r#"
+        (define-syntax add-one
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n) (with-syntax ((result (+ 1 n)))
+                       (syntax result))))))
+    "#).unwrap();
+    
+    // Use the macro - should compute result at macro expansion time
+    let result = eval.eval_str("(add-one 99)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100));
+}
+
+/// Test with-syntax with multiple bindings using pattern variables
+#[test]
+fn test_with_syntax_multiple_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with multiple with-syntax bindings that computes a sum
+    eval.eval_str(r#"
+        (define-syntax sum-triple
+          (lambda (x)
+            (syntax-case x ()
+              ((_ a b c)
+               (with-syntax ((total (+ a b c)))
+                 (syntax total))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(sum-triple 10 20 30)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(60));
+}
+
+/// Test with-syntax nested inside syntax-case with complex expressions
+#[test]
+fn test_with_syntax_complex_expression() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that doubles a number using addition
+    eval.eval_str(r#"
+        (define-syntax double-val
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n)
+               (with-syntax ((result (+ n n)))
+                 (syntax result))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(double-val 7)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(14));
+}
+
+/// Test with-syntax referencing other with-syntax bindings
+#[test]
+fn test_with_syntax_sequential_binding() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // with-syntax bindings should be able to use previous bindings
+    let result = eval.eval_str(r#"
+        (with-syntax ((x 5))
+          (with-syntax ((y (+ x 3)))
+            (+ x y)))
+    "#).unwrap();
+    
+    // x = 5, y = 8, result = 13
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(13));
+}
+
 /// Test syntax form for template creation
 #[test]
 fn test_syntax_template_basic() {
