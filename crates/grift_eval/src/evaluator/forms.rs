@@ -930,8 +930,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let head = self.lisp.car(transformer_expr)?;
                 if self.lisp.symbol_matches(head, "lambda")? {
                     // Procedural macro - evaluate the lambda in the current environment
-                    // We need to evaluate it, but we're in a trampoline context
-                    // For now, evaluate it directly using eval_lambda
                     let lambda_args = self.lisp.cdr(transformer_expr)?;
                     self.eval_lambda(lambda_args, env)?
                 } else if self.lisp.symbol_matches(head, "syntax-rules")? {
@@ -1028,11 +1026,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate (syntax template) - creates a syntax object
     ///
     /// Wraps the template in a syntax object with fresh marks for hygiene.
+    ///
+    /// TODO: Implement template transcription with pattern variable substitution.
+    /// Currently creates syntax objects with empty marks/substitutions, which means
+    /// pattern variables from syntax-case are not substituted in templates.
     pub(super) fn step_eval_syntax(&mut self, args: ArenaIndex, _env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let template = self.lisp.car(args)?;
         
-        // For now, just return the template wrapped in a syntax object
-        // with empty marks and substitutions
+        // TODO: Template transcription - substitute pattern variables bound in env
+        // Currently just wraps the template as-is without substitution
         let nil = self.lisp.nil()?;
         let syntax_obj = self.lisp.syntax(template, nil, nil)?;
         
