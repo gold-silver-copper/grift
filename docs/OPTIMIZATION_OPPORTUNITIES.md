@@ -299,15 +299,7 @@ The following functions should be converted to use accumulator patterns for tail
 
 **Location**: `crates/grift_eval/src/evaluator/expand.rs`, function `apply_builtin_for_expansion`.
 
-### 2. Cache Macro Expansions
 
-For frequently-used macros like `let`, `let*`, `cond`, consider caching expansion results for identical input patterns.
-
-### 3. Optimize Environment Lookups
-
-Current environment is an alist with O(n) lookup. Consider:
-- Using hash tables for large environments (when std is available)
-- Compiling variable references to indices where possible
 
 ---
 
@@ -326,34 +318,6 @@ Current environment is an alist with O(n) lookup. Consider:
 2. Add more builtins to macro expansion mini-evaluator
 3. Consolidate similar helper functions in stdlib.scm
 
-### Long-Term
 
-1. Investigate compilation to bytecode for hot paths
-2. Consider lazy evaluation for some constructs
-3. Profile actual usage to identify real bottlenecks
-
----
-
-## Benchmarking
-
-Use the built-in benchmark suite to measure impact of optimizations:
-
-```bash
-cargo run -p grift_repl --bin grift-bench --release
-```
-
-Focus on these benchmarks for measuring optimization impact:
-- Map over N elements
-- Filter even from N elements  
-- Fold sum over N elements
-- Map+Filter+Fold pipeline
-- Do loop iteration
-
----
-
-## Notes
-
-- All optimizations should maintain backward compatibility
 - Tail-recursion is critical since this is a no_std implementation
-- Prefer simple implementations over complex ones when performance difference is marginal
-- Always verify optimizations with the benchmark suite
+
