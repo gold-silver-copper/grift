@@ -132,6 +132,11 @@ fn format_value_impl<const N: usize>(
         Ok(Value::SyntaxRules { .. }) => {
             buf.push_str("#<syntax-rules>");
         }
+        Ok(Value::Syntax { expr, .. }) => {
+            buf.push_str("#<syntax:");
+            format_value(lisp, expr, buf);
+            buf.push('>');
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

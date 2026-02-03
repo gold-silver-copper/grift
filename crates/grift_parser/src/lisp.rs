@@ -545,6 +545,74 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Create a syntax object from an expression
+    ///
+    /// Syntax objects wrap an expression with lexical context information
+    /// for hygienic macro expansion. This is the foundation for `syntax-case`.
+    ///
+    /// # Arguments
+    ///
+    /// * `expr` - The expression to wrap (the datum)
+    /// * `marks` - List of hygiene marks for tracking macro expansion scopes
+    /// * `subst` - Substitution environment for identifier resolution
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Create a syntax object wrapping the symbol 'x' with empty context
+    /// let x = lisp.symbol("x")?;
+    /// let nil = lisp.nil()?;
+    /// let stx = lisp.syntax(x, nil, nil)?;
+    /// ```
+    pub fn syntax(
+        &self,
+        expr: ArenaIndex,
+        marks: ArenaIndex,
+        subst: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        // Pack marks and subst into cons cell: (marks . subst)
+        let context = self.cons(marks, subst)?;
+        self.arena.alloc(Value::Syntax { expr, context })
+    }
+    
+    /// Extract components from a syntax object
+    ///
+    /// Returns (expr, marks, subst) unpacked from the internal structure.
+    ///
+    /// # Returns
+    ///
+    /// * `expr` - The wrapped datum
+    /// * `marks` - List of hygiene marks
+    /// * `subst` - Substitution environment
+    pub fn syntax_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::Syntax { expr, context } => {
+                // Unpack (marks . subst)
+                let marks = self.car(context)?;
+                let subst = self.cdr(context)?;
+                Ok((expr, marks, subst))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Unwrap a syntax object to get the raw datum
+    ///
+    /// For syntax objects, returns the wrapped expression.
+    /// For non-syntax values, returns the value unchanged (pass-through).
+    ///
+    /// This is useful for extracting the underlying S-expression from a
+    /// syntax object during macro expansion.
+    pub fn syntax_to_datum(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(idx)? {
+            Value::Syntax { expr, .. } => Ok(expr),
+            _ => Ok(idx), // Non-syntax passes through unchanged
+        }
+    }
+    
     /// Build a list from an iterator of indices
     pub fn list<I: IntoIterator<Item = ArenaIndex>>(&self, items: I) -> ArenaResult<ArenaIndex>
     where

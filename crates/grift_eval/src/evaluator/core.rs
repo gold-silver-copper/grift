@@ -567,7 +567,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
-            Value::Ref(_) | Value::Usize(_) | Value::SyntaxRules { .. } => {
+            Value::Ref(_) | Value::Usize(_) | Value::SyntaxRules { .. } |
+            Value::Syntax { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
