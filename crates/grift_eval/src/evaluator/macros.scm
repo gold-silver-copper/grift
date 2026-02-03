@@ -449,7 +449,7 @@
   (syntax-rules ()
     ;; Base case: no clauses - error on any call
     ((case-lambda)
-     (lambda () (error "case-lambda: no clauses provided")))
+     (lambda () (error "case-lambda: no clauses provided - cannot dispatch")))
     ;; Single clause: just use regular lambda (this works!)
     ((case-lambda (formals body ...))
      (lambda formals body ...))

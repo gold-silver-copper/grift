@@ -4565,18 +4565,18 @@ fn test_case_lambda_two_clauses() {
     // With the current limitation, case-lambda with multiple clauses
     // uses only the first clause
     let define_result = eval.eval_str("
-        (define add
+        (define identity-or-sum
           (case-lambda
             ((x) x)
             ((x y) (+ x y))))
     ");
     assert!(define_result.is_ok(), "define failed: {:?}", define_result);
     
-    // Only the first clause works (takes 1 arg)
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(add 5)"), 5);
+    // Only the first clause works (takes 1 arg, returns it unchanged)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(identity-or-sum 5)"), 5);
     
     // Two-arg call fails because we only have first clause (limitation documented)
-    // let result2 = eval.eval_str("(add 3 4)");
+    // let result2 = eval.eval_str("(identity-or-sum 3 4)");
     // This would fail with wrong arg count
 }
 
@@ -4588,7 +4588,7 @@ fn test_case_lambda_three_clauses() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("
-        (define greet
+        (define multi-arity-zero
           (case-lambda
             (() 0)
             ((x) x)
@@ -4596,7 +4596,7 @@ fn test_case_lambda_three_clauses() {
     ").unwrap();
     
     // Only the first clause (zero-arity) works
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(greet)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(multi-arity-zero)"), 0);
     // Other arities would fail due to limitation
 }
 
