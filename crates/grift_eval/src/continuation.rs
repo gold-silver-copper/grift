@@ -52,6 +52,10 @@ pub enum Cont {
     /// Stack data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr] (6 elements)
     LambdaBindArg(usize),
 
+    /// Collecting rest arguments for rest-parameter lambda
+    /// Stack data: [remaining_exprs, eval_env, rest_param, body, new_env, collected, call_expr] (7 elements)
+    LambdaRestCollect(usize),
+
     // Note: LetBinding, LetStarBinding, LetrecInit removed - now handled by macros
     // Note: When, Unless, CondTest, And, Or removed - now handled by macros
 
@@ -169,6 +173,7 @@ impl Cont {
             Cont::BuiltinForceArg(_) => 5,
             // Note: DoBody removed
             Cont::LambdaBindArg(_) => 6,
+            Cont::LambdaRestCollect(_) => 7,
             // Note: DoInit, DoStep removed
         }
     }

@@ -4803,3 +4803,140 @@ fn test_make_promise_already_promise() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(force p2)"), 99);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REST-ARGUMENT LAMBDA TESTS (R7RS Section 4.1.4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_rest_lambda_basic() {
+    // Test (lambda args body) form - all args collected into a list
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define list-all (lambda args args))").unwrap();
+    
+    // With multiple args
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (list-all 1 2 3))"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (list-all 1 2 3))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr (list-all 1 2 3))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(caddr (list-all 1 2 3))"), 3);
+    
+    // With single arg
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (list-all 42))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (list-all 42))"), 42);
+    
+    // With no args - should return empty list
+    let result = eval.eval_str("(list-all)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+}
+
+#[test]
+fn test_rest_lambda_with_computation() {
+    // Rest lambda should evaluate arguments before collecting
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define sum-all (lambda args (fold + 0 args)))").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sum-all 1 2 3 4 5)"), 15);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sum-all (* 2 3) (* 4 5))"), 26);
+}
+
+#[test]
+fn test_dotted_lambda_basic() {
+    // Test (lambda (a b . rest) body) form
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define f (lambda (a b . rest) rest))").unwrap();
+    
+    // Exactly 2 args - rest is empty
+    let result = eval.eval_str("(f 1 2)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+    
+    // More than 2 args - rest collects extras
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (f 1 2 3))"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (f 1 2 3 4 5))"), 3);
+}
+
+#[test]
+fn test_dotted_lambda_use_all_params() {
+    // Test using both fixed and rest params
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define f (lambda (first . rest) (cons first rest)))").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (f 1 2 3))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr (f 1 2 3))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(caddr (f 1 2 3))"), 3);
+    
+    // With just one arg
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (f 42))"), 42);
+    let result = eval.eval_str("(cdr (f 42))").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+}
+
+#[test]
+fn test_dotted_lambda_sum_with_base() {
+    // Practical example: sum with a base value
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define sum-with-base (lambda (base . nums) (fold + base nums)))").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sum-with-base 100 1 2 3)"), 106);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sum-with-base 0)"), 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MORE PROMISE TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_promise_lazy_evaluation() {
+    // delay should not evaluate its body until forced
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define side-effect 0)").unwrap();
+    eval.eval_str("(define p (delay (set! side-effect (+ side-effect 1))))").unwrap();
+    
+    // Side effect should not have happened yet
+    assert_eq!(eval_to_num(&lisp, &mut eval, "side-effect"), 0);
+    
+    // Force the promise
+    eval.eval_str("(force p)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "side-effect"), 1);
+    
+    // Force again - should not re-evaluate (memoization)
+    eval.eval_str("(force p)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "side-effect"), 1);
+}
+
+#[test]
+fn test_multiple_promises() {
+    // Multiple independent promises
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define p1 (delay 10))").unwrap();
+    eval.eval_str("(define p2 (delay 20))").unwrap();
+    eval.eval_str("(define p3 (delay (+ (force p1) (force p2))))").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force p3)"), 30);
+}
+
+#[test]
+fn test_promise_chain() {
+    // Chained promises
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define p1 (delay 5))").unwrap();
+    eval.eval_str("(define p2 (delay (* 2 (force p1))))").unwrap();
+    eval.eval_str("(define p3 (delay (* 3 (force p2))))").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force p3)"), 30);
+}

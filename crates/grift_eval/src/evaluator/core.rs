@@ -192,6 +192,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::BinaryBuiltinSecond(data_start) |
                     Cont::LambdaFirstBind(data_start) |
                     Cont::LambdaBindArg(data_start) |
+                    Cont::LambdaRestCollect(data_start) |
                     Cont::EvalExpr(data_start) |
                     Cont::BeginSeq(data_start) |
                     // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
@@ -861,7 +862,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     
     define_cont_pack_unpack! {
-        pack_lambda_bind_arg / unpack_lambda_bind_arg => [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr]
+        pack_lambda_bind_arg / unpack_lambda_bind_arg => [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr];
+        pack_lambda_rest_collect / unpack_lambda_rest_collect => [remaining_exprs, eval_env, rest_param, body, new_env, collected, call_expr]
     }
 
     // ========================================================================

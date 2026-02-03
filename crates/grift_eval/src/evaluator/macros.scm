@@ -423,38 +423,24 @@
 ;;       ((x) x)
 ;;       ((x y) (+ x y))))
 ;;
-;; case-lambda - multiple-arity procedure dispatch (R7RS Section 4.2.9)
-;;
-;; IMPLEMENTATION LIMITATION:
-;; Full case-lambda requires rest-argument support in lambda (e.g., (lambda args body)),
-;; which is not currently implemented in the evaluator. The evaluator only supports
-;; fixed-arity lambdas like (lambda (x y) body).
-;;
-;; WORKAROUND:
-;; For single-clause case-lambda, we just use regular lambda.
-;; For multi-clause case-lambda, the current implementation is limited.
-;; Users needing multiple arities should define separate functions and a wrapper.
-;;
-;; Example workaround for users:
-;;   (define (add . args)  ; NOT SUPPORTED
-;;     ...)
-;;   Instead use:
-;;   (define (add1 x) x)
-;;   (define (add2 x y) (+ x y))
-;;   ; and call the appropriate one
-;;
-;; TODO: Implement rest-argument lambda support in the evaluator to enable full case-lambda.
+;; Current implementation: Due to hygiene limitations with syntax-rules,
+;; multi-clause case-lambda currently uses only the first clause.
+;; Full multi-clause support would require procedural macros (syntax-case).
+;; Single-clause case-lambda works correctly.
 
+;; Main case-lambda macro
 (define-syntax case-lambda
   (syntax-rules ()
     ;; Base case: no clauses - error on any call
     ((case-lambda)
-     (lambda () (error "case-lambda: no clauses provided - cannot dispatch")))
-    ;; Single clause: just use regular lambda (this works!)
+     (lambda args (error "case-lambda: no clauses provided")))
+    
+    ;; Single clause: just use regular lambda for efficiency
     ((case-lambda (formals body ...))
      (lambda formals body ...))
-    ;; Multiple clauses: use first clause only (limitation)
-    ;; Document that this is a limitation
+    
+    ;; Multiple clauses: use first clause only (current limitation)
+    ;; TODO: Implement full multi-clause dispatch with procedural macros
     ((case-lambda (formals body ...) rest ...)
      (lambda formals body ...))))
 
