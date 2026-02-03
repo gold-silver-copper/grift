@@ -587,7 +587,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             // Ellipsis symbol itself: error (shouldn't appear here)
             Value::Symbol(_) if self.lisp.symbol_matches(pattern, "...")? => {
-                Err(self.make_error(ErrorKind::Generic, pattern)
+                Err(self.make_error(ErrorKind::SyntaxError, pattern)
                     .with_message("misplaced ellipsis in pattern"))
             }
 
@@ -1347,7 +1347,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Lambda { .. } => {
                 self.apply_procedural_macro(transformer, expr)
             }
-            _ => Err(self.make_error(ErrorKind::Generic, transformer)
+            _ => Err(self.make_error(ErrorKind::SyntaxError, transformer)
                 .with_message("expected syntax-rules or lambda transformer"))
         }
     }
@@ -1386,7 +1386,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // No rule matched
-        Err(self.make_error(ErrorKind::Generic, expr)
+        Err(self.make_error(ErrorKind::SyntaxError, expr)
             .with_message("no matching syntax-rules clause"))
     }
     
@@ -1402,7 +1402,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Get lambda components
         let (params, body_env) = match self.lisp.get(transformer)? {
             Value::Lambda { params, body_env } => (params, body_env),
-            _ => return Err(self.make_error(ErrorKind::Generic, transformer)
+            _ => return Err(self.make_error(ErrorKind::SyntaxError, transformer)
                 .with_message("expected lambda transformer")),
         };
         
@@ -1484,7 +1484,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.apply_for_expansion(func, args)
             }
             
-            _ => Err(self.make_error(ErrorKind::Generic, expr)
+            _ => Err(self.make_error(ErrorKind::SyntaxError, expr)
                 .with_message("unexpected value in macro expansion"))
         }
     }
@@ -1529,7 +1529,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Handle common builtins needed for macro expansion
                 self.apply_builtin_for_expansion(builtin, args)
             }
-            _ => Err(self.make_error(ErrorKind::Generic, func)
+            _ => Err(self.make_error(ErrorKind::SyntaxError, func)
                 .with_message("not a procedure in macro expansion"))
         }
     }
@@ -1559,7 +1559,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 self.bind_params_for_expansion(rest_params, rest_args, extended_env)
             }
-            _ => Err(self.make_error(ErrorKind::Generic, params)
+            _ => Err(self.make_error(ErrorKind::SyntaxError, params)
                 .with_message("invalid parameter list"))
         }
     }
@@ -1643,7 +1643,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 self.lisp.boolean(result).map_err(Into::into)
             }
-            _ => Err(self.make_error(ErrorKind::Generic, args)
+            _ => Err(self.make_error(ErrorKind::SyntaxError, args)
                 .with_message("builtin not supported in macro expansion"))
         }
     }
@@ -1747,7 +1747,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
         
-        Err(self.make_error(ErrorKind::Generic, stx)
+        Err(self.make_error(ErrorKind::SyntaxError, stx)
             .with_message("syntax-case: no pattern matched"))
     }
     
@@ -1966,7 +1966,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(lambda_result);
         }
 
-        Err(self.make_error(ErrorKind::Generic, expr)
+        Err(self.make_error(ErrorKind::SyntaxError, expr)
             .with_message("expected (syntax-rules ...) or (lambda ...)"))
     }
 
