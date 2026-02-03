@@ -5178,3 +5178,198 @@ fn test_nested_pattern_decomposition() {
     assert_eq!(lisp.get(v3).unwrap().as_number(), Some(3));
     assert_eq!(lisp.get(v4).unwrap().as_number(), Some(4));
 }
+
+// ============================================================================
+// Mark Infrastructure Tests
+// ============================================================================
+
+/// Test basic mark_syntax functionality via syntax object creation
+/// This tests that we can create and manipulate syntax objects with marks
+#[test]
+fn test_syntax_object_with_marks() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let _eval = Evaluator::new(&lisp).unwrap();
+    
+    // Create a simple symbol
+    let sym = lisp.symbol("x").unwrap();
+    let nil = lisp.nil().unwrap();
+    
+    // Create a syntax object with empty marks
+    let stx = lisp.syntax(sym, nil, nil).unwrap();
+    
+    // Verify we can extract the parts
+    let (expr, marks, subst) = lisp.syntax_parts(stx).unwrap();
+    assert!(lisp.symbol_matches(expr, "x").unwrap());
+    assert!(lisp.get(marks).unwrap().is_nil());
+    assert!(lisp.get(subst).unwrap().is_nil());
+    
+    // Verify syntax_to_datum returns the original expression
+    let datum = lisp.syntax_to_datum(stx).unwrap();
+    assert!(lisp.symbol_matches(datum, "x").unwrap());
+    
+    // For non-syntax objects, syntax_to_datum passes through
+    let num = lisp.number(42).unwrap();
+    let passed = lisp.syntax_to_datum(num).unwrap();
+    assert_eq!(lisp.get(passed).unwrap().as_number(), Some(42));
+}
+
+/// Test mark_syntax applies fresh marks correctly
+#[test]
+fn test_mark_syntax_applies_marks() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Create a symbol
+    let sym = lisp.symbol("foo").unwrap();
+    let nil = lisp.nil().unwrap();
+    
+    // Create a syntax object with no marks
+    let stx1 = lisp.syntax(sym, nil, nil).unwrap();
+    
+    // Apply a mark
+    let stx2 = eval.mark_syntax(stx1).unwrap();
+    
+    // The marked syntax object should have a non-empty marks list
+    let (_expr, marks, _subst) = lisp.syntax_parts(stx2).unwrap();
+    assert!(!lisp.get(marks).unwrap().is_nil(), "marks should be non-empty after mark_syntax");
+    
+    // The first mark should be a gensym symbol (verify it's a symbol)
+    let first_mark = lisp.car(marks).unwrap();
+    match lisp.get(first_mark).unwrap() {
+        Value::Symbol(_) => {
+            // Mark is a symbol as expected - gensyms are symbols starting with #:
+            // We can use symbol_to_bytes to check, but just verifying it's a symbol is sufficient
+            let mut buf = [0u8; 32];
+            let len = lisp.symbol_to_bytes(first_mark, &mut buf).unwrap();
+            let name = core::str::from_utf8(&buf[..len]).unwrap();
+            assert!(name.starts_with("#:"), "mark should be a gensym starting with #:");
+        }
+        _ => panic!("mark should be a symbol"),
+    }
+    
+    // Apply another mark
+    let stx3 = eval.mark_syntax(stx2).unwrap();
+    let (_expr, marks2, _subst) = lisp.syntax_parts(stx3).unwrap();
+    
+    // Should have two marks now
+    let mark1 = lisp.car(marks2).unwrap();
+    let mark2 = lisp.car(lisp.cdr(marks2).unwrap()).unwrap();
+    
+    // They should be different gensyms
+    assert!(!lisp.symbol_eq(mark1, mark2).unwrap(), "successive marks should be different");
+}
+
+/// Test bound_identifier_eq with identical identifiers
+#[test]
+fn test_bound_identifier_eq_same() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let eval = Evaluator::new(&lisp).unwrap();
+    
+    // Create two syntax objects with the same name and marks
+    let sym = lisp.symbol("x").unwrap();
+    let nil = lisp.nil().unwrap();
+    
+    let stx1 = lisp.syntax(sym, nil, nil).unwrap();
+    let stx2 = lisp.syntax(sym, nil, nil).unwrap();
+    
+    // They should be bound-identifier=?
+    assert!(eval.bound_identifier_eq(stx1, stx2).unwrap());
+    
+    // Plain symbols should also work
+    let sym_a = lisp.symbol("a").unwrap();
+    let sym_a2 = lisp.symbol("a").unwrap();
+    assert!(eval.bound_identifier_eq(sym_a, sym_a2).unwrap());
+}
+
+/// Test bound_identifier_eq with different names
+#[test]
+fn test_bound_identifier_eq_different_names() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let eval = Evaluator::new(&lisp).unwrap();
+    
+    let sym_x = lisp.symbol("x").unwrap();
+    let sym_y = lisp.symbol("y").unwrap();
+    let nil = lisp.nil().unwrap();
+    
+    let stx_x = lisp.syntax(sym_x, nil, nil).unwrap();
+    let stx_y = lisp.syntax(sym_y, nil, nil).unwrap();
+    
+    // Different names - should not be equal
+    assert!(!eval.bound_identifier_eq(stx_x, stx_y).unwrap());
+}
+
+/// Test bound_identifier_eq with different marks
+#[test]
+fn test_bound_identifier_eq_different_marks() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    let sym = lisp.symbol("x").unwrap();
+    let nil = lisp.nil().unwrap();
+    
+    // Create unmarked syntax object
+    let stx1 = lisp.syntax(sym, nil, nil).unwrap();
+    
+    // Create marked syntax object (same name, different marks)
+    let stx2 = eval.mark_syntax(stx1).unwrap();
+    
+    // Same name but different marks - should NOT be bound-identifier=?
+    assert!(!eval.bound_identifier_eq(stx1, stx2).unwrap());
+}
+
+/// Test free_identifier_eq with unbound identifiers
+#[test]
+fn test_free_identifier_eq_unbound() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let eval = Evaluator::new(&lisp).unwrap();
+    
+    // Create two syntax objects for the same unbound name
+    let sym = lisp.symbol("unbound_x").unwrap();
+    let nil = lisp.nil().unwrap();
+    
+    let stx1 = lisp.syntax(sym, nil, nil).unwrap();
+    let stx2 = lisp.syntax(sym, nil, nil).unwrap();
+    
+    // Both unbound, same name - should be free-identifier=?
+    assert!(eval.free_identifier_eq(stx1, stx2).unwrap());
+    
+    // Different unbound names - should NOT be free-identifier=?
+    let sym_y = lisp.symbol("unbound_y").unwrap();
+    let stx3 = lisp.syntax(sym_y, nil, nil).unwrap();
+    assert!(!eval.free_identifier_eq(stx1, stx3).unwrap());
+}
+
+/// Test that hygiene ensures macro-introduced bindings don't capture user bindings
+#[test]
+fn test_hygiene_no_capture() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a variable in user code
+    eval.eval_str("(define temp 42)").unwrap();
+    
+    // Define a macro that uses 'temp' internally
+    eval.eval_str(r#"
+        (define-syntax swap
+          (syntax-rules ()
+            ((swap a b)
+             (let ((temp a))
+               (set! a b)
+               (set! b temp)))))
+    "#).unwrap();
+    
+    // Use swap with variables - the macro's temp should not capture user's temp
+    eval.eval_str("(define x 1)").unwrap();
+    eval.eval_str("(define y 2)").unwrap();
+    eval.eval_str("(swap x y)").unwrap();
+    
+    // x and y should be swapped
+    let x = eval.eval_str("x").unwrap();
+    let y = eval.eval_str("y").unwrap();
+    assert_eq!(lisp.get(x).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(y).unwrap().as_number(), Some(1));
+    
+    // User's temp should be unchanged
+    let temp = eval.eval_str("temp").unwrap();
+    assert_eq!(lisp.get(temp).unwrap().as_number(), Some(42));
+}
