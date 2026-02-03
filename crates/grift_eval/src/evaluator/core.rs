@@ -315,6 +315,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Check if a variable is bound in the environment (local or global)
+    /// Returns true if the variable exists, false otherwise.
+    /// This is used to determine if a variable binding shadows a macro.
+    pub(super) fn is_variable_bound(&self, env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
+        // Check local environment first
+        if self.env_contains(env, name)? {
+            return Ok(true);
+        }
+        
+        // Check global environment
+        self.env_contains(self.global_env, name)
+    }
+    
+    /// Helper to check if a name exists in a specific environment chain
+    fn env_contains(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
+        loop {
+            match self.lisp.get(env)? {
+                Value::Nil => {
+                    return Ok(false);
+                }
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, cdr: _ } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        return Ok(true);
+                    }
+                    env = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+            }
+        }
+    }
+    
     /// Set a variable in an environment (mutation operation)
     /// Searches both local and global environments
     /// Returns the new value on success
@@ -557,11 +590,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Check for special forms and macros
         if let Value::Symbol(_) = head {
-            // Check for macro invocation first (evaluation-time expansion)
-            if let Some(transformer) = self.lookup_macro(car)? {
-                let expanded = self.apply_macro(transformer, expr)?;
-                // Continue evaluating the expanded form
-                return Ok(TrampolineState::Eval { expr: expanded, env });
+            // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
+            // Check if this symbol is bound as a variable. If so, skip macro expansion
+            // and treat it as a function application.
+            let is_var_bound = self.is_variable_bound(env, car)?;
+            
+            // Check for macro invocation (evaluation-time expansion)
+            // Variable bindings shadow macros, so only expand if not bound as a variable
+            if !is_var_bound {
+                if let Some(transformer) = self.lookup_macro(car)? {
+                    let expanded = self.apply_macro(transformer, expr)?;
+                    // Continue evaluating the expanded form
+                    return Ok(TrampolineState::Eval { expr: expanded, env });
+                }
             }
             
             // quote
