@@ -788,7 +788,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Hygiene: Variables introduced by the macro (not from pattern) are renamed
     /// using gensym to prevent capture.
-    fn transcribe_template(
+    pub(crate) fn transcribe_template(
         &mut self,
         template: ArenaIndex,
         bindings: ArenaIndex,

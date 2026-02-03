@@ -136,6 +136,10 @@ pub enum Cont {
     /// After evaluating consumer, apply it to producer result
     /// Stack data: [producer_result, env] (2 elements)
     CallWithValuesApply(usize),
+
+    /// After evaluating stx-expr in syntax-case, try pattern matching
+    /// Stack data: [literals, clauses, env, pattern_bindings] (4 elements)
+    SyntaxCaseMatch(usize),
 }
 
 impl Cont {
@@ -170,6 +174,7 @@ impl Cont {
             Cont::BinaryBuiltinFirst(_) => 4,
             // Note: DoTestResult removed
             Cont::NativeArgsCollect(_) => 4,
+            Cont::SyntaxCaseMatch(_) => 4,
             Cont::BuiltinForceArg(_) => 5,
             // Note: DoBody removed
             Cont::LambdaBindArg(_) => 6,

@@ -5373,3 +5373,119 @@ fn test_hygiene_no_capture() {
     let temp = eval.eval_str("temp").unwrap();
     assert_eq!(lisp.get(temp).unwrap().as_number(), Some(42));
 }
+
+// ============================================================================
+// syntax-case Tests (Phase 3)
+// ============================================================================
+
+/// Test basic syntax-case with simple pattern
+#[test]
+fn test_syntax_case_simple_pattern() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic syntax-case with a literal pattern match
+    let result = eval.eval_str(r#"
+        (syntax-case '(hello world) ()
+          ((a b) (list 'matched (quote a) (quote b))))
+    "#).unwrap();
+    
+    // Should match and return (matched a b)
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "matched").unwrap());
+}
+
+/// Test syntax-case with multiple clauses
+#[test]
+fn test_syntax_case_multiple_clauses() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First clause doesn't match, second does
+    let result = eval.eval_str(r#"
+        (syntax-case '(a b c) ()
+          ((x) 'one-element)
+          ((x y) 'two-elements)
+          ((x y z) 'three-elements)
+          (_ 'other))
+    "#).unwrap();
+    
+    assert!(lisp.symbol_matches(result, "three-elements").unwrap());
+}
+
+/// Test syntax-case with pattern variable binding
+#[test]
+fn test_syntax_case_pattern_binding() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pattern variables should be bound in the output expression
+    let result = eval.eval_str(r#"
+        (syntax-case '(1 2 3) ()
+          ((a b c) (+ a b c)))
+    "#).unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(6));
+}
+
+/// Test with-syntax macro
+#[test]
+fn test_with_syntax_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // with-syntax should bind variables
+    let result = eval.eval_str(r#"
+        (with-syntax ((x 1) (y 2))
+          (+ x y))
+    "#).unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(3));
+}
+
+/// Test with-syntax empty bindings
+#[test]
+fn test_with_syntax_empty() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // with-syntax with no bindings should just evaluate body
+    let result = eval.eval_str("(with-syntax () 42)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+}
+
+/// Test syntax form for template creation
+#[test]
+fn test_syntax_template_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // (syntax ...) should create a quoted template
+    let result = eval.eval_str("(syntax (a b c))").unwrap();
+    
+    // Should return a list (a b c)
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "a").unwrap());
+    
+    let cadr = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(cadr, "b").unwrap());
+}
+
+/// Test syntax-case with literal keywords
+#[test]
+fn test_syntax_case_with_literals() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Literal keywords should match exactly
+    let result = eval.eval_str(r#"
+        (syntax-case '(if x y) (if)
+          ((if cond then) (list 'conditional cond then))
+          (_ 'no-match))
+    "#).unwrap();
+    
+    // Should match the (if cond then) pattern
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "conditional").unwrap());
+}

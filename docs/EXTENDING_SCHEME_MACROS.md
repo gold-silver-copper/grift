@@ -18,7 +18,10 @@ This document describes the design and implementation approach for extending Gri
 | 2 | `Value::Syntax` variant | ✅ Complete |
 | 2 | `syntax`, `syntax_parts`, `syntax_to_datum` methods | ✅ Complete |
 | 2 | Mark infrastructure | ✅ Complete |
-| 3-6 | `syntax-case` and related features | ⏳ Pending |
+| 3 | `syntax-case` special form handler | ✅ Complete |
+| 3 | `syntax` template transcription | ✅ Complete |
+| 3 | `with-syntax` macro | ✅ Complete |
+| 4-6 | Hygiene utilities and polish | ⏳ Pending |
 
 **Last updated**: February 2025
 
@@ -969,13 +972,13 @@ Expected results:
 2. Implement `syntax`, `syntax->datum` primitives ✅ (Lisp methods added)
 3. Add mark infrastructure ✅ (`mark_syntax`, `bound_identifier_eq`, `free_identifier_eq`, etc.)
 
-### Phase 3: syntax-case Core (Current Focus)
+### Phase 3: syntax-case Core ✅ Complete
 
-1. Implement `syntax-case` special form handler
-2. Add `syntax` template transcription
-3. Implement `with-syntax`
+1. Implement `syntax-case` special form handler ✅
+2. Add `syntax` template transcription ✅
+3. Implement `with-syntax` ✅
 
-### Phase 4: Hygiene Utilities
+### Phase 4: Hygiene Utilities (Current Focus)
 
 1. Implement `bound-identifier=?`, `free-identifier=?` (Scheme-level wrappers for Rust functions) 
 2. Add `datum->syntax`, `syntax->datum` (Scheme-level wrappers)
