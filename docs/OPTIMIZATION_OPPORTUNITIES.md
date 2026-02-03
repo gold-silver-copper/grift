@@ -17,6 +17,9 @@ This document outlines potential optimizations and improvements that can be made
 - ✅ **range**: Converted to tail-recursive with countdown iterator
 - ✅ **flatten**: Fixed O(n²) complexity by eliminating repeated append calls, now O(n) tail-recursive
 - ✅ **filter-map**: Eliminated double function calls using let binding, now tail-recursive
+- ✅ **take-right**: Implemented lag-pointer technique for O(n) single traversal
+- ✅ **drop-right**: Implemented lag-pointer technique for O(n) single traversal, fixed argument order bug
+- ✅ **split-at**: Fixed argument order bug (was passing (lst k) to take/drop which expect (n lst))
 
 #### Macro System (macros.scm)
 - ✅ **Named let helpers**: Reduced from 3 helper macros to 1 (`%named-let-helper`)
@@ -29,9 +32,19 @@ This document outlines potential optimizations and improvements that can be made
 
 2. **append optimization**: Uses an internal reverse helper to avoid forward references to other stdlib functions.
 
-3. **take-right optimization**: The lag-pointer technique was attempted but reverted to the simple `length`-based approach due to complexity with nested lambda/letrec combinations. This remains an optimization opportunity.
+3. **take-right/drop-right optimization**: Successfully implemented using the lag-pointer technique after resolving issues with the stdlib parsing. The original issue was not with nested lambda/letrec combinations in the evaluator, but rather with inline comments (`;;`) within stdlib function bodies causing parse errors in the `include_stdlib!` macro. The solution was to remove inline comments from the function bodies.
 
-4. **member/assoc consolidation**: Skipped to maintain minimal changes as these functions work correctly.
+4. **Bugs fixed during optimization**:
+   - `drop-right` had wrong argument order: was calling `(take lst n)` instead of `(take n lst)`
+   - `split-at` had the same issue with take/drop argument order
+
+5. **member/assoc consolidation**: Skipped to maintain minimal changes as these functions work correctly.
+
+### Known Limitations
+
+1. **syntax-case macro limitations**: The `%cl-arity-check` and `define-values` macros cannot easily be converted to use syntax-case with dynamic length calculation because `list?` and `length` are not available during macro expansion. Adding these builtins requires Rust code changes to `expand.rs`.
+
+2. **Macro expansion builtins**: Currently supported builtins in macro expansion are: `car`, `cdr`, `cons`, `list`, `null?`, `pair?`, `symbol?`, `eq?`, `eqv?`, `+`, `-`, `<`, `>`, `zero?`. Adding `*`, `/`, `modulo`, `list?`, `length` would require Rust changes.
 
 ---
 
@@ -216,22 +229,55 @@ Converted to tail-recursive using countdown iterator pattern:
 
 **Note**: The previously mentioned "let-binding issue in recursion" was resolved - the issue was with variable scoping, not let itself.
 
-#### 4. ⚠️ DEFERRED - Optimize `take-right` and `drop-right`
+#### 4. ✅ IMPLEMENTED - Optimize `take-right` and `drop-right`
 
-**Status**: ⚠️ Attempted but reverted to simple implementation
+**Status**: ✅ Completed with lag-pointer technique
 
-**Original Issue**: Both call `length` unnecessarily.
+**Original Issue**: Both call `length` unnecessarily, requiring O(n) + O(n) = O(2n) traversals.
+
+**Implementation**: Both now use the lag-pointer technique for O(n) single traversal:
 
 ```scheme
-;; Current:
+;;; (take-right lst k) - Return the last k elements of lst
+;;; Uses lag-pointer technique: O(n) single traversal
 (define (take-right lst k)
-  (drop lst (- (length lst) k)))
+  (define (advance p count)
+    (if (= count 0)
+        p
+        (if (null? p)
+            '()
+            (advance (cdr p) (- count 1)))))
+  (define (walk lead lag)
+    (if (null? lead)
+        lag
+        (walk (cdr lead) (cdr lag))))
+  (let ((lead (advance lst k)))
+    (if (null? lead)
+        lst
+        (walk lead lst))))
 
-;; Attempted optimization using lag pointer:
-;; Had issues with nested lambda/letrec - deferred for future work
+;;; (drop-right lst k) - Return all but the last k elements
+;;; Uses lag-pointer technique: O(n) single traversal, tail-recursive
+(define (drop-right lst k)
+  (define (advance p count)
+    (if (= count 0)
+        p
+        (if (null? p)
+            '()
+            (advance (cdr p) (- count 1)))))
+  (define (walk lead lag acc)
+    (if (null? lead)
+        (reverse acc)
+        (walk (cdr lead) (cdr lag) (cons (car lag) acc))))
+  (let ((lead (advance lst k)))
+    (if (null? lead)
+        '()
+        (walk lead lst '()))))
 ```
 
-**Note**: The lag-pointer technique was attempted but reverted due to complexity with nested lambda/letrec combinations in this Scheme implementation. Current simple implementation is acceptable for medium priority.
+**Note**: The original issue was not with nested lambda/letrec in the evaluator, but with the `include_stdlib!` macro parser having trouble with inline comments (`;; comment`) within function bodies. Removing inline comments resolved the issue.
+
+**Bug Fix**: Also fixed `split-at` which had the wrong argument order for `take` and `drop` (was passing `(lst k)` but they expect `(k lst)`).
 
 #### 5. ⏸️ NOT IMPLEMENTED - Consolidate Member/Assoc Functions
 
@@ -251,9 +297,9 @@ Converted to tail-recursive using countdown iterator pattern:
 
 **Status**: ⏸️ Deferred - requires Rust code changes
 
-**Current Limitation**: Only `+`, `-`, `<`, `>`, `zero?`, `eq?`, `eqv?`, `null?`, `pair?`, `symbol?` are supported in macro expansion.
+**Current Limitation**: The following builtins are supported in macro expansion: `+`, `-`, `<`, `>`, `zero?`, `eq?`, `eqv?`, `null?`, `pair?`, `symbol?`, `car`, `cdr`, `cons`, `list`.
 
-**Recommendation**: Add support for `*`, `/`, `modulo`, `cons`, `car`, `cdr`, `list` to enable more computation at compile time.
+**Recommendation**: Add support for `*`, `/`, `modulo`, `list?`, `length` to enable more computation at compile time. This would allow `%cl-arity-check` and `define-values` to be converted to dynamic syntax-case implementations.
 
 **Location**: `crates/grift_eval/src/evaluator/expand.rs`, function `apply_builtin_for_expansion`.
 
@@ -263,7 +309,7 @@ Converted to tail-recursive using countdown iterator pattern:
 
 ## General Recommendations
 
-### Short-Term (Easy Wins) - ✅ COMPLETED
+### Short-Term (Easy Wins) - ✅ ALL COMPLETED
 
 1. ✅ Convert `map`, `filter`, `append`, `range` to tail-recursive versions
 2. ✅ Fix `flatten` O(n²) complexity
@@ -271,13 +317,14 @@ Converted to tail-recursive using countdown iterator pattern:
 4. ✅ Simplify `case` macro patterns
 5. ✅ Simplify named let helper chain
 6. ✅ Fix `filter-map` double calls
+7. ✅ Optimize `take-right` and `drop-right` with lag-pointer technique
+8. ✅ Fix `split-at` argument order bug
 
 ### Medium-Term - Remaining Work
 
-1. ⏸️ Convert `%cl-arity-check` and `define-values` to syntax-case (deferred - low impact)
+1. ⏸️ Convert `%cl-arity-check` and `define-values` to syntax-case (requires `list?` and `length` in macro expansion)
 2. ⏸️ Add more builtins to macro expansion mini-evaluator (requires Rust changes)
 3. ⏸️ Consolidate similar helper functions in stdlib.scm (minimal benefit)
-4. ⏸️ Optimize `take-right` with lag-pointer (deferred due to implementation complexity)
 
 ### Key Principles
 
@@ -285,4 +332,29 @@ Converted to tail-recursive using countdown iterator pattern:
 - **All core list operations** now use tail-call optimization
 - **Minimal changes** - focused on high-impact, low-risk optimizations
 - **Tested and verified** - all changes validated with comprehensive test suite
+
+---
+
+## Appendix: The Nested Lambda/Letrec "Issue"
+
+During optimization, there was a note that the lag-pointer technique for `take-right` was "reverted due to complexity with nested lambda/letrec combinations." Investigation revealed that this was **not** an evaluator issue but rather a **stdlib parsing issue**.
+
+### Root Cause
+
+The `include_stdlib!` procedural macro in `crates/grift_macros/src/lib.rs` parses the stdlib.scm file and extracts function definitions. When function bodies contained inline comments (e.g., `;; comment`), the parser would include these in the function body string, which then caused parse errors when the Scheme parser tried to parse them.
+
+### Solution
+
+Simply remove inline comments from within function bodies in `stdlib.scm`. The documentation comments (`;;;`) at the start of each function are properly handled and should be kept.
+
+### Verification
+
+After removing inline comments, the lag-pointer implementation works correctly:
+
+```scheme
+(take-right '(1 2 3 4 5) 3)  ; => (3 4 5)
+(drop-right '(1 2 3 4 5) 2)  ; => (1 2 3)
+```
+
+Both `letrec` with nested `lambda` and internal `define` forms work correctly in the evaluator.
 
