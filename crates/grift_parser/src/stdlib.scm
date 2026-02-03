@@ -510,3 +510,22 @@
     ((char-whitespace? (car lst)) (drop-while-ws (cdr lst)))
     (else lst)))
 
+;;; ============================================================
+;;; Lazy Evaluation Functions (R7RS Section 4.2.5)
+;;; ============================================================
+
+;;; (promise? obj) - Check if obj is a promise
+;;; Note: In this implementation, promises are procedures (thunks).
+;;; This is consistent with R7RS which says "promises are not necessarily
+;;; disjoint from other Scheme types such as procedures."
+(define (promise? obj)
+  (procedure? obj))
+
+;;; (make-promise obj) - Create a promise that returns obj when forced
+;;; If obj is already a promise, it is returned unchanged.
+;;; This is a procedure, not syntax - it does not delay evaluation.
+(define (make-promise obj)
+  (if (promise? obj)
+      obj
+      (lambda () obj)))
+

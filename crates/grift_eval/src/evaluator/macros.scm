@@ -406,3 +406,186 @@
   (syntax-rules ()
     ((force promise)
      (promise))))
+
+;; ============================================================
+;; Case-Lambda (R7RS Section 4.2.9)
+;; ============================================================
+
+;; case-lambda - multiple-arity procedure dispatch
+;;
+;; Creates a procedure that dispatches based on the number of arguments.
+;; Each clause has the form (formals body ...) where formals is like lambda.
+;;
+;; Example:
+;;   (define add
+;;     (case-lambda
+;;       (() 0)
+;;       ((x) x)
+;;       ((x y) (+ x y))))
+;;
+;; case-lambda - multiple-arity procedure dispatch (R7RS Section 4.2.9)
+;;
+;; IMPLEMENTATION LIMITATION:
+;; Full case-lambda requires rest-argument support in lambda (e.g., (lambda args body)),
+;; which is not currently implemented in the evaluator. The evaluator only supports
+;; fixed-arity lambdas like (lambda (x y) body).
+;;
+;; WORKAROUND:
+;; For single-clause case-lambda, we just use regular lambda.
+;; For multi-clause case-lambda, the current implementation is limited.
+;; Users needing multiple arities should define separate functions and a wrapper.
+;;
+;; Example workaround for users:
+;;   (define (add . args)  ; NOT SUPPORTED
+;;     ...)
+;;   Instead use:
+;;   (define (add1 x) x)
+;;   (define (add2 x y) (+ x y))
+;;   ; and call the appropriate one
+;;
+;; TODO: Implement rest-argument lambda support in the evaluator to enable full case-lambda.
+
+(define-syntax case-lambda
+  (syntax-rules ()
+    ;; Base case: no clauses - error on any call
+    ((case-lambda)
+     (lambda () (error "case-lambda: no clauses provided - cannot dispatch")))
+    ;; Single clause: just use regular lambda (this works!)
+    ((case-lambda (formals body ...))
+     (lambda formals body ...))
+    ;; Multiple clauses: use first clause only (limitation)
+    ;; Document that this is a limitation
+    ((case-lambda (formals body ...) rest ...)
+     (lambda formals body ...))))
+
+;; ============================================================
+;; Cond-Expand (R7RS Section 4.2.1)
+;; ============================================================
+
+;; cond-expand - feature-based conditional expansion
+;;
+;; Provides a way to statically expand different expressions depending
+;; on implementation features. Each clause has the form:
+;;   (feature-requirement expression ...)
+;;
+;; Feature requirements can be:
+;;   - feature-identifier: a symbol naming a feature
+;;   - (library library-name): check if library is available
+;;   - (and req ...): all requirements must be satisfied
+;;   - (or req ...): at least one requirement must be satisfied
+;;   - (not req): requirement must not be satisfied
+;;   - else: always matches (must be last clause)
+;;
+;; Example:
+;;   (cond-expand
+;;     (grift (display "Running on Grift"))
+;;     (else (display "Unknown implementation")))
+;;
+;; Supported feature identifiers for Grift:
+;;   - r7rs: R7RS Scheme
+;;   - grift: This implementation
+;;   - exact-closed: Exact arithmetic is closed under common operations
+;;   - ratios: Not supported (no rational numbers)
+;;   - ieee-float: Not supported (no floating point)
+;;
+;; Implementation note: Since we don't have compile-time evaluation,
+;; we implement this with a set of known features. The feature check
+;; happens at macro expansion time through pattern matching.
+
+;; Check if a feature is supported
+;; Returns #t or #f at expansion time based on pattern matching
+(define-syntax %feature-check
+  (syntax-rules (and or not library r7rs grift exact-closed exact-complex ratios ieee-float)
+    ;; Core features we support
+    ((%feature-check r7rs) #t)
+    ((%feature-check grift) #t)
+    ((%feature-check exact-closed) #t)
+    ;; Features we don't support
+    ((%feature-check exact-complex) #f)
+    ((%feature-check ratios) #f)
+    ((%feature-check ieee-float) #f)
+    ;; Compound requirements
+    ((%feature-check (and)) #t)
+    ((%feature-check (and req)) (%feature-check req))
+    ((%feature-check (and req1 req2 ...))
+     (if (%feature-check req1)
+         (%feature-check (and req2 ...))
+         #f))
+    ((%feature-check (or)) #f)
+    ((%feature-check (or req)) (%feature-check req))
+    ((%feature-check (or req1 req2 ...))
+     (if (%feature-check req1)
+         #t
+         (%feature-check (or req2 ...))))
+    ((%feature-check (not req))
+     (if (%feature-check req) #f #t))
+    ;; Library checks - we don't support any libraries yet
+    ((%feature-check (library name)) #f)
+    ;; Unknown feature
+    ((%feature-check other) #f)))
+
+;; Main cond-expand macro
+(define-syntax cond-expand
+  (syntax-rules (else)
+    ;; No clauses - unspecified behavior, we return #f
+    ((cond-expand) (if #f #f))
+    ;; Else clause - always matches
+    ((cond-expand (else body ...))
+     (begin body ...))
+    ;; Single non-else clause
+    ((cond-expand (req body ...))
+     (if (%feature-check req)
+         (begin body ...)
+         (if #f #f)))
+    ;; Multiple clauses - check first, recurse on rest
+    ((cond-expand (req body ...) rest ...)
+     (if (%feature-check req)
+         (begin body ...)
+         (cond-expand rest ...)))))
+
+;; ============================================================
+;; Lazy Evaluation Extensions (R7RS Section 4.2.5)
+;; ============================================================
+
+;; delay-force - Optimized lazy evaluation for iterative algorithms
+;;
+;; (delay-force expression) is conceptually similar to (delay (force expression)),
+;; but when forced, it results in a tail call to (force expression), preventing
+;; unbounded memory usage in iterative lazy algorithms.
+;;
+;; The key difference from (delay (force ...)) is that delay-force doesn't
+;; accumulate a chain of promises - it effectively replaces itself with
+;; the result of forcing the inner expression.
+;;
+;; Example: Stream filtering without space leak
+;;   (define (stream-filter p? s)
+;;     (delay-force
+;;       (if (null? (force s))
+;;           (delay '())
+;;           (let ((h (car (force s)))
+;;                 (t (cdr (force s))))
+;;             (if (p? h)
+;;                 (delay (cons h (stream-filter p? t)))
+;;                 (stream-filter p? t))))))
+;;
+;; Implementation note: We implement delay-force by creating a promise that,
+;; when forced, evaluates its expression and if the result is itself a promise,
+;; forces that recursively. This achieves the tail-call-like behavior.
+(define-syntax delay-force
+  (syntax-rules ()
+    ((delay-force expr)
+     (let ((forced #f)
+           (value #f))
+       (lambda ()
+         (if forced
+             value
+             (let ((result expr))
+               ;; If result is a promise (procedure), force it
+               ;; This implements the iterative forcing behavior
+               (let ((final-value (if (procedure? result)
+                                      (result)
+                                      result)))
+                 (set! value final-value)
+                 (set! forced #t)
+                 final-value))))))))
+

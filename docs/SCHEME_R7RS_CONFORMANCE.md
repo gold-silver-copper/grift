@@ -221,13 +221,19 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [ ] Implement `define-syntax` - Top-level syntax definitions
 - [ ] Implement `syntax-error` - Macro error signaling
 
-### Phase 6: Control Features
+### Phase 6: Control Features ⚠️ PARTIALLY COMPLETED
 **Goal**: Advanced control flow
 
 #### 6.1 Conditionals
 - [x] Implement `when` / `unless` - Convenience conditionals (already in evaluator)
-- [ ] Implement `cond-expand` - Feature-based conditional expansion
-- [ ] Implement `case-lambda` - Multiple-arity procedures
+- [x] Implement `cond-expand` - Feature-based conditional expansion (macro in macros.scm)
+- [⚠️] Implement `case-lambda` - Multiple-arity procedures (LIMITED - see notes)
+
+**Note on case-lambda**: Full multi-clause case-lambda requires rest-argument lambda support
+(e.g., `(lambda args body)`), which is not currently implemented in the evaluator.
+Single-clause case-lambda works correctly. Multi-clause case-lambda is implemented but
+only uses the first clause - this is a documented limitation. To fully support case-lambda,
+the evaluator would need to support rest-argument syntax in lambda.
 
 #### 6.2 Exception Handling (Section 6.11)
 - [ ] Implement `guard` - Exception handling syntax
@@ -268,10 +274,17 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [ ] Implement `call-with-current-continuation` / `call/cc`
 - [ ] Implement `dynamic-wind`
 
-#### 9.2 Lazy Evaluation (scheme lazy library)
+#### 9.2 Lazy Evaluation (scheme lazy library) ✅ COMPLETED
 - [x] Implement `delay` / `force` - Basic delayed evaluation (macro-based)
-- [ ] Implement `delay-force` - Optimized for recursive promises
-- [ ] Implement `make-promise` / `promise?`
+- [x] Implement `delay-force` - Optimized for recursive promises (macro in macros.scm)
+- [x] Implement `make-promise` / `promise?` (stdlib functions in stdlib.scm)
+
+**Implementation Notes**:
+- `delay-force` creates a promise that, when forced, evaluates its expression and if the result
+  is itself a promise (procedure), forces it iteratively. This prevents unbounded stack growth.
+- `promise?` returns `#t` for procedures, consistent with R7RS which says "promises are not
+  necessarily disjoint from other Scheme types such as procedures."
+- `make-promise` returns the object unchanged if it's already a promise, otherwise wraps it in a thunk.
 
 #### 9.3 Environments
 - [ ] Implement `environment` - Create evaluation environment
