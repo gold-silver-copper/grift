@@ -5489,3 +5489,189 @@ fn test_syntax_case_with_literals() {
     let car = lisp.car(result).unwrap();
     assert!(lisp.symbol_matches(car, "conditional").unwrap());
 }
+
+// ============================================================================
+// Phase 4: Hygiene Utilities Tests
+// ============================================================================
+
+/// Test identifier? predicate with symbols
+#[test]
+fn test_identifier_predicate_symbol() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // A symbol is an identifier
+    let result = eval.eval_str("(identifier? 'foo)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::True));
+    
+    // A number is not an identifier
+    let result = eval.eval_str("(identifier? 42)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::False));
+    
+    // A list is not an identifier
+    let result = eval.eval_str("(identifier? '(a b c))").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::False));
+}
+
+/// Test bound-identifier=? builtin
+#[test]
+fn test_bound_identifier_eq_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Same symbol should be bound-identifier=?
+    let result = eval.eval_str("(bound-identifier=? 'x 'x)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::True));
+    
+    // Different symbols should not be bound-identifier=?
+    let result = eval.eval_str("(bound-identifier=? 'x 'y)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::False));
+}
+
+/// Test free-identifier=? builtin
+#[test]
+fn test_free_identifier_eq_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Same unbound symbol should be free-identifier=?
+    let result = eval.eval_str("(free-identifier=? 'x 'x)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::True));
+    
+    // Different unbound symbols should not be free-identifier=?
+    let result = eval.eval_str("(free-identifier=? 'x 'y)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::False));
+}
+
+/// Test syntax->datum builtin
+#[test]
+fn test_syntax_to_datum_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // syntax->datum should strip syntax wrapper from a quoted symbol
+    let result = eval.eval_str("(syntax->datum 'hello)").unwrap();
+    assert!(lisp.symbol_matches(result, "hello").unwrap());
+    
+    // syntax->datum on a number should return the number
+    let result = eval.eval_str("(syntax->datum 42)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    // syntax->datum on a list should return the list
+    let result = eval.eval_str("(syntax->datum '(a b c))").unwrap();
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "a").unwrap());
+}
+
+/// Test datum->syntax builtin
+#[test]
+fn test_datum_to_syntax_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // datum->syntax should wrap a symbol
+    let _result = eval.eval_str("(datum->syntax 'template 'new-name)").unwrap();
+    // The result should be a syntax object wrapping 'new-name
+    // When we unwrap it, we should get 'new-name back
+    let unwrapped = eval.eval_str("(syntax->datum (datum->syntax 'template 'new-name))").unwrap();
+    assert!(lisp.symbol_matches(unwrapped, "new-name").unwrap());
+}
+
+/// Test generate-temporaries builtin
+#[test]
+fn test_generate_temporaries_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // generate-temporaries should create a list of temporaries
+    let result = eval.eval_str("(generate-temporaries '(a b c))").unwrap();
+    
+    // Result should be a list
+    assert!(matches!(lisp.get(result).unwrap(), Value::Cons { .. }));
+    
+    // Count elements - should have 3 temporaries
+    let len = lisp.list_len(result).unwrap();
+    assert_eq!(len, 3);
+    
+    // Each element should be an identifier (syntax object wrapping a gensym)
+    let _first = lisp.car(result).unwrap();
+    let first_is_id = eval.eval_str(&format!("(let ((x (car (generate-temporaries '(a))))) (identifier? x))")).unwrap();
+    assert!(matches!(lisp.get(first_is_id).unwrap(), Value::True));
+}
+
+/// Test generate-temporaries with empty list
+#[test]
+fn test_generate_temporaries_empty() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // generate-temporaries with empty list should return empty list
+    let result = eval.eval_str("(generate-temporaries '())").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+}
+
+/// Test syntax-case with fender using function call
+#[test]
+fn test_syntax_case_fender_with_function() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Fender uses a function call (identifier? is a function)
+    let result = eval.eval_str(r#"
+        (syntax-case '(foo bar) ()
+          ((a b) (identifier? 'a) 'has-identifier)
+          (_ 'no-match))
+    "#).unwrap();
+    
+    assert!(lisp.symbol_matches(result, "has-identifier").unwrap());
+}
+
+/// Test syntax-case with fender that evaluates to false
+#[test]
+fn test_syntax_case_fender_false() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First clause matches pattern but fender fails
+    // Should fall through to second clause
+    let result = eval.eval_str(r#"
+        (syntax-case '(1 2 3) ()
+          ((a b c) (eq? a 'foo) 'first-clause)
+          ((a b c) #t 'second-clause))
+    "#).unwrap();
+    
+    assert!(lisp.symbol_matches(result, "second-clause").unwrap());
+}
+
+/// Test syntax-case with fender using arithmetic
+#[test]
+fn test_syntax_case_fender_arithmetic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Fender uses arithmetic comparison
+    let result = eval.eval_str(r#"
+        (syntax-case '(5 10) ()
+          ((a b) (< a b) 'ascending)
+          ((a b) (> a b) 'descending)
+          (_ 'equal))
+    "#).unwrap();
+    
+    assert!(lisp.symbol_matches(result, "ascending").unwrap());
+}
+
+/// Test syntax-case with complex fender
+#[test]
+fn test_syntax_case_fender_complex() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Fender uses multiple operations
+    let result = eval.eval_str(r#"
+        (syntax-case '(3 4 5) ()
+          ((a b c) (and (> b a) (> c b)) 'strictly-increasing)
+          (_ 'not-increasing))
+    "#).unwrap();
+    
+    assert!(lisp.symbol_matches(result, "strictly-increasing").unwrap());
+}

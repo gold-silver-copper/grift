@@ -973,6 +973,57 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
             }
+            
+            // ============================================================
+            // Syntax-case support (R6RS Chapter 11)
+            // ============================================================
+            
+            Builtin::Identifierp => {
+                // (identifier? x) - Check if x is an identifier
+                // An identifier is either a symbol or a syntax object wrapping a symbol
+                let arg = self.lisp.car(args)?;
+                let is_id = match self.lisp.get(arg)? {
+                    Value::Symbol(_) => true,
+                    Value::Syntax { expr, .. } => {
+                        matches!(self.lisp.get(expr)?, Value::Symbol(_))
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(is_id).map_err(Into::into)
+            }
+            
+            Builtin::BoundIdentifierEq => {
+                // (bound-identifier=? id1 id2) - Check if two identifiers have same name and marks
+                extract_args!(self, args, id1, id2);
+                let result = self.bound_identifier_eq(id1, id2)?;
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            
+            Builtin::FreeIdentifierEq => {
+                // (free-identifier=? id1 id2) - Check if two identifiers resolve to same binding
+                extract_args!(self, args, id1, id2);
+                let result = self.free_identifier_eq(id1, id2)?;
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            
+            Builtin::SyntaxToDatum => {
+                // (syntax->datum stx) - Strip syntax wrapper to get the underlying datum
+                let stx = self.lisp.car(args)?;
+                self.syntax_to_datum_recursive(stx)
+            }
+            
+            Builtin::DatumToSyntax => {
+                // (datum->syntax template-id datum) - Wrap datum with syntax context from template-id
+                extract_args!(self, args, template_id, datum);
+                self.datum_to_syntax(template_id, datum)
+            }
+            
+            Builtin::GenerateTemporaries => {
+                // (generate-temporaries list) - Generate a list of fresh identifiers
+                // For each element in the input list, generate a unique temporary identifier
+                let input = self.lisp.car(args)?;
+                self.generate_temporaries(input)
+            }
         }
     }
     

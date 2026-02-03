@@ -220,6 +220,20 @@ define_builtins! {
     GcEnabledP => "gc-enabled?",
     /// arena-stats - Get arena statistics as a list
     ArenaStats => "arena-stats",
+    
+    // Syntax-case support (R6RS Chapter 11)
+    /// identifier? - Check if value is an identifier (symbol or syntax-wrapped symbol)
+    Identifierp => "identifier?",
+    /// bound-identifier=? - Check if two identifiers have the same name and marks
+    BoundIdentifierEq => "bound-identifier=?",
+    /// free-identifier=? - Check if two identifiers resolve to the same binding
+    FreeIdentifierEq => "free-identifier=?",
+    /// syntax->datum - Strip syntax wrapper to get the underlying datum
+    SyntaxToDatum => "syntax->datum",
+    /// datum->syntax - Wrap a datum with syntax context from a template identifier
+    DatumToSyntax => "datum->syntax",
+    /// generate-temporaries - Generate a list of fresh identifiers
+    GenerateTemporaries => "generate-temporaries",
 }
 
 // Define all standard library functions using the include_stdlib! macro.

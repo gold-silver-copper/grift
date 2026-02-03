@@ -21,7 +21,12 @@ This document describes the design and implementation approach for extending Gri
 | 3 | `syntax-case` special form handler | ✅ Complete |
 | 3 | `syntax` template transcription | ✅ Complete |
 | 3 | `with-syntax` macro | ✅ Complete |
-| 4-6 | Hygiene utilities and polish | ⏳ Pending |
+| 4 | `identifier?` predicate | ✅ Complete |
+| 4 | `bound-identifier=?`, `free-identifier=?` builtins | ✅ Complete |
+| 4 | `syntax->datum`, `datum->syntax` builtins | ✅ Complete |
+| 4 | `generate-temporaries` builtin | ✅ Complete |
+| 4 | Trampolined fender evaluation | ✅ Complete |
+| 5-6 | Replace special forms with procedural macros | ⏳ Pending |
 
 **Last updated**: February 2025
 
@@ -978,11 +983,13 @@ Expected results:
 2. Add `syntax` template transcription ✅
 3. Implement `with-syntax` ✅
 
-### Phase 4: Hygiene Utilities (Current Focus)
+### Phase 4: Hygiene Utilities ✅ Complete
 
-1. Implement `bound-identifier=?`, `free-identifier=?` (Scheme-level wrappers for Rust functions) 
-2. Add `datum->syntax`, `syntax->datum` (Scheme-level wrappers)
-3. Implement `generate-temporaries`
+1. Implement `identifier?` predicate ✅
+2. Implement `bound-identifier=?`, `free-identifier=?` (Scheme-level builtins) ✅
+3. Add `datum->syntax`, `syntax->datum` (Scheme-level builtins) ✅
+4. Implement `generate-temporaries` ✅
+5. Upgrade fender evaluation to full trampolined evaluation ✅
 
 ### Phase 5: Replace Special Forms
 

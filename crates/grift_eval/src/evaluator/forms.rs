@@ -576,6 +576,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (literals, clauses, env, pattern_bindings) = self.unpack_syntax_case_match(data_start);
                 self.step_syntax_case_match(val, literals, clauses, env, pattern_bindings)
             }
+            
+            Cont::SyntaxCaseFender(data_start) => {
+                // val is the evaluated fender result
+                // If truthy, evaluate the output. Otherwise, continue with remaining clauses.
+                let (output, bindings, literals, remaining_clauses, env, stx) = self.unpack_syntax_case_fender(data_start);
+                
+                if self.is_false(val)? {
+                    // Fender failed - continue with remaining clauses
+                    self.step_syntax_case_match(stx, literals, remaining_clauses, env, self.lisp.nil()?)
+                } else {
+                    // Fender passed - evaluate output with bindings
+                    let output_env = self.extend_env_with_bindings(env, bindings)?;
+                    Ok(Some(TrampolineState::Eval { expr: output, env: output_env }))
+                }
+            }
         }
     }
 
@@ -1057,23 +1072,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check for fender (optional guard) - clause is (pattern fender output) or (pattern output)
                 let (fender, output) = self.extract_fender_and_output(clause_cdr)?;
 
-                // If there's a fender, we need to evaluate it with bindings
-                // NOTE: Fenders are evaluated using a simplified evaluator that only
-                // supports literals, variable references, and quoted expressions.
-                // Complex fenders with function calls require full trampolined evaluation
-                // which would need additional continuation infrastructure.
+                // If there's a fender, use trampolined evaluation
                 if let Some(fender_expr) = fender {
                     let fender_env = self.extend_env_with_bindings(env, bindings)?;
-                    let fender_result = self.eval_simple(fender_expr, fender_env)?;
                     
-                    if self.is_false(fender_result)? {
-                        // Fender failed, try next clause
-                        current = self.lisp.cdr(current)?;
-                        continue;
-                    }
+                    // Get remaining clauses for if fender fails
+                    let remaining_clauses = self.lisp.cdr(current)?;
+                    
+                    // Push continuation to handle fender result
+                    let data_start = self.pack_syntax_case_fender(output, bindings, literals, remaining_clauses, env, stx)?;
+                    self.push_cont(Cont::SyntaxCaseFender(data_start))?;
+                    
+                    // Evaluate fender with trampolined evaluation
+                    return Ok(Some(TrampolineState::Eval { expr: fender_expr, env: fender_env }));
                 }
 
-                // Evaluate output expression with pattern bindings
+                // No fender - evaluate output expression with pattern bindings
                 let output_env = self.extend_env_with_bindings(env, bindings)?;
                 return Ok(Some(TrampolineState::Eval { expr: output, env: output_env }));
             }
@@ -1124,39 +1138,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         Ok(result)
-    }
-
-    /// Simple non-trampolined evaluation for fenders
-    /// 
-    /// This is a limited evaluator for simple expressions in fenders.
-    /// Supports: literals, variable references, and quoted expressions.
-    /// For complex fenders with function calls, we'd need full trampolined support.
-    fn eval_simple(&mut self, expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        match self.lisp.get(expr)? {
-            // Self-evaluating
-            Value::Nil | Value::True | Value::False | Value::Number(_) 
-            | Value::String { .. } | Value::Char(_) => Ok(expr),
-            
-            // Symbol - lookup
-            Value::Symbol(_) => {
-                self.env_lookup(env, expr)
-            }
-            
-            // Quote
-            Value::Cons { .. } => {
-                let car = self.lisp.car(expr)?;
-                if self.lisp.symbol_matches(car, "quote")? {
-                    let cdr = self.lisp.cdr(expr)?;
-                    return self.lisp.car(cdr).map_err(Into::into);
-                }
-                // For anything else, fall back to saying we can't eval
-                // In a full implementation, we'd recurse or use trampolined eval
-                Err(self.make_error(ErrorKind::Generic, expr)
-                    .with_message("syntax-case fender must be a literal, variable, or quoted expression"))
-            }
-            
-            _ => Ok(expr),
-        }
     }
 
     // ========================================================================
