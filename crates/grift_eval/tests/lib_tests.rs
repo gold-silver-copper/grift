@@ -5491,7 +5491,7 @@ fn test_with_syntax_in_procedural_macro() {
         (define-syntax add-one
           (lambda (x)
             (syntax-case x ()
-              ((_ e) (with-syntax ((result (+ 1 e)))
+              ((_ n) (with-syntax ((result (+ 1 n)))
                        (syntax result))))))
     "#).unwrap();
     

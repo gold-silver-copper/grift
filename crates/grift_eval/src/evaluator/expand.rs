@@ -1917,7 +1917,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Each expr is evaluated in the current environment (which includes pattern
     /// variables from syntax-case), and the result is bound to the pattern variable.
     /// Unlike let, with-syntax also updates the #:pattern-bindings so that (syntax ...)
-    /// can access the bound variables.
+    /// can access the bound variables during template transcription. Without this update,
+    /// syntax templates would fail to find the with-syntax bound variables.
     fn eval_with_syntax_for_expansion(
         &mut self,
         args: ArenaIndex,
