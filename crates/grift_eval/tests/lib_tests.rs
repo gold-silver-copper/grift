@@ -5472,6 +5472,83 @@ fn test_syntax_template_basic() {
     assert!(lisp.symbol_matches(cadr, "b").unwrap());
 }
 
+/// Test syntax form with pattern variable substitution
+#[test]
+fn test_syntax_template_with_pattern_variables() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // (syntax template) should substitute pattern variables from syntax-case
+    let result = eval.eval_str(r#"
+        (syntax-case '(hello world) ()
+          ((a b) (syntax (list a b))))
+    "#).unwrap();
+    
+    // Should return (list hello world) - the template with substitutions
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "list").unwrap());
+    
+    let cadr = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(cadr, "hello").unwrap());
+    
+    let caddr = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(caddr, "world").unwrap());
+}
+
+/// Test syntax form substitutes pattern variables in nested templates
+#[test]
+fn test_syntax_template_nested_substitution() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pattern variables should be substituted in nested structures
+    let result = eval.eval_str(r#"
+        (syntax-case '(x y) ()
+          ((a b) (syntax ((a) (b) (a b)))))
+    "#).unwrap();
+    
+    // Should return ((x) (y) (x y))
+    // First element: (x)
+    let first = lisp.car(result).unwrap();
+    let first_car = lisp.car(first).unwrap();
+    assert!(lisp.symbol_matches(first_car, "x").unwrap());
+    
+    // Second element: (y)
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let second_car = lisp.car(second).unwrap();
+    assert!(lisp.symbol_matches(second_car, "y").unwrap());
+    
+    // Third element: (x y)
+    let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    let third_car = lisp.car(third).unwrap();
+    let third_cadr = lisp.car(lisp.cdr(third).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(third_car, "x").unwrap());
+    assert!(lisp.symbol_matches(third_cadr, "y").unwrap());
+}
+
+/// Test syntax form with numeric pattern variables
+#[test]
+fn test_syntax_template_with_numbers() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pattern variables bound to numbers should be substituted
+    let result = eval.eval_str(r#"
+        (syntax-case '(1 2 3) ()
+          ((a b c) (syntax (a b c))))
+    "#).unwrap();
+    
+    // Should return (1 2 3)
+    let car = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(car).unwrap().as_number(), Some(1));
+    
+    let cadr = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(cadr).unwrap().as_number(), Some(2));
+    
+    let caddr = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    assert_eq!(lisp.get(caddr).unwrap().as_number(), Some(3));
+}
+
 /// Test syntax-case with literal keywords
 #[test]
 fn test_syntax_case_with_literals() {
