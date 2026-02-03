@@ -361,58 +361,38 @@
 ;; x => 1
 ;; y => 2
 ;;
-;; Implementation note: Due to limitations with nested ellipsis patterns,
-;; we provide explicit patterns for common arities (0-4 variables).
-;; For more variables, users can nest define-values or use let-values.
+;; Implementation: Uses R7RS spec approach with ellipsis patterns to handle
+;; arbitrary arity dynamically. This eliminates code duplication from the
+;; previous explicit arity-0 through arity-4 patterns.
 ;;
-;; Note: We use %dv-a, %dv-b, etc. as lambda parameter names to avoid
-;; accidentally shadowing the user's variable names.
+;; The implementation stores all values in a list, then extracts each variable
+;; by mutating the list structure. This allows the ellipsis pattern to handle
+;; any number of variables without explicit cases.
 (define-syntax define-values
   (syntax-rules ()
     ;; Empty formals - just evaluate for side effects
     ((define-values () expr)
      (define %define-values-dummy
-       (call-with-values (lambda () expr) (lambda () (if #f #f)))))
-    ;; Single variable - use regular define
-    ((define-values (v1) expr)
-     (define v1 (call-with-values (lambda () expr) (lambda (%dv-x) %dv-x))))
-    ;; Two variables
-    ((define-values (v1 v2) expr)
+       (call-with-values (lambda () expr) (lambda args #f))))
+    ;; Single variable - extract using call-with-values
+    ((define-values (var) expr)
+     (define var (call-with-values (lambda () expr) (lambda (x) x))))
+    ;; Multiple variables (2 or more) - use ellipsis pattern for arbitrary arity
+    ;; var0 holds the list initially, then each var1... extracts and mutates,
+    ;; finally varn extracts the last value and sets var0 to its first element
+    ((define-values (var0 var1 ... varn) expr)
      (begin
-       (define v1 #f)
-       (define v2 #f)
-       (call-with-values
-         (lambda () expr)
-         (lambda (%dv-a %dv-b)
-           (set! v1 %dv-a)
-           (set! v2 %dv-b)))))
-    ;; Three variables
-    ((define-values (v1 v2 v3) expr)
-     (begin
-       (define v1 #f)
-       (define v2 #f)
-       (define v3 #f)
-       (call-with-values
-         (lambda () expr)
-         (lambda (%dv-a %dv-b %dv-c)
-           (set! v1 %dv-a)
-           (set! v2 %dv-b)
-           (set! v3 %dv-c)))))
-    ;; Four variables
-    ((define-values (v1 v2 v3 v4) expr)
-     (begin
-       (define v1 #f)
-       (define v2 #f)
-       (define v3 #f)
-       (define v4 #f)
-       (call-with-values
-         (lambda () expr)
-         (lambda (%dv-a %dv-b %dv-c %dv-d)
-           (set! v1 %dv-a)
-           (set! v2 %dv-b)
-           (set! v3 %dv-c)
-           (set! v4 %dv-d)))))
-    ;; Rest argument - capture all values as a list
+       (define var0
+         (call-with-values (lambda () expr) list))
+       (define var1
+         (let ((v (cadr var0)))
+           (set-cdr! var0 (cddr var0))
+           v)) ...
+       (define varn
+         (let ((v (cadr var0)))
+           (set! var0 (car var0))
+           v))))
+    ;; Single identifier (not in a list) - capture all values as a list
     ((define-values var expr)
      (define var
        (call-with-values (lambda () expr) list)))))
