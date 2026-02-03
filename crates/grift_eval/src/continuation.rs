@@ -136,6 +136,10 @@ pub enum Cont {
     /// After evaluating consumer, apply it to producer result
     /// Stack data: [producer_result, env] (2 elements)
     CallWithValuesApply(usize),
+    
+    /// After evaluating syntax object for syntax-case, match patterns
+    /// Stack data: [literals, clauses, env] (3 elements)
+    SyntaxCase(usize),
 }
 
 impl Cont {
@@ -167,6 +171,7 @@ impl Cont {
             Cont::ValuesCollect(_) => 3,
             Cont::QuasiquoteCar(_) => 3,
             Cont::QuasiquoteSplice(_) => 3,
+            Cont::SyntaxCase(_) => 3,
             Cont::BinaryBuiltinFirst(_) => 4,
             // Note: DoTestResult removed
             Cont::NativeArgsCollect(_) => 4,

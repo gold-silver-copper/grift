@@ -209,7 +209,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::LetSyntaxBody(data_start) |
                     Cont::CallWithValuesProducer(data_start) |
                     Cont::CallWithValuesConsumer(data_start) |
-                    Cont::CallWithValuesApply(data_start) => data_start,
+                    Cont::CallWithValuesApply(data_start) |
+                    Cont::SyntaxCase(data_start) => data_start,
                 };
                 // Add all ArenaIndex values from this continuation's data to roots
                 for j in 0..data_len {
@@ -604,9 +605,47 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Variable bindings shadow macros, so only expand if not bound as a variable
             if !is_var_bound {
                 if let Some(transformer) = self.lookup_macro(car)? {
-                    let expanded = self.apply_macro(transformer, expr)?;
-                    // Continue evaluating the expanded form
-                    return Ok(TrampolineState::Eval { expr: expanded, env });
+                    // Check if transformer is a procedural macro (lambda) or syntax-rules
+                    match self.lisp.get(transformer)? {
+                        Value::Lambda { .. } => {
+                            // Procedural macro - wrap input in syntax object and call the lambda
+                            let nil = self.lisp.nil()?;
+                            let stx = self.lisp.syntax(expr, nil, nil)?;
+                            
+                            // Extract lambda parts
+                            let (params, body, closure_env) = self.lisp.lambda_parts(transformer)?;
+                            
+                            // For procedural macros, params should be a single symbol or a list with one symbol
+                            // Bind the parameter to the syntax object
+                            let param = if matches!(self.lisp.get(params)?, Value::Symbol(_)) {
+                                // Single parameter (rest-args style): (lambda x body)
+                                params
+                            } else {
+                                // List of parameters: (lambda (x) body)
+                                self.lisp.car(params)?
+                            };
+                            
+                            let expanded_env = self.env_extend(closure_env, param, stx)?;
+                            
+                            // Evaluate the body in the extended environment
+                            let result = self.eval_in_env(body, expanded_env)?;
+                            
+                            // Unwrap the result if it's a syntax object
+                            let expanded = self.lisp.syntax_to_datum(result)?;
+                            
+                            // Continue evaluating the expanded form
+                            return Ok(TrampolineState::Eval { expr: expanded, env });
+                        }
+                        Value::SyntaxRules { .. } => {
+                            // Static macro - use existing expansion
+                            let expanded = self.apply_macro(transformer, expr)?;
+                            return Ok(TrampolineState::Eval { expr: expanded, env });
+                        }
+                        _ => {
+                            return Err(self.make_error(ErrorKind::TypeError, transformer)
+                                .with_message("transformer must be syntax-rules or lambda"));
+                        }
+                    }
                 }
             }
             
@@ -704,6 +743,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // call-with-values - call producer, apply consumer to results
             if self.lisp.symbol_matches(car, "call-with-values")? {
                 return self.step_eval_call_with_values(cdr, env);
+            }
+            
+            // syntax-case - procedural pattern matching for macros
+            if self.lisp.symbol_matches(car, "syntax-case")? {
+                return self.step_eval_syntax_case(cdr, env);
+            }
+            
+            // syntax - create syntax object (used in templates)
+            if self.lisp.symbol_matches(car, "syntax")? {
+                return self.step_eval_syntax(cdr, env);
             }
         }
         
@@ -852,6 +901,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_apply_forced / unpack_apply_forced => [args_expr, env, call_expr];
         pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
         pack_values_collect / unpack_values_collect => [remaining, collected, env];
+        pack_syntax_case / unpack_syntax_case => [literals, clauses, env];
         
         // Note: pack_do_test_result, pack_do_body, pack_do_init, pack_do_step removed - do is now handled by macros (Phase 9)
         // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros
