@@ -376,7 +376,7 @@
        (call-with-values (lambda () expr) (lambda args #f))))
     ;; Single variable - extract using call-with-values
     ((define-values (var) expr)
-     (define var (call-with-values (lambda () expr) (lambda (x) x))))
+     (define var (call-with-values (lambda () expr) (lambda (val) val))))
     ;; Multiple variables (2 or more) - use ellipsis pattern for arbitrary arity
     ;; var0 holds the list initially, then each var1... extracts and mutates,
     ;; finally varn extracts the last value and sets var0 to its first element
