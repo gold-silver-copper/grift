@@ -626,6 +626,28 @@ fn test_petrofsky_let() {
     // This should return -1 (result of (- 1) which is negation/subtraction)
     // NOT 1 (which would happen if - was bound to the loop before evaluating (- 1))
     assert_eq!(eval_to_num(&lisp, &mut eval, "(let - ((n (- 1))) n)"), -1);
+    
+    // Additional tests with builtin function names as loop names
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let + ((x 5) (y 3)) (- x y))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let * ((a 10) (b 2)) (+ a b))"), 12);
+}
+
+#[test]
+fn test_named_let() {
+    // Test that named let works correctly for recursion
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Factorial using named let
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let fact ((n 5)) (if (= n 0) 1 (* n (fact (- n 1)))))"), 120);
+    
+    // Sum using accumulator
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(let sum ((n 10) (acc 0)) (if (= n 0) acc (sum (- n 1) (+ acc n))))"), 55);
+    
+    // Empty bindings named let
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let loop () 42)"), 42);
 }
 
 #[test]
