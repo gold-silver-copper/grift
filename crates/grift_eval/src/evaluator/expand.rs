@@ -1165,8 +1165,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Reverse a list, optionally ending with an improper tail
     /// 
-    /// For `(c b a)` with `tail=None`, returns `(a b c)` (proper list)
-    /// For `(c b a)` with `tail=Some(rest)`, returns `(a b c . rest)` (improper list)
+    /// This function is used for constructing improper list formals like `(a b . rest)`
+    /// when transcribing lambda expressions in macros.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `list` - The proper list to reverse (e.g., `(c b a)`)
+    /// * `tail` - Optional tail element for improper list construction
+    /// 
+    /// # Returns
+    /// 
+    /// * With `tail=None`: Returns a proper list (e.g., `(c b a)` → `(a b c)`)
+    /// * With `tail=Some(rest)`: Returns an improper list (e.g., `(c b a)` → `(a b c . rest)`)
     fn reverse_list_with_tail(&self, mut list: ArenaIndex, tail: Option<ArenaIndex>) -> EvalResult {
         let mut result = tail.unwrap_or(self.lisp.nil()?);
         loop {

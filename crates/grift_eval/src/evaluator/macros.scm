@@ -455,8 +455,9 @@
     ((%cl-arity-check n (a b c d e f)) (= n 6))
     ((%cl-arity-check n (a b c d e f g)) (= n 7))
     ((%cl-arity-check n (a b c d e f g h)) (= n 8))
-    ;; Plain symbol (variadic) - matches any arity
-    ((%cl-arity-check n rest-sym) #t)))
+    ;; Catch-all: plain symbol (variadic) - matches any arity
+    ;; This matches formals like `args` in `(lambda args ...)`
+    ((%cl-arity-check n variadic) #t)))
 
 ;; Helper: Recursively build clause dispatch
 ;; Tries each clause in order until one matches
