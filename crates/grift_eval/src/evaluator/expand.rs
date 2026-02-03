@@ -1271,7 +1271,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Apply a macro transformer to an expression
+    /// 
+    /// Supports two types of transformers:
+    /// 1. SyntaxRules - pattern-based declarative macros
+    /// 2. Lambda - procedural macros (transformer receives the full expression)
     pub(super) fn apply_macro(
+        &mut self,
+        transformer: ArenaIndex,
+        expr: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(transformer)? {
+            Value::SyntaxRules { .. } => {
+                self.apply_syntax_rules_macro(transformer, expr)
+            }
+            Value::Lambda { .. } => {
+                self.apply_procedural_macro(transformer, expr)
+            }
+            _ => Err(self.make_error(ErrorKind::Generic, transformer)
+                .with_message("expected syntax-rules or lambda transformer"))
+        }
+    }
+    
+    /// Apply a syntax-rules based macro transformer
+    fn apply_syntax_rules_macro(
         &mut self,
         transformer: ArenaIndex,
         expr: ArenaIndex,
@@ -1307,6 +1329,521 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Err(self.make_error(ErrorKind::Generic, expr)
             .with_message("no matching syntax-rules clause"))
     }
+    
+    /// Apply a procedural (lambda-based) macro transformer
+    /// 
+    /// The transformer lambda is called with the full expression as its argument.
+    /// It should return the expanded form.
+    fn apply_procedural_macro(
+        &mut self,
+        transformer: ArenaIndex,
+        expr: ArenaIndex,
+    ) -> EvalResult {
+        // Get lambda components
+        let (params, body_env) = match self.lisp.get(transformer)? {
+            Value::Lambda { params, body_env } => (params, body_env),
+            _ => return Err(self.make_error(ErrorKind::Generic, transformer)
+                .with_message("expected lambda transformer")),
+        };
+        
+        let body = self.lisp.car(body_env)?;
+        let def_env = self.lisp.cdr(body_env)?;
+        
+        // The parameter should be a single symbol (e.g., (lambda (x) ...))
+        // Bind it to the expression being expanded
+        let param = self.lisp.car(params)?;
+        let binding = self.lisp.cons(param, expr)?;
+        let call_env = self.lisp.cons(binding, def_env)?;
+        
+        // Evaluate the transformer body in the extended environment
+        // This is a synchronous evaluation, so we use a simple recursive call
+        self.eval_for_macro_expansion(body, call_env)
+    }
+    
+    /// Evaluate an expression for macro expansion
+    /// 
+    /// This is a simplified evaluator used during procedural macro expansion.
+    /// It handles the common cases needed for syntax-case based macros.
+    fn eval_for_macro_expansion(
+        &mut self,
+        expr: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(expr)? {
+            // Self-evaluating values
+            Value::Nil | Value::True | Value::False | Value::Number(_) | Value::Char(_) |
+            Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
+            Value::SyntaxRules { .. } | Value::Syntax { .. } => Ok(expr),
+            
+            // String is self-evaluating
+            Value::String { .. } => Ok(expr),
+            
+            // Symbol - look up in environment
+            Value::Symbol { .. } => {
+                self.env_lookup(env, expr)
+            }
+            
+            // Cons - could be a special form or function call
+            Value::Cons { .. } => {
+                let car = self.lisp.car(expr)?;
+                let cdr = self.lisp.cdr(expr)?;
+                
+                // Check for quote
+                if self.lisp.symbol_matches(car, "quote")? {
+                    return self.lisp.car(cdr).map_err(Into::into);
+                }
+                
+                // Check for syntax-case
+                if self.lisp.symbol_matches(car, "syntax-case")? {
+                    return self.eval_syntax_case_for_expansion(cdr, env);
+                }
+                
+                // Check for syntax (template)
+                if self.lisp.symbol_matches(car, "syntax")? {
+                    return self.eval_syntax_for_expansion(cdr, env);
+                }
+                
+                // Check for if
+                if self.lisp.symbol_matches(car, "if")? {
+                    return self.eval_if_for_expansion(cdr, env);
+                }
+                
+                // Check for begin
+                if self.lisp.symbol_matches(car, "begin")? {
+                    return self.eval_begin_for_expansion(cdr, env);
+                }
+                
+                // Check for let
+                if self.lisp.symbol_matches(car, "let")? {
+                    return self.eval_let_for_expansion(cdr, env);
+                }
+                
+                // Function call - evaluate car and args, then apply
+                let func = self.eval_for_macro_expansion(car, env)?;
+                let args = self.eval_args_for_expansion(cdr, env)?;
+                self.apply_for_expansion(func, args)
+            }
+            
+            _ => Err(self.make_error(ErrorKind::Generic, expr)
+                .with_message("unexpected value in macro expansion"))
+        }
+    }
+    
+    /// Evaluate arguments for macro expansion
+    fn eval_args_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        if self.lisp.get(args)?.is_nil() {
+            return Ok(args);
+        }
+        
+        let car = self.lisp.car(args)?;
+        let cdr = self.lisp.cdr(args)?;
+        
+        let evaluated_car = self.eval_for_macro_expansion(car, env)?;
+        let evaluated_cdr = self.eval_args_for_expansion(cdr, env)?;
+        
+        self.lisp.cons(evaluated_car, evaluated_cdr).map_err(Into::into)
+    }
+    
+    /// Apply a function for macro expansion
+    fn apply_for_expansion(
+        &mut self,
+        func: ArenaIndex,
+        args: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(func)? {
+            Value::Lambda { params, body_env } => {
+                let body = self.lisp.car(body_env)?;
+                let def_env = self.lisp.cdr(body_env)?;
+                
+                // Bind parameters to arguments
+                let call_env = self.bind_params_for_expansion(params, args, def_env)?;
+                
+                // Evaluate body
+                self.eval_for_macro_expansion(body, call_env)
+            }
+            Value::Builtin(builtin) => {
+                // Handle common builtins needed for macro expansion
+                self.apply_builtin_for_expansion(builtin, args)
+            }
+            _ => Err(self.make_error(ErrorKind::Generic, func)
+                .with_message("not a procedure in macro expansion"))
+        }
+    }
+    
+    /// Bind parameters to arguments for macro expansion
+    fn bind_params_for_expansion(
+        &self,
+        params: ArenaIndex,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(params)? {
+            Value::Nil => Ok(env),
+            Value::Symbol { .. } => {
+                // Rest parameter - bind to all remaining args
+                let binding = self.lisp.cons(params, args)?;
+                self.lisp.cons(binding, env).map_err(Into::into)
+            }
+            Value::Cons { .. } => {
+                let param = self.lisp.car(params)?;
+                let rest_params = self.lisp.cdr(params)?;
+                let arg = self.lisp.car(args)?;
+                let rest_args = self.lisp.cdr(args)?;
+                
+                let binding = self.lisp.cons(param, arg)?;
+                let extended_env = self.lisp.cons(binding, env)?;
+                
+                self.bind_params_for_expansion(rest_params, rest_args, extended_env)
+            }
+            _ => Err(self.make_error(ErrorKind::Generic, params)
+                .with_message("invalid parameter list"))
+        }
+    }
+    
+    /// Apply a builtin for macro expansion
+    fn apply_builtin_for_expansion(
+        &mut self,
+        builtin: grift_parser::Builtin,
+        args: ArenaIndex,
+    ) -> EvalResult {
+        use grift_parser::Builtin;
+        
+        match builtin {
+            Builtin::Car => {
+                let arg = self.lisp.car(args)?;
+                self.lisp.car(arg).map_err(Into::into)
+            }
+            Builtin::Cdr => {
+                let arg = self.lisp.car(args)?;
+                self.lisp.cdr(arg).map_err(Into::into)
+            }
+            Builtin::Cons => {
+                let car_arg = self.lisp.car(args)?;
+                let cdr_args = self.lisp.cdr(args)?;
+                let cdr_arg = self.lisp.car(cdr_args)?;
+                self.lisp.cons(car_arg, cdr_arg).map_err(Into::into)
+            }
+            Builtin::List => {
+                Ok(args)  // args is already a list
+            }
+            Builtin::Null => {
+                let arg = self.lisp.car(args)?;
+                let result = self.lisp.get(arg)?.is_nil();
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            Builtin::Pairp => {
+                let arg = self.lisp.car(args)?;
+                let result = matches!(self.lisp.get(arg)?, Value::Cons { .. });
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            Builtin::Symbolp => {
+                let arg = self.lisp.car(args)?;
+                let result = matches!(self.lisp.get(arg)?, Value::Symbol { .. });
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            Builtin::EqP | Builtin::EqvP => {
+                let a = self.lisp.car(args)?;
+                let b = self.lisp.car(self.lisp.cdr(args)?)?;
+                let result = self.lisp.eqv(a, b)?;
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            Builtin::Add => {
+                self.builtin_add_for_expansion(args)
+            }
+            Builtin::Sub => {
+                self.builtin_sub_for_expansion(args)
+            }
+            Builtin::Lt => {
+                let a = self.lisp.car(args)?;
+                let b = self.lisp.car(self.lisp.cdr(args)?)?;
+                let result = match (self.lisp.get(a)?, self.lisp.get(b)?) {
+                    (Value::Number(n1), Value::Number(n2)) => n1 < n2,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, args)),
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            Builtin::Gt => {
+                let a = self.lisp.car(args)?;
+                let b = self.lisp.car(self.lisp.cdr(args)?)?;
+                let result = match (self.lisp.get(a)?, self.lisp.get(b)?) {
+                    (Value::Number(n1), Value::Number(n2)) => n1 > n2,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, args)),
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            Builtin::Zerop => {
+                let arg = self.lisp.car(args)?;
+                let result = match self.lisp.get(arg)? {
+                    Value::Number(n) => n == 0,
+                    _ => false,
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+            _ => Err(self.make_error(ErrorKind::Generic, args)
+                .with_message("builtin not supported in macro expansion"))
+        }
+    }
+    
+    /// Add for macro expansion
+    fn builtin_add_for_expansion(&self, args: ArenaIndex) -> EvalResult {
+        let mut sum: isize = 0;
+        let mut current = args;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let arg = self.lisp.car(current)?;
+            if let Value::Number(n) = self.lisp.get(arg)? {
+                sum = sum.wrapping_add(n);
+            } else {
+                return Err(self.make_error(ErrorKind::TypeError, arg));
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        self.lisp.number(sum).map_err(Into::into)
+    }
+    
+    /// Subtract for macro expansion
+    fn builtin_sub_for_expansion(&self, args: ArenaIndex) -> EvalResult {
+        let first = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        let first_val = match self.lisp.get(first)? {
+            Value::Number(n) => n,
+            _ => return Err(self.make_error(ErrorKind::TypeError, first)),
+        };
+        
+        if self.lisp.get(rest)?.is_nil() {
+            // Unary minus
+            return self.lisp.number(-first_val).map_err(Into::into);
+        }
+        
+        let mut result = first_val;
+        let mut current = rest;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let arg = self.lisp.car(current)?;
+            if let Value::Number(n) = self.lisp.get(arg)? {
+                result = result.wrapping_sub(n);
+            } else {
+                return Err(self.make_error(ErrorKind::TypeError, arg));
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        self.lisp.number(result).map_err(Into::into)
+    }
+    
+    /// Evaluate syntax-case for macro expansion
+    fn eval_syntax_case_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        // Parse: (stx-expr (literal ...) clause ...)
+        let stx_expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let literals = self.lisp.car(rest)?;
+        let clauses = self.lisp.cdr(rest)?;
+        
+        // Evaluate stx-expr
+        let stx = self.eval_for_macro_expansion(stx_expr, env)?;
+        
+        // Try each clause
+        let mut current = clauses;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let clause = self.lisp.car(current)?;
+            let pattern = self.lisp.car(clause)?;
+            let clause_cdr = self.lisp.cdr(clause)?;
+            
+            // Unwrap syntax object
+            let datum = self.lisp.syntax_to_datum(stx)?;
+            
+            // Try to match pattern
+            let empty = self.lisp.nil()?;
+            if let Some(bindings) = self.match_pattern(pattern, datum, literals, empty)? {
+                // Extract fender and output
+                let (fender, output) = self.extract_fender_and_output_expansion(clause_cdr)?;
+                
+                // Extend environment with pattern bindings
+                let extended_env = self.extend_env_with_bindings_expansion(env, bindings)?;
+                
+                // Check fender if present
+                if let Some(fender_expr) = fender {
+                    let fender_result = self.eval_for_macro_expansion(fender_expr, extended_env)?;
+                    if !self.is_truthy_expansion(fender_result)? {
+                        current = self.lisp.cdr(current)?;
+                        continue;
+                    }
+                }
+                
+                // Evaluate output expression
+                return self.eval_for_macro_expansion(output, extended_env);
+            }
+            
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Err(self.make_error(ErrorKind::Generic, stx)
+            .with_message("syntax-case: no pattern matched"))
+    }
+    
+    /// Extract fender and output for expansion
+    fn extract_fender_and_output_expansion(
+        &self,
+        clause_cdr: ArenaIndex,
+    ) -> Result<(Option<ArenaIndex>, ArenaIndex), EvalError> {
+        let first = self.lisp.car(clause_cdr)?;
+        let rest = self.lisp.cdr(clause_cdr)?;
+
+        if self.lisp.get(rest)?.is_nil() {
+            // Only one element - it's the output, no fender
+            Ok((None, first))
+        } else {
+            // Two elements - first is fender, second is output
+            let output = self.lisp.car(rest)?;
+            Ok((Some(first), output))
+        }
+    }
+    
+    /// Extend environment with pattern bindings for expansion
+    fn extend_env_with_bindings_expansion(
+        &self,
+        env: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> EvalResult {
+        let mut result = env;
+        let mut current = bindings;
+
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let pair = self.lisp.car(current)?;
+            result = self.lisp.cons(pair, result)?;
+            current = self.lisp.cdr(current)?;
+        }
+
+        // Also store the full bindings alist under #:pattern-bindings
+        let key = self.lisp.symbol("#:pattern-bindings")?;
+        let binding_pair = self.lisp.cons(key, bindings)?;
+        result = self.lisp.cons(binding_pair, result)?;
+
+        Ok(result)
+    }
+    
+    /// Check if value is truthy for expansion
+    fn is_truthy_expansion(&self, val: ArenaIndex) -> Result<bool, EvalError> {
+        match self.lisp.get(val)? {
+            Value::False => Ok(false),
+            _ => Ok(true),
+        }
+    }
+    
+    /// Evaluate syntax template for expansion
+    fn eval_syntax_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        let template = self.lisp.car(args)?;
+        
+        // Get pattern bindings from environment
+        let bindings = self.get_pattern_bindings_from_env_expansion(env)?;
+        
+        // Transcribe template
+        let empty_renames = self.lisp.nil()?;
+        self.transcribe_template(template, bindings, empty_renames, self.global_env)
+    }
+    
+    /// Get pattern bindings from environment for expansion
+    fn get_pattern_bindings_from_env_expansion(&self, env: ArenaIndex) -> EvalResult {
+        let key = self.lisp.symbol("#:pattern-bindings")?;
+        let mut current = env;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let name = self.lisp.car(binding)?;
+                if self.lisp.symbol_eq(name, key)? {
+                    return self.lisp.cdr(binding).map_err(Into::into);
+                }
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        self.lisp.nil().map_err(Into::into)
+    }
+    
+    /// Evaluate if for expansion
+    fn eval_if_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        let cond_expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let then_expr = self.lisp.car(rest)?;
+        let else_rest = self.lisp.cdr(rest)?;
+        
+        let cond_val = self.eval_for_macro_expansion(cond_expr, env)?;
+        
+        if self.is_truthy_expansion(cond_val)? {
+            self.eval_for_macro_expansion(then_expr, env)
+        } else if !self.lisp.get(else_rest)?.is_nil() {
+            let else_expr = self.lisp.car(else_rest)?;
+            self.eval_for_macro_expansion(else_expr, env)
+        } else {
+            self.lisp.nil().map_err(Into::into)
+        }
+    }
+    
+    /// Evaluate begin for expansion
+    fn eval_begin_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        let mut result = self.lisp.nil()?;
+        let mut current = args;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let expr = self.lisp.car(current)?;
+            result = self.eval_for_macro_expansion(expr, env)?;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Ok(result)
+    }
+    
+    /// Evaluate let for expansion
+    fn eval_let_for_expansion(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Evaluate all binding values and extend environment
+        let mut extended_env = env;
+        let mut current = bindings;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            let name = self.lisp.car(binding)?;
+            let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+            let val = self.eval_for_macro_expansion(val_expr, env)?;
+            
+            let pair = self.lisp.cons(name, val)?;
+            extended_env = self.lisp.cons(pair, extended_env)?;
+            
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Evaluate body
+        self.eval_begin_for_expansion(body, extended_env)
+    }
 
     /// Handle (define-syntax name transformer)
     fn expand_define_syntax(&mut self, args: ArenaIndex) -> EvalResult {
@@ -1324,40 +1861,73 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(self.lisp.nil()?)
     }
 
-    /// Parse a transformer expression (syntax-rules ...)
-    pub(super) fn parse_transformer(&self, expr: ArenaIndex) -> EvalResult {
+    /// Parse a transformer expression (syntax-rules ...) or (lambda (x) ...)
+    /// 
+    /// Supports two forms of macro transformers:
+    /// 1. `(syntax-rules ...)` - declarative pattern-based macros (R7RS)
+    /// 2. `(lambda (x) ...)` - procedural macros using syntax-case
+    pub(super) fn parse_transformer(&mut self, expr: ArenaIndex) -> EvalResult {
         let head = self.lisp.car(expr)?;
 
-        if !self.lisp.symbol_matches(head, "syntax-rules")? {
-            return Err(self.make_error(ErrorKind::Generic, expr)
-                .with_message("expected (syntax-rules ...)"));
+        // Check for syntax-rules (declarative transformer)
+        if self.lisp.symbol_matches(head, "syntax-rules")? {
+            let rest = self.lisp.cdr(expr)?;
+            let literals = self.lisp.car(rest)?;
+            let rules_raw = self.lisp.cdr(rest)?;
+
+            // Parse rules into (pattern . template) pairs
+            let mut rules = self.lisp.nil()?;
+            let mut current = rules_raw;
+
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let rule = self.lisp.car(current)?;
+                let pattern = self.lisp.car(rule)?;
+                let template = self.lisp.car(self.lisp.cdr(rule)?)?;
+
+                let pair = self.lisp.cons(pattern, template)?;
+                rules = self.lisp.cons(pair, rules)?;
+
+                current = self.lisp.cdr(current)?;
+            }
+
+            // Reverse to maintain definition order
+            let rules = self.reverse_list(rules)?;
+
+            // Create SyntaxRules value
+            return self.lisp.syntax_rules(literals, rules, self.global_env)
+                .map_err(Into::into);
         }
 
-        let rest = self.lisp.cdr(expr)?;
-        let literals = self.lisp.car(rest)?;
-        let rules_raw = self.lisp.cdr(rest)?;
-
-        // Parse rules into (pattern . template) pairs
-        let mut rules = self.lisp.nil()?;
-        let mut current = rules_raw;
-
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let rule = self.lisp.car(current)?;
-            let pattern = self.lisp.car(rule)?;
-            let template = self.lisp.car(self.lisp.cdr(rule)?)?;
-
-            let pair = self.lisp.cons(pattern, template)?;
-            rules = self.lisp.cons(pair, rules)?;
-
-            current = self.lisp.cdr(current)?;
+        // Check for lambda (procedural transformer)
+        if self.lisp.symbol_matches(head, "lambda")? {
+            // Evaluate the lambda to create a closure
+            // The lambda will be called with the syntax object as its argument
+            let lambda_result = self.eval_lambda_for_transformer(expr)?;
+            return Ok(lambda_result);
         }
 
-        // Reverse to maintain definition order
-        let rules = self.reverse_list(rules)?;
+        Err(self.make_error(ErrorKind::Generic, expr)
+            .with_message("expected (syntax-rules ...) or (lambda ...)"))
+    }
 
-        // Create SyntaxRules value
-        self.lisp.syntax_rules(literals, rules, self.global_env)
-            .map_err(Into::into)
+    /// Evaluate a lambda expression to create a transformer closure
+    /// 
+    /// This creates a Lambda value that can be invoked as a procedural macro.
+    fn eval_lambda_for_transformer(&self, lambda_expr: ArenaIndex) -> EvalResult {
+        let rest = self.lisp.cdr(lambda_expr)?;
+        let params = self.lisp.car(rest)?;
+        let body_list = self.lisp.cdr(rest)?;
+        
+        // Wrap body in begin if multiple expressions
+        let body = if self.list_length(body_list)? == 1 {
+            self.lisp.car(body_list)?
+        } else {
+            let begin = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin, body_list)?
+        };
+        
+        // Create Lambda value using the proper API (params, body, env)
+        self.lisp.lambda(params, body, self.global_env).map_err(Into::into)
     }
 
     /// Handle (let-syntax ((name transformer) ...) body ...)

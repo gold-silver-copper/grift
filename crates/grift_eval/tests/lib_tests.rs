@@ -5752,3 +5752,110 @@ fn test_syntax_case_fender_complex() {
     
     assert!(lisp.symbol_matches(result, "strictly-increasing").unwrap());
 }
+
+// ============================================================================
+// Procedural Macro Tests (Phase 5)
+// ============================================================================
+
+/// Test basic procedural macro with lambda transformer
+#[test]
+fn test_procedural_macro_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a simple procedural macro
+    eval.eval_str(r#"
+        (define-syntax my-first
+          (lambda (x)
+            (syntax-case x ()
+              ((_ a . rest) (syntax a)))))
+    "#).unwrap();
+    
+    // Now use the macro
+    let result = eval.eval_str("(my-first 1 2 3)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(1));
+}
+
+/// Test procedural macro with syntax-case pattern matching
+#[test]
+fn test_procedural_macro_pattern_match() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that processes its input
+    eval.eval_str(r#"
+        (define-syntax my-add
+          (lambda (x)
+            (syntax-case x ()
+              ((_ a b) (syntax (+ a b))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(my-add 2 3)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5));
+}
+
+/// Test procedural macro with multiple clauses
+#[test]
+fn test_procedural_macro_multiple_clauses() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with multiple patterns
+    eval.eval_str(r#"
+        (define-syntax count-args
+          (lambda (x)
+            (syntax-case x ()
+              ((_) (syntax 0))
+              ((_ a) (syntax 1))
+              ((_ a b) (syntax 2))
+              ((_ a b c) (syntax 3)))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(count-args a b c)").unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(3));
+}
+
+/// Test procedural macro with fender (guard)
+#[test]
+fn test_procedural_macro_with_fender() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Macro that uses a fender to check its input
+    eval.eval_str(r#"
+        (define-syntax check-positive
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n) (> n 0) (syntax 'positive))
+              ((_ n) (syntax 'not-positive)))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(check-positive 5)").unwrap();
+    
+    assert!(lisp.symbol_matches(result, "positive").unwrap());
+}
+
+/// Test procedural macro with nested syntax-case
+#[test]
+fn test_procedural_macro_nested() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Macro that returns a list structure
+    eval.eval_str(r#"
+        (define-syntax make-pair
+          (lambda (x)
+            (syntax-case x ()
+              ((_ a b) (syntax (cons a b))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(make-pair 'left 'right)").unwrap();
+    
+    let car = lisp.car(result).unwrap();
+    let cdr = lisp.cdr(result).unwrap();
+    assert!(lisp.symbol_matches(car, "left").unwrap());
+    assert!(lisp.symbol_matches(cdr, "right").unwrap());
+}
