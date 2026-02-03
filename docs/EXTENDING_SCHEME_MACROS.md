@@ -14,10 +14,10 @@ This document describes the design and implementation approach for extending Gri
 | 1 | Recursive pattern documentation | ✅ Complete |
 | 1 | Helper macro examples | ✅ Complete |
 | 1 | Tests for complex patterns | ✅ Complete |
-| 1 | Improved nested ellipsis handling | 🔄 In Progress |
+| 1 | Improved nested ellipsis handling | ✅ Complete |
 | 2 | `Value::Syntax` variant | ✅ Complete |
 | 2 | `syntax`, `syntax_parts`, `syntax_to_datum` methods | ✅ Complete |
-| 2 | Mark infrastructure | ⏳ Pending |
+| 2 | Mark infrastructure | ✅ Complete |
 | 3-6 | `syntax-case` and related features | ⏳ Pending |
 
 **Last updated**: February 2025
@@ -956,20 +956,20 @@ Expected results:
 
 ## Implementation Roadmap
 
-### Phase 1: Enhanced syntax-rules (Current Focus)
+### Phase 1: Enhanced syntax-rules ✅ Complete
 
 1. **Document recursive patterns** ✅ (this document)
 2. **Add more helper macro examples** ✅
-3. **Improve nested ellipsis handling in expand.rs**
+3. **Improve nested ellipsis handling in expand.rs** ✅
 4. **Add tests for complex patterns** ✅
 
-### Phase 2: Syntax Objects
+### Phase 2: Syntax Objects ✅ Complete
 
 1. Add `Value::Syntax` variant to parser ✅
 2. Implement `syntax`, `syntax->datum` primitives ✅ (Lisp methods added)
-3. Add mark infrastructure
+3. Add mark infrastructure ✅ (`mark_syntax`, `bound_identifier_eq`, `free_identifier_eq`, etc.)
 
-### Phase 3: syntax-case Core
+### Phase 3: syntax-case Core (Current Focus)
 
 1. Implement `syntax-case` special form handler
 2. Add `syntax` template transcription
@@ -977,8 +977,8 @@ Expected results:
 
 ### Phase 4: Hygiene Utilities
 
-1. Implement `bound-identifier=?`, `free-identifier=?`
-2. Add `datum->syntax`, `syntax->datum`
+1. Implement `bound-identifier=?`, `free-identifier=?` (Scheme-level wrappers for Rust functions) 
+2. Add `datum->syntax`, `syntax->datum` (Scheme-level wrappers)
 3. Implement `generate-temporaries`
 
 ### Phase 5: Replace Special Forms

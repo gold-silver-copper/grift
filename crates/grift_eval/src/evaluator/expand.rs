@@ -86,6 +86,272 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 }
 
 // ============================================================================
+// Mark Infrastructure for Hygiene
+// ============================================================================
+
+impl<'a, const N: usize> Evaluator<'a, N> {
+    /// Apply a fresh mark to a syntax object
+    ///
+    /// Marks track macro expansion scopes for hygiene. Each time a macro
+    /// is expanded, a fresh mark is applied to all identifiers introduced
+    /// by the macro. This allows the system to distinguish between
+    /// identifiers with the same name but different binding scopes.
+    ///
+    /// # Arguments
+    ///
+    /// * `stx` - A syntax object to mark
+    ///
+    /// # Returns
+    ///
+    /// A new syntax object with the fresh mark added to its marks list
+    ///
+    /// # Memory
+    ///
+    /// Allocates 2 arena slots: one for the new mark, one for the cons cell
+    pub fn mark_syntax(&mut self, stx: ArenaIndex) -> EvalResult {
+        let (expr, marks, subst) = self.lisp.syntax_parts(stx)?;
+
+        // Generate fresh mark
+        let new_mark = self.gensym_simple()?;
+
+        // Add to marks list (prepend for efficiency)
+        let new_marks = self.lisp.cons(new_mark, marks)?;
+
+        // Create new syntax object with updated marks
+        self.lisp.syntax(expr, new_marks, subst).map_err(Into::into)
+    }
+
+    /// Check if two marks lists are equal
+    ///
+    /// Two marks lists are equal if they contain the same marks in the same order.
+    /// This is used by `bound_identifier_eq` to compare identifiers.
+    ///
+    /// # Arguments
+    ///
+    /// * `marks1` - First marks list
+    /// * `marks2` - Second marks list
+    ///
+    /// # Returns
+    ///
+    /// `true` if the marks lists are identical, `false` otherwise
+    fn marks_equal(&self, marks1: ArenaIndex, marks2: ArenaIndex) -> Result<bool, EvalError> {
+        let mut m1 = marks1;
+        let mut m2 = marks2;
+
+        loop {
+            match (self.lisp.get(m1)?, self.lisp.get(m2)?) {
+                // Both nil - equal
+                (Value::Nil, Value::Nil) => return Ok(true),
+                // One nil, one not - not equal
+                (Value::Nil, _) | (_, Value::Nil) => return Ok(false),
+                // Both cons - compare cars and recurse on cdrs
+                (Value::Cons { .. }, Value::Cons { .. }) => {
+                    let car1 = self.lisp.car(m1)?;
+                    let car2 = self.lisp.car(m2)?;
+                    
+                    // Compare marks using symbol equality
+                    if !self.lisp.symbol_eq(car1, car2)? {
+                        return Ok(false);
+                    }
+                    
+                    m1 = self.lisp.cdr(m1)?;
+                    m2 = self.lisp.cdr(m2)?;
+                }
+                // Any other combination - not equal
+                _ => return Ok(false),
+            }
+        }
+    }
+
+    /// Check if two identifiers are bound-identifier=?
+    ///
+    /// Two identifiers are `bound-identifier=?` if they have the same name
+    /// AND the same marks. This means they were introduced at the same
+    /// point in the macro expansion process and would bind the same variable.
+    ///
+    /// # Arguments
+    ///
+    /// * `id1` - First identifier (as a syntax object)
+    /// * `id2` - Second identifier (as a syntax object)
+    ///
+    /// # Returns
+    ///
+    /// `true` if the identifiers have the same name and marks
+    ///
+    /// # Example
+    ///
+    /// In the following macro, `x` introduced by the template is different
+    /// from `x` provided by the user because they have different marks:
+    ///
+    /// ```scheme
+    /// (define-syntax test
+    ///   (syntax-rules ()
+    ///     ((test x) (let ((x 1)) x))))
+    /// (let ((x 2)) (test x))  ; returns 1, not 2
+    /// ```
+    pub fn bound_identifier_eq(
+        &self,
+        id1: ArenaIndex,
+        id2: ArenaIndex,
+    ) -> Result<bool, EvalError> {
+        // Check if both are syntax objects
+        match (self.lisp.get(id1)?, self.lisp.get(id2)?) {
+            (Value::Syntax { .. }, Value::Syntax { .. }) => {
+                let (name1, marks1, _) = self.lisp.syntax_parts(id1)?;
+                let (name2, marks2, _) = self.lisp.syntax_parts(id2)?;
+
+                // Names must match
+                if !self.lisp.eqv(name1, name2)? {
+                    return Ok(false);
+                }
+
+                // Marks must match
+                self.marks_equal(marks1, marks2)
+            }
+            // If both are symbols (not syntax objects), compare directly
+            (Value::Symbol(_), Value::Symbol(_)) => {
+                self.lisp.symbol_eq(id1, id2).map_err(Into::into)
+            }
+            // Mixed or non-identifier types - not equal
+            _ => Ok(false),
+        }
+    }
+
+    /// Resolve an identifier to its binding in the current environment
+    ///
+    /// This function looks up an identifier in the substitution environment
+    /// associated with the syntax object, or in the global environment.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - An identifier (as a syntax object or symbol)
+    ///
+    /// # Returns
+    ///
+    /// `Some(binding)` if the identifier is bound, `None` if unbound
+    fn resolve_identifier(&self, id: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
+        // If it's a syntax object, check its substitution environment first
+        if let Value::Syntax { .. } = self.lisp.get(id)? {
+            let (name, _marks, subst) = self.lisp.syntax_parts(id)?;
+            
+            // Check substitution environment
+            if let Some(binding) = self.lookup_in_subst(name, subst)? {
+                return Ok(Some(binding));
+            }
+            
+            // Fall through to check global environment using the unwrapped name
+            return self.lookup_in_env(name, self.global_env);
+        }
+        
+        // For plain symbols, check the global environment
+        self.lookup_in_env(id, self.global_env)
+    }
+
+    /// Look up a name in a substitution environment
+    ///
+    /// The substitution environment is an alist of (name . binding) pairs.
+    fn lookup_in_subst(
+        &self,
+        name: ArenaIndex,
+        subst: ArenaIndex,
+    ) -> Result<Option<ArenaIndex>, EvalError> {
+        let mut current = subst;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let pair = self.lisp.car(current)?;
+            let key = self.lisp.car(pair)?;
+            
+            if self.lisp.symbol_eq(key, name)? {
+                return Ok(Some(self.lisp.cdr(pair)?));
+            }
+            
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Ok(None)
+    }
+
+    /// Look up a name in an environment
+    fn lookup_in_env(
+        &self,
+        name: ArenaIndex,
+        env: ArenaIndex,
+    ) -> Result<Option<ArenaIndex>, EvalError> {
+        let mut current = env;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let bound_name = self.lisp.car(binding)?;
+                
+                if self.lisp.symbol_eq(bound_name, name)? {
+                    return Ok(Some(self.lisp.cdr(binding)?));
+                }
+            }
+            
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Ok(None)
+    }
+
+    /// Check if two identifiers are free-identifier=?
+    ///
+    /// Two identifiers are `free-identifier=?` if they resolve to the same
+    /// binding in the current environment. This is used when checking if
+    /// an identifier in a pattern matches a literal keyword.
+    ///
+    /// # Arguments
+    ///
+    /// * `id1` - First identifier
+    /// * `id2` - Second identifier
+    ///
+    /// # Returns
+    ///
+    /// `true` if both identifiers resolve to the same binding (or both are unbound
+    /// and have the same name)
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// ;; Two references to the same variable are free-identifier=?
+    /// (define x 1)
+    /// ;; (free-identifier=? #'x #'x) => #t
+    ///
+    /// ;; In a macro, an identifier from the input may refer to a different
+    /// ;; binding than an identifier introduced by the template:
+    /// (let ((x 1))          ;; outer x
+    ///   (let ((x 2))        ;; inner x (shadows outer)
+    ///     ;; references to 'x' here refer to inner x (value 2)
+    ///     ;; but in a macro that captured outer x, they would differ
+    ///     x))               ;; => 2
+    /// ```
+    pub fn free_identifier_eq(
+        &self,
+        id1: ArenaIndex,
+        id2: ArenaIndex,
+    ) -> Result<bool, EvalError> {
+        // Resolve both identifiers
+        let binding1 = self.resolve_identifier(id1)?;
+        let binding2 = self.resolve_identifier(id2)?;
+
+        match (binding1, binding2) {
+            // Both bound - compare bindings
+            (Some(b1), Some(b2)) => self.lisp.eqv(b1, b2).map_err(Into::into),
+            // Both unbound - compare names
+            (None, None) => {
+                let name1 = self.lisp.syntax_to_datum(id1)?;
+                let name2 = self.lisp.syntax_to_datum(id2)?;
+                self.lisp.eqv(name1, name2).map_err(Into::into)
+            }
+            // One bound, one not - not equal
+            _ => Ok(false),
+        }
+    }
+}
+
+// ============================================================================
 // Binding and Rename Environments
 // ============================================================================
 
