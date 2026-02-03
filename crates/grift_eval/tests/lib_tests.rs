@@ -616,6 +616,47 @@ fn test_let_bindings() {
 }
 
 #[test]
+fn test_petrofsky_let() {
+    // The Petrofsky let test: ensures named-let doesn't introduce the loop name
+    // too early in the scope. The initializer (- 1) should call the subtraction
+    // function from outer scope, not the named-let loop function.
+    // Reference: http://web.archive.org/web/20070626123636/http://www.paulgraham.com/arcchallenge.html
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // This should return -1 (result of (- 1) which is negation/subtraction)
+    // NOT 1 (which would happen if - was bound to the loop before evaluating (- 1))
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let - ((n (- 1))) n)"), -1);
+    
+    // Additional edge case: using builtin name as loop, but with recursion
+    // The initializer (+ 2 3) uses outer +, but body uses loop + recursively
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let + ((n (+ 2 3))) (if (= n 0) 100 (+ (- n 1))))"), 100);
+    
+    // Another case with * - initializer uses outer *, body uses loop *
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(let * ((x (* 2 3))) (if (= x 0) 42 (* (- x 1))))"), 42);
+}
+
+#[test]
+fn test_named_let() {
+    // Test that named let works correctly for recursion
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Factorial using named let
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let fact ((n 5)) (if (= n 0) 1 (* n (fact (- n 1)))))"), 120);
+    
+    // Sum using accumulator
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(let sum ((n 10) (acc 0)) (if (= n 0) acc (sum (- n 1) (+ acc n))))"), 55);
+    
+    // Empty bindings named let
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let loop () 42)"), 42);
+}
+
+#[test]
 fn test_cons_with_expressions() {
     // cons evaluates expressions in strict mode
     let lisp: Lisp<20000> = Lisp::new();
