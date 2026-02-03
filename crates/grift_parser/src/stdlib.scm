@@ -71,7 +71,8 @@
 ;;; Member and Assoc Functions (Using Helpers)
 ;;; ============================================================
 
-;;; (member x lst) - Check if x is in lst using eq?
+;;; (member x lst) - Check if x is in lst using eq? (returns boolean)
+;;; Note: Unlike standard Scheme, this returns #t/#f instead of sublist
 (define (member x lst) (if (mem-helper eq? x lst) #t #f))
 
 ;;; (assoc key alist) - Look up key in association list using eq?
