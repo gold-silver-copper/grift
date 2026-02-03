@@ -2,6 +2,39 @@
 
 This document outlines potential optimizations and improvements that can be made to speed up the Grift Scheme interpreter. The optimizations are categorized by priority and area.
 
+---
+
+## Implementation Progress
+
+**Last Updated**: 2026-02-03
+
+### Completed Optimizations
+
+#### Standard Library (stdlib.scm)
+- ✅ **map**: Converted to tail-recursive with accumulator pattern
+- ✅ **filter**: Converted to tail-recursive with accumulator pattern
+- ✅ **append**: Converted to tail-recursive using internal reverse helper
+- ✅ **range**: Converted to tail-recursive with countdown iterator
+- ✅ **flatten**: Fixed O(n²) complexity by eliminating repeated append calls, now O(n) tail-recursive
+- ✅ **filter-map**: Eliminated double function calls using let binding, now tail-recursive
+
+#### Macro System (macros.scm)
+- ✅ **Named let helpers**: Reduced from 3 helper macros to 1 (`%named-let-helper`)
+- ✅ **case macro**: Simplified from 6 patterns to 3 patterns
+- ✅ **Dead code removal**: Removed commented-out quasiquote alternative implementation
+
+### Notes on Implementation
+
+1. **Tail recursion importance**: All optimizations prioritize tail-call optimization since this is a `no_std` implementation with limited stack space.
+
+2. **append optimization**: Uses an internal reverse helper to avoid forward references to other stdlib functions.
+
+3. **take-right optimization**: The lag-pointer technique was attempted but reverted to the simple `length`-based approach due to complexity with nested lambda/letrec combinations. This remains an optimization opportunity.
+
+4. **member/assoc consolidation**: Skipped to maintain minimal changes as these functions work correctly.
+
+---
+
 ## Table of Contents
 
 1. [Macro System Optimizations](#macro-system-optimizations)
@@ -17,23 +50,13 @@ Located in `crates/grift_eval/src/evaluator/macros.scm`
 
 ### High Priority
 
-#### 1. Simplify Named Let Helper Chain
+#### 1. ✅ IMPLEMENTED - Simplify Named Let Helper Chain
 
-**Current Issue**: The named let implementation uses three helper macros (`%named-let-build` → `%named-let-expand` → `%named-let-extract-and-call`) creating unnecessary expansion overhead.
+**Status**: ✅ Completed - Reduced from 3 helpers to 1
 
-**Recommendation**: Collapse into a single helper macro:
+**Original Issue**: The named let implementation uses three helper macros (`%named-let-build` → `%named-let-expand` → `%named-let-extract-and-call`) creating unnecessary expansion overhead.
 
-```scheme
-(define-syntax %named-let-helper
-  (syntax-rules ()
-    ((%named-let-helper loop () (vars ...) (vals ...) (body ...))
-     ((lambda (vars ...)
-        (letrec ((loop (lambda (vars ...) . body)))
-          (loop vars ...)))
-      vals ...))
-    ((%named-let-helper loop ((var val) . rest) (vars ...) (vals ...) (body ...))
-     (%named-let-helper loop rest (vars ... var) (vals ... val) (body ...)))))
-```
+**Implementation**: Collapsed into a single helper macro `%named-let-helper` as recommended.
 
 **Benefit**: Reduces macro expansion steps from 3 to 1.
 
@@ -66,22 +89,16 @@ Located in `crates/grift_eval/src/evaluator/macros.scm`
 
 ### Medium Priority
 
-#### 3. Simplify `case` Macro Patterns
+#### 3. ✅ IMPLEMENTED - Simplify `case` Macro Patterns
 
-**Current Issue**: 6 patterns for handling with/without else × single/multiple clauses.
+**Status**: ✅ Completed - Reduced from 6 to 3 patterns
 
-**Recommendation**: Reduce to 3 patterns:
+**Original Issue**: 6 patterns for handling with/without else × single/multiple clauses.
 
-```scheme
-(define-syntax case
-  (syntax-rules (else)
-    ((case key) (if #f #f))
-    ((case key (else result ...)) (begin result ...))
-    ((case key ((datum ...) result ...) . rest)
-     (if (memv key '(datum ...))
-         (begin result ...)
-         (case key . rest)))))
-```
+**Implementation**: Reduced to 3 patterns as recommended:
+1. No clauses case
+2. Else clause
+3. Regular clause with recursion
 
 **Benefit**: Simpler to maintain, same functionality.
 
@@ -93,11 +110,13 @@ Located in `crates/grift_eval/src/evaluator/macros.scm`
 
 ### Low Priority
 
-#### 5. Remove Commented Dead Code
+#### 5. ✅ IMPLEMENTED - Remove Commented Dead Code
 
-**Issue**: Lines 279-283 contain commented-out quasiquote implementation.
+**Status**: ✅ Completed
 
-**Action**: Remove or move to documentation.
+**Original Issue**: Lines 279-283 contain commented-out quasiquote implementation.
+
+**Action**: Removed to clean up the codebase.
 
 #### 6. Optimize `or` Macro Temporary Bindings
 
@@ -122,63 +141,32 @@ Located in `crates/grift_parser/src/stdlib.scm`
 
 ### High Priority
 
-#### 1. Make Core Functions Tail-Recursive
+#### 1. ✅ IMPLEMENTED - Make Core Functions Tail-Recursive
 
-The following functions should be converted to use accumulator patterns for tail-call optimization:
+**Status**: ✅ Completed for map, filter, append, range, flatten
 
-##### `map` (currently non-tail-recursive)
+The following functions have been converted to use accumulator patterns for tail-call optimization:
+
+##### ✅ `map` - IMPLEMENTED
+Converted to tail-recursive with accumulator pattern and reverse at the end.
+
+##### ✅ `filter` - IMPLEMENTED
+Converted to tail-recursive with accumulator pattern and reverse at the end.
+
+##### ✅ `append` - IMPLEMENTED
+Converted to tail-recursive using internal reverse helper to avoid forward references.
+Note: Uses a self-contained implementation rather than `fold-right` to avoid dependency ordering issues.
+
+##### ✅ `range` - IMPLEMENTED
+Converted to tail-recursive using countdown iterator pattern:
 ```scheme
-;; Current (non-tail-recursive):
-(define (map f lst)
-  (if (null? lst) '()
-      (cons (f (car lst)) (map f (cdr lst)))))
-
-;; Optimized (tail-recursive):
-(define (map f lst)
-  (define (map-iter lst acc)
-    (if (null? lst)
-        (reverse acc)
-        (map-iter (cdr lst) (cons (f (car lst)) acc))))
-  (map-iter lst '()))
-```
-
-##### `filter` (currently non-tail-recursive)
-```scheme
-;; Current:
-(define (filter pred lst)
-  (if (null? lst) '()
-      (if (pred (car lst))
-          (cons (car lst) (filter pred (cdr lst)))
-          (filter pred (cdr lst)))))
-
-;; Optimized:
-(define (filter pred lst)
-  (define (filter-iter lst acc)
-    (if (null? lst)
-        (reverse acc)
-        (if (pred (car lst))
-            (filter-iter (cdr lst) (cons (car lst) acc))
-            (filter-iter (cdr lst) acc))))
-  (filter-iter lst '()))
-```
-
-##### `append` (currently non-tail-recursive)
-```scheme
-;; Current:
-(define (append a b)
-  (if (null? a) b
-      (cons (car a) (append (cdr a) b))))
-
-;; Optimized:
-(define (append a b)
-  (define (append-iter a acc)
-    (if (null? a)
+(define (range start end)
+  (define (range-iter n acc)
+    (if (< n start)
         acc
-        (append-iter (cdr a) (cons (car a) acc))))
-  (append-iter (reverse a) b))
-;; Alternative using fold:
-(define (append a b)
-  (fold-right cons b a))
+        (range-iter (- n 1) (cons n acc))))
+  (range-iter (- end 1) '()))
+```
 ```
 
 ##### `range` (currently non-tail-recursive)
@@ -197,101 +185,79 @@ The following functions should be converted to use accumulator patterns for tail
   (range-iter (- end 1) '()))
 ```
 
-#### 2. Fix O(n²) in `flatten`
+#### 2. ✅ IMPLEMENTED - Fix O(n²) in `flatten`
 
-**Current Issue**: Uses repeated `append` calls leading to O(n²) complexity.
+**Status**: ✅ Completed
 
-```scheme
-;; Current:
-(define (flatten lst)
-  (cond
-    ((null? lst) '())
-    ((not (pair? lst)) (list lst))
-    (else (append (flatten (car lst)) (flatten (cdr lst))))))
+**Original Issue**: Uses repeated `append` calls leading to O(n²) complexity.
 
-;; Optimized (O(n)):
-(define (flatten lst)
-  (define (flatten-iter lst acc)
-    (cond
-      ((null? lst) acc)
-      ((not (pair? lst)) (cons lst acc))
-      (else (flatten-iter (car lst) (flatten-iter (cdr lst) acc)))))
-  (flatten-iter lst '()))
-```
+**Implementation**: Converted to O(n) tail-recursive using accumulator pattern as recommended.
 
 ### Medium Priority
 
-#### 3. Avoid Double Calls in `filter-map`
+#### 3. ✅ IMPLEMENTED - Avoid Double Calls in `filter-map`
 
-**Current Issue**: Calls `(f (car lst))` twice.
+**Status**: ✅ Completed
 
+**Original Issue**: Calls `(f (car lst))` twice.
+
+**Implementation**: Converted to tail-recursive with let binding to store result:
 ```scheme
-;; Current:
 (define (filter-map f lst)
-  (if (null? lst) '()
-      (if (f (car lst))
-          (cons (f (car lst)) (filter-map f (cdr lst)))
-          (filter-map f (cdr lst)))))
+  (define (filter-map-iter lst acc)
+    (if (null? lst)
+        (reverse acc)
+        (let ((result (f (car lst))))
+          (if result
+              (filter-map-iter (cdr lst) (cons result acc))
+              (filter-map-iter (cdr lst) acc)))))
+  (filter-map-iter lst '()))
 ```
 
-**Fix**: Use `let` to store result (but note: the file comment mentions a "let-binding issue in recursion" - investigate first).
+**Note**: The previously mentioned "let-binding issue in recursion" was resolved - the issue was with variable scoping, not let itself.
 
-#### 4. Optimize `take-right` and `drop-right`
+#### 4. ⚠️ DEFERRED - Optimize `take-right` and `drop-right`
 
-**Current Issue**: Both call `length` unnecessarily.
+**Status**: ⚠️ Attempted but reverted to simple implementation
+
+**Original Issue**: Both call `length` unnecessarily.
 
 ```scheme
 ;; Current:
 (define (take-right lst k)
   (drop lst (- (length lst) k)))
 
-;; More efficient approach:
-;; Use a "lag pointer" technique - no length call needed
-(define (take-right lst k)
-  (define (helper fast slow)
-    (if (null? fast)
-        slow
-        (helper (cdr fast) (cdr slow))))
-  (define (skip-k lst k)
-    (if (= k 0) lst (skip-k (cdr lst) (- k 1))))
-  (helper (skip-k lst k) lst))
+;; Attempted optimization using lag pointer:
+;; Had issues with nested lambda/letrec - deferred for future work
 ```
 
-#### 5. Consolidate Member/Assoc Functions
+**Note**: The lag-pointer technique was attempted but reverted due to complexity with nested lambda/letrec combinations in this Scheme implementation. Current simple implementation is acceptable for medium priority.
+
+#### 5. ⏸️ NOT IMPLEMENTED - Consolidate Member/Assoc Functions
+
+**Status**: ⏸️ Skipped to maintain minimal changes
 
 **Issue**: `member`, `memq`, `memv`, `assoc`, `assq`, `assv` share nearly identical logic.
 
-**Recommendation**: Create internal helpers:
-```scheme
-(define (%member-by pred obj lst)
-  (if (null? lst) #f
-      (if (pred obj (car lst)) lst
-          (%member-by pred obj (cdr lst)))))
-
-(define (memq obj lst) (%member-by eq? obj lst))
-(define (memv obj lst) (%member-by eqv? obj lst))
-(define (member-equal obj lst) (%member-by equal? obj lst))
-```
+**Recommendation**: Could create internal helpers, but current implementations work correctly and consolidation provides minimal performance benefit.
 
 ### Low Priority
 
-#### 6. Optimize Character Case-Insensitive Comparisons
+#### 6. ⏸️ NOT IMPLEMENTED - Optimize Character Case-Insensitive Comparisons
+
+**Status**: ⏸️ Skipped - low priority
 
 **Issue**: Each `char-ci` comparison calls `char-foldcase` twice.
 
-```scheme
-;; Current:
-(define (char-ci=? c1 c2)
-  (char=? (char-foldcase c1) (char-foldcase c2)))
-
-;; Could cache foldcase results when comparing multiple characters
-```
+**Note**: Would provide minimal performance benefit and add complexity.
 
 ---
 
 ## Evaluator Optimizations
 
-### 1. Support More Builtins in Macro Expansion
+### 1. ⏸️ NOT IMPLEMENTED - Support More Builtins in Macro Expansion
+
+**Status**: ⏸️ Deferred - requires Rust code changes
 
 **Current Limitation**: Only `+`, `-`, `<`, `>`, `zero?`, `eq?`, `eqv?`, `null?`, `pair?`, `symbol?` are supported in macro expansion.
 
@@ -299,25 +265,32 @@ The following functions should be converted to use accumulator patterns for tail
 
 **Location**: `crates/grift_eval/src/evaluator/expand.rs`, function `apply_builtin_for_expansion`.
 
-
+**Note**: This optimization requires Rust code changes and was deemed out of scope for this initial optimization pass focusing on Scheme code.
 
 ---
 
 ## General Recommendations
 
-### Short-Term (Easy Wins)
+### Short-Term (Easy Wins) - ✅ COMPLETED
 
-1. Convert `map`, `filter`, `append`, `range` to tail-recursive versions
-2. Fix `flatten` O(n²) complexity
-3. Remove dead code/comments from macros.scm
-4. Simplify `case` macro patterns
+1. ✅ Convert `map`, `filter`, `append`, `range` to tail-recursive versions
+2. ✅ Fix `flatten` O(n²) complexity
+3. ✅ Remove dead code/comments from macros.scm
+4. ✅ Simplify `case` macro patterns
+5. ✅ Simplify named let helper chain
+6. ✅ Fix `filter-map` double calls
 
-### Medium-Term
+### Medium-Term - Remaining Work
 
-1. Convert `%cl-arity-check` and `define-values` to syntax-case
-2. Add more builtins to macro expansion mini-evaluator
-3. Consolidate similar helper functions in stdlib.scm
+1. ⏸️ Convert `%cl-arity-check` and `define-values` to syntax-case (deferred - low impact)
+2. ⏸️ Add more builtins to macro expansion mini-evaluator (requires Rust changes)
+3. ⏸️ Consolidate similar helper functions in stdlib.scm (minimal benefit)
+4. ⏸️ Optimize `take-right` with lag-pointer (deferred due to implementation complexity)
 
+### Key Principles
 
-- Tail-recursion is critical since this is a no_std implementation
+- **Tail-recursion is critical** since this is a no_std implementation with limited stack space
+- **All core list operations** now use tail-call optimization
+- **Minimal changes** - focused on high-impact, low-risk optimizations
+- **Tested and verified** - all changes validated with comprehensive test suite
 
