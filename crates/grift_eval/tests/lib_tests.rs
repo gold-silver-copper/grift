@@ -1038,6 +1038,23 @@ fn test_define_values_three() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "dv-c"), 3);
 }
 
+#[test]
+fn test_define_values_many() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test with more than 4 values (verifies ellipsis pattern works)
+    eval.eval_str("(define-values (v1 v2 v3 v4 v5 v6 v7) (values 10 20 30 40 50 60 70))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v1"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v2"), 20);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v3"), 30);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v4"), 40);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v5"), 50);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v6"), 60);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "v7"), 70);
+}
+
+
 // ───────────────────────────────────────────────────────────────────────────
 // DELAY/FORCE - Lazy Evaluation
 // ───────────────────────────────────────────────────────────────────────────
