@@ -4940,3 +4940,241 @@ fn test_promise_chain() {
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "(force p3)"), 30);
 }
+
+// ============================================================================
+// Tests for EXTENDING_SCHEME_MACROS.md - Part 1: Recursive Helper Patterns
+// ============================================================================
+
+/// Test accumulator-based recursive macro pattern
+/// This tests the pattern described in Section 1.1 of EXTENDING_SCHEME_MACROS.md
+#[test]
+fn test_recursive_helper_accumulator_pattern() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a simple accumulator-based recursive macro
+    // This collects elements one at a time
+    eval.eval_str(r#"
+        (define-syntax collect-first
+          (syntax-rules ()
+            ((collect-first () (acc ...))
+             (quote (acc ...)))
+            ((collect-first (first . rest) (acc ...))
+             (collect-first rest (acc ... first)))))
+    "#).unwrap();
+    
+    // Test with empty input
+    let result = eval.eval_str("(collect-first () ())").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+    
+    // Test with single element
+    let result = eval.eval_str("(collect-first (a) ())").unwrap();
+    let first = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(first, "a").unwrap());
+    
+    // Test with multiple elements
+    let result = eval.eval_str("(collect-first (a b c) ())").unwrap();
+    let first = lisp.car(result).unwrap();
+    let second = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let third = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(first, "a").unwrap());
+    assert!(lisp.symbol_matches(second, "b").unwrap());
+    assert!(lisp.symbol_matches(third, "c").unwrap());
+}
+
+/// Test dual accumulator pattern (used by do macro)
+/// This tests the pattern described in Section 1.4 of EXTENDING_SCHEME_MACROS.md
+#[test]
+fn test_dual_accumulator_pattern() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that extracts two pieces from each binding
+    eval.eval_str(r#"
+        (define-syntax extract-pairs
+          (syntax-rules ()
+            ((extract-pairs () (firsts ...) (seconds ...))
+             (list (quote (firsts ...)) (quote (seconds ...))))
+            ((extract-pairs ((a b) . rest) (firsts ...) (seconds ...))
+             (extract-pairs rest (firsts ... a) (seconds ... b)))))
+    "#).unwrap();
+    
+    // Test with single pair
+    let result = eval.eval_str("(extract-pairs ((x 1)) () ())").unwrap();
+    let firsts = lisp.car(result).unwrap();
+    let seconds = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    
+    let x = lisp.car(firsts).unwrap();
+    let one = lisp.car(seconds).unwrap();
+    assert!(lisp.symbol_matches(x, "x").unwrap());
+    assert_eq!(lisp.get(one).unwrap().as_number(), Some(1));
+    
+    // Test with multiple pairs
+    let result = eval.eval_str("(extract-pairs ((a 1) (b 2) (c 3)) () ())").unwrap();
+    let firsts = lisp.car(result).unwrap();
+    let seconds = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    
+    // Check firsts list is (a b c)
+    assert!(lisp.symbol_matches(lisp.car(firsts).unwrap(), "a").unwrap());
+    assert!(lisp.symbol_matches(lisp.car(lisp.cdr(firsts).unwrap()).unwrap(), "b").unwrap());
+    assert!(lisp.symbol_matches(lisp.car(lisp.cdr(lisp.cdr(firsts).unwrap()).unwrap()).unwrap(), "c").unwrap());
+    
+    // Check seconds list is (1 2 3)
+    assert_eq!(lisp.get(lisp.car(seconds).unwrap()).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(lisp.car(lisp.cdr(seconds).unwrap()).unwrap()).unwrap().as_number(), Some(2));
+}
+
+/// Test macro hygiene with recursive patterns
+/// This tests hygiene as described in Section 1.5 of EXTENDING_SCHEME_MACROS.md
+#[test]
+fn test_recursive_macro_hygiene() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a recursive macro that introduces a binding
+    eval.eval_str(r#"
+        (define-syntax sum-list
+          (syntax-rules ()
+            ((sum-list () acc) acc)
+            ((sum-list (x . rest) acc)
+             (sum-list rest (+ acc x)))))
+    "#).unwrap();
+    
+    // User defines 'acc' - should not be captured by macro's 'acc'
+    eval.eval_str("(define acc 1000)").unwrap();
+    
+    // Use the macro - user's 'acc' should be untouched
+    let result = eval.eval_str("(sum-list (1 2 3) 0)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(6));
+    
+    // Verify user's 'acc' is still 1000
+    let user_acc = eval.eval_str("acc").unwrap();
+    assert_eq!(lisp.get(user_acc).unwrap().as_number(), Some(1000));
+}
+
+/// Test that do loop with accumulators works correctly
+/// This validates the do macro implementation from EXTENDING_SCHEME_MACROS.md
+#[test]
+fn test_do_loop_with_accumulator() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Sum 1 to 10 using do with explicit step
+    let result = eval.eval_str(r#"
+        (do ((i 1 (+ i 1))
+             (sum 0 (+ sum i)))
+            ((> i 10) sum))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(55));
+}
+
+/// Test do loop without explicit step (step defaults to variable)
+#[test]
+fn test_do_loop_default_step() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // When step is omitted, variable keeps its value
+    let result = eval.eval_str(r#"
+        (do ((count 0 (+ count 1))
+             (limit 5))
+            ((>= count limit) 'done))
+    "#).unwrap();
+    assert!(lisp.symbol_matches(result, "done").unwrap());
+}
+
+/// Test pattern alternatives in recursive macros
+/// This tests the pattern described in Section 1.1 of EXTENDING_SCHEME_MACROS.md
+#[test]
+fn test_pattern_alternatives() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with multiple pattern alternatives
+    eval.eval_str(r#"
+        (define-syntax process-item
+          (syntax-rules ()
+            ((process-item ()) (quote empty))
+            ((process-item (a)) (quote one))
+            ((process-item (a b)) (quote two))
+            ((process-item (a b c)) (quote three))
+            ((process-item other) (quote many))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(process-item ())").unwrap();
+    assert!(lisp.symbol_matches(result, "empty").unwrap());
+    
+    let result = eval.eval_str("(process-item (1))").unwrap();
+    assert!(lisp.symbol_matches(result, "one").unwrap());
+    
+    let result = eval.eval_str("(process-item (1 2))").unwrap();
+    assert!(lisp.symbol_matches(result, "two").unwrap());
+    
+    let result = eval.eval_str("(process-item (1 2 3))").unwrap();
+    assert!(lisp.symbol_matches(result, "three").unwrap());
+    
+    let result = eval.eval_str("(process-item (1 2 3 4))").unwrap();
+    assert!(lisp.symbol_matches(result, "many").unwrap());
+}
+
+/// Test literal keyword matching in patterns
+/// This tests literal handling as part of syntax-rules
+#[test]
+fn test_literal_keywords() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with literal keywords
+    eval.eval_str(r#"
+        (define-syntax my-cond
+          (syntax-rules (else =>)
+            ((my-cond (else result)) result)
+            ((my-cond (test => proc))
+             (let ((temp test))
+               (if temp (proc temp) #f)))
+            ((my-cond (test result))
+             (if test result #f))))
+    "#).unwrap();
+    
+    // Test else clause
+    let result = eval.eval_str("(my-cond (else 42))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    // Test arrow clause
+    let result = eval.eval_str("(my-cond (5 => (lambda (x) (* x 2))))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(10));
+    
+    // Test regular clause
+    let result = eval.eval_str("(my-cond (#t 100))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(100));
+}
+
+/// Test nested ellipsis with helper macro decomposition
+/// This tests the decomposition pattern from Section 1.2 of EXTENDING_SCHEME_MACROS.md
+#[test]
+fn test_nested_pattern_decomposition() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that decomposes nested patterns using helpers
+    eval.eval_str(r#"
+        (define-syntax flatten-pairs
+          (syntax-rules ()
+            ((flatten-pairs ()) (quote ()))
+            ((flatten-pairs ((a b) . rest))
+             (cons a (cons b (flatten-pairs rest))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(flatten-pairs ((1 2) (3 4)))").unwrap();
+    
+    // Should produce (1 2 3 4)
+    let v1 = lisp.car(result).unwrap();
+    let v2 = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let v3 = lisp.car(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap();
+    let v4 = lisp.car(lisp.cdr(lisp.cdr(lisp.cdr(result).unwrap()).unwrap()).unwrap()).unwrap();
+    
+    assert_eq!(lisp.get(v1).unwrap().as_number(), Some(1));
+    assert_eq!(lisp.get(v2).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(v3).unwrap().as_number(), Some(3));
+    assert_eq!(lisp.get(v4).unwrap().as_number(), Some(4));
+}

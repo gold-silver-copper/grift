@@ -7,6 +7,23 @@ This document describes the design and implementation approach for extending Gri
 
 ---
 
+## Implementation Status
+
+| Phase | Feature | Status |
+|-------|---------|--------|
+| 1 | Recursive pattern documentation | ✅ Complete |
+| 1 | Helper macro examples | ✅ Complete |
+| 1 | Tests for complex patterns | ✅ Complete |
+| 1 | Improved nested ellipsis handling | 🔄 In Progress |
+| 2 | `Value::Syntax` variant | ✅ Complete |
+| 2 | `syntax`, `syntax_parts`, `syntax_to_datum` methods | ✅ Complete |
+| 2 | Mark infrastructure | ⏳ Pending |
+| 3-6 | `syntax-case` and related features | ⏳ Pending |
+
+**Last updated**: February 2025
+
+---
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -942,14 +959,14 @@ Expected results:
 ### Phase 1: Enhanced syntax-rules (Current Focus)
 
 1. **Document recursive patterns** ✅ (this document)
-2. **Add more helper macro examples**
+2. **Add more helper macro examples** ✅
 3. **Improve nested ellipsis handling in expand.rs**
-4. **Add tests for complex patterns**
+4. **Add tests for complex patterns** ✅
 
 ### Phase 2: Syntax Objects
 
-1. Add `Value::Syntax` variant to parser
-2. Implement `syntax`, `syntax->datum` primitives
+1. Add `Value::Syntax` variant to parser ✅
+2. Implement `syntax`, `syntax->datum` primitives ✅ (Lisp methods added)
 3. Add mark infrastructure
 
 ### Phase 3: syntax-case Core

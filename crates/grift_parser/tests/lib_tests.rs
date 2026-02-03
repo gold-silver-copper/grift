@@ -924,3 +924,118 @@ fn test_string_gc_trace() {
     assert_eq!(lisp.string_len(s).unwrap(), 11);
     assert!(lisp.string_matches(s, "hello world").unwrap());
 }
+
+// ========================================================================
+// Syntax Object Tests (Phase 2 of EXTENDING_SCHEME_MACROS.md)
+// ========================================================================
+
+#[test]
+fn test_syntax_object_creation() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Create a syntax object wrapping a symbol
+    let x = lisp.symbol("x").unwrap();
+    let nil = lisp.nil().unwrap();
+    let stx = lisp.syntax(x, nil, nil).unwrap();
+    
+    // Verify it's a syntax object
+    assert!(lisp.get(stx).unwrap().is_syntax());
+    assert_eq!(lisp.get(stx).unwrap().type_name(), "syntax");
+}
+
+#[test]
+fn test_syntax_object_parts() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Create a syntax object with marks and substitutions
+    let expr = lisp.symbol("test").unwrap();
+    let mark1 = lisp.symbol("m1").unwrap();
+    let marks = lisp.cons(mark1, lisp.nil().unwrap()).unwrap();
+    let subst = lisp.nil().unwrap();
+    
+    let stx = lisp.syntax(expr, marks, subst).unwrap();
+    
+    // Extract parts and verify
+    let (extracted_expr, extracted_marks, extracted_subst) = lisp.syntax_parts(stx).unwrap();
+    
+    assert_eq!(extracted_expr, expr);
+    assert_eq!(extracted_marks, marks);
+    assert_eq!(extracted_subst, subst);
+}
+
+#[test]
+fn test_syntax_to_datum() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Create a syntax object
+    let expr = lisp.number(42).unwrap();
+    let nil = lisp.nil().unwrap();
+    let stx = lisp.syntax(expr, nil, nil).unwrap();
+    
+    // Unwrap to get the datum
+    let datum = lisp.syntax_to_datum(stx).unwrap();
+    assert_eq!(datum, expr);
+    assert_eq!(lisp.get(datum).unwrap().as_number(), Some(42));
+}
+
+#[test]
+fn test_syntax_to_datum_passthrough() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Non-syntax values should pass through unchanged
+    let num = lisp.number(100).unwrap();
+    let result = lisp.syntax_to_datum(num).unwrap();
+    assert_eq!(result, num);
+    
+    let sym = lisp.symbol("hello").unwrap();
+    let result = lisp.syntax_to_datum(sym).unwrap();
+    assert_eq!(result, sym);
+}
+
+#[test]
+fn test_syntax_object_with_list() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Create a syntax object wrapping a list (+ 1 2)
+    let plus = lisp.symbol("+").unwrap();
+    let one = lisp.number(1).unwrap();
+    let two = lisp.number(2).unwrap();
+    let list = lisp.list([plus, one, two]).unwrap();
+    
+    let nil = lisp.nil().unwrap();
+    let stx = lisp.syntax(list, nil, nil).unwrap();
+    
+    // Verify extraction
+    let datum = lisp.syntax_to_datum(stx).unwrap();
+    assert!(lisp.get(datum).unwrap().is_cons());
+    
+    let first = lisp.car(datum).unwrap();
+    assert!(lisp.symbol_matches(first, "+").unwrap());
+}
+
+#[test]
+fn test_syntax_object_gc() {
+    let lisp: Lisp<1000> = Lisp::new();
+    
+    // Create a syntax object with some structure
+    let expr = lisp.symbol("test-gc").unwrap();
+    let mark = lisp.symbol("mark1").unwrap();
+    let marks = lisp.cons(mark, lisp.nil().unwrap()).unwrap();
+    let subst = lisp.nil().unwrap();
+    
+    let stx = lisp.syntax(expr, marks, subst).unwrap();
+    
+    // Create garbage
+    for i in 0..50 {
+        lisp.number(i * 100).unwrap();
+    }
+    
+    // Run GC with syntax object as root
+    let stats = lisp.gc(&[stx]);
+    assert!(stats.collected > 0);
+    
+    // Syntax object and its parts should survive
+    assert!(lisp.get(stx).unwrap().is_syntax());
+    let (extracted_expr, _, _) = lisp.syntax_parts(stx).unwrap();
+    assert!(lisp.symbol_matches(extracted_expr, "test-gc").unwrap());
+}

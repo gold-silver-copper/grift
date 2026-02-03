@@ -417,6 +417,40 @@ pub enum Value {
         literals: ArenaIndex,   // list of literal keyword symbols
         rules_env: ArenaIndex,  // cons cell: (rules . definition_env)
     },
+    
+    /// Syntax object for procedural macros (syntax-case)
+    ///
+    /// A syntax object wraps an expression with lexical context information
+    /// for hygienic macro expansion. This is the foundation for implementing
+    /// R6RS-style `syntax-case` macros.
+    ///
+    /// # Memory Layout
+    ///
+    /// - `expr`: ArenaIndex to the wrapped datum (the actual S-expression)
+    /// - `context`: ArenaIndex to cons cell (marks . substitutions)
+    ///   - car: list of marks for tracking hygiene scopes
+    ///   - cdr: substitution environment for identifier resolution
+    ///
+    /// This maintains the 2-index constraint per arena slot, matching Lambda's layout.
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (syntax-case stx ()
+    ///   ((keyword arg ...)
+    ///    (with-syntax ((name (generate-name)))
+    ///      #'(define name (lambda () arg ...)))))
+    /// ```
+    ///
+    /// # References
+    ///
+    /// - R6RS Chapter 11 (syntax-case)
+    /// - "Macros that Work" (Clinger & Rees, 1991)
+    /// - psyntax (Dybvig, Hieb, Bruggeman)
+    Syntax {
+        expr: ArenaIndex,       // The wrapped datum
+        context: ArenaIndex,    // cons cell: (marks . substitutions)
+    },
 }
 
 impl Value {
@@ -594,6 +628,7 @@ impl Value {
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
             Value::SyntaxRules { .. } => "syntax-rules",
+            Value::Syntax { .. } => "syntax",
         }
     }
     
@@ -601,6 +636,12 @@ impl Value {
     #[inline]
     pub const fn is_syntax_rules(&self) -> bool {
         matches!(self, Value::SyntaxRules { .. })
+    }
+    
+    /// Check if this value is a syntax object
+    #[inline]
+    pub const fn is_syntax(&self) -> bool {
+        matches!(self, Value::Syntax { .. })
     }
 }
 
@@ -643,6 +684,12 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // rules_env points to a cons cell (rules . definition_env)
                 tracer(*literals);
                 tracer(*rules_env);
+            }
+            Value::Syntax { expr, context } => {
+                // expr and context are inline ArenaIndex - trace both
+                // context points to a cons cell (marks . substitutions)
+                tracer(*expr);
+                tracer(*context);
             }
             Value::Array { len, data } => {
                 // For non-empty arrays, trace all elements
