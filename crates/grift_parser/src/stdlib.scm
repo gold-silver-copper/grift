@@ -7,11 +7,23 @@
 ;;;   ;;; Documentation comment
 ;;;   (define (function-name param1 param2 ...) body)
 
-;;; (map f lst) - Apply f to each element of lst
-(define (map f lst) (if (null? lst) '() (cons (f (car lst)) (map f (cdr lst)))))
+;;; (map f lst) - Apply f to each element of lst (tail-recursive)
+(define (map f lst)
+  (define (map-iter lst acc)
+    (if (null? lst)
+        (reverse acc)
+        (map-iter (cdr lst) (cons (f (car lst)) acc))))
+  (map-iter lst '()))
 
-;;; (filter pred lst) - Return elements where pred is true
-(define (filter pred lst) (if (null? lst) '() (if (pred (car lst)) (cons (car lst) (filter pred (cdr lst))) (filter pred (cdr lst)))))
+;;; (filter pred lst) - Return elements where pred is true (tail-recursive)
+(define (filter pred lst)
+  (define (filter-iter lst acc)
+    (if (null? lst)
+        (reverse acc)
+        (if (pred (car lst))
+            (filter-iter (cdr lst) (cons (car lst) acc))
+            (filter-iter (cdr lst) acc))))
+  (filter-iter lst '()))
 
 ;;; (fold f acc lst) - Left fold over lst
 (define (fold f acc lst) (if (null? lst) acc (fold f (f acc (car lst)) (cdr lst))))
@@ -22,8 +34,13 @@
     (if (null? lst) acc (length-iter (cdr lst) (+ acc 1))))
   (length-iter lst 0))
 
-;;; (append a b) - Concatenate two lists
-(define (append a b) (if (null? a) b (cons (car a) (append (cdr a) b))))
+;;; (append a b) - Concatenate two lists (tail-recursive, self-contained)
+(define (append a b)
+  (define (rev-helper lst acc)
+    (if (null? lst) acc (rev-helper (cdr lst) (cons (car lst) acc))))
+  (define (append-iter lst acc)
+    (if (null? lst) acc (append-iter (cdr lst) (cons (car lst) acc))))
+  (append-iter (rev-helper a '()) b))
 
 ;;; (reverse lst) - Reverse a list
 (define (reverse lst) (fold (lambda (acc x) (cons x acc)) '() lst))
@@ -46,8 +63,13 @@
 ;;; (assoc key alist) - Look up key in association list using eq?
 (define (assoc key alist) (if (null? alist) #f (if (eq? (car (car alist)) key) (car alist) (assoc key (cdr alist)))))
 
-;;; (range start end) - Generate list of integers [start, end)
-(define (range start end) (if (>= start end) '() (cons start (range (+ start 1) end))))
+;;; (range start end) - Generate list of integers [start, end) (tail-recursive)
+(define (range start end)
+  (define (range-iter n acc)
+    (if (< n start)
+        acc
+        (range-iter (- n 1) (cons n acc))))
+  (range-iter (- end 1) '()))
 
 ;;; (compose f g) - Return function that applies g then f
 (define (compose f g) (lambda (x) (f (g x))))
@@ -224,9 +246,16 @@
 ;;; (find pred lst) - Return first element where pred is true, or #f
 (define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))
 
-;;; (filter-map f lst) - Map f over lst, keeping only non-#f results
-;;; Note: This version avoids let binding due to recursion issue
-(define (filter-map f lst) (if (null? lst) '() (if (f (car lst)) (cons (f (car lst)) (filter-map f (cdr lst))) (filter-map f (cdr lst)))))
+;;; (filter-map f lst) - Map f over lst, keeping only non-#f results (tail-recursive, no double calls)
+(define (filter-map f lst)
+  (define (filter-map-iter lst acc)
+    (if (null? lst)
+        (reverse acc)
+        (let ((result (f (car lst))))
+          (if result
+              (filter-map-iter (cdr lst) (cons result acc))
+              (filter-map-iter (cdr lst) acc)))))
+  (filter-map-iter lst '()))
 
 ;;; (partition pred lst) - Split lst into pair of two lists: (matching . non-matching)
 ;;; Returns (cons matches non-matches) where matches contains elements satisfying pred.
@@ -406,7 +435,7 @@
 
 ;;; (take-right lst k) - Return the last k elements of lst
 (define (take-right lst k)
-  (drop lst (- (length lst) k)))
+  (drop (- (length lst) k) lst))
 
 ;;; (drop-right lst k) - Return all but the last k elements
 (define (drop-right lst k)
@@ -420,12 +449,14 @@
 (define (concatenate lsts)
   (fold-right append '() lsts))
 
-;;; (flatten lst) - Flatten a nested list structure
+;;; (flatten lst) - Flatten a nested list structure (O(n) tail-recursive)
 (define (flatten lst)
-  (cond
-    ((null? lst) '())
-    ((not (pair? lst)) (list lst))
-    (else (append (flatten (car lst)) (flatten (cdr lst))))))
+  (define (flatten-iter lst acc)
+    (cond
+      ((null? lst) acc)
+      ((not (pair? lst)) (cons lst acc))
+      (else (flatten-iter (car lst) (flatten-iter (cdr lst) acc)))))
+  (flatten-iter lst '()))
 
 ;;; (count pred lst) - Count elements satisfying predicate
 (define (count pred lst)

@@ -22,33 +22,19 @@
 ;; Binding Forms (let, let*)
 ;; ============================================================
 
-;; Helper for named let - extract variable names from bindings and build the complete expansion
-(define-syntax %named-let-build
+;; Helper for named let - single helper that builds the complete expansion
+;; Replaces the old 3-helper chain (%named-let-build -> %named-let-expand -> %named-let-extract-and-call)
+(define-syntax %named-let-helper
   (syntax-rules ()
-    ((%named-let-build loop () (vars ...) bindings body ...)
-     (%named-let-expand (vars ...) bindings (loop) (body ...)))
-    ((%named-let-build loop ((var val) . rest) (vars ...) bindings body ...)
-     (%named-let-build loop rest (vars ... var) bindings body ...))))
-
-;; Helper to expand named-let with proper scoping
-;; Evaluates init values before binding loop name
-(define-syntax %named-let-expand
-  (syntax-rules ()
-    ((%named-let-expand (vars ...) bindings (loop) (body ...))
-     (%named-let-extract-and-call (vars ...) bindings () (loop) (body ...)))  ))
-
-;; Extract values and build the lambda/letrec structure
-(define-syntax %named-let-extract-and-call
-  (syntax-rules ()
-    ;; Base case: all values extracted, now build ((lambda (vals...) (letrec ...)) val ...)
-    ((%named-let-extract-and-call (vars ...) () (vals ...) (loop) (body ...))
+    ;; Base case: all bindings processed
+    ((%named-let-helper loop () (vars ...) (vals ...) (body ...))
      ((lambda (vars ...)
         (letrec ((loop (lambda (vars ...) . body)))
           (loop vars ...)))
       vals ...))
-    ;; Recursive case: extract one value at a time
-    ((%named-let-extract-and-call (vars ...) ((var val) . rest) (vals ...) (loop) (body ...))
-     (%named-let-extract-and-call (vars ...) rest (vals ... val) (loop) (body ...)))))
+    ;; Recursive case: extract one var/val pair at a time
+    ((%named-let-helper loop ((var val) . rest) (vars ...) (vals ...) (body ...))
+     (%named-let-helper loop rest (vars ... var) (vals ... val) (body ...)))))
 
 ;; let - using recursive approach to avoid nested ellipsis bug
 ;; Supports both regular let and named let forms.
@@ -66,7 +52,7 @@
     ;; Named let: (let name bindings body ...)
     ;; name must be a symbol (not a list), followed by bindings
     ((let loop bindings body ...)
-     (%named-let-build loop bindings () bindings body ...))))
+     (%named-let-helper loop bindings () () (body ...)))))
 
 ;; let* - sequential binding (each binding can refer to previous ones)
 ;; Uses recursive self-reference (let* calls let*) to ensure each binding
@@ -183,34 +169,20 @@
 
 ;; case - match key against datum lists using eqv?
 ;; Pattern: (case key ((datum ...) result ...) ... (else result ...))
+;; Simplified to 3 patterns for better maintainability
 (define-syntax case
   (syntax-rules (else)
-    ;; Base case: just else
-    ((case key (else result ...))
-     (begin result ...))
-    ;; No else and no clauses - return unspecified
+    ;; No clauses - return unspecified
     ((case key)
      (if #f #f))
-    ;; Single clause with else after
-    ((case key ((datum ...) result ...) (else else-result ...))
+    ;; Else clause - always matches
+    ((case key (else result ...))
+     (begin result ...))
+    ;; Regular clause - check membership, recurse on remaining clauses
+    ((case key ((datum ...) result ...) . rest)
      (if (memv key '(datum ...))
          (begin result ...)
-         (begin else-result ...)))
-    ;; Single clause without else
-    ((case key ((datum ...) result ...))
-     (if (memv key '(datum ...))
-         (begin result ...)
-         (if #f #f)))
-    ;; Multiple clauses with else
-    ((case key ((datum ...) result ...) clause ... (else else-result ...))
-     (if (memv key '(datum ...))
-         (begin result ...)
-         (case key clause ... (else else-result ...))))
-    ;; Multiple clauses without else
-    ((case key ((datum ...) result ...) clause ...)
-     (if (memv key '(datum ...))
-         (begin result ...)
-         (case key clause ...)))))
+         (case key . rest)))))
 
 ;; ============================================================
 ;; do - Iteration construct
@@ -272,15 +244,6 @@
 ;; This implementation is provided for educational purposes and to complete
 ;; the procedural macro infrastructure. The special form remains the primary
 ;; implementation due to its performance characteristics.
-
-;; Alternative procedural macro implementation of quasiquote
-;; Uncomment to use instead of the special form:
-
-;; (define-syntax quasiquote
-;;   (lambda (stx)
-;;     (syntax-case stx ()
-;;       ((_ template)
-;;        (syntax (%qq-expand template (d z)))))))
 
 ;; Helper macro for quasiquote expansion with depth tracking
 ;; Depth is tracked using Peano numerals: z=0, (d z)=1, (d (d z))=2, etc.
