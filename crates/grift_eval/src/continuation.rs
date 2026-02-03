@@ -140,6 +140,10 @@ pub enum Cont {
     /// After evaluating stx-expr in syntax-case, try pattern matching
     /// Stack data: [literals, clauses, env, pattern_bindings] (4 elements)
     SyntaxCaseMatch(usize),
+    
+    /// After evaluating fender in syntax-case, decide to use this clause or continue
+    /// Stack data: [output, bindings, literals, remaining_clauses, env, stx] (6 elements)
+    SyntaxCaseFender(usize),
 }
 
 impl Cont {
@@ -178,6 +182,7 @@ impl Cont {
             Cont::BuiltinForceArg(_) => 5,
             // Note: DoBody removed
             Cont::LambdaBindArg(_) => 6,
+            Cont::SyntaxCaseFender(_) => 6,
             Cont::LambdaRestCollect(_) => 7,
             // Note: DoInit, DoStep removed
         }

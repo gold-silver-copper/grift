@@ -210,7 +210,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::CallWithValuesProducer(data_start) |
                     Cont::CallWithValuesConsumer(data_start) |
                     Cont::CallWithValuesApply(data_start) |
-                    Cont::SyntaxCaseMatch(data_start) => data_start,
+                    Cont::SyntaxCaseMatch(data_start) |
+                    Cont::SyntaxCaseFender(data_start) => data_start,
                 };
                 // Add all ArenaIndex values from this continuation's data to roots
                 for j in 0..data_len {
@@ -866,6 +867,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // 4-field continuations
         pack_syntax_case_match / unpack_syntax_case_match => [literals, clauses, env, pattern_bindings];
+        
+        // 6-field continuations (syntax-case fender)
+        pack_syntax_case_fender / unpack_syntax_case_fender => [output, bindings, literals, remaining_clauses, env, stx];
         
         // Note: pack_do_test_result, pack_do_body, pack_do_init, pack_do_step removed - do is now handled by macros (Phase 9)
         // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros

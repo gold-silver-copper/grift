@@ -1421,3 +1421,146 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 }
 
+// ============================================================================
+// Syntax-case Support Functions
+// ============================================================================
+
+impl<'a, const N: usize> Evaluator<'a, N> {
+    /// Recursively strip syntax wrappers to get the underlying datum.
+    ///
+    /// This walks through the expression, converting:
+    /// - Syntax objects to their wrapped datum
+    /// - Pairs to pairs with recursively unwrapped car and cdr
+    /// - Atoms pass through unchanged
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (syntax->datum #'(a b c))  ; => (a b c)
+    /// (syntax->datum #'42)       ; => 42
+    /// ```
+    pub fn syntax_to_datum_recursive(&mut self, stx: ArenaIndex) -> EvalResult {
+        match self.lisp.get(stx)? {
+            // Syntax object - unwrap and recurse on the wrapped expression
+            Value::Syntax { expr, .. } => {
+                self.syntax_to_datum_recursive(expr)
+            }
+            // Pair - recurse on both car and cdr
+            Value::Cons { .. } => {
+                let car = self.lisp.car(stx)?;
+                let cdr = self.lisp.cdr(stx)?;
+                let new_car = self.syntax_to_datum_recursive(car)?;
+                let new_cdr = self.syntax_to_datum_recursive(cdr)?;
+                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+            }
+            // Atoms pass through unchanged
+            _ => Ok(stx),
+        }
+    }
+
+    /// Wrap a datum with syntax context from a template identifier.
+    ///
+    /// The template-id provides the lexical context (marks and substitutions)
+    /// for the resulting syntax object. This is essential for creating
+    /// hygienically correct identifiers in procedural macros.
+    ///
+    /// # Arguments
+    ///
+    /// * `template_id` - An identifier whose lexical context is used
+    /// * `datum` - The datum to wrap
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (datum->syntax #'here 'new-name)  ; Creates syntax object with 'here's context
+    /// ```
+    pub fn datum_to_syntax(
+        &mut self,
+        template_id: ArenaIndex,
+        datum: ArenaIndex,
+    ) -> EvalResult {
+        // Get the context from template_id
+        let (marks, subst) = match self.lisp.get(template_id)? {
+            Value::Syntax { context, .. } => {
+                let marks = self.lisp.car(context)?;
+                let subst = self.lisp.cdr(context)?;
+                (marks, subst)
+            }
+            // If template_id is just a symbol, use empty context
+            Value::Symbol(_) => {
+                let nil = self.lisp.nil()?;
+                (nil, nil)
+            }
+            _ => {
+                // Non-identifier - use empty context
+                let nil = self.lisp.nil()?;
+                (nil, nil)
+            }
+        };
+
+        // Recursively wrap the datum
+        self.datum_to_syntax_with_context(datum, marks, subst)
+    }
+
+    /// Helper to recursively wrap a datum with a given context.
+    fn datum_to_syntax_with_context(
+        &mut self,
+        datum: ArenaIndex,
+        marks: ArenaIndex,
+        subst: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(datum)? {
+            // Symbols become syntax objects
+            Value::Symbol(_) => {
+                self.lisp.syntax(datum, marks, subst).map_err(Into::into)
+            }
+            // Pairs - recursively wrap car and cdr
+            Value::Cons { .. } => {
+                let car = self.lisp.car(datum)?;
+                let cdr = self.lisp.cdr(datum)?;
+                let wrapped_car = self.datum_to_syntax_with_context(car, marks, subst)?;
+                let wrapped_cdr = self.datum_to_syntax_with_context(cdr, marks, subst)?;
+                self.lisp.cons(wrapped_car, wrapped_cdr).map_err(Into::into)
+            }
+            // Other atoms pass through unchanged (numbers, strings, etc.)
+            _ => Ok(datum),
+        }
+    }
+
+    /// Generate a list of fresh temporary identifiers.
+    ///
+    /// For each element in the input list, generates a unique temporary
+    /// identifier using gensym. The temporary identifiers are syntax objects
+    /// with the same lexical context.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - A list (length determines number of temporaries generated)
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (generate-temporaries '(a b c))  ; => (#:tmp0 #:tmp1 #:tmp2)
+    /// ```
+    pub fn generate_temporaries(&mut self, input: ArenaIndex) -> EvalResult {
+        let mut result = self.lisp.nil()?;
+        let mut current = input;
+
+        // Count elements and generate that many temporaries
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            // Generate a fresh temporary symbol
+            let temp = self.gensym("tmp")?;
+            
+            // Wrap it as a syntax object with empty context
+            let nil = self.lisp.nil()?;
+            let stx = self.lisp.syntax(temp, nil, nil)?;
+            
+            result = self.lisp.cons(stx, result)?;
+            current = self.lisp.cdr(current)?;
+        }
+
+        // Reverse the list to maintain order
+        self.reverse_list(result)
+    }
+}
+
