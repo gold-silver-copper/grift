@@ -928,6 +928,116 @@ fn test_values_basic() {
     assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 1);
 }
 
+#[test]
+fn test_call_with_values_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic call-with-values with two values
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(call-with-values (lambda () (values 4 5)) (lambda (a b) (+ a b)))"), 9);
+    
+    // Return second value
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(call-with-values (lambda () (values 4 5)) (lambda (a b) b))"), 5);
+}
+
+#[test]
+fn test_call_with_values_single() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Single value from normal lambda (not using values)
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(call-with-values (lambda () 42) (lambda (x) (* x 2)))"), 84);
+}
+
+#[test]
+fn test_call_with_values_no_values() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Zero values
+    let result = eval.eval_str("(call-with-values (lambda () (values)) (lambda () 'no-values))").unwrap();
+    assert!(lisp.symbol_matches(result, "no-values").unwrap());
+}
+
+#[test]
+fn test_call_with_values_many() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Multiple values (3)
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(call-with-values (lambda () (values 1 2 3)) (lambda (x y z) (+ x y z)))"), 6);
+}
+
+#[test]
+fn test_let_values_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic let-values
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let-values (((a b) (values 1 2))) (+ a b))"), 3);
+    
+    // Empty bindings
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let-values () 42)"), 42);
+}
+
+#[test]
+fn test_let_values_multiple_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Multiple bindings
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let-values (((a b) (values 1 2)) ((c) (values 3))) (+ a b c))"), 6);
+}
+
+#[test]
+fn test_let_star_values() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // let*-values allows later bindings to see earlier ones
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(let*-values (((a b) (values 1 2)) ((c) (values (+ a b)))) c)"), 3);
+}
+
+#[test]
+fn test_define_values_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define two values
+    eval.eval_str("(define-values (dv-x dv-y) (values 10 20))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "dv-x"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "dv-y"), 20);
+}
+
+#[test]
+fn test_define_values_single() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Single value
+    eval.eval_str("(define-values (dv-single) (values 42))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "dv-single"), 42);
+}
+
+#[test]
+fn test_define_values_three() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Three values
+    eval.eval_str("(define-values (dv-a dv-b dv-c) (values 1 2 3))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "dv-a"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "dv-b"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "dv-c"), 3);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPREHENSIVE BUILTIN TESTS
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1120,6 +1120,40 @@ fn main() {
         Some("3"),
     ));
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // SECTION 11: Multiple Values
+    // ═══════════════════════════════════════════════════════════════════════
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Section 11: Multiple Values");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    results.push(run_bench(
+        "call-with-values x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(call-with-values (lambda () (values 1 2 3)) (lambda (a b c) (+ a b c)))",
+        Some("6"),
+    ));
+
+    results.push(run_bench(
+        "let-values x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(let-values (((a b) (values 10 20))) (+ a b))",
+        Some("30"),
+    ));
+
+    results.push(run_bench(
+        "let*-values x 500",
+        &lisp,
+        &mut eval,
+        500,
+        "(let*-values (((a b) (values 1 2)) ((c) (values (+ a b)))) c)",
+        Some("3"),
+    ));
+
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════

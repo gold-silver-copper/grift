@@ -24,7 +24,14 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Lexical scoping with closures
 - ✅ Proper tail-call optimization (via trampolining)
 - ✅ Strict evaluation (call-by-value)
-- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`
+- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`
+
+#### Multiple Values (R7RS Section 6.10)
+- ✅ `values` - Return multiple values
+- ✅ `call-with-values` - Receive multiple values  
+- ✅ `let-values` - Bind multiple values locally
+- ✅ `let*-values` - Sequential binding of multiple values
+- ✅ `define-values` - Define multiple values at top level
 
 #### Built-in Procedures (Chapter 6)
 - ✅ **Equivalence**: `eq?`, `eqv?`, `equal?`
@@ -189,16 +196,23 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - All vector operations are implemented as builtins for optimal performance
 - Vector literal `#(...)` is parsed at read time and creates a vector directly
 
-### Phase 4: Multiple Values
+### Phase 4: Multiple Values ✅ COMPLETED
 **Goal**: Full multiple value support
 
 #### 4.1 Multiple Values (Section 6.10)
-- [ ] Verify `values` implementation
-- [ ] Implement `call-with-values` - Receive multiple values
-- [ ] Implement `let-values` / `let*-values` - Bind multiple values
-- [ ] Implement `define-values` - Define multiple values
+- [x] Verify `values` implementation - Returns multiple values as a list
+- [x] Implement `call-with-values` - Receive multiple values (special form)
+- [x] Implement `let-values` / `let*-values` - Bind multiple values (macros in macros.scm)
+- [x] Implement `define-values` - Define multiple values (macro in macros.scm)
 
-### Phase 5: Hygienic Macros
+**Implementation Notes**:
+- `call-with-values` is implemented as a special form with three continuation types
+- `values` returns a list, and `call-with-values` unwraps it to call the consumer
+- Single non-values returns are automatically wrapped in a list for the consumer
+- `let-values` and `let*-values` use `call-with-values` internally
+- `define-values` supports 0-4 variables explicitly; for more, use rest argument syntax
+
+### Phase 5: Hygienic Macros ✅ MOSTLY COMPLETED
 **Goal**: R7RS-compliant macro system
 
 #### 5.1 Syntax-Rules (Section 4.3.2)
@@ -317,8 +331,7 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 1. **Continuations**: Current trampoline design doesn't support `call/cc`.
    - **Impact**: Low priority - defer to Phase 9
    
-2. **Multiple Values**: Partially implemented - needs `call-with-values`.
-   - **Impact**: Medium priority - Phase 4
+2. **Multiple Values**: ✅ **COMPLETED** - Full support via `call-with-values`, `let-values`, `let*-values`, `define-values`.
 
 3. **Library System**: No module system yet.
    - **Impact**: Required for full conformance - Phase 8
@@ -331,6 +344,7 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - **Architecture**: `docs/LISP_ARCHITECTURE.md`
 - **Arena Architecture**: `docs/ARENA_ARCHITECTURE.md`
 - **Current Stdlib**: `crates/grift_parser/src/stdlib.scm`
+- **Standard Macros**: `crates/grift_eval/src/evaluator/macros.scm`
 - **Parser**: `crates/grift_parser/src/lib.rs`
 - **Evaluator**: `crates/grift_eval/src/lib.rs`
 
