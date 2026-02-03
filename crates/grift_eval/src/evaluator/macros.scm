@@ -22,22 +22,36 @@
 ;; Binding Forms (let, let*)
 ;; ============================================================
 
-;; Helper for named let - extract values from bindings and build the call
-(define-syntax %named-let-values
-  (syntax-rules ()
-    ((%named-let-values loop () (vals ...))
-     (loop vals ...))
-    ((%named-let-values loop ((var val) . rest) (vals ...))
-     (%named-let-values loop rest (vals ... val)))))
+;; Helper to build temporary variable names for named-let
+;; Not actually needed since we can just use the vals directly
 
-;; Helper for named let - extract variable names from bindings and build lambda
+;; Helper for named let - extract variable names from bindings and build the complete expansion
 (define-syntax %named-let-build
   (syntax-rules ()
     ((%named-let-build loop () (vars ...) bindings body ...)
-     (letrec ((loop (lambda (vars ...) body ...)))
-       (%named-let-values loop bindings ())))
+     (%named-let-expand (vars ...) bindings (loop) (body ...)))
     ((%named-let-build loop ((var val) . rest) (vars ...) bindings body ...)
      (%named-let-build loop rest (vars ... var) bindings body ...))))
+
+;; Helper to expand named-let with proper scoping
+;; Evaluates init values before binding loop name
+(define-syntax %named-let-expand
+  (syntax-rules ()
+    ((%named-let-expand (vars ...) bindings (loop) (body ...))
+     (%named-let-extract-and-call (vars ...) bindings () (loop) (body ...)))  ))
+
+;; Extract values and build the lambda/letrec structure
+(define-syntax %named-let-extract-and-call
+  (syntax-rules ()
+    ;; Base case: all values extracted, now build ((lambda (vals...) (letrec ...)) val ...)
+    ((%named-let-extract-and-call (vars ...) () (vals ...) (loop) (body ...))
+     ((lambda (vars ...)
+        (letrec ((loop (lambda (vars ...) . body)))
+          (loop vars ...)))
+      vals ...))
+    ;; Recursive case: extract one value at a time
+    ((%named-let-extract-and-call (vars ...) ((var val) . rest) (vals ...) (loop) (body ...))
+     (%named-let-extract-and-call (vars ...) rest (vals ... val) (loop) (body ...)))))
 
 ;; let - using recursive approach to avoid nested ellipsis bug
 ;; Supports both regular let and named let forms.

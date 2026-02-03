@@ -616,6 +616,19 @@ fn test_let_bindings() {
 }
 
 #[test]
+fn test_petrofsky_let() {
+    // The Petrofsky let test: ensures named-let doesn't introduce the loop name
+    // too early in the scope. The initializer (- 1) should call the subtraction
+    // function from outer scope, not the named-let loop function.
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // This should return -1 (result of (- 1) which is negation/subtraction)
+    // NOT 1 (which would happen if - was bound to the loop before evaluating (- 1))
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let - ((n (- 1))) n)"), -1);
+}
+
+#[test]
 fn test_cons_with_expressions() {
     // cons evaluates expressions in strict mode
     let lisp: Lisp<20000> = Lisp::new();
