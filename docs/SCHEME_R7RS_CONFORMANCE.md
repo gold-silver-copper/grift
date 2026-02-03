@@ -313,10 +313,6 @@ the evaluator would need to support rest-argument syntax in lambda.
 
 ### For Standard Procedures
 
-1. **Builtins** (for performance-critical operations):
-   - Add variant to `define_builtins!` macro in `crates/grift_parser/src/lib.rs`
-   - Implement in `apply_builtin` in `crates/grift_eval/src/lib.rs`
-   - Add tests
 
 2. **Standard Library** (for less critical operations):
    - Add definition to `crates/grift_parser/src/stdlib.scm`
