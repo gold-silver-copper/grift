@@ -1108,6 +1108,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut new_renames = renames;
         let mut current = params;
 
+        // Handle plain symbol formals (e.g., `(lambda args ...)`)
+        // In this case, params is just a symbol, not a list at all
+        if let Value::Symbol(_) = self.lisp.get(params)? {
+            let is_from_pattern = self.symbol_appears_in_binding_values(params, bindings)?;
+            let new_param = if is_from_pattern {
+                params
+            } else {
+                let fresh = self.gensym_simple()?;
+                new_renames = self.rename_extend(new_renames, params, fresh)?;
+                fresh
+            };
+            return Ok((new_param, new_renames));
+        }
+
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let param = self.lisp.car(current)?;
 
@@ -1129,8 +1143,54 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
 
-        let new_params = self.reverse_list(new_params)?;
+        // Handle rest parameter for improper lists (e.g., `(a b . rest)`)
+        // After the loop, `current` may be a symbol (the rest param) instead of nil
+        let rest_param = if let Value::Symbol(_) = self.lisp.get(current)? {
+            let is_from_pattern = self.symbol_appears_in_binding_values(current, bindings)?;
+            if is_from_pattern {
+                Some(current)
+            } else {
+                let fresh = self.gensym_simple()?;
+                new_renames = self.rename_extend(new_renames, current, fresh)?;
+                Some(fresh)
+            }
+        } else {
+            None
+        };
+
+        // Reverse the proper list part and optionally append rest parameter
+        let new_params = self.reverse_list_with_tail(new_params, rest_param)?;
         Ok((new_params, new_renames))
+    }
+
+    /// Reverse a list, optionally ending with an improper tail
+    /// 
+    /// This function is used for constructing improper list formals like `(a b . rest)`
+    /// when transcribing lambda expressions in macros.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `list` - The proper list to reverse (e.g., `(c b a)`)
+    /// * `tail` - Optional tail element for improper list construction
+    /// 
+    /// # Returns
+    /// 
+    /// * With `tail=None`: Returns a proper list (e.g., `(c b a)` → `(a b c)`)
+    /// * With `tail=Some(rest)`: Returns an improper list (e.g., `(c b a)` → `(a b c . rest)`)
+    fn reverse_list_with_tail(&self, mut list: ArenaIndex, tail: Option<ArenaIndex>) -> EvalResult {
+        let mut result = tail.unwrap_or(self.lisp.nil()?);
+        loop {
+            match self.lisp.get(list)? {
+                Value::Nil => return Ok(result),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(list)?;
+                    let cdr = self.lisp.cdr(list)?;
+                    result = self.lisp.cons(car, result)?;
+                    list = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, list)),
+            }
+        }
     }
 
     /// Check if a symbol appears in any binding value (including inside lists)

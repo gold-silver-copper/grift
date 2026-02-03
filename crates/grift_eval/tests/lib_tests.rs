@@ -4556,14 +4556,10 @@ fn test_case_lambda_single_clause() {
 
 #[test]
 fn test_case_lambda_two_clauses() {
-    // NOTE: Full case-lambda with multiple clauses requires rest-argument lambda support,
-    // which is not implemented. This test documents the current limitation.
-    // Multi-clause case-lambda currently uses only the first clause.
+    // Test case-lambda with two clauses - dispatches on argument count
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // With the current limitation, case-lambda with multiple clauses
-    // uses only the first clause
     let define_result = eval.eval_str("
         (define identity-or-sum
           (case-lambda
@@ -4572,56 +4568,60 @@ fn test_case_lambda_two_clauses() {
     ");
     assert!(define_result.is_ok(), "define failed: {:?}", define_result);
     
-    // Only the first clause works (takes 1 arg, returns it unchanged)
+    // Single arg - returns the value unchanged
     assert_eq!(eval_to_num(&lisp, &mut eval, "(identity-or-sum 5)"), 5);
     
-    // Two-arg call fails because we only have first clause (limitation documented)
-    // let result2 = eval.eval_str("(identity-or-sum 3 4)");
-    // This would fail with wrong arg count
+    // Two args - returns the sum
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(identity-or-sum 3 4)"), 7);
 }
 
 #[test]
 fn test_case_lambda_three_clauses() {
-    // NOTE: Multi-clause case-lambda with different arities is limited.
-    // Currently only the first clause is used.
+    // Test case-lambda with three clauses
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("
-        (define multi-arity-zero
+        (define multi-arity
           (case-lambda
             (() 0)
             ((x) x)
             ((x y) (+ x y))))
     ").unwrap();
     
-    // Only the first clause (zero-arity) works
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(multi-arity-zero)"), 0);
-    // Other arities would fail due to limitation
+    // Test all three arities
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(multi-arity)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(multi-arity 42)"), 42);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(multi-arity 3 4)"), 7);
+    
+    // Test that wrong arity errors
+    let result = eval.eval_str("(multi-arity 1 2 3)");
+    assert!(result.is_err(), "Expected error for 3 args");
 }
 
 #[test]
 fn test_case_lambda_range_example() {
-    // R7RS spec example: range function
-    // NOTE: This test is skipped due to case-lambda multi-arity limitation.
-    // The range example requires dispatching on 1 or 2 args.
+    // R7RS spec example: range function with multi-arity dispatch
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // For now, just test with explicit 2-arg version
+    // Define range using case-lambda for optional start argument
     eval.eval_str("
-        (define (range b e)
-          (do ((r '() (cons e r))
-               (e (- e 1) (- e 1)))
-              ((< e b) r)))
+        (define range
+          (case-lambda
+            ((e) (range 0 e))
+            ((b e)
+              (do ((r '() (cons e r))
+                   (e (- e 1) (- e 1)))
+                  ((< e b) r)))))
     ").unwrap();
     
-    // (range 0 3) should return (0 1 2)
-    let result = eval.eval_str("(range 0 3)").unwrap();
+    // (range 3) should return (0 1 2) - single arg uses default start of 0
+    let result = eval.eval_str("(range 3)").unwrap();
     let first = lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap();
     assert_eq!(first, 0);
     
-    // (range 3 5) should return (3 4)
+    // (range 3 5) should return (3 4) - explicit start
     let result = eval.eval_str("(range 3 5)").unwrap();
     let first = lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap();
     assert_eq!(first, 3);
@@ -4629,7 +4629,7 @@ fn test_case_lambda_range_example() {
 
 #[test]
 fn test_case_lambda_zero_args() {
-    // Test case-lambda with zero-arg clause (first clause)
+    // Test case-lambda with zero-arg clause
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -4637,10 +4637,35 @@ fn test_case_lambda_zero_args() {
     eval.eval_str("(define zero-only (case-lambda (() 100)))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(zero-only)"), 100);
     
-    // Multi-clause is limited - only first clause used
+    // Multi-clause with zero and one arg
     eval.eval_str("(define zero-or-one (case-lambda (() 100) ((x) x)))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(zero-or-one)"), 100);
-    // (zero-or-one 42) would fail with wrong arg count
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(zero-or-one 42)"), 42);
+}
+
+#[test]
+fn test_case_lambda_variadic_clause() {
+    // Test case-lambda with a variadic catch-all clause
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("
+        (define add-all
+          (case-lambda
+            (() 0)
+            ((x) x)
+            ((x y) (+ x y))
+            (args (apply + args))))
+    ").unwrap();
+    
+    // Test specific arities
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(add-all)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(add-all 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(add-all 3 4)"), 7);
+    
+    // Test variadic catch-all for 3+ args
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(add-all 1 2 3)"), 6);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(add-all 1 2 3 4 5)"), 15);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

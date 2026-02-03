@@ -419,34 +419,73 @@
 ;; Creates a procedure that dispatches based on the number of arguments.
 ;; Each clause has the form (formals body ...) where formals is like lambda.
 ;;
+;; Formals can be:
+;;   - () - takes exactly 0 arguments
+;;   - (x) - takes exactly 1 argument
+;;   - (x y z) - takes exactly 3 arguments
+;;   - (x . rest) - takes at least 1 argument, rest collected in a list
+;;   - args - takes any number of arguments, all collected in a list
+;;
 ;; Example:
 ;;   (define add
 ;;     (case-lambda
 ;;       (() 0)
 ;;       ((x) x)
-;;       ((x y) (+ x y))))
+;;       ((x y) (+ x y))
+;;       (args (apply + args))))  ; catch-all for 3+ args
 ;;
-;; Current implementation: Uses syntax-rules for simplicity.
-;; Multi-clause dispatch is now possible with procedural macros, but
-;; would require runtime argument count checking. For now, the
-;; implementation uses only the first clause for multi-clause forms.
-;; Single-clause case-lambda works correctly.
+;;   (add)        => 0
+;;   (add 5)      => 5
+;;   (add 3 4)    => 7
+;;   (add 1 2 3)  => 6
+
+;; Helper: Check if argument count n matches formals
+;; Returns #t if the clause can handle n arguments
+;; Proper list formals (x y z) require exact match
+;; Symbol formals or improper lists allow variable args
+(define-syntax %cl-arity-check
+  (syntax-rules ()
+    ;; Exact arity matches for proper lists
+    ((%cl-arity-check n ()) (= n 0))
+    ((%cl-arity-check n (a)) (= n 1))
+    ((%cl-arity-check n (a b)) (= n 2))
+    ((%cl-arity-check n (a b c)) (= n 3))
+    ((%cl-arity-check n (a b c d)) (= n 4))
+    ((%cl-arity-check n (a b c d e)) (= n 5))
+    ((%cl-arity-check n (a b c d e f)) (= n 6))
+    ((%cl-arity-check n (a b c d e f g)) (= n 7))
+    ((%cl-arity-check n (a b c d e f g h)) (= n 8))
+    ;; Catch-all: plain symbol (variadic) - matches any arity
+    ;; This matches formals like `args` in `(lambda args ...)`
+    ((%cl-arity-check n variadic) #t)))
+
+;; Helper: Recursively build clause dispatch
+;; Tries each clause in order until one matches
+(define-syntax %cl-build
+  (syntax-rules ()
+    ;; No more clauses - error
+    ((%cl-build n args ())
+     (error "case-lambda: no matching clause for argument count"))
+    ;; Try first clause; if arity matches, apply it; otherwise try rest
+    ((%cl-build n args ((formals body ...) . rest))
+     (if (%cl-arity-check n formals)
+         (apply (lambda formals body ...) args)
+         (%cl-build n args rest)))))
 
 ;; Main case-lambda macro
 (define-syntax case-lambda
   (syntax-rules ()
-    ;; Base case: no clauses - error on any call
+    ;; No clauses - error on any call
     ((case-lambda)
      (lambda args (error "case-lambda: no clauses provided")))
-    
-    ;; Single clause: just use regular lambda for efficiency
+    ;; Single clause - optimize to regular lambda
     ((case-lambda (formals body ...))
      (lambda formals body ...))
-    
-    ;; Multiple clauses: use first clause only (current limitation)
-    ;; Note: Procedural macros are now available for user-defined alternatives
-    ((case-lambda (formals body ...) rest ...)
-     (lambda formals body ...))))
+    ;; Multiple clauses - dispatch based on argument count
+    ((case-lambda clause ...)
+     (lambda %args
+       (let ((%n (length %args)))
+         (%cl-build %n %args (clause ...)))))))
 
 ;; ============================================================
 ;; Cond-Expand (R7RS Section 4.2.1)

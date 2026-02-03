@@ -28,6 +28,8 @@ This document describes the design and implementation approach for extending Gri
 | 4 | Trampolined fender evaluation | ✅ Complete |
 | 5 | Procedural macro support (`(lambda (x) ...)` transformers) | ✅ Complete |
 | 5 | Procedural macro tests | ✅ Complete |
+| 5 | Fix lambda rest/variadic formals in macro transcription | ✅ Complete |
+| 5 | `case-lambda` multi-arity dispatch | ✅ Complete |
 | 6 | Convert `quasiquote` to procedural macro | ⏳ Pending (special form works correctly) |
 | 6 | Documentation updates | ✅ Complete |
 
