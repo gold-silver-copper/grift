@@ -913,6 +913,56 @@ fn main() {
         Some("45"),
     ));
 
+    // cond-expand (feature detection)
+    results.push(run_bench(
+        "Cond-expand feature check x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(cond-expand (grift 42) (else 0))",
+        Some("42"),
+    ));
+
+    // delay/force (lazy evaluation)
+    results.push(run_bench(
+        "Delay/force memoization x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(let ((p (delay (+ 10 20)))) (+ (force p) (force p)))",
+        Some("60"),
+    ));
+
+    // delay-force (optimized lazy evaluation)
+    results.push(run_bench(
+        "Delay-force chain x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(let ((p (delay-force (+ 1 2 3)))) (force p))",
+        Some("6"),
+    ));
+
+    // make-promise / promise?
+    results.push(run_bench(
+        "Make-promise and force x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(force (make-promise 99))",
+        Some("99"),
+    ));
+
+    // case-lambda (single clause, since multi-clause is limited)
+    results.push(run_bench(
+        "Case-lambda single clause x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "((case-lambda ((x) (+ x 1))) 41)",
+        Some("42"),
+    ));
+
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
