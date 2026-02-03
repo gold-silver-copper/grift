@@ -315,10 +315,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// # Example
     ///
     /// ```scheme
+    /// ;; Two references to the same variable are free-identifier=?
     /// (define x 1)
-    /// (define y x)
-    /// ;; x and y are NOT free-identifier=? because they have different bindings
-    /// ;; But two references to 'x' would be free-identifier=?
+    /// ;; (free-identifier=? #'x #'x) => #t
+    ///
+    /// ;; In a macro, an identifier from the input may refer to a different
+    /// ;; binding than an identifier introduced by the template:
+    /// (let ((x 1))          ;; outer x
+    ///   (let ((x 2))        ;; inner x (shadows outer)
+    ///     ;; references to 'x' here refer to inner x (value 2)
+    ///     ;; but in a macro that captured outer x, they would differ
+    ///     x))               ;; => 2
     /// ```
     pub fn free_identifier_eq(
         &self,
