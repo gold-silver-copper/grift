@@ -575,3 +575,30 @@
                  (set! forced #t)
                  final-value))))))))
 
+;; ============================================================
+;; syntax-case Support (Phase 3)
+;; ============================================================
+
+;; with-syntax - bind pattern variables for use in syntax templates
+;;
+;; (with-syntax ((pattern expr) ...) body ...)
+;;
+;; Each pattern is matched against the result of evaluating expr,
+;; and the resulting bindings are available in body.
+;;
+;; This is a simplified implementation that supports single-variable patterns.
+;; For full pattern matching, we use syntax-case internally.
+(define-syntax with-syntax
+  (syntax-rules ()
+    ;; No bindings - just evaluate body
+    ((with-syntax () body ...)
+     (begin body ...))
+    ;; Single binding with simple pattern variable
+    ((with-syntax ((var expr)) body ...)
+     (let ((var expr))
+       body ...))
+    ;; Multiple bindings - nest with-syntax
+    ((with-syntax ((var expr) rest ...) body ...)
+     (let ((var expr))
+       (with-syntax (rest ...) body ...)))))
+

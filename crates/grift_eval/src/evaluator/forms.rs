@@ -569,6 +569,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Return the value from the body
                 Ok(Some(TrampolineState::Return { val }))
             }
+
+            Cont::SyntaxCaseMatch(data_start) => {
+                // val is the evaluated stx-expr
+                // Now try to match it against clauses
+                let (literals, clauses, env, pattern_bindings) = self.unpack_syntax_case_match(data_start);
+                self.step_syntax_case_match(val, literals, clauses, env, pattern_bindings)
+            }
         }
     }
 
@@ -964,5 +971,212 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Evaluate body with extended macro environment
         Ok(TrampolineState::Eval { expr: body, env })
+    }
+
+    // ========================================================================
+    // syntax-case - Procedural Macro Pattern Matching
+    // ========================================================================
+
+    /// Evaluate (syntax-case stx-expr (literal ...) clause ...)
+    ///
+    /// Each clause is either:
+    /// - (pattern output)
+    /// - (pattern fender output)
+    ///
+    /// The stx-expr is evaluated first, then matched against patterns.
+    pub(super) fn step_eval_syntax_case(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> Result<TrampolineState, EvalError> {
+        // Parse: (stx-expr (literal ...) clause ...)
+        let stx_expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let literals = self.lisp.car(rest)?;
+        let clauses = self.lisp.cdr(rest)?;
+
+        // Start with empty pattern bindings (will be populated by caller via with-syntax)
+        let pattern_bindings = self.get_pattern_bindings_from_env(env)?;
+
+        // Push continuation to handle pattern matching after stx-expr is evaluated
+        let data_start = self.pack_syntax_case_match(literals, clauses, env, pattern_bindings)?;
+        self.push_cont(Cont::SyntaxCaseMatch(data_start))?;
+
+        // Evaluate stx-expr first
+        Ok(TrampolineState::Eval { expr: stx_expr, env })
+    }
+
+    /// Get pattern bindings from the current environment
+    /// 
+    /// In syntax-case, pattern bindings are stored in the environment.
+    /// For now, we look for a special binding `%pattern-bindings%`.
+    fn get_pattern_bindings_from_env(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // Look for %pattern-bindings% in env
+        let key = self.lisp.symbol("%pattern-bindings%")?;
+        let mut current = env;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let name = self.lisp.car(binding)?;
+                if self.lisp.symbol_eq(name, key)? {
+                    return self.lisp.cdr(binding).map_err(Into::into);
+                }
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // No pattern bindings - return empty
+        self.lisp.nil().map_err(Into::into)
+    }
+
+    /// Continue syntax-case after stx-expr is evaluated
+    fn step_syntax_case_match(
+        &mut self,
+        stx: ArenaIndex,
+        literals: ArenaIndex,
+        clauses: ArenaIndex,
+        env: ArenaIndex,
+        _pattern_bindings: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        // Try each clause in order
+        let mut current = clauses;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let clause = self.lisp.car(current)?;
+            let pattern = self.lisp.car(clause)?;
+            let clause_cdr = self.lisp.cdr(clause)?;
+
+            // Unwrap syntax object if present to get the datum
+            let datum = self.lisp.syntax_to_datum(stx)?;
+
+            // Try to match pattern against datum
+            let empty = self.lisp.nil()?;
+            if let Some(bindings) = self.match_pattern(pattern, datum, literals, empty)? {
+                // Match succeeded! 
+                // Check for fender (optional guard) - clause is (pattern fender output) or (pattern output)
+                let (fender, output) = self.extract_fender_and_output(clause_cdr)?;
+
+                // If there's a fender, we need to evaluate it with bindings
+                if let Some(fender_expr) = fender {
+                    // For now, skip fender evaluation (would require more continuations)
+                    // Just evaluate the fender in a simple way
+                    let fender_env = self.extend_env_with_bindings(env, bindings)?;
+                    let fender_result = self.eval_simple(fender_expr, fender_env)?;
+                    
+                    if self.is_false(fender_result)? {
+                        // Fender failed, try next clause
+                        current = self.lisp.cdr(current)?;
+                        continue;
+                    }
+                }
+
+                // Evaluate output expression with pattern bindings
+                let output_env = self.extend_env_with_bindings(env, bindings)?;
+                return Ok(Some(TrampolineState::Eval { expr: output, env: output_env }));
+            }
+
+            current = self.lisp.cdr(current)?;
+        }
+
+        // No pattern matched - error
+        Err(self.make_error(ErrorKind::Generic, stx)
+            .with_message("syntax-case: no pattern matched"))
+    }
+
+    /// Extract fender and output from clause tail
+    /// 
+    /// Clause tail is either (output) or (fender output)
+    fn extract_fender_and_output(
+        &self,
+        clause_cdr: ArenaIndex,
+    ) -> Result<(Option<ArenaIndex>, ArenaIndex), EvalError> {
+        let first = self.lisp.car(clause_cdr)?;
+        let rest = self.lisp.cdr(clause_cdr)?;
+
+        if self.lisp.get(rest)?.is_nil() {
+            // Only one element - it's the output, no fender
+            Ok((None, first))
+        } else {
+            // Two elements - first is fender, second is output
+            let output = self.lisp.car(rest)?;
+            Ok((Some(first), output))
+        }
+    }
+
+    /// Extend environment with pattern bindings
+    fn extend_env_with_bindings(
+        &self,
+        env: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> Result<ArenaIndex, EvalError> {
+        // bindings is an alist of (var . value) pairs
+        // Prepend each binding to env
+        let mut result = env;
+        let mut current = bindings;
+
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let pair = self.lisp.car(current)?;
+            result = self.lisp.cons(pair, result)?;
+            current = self.lisp.cdr(current)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Simple non-trampolined evaluation for fenders
+    /// 
+    /// This is a limited evaluator for simple expressions in fenders.
+    /// For complex fenders, we'd need full trampolined support.
+    fn eval_simple(&mut self, expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        match self.lisp.get(expr)? {
+            // Self-evaluating
+            Value::Nil | Value::True | Value::False | Value::Number(_) 
+            | Value::String { .. } | Value::Char(_) => Ok(expr),
+            
+            // Symbol - lookup
+            Value::Symbol(_) => {
+                self.env_lookup(env, expr)
+            }
+            
+            // Quote
+            Value::Cons { .. } => {
+                let car = self.lisp.car(expr)?;
+                if self.lisp.symbol_matches(car, "quote")? {
+                    let cdr = self.lisp.cdr(expr)?;
+                    return self.lisp.car(cdr).map_err(Into::into);
+                }
+                // For anything else, fall back to saying we can't eval
+                // In a full implementation, we'd recurse or use trampolined eval
+                Err(self.make_error(ErrorKind::Generic, expr)
+                    .with_message("syntax-case fender too complex for simple eval"))
+            }
+            
+            _ => Ok(expr),
+        }
+    }
+
+    // ========================================================================
+    // syntax - Template Transcription
+    // ========================================================================
+
+    /// Evaluate (syntax template) - create syntax object from template
+    ///
+    /// This is similar to transcribe_template but operates at runtime
+    /// using pattern bindings from the current environment.
+    pub(super) fn step_eval_syntax(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> Result<TrampolineState, EvalError> {
+        let template = self.lisp.car(args)?;
+
+        // Get pattern bindings from environment
+        let bindings = self.get_pattern_bindings_from_env(env)?;
+
+        // Transcribe the template with pattern bindings
+        let empty_renames = self.lisp.nil()?;
+        let result = self.transcribe_template(template, bindings, empty_renames, self.global_env)?;
+
+        Ok(TrampolineState::Return { val: result })
     }
 }

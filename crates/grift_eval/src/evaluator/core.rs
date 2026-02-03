@@ -209,7 +209,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::LetSyntaxBody(data_start) |
                     Cont::CallWithValuesProducer(data_start) |
                     Cont::CallWithValuesConsumer(data_start) |
-                    Cont::CallWithValuesApply(data_start) => data_start,
+                    Cont::CallWithValuesApply(data_start) |
+                    Cont::SyntaxCaseMatch(data_start) => data_start,
                 };
                 // Add all ArenaIndex values from this continuation's data to roots
                 for j in 0..data_len {
@@ -626,6 +627,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.step_eval_let_syntax(cdr, env);
             }
             
+            // syntax-case - procedural macro pattern matching
+            if self.lisp.symbol_matches(car, "syntax-case")? {
+                return self.step_eval_syntax_case(cdr, env);
+            }
+            
+            // syntax - create syntax template
+            if self.lisp.symbol_matches(car, "syntax")? {
+                return self.step_eval_syntax(cdr, env);
+            }
+            
             // if - condition evaluated, then one branch selected
             if self.lisp.symbol_matches(car, "if")? {
                 let cond_expr = self.lisp.car(cdr)?;
@@ -852,6 +863,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_apply_forced / unpack_apply_forced => [args_expr, env, call_expr];
         pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
         pack_values_collect / unpack_values_collect => [remaining, collected, env];
+        
+        // 4-field continuations
+        pack_syntax_case_match / unpack_syntax_case_match => [literals, clauses, env, pattern_bindings];
         
         // Note: pack_do_test_result, pack_do_body, pack_do_init, pack_do_step removed - do is now handled by macros (Phase 9)
         // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros
