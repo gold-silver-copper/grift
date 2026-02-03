@@ -60,7 +60,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Extract lambda parts: (params, body, env)
                         let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
                         
-                        if self.lisp.get(args_expr)?.is_nil() {
+                        // Check for rest-argument lambda: (lambda args body) where args is a symbol
+                        if self.lisp.get(params)?.is_symbol() {
+                            // Rest-only lambda: all args collected into a single list
+                            if self.lisp.get(args_expr)?.is_nil() {
+                                // No args - bind to empty list
+                                let nil = self.lisp.nil()?;
+                                let extended_env = self.env_extend(closure_env, params, nil)?;
+                                Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
+                            } else {
+                                // Evaluate first arg and start collecting
+                                let first_expr = self.lisp.car(args_expr)?;
+                                let rest_exprs = self.lisp.cdr(args_expr)?;
+                                let nil = self.lisp.nil()?;
+                                
+                                let data_start = self.pack_lambda_rest_collect(
+                                    rest_exprs, env, params, body, closure_env, nil, call_expr
+                                )?;
+                                self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                                
+                                Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
+                            }
+                        } else if self.lisp.get(args_expr)?.is_nil() {
                             // No args - check params are also empty
                             if !self.lisp.get(params)?.is_nil() {
                                 let expected = self.count_list(params)?;
@@ -186,7 +207,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Extend environment with binding
                     let extended_env = self.env_extend(new_env, param, val)?;
                     
-                    if self.lisp.get(remaining_exprs)?.is_nil() {
+                    // Check if remaining_params is a symbol (rest parameter for dotted lambda)
+                    if self.lisp.get(remaining_params)?.is_symbol() {
+                        // Dotted parameter: (a b . rest) - collect remaining args into rest
+                        if self.lisp.get(remaining_exprs)?.is_nil() {
+                            // No more args - bind rest param to empty list
+                            let nil = self.lisp.nil()?;
+                            let final_env = self.env_extend(extended_env, remaining_params, nil)?;
+                            Ok(Some(TrampolineState::Eval { expr: body, env: final_env }))
+                        } else {
+                            // Start collecting rest args
+                            let first_expr = self.lisp.car(remaining_exprs)?;
+                            let rest_exprs = self.lisp.cdr(remaining_exprs)?;
+                            let nil = self.lisp.nil()?;
+                            
+                            let data_start = self.pack_lambda_rest_collect(
+                                rest_exprs, eval_env, remaining_params, body, extended_env, nil, call_expr
+                            )?;
+                            self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                            
+                            Ok(Some(TrampolineState::Eval { expr: first_expr, env: eval_env }))
+                        }
+                    } else if self.lisp.get(remaining_exprs)?.is_nil() {
                         // No more args - check params match
                         if !self.lisp.get(remaining_params)?.is_nil() {
                             let expected = self.count_list(remaining_params)? + 1;
@@ -225,6 +267,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Cont::LambdaBindArg { .. } => {
                 // This shouldn't be hit directly - LambdaFirstBind pops it
                 Err(self.make_error(ErrorKind::Generic, val))
+            }
+            
+            Cont::LambdaRestCollect(data_start) => {
+                // Collecting rest arguments into a list
+                let (remaining_exprs, eval_env, rest_param, body, new_env, collected, call_expr) = 
+                    self.unpack_lambda_rest_collect(data_start);
+                
+                // Add evaluated value to collected list
+                let new_collected = self.lisp.cons(val, collected)?;
+                
+                if self.lisp.get(remaining_exprs)?.is_nil() {
+                    // No more args - reverse collected and bind to rest_param
+                    let rest_list = self.reverse_list(new_collected)?;
+                    let extended_env = self.env_extend(new_env, rest_param, rest_list)?;
+                    Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
+                } else {
+                    // More args to collect
+                    let next_expr = self.lisp.car(remaining_exprs)?;
+                    let rest_exprs = self.lisp.cdr(remaining_exprs)?;
+                    
+                    let data_start = self.pack_lambda_rest_collect(
+                        rest_exprs, eval_env, rest_param, body, new_env, new_collected, call_expr
+                    )?;
+                    self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                    
+                    Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
+                }
             }
             
             Cont::BuiltinForceArg(data_start) => {
