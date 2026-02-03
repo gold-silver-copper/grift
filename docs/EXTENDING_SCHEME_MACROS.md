@@ -26,7 +26,10 @@ This document describes the design and implementation approach for extending Gri
 | 4 | `syntax->datum`, `datum->syntax` builtins | ✅ Complete |
 | 4 | `generate-temporaries` builtin | ✅ Complete |
 | 4 | Trampolined fender evaluation | ✅ Complete |
-| 5-6 | Replace special forms with procedural macros | ⏳ Pending |
+| 5 | Procedural macro support (`(lambda (x) ...)` transformers) | ✅ Complete |
+| 5 | Procedural macro tests | ✅ Complete |
+| 6 | Convert `quasiquote` to procedural macro | ⏳ Pending (special form works correctly) |
+| 6 | Documentation updates | ✅ Complete |
 
 **Last updated**: February 2025
 
