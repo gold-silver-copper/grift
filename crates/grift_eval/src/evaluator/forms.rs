@@ -1009,10 +1009,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get pattern bindings from the current environment
     /// 
     /// In syntax-case, pattern bindings are stored in the environment.
-    /// For now, we look for a special binding `%pattern-bindings%`.
+    /// Uses a gensym-style internal symbol `#:pattern-bindings` to avoid
+    /// conflicts with user code.
     fn get_pattern_bindings_from_env(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        // Look for %pattern-bindings% in env
-        let key = self.lisp.symbol("%pattern-bindings%")?;
+        // Look for #:pattern-bindings in env (internal gensym-style name)
+        let key = self.lisp.symbol("#:pattern-bindings")?;
         let mut current = env;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
@@ -1057,9 +1058,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (fender, output) = self.extract_fender_and_output(clause_cdr)?;
 
                 // If there's a fender, we need to evaluate it with bindings
+                // NOTE: Fenders are evaluated using a simplified evaluator that only
+                // supports literals, variable references, and quoted expressions.
+                // Complex fenders with function calls require full trampolined evaluation
+                // which would need additional continuation infrastructure.
                 if let Some(fender_expr) = fender {
-                    // For now, skip fender evaluation (would require more continuations)
-                    // Just evaluate the fender in a simple way
                     let fender_env = self.extend_env_with_bindings(env, bindings)?;
                     let fender_result = self.eval_simple(fender_expr, fender_env)?;
                     
@@ -1126,7 +1129,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Simple non-trampolined evaluation for fenders
     /// 
     /// This is a limited evaluator for simple expressions in fenders.
-    /// For complex fenders, we'd need full trampolined support.
+    /// Supports: literals, variable references, and quoted expressions.
+    /// For complex fenders with function calls, we'd need full trampolined support.
     fn eval_simple(&mut self, expr: ArenaIndex, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         match self.lisp.get(expr)? {
             // Self-evaluating
@@ -1148,7 +1152,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // For anything else, fall back to saying we can't eval
                 // In a full implementation, we'd recurse or use trampolined eval
                 Err(self.make_error(ErrorKind::Generic, expr)
-                    .with_message("syntax-case fender too complex for simple eval"))
+                    .with_message("syntax-case fender must be a literal, variable, or quoted expression"))
             }
             
             _ => Ok(expr),
