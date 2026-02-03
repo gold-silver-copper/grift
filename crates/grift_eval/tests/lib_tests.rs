@@ -5884,3 +5884,109 @@ fn test_procedural_macro_nested() {
     assert!(lisp.symbol_matches(car, "left").unwrap());
     assert!(lisp.symbol_matches(cdr, "right").unwrap());
 }
+
+// ============================================================================
+// Procedural Quasiquote Macro Tests (Phase 5)
+// ============================================================================
+
+/// Test that the %qq-expand helper macro is available and works
+#[test]
+fn test_procedural_quasiquote_macro_helper() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test the %qq-expand helper directly (it's loaded from macros.scm)
+    eval.eval_str("(define x 42)").unwrap();
+    
+    // Basic case: atom
+    let result = eval.eval_str("(%qq-expand atom (d z))").unwrap();
+    assert!(lisp.symbol_matches(result, "atom").unwrap());
+    
+    // Unquote at depth 1 evaluates the expression
+    let result = eval.eval_str("(%qq-expand (unquote x) (d z))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    // List with unquote
+    let result = eval.eval_str("(%qq-expand (a (unquote x) c) (d z))").unwrap();
+    // Should produce (a 42 c)
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "a").unwrap());
+    let cadr = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(cadr).unwrap().as_number(), Some(42));
+}
+
+/// Test procedural quasiquote handles unquote-splicing
+#[test]
+fn test_procedural_quasiquote_macro_splice() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define xs '(1 2 3))").unwrap();
+    
+    // Splice at depth 1
+    let result = eval.eval_str("(%qq-expand (a (unquote-splicing xs) b) (d z))").unwrap();
+    // Should produce (a 1 2 3 b)
+    
+    // Count elements - should be 5
+    let mut count = 0;
+    let mut current = result;
+    loop {
+        match lisp.get(current).unwrap() {
+            Value::Nil => break,
+            Value::Cons { cdr, .. } => {
+                count += 1;
+                current = cdr;
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(count, 5, "Should have 5 elements: a, 1, 2, 3, b");
+}
+
+/// Test procedural quasiquote handles nested quasiquote
+#[test]
+fn test_procedural_quasiquote_macro_nested() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 42)").unwrap();
+    
+    // Nested quasiquote - inner unquote should NOT evaluate
+    let result = eval.eval_str("(%qq-expand (quasiquote (unquote x)) (d z))").unwrap();
+    // Should produce (quasiquote (unquote x)) - a list with quasiquote symbol
+    
+    let car = lisp.car(result).unwrap();
+    assert!(lisp.symbol_matches(car, "quasiquote").unwrap());
+    
+    // The inner part should be (unquote x), not 42
+    let inner = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    let inner_car = lisp.car(inner).unwrap();
+    assert!(lisp.symbol_matches(inner_car, "unquote").unwrap());
+}
+
+/// Test that procedural quasiquote produces same results as special form
+#[test]
+fn test_procedural_quasiquote_matches_special_form() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define x 10)").unwrap();
+    eval.eval_str("(define y 20)").unwrap();
+    
+    // Test various cases - procedural macro vs special form should match
+    
+    // Basic list with unquote
+    let proc_result = eval.eval_str("(%qq-expand (a (unquote x) c) (d z))").unwrap();
+    let sf_result = eval.eval_str("`(a ,x c)").unwrap();
+    
+    // Compare: both should be (a 10 c)
+    let proc_car = lisp.car(proc_result).unwrap();
+    let sf_car = lisp.car(sf_result).unwrap();
+    assert!(lisp.symbol_matches(proc_car, "a").unwrap());
+    assert!(lisp.symbol_matches(sf_car, "a").unwrap());
+    
+    let proc_cadr = lisp.car(lisp.cdr(proc_result).unwrap()).unwrap();
+    let sf_cadr = lisp.car(lisp.cdr(sf_result).unwrap()).unwrap();
+    assert_eq!(lisp.get(proc_cadr).unwrap().as_number(), Some(10));
+    assert_eq!(lisp.get(sf_cadr).unwrap().as_number(), Some(10));
+}
