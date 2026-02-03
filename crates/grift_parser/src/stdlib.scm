@@ -57,11 +57,26 @@
 ;;; (zip a b) - Zip two lists into list of pairs
 (define (zip a b) (if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b))))))
 
-;;; (member x lst) - Check if x is in lst using eq?
-(define (member x lst) (if (null? lst) #f (if (eq? (car lst) x) #t (member x (cdr lst)))))
+;;; ============================================================
+;;; Internal Helper Functions
+;;; ============================================================
+
+;;; (mem-helper pred obj lst) - Generic member helper using predicate
+(define (mem-helper pred obj lst) (if (null? lst) #f (if (pred obj (car lst)) lst (mem-helper pred obj (cdr lst)))))
+
+;;; (assoc-helper pred key alist) - Generic assoc helper using predicate
+(define (assoc-helper pred key alist) (if (null? alist) #f (if (pred key (car (car alist))) (car alist) (assoc-helper pred key (cdr alist)))))
+
+;;; ============================================================
+;;; Member and Assoc Functions (Using Helpers)
+;;; ============================================================
+
+;;; (member x lst) - Check if x is in lst using eq? (returns boolean)
+;;; Note: Unlike standard Scheme, this returns #t/#f instead of sublist
+(define (member x lst) (if (mem-helper eq? x lst) #t #f))
 
 ;;; (assoc key alist) - Look up key in association list using eq?
-(define (assoc key alist) (if (null? alist) #f (if (eq? (car (car alist)) key) (car alist) (assoc key (cdr alist)))))
+(define (assoc key alist) (assoc-helper eq? key alist))
 
 ;;; (range start end) - Generate list of integers [start, end) (tail-recursive)
 (define (range start end)
@@ -115,16 +130,16 @@
 (define (list-copy lst) (if (null? lst) '() (cons (car lst) (list-copy (cdr lst)))))
 
 ;;; (memq obj lst) - Find obj in lst using eq?, return sublist or #f
-(define (memq obj lst) (if (null? lst) #f (if (eq? obj (car lst)) lst (memq obj (cdr lst)))))
+(define (memq obj lst) (mem-helper eq? obj lst))
 
 ;;; (memv obj lst) - Find obj in lst using eqv?, return sublist or #f
-(define (memv obj lst) (if (null? lst) #f (if (eqv? obj (car lst)) lst (memv obj (cdr lst)))))
+(define (memv obj lst) (mem-helper eqv? obj lst))
 
 ;;; (assq key alist) - Look up key in alist using eq?
-(define (assq key alist) (if (null? alist) #f (if (eq? key (car (car alist))) (car alist) (assq key (cdr alist)))))
+(define (assq key alist) (assoc-helper eq? key alist))
 
 ;;; (assv key alist) - Look up key in alist using eqv?
-(define (assv key alist) (if (null? alist) #f (if (eqv? key (car (car alist))) (car alist) (assv key (cdr alist)))))
+(define (assv key alist) (assoc-helper eqv? key alist))
 
 ;;; ============================================================
 ;;; Additional c...r accessors (R7RS Section 6.4)
@@ -222,10 +237,10 @@
 ;;; ============================================================
 
 ;;; (member-equal obj lst) - Find obj in lst using equal?, return sublist or #f
-(define (member-equal obj lst) (if (null? lst) #f (if (equal? obj (car lst)) lst (member-equal obj (cdr lst)))))
+(define (member-equal obj lst) (mem-helper equal? obj lst))
 
 ;;; (assoc-equal key alist) - Look up key in alist using equal?
-(define (assoc-equal key alist) (if (null? alist) #f (if (equal? key (car (car alist))) (car alist) (assoc-equal key (cdr alist)))))
+(define (assoc-equal key alist) (assoc-helper equal? key alist))
 
 ;;; ============================================================
 ;;; Higher-order list functions (R7RS Section 6.10)
