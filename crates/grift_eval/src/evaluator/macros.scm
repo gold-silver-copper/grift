@@ -22,9 +22,6 @@
 ;; Binding Forms (let, let*)
 ;; ============================================================
 
-;; Helper to build temporary variable names for named-let
-;; Not actually needed since we can just use the vals directly
-
 ;; Helper for named let - extract variable names from bindings and build the complete expansion
 (define-syntax %named-let-build
   (syntax-rules ()
