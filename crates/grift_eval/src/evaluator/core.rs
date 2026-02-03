@@ -205,7 +205,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::QuasiquoteCdr(data_start) |
                     Cont::QuasiquoteSplice(data_start) |
                     Cont::QuasiquoteSpliceAppend(data_start) |
-                    Cont::LetSyntaxBody(data_start) => data_start,
+                    Cont::LetSyntaxBody(data_start) |
+                    Cont::CallWithValuesProducer(data_start) |
+                    Cont::CallWithValuesConsumer(data_start) |
+                    Cont::CallWithValuesApply(data_start) => data_start,
                 };
                 // Add all ArenaIndex values from this continuation's data to roots
                 for j in 0..data_len {
@@ -695,6 +698,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "values")? {
                 return self.eval_values(cdr, env);
             }
+            
+            // call-with-values - call producer, apply consumer to results
+            if self.lisp.symbol_matches(car, "call-with-values")? {
+                return self.step_eval_call_with_values(cdr, env);
+            }
         }
         
         // Function application - HYBRID EVALUATION
@@ -834,6 +842,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_apply_first / unpack_apply_first => [args_list_expr, env];
         pack_apply_second / unpack_apply_second => [func, env];
         pack_set_value / unpack_set_value => [name, env];
+        pack_call_with_values_producer / unpack_call_with_values_producer => [consumer_expr, env];
+        pack_call_with_values_consumer / unpack_call_with_values_consumer => [consumer_expr, env];
+        pack_call_with_values_apply / unpack_call_with_values_apply => [producer_result, env];
         
         // 3-field continuations
         pack_apply_forced / unpack_apply_forced => [args_expr, env, call_expr];

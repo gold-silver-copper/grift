@@ -120,6 +120,18 @@ pub enum Cont {
     /// After evaluating let-syntax body, restore macro environment
     /// Stack data: [saved_macro_env] (1 element)
     LetSyntaxBody(usize),
+
+    /// After evaluating producer for call-with-values, evaluate consumer
+    /// Stack data: [consumer_expr, env] (2 elements)
+    CallWithValuesProducer(usize),
+
+    /// After calling producer, evaluate consumer
+    /// Stack data: [consumer_expr, env] (2 elements)
+    CallWithValuesConsumer(usize),
+
+    /// After evaluating consumer, apply it to producer result
+    /// Stack data: [producer_result, env] (2 elements)
+    CallWithValuesApply(usize),
 }
 
 impl Cont {
@@ -142,6 +154,9 @@ impl Cont {
             Cont::ApplyFirst(_) => 2,
             Cont::ApplySecond(_) => 2,
             Cont::SetValue(_) => 2,
+            Cont::CallWithValuesProducer(_) => 2,
+            Cont::CallWithValuesConsumer(_) => 2,
+            Cont::CallWithValuesApply(_) => 2,
             Cont::ApplyForced(_) => 3,
             Cont::IfBranch(_) => 3,
             Cont::BinaryBuiltinSecond(_) => 3,

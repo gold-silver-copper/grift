@@ -287,3 +287,122 @@
                (set! value expr)
                (set! forced #t)
                value)))))))
+
+;; ============================================================
+;; Multiple Values (R7RS Section 4.2.2 and 5.3.3)
+;; ============================================================
+
+;; let-values - bind multiple values from expressions
+;; 
+;; (let-values (((a b) (values 1 2))
+;;              ((c) (values 3)))
+;;   (+ a b c))
+;; => 6
+;;
+;; Uses call-with-values to capture multiple values and bind them.
+;; Implementation note: We use a recursive approach to handle multiple bindings.
+(define-syntax let-values
+  (syntax-rules ()
+    ;; Base case: no bindings, just evaluate body
+    ((let-values () body ...)
+     (begin body ...))
+    ;; Single binding case
+    ((let-values ((formals init)) body ...)
+     (call-with-values
+       (lambda () init)
+       (lambda formals body ...)))
+    ;; Multiple bindings: handle first, then recurse
+    ((let-values ((formals init) rest ...) body ...)
+     (call-with-values
+       (lambda () init)
+       (lambda formals
+         (let-values (rest ...) body ...))))))
+
+;; let*-values - sequential binding of multiple values
+;;
+;; Like let-values, but bindings are visible to subsequent inits.
+;; Each binding's init can reference variables from previous bindings.
+;;
+;; (let*-values (((a b) (values 1 2))
+;;               ((c) (values (+ a b))))
+;;   c)
+;; => 3
+(define-syntax let*-values
+  (syntax-rules ()
+    ;; Base case: no bindings
+    ((let*-values () body ...)
+     (begin body ...))
+    ;; Single or first binding: use let-values then recurse
+    ((let*-values ((formals init) rest ...) body ...)
+     (call-with-values
+       (lambda () init)
+       (lambda formals
+         (let*-values (rest ...) body ...))))))
+
+;; define-values - define multiple values at top level
+;;
+;; (define-values (x y) (values 1 2))
+;; x => 1
+;; y => 2
+;;
+;; Implementation note: Due to limitations with nested ellipsis patterns,
+;; we provide explicit patterns for common arities (0-4 variables).
+;; For more variables, users can nest define-values or use let-values.
+;;
+;; Note: We use %dv-a, %dv-b, etc. as lambda parameter names to avoid
+;; accidentally shadowing the user's variable names.
+(define-syntax define-values
+  (syntax-rules ()
+    ;; Empty formals - just evaluate for side effects
+    ((define-values () expr)
+     (define %define-values-dummy
+       (call-with-values (lambda () expr) (lambda () (if #f #f)))))
+    ;; Single variable - use regular define
+    ((define-values (v1) expr)
+     (define v1 (call-with-values (lambda () expr) (lambda (%dv-x) %dv-x))))
+    ;; Two variables
+    ((define-values (v1 v2) expr)
+     (begin
+       (define v1 #f)
+       (define v2 #f)
+       (call-with-values
+         (lambda () expr)
+         (lambda (%dv-a %dv-b)
+           (set! v1 %dv-a)
+           (set! v2 %dv-b)))))
+    ;; Three variables
+    ((define-values (v1 v2 v3) expr)
+     (begin
+       (define v1 #f)
+       (define v2 #f)
+       (define v3 #f)
+       (call-with-values
+         (lambda () expr)
+         (lambda (%dv-a %dv-b %dv-c)
+           (set! v1 %dv-a)
+           (set! v2 %dv-b)
+           (set! v3 %dv-c)))))
+    ;; Four variables
+    ((define-values (v1 v2 v3 v4) expr)
+     (begin
+       (define v1 #f)
+       (define v2 #f)
+       (define v3 #f)
+       (define v4 #f)
+       (call-with-values
+         (lambda () expr)
+         (lambda (%dv-a %dv-b %dv-c %dv-d)
+           (set! v1 %dv-a)
+           (set! v2 %dv-b)
+           (set! v3 %dv-c)
+           (set! v4 %dv-d)))))
+    ;; Rest argument - capture all values as a list
+    ((define-values var expr)
+     (define var
+       (call-with-values (lambda () expr) list)))))
+
+;; force - force evaluation of a delayed expression
+(define-syntax force
+  (syntax-rules ()
+    ((force promise)
+     (promise))))

@@ -342,6 +342,68 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
+            Cont::CallWithValuesProducer(data_start) => {
+                let (consumer_expr, env) = self.unpack_call_with_values_producer(data_start);
+                // val is the producer function - call it with no arguments
+                // Build call expression: (producer)
+                let nil = self.lisp.nil()?;
+                let call_expr = self.lisp.cons(val, nil)?;
+                
+                // Push continuation to apply consumer after producer returns
+                let data_start = self.pack_call_with_values_consumer(consumer_expr, env)?;
+                self.push_cont(Cont::CallWithValuesConsumer(data_start))?;
+                
+                // Apply the producer (no arguments)
+                self.push_frame(call_expr, val)?;
+                let data_start = self.pack_apply_forced(nil, env, call_expr)?;
+                self.push_cont(Cont::ApplyForced(data_start))?;
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
+            Cont::CallWithValuesConsumer(data_start) => {
+                let (consumer_expr, env) = self.unpack_call_with_values_consumer(data_start);
+                // val is the result from producer - could be a single value or a list from (values ...)
+                // Now we need to evaluate consumer and apply it to the producer's result(s)
+                
+                // Store the producer result and push continuation to apply consumer
+                let data_start = self.pack_call_with_values_apply(val, env)?;
+                self.push_cont(Cont::CallWithValuesApply(data_start))?;
+                
+                // Evaluate the consumer expression
+                Ok(Some(TrampolineState::Eval { expr: consumer_expr, env }))
+            }
+
+            Cont::CallWithValuesApply(data_start) => {
+                let (producer_result, env) = self.unpack_call_with_values_apply(data_start);
+                // val is the consumer function - apply it to producer_result
+                // 
+                // The producer_result handling depends on how the producer returned:
+                // - If producer used (values a b c), producer_result is already (a b c) - a list
+                // - If producer returned a single value normally, producer_result is that value
+                //
+                // R7RS semantics: A producer that doesn't explicitly call values returns
+                // a single value, which becomes a single argument to consumer.
+                // We need to wrap non-list single values in a list.
+                let args_list = match self.lisp.get(producer_result)? {
+                    // If it's nil (empty list from (values)), use it directly
+                    Value::Nil => producer_result,
+                    // If it's a cons (list from (values a b ...)), use it directly
+                    Value::Cons { .. } => producer_result,
+                    // If it's any other value (single return value), wrap it in a list
+                    _ => {
+                        let nil = self.lisp.nil()?;
+                        self.lisp.cons(producer_result, nil)?
+                    }
+                };
+                
+                let call_expr = self.lisp.cons(val, args_list)?;
+                
+                self.push_frame(call_expr, val)?;
+                let data_start = self.pack_apply_forced(args_list, env, call_expr)?;
+                self.push_cont(Cont::ApplyForced(data_start))?;
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
             Cont::DefineValue(data_start) => {
                 let name = self.unpack_define_value(data_start);
                 // val is the evaluated value - define the binding
@@ -588,6 +650,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let data_start = self.pack_values_collect(rest, nil, env)?;
         self.push_cont(Cont::ValuesCollect(data_start))?;
         Ok(TrampolineState::Eval { expr: first_expr, env })
+    }
+    
+    /// Evaluate call-with-values - call producer, apply consumer to results
+    /// 
+    /// (call-with-values producer consumer)
+    /// 
+    /// Calls producer with no arguments, then applies consumer to the values
+    /// returned by producer. If producer returns multiple values (via values),
+    /// those become the arguments to consumer.
+    pub(super) fn step_eval_call_with_values(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        let producer_expr = self.lisp.car(args)?;
+        let consumer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+        
+        // Push continuation to call consumer after producer is evaluated and called
+        let data_start = self.pack_call_with_values_producer(consumer_expr, env)?;
+        self.push_cont(Cont::CallWithValuesProducer(data_start))?;
+        
+        // Evaluate producer first
+        Ok(TrampolineState::Eval { expr: producer_expr, env })
     }
     
     /// Evaluate lambda
