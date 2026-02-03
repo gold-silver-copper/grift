@@ -1121,6 +1121,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Extend environment with pattern bindings
+    /// 
+    /// This adds pattern bindings to the environment in two ways:
+    /// 1. Each binding is added directly for normal variable lookup
+    /// 2. The full bindings alist is stored under `#:pattern-bindings` for
+    ///    use by the `syntax` form for template transcription
     fn extend_env_with_bindings(
         &self,
         env: ArenaIndex,
@@ -1137,6 +1142,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
 
+        // Also store the full bindings alist under #:pattern-bindings
+        // This allows the `syntax` form to retrieve just the pattern bindings
+        // without picking up other environment bindings (like builtins)
+        let key = self.lisp.symbol("#:pattern-bindings")?;
+        let binding_pair = self.lisp.cons(key, bindings)?;
+        result = self.lisp.cons(binding_pair, result)?;
+
         Ok(result)
     }
 
@@ -1148,6 +1160,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// This is similar to transcribe_template but operates at runtime
     /// using pattern bindings from the current environment.
+    /// 
+    /// The pattern bindings are stored under the special `#:pattern-bindings`
+    /// key by `extend_env_with_bindings` when syntax-case matches.
     pub(super) fn step_eval_syntax(
         &mut self,
         args: ArenaIndex,
@@ -1155,7 +1170,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<TrampolineState, EvalError> {
         let template = self.lisp.car(args)?;
 
-        // Get pattern bindings from environment
+        // Get pattern bindings from the special key in the environment
+        // This contains only the pattern variable bindings, not other env bindings
         let bindings = self.get_pattern_bindings_from_env(env)?;
 
         // Transcribe the template with pattern bindings
