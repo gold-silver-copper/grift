@@ -32,6 +32,9 @@ This document describes the design and implementation approach for extending Gri
 | 5 | `case-lambda` multi-arity dispatch | ✅ Complete |
 | 6 | Procedural `quasiquote` macro implementation | ✅ Complete |
 | 6 | Documentation updates | ✅ Complete |
+| 6 | `SyntaxError` error kind for macro errors | ✅ Complete |
+| 6 | Improved macro error messages | ✅ Complete |
+| 6 | Macro benchmarks in `bench.rs` | ✅ Complete |
 
 **Last updated**: February 2025
 
@@ -1010,11 +1013,18 @@ Expected results:
    - Added nested test: `test_procedural_quasiquote_macro_nested`
    - Added comparison test: `test_procedural_quasiquote_matches_special_form`
 
-### Phase 6: Polish
+### Phase 6: Polish ✅ Complete
 
-1. Error message improvements
-2. Documentation ✅
-3. Benchmarking and optimization
+1. **Error message improvements** ✅
+   - Added `SyntaxError` variant to `ErrorKind` enum
+   - Updated macro expansion errors to use `SyntaxError` kind
+   - Improved error messages for pattern matching failures
+2. **Documentation** ✅
+3. **Benchmarking and optimization** ✅
+   - Added 13 macro benchmarks to `bench.rs` Section 11
+   - Benchmarks cover: `let`, `let*`, `letrec`, `cond`, `case`, `do`, `and`/`or`, `when`/`unless`
+   - Benchmarks for `syntax-case` procedural macros with fenders
+   - Benchmarks for `named-let`, `case-lambda`, `with-syntax`
 
 ---
 

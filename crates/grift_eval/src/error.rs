@@ -49,6 +49,8 @@ pub enum ErrorKind {
     NotAPair = 9,
     /// Generic error
     Generic = 10,
+    /// Syntax/macro expansion error
+    SyntaxError = 11,
 }
 
 impl ErrorKind {
@@ -65,6 +67,7 @@ impl ErrorKind {
             ErrorKind::StackOverflow => "stack overflow",
             ErrorKind::NotAPair => "not a pair",
             ErrorKind::Generic => "error",
+            ErrorKind::SyntaxError => "syntax error",
         }
     }
 }

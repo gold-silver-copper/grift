@@ -802,12 +802,159 @@ fn main() {
     // SECTION 11: Macros & Metaprogramming
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 11: Reserved for Future Hygienic Macros");
+    println!("Section 11: Hygienic Macros (syntax-rules & syntax-case)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Note: defmacro and gensym have been removed for Scheme R7RS conformance.
-    // Hygienic macros via syntax-rules will be implemented in a future phase.
-    println!("  (Skipped - defmacro/gensym removed for Scheme conformance)");
+    // syntax-rules macro: let form expansion
+    results.push(run_bench(
+        "let macro expansion x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(let ((x 1) (y 2)) (+ x y))",
+        Some("3"),
+    ));
+
+    // syntax-rules macro: let* with sequential bindings
+    results.push(run_bench(
+        "let* macro expansion x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(let* ((a 1) (b (+ a 1)) (c (+ b 1))) c)",
+        Some("3"),
+    ));
+
+    // syntax-rules macro: letrec with mutual recursion
+    results.push(run_bench(
+        "letrec macro expansion x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1))))) (odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))) (even? 10))",
+        Some("#t"),
+    ));
+
+    // syntax-rules macro: cond conditional
+    results.push(run_bench(
+        "cond macro expansion x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(cond ((= 1 2) 'first) ((= 2 3) 'second) (else 'third))",
+        Some("third"),
+    ));
+
+    // syntax-rules macro: case pattern matching
+    results.push(run_bench(
+        "case macro expansion x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(case 'b ((a) 1) ((b c) 2) (else 3))",
+        Some("2"),
+    ));
+
+    // syntax-rules macro: do loop
+    results.push(run_bench(
+        "do loop macro expansion x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(do ((i 0 (+ i 1)) (sum 0 (+ sum i))) ((= i 10) sum))",
+        Some("45"),
+    ));
+
+    // syntax-rules macro: and/or short-circuit
+    results.push(run_bench(
+        "and/or macro expansion x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(and (or #f #t) (or #t #f) (and #t #t))",
+        Some("#t"),
+    ));
+
+    // syntax-rules macro: when/unless
+    results.push(run_bench(
+        "when/unless macro expansion x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(let ((x 0)) (when #t (set! x 1)) (unless #f (set! x (+ x 1))) x)",
+        Some("2"),
+    ));
+
+    // syntax-case: procedural macro with lambda transformer
+    // First define a simple swap macro
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(define-syntax my-add1 (lambda (x) (syntax-case x () ((_ n) (syntax (+ n 1))))))",
+    );
+    results.push(run_bench(
+        "syntax-case procedural macro x 100",
+        &lisp,
+        &mut eval,
+        100,
+        "(my-add1 41)",
+        Some("42"),
+    ));
+
+    // syntax-case with fender (guard)
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(define-syntax check-pos (lambda (x) (syntax-case x () ((_ n) (> n 0) (syntax 'positive)) ((_ n) (syntax 'non-positive)))))",
+    );
+    results.push(run_bench(
+        "syntax-case with fender x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(check-pos 5)",
+        Some("positive"),
+    ));
+
+    // Named let for iteration
+    results.push(run_bench(
+        "named let iteration x 30",
+        &lisp,
+        &mut eval,
+        30,
+        "(let loop ((n 10) (acc 0)) (if (= n 0) acc (loop (- n 1) (+ acc n))))",
+        Some("55"),
+    ));
+
+    // case-lambda multi-arity dispatch
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(define multi-add (case-lambda (() 0) ((x) x) ((x y) (+ x y)) ((x y z) (+ x y z))))",
+    );
+    results.push(run_bench(
+        "case-lambda dispatch x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(+ (multi-add) (multi-add 1) (multi-add 1 2) (multi-add 1 2 3))",
+        Some("10"),
+    ));
+
+    // with-syntax pattern binding
+    let _ = eval_str(
+        &lisp,
+        &mut eval,
+        "(define-syntax add-one (lambda (x) (syntax-case x () ((_ e) (with-syntax ((result (+ 1 e))) (syntax result))))))",
+    );
+    results.push(run_bench(
+        "with-syntax binding x 50",
+        &lisp,
+        &mut eval,
+        50,
+        "(add-one 99)",
+        Some("100"),
+    ));
 
     println!();
 
