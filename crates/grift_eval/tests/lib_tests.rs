@@ -4315,3 +4315,88 @@ fn check_eval_error_size() {
     // Verify ArgCountInfo is compact (4 bytes: 2 × u16)
     assert_eq!(size_of::<ArgCountInfo>(), 4, "ArgCountInfo should be 4 bytes (2 × u16)");
 }
+
+// ============================================================
+// Keyword Shadowing Tests (R7RS §4.3)
+// ============================================================
+
+#[test]
+fn test_keyword_shadowing_cond() {
+    // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
+    // The cond macro should be shadowable by a variable binding
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First verify that cond works as a macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cond (#t 42))"), 42);
+    
+    // Now define cond as a function that returns 32
+    eval.eval_str("(define (cond) 32)").unwrap();
+    
+    // Calling (cond) should now invoke the variable binding, not the macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cond)"), 32);
+}
+
+#[test]
+fn test_keyword_shadowing_let() {
+    // Test that let can be shadowed
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First verify that let works as a macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let ((x 5)) x)"), 5);
+    
+    // Define let as a function
+    eval.eval_str("(define (let x) (+ x 10))").unwrap();
+    
+    // Calling (let 7) should invoke the variable binding
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let 7)"), 17);
+}
+
+#[test]
+fn test_keyword_shadowing_and() {
+    // Test that and can be shadowed
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First verify that and works as a macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(and 1 2 3)"), 3);
+    
+    // Define and as a variable
+    eval.eval_str("(define and 999)").unwrap();
+    
+    // Referencing and should return the variable value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "and"), 999);
+}
+
+#[test]
+fn test_keyword_shadowing_or() {
+    // Test that or can be shadowed
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First verify that or works as a macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(or #f 42)"), 42);
+    
+    // Define or as a function
+    eval.eval_str("(define (or a b) (* a b))").unwrap();
+    
+    // Calling (or 3 4) should invoke the variable binding
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(or 3 4)"), 12);
+}
+
+#[test]
+fn test_keyword_shadowing_when() {
+    // Test that when can be shadowed
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // First verify that when works as a macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(when #t 100)"), 100);
+    
+    // Define when as a function
+    eval.eval_str("(define (when) 77)").unwrap();
+    
+    // Calling (when) should invoke the variable binding
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(when)"), 77);
+}
