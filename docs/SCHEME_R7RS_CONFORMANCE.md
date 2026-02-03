@@ -269,7 +269,8 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - [ ] Implement `dynamic-wind`
 
 #### 9.2 Lazy Evaluation (scheme lazy library)
-- [ ] Implement `delay` / `force` / `delay-force`
+- [x] Implement `delay` / `force` - Basic delayed evaluation (macro-based)
+- [ ] Implement `delay-force` - Optimized for recursive promises
 - [ ] Implement `make-promise` / `promise?`
 
 #### 9.3 Environments

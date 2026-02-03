@@ -1038,6 +1038,35 @@ fn test_define_values_three() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "dv-c"), 3);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// DELAY/FORCE - Lazy Evaluation
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_delay_force_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic delay/force
+    eval.eval_str("(define promise (delay (+ 1 2)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force promise)"), 3);
+    // Second force should return same value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force promise)"), 3);
+}
+
+#[test]
+fn test_delay_memoization() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Verify that delay memoizes - expression is only evaluated once
+    eval.eval_str("(define counter 0)").unwrap();
+    eval.eval_str("(define lazy-inc (delay (begin (set! counter (+ counter 1)) counter)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force lazy-inc)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force lazy-inc)"), 1); // Still 1, not 2
+    assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 1); // counter was only incremented once
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPREHENSIVE BUILTIN TESTS
 // ═══════════════════════════════════════════════════════════════════════════
