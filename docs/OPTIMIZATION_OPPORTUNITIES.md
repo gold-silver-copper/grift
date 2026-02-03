@@ -241,15 +241,7 @@ Converted to tail-recursive using countdown iterator pattern:
 
 **Recommendation**: Could create internal helpers, but current implementations work correctly and consolidation provides minimal performance benefit.
 
-### Low Priority
 
-#### 6. ⏸️ NOT IMPLEMENTED - Optimize Character Case-Insensitive Comparisons
-
-**Status**: ⏸️ Skipped - low priority
-
-**Issue**: Each `char-ci` comparison calls `char-foldcase` twice.
-
-**Note**: Would provide minimal performance benefit and add complexity.
 
 ---
 
