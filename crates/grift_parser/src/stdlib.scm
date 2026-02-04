@@ -71,12 +71,11 @@
 ;;; Member and Assoc Functions (Using Helpers)
 ;;; ============================================================
 
-;;; (member x lst) - Check if x is in lst using eq? (returns boolean)
-;;; Note: Unlike standard Scheme, this returns #t/#f instead of sublist
-(define (member x lst) (if (mem-helper eq? x lst) #t #f))
+;;; (member x lst) - Find x in lst using equal?, return sublist or #f
+(define (member x lst) (mem-helper equal? x lst))
 
-;;; (assoc key alist) - Look up key in association list using eq?
-(define (assoc key alist) (assoc-helper eq? key alist))
+;;; (assoc key alist) - Look up key in association list using equal?
+(define (assoc key alist) (assoc-helper equal? key alist))
 
 ;;; (range start end) - Generate list of integers [start, end) (tail-recursive)
 (define (range start end)
