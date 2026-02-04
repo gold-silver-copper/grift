@@ -234,6 +234,11 @@ define_builtins! {
     DatumToSyntax => "datum->syntax",
     /// generate-temporaries - Generate a list of fresh identifiers
     GenerateTemporaries => "generate-temporaries",
+    
+    /// symbol->string - Convert symbol to string
+    SymbolToString => "symbol->string",
+    /// string->symbol - Convert string to symbol
+    StringToSymbol => "string->symbol",
 }
 
 // Define all standard library functions using the include_stdlib! macro.

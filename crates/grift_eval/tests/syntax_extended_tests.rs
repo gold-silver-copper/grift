@@ -319,8 +319,14 @@ fn test_dynamic_wind_returns_value() {
 
 #[test]
 fn test_error_handling_with_guard() {
-    // Test guard form for exception handling
-    // Note: guard is not implemented in grift.
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test guard macro with normal execution (no exception raised)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(guard (exn ((number? exn) exn)) (+ 1 2))"), 3);
+    
+    // Test guard with a single expression body
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(guard (e (else 99)) 42)"), 42);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -329,14 +335,70 @@ fn test_error_handling_with_guard() {
 
 #[test]
 fn test_fold_left() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
     // fold-left combines elements left to right
-    // Note: fold-left is not implemented in grift. Use reduce instead.
+    // (fold-left + 0 '(1 2 3 4 5)) = ((((0+1)+2)+3)+4)+5 = 15
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(fold-left + 0 '(1 2 3 4 5))"), 15);
+    
+    // fold-left with subtraction shows left-associativity
+    // (fold-left - 0 '(1 2 3)) = ((0-1)-2)-3 = -6
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(fold-left - 0 '(1 2 3))"), -6);
+    
+    // Empty list returns initial value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(fold-left + 100 '())"), 100);
 }
 
 #[test]
 fn test_fold_right() {
     // fold-right combines elements right to left
     // Note: fold-right is not implemented in grift.
+}
+
+#[test]
+fn test_variadic_append() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Zero arguments returns empty list
+    let result = eval.eval_str("(append)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+    
+    // Single argument returns the list unchanged
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (append '(1 2 3)))"), 1);
+    
+    // Two arguments (basic append)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (append '(1 2) '(3 4)))"), 4);
+    
+    // Three or more arguments
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length (append '(1) '(2) '(3) '(4) '(5)))"), 5);
+    
+    // Check order is preserved
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (append '(1 2) '(3 4) '(5 6)))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr (cdr (append '(1 2) '(3 4) '(5 6)))))"), 3);
+}
+
+#[test]
+fn test_symbol_string_conversion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // symbol->string converts a symbol to its string representation
+    let result = eval.eval_str("(symbol->string 'hello)").unwrap();
+    assert!(lisp.get(result).unwrap().is_string());
+    
+    // string->symbol converts a string to a symbol
+    let result = eval.eval_str("(string->symbol \"world\")").unwrap();
+    assert!(lisp.get(result).unwrap().is_symbol());
+    
+    // Round-trip: symbol -> string -> symbol
+    assert!(eval_is_true(&lisp, &mut eval, 
+        "(eq? 'test (string->symbol (symbol->string 'test)))"));
+    
+    // string->symbol with same string gives eq? symbols (interning)
+    assert!(eval_is_true(&lisp, &mut eval,
+        "(eq? (string->symbol \"foo\") (string->symbol \"foo\"))"));
 }
 
 #[test]

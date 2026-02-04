@@ -432,6 +432,52 @@ impl<const N: usize> Lisp<N> {
         Ok(symbol)
     }
     
+    /// Create or retrieve an interned symbol from an existing string index
+    /// 
+    /// This method is used by string->symbol to create a symbol from an existing string.
+    /// It checks the intern table first to ensure proper symbol interning.
+    pub fn symbol_from_string(&self, string_idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Verify it's a string
+        match self.get(string_idx)? {
+            Value::String { len, data } => {
+                // Check if a symbol with this string content already exists
+                if let Some(existing_symbol) = self.intern_table_lookup(string_idx)? {
+                    return Ok(existing_symbol);
+                }
+                
+                // Not found - need to create a new symbol
+                // First, copy the string to avoid sharing the mutable string
+                let new_str = if len == 0 {
+                    self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
+                } else {
+                    // Copy the string content
+                    let new_data = self.arena.alloc_contiguous(len, Value::Nil)?;
+                    for i in 0..len {
+                        let src_idx = self.arena.index_at_offset(data, i)?;
+                        let dst_idx = self.arena.index_at_offset(new_data, i)?;
+                        let ch = self.get(src_idx)?;
+                        self.arena.set(dst_idx, ch)?;
+                    }
+                    self.alloc(Value::String { len, data: new_data })?
+                };
+                
+                // Create new symbol
+                let symbol = self.alloc(Value::Symbol(new_str))?;
+                
+                // Add to intern table: (new_str . symbol)
+                let binding = self.cons(new_str, symbol)?;
+                let current_table = self.get_intern_table_root()?;
+                let new_table = self.cons(binding, current_table)?;
+                
+                // Update intern table root
+                self.set_intern_table_root(new_table)?;
+                
+                Ok(symbol)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Allocate a builtin function
     #[inline]
     pub fn builtin(&self, b: Builtin) -> ArenaResult<ArenaIndex> {
