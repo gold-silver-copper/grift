@@ -25,7 +25,9 @@ use super::Evaluator;
 
 impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
-        let (cont_type, data, _cont_env) = self.pop_cont()?;
+        // The cont_env field is stored for potential future use (e.g., debugging, stack traces)
+        // but is not currently used during normal continuation processing.
+        let (cont_type, data, _) = self.pop_cont()?;
         
         match cont_type {
             CONT_DONE => {

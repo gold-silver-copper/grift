@@ -136,16 +136,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         &self.native_registry
     }
     
-    /// Run GC with current roots (global env only)
+    /// Run GC with minimal roots (global env, macro env, and current continuation)
+    /// 
+    /// Use `gc_with_state()` during evaluation to also root the current expression/value.
     pub fn gc(&self) -> GcStats {
         self.lisp.gc(&[self.global_env, self.macro_env, self.current_cont])
     }
     
     /// Run GC during evaluation - marks continuation chain AND current state as roots
+    /// 
+    /// Roots array size is 8 to accommodate:
+    /// - global_env, macro_env, current_cont (3 static roots)
+    /// - expr, env from TrampolineState::Eval (2 roots)
+    /// - val from TrampolineState::Return (1 root)
+    /// Plus some headroom for future additions.
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
         // With arena-based continuations, we just need to root the current_cont pointer.
         // The GC will trace through the ContFrame linked list automatically.
-        let mut roots = [ArenaIndex::NIL; 8];
+        const MAX_ROOTS: usize = 8;
+        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
         // Always include global env, macro env, and current continuation chain
