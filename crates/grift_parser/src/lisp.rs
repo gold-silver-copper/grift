@@ -731,6 +731,64 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Create a captured continuation value for call/cc
+    ///
+    /// A continuation represents "the rest of the computation" and can be
+    /// called as a procedure to jump back to the point where it was captured.
+    ///
+    /// # Arguments
+    ///
+    /// * `cont_chain` - ArenaIndex to ContFrame linked list (captured continuation stack)
+    /// * `capture_env` - ArenaIndex to the environment at capture point
+    /// * `dynamic_wind_chain` - ArenaIndex to dynamic-wind chain (or Nil if none)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Capture the current continuation
+    /// let cont = lisp.continuation(current_cont, env, nil)?;
+    /// // Later, invoke it with a value to return to the capture point
+    /// ```
+    pub fn continuation(
+        &self,
+        cont_chain: ArenaIndex,
+        capture_env: ArenaIndex,
+        dynamic_wind_chain: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        // Create metadata cons: (capture_env . dynamic_wind_chain)
+        let metadata = self.cons(capture_env, dynamic_wind_chain)?;
+        // Create the Continuation value
+        self.arena.alloc(Value::Continuation { cont_chain, metadata })
+    }
+    
+    /// Extract components from a Continuation value
+    ///
+    /// Returns (cont_chain, capture_env, dynamic_wind_chain) unpacked from the internal structure.
+    ///
+    /// # Returns
+    ///
+    /// * `cont_chain` - Captured continuation stack (ContFrame linked list)
+    /// * `capture_env` - Environment at capture point
+    /// * `dynamic_wind_chain` - Dynamic-wind chain for proper before/after thunk handling
+    ///
+    /// # Errors
+    ///
+    /// Returns ArenaError::InvalidIndex if the index doesn't point to a Continuation.
+    pub fn continuation_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::Continuation { cont_chain, metadata } => {
+                // Unpack (capture_env . dynamic_wind_chain)
+                let capture_env = self.car(metadata)?;
+                let dynamic_wind_chain = self.cdr(metadata)?;
+                Ok((cont_chain, capture_env, dynamic_wind_chain))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Build a list from an iterator of indices
     pub fn list<I: IntoIterator<Item = ArenaIndex>>(&self, items: I) -> ArenaResult<ArenaIndex>
     where

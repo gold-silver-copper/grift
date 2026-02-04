@@ -1182,3 +1182,99 @@ fn test_cont_frame_type_name() {
     
     assert_eq!(lisp.get(cont).unwrap().type_name(), "cont-frame");
 }
+
+// Continuation Value Tests (first-class call/cc continuations)
+// ============================================================================
+
+#[test]
+fn test_continuation_creation() {
+    let lisp: Lisp<200> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    let env = nil;
+    
+    // Create a simple continuation with empty cont_chain
+    let cont = lisp.continuation(nil, env, nil).unwrap();
+    
+    // Verify it's a Continuation
+    assert!(lisp.get(cont).unwrap().is_continuation());
+    assert_eq!(lisp.get(cont).unwrap().type_name(), "continuation");
+}
+
+#[test]
+fn test_continuation_parts_extraction() {
+    let lisp: Lisp<200> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    
+    // Create a more complex continuation
+    let cont_chain = nil; // Empty chain for this test
+    let sym_a = lisp.symbol("a").unwrap();
+    let num_42 = lisp.number(42).unwrap();
+    let capture_env = lisp.cons(sym_a, num_42).unwrap();
+    let dw_chain = nil; // No dynamic-wind for this test
+    
+    let cont = lisp.continuation(cont_chain, capture_env, dw_chain).unwrap();
+    
+    // Extract and verify parts
+    let (extracted_chain, extracted_env, extracted_dw) = lisp.continuation_parts(cont).unwrap();
+    
+    assert_eq!(extracted_chain, cont_chain);
+    assert_eq!(extracted_env, capture_env);
+    assert_eq!(extracted_dw, dw_chain);
+}
+
+#[test]
+fn test_continuation_with_cont_frame_chain() {
+    let lisp: Lisp<500> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    let env = nil;
+    
+    // Create a chain of ContFrames
+    let frame1 = lisp.cont_frame(0, nil, nil, env).unwrap(); // Done
+    let frame2 = lisp.cont_frame(1, nil, frame1, env).unwrap(); // ApplyForced
+    let frame3 = lisp.cont_frame(2, nil, frame2, env).unwrap(); // IfBranch
+    
+    // Create a continuation with this chain
+    let cont = lisp.continuation(frame3, env, nil).unwrap();
+    
+    // Extract and verify the chain
+    let (extracted_chain, _, _) = lisp.continuation_parts(cont).unwrap();
+    assert_eq!(extracted_chain, frame3);
+    
+    // Walk the chain
+    let (type3, _, parent3, _) = lisp.cont_frame_parts(extracted_chain).unwrap();
+    assert_eq!(type3, 2);
+    
+    let (type2, _, parent2, _) = lisp.cont_frame_parts(parent3).unwrap();
+    assert_eq!(type2, 1);
+    
+    let (type1, _, parent1, _) = lisp.cont_frame_parts(parent2).unwrap();
+    assert_eq!(type1, 0);
+    assert!(parent1.is_nil()); // Done has no parent
+}
+
+#[test]
+fn test_continuation_gc_survival() {
+    let lisp: Lisp<500> = Lisp::new();
+    let nil = lisp.nil().unwrap();
+    let sym_x = lisp.symbol("x").unwrap();
+    let num_1 = lisp.number(1).unwrap();
+    let env = lisp.cons(sym_x, num_1).unwrap();
+    
+    // Create a continuation with some data
+    let frame = lisp.cont_frame(0, nil, nil, env).unwrap();
+    let cont = lisp.continuation(frame, env, nil).unwrap();
+    
+    // Allocate some garbage
+    for _ in 0..50 {
+        lisp.cons(nil, nil).unwrap();
+    }
+    
+    // Run GC with continuation as root
+    let stats = lisp.gc(&[cont]);
+    assert!(stats.collected > 0);
+    
+    // Verify continuation survived and is still valid
+    assert!(lisp.get(cont).unwrap().is_continuation());
+    let (chain, _, _) = lisp.continuation_parts(cont).unwrap();
+    assert!(lisp.get(chain).unwrap().is_cont_frame());
+}

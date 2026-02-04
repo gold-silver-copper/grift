@@ -187,6 +187,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
+                    Value::Continuation { .. } => {
+                        // Continuation invocation: (k arg)
+                        // Continuations take exactly one argument
+                        self.pop_frame();
+                        
+                        // Check we have exactly one argument
+                        if self.lisp.get(args_expr)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("continuation requires exactly 1 argument"));
+                        }
+                        let arg_expr = self.lisp.car(args_expr)?;
+                        let rest = self.lisp.cdr(args_expr)?;
+                        if !self.lisp.get(rest)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("continuation requires exactly 1 argument"));
+                        }
+                        
+                        // Push continuation to restore when arg is evaluated
+                        let data_start = self.pack_continuation_apply(val)?;
+                        self.push_cont(Cont::ContinuationApply(data_start))?;
+                        
+                        // Evaluate the argument
+                        Ok(Some(TrampolineState::Eval { expr: arg_expr, env }))
+                    }
                     _ => {
                         self.pop_frame();
                         Err(self.type_error(call_expr, "procedure", self.lisp.get(val)?.type_name()))
@@ -591,6 +615,61 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Ok(Some(TrampolineState::Eval { expr: output, env: output_env }))
                 }
             }
+            
+            Cont::CallCcApply(data_start) => {
+                // val is the evaluated procedure from (call/cc proc)
+                // We now need to apply it to the captured continuation
+                let captured_continuation = self.unpack_call_cc_apply(data_start);
+                
+                // Create argument list with just the captured continuation
+                let nil = self.lisp.nil()?;
+                let args = self.lisp.cons(captured_continuation, nil)?;
+                
+                // Apply the procedure to the continuation
+                // We need to determine if it's a lambda, builtin, etc.
+                match self.lisp.get(val)? {
+                    Value::Lambda { .. } => {
+                        let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
+                        
+                        // Check param count - should be exactly 1
+                        if self.lisp.get(params)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, val)
+                                .with_message("call/cc procedure must accept 1 argument"));
+                        }
+                        let first_param = self.lisp.car(params)?;
+                        let rest_params = self.lisp.cdr(params)?;
+                        if !self.lisp.get(rest_params)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, val)
+                                .with_message("call/cc procedure must accept exactly 1 argument"));
+                        }
+                        
+                        // Bind the captured continuation to the parameter
+                        let extended_env = self.env_extend(closure_env, first_param, captured_continuation)?;
+                        Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
+                    }
+                    _ => {
+                        // For other callable types, use the standard apply mechanism
+                        // Create a call expression and go through ApplyForced
+                        let call_expr = self.lisp.cons(val, args)?;
+                        self.push_frame(call_expr, val)?;
+                        let data_start = self.pack_apply_forced(args, self.global_env, call_expr)?;
+                        self.push_cont(Cont::ApplyForced(data_start))?;
+                        Ok(Some(TrampolineState::Return { val }))
+                    }
+                }
+            }
+            
+            Cont::ContinuationApply(data_start) => {
+                // val is the evaluated argument to the captured continuation
+                // Now we restore the captured continuation and return val as the result
+                let captured_continuation = self.unpack_continuation_apply(data_start);
+                
+                // Restore the captured continuation
+                self.restore_continuation(captured_continuation)?;
+                
+                // Return val as the result of the original call/cc
+                Ok(Some(TrampolineState::Return { val }))
+            }
         }
     }
 
@@ -760,6 +839,488 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Evaluate producer first
         Ok(TrampolineState::Eval { expr: producer_expr, env })
+    }
+    
+    /// Evaluate call-with-current-continuation (call/cc)
+    /// 
+    /// (call/cc proc) or (call-with-current-continuation proc)
+    /// 
+    /// Captures the current continuation as a first-class value and calls proc
+    /// with that continuation as its only argument. If proc returns normally,
+    /// that value becomes the result of call/cc. If the captured continuation
+    /// is ever called with a value, that value immediately becomes the result
+    /// of the call/cc, abandoning the current computation.
+    pub(super) fn step_eval_call_cc(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        // Check that we have exactly one argument (the procedure)
+        if self.lisp.get(args)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("call/cc requires exactly 1 argument"));
+        }
+        let proc_expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        if !self.lisp.get(rest)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("call/cc requires exactly 1 argument"));
+        }
+        
+        // Capture the current continuation BEFORE evaluating the procedure
+        // This is the continuation that will be restored when the captured
+        // continuation is invoked
+        let captured_continuation = self.capture_continuation(env)?;
+        
+        // Push continuation to apply proc to the captured continuation after proc is evaluated
+        let data_start = self.pack_call_cc_apply(captured_continuation)?;
+        self.push_cont(Cont::CallCcApply(data_start))?;
+        
+        // Evaluate the procedure expression
+        Ok(TrampolineState::Eval { expr: proc_expr, env })
+    }
+    
+    /// Capture the current continuation as a first-class value
+    /// 
+    /// Converts the current cont_stack and data_stack into an arena-based
+    /// ContFrame linked list, wraps it in a Value::Continuation, and returns it.
+    fn capture_continuation(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // Convert the current continuation stack to arena-based ContFrame chain
+        // We build from bottom (Done) up to current depth
+        let cont_chain = self.stack_to_arena_chain()?;
+        
+        // Create the continuation value
+        // For now, we don't have dynamic-wind support, so use nil for that field
+        let nil = self.lisp.nil()?;
+        let continuation = self.lisp.continuation(cont_chain, env, nil)?;
+        
+        Ok(continuation)
+    }
+    
+    /// Convert the current continuation stack to an arena-based ContFrame chain
+    /// 
+    /// This creates a linked list of ContFrame values in the arena, starting
+    /// from the Done continuation at the bottom and building up to the current
+    /// continuation depth.
+    fn stack_to_arena_chain(&self) -> Result<ArenaIndex, EvalError> {
+        // Start with Nil representing the Done continuation
+        let nil = self.lisp.nil()?;
+        let mut chain = nil;
+        
+        // Build the chain from bottom to top
+        // We iterate from 0 to cont_depth, which gives us the correct order
+        // (oldest continuation first, which becomes the innermost in the chain)
+        for i in 0..self.cont_depth {
+            let cont = self.cont_stack[i];
+            
+            // Encode the continuation type as a usize
+            let cont_type = self.cont_type_to_usize(cont);
+            
+            // Collect the data for this continuation
+            let data = self.cont_data_to_arena(cont)?;
+            
+            // For now, use nil as the env for each frame
+            // A more complete implementation would track the env at each point
+            let frame = self.lisp.cont_frame(cont_type, data, chain, nil)?;
+            chain = frame;
+        }
+        
+        Ok(chain)
+    }
+    
+    /// Convert a Cont variant to its type code
+    fn cont_type_to_usize(&self, cont: Cont) -> usize {
+        match cont {
+            Cont::Done => 0,
+            Cont::ApplyForced(_) => 1,
+            Cont::IfBranch(_) => 2,
+            Cont::BuiltinForceArg(_) => 3,
+            Cont::BinaryBuiltinFirst(_) => 4,
+            Cont::BinaryBuiltinSecond(_) => 5,
+            Cont::LambdaFirstBind(_) => 6,
+            Cont::LambdaBindArg(_) => 7,
+            Cont::LambdaRestCollect(_) => 8,
+            Cont::EvalExpr(_) => 9,
+            Cont::BeginSeq(_) => 10,
+            Cont::ApplyFirst(_) => 11,
+            Cont::ApplySecond(_) => 12,
+            Cont::ValuesCollect(_) => 13,
+            Cont::DefineValue(_) => 14,
+            Cont::SetValue(_) => 15,
+            Cont::NativeArgsCollect(_) => 16,
+            Cont::QuasiquoteCar(_) => 17,
+            Cont::QuasiquoteCdr(_) => 18,
+            Cont::QuasiquoteUnquoteWrap => 19,
+            Cont::QuasiquoteNestedWrap => 20,
+            Cont::QuasiquoteSplice(_) => 21,
+            Cont::QuasiquoteSpliceAppend(_) => 22,
+            Cont::LetSyntaxBody(_) => 23,
+            Cont::CallWithValuesProducer(_) => 24,
+            Cont::CallWithValuesConsumer(_) => 25,
+            Cont::CallWithValuesApply(_) => 26,
+            Cont::SyntaxCaseMatch(_) => 27,
+            Cont::SyntaxCaseFender(_) => 28,
+            Cont::CallCcApply(_) => 29,
+            Cont::ContinuationApply(_) => 30,
+        }
+    }
+    
+    /// Convert continuation data to arena representation
+    fn cont_data_to_arena(&self, cont: Cont) -> Result<ArenaIndex, EvalError> {
+        let nil = self.lisp.nil()?;
+        
+        match cont {
+            Cont::Done | Cont::QuasiquoteUnquoteWrap | Cont::QuasiquoteNestedWrap => {
+                // No data
+                Ok(nil)
+            }
+            Cont::LambdaFirstBind(ds) | Cont::EvalExpr(ds) | Cont::DefineValue(ds) |
+            Cont::QuasiquoteCdr(ds) | Cont::QuasiquoteSpliceAppend(ds) |
+            Cont::LetSyntaxBody(ds) | Cont::CallCcApply(ds) | Cont::ContinuationApply(ds) => {
+                // 1 element
+                Ok(self.data_stack[ds])
+            }
+            Cont::BeginSeq(ds) | Cont::ApplyFirst(ds) | Cont::ApplySecond(ds) |
+            Cont::SetValue(ds) | Cont::CallWithValuesProducer(ds) |
+            Cont::CallWithValuesConsumer(ds) | Cont::CallWithValuesApply(ds) => {
+                // 2 elements - build as cons cell
+                let a = self.data_stack[ds];
+                let b = self.data_stack[ds + 1];
+                self.lisp.cons(a, b).map_err(Into::into)
+            }
+            Cont::ApplyForced(ds) | Cont::IfBranch(ds) | Cont::BinaryBuiltinSecond(ds) |
+            Cont::ValuesCollect(ds) | Cont::QuasiquoteCar(ds) | Cont::QuasiquoteSplice(ds) => {
+                // 3 elements - build as list
+                let a = self.data_stack[ds];
+                let b = self.data_stack[ds + 1];
+                let c = self.data_stack[ds + 2];
+                let bc = self.lisp.cons(b, c)?;
+                self.lisp.cons(a, bc).map_err(Into::into)
+            }
+            Cont::BinaryBuiltinFirst(ds) | Cont::NativeArgsCollect(ds) | Cont::SyntaxCaseMatch(ds) => {
+                // 4 elements
+                let a = self.data_stack[ds];
+                let b = self.data_stack[ds + 1];
+                let c = self.data_stack[ds + 2];
+                let d = self.data_stack[ds + 3];
+                let cd = self.lisp.cons(c, d)?;
+                let bcd = self.lisp.cons(b, cd)?;
+                self.lisp.cons(a, bcd).map_err(Into::into)
+            }
+            Cont::BuiltinForceArg(ds) => {
+                // 5 elements
+                let a = self.data_stack[ds];
+                let b = self.data_stack[ds + 1];
+                let c = self.data_stack[ds + 2];
+                let d = self.data_stack[ds + 3];
+                let e = self.data_stack[ds + 4];
+                let de = self.lisp.cons(d, e)?;
+                let cde = self.lisp.cons(c, de)?;
+                let bcde = self.lisp.cons(b, cde)?;
+                self.lisp.cons(a, bcde).map_err(Into::into)
+            }
+            Cont::LambdaBindArg(ds) | Cont::SyntaxCaseFender(ds) => {
+                // 6 elements
+                let a = self.data_stack[ds];
+                let b = self.data_stack[ds + 1];
+                let c = self.data_stack[ds + 2];
+                let d = self.data_stack[ds + 3];
+                let e = self.data_stack[ds + 4];
+                let f = self.data_stack[ds + 5];
+                let ef = self.lisp.cons(e, f)?;
+                let def = self.lisp.cons(d, ef)?;
+                let cdef = self.lisp.cons(c, def)?;
+                let bcdef = self.lisp.cons(b, cdef)?;
+                self.lisp.cons(a, bcdef).map_err(Into::into)
+            }
+            Cont::LambdaRestCollect(ds) => {
+                // 7 elements
+                let a = self.data_stack[ds];
+                let b = self.data_stack[ds + 1];
+                let c = self.data_stack[ds + 2];
+                let d = self.data_stack[ds + 3];
+                let e = self.data_stack[ds + 4];
+                let f = self.data_stack[ds + 5];
+                let g = self.data_stack[ds + 6];
+                let fg = self.lisp.cons(f, g)?;
+                let efg = self.lisp.cons(e, fg)?;
+                let defg = self.lisp.cons(d, efg)?;
+                let cdefg = self.lisp.cons(c, defg)?;
+                let bcdefg = self.lisp.cons(b, cdefg)?;
+                self.lisp.cons(a, bcdefg).map_err(Into::into)
+            }
+        }
+    }
+    
+    /// Restore a captured continuation
+    /// 
+    /// Replaces the current cont_stack and data_stack with the contents
+    /// of the arena-based ContFrame chain stored in the captured continuation.
+    fn restore_continuation(&mut self, continuation: ArenaIndex) -> Result<(), EvalError> {
+        // Extract the cont_chain from the Continuation value
+        let (cont_chain, _capture_env, _dw_chain) = self.lisp.continuation_parts(continuation)?;
+        
+        // Restore from arena chain to stack
+        self.arena_chain_to_stack(cont_chain)?;
+        
+        Ok(())
+    }
+    
+    /// Restore the continuation stack from an arena-based ContFrame chain
+    fn arena_chain_to_stack(&mut self, chain: ArenaIndex) -> Result<(), EvalError> {
+        use crate::continuation::MAX_CONT_DEPTH;
+        
+        // First, collect all frames from the chain (they're in reverse order)
+        let mut frames: [(usize, ArenaIndex); MAX_CONT_DEPTH] = [(0, ArenaIndex::NIL); MAX_CONT_DEPTH];
+        let mut frame_count = 0;
+        let mut current = chain;
+        
+        while !current.is_nil() {
+            if frame_count >= MAX_CONT_DEPTH {
+                return Err(self.make_error(ErrorKind::StackOverflow, chain));
+            }
+            
+            let (cont_type, data, parent, _env) = self.lisp.cont_frame_parts(current)?;
+            frames[frame_count] = (cont_type, data);
+            frame_count += 1;
+            current = parent;
+        }
+        
+        // Now restore in reverse order (so oldest continuation is at index 0)
+        self.cont_depth = 0;
+        self.data_stack_top = 0;
+        
+        for i in (0..frame_count).rev() {
+            let (cont_type, data) = frames[i];
+            self.restore_single_cont(cont_type, data)?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Restore a single continuation from its type code and data
+    fn restore_single_cont(&mut self, cont_type: usize, data: ArenaIndex) -> Result<(), EvalError> {
+        use crate::continuation::MAX_CONT_DEPTH;
+        
+        if self.cont_depth >= MAX_CONT_DEPTH {
+            return Err(self.make_error(ErrorKind::StackOverflow, data));
+        }
+        
+        let data_start = self.data_stack_top;
+        
+        match cont_type {
+            0 => {
+                // Done - no data
+                self.cont_stack[self.cont_depth] = Cont::Done;
+            }
+            1 => {
+                // ApplyForced - 3 elements
+                let (a, bc) = self.unpack_2_from_arena(data)?;
+                let (b, c) = self.unpack_2_from_arena(bc)?;
+                self.push_data(&[a, b, c])?;
+                self.cont_stack[self.cont_depth] = Cont::ApplyForced(data_start);
+            }
+            2 => {
+                // IfBranch - 3 elements
+                let (a, bc) = self.unpack_2_from_arena(data)?;
+                let (b, c) = self.unpack_2_from_arena(bc)?;
+                self.push_data(&[a, b, c])?;
+                self.cont_stack[self.cont_depth] = Cont::IfBranch(data_start);
+            }
+            3 => {
+                // BuiltinForceArg - 5 elements
+                let (a, bcde) = self.unpack_2_from_arena(data)?;
+                let (b, cde) = self.unpack_2_from_arena(bcde)?;
+                let (c, de) = self.unpack_2_from_arena(cde)?;
+                let (d, e) = self.unpack_2_from_arena(de)?;
+                self.push_data(&[a, b, c, d, e])?;
+                self.cont_stack[self.cont_depth] = Cont::BuiltinForceArg(data_start);
+            }
+            4 => {
+                // BinaryBuiltinFirst - 4 elements
+                let (a, bcd) = self.unpack_2_from_arena(data)?;
+                let (b, cd) = self.unpack_2_from_arena(bcd)?;
+                let (c, d) = self.unpack_2_from_arena(cd)?;
+                self.push_data(&[a, b, c, d])?;
+                self.cont_stack[self.cont_depth] = Cont::BinaryBuiltinFirst(data_start);
+            }
+            5 => {
+                // BinaryBuiltinSecond - 3 elements
+                let (a, bc) = self.unpack_2_from_arena(data)?;
+                let (b, c) = self.unpack_2_from_arena(bc)?;
+                self.push_data(&[a, b, c])?;
+                self.cont_stack[self.cont_depth] = Cont::BinaryBuiltinSecond(data_start);
+            }
+            6 => {
+                // LambdaFirstBind - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::LambdaFirstBind(data_start);
+            }
+            7 => {
+                // LambdaBindArg - 6 elements
+                let (a, bcdef) = self.unpack_2_from_arena(data)?;
+                let (b, cdef) = self.unpack_2_from_arena(bcdef)?;
+                let (c, def) = self.unpack_2_from_arena(cdef)?;
+                let (d, ef) = self.unpack_2_from_arena(def)?;
+                let (e, f) = self.unpack_2_from_arena(ef)?;
+                self.push_data(&[a, b, c, d, e, f])?;
+                self.cont_stack[self.cont_depth] = Cont::LambdaBindArg(data_start);
+            }
+            8 => {
+                // LambdaRestCollect - 7 elements
+                let (a, bcdefg) = self.unpack_2_from_arena(data)?;
+                let (b, cdefg) = self.unpack_2_from_arena(bcdefg)?;
+                let (c, defg) = self.unpack_2_from_arena(cdefg)?;
+                let (d, efg) = self.unpack_2_from_arena(defg)?;
+                let (e, fg) = self.unpack_2_from_arena(efg)?;
+                let (f, g) = self.unpack_2_from_arena(fg)?;
+                self.push_data(&[a, b, c, d, e, f, g])?;
+                self.cont_stack[self.cont_depth] = Cont::LambdaRestCollect(data_start);
+            }
+            9 => {
+                // EvalExpr - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::EvalExpr(data_start);
+            }
+            10 => {
+                // BeginSeq - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::BeginSeq(data_start);
+            }
+            11 => {
+                // ApplyFirst - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::ApplyFirst(data_start);
+            }
+            12 => {
+                // ApplySecond - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::ApplySecond(data_start);
+            }
+            13 => {
+                // ValuesCollect - 3 elements
+                let (a, bc) = self.unpack_2_from_arena(data)?;
+                let (b, c) = self.unpack_2_from_arena(bc)?;
+                self.push_data(&[a, b, c])?;
+                self.cont_stack[self.cont_depth] = Cont::ValuesCollect(data_start);
+            }
+            14 => {
+                // DefineValue - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::DefineValue(data_start);
+            }
+            15 => {
+                // SetValue - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::SetValue(data_start);
+            }
+            16 => {
+                // NativeArgsCollect - 4 elements
+                let (a, bcd) = self.unpack_2_from_arena(data)?;
+                let (b, cd) = self.unpack_2_from_arena(bcd)?;
+                let (c, d) = self.unpack_2_from_arena(cd)?;
+                self.push_data(&[a, b, c, d])?;
+                self.cont_stack[self.cont_depth] = Cont::NativeArgsCollect(data_start);
+            }
+            17 => {
+                // QuasiquoteCar - 3 elements
+                let (a, bc) = self.unpack_2_from_arena(data)?;
+                let (b, c) = self.unpack_2_from_arena(bc)?;
+                self.push_data(&[a, b, c])?;
+                self.cont_stack[self.cont_depth] = Cont::QuasiquoteCar(data_start);
+            }
+            18 => {
+                // QuasiquoteCdr - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::QuasiquoteCdr(data_start);
+            }
+            19 => {
+                // QuasiquoteUnquoteWrap - no data
+                self.cont_stack[self.cont_depth] = Cont::QuasiquoteUnquoteWrap;
+            }
+            20 => {
+                // QuasiquoteNestedWrap - no data
+                self.cont_stack[self.cont_depth] = Cont::QuasiquoteNestedWrap;
+            }
+            21 => {
+                // QuasiquoteSplice - 3 elements
+                let (a, bc) = self.unpack_2_from_arena(data)?;
+                let (b, c) = self.unpack_2_from_arena(bc)?;
+                self.push_data(&[a, b, c])?;
+                self.cont_stack[self.cont_depth] = Cont::QuasiquoteSplice(data_start);
+            }
+            22 => {
+                // QuasiquoteSpliceAppend - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::QuasiquoteSpliceAppend(data_start);
+            }
+            23 => {
+                // LetSyntaxBody - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::LetSyntaxBody(data_start);
+            }
+            24 => {
+                // CallWithValuesProducer - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::CallWithValuesProducer(data_start);
+            }
+            25 => {
+                // CallWithValuesConsumer - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::CallWithValuesConsumer(data_start);
+            }
+            26 => {
+                // CallWithValuesApply - 2 elements
+                let (a, b) = self.unpack_2_from_arena(data)?;
+                self.push_data(&[a, b])?;
+                self.cont_stack[self.cont_depth] = Cont::CallWithValuesApply(data_start);
+            }
+            27 => {
+                // SyntaxCaseMatch - 4 elements
+                let (a, bcd) = self.unpack_2_from_arena(data)?;
+                let (b, cd) = self.unpack_2_from_arena(bcd)?;
+                let (c, d) = self.unpack_2_from_arena(cd)?;
+                self.push_data(&[a, b, c, d])?;
+                self.cont_stack[self.cont_depth] = Cont::SyntaxCaseMatch(data_start);
+            }
+            28 => {
+                // SyntaxCaseFender - 6 elements
+                let (a, bcdef) = self.unpack_2_from_arena(data)?;
+                let (b, cdef) = self.unpack_2_from_arena(bcdef)?;
+                let (c, def) = self.unpack_2_from_arena(cdef)?;
+                let (d, ef) = self.unpack_2_from_arena(def)?;
+                let (e, f) = self.unpack_2_from_arena(ef)?;
+                self.push_data(&[a, b, c, d, e, f])?;
+                self.cont_stack[self.cont_depth] = Cont::SyntaxCaseFender(data_start);
+            }
+            29 => {
+                // CallCcApply - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::CallCcApply(data_start);
+            }
+            30 => {
+                // ContinuationApply - 1 element
+                self.push_data(&[data])?;
+                self.cont_stack[self.cont_depth] = Cont::ContinuationApply(data_start);
+            }
+            _ => {
+                // Unknown continuation type
+                return Err(self.make_error(ErrorKind::Generic, data)
+                    .with_message("unknown continuation type in captured continuation"));
+            }
+        }
+        
+        self.cont_depth += 1;
+        Ok(())
+    }
+    
+    /// Helper to unpack a cons cell from arena
+    fn unpack_2_from_arena(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let car = self.lisp.car(data)?;
+        let cdr = self.lisp.cdr(data)?;
+        Ok((car, cdr))
     }
     
     /// Evaluate lambda

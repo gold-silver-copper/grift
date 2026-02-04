@@ -6143,3 +6143,157 @@ fn test_procedural_quasiquote_matches_special_form() {
     assert_eq!(lisp.get(proc_cadr).unwrap().as_number(), Some(10));
     assert_eq!(lisp.get(sf_cadr).unwrap().as_number(), Some(10));
 }
+
+// ==============================================================================
+// call/cc (call-with-current-continuation) tests
+// ==============================================================================
+
+/// Test basic call/cc - escape continuation
+#[test]
+fn test_call_cc_basic_escape() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // (+ 1 (call/cc (lambda (k) (+ 2 (k 3)))))
+    // When (k 3) is called, it immediately returns 3 as the result of call/cc,
+    // skipping the (+ 2 ...) computation. So the result is (+ 1 3) = 4.
+    let result = eval.eval_str("(+ 1 (call/cc (lambda (k) (+ 2 (k 3)))))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(4));
+}
+
+/// Test call/cc when continuation is not invoked (normal return)
+#[test]
+fn test_call_cc_no_escape() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // When the continuation is not called, the lambda returns normally
+    let result = eval.eval_str("(+ 1 (call/cc (lambda (k) 3)))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(4)); // 1 + 3
+}
+
+/// Test storing and using a continuation later
+#[test]
+fn test_call_cc_stored_continuation() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Store the continuation and return normally
+    eval.eval_str("(define saved-k #f)").unwrap();
+    let result1 = eval.eval_str("(+ 1 (call/cc (lambda (k) (set! saved-k k) 4)))").unwrap();
+    assert_eq!(lisp.get(result1).unwrap().as_number(), Some(5)); // 1 + 4
+    
+    // Now invoke the saved continuation with a new value
+    // This should return to the point of call/cc and compute (+ 1 9) = 10
+    let result2 = eval.eval_str("(saved-k 9)").unwrap();
+    assert_eq!(lisp.get(result2).unwrap().as_number(), Some(10));
+}
+
+/// Test nested call/cc - inner escapes outer
+#[test]
+fn test_call_cc_nested() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Inner call/cc invokes outer's continuation, jumping out of both
+    let result = eval.eval_str(
+        "(call/cc (lambda (outer) (call/cc (lambda (inner) (outer 'done))) 'never-reached))"
+    ).unwrap();
+    assert!(lisp.symbol_matches(result, "done").unwrap());
+}
+
+/// Test call-with-current-continuation long form
+#[test]
+fn test_call_with_current_continuation() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // The long form should work exactly like call/cc
+    let result = eval.eval_str("(+ 1 (call-with-current-continuation (lambda (k) (k 5))))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(6)); // 1 + 5
+}
+
+/// Test call/cc with multiple returns using same continuation
+#[test]
+fn test_call_cc_multiple_returns() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a counter and a continuation
+    eval.eval_str("(define counter 0)").unwrap();
+    eval.eval_str("(define saved-k #f)").unwrap();
+    
+    // First call - save continuation and return 1
+    let result1 = eval.eval_str(
+        "(call/cc (lambda (k) (set! saved-k k) 1))"
+    ).unwrap();
+    assert_eq!(lisp.get(result1).unwrap().as_number(), Some(1));
+    
+    // Use the continuation multiple times
+    let result2 = eval.eval_str("(saved-k 2)").unwrap();
+    assert_eq!(lisp.get(result2).unwrap().as_number(), Some(2));
+    
+    let result3 = eval.eval_str("(saved-k 3)").unwrap();
+    assert_eq!(lisp.get(result3).unwrap().as_number(), Some(3));
+}
+
+/// Test call/cc continuation is a procedure
+#[test]
+fn test_call_cc_continuation_is_procedure() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Get the continuation and check it's a valid value
+    eval.eval_str("(define k #f)").unwrap();
+    eval.eval_str("(call/cc (lambda (c) (set! k c) 1))").unwrap();
+    
+    // The continuation should exist and be callable
+    let result = eval.eval_str("k").unwrap();
+    // It should be a continuation value
+    assert!(lisp.get(result).unwrap().is_continuation());
+}
+
+/// Test call/cc with arithmetic in continuation
+#[test]
+fn test_call_cc_arithmetic_context() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // More complex arithmetic context
+    let result = eval.eval_str("(* 2 (+ 3 (call/cc (lambda (k) (k 5)))))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(16)); // 2 * (3 + 5) = 16
+}
+
+/// Test call/cc error: wrong number of arguments to continuation
+#[test]
+fn test_call_cc_continuation_wrong_args() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Store a continuation
+    eval.eval_str("(define k #f)").unwrap();
+    eval.eval_str("(call/cc (lambda (c) (set! k c) 1))").unwrap();
+    
+    // Calling continuation with no args should fail
+    let result = eval.eval_str("(k)");
+    assert!(result.is_err());
+    
+    // Calling with too many args should also fail
+    let result2 = eval.eval_str("(k 1 2)");
+    assert!(result2.is_err());
+}
+
+/// Test call/cc error: wrong number of arguments to call/cc itself
+#[test]
+fn test_call_cc_wrong_args() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // call/cc with no arguments should fail
+    let result = eval.eval_str("(call/cc)");
+    assert!(result.is_err());
+    
+    // call/cc with too many arguments should fail
+    let result2 = eval.eval_str("(call/cc (lambda (k) k) extra)");
+    assert!(result2.is_err());
+}
