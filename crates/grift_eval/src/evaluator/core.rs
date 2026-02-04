@@ -35,6 +35,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             macro_env: nil,
             gensym_counter: 0,
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
+            output_callback: None, // No output callback by default
         };
         
         // Initialize global environment with builtins
@@ -135,6 +136,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Get a reference to the native function registry.
     pub fn native_registry(&self) -> &NativeRegistry<N> {
         &self.native_registry
+    }
+    
+    /// Set an output callback for display/newline operations.
+    ///
+    /// When set, the `display` and `newline` builtins will call this function
+    /// to produce output. This enables side effects during macro expansion to be visible.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift_eval::{Lisp, Evaluator, ArenaIndex};
+    ///
+    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let mut eval = Evaluator::new(&lisp).unwrap();
+    /// 
+    /// // Set output callback
+    /// eval.set_output_callback(Some(|lisp, val| {
+    ///     // In a real implementation with std, you would print here
+    ///     // println!("{}", format_value(lisp, val));
+    /// }));
+    /// ```
+    pub fn set_output_callback(&mut self, callback: Option<crate::evaluator::OutputCallback<N>>) {
+        self.output_callback = callback;
     }
     
     /// Run GC with minimal roots (global env, macro env, current continuation, and dynamic-wind chain)
