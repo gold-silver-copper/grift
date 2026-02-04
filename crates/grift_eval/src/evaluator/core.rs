@@ -211,7 +211,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Cont::CallWithValuesConsumer(data_start) |
                     Cont::CallWithValuesApply(data_start) |
                     Cont::SyntaxCaseMatch(data_start) |
-                    Cont::SyntaxCaseFender(data_start) => data_start,
+                    Cont::SyntaxCaseFender(data_start) |
+                    Cont::CallCcApply(data_start) |
+                    Cont::ContinuationApply(data_start) => data_start,
                 };
                 // Add all ArenaIndex values from this continuation's data to roots
                 for j in 0..data_len {
@@ -570,7 +572,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) | Value::SyntaxRules { .. } |
-            Value::Syntax { .. } | Value::ContFrame { .. } => {
+            Value::Syntax { .. } | Value::ContFrame { .. } | Value::Continuation { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -717,6 +719,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "call-with-values")? {
                 return self.step_eval_call_with_values(cdr, env);
             }
+            
+            // call-with-current-continuation / call/cc - capture the current continuation
+            if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
+                || self.lisp.symbol_matches(car, "call/cc")? {
+                return self.step_eval_call_cc(cdr, env);
+            }
         }
         
         // Function application - HYBRID EVALUATION
@@ -849,6 +857,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         pack_quasiquote_cdr / unpack_quasiquote_cdr => [car_val];
         pack_quasiquote_splice_append / unpack_quasiquote_splice_append => [splice_val];
         pack_let_syntax_body / unpack_let_syntax_body => [saved_macro_env];
+        pack_call_cc_apply / unpack_call_cc_apply => [captured_continuation];
+        pack_continuation_apply / unpack_continuation_apply => [captured_continuation];
         
         // 2-field continuations
         pack_begin_seq / unpack_begin_seq => [remaining, env];

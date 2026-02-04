@@ -89,11 +89,38 @@ The `Cont` enum represents different types of continuations:
 | 1.2 | Implement `Trace` for ContFrame (GC support) | ✅ Complete |
 | 1.3 | Add helper methods (`cont_frame`, `cont_frame_parts`, `cont_frame_parent`) | ✅ Complete |
 | 1.4 | Add unit tests for ContFrame functionality | ✅ Complete |
-| 1.5 | Migrate evaluator to use arena-based continuations | 🔲 Not started |
+| 1.5 | Migrate evaluator to use arena-based continuations | 🔲 Partial (hybrid approach) |
 
-**Next Steps**:
-- Step 1.5 requires modifying the Evaluator struct to use `current_cont: ArenaIndex` instead of `cont_stack` and `data_stack` arrays
-- This is a significant refactoring effort that should be done carefully with comprehensive testing
+### Phase 2 Progress Tracking
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 2.1 | Add `Value::Continuation` type to Value enum | ✅ Complete |
+| 2.2 | Implement `Trace` for Continuation (GC support) | ✅ Complete |
+| 2.3 | Add helper methods (`continuation`, `continuation_parts`) | ✅ Complete |
+| 2.4 | Add unit tests for Continuation functionality | ✅ Complete |
+
+### Phase 3 Progress Tracking
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 3.1 | Add `call/cc` and `call-with-current-continuation` special forms | ✅ Complete |
+| 3.2 | Implement continuation capture (`capture_continuation`) | ✅ Complete |
+| 3.3 | Implement continuation restore (`restore_continuation`) | ✅ Complete |
+| 3.4 | Handle continuation invocation in `ApplyForced` | ✅ Complete |
+| 3.5 | Add comprehensive tests for call/cc | ✅ Complete |
+
+### Phase 4 Progress Tracking
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 4.1 | Implement `dynamic-wind` | 🔲 Not started |
+
+**Implementation Notes**:
+- Phase 1.5 uses a hybrid approach: the evaluator still uses array-based `cont_stack` and `data_stack`,
+  but continuations are serialized to arena-based `ContFrame` chains when captured with `call/cc`
+- This hybrid approach provides correct semantics with less invasive changes to the evaluator
+- Full migration to arena-based continuations can be done later as an optimization
 
 ## Implementation Strategy
 

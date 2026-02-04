@@ -495,6 +495,45 @@ pub enum Value {
         cont_data: ArenaIndex,  // cons cell: ((type . data) . parent_cont)
         env: ArenaIndex,        // environment at this continuation point
     },
+    
+    /// Captured continuation from call/cc - a first-class callable value
+    ///
+    /// When `call-with-current-continuation` (call/cc) is invoked, the current
+    /// continuation is captured and wrapped as this value type. The continuation
+    /// can later be invoked as a procedure, which abandons the current computation
+    /// and returns to the point where the continuation was captured.
+    ///
+    /// # Memory Layout
+    ///
+    /// Following the 2-index constraint like Lambda and Cons:
+    /// - `cont_chain`: ArenaIndex to ContFrame linked list (captured continuation stack)
+    ///   - Points to the head of the continuation chain (most recent frame)
+    ///   - Nil represents an empty continuation (e.g., at top-level REPL with no pending work)
+    /// - `metadata`: ArenaIndex to cons cell `(capture_env . dynamic_wind_chain)`
+    ///   - car: environment at capture point
+    ///   - cdr: dynamic-wind chain for proper before/after thunk invocation
+    ///
+    /// # Semantics
+    ///
+    /// When a continuation is called with a value:
+    /// 1. The current computation is abandoned
+    /// 2. The captured continuation stack is restored
+    /// 3. The value becomes the result at the call/cc point
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (+ 1 (call/cc (lambda (k) (+ 2 (k 3)))))
+    /// ;; => 4 (not 6, because (k 3) never returns)
+    /// ```
+    ///
+    /// # References
+    ///
+    /// See docs/CALL_CC_IMPLEMENTATION_PLAN.md for the full implementation plan.
+    Continuation {
+        cont_chain: ArenaIndex,  // Points to ContFrame linked list head (or Nil for empty)
+        metadata: ArenaIndex,    // cons cell: (capture_env . dynamic_wind_chain)
+    },
 }
 
 impl Value {
@@ -674,6 +713,7 @@ impl Value {
             Value::SyntaxRules { .. } => "syntax-rules",
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
+            Value::Continuation { .. } => "continuation",
         }
     }
     
@@ -693,6 +733,12 @@ impl Value {
     #[inline]
     pub const fn is_cont_frame(&self) -> bool {
         matches!(self, Value::ContFrame { .. })
+    }
+    
+    /// Check if this value is a captured continuation (from call/cc)
+    #[inline]
+    pub const fn is_continuation(&self) -> bool {
+        matches!(self, Value::Continuation { .. })
     }
 }
 
@@ -747,6 +793,13 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // cont_data points to a cons cell (type_and_data . parent_cont)
                 tracer(*cont_data);
                 tracer(*env);
+            }
+            Value::Continuation { cont_chain, metadata } => {
+                // cont_chain and metadata are inline ArenaIndex - trace both
+                // cont_chain points to ContFrame linked list
+                // metadata points to a cons cell (capture_env . dynamic_wind_chain)
+                tracer(*cont_chain);
+                tracer(*metadata);
             }
             Value::Array { len, data } => {
                 // For non-empty arrays, trace all elements

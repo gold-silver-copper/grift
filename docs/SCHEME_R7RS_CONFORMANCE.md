@@ -24,7 +24,7 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Lexical scoping with closures
 - ✅ Proper tail-call optimization (via trampolining)
 - ✅ Strict evaluation (call-by-value)
-- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`
+- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`, `call-with-current-continuation` / `call/cc`
 
 #### Multiple Values (R7RS Section 6.10)
 - ✅ `values` - Return multiple values
@@ -270,16 +270,21 @@ the evaluator would need to support rest-argument syntax in lambda.
 ### Phase 9: Advanced Features (Optional)
 **Goal**: Complete R7RS conformance
 
-#### 9.1 Continuations (IN PROGRESS)
+#### 9.1 Continuations (MOSTLY COMPLETE)
 - [x] Add `Value::ContFrame` type for arena-based continuation stack (Phase 1 infrastructure)
-- [ ] Migrate evaluator to use arena-based continuations (Phase 1 continued)
-- [ ] Implement `call-with-current-continuation` / `call/cc`
-- [ ] Implement `dynamic-wind`
+- [x] Add `Value::Continuation` type for first-class continuations (Phase 2)
+- [x] Implement `call-with-current-continuation` / `call/cc` (Phase 3)
+- [ ] Migrate evaluator fully to arena-based continuations (optimization)
+- [ ] Implement `dynamic-wind` (Phase 4)
 
 **Implementation Notes**:
 - See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for the detailed implementation plan
-- Phase 1 (infrastructure) adds `Value::ContFrame` for arena-based continuation storage
-- This enables O(1) continuation capture once the evaluator migration is complete
+- `call/cc` and `call-with-current-continuation` are now fully functional
+- Continuations can be captured, stored, and invoked multiple times
+- Uses a hybrid approach: evaluator uses array-based stacks, but continuations are
+  serialized to arena-based `ContFrame` chains when captured
+- `dynamic-wind` is not yet implemented (before/after thunks are not called during
+  continuation jumps)
 
 #### 9.2 Lazy Evaluation (scheme lazy library) ✅ COMPLETED
 - [x] Implement `delay` / `force` - Basic delayed evaluation (macro-based)
@@ -345,8 +350,9 @@ the evaluator would need to support rest-argument syntax in lambda.
 
 ### Potential Challenges
 
-1. **Continuations**: Phase 1 infrastructure complete with `Value::ContFrame`. See `docs/CALL_CC_IMPLEMENTATION_PLAN.md`.
-   - **Impact**: Currently implementing - Phase 9 moved to active development
+1. **Continuations**: ✅ **MOSTLY COMPLETED** - `call/cc` and `call-with-current-continuation` are fully functional.
+   - `dynamic-wind` not yet implemented (before/after thunks are not called during continuation jumps)
+   - See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for implementation details
    
 2. **Multiple Values**: ✅ **COMPLETED** - Full support via `call-with-values`, `let-values`, `let*-values`, `define-values`.
 

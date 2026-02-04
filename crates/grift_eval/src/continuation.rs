@@ -144,6 +144,17 @@ pub enum Cont {
     /// After evaluating fender in syntax-case, decide to use this clause or continue
     /// Stack data: [output, bindings, literals, remaining_clauses, env, stx] (6 elements)
     SyntaxCaseFender(usize),
+    
+    /// After evaluating the procedure argument of call/cc, apply it to the captured continuation
+    /// Stack data: [captured_continuation] (1 element)
+    /// The captured continuation is a Value::Continuation that represents the current state
+    CallCcApply(usize),
+    
+    /// After evaluating the argument to a captured continuation, restore and return
+    /// Stack data: [captured_continuation] (1 element)
+    /// When this continuation is popped, we restore the captured continuation and
+    /// return val as the result of the original call/cc
+    ContinuationApply(usize),
 }
 
 impl Cont {
@@ -161,6 +172,8 @@ impl Cont {
             Cont::QuasiquoteCdr(_) => 1,
             Cont::QuasiquoteSpliceAppend(_) => 1,
             Cont::LetSyntaxBody(_) => 1,
+            Cont::CallCcApply(_) => 1,
+            Cont::ContinuationApply(_) => 1,
             Cont::BeginSeq(_) => 2,
             // Note: CaseKey removed
             Cont::ApplyFirst(_) => 2,
