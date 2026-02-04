@@ -52,10 +52,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let sym1 = eval.gensym("tmp")?;  // #:tmp0
-    /// let sym2 = eval.gensym("tmp")?;  // #:tmp1
-    /// let sym3 = eval.gensym_simple()?; // #:g2
+    /// ```
+    /// use grift_parser::Lisp;
+    /// use grift_eval::Evaluator;
+    /// 
+    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let mut eval = Evaluator::new(&lisp).unwrap();
+    /// 
+    /// let sym1 = eval.gensym("tmp").unwrap();
+    /// let sym2 = eval.gensym("tmp").unwrap();
+    /// let sym3 = eval.gensym_simple().unwrap();
+    /// 
+    /// // Each symbol is unique
+    /// assert_ne!(sym1, sym2);
+    /// assert_ne!(sym2, sym3);
     /// ```
     ///
     /// # Memory

@@ -558,11 +558,21 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```
+    /// use grift_parser::{Lisp, Value};
+    /// 
+    /// let lisp: Lisp<1000> = Lisp::new();
+    /// 
     /// // Create a syntax object wrapping the symbol 'x' with empty context
-    /// let x = lisp.symbol("x")?;
-    /// let nil = lisp.nil()?;
-    /// let stx = lisp.syntax(x, nil, nil)?;
+    /// let x = lisp.symbol("x").unwrap();
+    /// let nil = lisp.nil().unwrap();
+    /// let stx = lisp.syntax(x, nil, nil).unwrap();
+    /// 
+    /// // Verify it's a syntax object
+    /// match lisp.get(stx).unwrap() {
+    ///     Value::Syntax { .. } => (), // Success
+    ///     _ => panic!("Expected Syntax value"),
+    /// }
     /// ```
     pub fn syntax(
         &self,
@@ -637,14 +647,25 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```
+    /// use grift_parser::Lisp;
+    /// 
+    /// let lisp: Lisp<1000> = Lisp::new();
+    /// 
     /// // Create a Done continuation (type 0, no data, no parent)
-    /// let nil = lisp.nil()?;
-    /// let done_cont = lisp.cont_frame(0, nil, nil, nil)?;
-    ///
+    /// let nil = lisp.nil().unwrap();
+    /// let done_cont = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    /// 
     /// // Create an IfBranch continuation (type 2) with data
-    /// let data = lisp.cons(then_expr, else_expr)?;
-    /// let if_cont = lisp.cont_frame(2, data, done_cont, env)?;
+    /// let then_expr = lisp.symbol("then").unwrap();
+    /// let else_expr = lisp.symbol("else").unwrap();
+    /// let data = lisp.cons(then_expr, else_expr).unwrap();
+    /// let env = lisp.nil().unwrap();
+    /// let if_cont = lisp.cont_frame(2, data, done_cont, env).unwrap();
+    /// 
+    /// // Verify the continuation parent
+    /// let parent = lisp.cont_frame_parent(if_cont).unwrap();
+    /// assert_eq!(parent, done_cont);
     /// ```
     pub fn cont_frame(
         &self,
@@ -714,12 +735,25 @@ impl<const N: usize> Lisp<N> {
     /// - Otherwise returns ArenaError::InvalidIndex
     ///
     /// The Nil case enables writing simple iteration loops that naturally terminate:
-    /// ```ignore
-    /// let mut current = some_cont_frame;
-    /// while !current.is_nil() {
-    ///     // process current
-    ///     current = lisp.cont_frame_parent(current)?;
+    /// ```
+    /// use grift_parser::{Lisp, Value};
+    /// 
+    /// let lisp: Lisp<1000> = Lisp::new();
+    /// 
+    /// // Create a chain: cont3 -> cont2 -> cont1 -> nil
+    /// let nil = lisp.nil().unwrap();
+    /// let cont1 = lisp.cont_frame(1, nil, nil, nil).unwrap();
+    /// let cont2 = lisp.cont_frame(2, nil, cont1, nil).unwrap();
+    /// let cont3 = lisp.cont_frame(3, nil, cont2, nil).unwrap();
+    /// 
+    /// // Iterate through the chain
+    /// let mut current = cont3;
+    /// let mut count = 0;
+    /// while !matches!(lisp.get(current).unwrap(), Value::Nil) {
+    ///     current = lisp.cont_frame_parent(current).unwrap();
+    ///     count += 1;
     /// }
+    /// assert_eq!(count, 3); // Visited cont3, cont2, cont1
     /// ```
     pub fn cont_frame_parent(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(idx)? {
@@ -744,10 +778,22 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// // Capture the current continuation
-    /// let cont = lisp.continuation(current_cont, env, nil)?;
-    /// // Later, invoke it with a value to return to the capture point
+    /// ```
+    /// use grift_parser::{Lisp, Value};
+    /// 
+    /// let lisp: Lisp<1000> = Lisp::new();
+    /// 
+    /// // Create a simple continuation
+    /// let nil = lisp.nil().unwrap();
+    /// let cont_chain = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    /// let env = lisp.nil().unwrap();
+    /// let cont = lisp.continuation(cont_chain, env, nil).unwrap();
+    /// 
+    /// // Verify it's a continuation value
+    /// match lisp.get(cont).unwrap() {
+    ///     Value::Continuation { .. } => (), // Success
+    ///     _ => panic!("Expected Continuation value"),
+    /// }
     /// ```
     pub fn continuation(
         &self,
