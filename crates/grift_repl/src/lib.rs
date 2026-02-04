@@ -212,6 +212,29 @@ pub fn value_to_string<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> Strin
     buf
 }
 
+/// Output callback for display/newline during evaluation.
+/// 
+/// This function is called by the evaluator when display or newline is executed,
+/// including during macro expansion phases. This allows output to be visible
+/// during both runtime evaluation and macro expansion.
+/// 
+/// We check if the value is nil (which represents a newline) or an actual value.
+fn output_callback<const N: usize>(lisp: &Lisp<N>, val: ArenaIndex) {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout();
+    
+    // Check if this is a newline (represented by nil value)
+    // We distinguish by checking the actual pointer - if it's the NIL constant
+    if val.is_nil() {
+        let _ = stdout.write_all(b"\n");
+    } else {
+        // Display the value
+        let s = value_to_string(lisp, val);
+        let _ = stdout.write_all(s.as_bytes());
+    }
+    let _ = stdout.flush();
+}
+
 // ============================================================================
 // Error Formatting
 // ============================================================================
@@ -339,6 +362,9 @@ pub fn run_repl<const N: usize>() {
             return;
         }
     };
+    
+    // Set output callback for display/newline to enable side effects during macro expansion
+    eval.set_output_callback(Some(output_callback));
     
     let stdin = io::stdin();
     let mut stdout = io::stdout();

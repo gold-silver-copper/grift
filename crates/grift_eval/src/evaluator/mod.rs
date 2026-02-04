@@ -20,6 +20,17 @@ use crate::native::NativeRegistry;
 // Evaluator
 // ============================================================================
 
+/// Function pointer type for output callbacks
+/// 
+/// This function is called by `display` and `newline` builtins during evaluation,
+/// including during macro expansion. The function receives the evaluator's lisp 
+/// context and the value to display.
+/// 
+/// **Special handling for newline**: The `newline` builtin passes `nil` as the
+/// value parameter. Callbacks should check `val.is_nil()` to distinguish between
+/// newline requests and actual display values.
+pub type OutputCallback<const N: usize> = fn(&Lisp<N>, ArenaIndex);
+
 /// The Lisp evaluator with full trampolined TCO.
 ///
 /// This evaluator uses continuation-passing style with an arena-based
@@ -50,4 +61,9 @@ pub struct Evaluator<'a, const N: usize> {
     /// Used to track dynamic extent for proper before/after thunk execution
     /// when entering/exiting dynamic-wind scopes via call/cc
     dynamic_wind_chain: ArenaIndex,
+    /// Optional output callback for display/newline
+    /// 
+    /// When set, `display` and `newline` will call this function to produce output.
+    /// This enables side effects during macro expansion to be visible.
+    output_callback: Option<OutputCallback<N>>,
 }

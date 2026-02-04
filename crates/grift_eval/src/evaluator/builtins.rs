@@ -341,10 +341,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::NumEq => self.compare_numbers(args, |a, b| a == b, call_expr),
             
             Builtin::Display => {
-                Ok(self.lisp.car(args)?)
+                let val = self.lisp.car(args)?;
+                // Call output callback if set
+                if let Some(callback) = self.output_callback {
+                    callback(self.lisp, val);
+                }
+                Ok(val)
             }
             
             Builtin::Newline => {
+                // Call output callback with nil (marker for newline)
+                if let Some(callback) = self.output_callback {
+                    callback(self.lisp, self.lisp.nil()?);
+                }
                 self.lisp.nil().map_err(Into::into)
             }
             

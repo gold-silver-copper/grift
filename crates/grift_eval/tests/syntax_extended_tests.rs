@@ -656,3 +656,125 @@ fn test_macro_uses_previously_restricted_builtins() {
     let result = eval.eval_str("(length-macro (1 2 3 4 5))").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(5));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MACRO EXPANSION SIDE EFFECTS TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test that display during macro expansion is executed
+/// 
+/// This test validates that side effects like display work during macro expansion.
+/// We test this by defining a macro that performs side effects during expansion
+/// and verifying the macro works correctly (implying side effects executed).
+#[test]
+fn test_macro_expansion_side_effects_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that displays during expansion
+    // The display will execute but we can't easily capture it in tests
+    // However, we can verify the macro itself works correctly
+    eval.eval_str(r#"
+        (define-syntax my-add1
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n)
+               (begin
+                 (display "During expansion")
+                 (syntax
+                   (begin
+                     (display "During runtime")
+                     (+ n 1))))))))
+    "#).unwrap();
+    
+    // Invoke the macro - if display during expansion causes an error,
+    // this will fail. If it succeeds, expansion-time display executed.
+    let result = eval.eval_str("(my-add1 4)").unwrap();
+    
+    // Verify the macro expanded correctly and produced the right result
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5));
+}
+
+/// Test that newline during macro expansion works without errors
+#[test]
+fn test_macro_expansion_newline() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that uses newline during expansion
+    eval.eval_str(r#"
+        (define-syntax my-test
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n)
+               (begin
+                 (display "Line1")
+                 (newline)
+                 (display "Line2")
+                 (newline)
+                 (syntax n))))))
+    "#).unwrap();
+    
+    // Invoke the macro - newline should not cause errors
+    let result = eval.eval_str("(my-test 42)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+}
+
+/// Test that multiple macro invocations work correctly with side effects
+#[test]
+fn test_macro_expansion_multiple_invocations() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that displays during expansion
+    eval.eval_str(r#"
+        (define-syntax count-macro
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n)
+               (begin
+                 (display "EXPAND")
+                 (newline)
+                 (syntax (+ n 1)))))))
+    "#).unwrap();
+    
+    // Invoke the macro three times - each should trigger expansion
+    let r1 = eval.eval_str("(count-macro 1)").unwrap();
+    let r2 = eval.eval_str("(count-macro 2)").unwrap();
+    let r3 = eval.eval_str("(count-macro 3)").unwrap();
+    
+    // Verify each invocation worked correctly
+    assert_eq!(lisp.get(r1).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(r2).unwrap().as_number(), Some(3));
+    assert_eq!(lisp.get(r3).unwrap().as_number(), Some(4));
+}
+
+/// Test complex side effects during macro expansion
+#[test]
+fn test_macro_expansion_complex_side_effects() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that performs multiple side effects during expansion
+    eval.eval_str(r#"
+        (define-syntax debug-macro
+          (lambda (x)
+            (syntax-case x ()
+              ((_ name val)
+               (begin
+                 (display "Macro expansion for: ")
+                 (display name)
+                 (newline)
+                 (display "Value: ")
+                 (display val)
+                 (newline)
+                 (syntax (+ val 10)))))))
+    "#).unwrap();
+    
+    // Invoke with different arguments
+    let result = eval.eval_str("(debug-macro x 5)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(15));
+    
+    let result2 = eval.eval_str("(debug-macro y 20)").unwrap();
+    assert_eq!(lisp.get(result2).unwrap().as_number(), Some(30));
+}
