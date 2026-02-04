@@ -474,8 +474,8 @@ pub enum Value {
     ///
     /// # Memory Layout
     ///
-    /// - `cont_data`: ArenaIndex to cons cell (type_and_data . parent_cont)
-    ///   - car: (Usize(cont_type) . data) where data encodes continuation-specific values
+    /// - `cont_data`: ArenaIndex to cons cell `((type . data) . parent_cont)`
+    ///   - car: cons cell `(Usize(cont_type) . data)` where data encodes continuation-specific values
     ///   - cdr: ArenaIndex to parent ContFrame, or Nil for Done
     /// - `env`: ArenaIndex to the environment at this continuation point
     ///
@@ -492,7 +492,7 @@ pub enum Value {
     ///
     /// See docs/CALL_CC_IMPLEMENTATION_PLAN.md for the full implementation plan.
     ContFrame {
-        cont_data: ArenaIndex,  // cons cell: (type_and_data . parent_cont)
+        cont_data: ArenaIndex,  // cons cell: ((type . data) . parent_cont)
         env: ArenaIndex,        // environment at this continuation point
     },
 }

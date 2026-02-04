@@ -705,13 +705,28 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Returns
     ///
-    /// The parent continuation ArenaIndex (or Nil if this is the Done continuation)
+    /// The parent continuation ArenaIndex (or Nil if this is the Done continuation).
+    ///
+    /// # Special Cases
+    ///
+    /// - If `idx` points to a ContFrame, returns the parent continuation
+    /// - If `idx` is Nil, returns Nil (end of chain sentinel - allows safe iteration)
+    /// - Otherwise returns ArenaError::InvalidIndex
+    ///
+    /// The Nil case enables writing simple iteration loops that naturally terminate:
+    /// ```ignore
+    /// let mut current = some_cont_frame;
+    /// while !current.is_nil() {
+    ///     // process current
+    ///     current = lisp.cont_frame_parent(current)?;
+    /// }
+    /// ```
     pub fn cont_frame_parent(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(idx)? {
             Value::ContFrame { cont_data, .. } => {
                 self.cdr(cont_data)
             }
-            Value::Nil => Ok(idx), // Nil represents end of chain
+            Value::Nil => Ok(idx), // Nil represents end of chain - return self for safe iteration
             _ => Err(ArenaError::InvalidIndex),
         }
     }

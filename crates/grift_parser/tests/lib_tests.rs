@@ -1155,9 +1155,9 @@ fn test_cont_frame_gc_survival() {
     let done_cont = lisp.cont_frame(0, nil, nil, env).unwrap();
     let child_cont = lisp.cont_frame(1, nil, done_cont, env).unwrap();
     
-    // Create garbage
+    // Create garbage (intentionally discarded for GC testing)
     for i in 0..50 {
-        lisp.number(i * 100).unwrap();
+        let _ = lisp.number(i * 100).unwrap();
     }
     
     // Run GC with child_cont as root
