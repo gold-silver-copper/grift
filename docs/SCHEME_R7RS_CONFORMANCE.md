@@ -26,7 +26,7 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Strict evaluation (call-by-value)
 - ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`, `call-with-current-continuation` / `call/cc`, `dynamic-wind`
 
-#### Hygienic Macro System (R7RS Section 4.3)
+#### Hygienic Macro System (R7RS Sections 4.3 and 4.3.2)
 - ✅ `define-syntax` - Top-level macro definitions
 - ✅ `syntax-rules` - Pattern-based declarative macros with ellipsis support
 - ✅ `let-syntax` - Local macro bindings
@@ -242,7 +242,7 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 **Implementation Notes**:
 - Hygienic expansion using mark-based hygiene (Clinger & Rees 1991)
 - Macros expand during evaluation (evaluation-time expansion)
-- Ellipsis patterns with full repetition support (nested ellipsis has known limitations)
+- Ellipsis patterns with repetition support (see line 395 for nested ellipsis limitations)
 - 20+ standard R7RS forms implemented as macros in `macros.scm` (see Phase 5.3)
 
 #### 5.3 Standard Forms Implemented as Macros
