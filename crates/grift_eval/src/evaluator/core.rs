@@ -449,6 +449,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.trampoline(TrampolineState::Eval { expr, env })
     }
     
+    /// Evaluate an expression for macro expansion
+    /// 
+    /// This is similar to eval_in_env but saves and restores the continuation
+    /// state so that macro expansion can be nested within outer evaluation.
+    /// This is crucial when macro expansion happens while evaluating arguments
+    /// or in other nested contexts.
+    pub(crate) fn eval_for_macro(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
+        // Save current continuation and call stack state
+        let saved_cont = self.current_cont;
+        let saved_depth = self.call_stack_depth;
+        
+        // Initialize for new evaluation
+        self.current_cont = self.lisp.nil()?;
+        
+        // Run trampoline until completion
+        let result = self.trampoline(TrampolineState::Eval { expr, env });
+        
+        // Restore saved state
+        self.current_cont = saved_cont;
+        self.call_stack_depth = saved_depth;
+        
+        result
+    }
+    
     /// The main trampoline loop - processes states and continuations
     /// This is the ONLY place where looping happens - no Rust recursion!
     ///
@@ -580,6 +604,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // syntax - create syntax template
             if self.lisp.symbol_matches(car, "syntax")? {
                 return self.step_eval_syntax(cdr, env);
+            }
+            
+            // with-syntax - bind pattern variables for use in syntax templates
+            // This updates #:pattern-bindings so that (syntax ...) can access them
+            if self.lisp.symbol_matches(car, "with-syntax")? {
+                return self.step_eval_with_syntax(cdr, env);
             }
             
             // if - condition evaluated, then one branch selected

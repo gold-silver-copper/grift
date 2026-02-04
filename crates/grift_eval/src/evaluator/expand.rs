@@ -1426,8 +1426,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let call_env = self.lisp.cons(binding, def_env)?;
         
         // Evaluate the transformer body in the extended environment
-        // This is a synchronous evaluation, so we use a simple recursive call
-        self.eval_for_macro_expansion(body, call_env)
+        // Use eval_for_macro which preserves outer continuation state
+        // This enables full runtime capabilities during expansion while maintaining
+        // proper nesting of evaluations
+        self.eval_for_macro(body, call_env)
     }
     
     /// Evaluate an expression for macro expansion
