@@ -79,11 +79,33 @@ The `Cont` enum represents different types of continuations:
 
 **Design Constraint**: Following the same pattern as `Lambda { params, body_env }` and `Cons { car, cdr }`, continuation values must store at most **two ArenaIndex-sized fields** to maintain the 24-byte Value enum size and ensure cache-friendly memory layout.
 
+## Implementation Progress
+
+### Phase 1 Progress Tracking
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1.1 | Add `Value::ContFrame` type to Value enum | ✅ Complete |
+| 1.2 | Implement `Trace` for ContFrame (GC support) | ✅ Complete |
+| 1.3 | Add helper methods (`cont_frame`, `cont_frame_parts`, `cont_frame_parent`) | ✅ Complete |
+| 1.4 | Add unit tests for ContFrame functionality | ✅ Complete |
+| 1.5 | Migrate evaluator to use arena-based continuations | 🔲 Not started |
+
+**Next Steps**:
+- Step 1.5 requires modifying the Evaluator struct to use `current_cont: ArenaIndex` instead of `cont_stack` and `data_stack` arrays
+- This is a significant refactoring effort that should be done carefully with comprehensive testing
+
 ## Implementation Strategy
 
 ### Phase 1: Migrate to Arena-Based Continuation Stack
 
 **Goal**: Move the continuation stack from a separate array into the arena as a linked list structure
+
+**Incremental Approach**: This phase is implemented in steps:
+1. First, add the `Value::ContFrame` type to the Value enum with appropriate Trace implementation
+2. Add helper methods to Lisp for creating and manipulating ContFrame values
+3. Only after the type infrastructure is in place, migrate the evaluator to use arena-based continuations
+4. This allows testing the new types without breaking the existing evaluator
 
 #### 1.1 Design Arena-Based Continuation Structure
 

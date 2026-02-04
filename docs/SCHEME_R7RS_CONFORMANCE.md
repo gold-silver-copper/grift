@@ -270,9 +270,16 @@ the evaluator would need to support rest-argument syntax in lambda.
 ### Phase 9: Advanced Features (Optional)
 **Goal**: Complete R7RS conformance
 
-#### 9.1 Continuations
+#### 9.1 Continuations (IN PROGRESS)
+- [x] Add `Value::ContFrame` type for arena-based continuation stack (Phase 1 infrastructure)
+- [ ] Migrate evaluator to use arena-based continuations (Phase 1 continued)
 - [ ] Implement `call-with-current-continuation` / `call/cc`
 - [ ] Implement `dynamic-wind`
+
+**Implementation Notes**:
+- See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for the detailed implementation plan
+- Phase 1 (infrastructure) adds `Value::ContFrame` for arena-based continuation storage
+- This enables O(1) continuation capture once the evaluator migration is complete
 
 #### 9.2 Lazy Evaluation (scheme lazy library) ✅ COMPLETED
 - [x] Implement `delay` / `force` - Basic delayed evaluation (macro-based)
@@ -338,8 +345,8 @@ the evaluator would need to support rest-argument syntax in lambda.
 
 ### Potential Challenges
 
-1. **Continuations**: Current trampoline design doesn't support `call/cc`.
-   - **Impact**: Low priority - defer to Phase 9
+1. **Continuations**: Phase 1 infrastructure complete with `Value::ContFrame`. See `docs/CALL_CC_IMPLEMENTATION_PLAN.md`.
+   - **Impact**: Currently implementing - Phase 9 moved to active development
    
 2. **Multiple Values**: ✅ **COMPLETED** - Full support via `call-with-values`, `let-values`, `let*-values`, `define-values`.
 

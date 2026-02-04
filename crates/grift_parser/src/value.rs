@@ -465,6 +465,36 @@ pub enum Value {
         expr: ArenaIndex,       // The wrapped datum
         context: ArenaIndex,    // cons cell: (marks . substitutions)
     },
+    
+    /// Continuation frame for arena-based continuation stack (call/cc support)
+    ///
+    /// Continuation frames form a linked list in the arena, enabling O(1) capture
+    /// for call/cc. Each frame stores the continuation type, associated data, and
+    /// a reference to the parent continuation.
+    ///
+    /// # Memory Layout
+    ///
+    /// - `cont_data`: ArenaIndex to cons cell `((type . data) . parent_cont)`
+    ///   - car: cons cell `(Usize(cont_type) . data)` where data encodes continuation-specific values
+    ///   - cdr: ArenaIndex to parent ContFrame, or Nil for Done
+    /// - `env`: ArenaIndex to the environment at this continuation point
+    ///
+    /// This maintains the 2-index constraint per arena slot, matching Lambda's layout.
+    ///
+    /// # Example Continuation Types (encoded as Usize)
+    ///
+    /// - 0: Done - computation complete
+    /// - 1: ApplyForced - after evaluating function
+    /// - 2: IfBranch - after evaluating condition
+    /// - etc.
+    ///
+    /// # References
+    ///
+    /// See docs/CALL_CC_IMPLEMENTATION_PLAN.md for the full implementation plan.
+    ContFrame {
+        cont_data: ArenaIndex,  // cons cell: ((type . data) . parent_cont)
+        env: ArenaIndex,        // environment at this continuation point
+    },
 }
 
 impl Value {
@@ -643,6 +673,7 @@ impl Value {
             Value::Usize(_) => "usize",
             Value::SyntaxRules { .. } => "syntax-rules",
             Value::Syntax { .. } => "syntax",
+            Value::ContFrame { .. } => "cont-frame",
         }
     }
     
@@ -656,6 +687,12 @@ impl Value {
     #[inline]
     pub const fn is_syntax(&self) -> bool {
         matches!(self, Value::Syntax { .. })
+    }
+    
+    /// Check if this value is a continuation frame
+    #[inline]
+    pub const fn is_cont_frame(&self) -> bool {
+        matches!(self, Value::ContFrame { .. })
     }
 }
 
@@ -704,6 +741,12 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // context points to a cons cell (marks . substitutions)
                 tracer(*expr);
                 tracer(*context);
+            }
+            Value::ContFrame { cont_data, env } => {
+                // cont_data and env are inline ArenaIndex - trace both
+                // cont_data points to a cons cell (type_and_data . parent_cont)
+                tracer(*cont_data);
+                tracer(*env);
             }
             Value::Array { len, data } => {
                 // For non-empty arrays, trace all elements

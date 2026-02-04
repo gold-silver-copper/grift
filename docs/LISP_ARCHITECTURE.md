@@ -102,6 +102,9 @@ pub enum Value {
     Native { id: usize, name_hash: usize }, // Rust function reference
     Ref(ArenaIndex),                        // Internal reference
     Usize(usize),                           // Internal unsigned int
+    SyntaxRules { literals: ArenaIndex, rules_env: ArenaIndex }, // Macro transformer
+    Syntax { expr: ArenaIndex, context: ArenaIndex },            // Syntax object
+    ContFrame { cont_data: ArenaIndex, env: ArenaIndex },        // Continuation frame
 }
 ```
 
@@ -117,6 +120,9 @@ Current variant payloads:
 - `Array { len, data }` — 1 usize + 1 ArenaIndex ✓
 - `String { len, data }` — 1 usize + 1 ArenaIndex ✓
 - `Native { id, name_hash }` — 2 usize ✓
+- `SyntaxRules { literals, rules_env }` — 2 ArenaIndex ✓
+- `Syntax { expr, context }` — 2 ArenaIndex ✓
+- `ContFrame { cont_data, env }` — 2 ArenaIndex ✓
 
 Specific optimizations:
 
@@ -125,6 +131,8 @@ Specific optimizations:
 2. **StdLib** - Uses a simple tuple variant `StdLib(StdLib)` with just the function enum. Function bodies are parsed on each call from static strings.
 
 3. **Array/String** - Store length inline in the Value variant for O(1) access. The `data` pointer points directly to the first element (no length header in arena). Empty arrays/strings have `len=0` and `data == NIL`.
+
+4. **ContFrame** - Used for arena-based continuation stack (call/cc support). Stores `cont_data` as a cons cell `((type . data) . parent)` and `env` as the environment. This enables O(1) continuation capture for call/cc implementation.
 
 This design optimizes for common operations (length queries, iteration) while keeping arena usage minimal.
 
