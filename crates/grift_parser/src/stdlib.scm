@@ -26,7 +26,10 @@
   (filter-iter lst '()))  ;; Start with empty accumulator
 
 ;;; (fold f acc lst) - Left fold over lst
-(define (fold f acc lst) (if (null? lst) acc (fold f (f acc (car lst)) (cdr lst))))
+(define (fold f acc lst)  ;; Left-associative fold
+  (if (null? lst)
+      acc  ;; Base case: return accumulator
+      (fold f (f acc (car lst)) (cdr lst))))  ;; Apply f to acc and car, recurse
 
 ;;; (length lst) - Return length of lst (tail-recursive)
 (define (length lst)

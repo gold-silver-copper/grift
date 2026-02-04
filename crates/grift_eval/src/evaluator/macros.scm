@@ -127,12 +127,13 @@
     ((and test rest ...)  ;; Multiple arguments: test first, then rest
      (if test (and rest ...) #f))))  ;; Short-circuit if test is false
 
+;; or - logical OR, short-circuits on first truthy value
 (define-syntax or
   (syntax-rules ()
-    ((or) #f)
-    ((or test) test)
-    ((or test rest ...)
-     (let ((temp test))
+    ((or) #f)  ;; No arguments: return false
+    ((or test) test)  ;; Single argument: return its value
+    ((or test rest ...)  ;; Multiple arguments: test first, then rest
+     (let ((temp test))  ;; Evaluate test only once
        (if temp temp (or rest ...))))))
 
 (define-syntax when
