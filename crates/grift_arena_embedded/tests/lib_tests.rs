@@ -1,7 +1,9 @@
 use grift_arena_embedded::*;
 use grift_eval::{Lisp, Evaluator};
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn test_peek_poke() {
     reset_mock_hardware();
     
@@ -19,6 +21,7 @@ fn test_peek_poke() {
 }
 
 #[test]
+#[serial]
 fn test_peek_poke_32() {
     reset_mock_hardware();
     
@@ -36,6 +39,7 @@ fn test_peek_poke_32() {
 }
 
 #[test]
+#[serial]
 fn test_gpio_read_write() {
     reset_mock_hardware();
     
@@ -53,6 +57,7 @@ fn test_gpio_read_write() {
 }
 
 #[test]
+#[serial]
 fn test_gpio_bit_operations() {
     reset_mock_hardware();
     

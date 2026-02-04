@@ -14,6 +14,9 @@ grift_arena = { version = "1.2.0", path = "../grift_arena" }
 grift_parser = { version = "1.2.0", path = "../grift_parser" }
 grift_eval = { version = "1.2.0", path = "../grift_eval" }
 
+[dev-dependencies]
+serial_test = "3.3"
+
 [features]
 default = []
 # Enable std for testing/simulation on host machines
