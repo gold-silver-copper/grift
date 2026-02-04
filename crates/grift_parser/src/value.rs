@@ -230,6 +230,8 @@ define_builtins! {
     FreeIdentifierEq => "free-identifier=?",
     /// syntax->datum - Strip syntax wrapper to get the underlying datum
     SyntaxToDatum => "syntax->datum",
+    /// syntax-e - Racket-style alias for syntax->datum, extract the datum from a syntax object
+    SyntaxE => "syntax-e",
     /// datum->syntax - Wrap a datum with syntax context from a template identifier
     DatumToSyntax => "datum->syntax",
     /// generate-temporaries - Generate a list of fresh identifiers

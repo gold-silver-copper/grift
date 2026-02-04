@@ -1026,6 +1026,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.syntax_to_datum_recursive(stx)
             }
             
+            Builtin::SyntaxE => {
+                // (syntax-e stx) - Racket-style alias for syntax->datum
+                // Extract the datum from a syntax object
+                let stx = self.lisp.car(args)?;
+                self.syntax_to_datum_recursive(stx)
+            }
+            
             Builtin::DatumToSyntax => {
                 // (datum->syntax template-id datum) - Wrap datum with syntax context from template-id
                 extract_args!(self, args, template_id, datum);

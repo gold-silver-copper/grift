@@ -1221,6 +1221,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// Supports R7RS internal definitions: `define` forms at the start of the body
     /// are transformed to `letrec` semantics.
+    /// 
+    /// **Important**: Macro expansion happens here at lambda creation time (not at
+    /// call time). This ensures side effects in macros execute once during expansion,
+    /// not on every call to the lambda.
     pub(super) fn eval_lambda(&mut self, args: ArenaIndex, env: ArenaIndex) -> EvalResult {
         let params = self.lisp.car(args)?;
         let body_list = self.lisp.cdr(args)?;
@@ -1228,7 +1232,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Check for internal defines and transform to letrec
         let body = self.transform_internal_defines(body_list)?;
         
-        self.lisp.lambda(params, body, env).map_err(Into::into)
+        // Expand macros in the body at lambda creation time (not at call time)
+        // This ensures macro side effects run during expansion, not during each call
+        let expanded_body = self.expand(body)?;
+        
+        self.lisp.lambda(params, expanded_body, env).map_err(Into::into)
     }
     
     /// Transform internal defines at the start of a body to letrec
@@ -1352,13 +1360,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let name = self.lisp.car(first)?;
                 let params = self.lisp.cdr(first)?;
                 let body_list = rest;
-                let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-                    self.lisp.car(body_list)?
-                } else {
-                    let begin = self.lisp.symbol("begin")?;
-                    self.lisp.cons(begin, body_list)?
-                };
-                let lambda = self.lisp.lambda(params, body, env)?;
+                
+                // Transform internal defines if needed
+                let body = self.transform_internal_defines(body_list)?;
+                
+                // Expand macros in the body at definition time (not at call time)
+                // This ensures macro side effects run during expansion, not during each call
+                let expanded_body = self.expand(body)?;
+                
+                let lambda = self.lisp.lambda(params, expanded_body, env)?;
                 self.define(name, lambda)?;
                 Ok(TrampolineState::Return { val: name })
             }

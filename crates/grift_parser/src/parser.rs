@@ -280,7 +280,7 @@ impl<'a> Parser<'a> {
         }
     }
     
-    /// Parse hash literals (#t, #f, #\char, #(vector), etc.)
+    /// Parse hash literals (#t, #f, #\char, #(vector), #'expr, etc.)
     fn parse_hash_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         self.advance(); // consume '#'
         
@@ -295,6 +295,15 @@ impl<'a> Parser<'a> {
             }
             Some(b'\\') => self.parse_char_literal(lisp),
             Some(b'(') => self.parse_vector_literal(lisp),
+            Some(b'\'') => {
+                // Syntax quote: #'x -> (syntax x)
+                self.advance(); // consume '\''
+                let expr = self.parse(lisp)?;
+                let syntax_sym = lisp.symbol("syntax")?;
+                let nil = lisp.nil()?;
+                let quoted = lisp.cons(expr, nil)?;
+                lisp.cons(syntax_sym, quoted).map_err(Into::into)
+            }
             Some(_) => Err(self.error(ParseErrorKind::InvalidHashLiteral)),
             None => Err(self.error(ParseErrorKind::UnexpectedEof)),
         }
