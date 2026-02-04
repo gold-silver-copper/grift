@@ -1,7 +1,7 @@
 //! Core evaluator implementation.
 //!
 //! Contains the Evaluator constructor, GC, environment management,
-//! stack management, trampoline loop, and basic evaluation steps.
+//! continuation management (arena-based), trampoline loop, and basic evaluation steps.
 
 use grift_parser::{
     ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
@@ -11,11 +11,18 @@ use crate::error::{
     ErrorKind, StackFrame, EvalError, EvalResult,
     MAX_STACK_DEPTH,
 };
-use crate::continuation::{Cont, TrampolineState, MAX_CONT_DEPTH, MAX_DATA_STACK};
-use crate::native::{NativeRegistry, NativeFn, simple_hash};
-use crate::{
-    define_cont_pack_unpack, define_cont_pack_unpack_builtin_first, define_cont_pack_unpack_with_usize,
+use crate::continuation::{TrampolineState, is_binary_builtin, 
+    CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_BUILTIN_FORCE_ARG,
+    CONT_BINARY_BUILTIN_FIRST, CONT_BINARY_BUILTIN_SECOND, CONT_LAMBDA_FIRST_BIND,
+    CONT_LAMBDA_BIND_ARG, CONT_LAMBDA_REST_COLLECT, CONT_EVAL_EXPR, CONT_BEGIN_SEQ,
+    CONT_APPLY_FIRST, CONT_APPLY_SECOND, CONT_VALUES_COLLECT, CONT_DEFINE_VALUE,
+    CONT_SET_VALUE, CONT_NATIVE_ARGS_COLLECT, CONT_QUASIQUOTE_CAR, CONT_QUASIQUOTE_CDR,
+    CONT_QUASIQUOTE_UNQUOTE_WRAP, CONT_QUASIQUOTE_NESTED_WRAP, CONT_QUASIQUOTE_SPLICE,
+    CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
+    CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
+    CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
 };
+use crate::native::{NativeRegistry, NativeFn, simple_hash};
 
 use super::Evaluator;
 
@@ -25,17 +32,15 @@ const STANDARD_MACROS: &str = include_str!("macros.scm");
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
+        let nil = lisp.nil()?;
         let mut eval = Evaluator {
             lisp,
-            global_env: ArenaIndex::NIL,
+            global_env: nil,
             call_stack: [StackFrame::default(); MAX_STACK_DEPTH],
             call_stack_depth: 0,
-            cont_stack: [Cont::Done; MAX_CONT_DEPTH],
-            cont_depth: 0,
-            data_stack: [ArenaIndex::NIL; MAX_DATA_STACK],
-            data_stack_top: 0,
+            current_cont: nil, // Empty continuation (Done)
             native_registry: NativeRegistry::new(),
-            macro_env: ArenaIndex::NIL,
+            macro_env: nil,
             gensym_counter: 0,
         };
         
@@ -141,20 +146,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Run GC with current roots (global env only)
     pub fn gc(&self) -> GcStats {
-        self.lisp.gc(&[self.global_env, self.macro_env])
+        self.lisp.gc(&[self.global_env, self.macro_env, self.current_cont])
     }
     
-    /// Run GC during evaluation - marks continuation stack AND current state as roots
+    /// Run GC during evaluation - marks continuation chain AND current state as roots
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
-        // Collect all roots: global env + macro env + current state + all ArenaIndex values in continuations
-        const MAX_ROOTS: usize = 512;
-        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
+        // With arena-based continuations, we just need to root the current_cont pointer.
+        // The GC will trace through the ContFrame linked list automatically.
+        let mut roots = [ArenaIndex::NIL; 8];
         let mut root_count = 0;
         
-        // Always include global env and macro env
+        // Always include global env, macro env, and current continuation chain
         roots[root_count] = self.global_env;
         root_count += 1;
         roots[root_count] = self.macro_env;
+        root_count += 1;
+        roots[root_count] = self.current_cont;
         root_count += 1;
         
         // Include current state
@@ -168,66 +175,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         
-        // Collect roots from all continuations
-        // Each variant stores its data as a single ArenaIndex to a cons-list,
-        // which the GC will trace recursively
-        for i in 0..self.cont_depth {
-            if root_count >= MAX_ROOTS - 2 {
-                break; // Leave some room
-            }
-            
-            // Continuation data is now stored in a separate data_stack, not in the arena.
-            // The data_stack stores raw ArenaIndex values that may reference arena objects.
-            // We need to trace all ArenaIndex values in the data_stack up to current top.
-            let cont = self.cont_stack[i];
-            let data_len = cont.data_len();
-            if data_len > 0 {
-                // Get the data_start from the continuation
-                let ds = match cont {
-                    Cont::Done | Cont::QuasiquoteUnquoteWrap | Cont::QuasiquoteNestedWrap => 0,
-                    Cont::ApplyForced(data_start) |
-                    Cont::IfBranch(data_start) |
-                    Cont::BuiltinForceArg(data_start) |
-                    Cont::BinaryBuiltinFirst(data_start) |
-                    Cont::BinaryBuiltinSecond(data_start) |
-                    Cont::LambdaFirstBind(data_start) |
-                    Cont::LambdaBindArg(data_start) |
-                    Cont::LambdaRestCollect(data_start) |
-                    Cont::EvalExpr(data_start) |
-                    Cont::BeginSeq(data_start) |
-                    // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
-                    Cont::ApplyFirst(data_start) |
-                    Cont::ApplySecond(data_start) |
-                    Cont::ValuesCollect(data_start) |
-                    Cont::DefineValue(data_start) |
-                    Cont::SetValue(data_start) |
-                    Cont::NativeArgsCollect(data_start) |
-                    Cont::QuasiquoteCar(data_start) |
-                    Cont::QuasiquoteCdr(data_start) |
-                    Cont::QuasiquoteSplice(data_start) |
-                    Cont::QuasiquoteSpliceAppend(data_start) |
-                    Cont::LetSyntaxBody(data_start) |
-                    Cont::CallWithValuesProducer(data_start) |
-                    Cont::CallWithValuesConsumer(data_start) |
-                    Cont::CallWithValuesApply(data_start) |
-                    Cont::SyntaxCaseMatch(data_start) |
-                    Cont::SyntaxCaseFender(data_start) |
-                    Cont::CallCcApply(data_start) |
-                    Cont::ContinuationApply(data_start) => data_start,
-                };
-                // Add all ArenaIndex values from this continuation's data to roots
-                for j in 0..data_len {
-                    let idx = self.data_stack[ds + j];
-                    // Skip encoded builtins/raw usize values (they have very high values)
-                    // Real arena indices are < N
-                    if idx.raw() < N {
-                        roots[root_count] = idx;
-                        root_count += 1;
-                    }
-                }
-            }
-        }
-
         self.lisp.gc(&roots[..root_count])
     }
     
@@ -437,49 +384,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Main Evaluation - Full Trampoline (No Rust Recursion)
     // ========================================================================
     
-    /// Push a continuation onto the stack
+    /// Push a continuation onto the arena-based stack
+    ///
+    /// Creates a new ContFrame in the arena and links it to the current continuation chain.
+    /// This is O(1) allocation and enables O(1) capture for call/cc.
     #[inline]
-    pub(super) fn push_cont(&mut self, cont: Cont) -> Result<(), EvalError> {
-        if self.cont_depth >= MAX_CONT_DEPTH {
-            return Err(EvalError::new(ErrorKind::StackOverflow));
-        }
-        self.cont_stack[self.cont_depth] = cont;
-        self.cont_depth += 1;
+    pub(super) fn push_cont(&mut self, cont_type: usize, data: ArenaIndex, env: ArenaIndex) -> Result<(), EvalError> {
+        let new_frame = self.lisp.cont_frame(cont_type, data, self.current_cont, env)?;
+        self.current_cont = new_frame;
         Ok(())
     }
     
-    /// Pop a continuation from the stack
-    /// Also restores the data stack by popping the continuation's data
+    /// Pop a continuation from the arena-based stack
+    ///
+    /// Returns the continuation type, data, and environment from the current frame,
+    /// then updates current_cont to point to the parent frame.
+    ///
+    /// Returns (CONT_DONE, nil, nil) if the continuation stack is empty.
     #[inline]
-    pub(super) fn pop_cont(&mut self) -> Cont {
-        if self.cont_depth == 0 {
-            Cont::Done
-        } else {
-            self.cont_depth -= 1;
-            let cont = self.cont_stack[self.cont_depth];
-            // Restore data stack - pop this continuation's data
-            // data_start points to where this continuation's data begins
-            // After unpack, data_stack_top should be restored to data_start
-            // (This happens automatically since unpack reads but doesn't modify data_stack_top,
-            // and the next pack will overwrite from the current data_stack_top)
-            // Actually we need to restore here since unpack doesn't change data_stack_top
-            let data_len = cont.data_len();
-            if data_len > 0 {
-                self.data_stack_top -= data_len;
-            }
-            cont
+    pub(super) fn pop_cont(&mut self) -> Result<(usize, ArenaIndex, ArenaIndex), EvalError> {
+        if self.current_cont.is_nil() {
+            let nil = self.lisp.nil()?;
+            return Ok((CONT_DONE, nil, nil));
         }
+        
+        let (cont_type, data, parent, env) = self.lisp.cont_frame_parts(self.current_cont)?;
+        self.current_cont = parent;
+        Ok((cont_type, data, env))
     }
     
+    /// Check if the continuation stack is empty (at Done state)
+    #[inline]
+    pub(super) fn is_cont_done(&self) -> bool {
+        self.current_cont.is_nil()
+    }
     
     /// Evaluate an expression (entry point)
     /// 
     /// Macros are now expanded during evaluation (not pre-processed).
     /// This enables evaluation-time macro expansion per the R7RS model.
     pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
-        // Reset continuation stack and data stack
-        self.cont_depth = 0;
-        self.data_stack_top = 0;
+        // Reset continuation to empty (Done)
+        self.current_cont = self.lisp.nil()?;
         // Start evaluation - macros are expanded on-demand during eval
         self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
@@ -489,9 +435,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// This is now equivalent to `eval()` since macro expansion 
     /// happens during evaluation. Kept for API compatibility.
     pub fn eval_expanded(&mut self, expr: ArenaIndex) -> EvalResult {
-        // Reset continuation stack and data stack
-        self.cont_depth = 0;
-        self.data_stack_top = 0;
+        // Reset continuation to empty (Done)
+        self.current_cont = self.lisp.nil()?;
         // Start evaluation
         self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
@@ -501,9 +446,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This is public so the REPL can evaluate expressions for display
     pub fn eval_in_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
-        // Reset continuation stack and run - macros expanded during eval
-        self.cont_depth = 0;
-        self.data_stack_top = 0;
+        // Reset continuation to empty (Done)
+        self.current_cont = self.lisp.nil()?;
         self.trampoline(TrampolineState::Eval { expr, env })
     }
     
@@ -653,8 +597,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 
                 // Push continuation for after condition is evaluated
-                let data_start = self.pack_if_branch(then_expr, else_expr, env)?;
-                self.push_cont(Cont::IfBranch(data_start))?;
+                // Data: (then_expr . (else_expr . env))
+                let data = self.pack3(then_expr, else_expr, env)?;
+                self.push_cont(CONT_IF_BRANCH, data, env)?;
                 
                 // Evaluate condition
                 return Ok(TrampolineState::Eval { expr: cond_expr, env });
@@ -699,8 +644,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "eval")? {
                 let expr_to_eval = self.lisp.car(cdr)?;
                 // Push continuation to evaluate the result in global environment
-                let data_start = self.pack_eval_expr(self.global_env)?;
-                self.push_cont(Cont::EvalExpr(data_start))?;
+                // Data: env (single value)
+                let data = self.pack1(self.global_env)?;
+                self.push_cont(CONT_EVAL_EXPR, data, env)?;
                 // First evaluate the expression to get the code to eval
                 return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
             }
@@ -731,8 +677,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.push_frame(expr, car)?;
         
         // Push continuation: after evaluating func, apply it
-        let data_start = self.pack_apply_forced(cdr, env, expr)?;
-        self.push_cont(Cont::ApplyForced(data_start))?;
+        // Data: (args_expr . (env . call_expr))
+        let data = self.pack3(cdr, env, expr)?;
+        self.push_cont(CONT_APPLY_FORCED, data, env)?;
         
         // Evaluate the function expression
         Ok(TrampolineState::Eval { expr: car, env })
@@ -773,61 +720,153 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     // ========================================================================
-    // Pack/Unpack helpers for continuation data (using separate data stack)
+    // Arena-Based Pack/Unpack helpers for continuation data
     // ========================================================================
     //
-    // These push/pop ArenaIndex values directly to the data_stack, avoiding
-    // arena allocation entirely. No GC pressure, no RefCell overhead.
+    // These functions build and extract cons-cell chains in the arena for
+    // storing continuation data. Each pack function returns an ArenaIndex
+    // to the packed data, and each unpack function extracts values from
+    // a packed ArenaIndex.
     
-    /// Push values to data stack, return start index
+    /// Pack 1 value (just returns it as-is)
     #[inline]
-    pub(super) fn push_data(&mut self, values: &[ArenaIndex]) -> Result<usize, EvalError> {
-        let start = self.data_stack_top;
-        let new_top = start + values.len();
-        if new_top > MAX_DATA_STACK {
-            return Err(EvalError::new(ErrorKind::StackOverflow));
-        }
-        self.data_stack[start..new_top].copy_from_slice(values);
-        self.data_stack_top = new_top;
-        Ok(start)
+    pub(super) fn pack1(&self, a: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        Ok(a)
     }
     
-    /// Read values from data stack (does not modify stack - pop_cont handles cleanup)
+    /// Unpack 1 value (just returns it as-is)
     #[inline]
-    pub(super) fn read_data1(&self, start: usize) -> ArenaIndex {
-        self.data_stack[start]
+    pub(super) fn unpack1(&self, data: ArenaIndex) -> ArenaIndex {
+        data
     }
     
+    /// Pack 2 values into a cons cell: (a . b)
     #[inline]
-    pub(super) fn read_data2(&self, start: usize) -> (ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1])
+    pub(super) fn pack2(&self, a: ArenaIndex, b: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        self.lisp.cons(a, b).map_err(Into::into)
     }
     
+    /// Unpack 2 values from a cons cell: (a . b) -> (a, b)
     #[inline]
-    pub(super) fn read_data3(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2])
+    pub(super) fn unpack2(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let a = self.lisp.car(data)?;
+        let b = self.lisp.cdr(data)?;
+        Ok((a, b))
     }
     
+    /// Pack 3 values into nested cons: (a . (b . c))
     #[inline]
-    pub(super) fn read_data4(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3])
+    pub(super) fn pack3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let bc = self.lisp.cons(b, c)?;
+        self.lisp.cons(a, bc).map_err(Into::into)
     }
     
+    /// Unpack 3 values from nested cons: (a . (b . c)) -> (a, b, c)
     #[inline]
-    pub(super) fn read_data5(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4])
+    pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
+        let a = self.lisp.car(data)?;
+        let bc = self.lisp.cdr(data)?;
+        let b = self.lisp.car(bc)?;
+        let c = self.lisp.cdr(bc)?;
+        Ok((a, b, c))
     }
     
+    /// Pack 4 values into nested cons: (a . (b . (c . d)))
     #[inline]
-    pub(super) fn read_data6(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5])
+    pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let cd = self.lisp.cons(c, d)?;
+        let bcd = self.lisp.cons(b, cd)?;
+        self.lisp.cons(a, bcd).map_err(Into::into)
     }
     
-    /// Note: No longer used since do is now a macro (Phase 9), but kept for potential future use.
+    /// Unpack 4 values from nested cons
     #[inline]
-    #[allow(dead_code)]
-    pub(super) fn read_data7(&self, start: usize) -> (ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex) {
-        (self.data_stack[start], self.data_stack[start + 1], self.data_stack[start + 2], self.data_stack[start + 3], self.data_stack[start + 4], self.data_stack[start + 5], self.data_stack[start + 6])
+    pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
+        let a = self.lisp.car(data)?;
+        let bcd = self.lisp.cdr(data)?;
+        let b = self.lisp.car(bcd)?;
+        let cd = self.lisp.cdr(bcd)?;
+        let c = self.lisp.car(cd)?;
+        let d = self.lisp.cdr(cd)?;
+        Ok((a, b, c, d))
+    }
+    
+    /// Pack 5 values into nested cons
+    #[inline]
+    pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let de = self.lisp.cons(d, e)?;
+        let cde = self.lisp.cons(c, de)?;
+        let bcde = self.lisp.cons(b, cde)?;
+        self.lisp.cons(a, bcde).map_err(Into::into)
+    }
+    
+    /// Unpack 5 values from nested cons
+    #[inline]
+    pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
+        let a = self.lisp.car(data)?;
+        let bcde = self.lisp.cdr(data)?;
+        let b = self.lisp.car(bcde)?;
+        let cde = self.lisp.cdr(bcde)?;
+        let c = self.lisp.car(cde)?;
+        let de = self.lisp.cdr(cde)?;
+        let d = self.lisp.car(de)?;
+        let e = self.lisp.cdr(de)?;
+        Ok((a, b, c, d, e))
+    }
+    
+    /// Pack 6 values into nested cons
+    #[inline]
+    pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let ef = self.lisp.cons(e, f)?;
+        let def = self.lisp.cons(d, ef)?;
+        let cdef = self.lisp.cons(c, def)?;
+        let bcdef = self.lisp.cons(b, cdef)?;
+        self.lisp.cons(a, bcdef).map_err(Into::into)
+    }
+    
+    /// Unpack 6 values from nested cons
+    #[inline]
+    pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
+        let a = self.lisp.car(data)?;
+        let bcdef = self.lisp.cdr(data)?;
+        let b = self.lisp.car(bcdef)?;
+        let cdef = self.lisp.cdr(bcdef)?;
+        let c = self.lisp.car(cdef)?;
+        let def = self.lisp.cdr(cdef)?;
+        let d = self.lisp.car(def)?;
+        let ef = self.lisp.cdr(def)?;
+        let e = self.lisp.car(ef)?;
+        let f = self.lisp.cdr(ef)?;
+        Ok((a, b, c, d, e, f))
+    }
+    
+    /// Pack 7 values into nested cons
+    #[inline]
+    pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let fg = self.lisp.cons(f, g)?;
+        let efg = self.lisp.cons(e, fg)?;
+        let defg = self.lisp.cons(d, efg)?;
+        let cdefg = self.lisp.cons(c, defg)?;
+        let bcdefg = self.lisp.cons(b, cdefg)?;
+        self.lisp.cons(a, bcdefg).map_err(Into::into)
+    }
+    
+    /// Unpack 7 values from nested cons
+    #[inline]
+    pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
+        let a = self.lisp.car(data)?;
+        let bcdefg = self.lisp.cdr(data)?;
+        let b = self.lisp.car(bcdefg)?;
+        let cdefg = self.lisp.cdr(bcdefg)?;
+        let c = self.lisp.car(cdefg)?;
+        let defg = self.lisp.cdr(cdefg)?;
+        let d = self.lisp.car(defg)?;
+        let efg = self.lisp.cdr(defg)?;
+        let e = self.lisp.car(efg)?;
+        let fg = self.lisp.cdr(efg)?;
+        let f = self.lisp.car(fg)?;
+        let g = self.lisp.cdr(fg)?;
+        Ok((a, b, c, d, e, f, g))
     }
     
     /// Encode Builtin as ArenaIndex (store discriminant as raw usize)
@@ -841,84 +880,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn decode_builtin(encoded: ArenaIndex) -> Builtin {
         Builtin::from_usize(encoded.raw())
     }
-
-    // ========================================================================
-    // Generated pack/unpack functions (via macro)
-    // ========================================================================
-    //
-    // Simple ArenaIndex-only pack/unpack pairs are generated by this macro.
-    // Special cases with Builtin or usize encoding are defined manually below.
     
-    define_cont_pack_unpack! {
-        // 1-field continuations
-        pack_lambda_first_bind / unpack_lambda_first_bind => [param];
-        pack_eval_expr / unpack_eval_expr => [env];
-        pack_define_value / unpack_define_value => [name];
-        pack_quasiquote_cdr / unpack_quasiquote_cdr => [car_val];
-        pack_quasiquote_splice_append / unpack_quasiquote_splice_append => [splice_val];
-        pack_let_syntax_body / unpack_let_syntax_body => [saved_macro_env];
-        pack_call_cc_apply / unpack_call_cc_apply => [captured_continuation];
-        pack_continuation_apply / unpack_continuation_apply => [captured_continuation];
-        
-        // 2-field continuations
-        pack_begin_seq / unpack_begin_seq => [remaining, env];
-        // Note: pack_case_key removed - case is now handled by macros (Phase 9)
-        pack_apply_first / unpack_apply_first => [args_list_expr, env];
-        pack_apply_second / unpack_apply_second => [func, env];
-        pack_set_value / unpack_set_value => [name, env];
-        pack_call_with_values_producer / unpack_call_with_values_producer => [consumer_expr, env];
-        pack_call_with_values_consumer / unpack_call_with_values_consumer => [consumer_expr, env];
-        pack_call_with_values_apply / unpack_call_with_values_apply => [producer_result, env];
-        
-        // 3-field continuations
-        pack_apply_forced / unpack_apply_forced => [args_expr, env, call_expr];
-        pack_if_branch / unpack_if_branch => [then_expr, else_expr, env];
-        pack_values_collect / unpack_values_collect => [remaining, collected, env];
-        
-        // 4-field continuations
-        pack_syntax_case_match / unpack_syntax_case_match => [literals, clauses, env, pattern_bindings];
-        
-        // 6-field continuations (syntax-case fender)
-        pack_syntax_case_fender / unpack_syntax_case_fender => [output, bindings, literals, remaining_clauses, env, stx];
-        
-        // Note: pack_do_test_result, pack_do_body, pack_do_init, pack_do_step removed - do is now handled by macros (Phase 9)
-        // Note: pack_let_star_binding, pack_letrec_init removed - now handled by macros
-        // Note: pack_let_binding removed - now handled by macros
+    /// Encode usize as ArenaIndex
+    #[inline]
+    pub(super) fn encode_usize(val: usize) -> ArenaIndex {
+        ArenaIndex::new(val)
     }
-
-    // ========================================================================
-    // Generated pack/unpack functions for 6-field lambda binding continuation
-    // ========================================================================
     
-    define_cont_pack_unpack! {
-        pack_lambda_bind_arg / unpack_lambda_bind_arg => [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr];
-        pack_lambda_rest_collect / unpack_lambda_rest_collect => [remaining_exprs, eval_env, rest_param, body, new_env, collected, call_expr]
-    }
-
-    // ========================================================================
-    // Generated pack/unpack functions for Builtin-first patterns
-    // ========================================================================
-    
-    define_cont_pack_unpack_builtin_first! {
-        pack_builtin_force_arg / unpack_builtin_force_arg =>
-            builtin, [remaining_args, collected, call_expr, eval_env];
-        pack_binary_builtin_first / unpack_binary_builtin_first =>
-            builtin, [second_arg, call_expr, eval_env];
-        pack_binary_builtin_second / unpack_binary_builtin_second =>
-            builtin, [first_val, call_expr]
-    }
-
-    // ========================================================================
-    // Generated pack/unpack functions with usize field
-    // ========================================================================
-    
-    define_cont_pack_unpack_with_usize! {
-        pack_native_args_collect / unpack_native_args_collect =>
-            [remaining, collected], id, [env];
-        pack_quasiquote_car / unpack_quasiquote_car =>
-            [cdr], depth, [env];
-        pack_quasiquote_splice / unpack_quasiquote_splice =>
-            [cdr], depth, [env]
+    /// Decode usize from ArenaIndex
+    #[inline]
+    pub(super) fn decode_usize(encoded: ArenaIndex) -> usize {
+        encoded.raw()
     }
     
     /// Convert a ParseError to EvalError with expression context

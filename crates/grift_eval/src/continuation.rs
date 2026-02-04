@@ -1,206 +1,144 @@
-//! Continuation types for trampolined evaluation.
+//! Continuation types for arena-based trampolined evaluation.
 //!
-//! Continuation data is stored in a separate data stack (not the arena).
-//! Each Cont variant stores a `data_start` offset into the evaluator's data stack.
-//! The number of elements is fixed per variant type.
+//! Continuations are stored in the arena as a linked list of `ContFrame` values.
+//! Each frame stores a continuation type (as usize), associated data, and a
+//! reference to the parent continuation.
+//!
+//! This design enables O(1) capture for call/cc (just save the current pointer)
+//! and natural structure sharing between continuations.
 
 use grift_parser::Builtin;
 
-/// Maximum continuation stack depth
-pub const MAX_CONT_DEPTH: usize = 1024;
+// ============================================================================
+// Continuation Type Constants
+// ============================================================================
+//
+// These constants identify the continuation type stored in each ContFrame.
+// The data field of each ContFrame contains continuation-specific data
+// encoded as cons cells in the arena.
 
-/// Maximum data stack size (stores ArenaIndex values for continuation data)
-/// Each continuation needs at most 7 values, so this is plenty.
-pub const MAX_DATA_STACK: usize = MAX_CONT_DEPTH * 8;
+/// We're done - return the value (no data)
+pub const CONT_DONE: usize = 0;
 
-/// Continuation - what to do after a computation completes
-///
-/// Each variant wraps a `usize` offset into the evaluator's data stack.
-/// The number of elements is fixed per variant (encoded in the variant type).
-/// Use the corresponding pack_*/unpack_* methods in Evaluator to create and access data.
-#[derive(Clone, Copy, Debug)]
-pub enum Cont {
-    /// We're done - return the value
-    Done,
+/// After evaluating function, decide builtin vs lambda
+/// Data: (args_expr . (env . call_expr))
+pub const CONT_APPLY_FORCED: usize = 1;
 
-    /// After evaluating function, decide builtin vs lambda
-    /// Stack data: [args_expr, env, call_expr] (3 elements)
-    ApplyForced(usize),
+/// After evaluating condition, choose branch
+/// Data: (then_expr . (else_expr . env))
+pub const CONT_IF_BRANCH: usize = 2;
 
-    /// After evaluating condition, choose branch
-    /// Stack data: [then_expr, else_expr, env] (3 elements)
-    IfBranch(usize),
+/// After evaluating argument for builtin (variadic ops like +)
+/// Data: (builtin_encoded . (remaining_args . (collected . (call_expr . eval_env))))
+pub const CONT_BUILTIN_FORCE_ARG: usize = 3;
 
-    /// After evaluating argument for builtin (variadic ops like +)
-    /// Stack data: [builtin_encoded, remaining_args, collected, call_expr, eval_env] (5 elements)
-    /// Note: builtin stored as usize discriminant to avoid arena allocation
-    BuiltinForceArg(usize),
+/// After evaluating first arg of binary builtin, evaluate second arg
+/// Data: (builtin_encoded . (second_arg . (call_expr . eval_env)))
+pub const CONT_BINARY_BUILTIN_FIRST: usize = 4;
 
-    /// OPTIMIZED: After evaluating first arg of binary builtin, evaluate second arg
-    /// Stack data: [builtin_encoded, second_arg, call_expr, eval_env] (4 elements)
-    BinaryBuiltinFirst(usize),
+/// After evaluating both args of binary builtin, apply
+/// Data: (builtin_encoded . (first_val . call_expr))
+pub const CONT_BINARY_BUILTIN_SECOND: usize = 5;
 
-    /// OPTIMIZED: After evaluating both args of binary builtin, apply
-    /// Stack data: [builtin_encoded, first_val, call_expr] (3 elements)
-    BinaryBuiltinSecond(usize),
+/// After evaluating first lambda arg, bind it to param
+/// Data: param (single value)
+pub const CONT_LAMBDA_FIRST_BIND: usize = 6;
 
-    /// After evaluating first lambda arg, bind it to param
-    /// Stack data: [param] (1 element)
-    LambdaFirstBind(usize),
+/// After binding a lambda arg, continue with remaining args
+/// Data: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . call_expr)))))
+pub const CONT_LAMBDA_BIND_ARG: usize = 7;
 
-    /// After binding a lambda arg, continue with remaining args
-    /// Stack data: [remaining_exprs, eval_env, remaining_params, body, new_env, call_expr] (6 elements)
-    LambdaBindArg(usize),
+/// Collecting rest arguments for rest-parameter lambda
+/// Data: (remaining_exprs . (eval_env . (rest_param . (body . (new_env . (collected . call_expr))))))
+pub const CONT_LAMBDA_REST_COLLECT: usize = 8;
 
-    /// Collecting rest arguments for rest-parameter lambda
-    /// Stack data: [remaining_exprs, eval_env, rest_param, body, new_env, collected, call_expr] (7 elements)
-    LambdaRestCollect(usize),
+/// After evaluating expr in eval special form
+/// Data: env (single value)
+pub const CONT_EVAL_EXPR: usize = 9;
 
-    // Note: LetBinding, LetStarBinding, LetrecInit removed - now handled by macros
-    // Note: When, Unless, CondTest, And, Or removed - now handled by macros
+/// Processing begin expressions (non-tail)
+/// Data: (remaining . env)
+pub const CONT_BEGIN_SEQ: usize = 10;
 
-    /// After evaluating expr in eval special form
-    /// Stack data: [env] (1 element)
-    EvalExpr(usize),
+/// After evaluating first arg for apply, evaluate second arg (args list)
+/// Data: (args_list_expr . env)
+pub const CONT_APPLY_FIRST: usize = 11;
 
-    /// Processing begin expressions (non-tail)
-    /// Stack data: [remaining, env] (2 elements)
-    BeginSeq(usize),
+/// After evaluating both args for apply, perform the application
+/// Data: (func . env)
+pub const CONT_APPLY_SECOND: usize = 12;
 
-    // ========================================================================
-    // Continuation types for fully trampolined evaluation
-    // ========================================================================
+/// Evaluate expressions for values, collecting results
+/// Data: (remaining . (collected . env))
+pub const CONT_VALUES_COLLECT: usize = 13;
 
-    // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
+/// After evaluating value for define
+/// Data: name (single value)
+pub const CONT_DEFINE_VALUE: usize = 14;
 
-    /// After evaluating first arg for apply, evaluate second arg (args list)
-    /// Stack data: [args_list_expr, env] (2 elements)
-    ApplyFirst(usize),
+/// After evaluating value for set!
+/// Data: (name . env)
+pub const CONT_SET_VALUE: usize = 15;
 
-    /// After evaluating both args for apply, perform the application
-    /// Stack data: [func, env] (2 elements)
-    ApplySecond(usize),
+/// Evaluate arguments for native function call
+/// Data: (remaining . (collected . (id_encoded . env)))
+pub const CONT_NATIVE_ARGS_COLLECT: usize = 16;
 
-    /// Evaluate expressions for values, collecting results
-    /// Stack data: [remaining, collected, env] (3 elements)
-    ValuesCollect(usize),
+/// After evaluating car in quasiquote, evaluate cdr
+/// Data: (cdr . (depth_encoded . env))
+pub const CONT_QUASIQUOTE_CAR: usize = 17;
 
-    /// After evaluating value for define
-    /// Stack data: [name] (1 element)
-    DefineValue(usize),
+/// After evaluating cdr in quasiquote, cons with car
+/// Data: car_val (single value)
+pub const CONT_QUASIQUOTE_CDR: usize = 18;
 
-    /// After evaluating value for set!
-    /// Stack data: [name, env] (2 elements)
-    SetValue(usize),
+/// After evaluating unquote in quasiquote at depth > 1, wrap with unquote symbol
+/// Data: Nil (no data)
+pub const CONT_QUASIQUOTE_UNQUOTE_WRAP: usize = 19;
 
-    /// Evaluate arguments for native function call
-    /// Stack data: [remaining, collected, id_as_usize, env] (4 elements)
-    /// Note: id stored as raw usize bits in ArenaIndex
-    NativeArgsCollect(usize),
+/// After evaluating inner in nested quasiquote, wrap with quasiquote symbol
+/// Data: Nil (no data)
+pub const CONT_QUASIQUOTE_NESTED_WRAP: usize = 20;
 
-    /// After evaluating car in quasiquote, evaluate cdr
-    /// Stack data: [cdr, depth_as_usize, env] (3 elements)
-    /// Note: depth stored as raw usize bits in ArenaIndex
-    QuasiquoteCar(usize),
+/// After evaluating unquote-splicing, append with rest
+/// Data: (cdr . (depth_encoded . env))
+pub const CONT_QUASIQUOTE_SPLICE: usize = 21;
 
-    /// After evaluating cdr in quasiquote, cons with car
-    /// Stack data: [car_val] (1 element)
-    QuasiquoteCdr(usize),
+/// After evaluating cdr for splice, append with splice value
+/// Data: splice_val (single value)
+pub const CONT_QUASIQUOTE_SPLICE_APPEND: usize = 22;
 
-    /// After evaluating unquote in quasiquote at depth > 1, wrap with unquote symbol
-    QuasiquoteUnquoteWrap,
+/// After evaluating let-syntax body, restore macro environment
+/// Data: saved_macro_env (single value)
+pub const CONT_LET_SYNTAX_BODY: usize = 23;
 
-    /// After evaluating inner in nested quasiquote, wrap with quasiquote symbol
-    QuasiquoteNestedWrap,
+/// After evaluating producer for call-with-values, evaluate consumer
+/// Data: (consumer_expr . env)
+pub const CONT_CALL_WITH_VALUES_PRODUCER: usize = 24;
 
-    /// After evaluating unquote-splicing, append with rest
-    /// Stack data: [cdr, depth_as_usize, env] (3 elements)
-    QuasiquoteSplice(usize),
+/// After calling producer, evaluate consumer
+/// Data: (consumer_expr . env)
+pub const CONT_CALL_WITH_VALUES_CONSUMER: usize = 25;
 
-    /// After evaluating cdr for splice, append with splice value
-    /// Stack data: [splice_val] (1 element)
-    QuasiquoteSpliceAppend(usize),
+/// After evaluating consumer, apply it to producer result
+/// Data: (producer_result . env)
+pub const CONT_CALL_WITH_VALUES_APPLY: usize = 26;
 
-    /// After evaluating let-syntax body, restore macro environment
-    /// Stack data: [saved_macro_env] (1 element)
-    LetSyntaxBody(usize),
+/// After evaluating stx-expr in syntax-case, try pattern matching
+/// Data: (literals . (clauses . (env . pattern_bindings)))
+pub const CONT_SYNTAX_CASE_MATCH: usize = 27;
 
-    /// After evaluating producer for call-with-values, evaluate consumer
-    /// Stack data: [consumer_expr, env] (2 elements)
-    CallWithValuesProducer(usize),
+/// After evaluating fender in syntax-case, decide to use this clause or continue
+/// Data: (output . (bindings . (literals . (remaining_clauses . (env . stx)))))
+pub const CONT_SYNTAX_CASE_FENDER: usize = 28;
 
-    /// After calling producer, evaluate consumer
-    /// Stack data: [consumer_expr, env] (2 elements)
-    CallWithValuesConsumer(usize),
+/// After evaluating the procedure argument of call/cc, apply it to the captured continuation
+/// Data: captured_continuation (single value)
+pub const CONT_CALL_CC_APPLY: usize = 29;
 
-    /// After evaluating consumer, apply it to producer result
-    /// Stack data: [producer_result, env] (2 elements)
-    CallWithValuesApply(usize),
-
-    /// After evaluating stx-expr in syntax-case, try pattern matching
-    /// Stack data: [literals, clauses, env, pattern_bindings] (4 elements)
-    SyntaxCaseMatch(usize),
-    
-    /// After evaluating fender in syntax-case, decide to use this clause or continue
-    /// Stack data: [output, bindings, literals, remaining_clauses, env, stx] (6 elements)
-    SyntaxCaseFender(usize),
-    
-    /// After evaluating the procedure argument of call/cc, apply it to the captured continuation
-    /// Stack data: [captured_continuation] (1 element)
-    /// The captured continuation is a Value::Continuation that represents the current state
-    CallCcApply(usize),
-    
-    /// After evaluating the argument to a captured continuation, restore and return
-    /// Stack data: [captured_continuation] (1 element)
-    /// When this continuation is popped, we restore the captured continuation and
-    /// return val as the result of the original call/cc
-    ContinuationApply(usize),
-}
-
-impl Cont {
-    /// Get the number of data stack elements this continuation uses.
-    /// Used for restoring the data stack when popping.
-    #[inline]
-    pub const fn data_len(&self) -> usize {
-        match self {
-            Cont::Done => 0,
-            Cont::QuasiquoteUnquoteWrap => 0,
-            Cont::QuasiquoteNestedWrap => 0,
-            Cont::LambdaFirstBind(_) => 1,
-            Cont::EvalExpr(_) => 1,
-            Cont::DefineValue(_) => 1,
-            Cont::QuasiquoteCdr(_) => 1,
-            Cont::QuasiquoteSpliceAppend(_) => 1,
-            Cont::LetSyntaxBody(_) => 1,
-            Cont::CallCcApply(_) => 1,
-            Cont::ContinuationApply(_) => 1,
-            Cont::BeginSeq(_) => 2,
-            // Note: CaseKey removed
-            Cont::ApplyFirst(_) => 2,
-            Cont::ApplySecond(_) => 2,
-            Cont::SetValue(_) => 2,
-            Cont::CallWithValuesProducer(_) => 2,
-            Cont::CallWithValuesConsumer(_) => 2,
-            Cont::CallWithValuesApply(_) => 2,
-            Cont::ApplyForced(_) => 3,
-            Cont::IfBranch(_) => 3,
-            Cont::BinaryBuiltinSecond(_) => 3,
-            Cont::ValuesCollect(_) => 3,
-            Cont::QuasiquoteCar(_) => 3,
-            Cont::QuasiquoteSplice(_) => 3,
-            Cont::BinaryBuiltinFirst(_) => 4,
-            // Note: DoTestResult removed
-            Cont::NativeArgsCollect(_) => 4,
-            Cont::SyntaxCaseMatch(_) => 4,
-            Cont::BuiltinForceArg(_) => 5,
-            // Note: DoBody removed
-            Cont::LambdaBindArg(_) => 6,
-            Cont::SyntaxCaseFender(_) => 6,
-            Cont::LambdaRestCollect(_) => 7,
-            // Note: DoInit, DoStep removed
-        }
-    }
-}
+/// After evaluating the argument to a captured continuation, restore and return
+/// Data: captured_continuation (single value)
+pub const CONT_CONTINUATION_APPLY: usize = 30;
 
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]

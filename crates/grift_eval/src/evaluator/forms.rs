@@ -8,23 +8,34 @@
 use grift_parser::{ArenaIndex, Value, parse};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::continuation::{Cont, TrampolineState};
+use crate::continuation::{TrampolineState,
+    CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_BUILTIN_FORCE_ARG,
+    CONT_BINARY_BUILTIN_FIRST, CONT_BINARY_BUILTIN_SECOND, CONT_LAMBDA_FIRST_BIND,
+    CONT_LAMBDA_BIND_ARG, CONT_LAMBDA_REST_COLLECT, CONT_EVAL_EXPR, CONT_BEGIN_SEQ,
+    CONT_APPLY_FIRST, CONT_APPLY_SECOND, CONT_VALUES_COLLECT, CONT_DEFINE_VALUE,
+    CONT_SET_VALUE, CONT_NATIVE_ARGS_COLLECT, CONT_QUASIQUOTE_CAR, CONT_QUASIQUOTE_CDR,
+    CONT_QUASIQUOTE_UNQUOTE_WRAP, CONT_QUASIQUOTE_NESTED_WRAP, CONT_QUASIQUOTE_SPLICE,
+    CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
+    CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
+    CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
+};
 use crate::extract_args;
 
 use super::Evaluator;
 
 impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
-        let cont = self.pop_cont();
+        let (cont_type, data, _cont_env) = self.pop_cont()?;
         
-        match cont {
-            Cont::Done => {
+        match cont_type {
+            CONT_DONE => {
                 // No more continuations - we're done
                 Ok(None)
             }
             
-            Cont::IfBranch(data_start) => {
-                let (then_expr, else_expr, env) = self.unpack_if_branch(data_start);
+            CONT_IF_BRANCH => {
+                // Data: (then_expr . (else_expr . env))
+                let (then_expr, else_expr, env) = self.unpack3(data)?;
                 // val is the evaluated condition
                 let branch = if !self.is_false(val)? { then_expr } else { else_expr };
                 if branch.is_nil() {
@@ -35,8 +46,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::ApplyForced(data_start) => {
-                let (args_expr, env, call_expr) = self.unpack_apply_forced(data_start);
+            CONT_APPLY_FORCED => {
+                // Data: (args_expr . (env . call_expr))
+                let (args_expr, env, call_expr) = self.unpack3(data)?;
                 // val is the evaluated function
                 match self.lisp.get(val)? {
                     Value::Builtin(b) => {
@@ -74,10 +86,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 let rest_exprs = self.lisp.cdr(args_expr)?;
                                 let nil = self.lisp.nil()?;
                                 
-                                let data_start = self.pack_lambda_rest_collect(
-                                    rest_exprs, env, params, body, closure_env, nil, call_expr
-                                )?;
-                                self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                                // Data: (remaining_exprs . (eval_env . (rest_param . (body . (new_env . (collected . call_expr))))))
+                                let data = self.pack7(rest_exprs, env, params, body, closure_env, nil, call_expr)?;
+                                self.push_cont(CONT_LAMBDA_REST_COLLECT, data, env)?;
                                 
                                 Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                             }
@@ -103,13 +114,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            let data_start = self.pack_lambda_bind_arg(
-                                rest_exprs, env, rest_params, body, closure_env, call_expr
-                            )?;
-                            self.push_cont(Cont::LambdaBindArg(data_start))?;
+                            // Data for LambdaBindArg: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . call_expr)))))
+                            let data = self.pack6(rest_exprs, env, rest_params, body, closure_env, call_expr)?;
+                            self.push_cont(CONT_LAMBDA_BIND_ARG, data, env)?;
                             // Push binding continuation for first param
-                            let data_start = self.pack_lambda_first_bind(first_param)?;
-                            self.push_cont(Cont::LambdaFirstBind(data_start))?;
+                            // Data for LambdaFirstBind: param
+                            let data = self.pack1(first_param)?;
+                            self.push_cont(CONT_LAMBDA_FIRST_BIND, data, env)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }

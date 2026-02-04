@@ -6,7 +6,8 @@
 use grift_parser::{ArenaIndex, Value, Builtin};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::continuation::{Cont, TrampolineState, is_binary_builtin};
+use crate::continuation::{TrampolineState, is_binary_builtin,
+    CONT_BINARY_BUILTIN_FIRST, CONT_BUILTIN_FORCE_ARG};
 use crate::helpers::{gcd_helper, int_pow, equal_recursive};
 use crate::{
     extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_int_identity, builtin_div_op,
@@ -33,17 +34,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(third_check)?.is_nil() {
                     // Exactly 2 args - use optimized binary path
                     // Evaluate second arg expr (store for later), then evaluate first
-                    let data_start = self.pack_binary_builtin_first(builtin, second_arg_expr, call_expr, env)?;
-                    self.push_cont(Cont::BinaryBuiltinFirst(data_start))?;
+                    // Data: (builtin_encoded . (second_arg . (call_expr . eval_env)))
+                    let builtin_encoded = Self::encode_builtin(builtin);
+                    let data = self.pack4(builtin_encoded, second_arg_expr, call_expr, env)?;
+                    self.push_cont(CONT_BINARY_BUILTIN_FIRST, data, env)?;
                     return Ok(Some(TrampolineState::Eval { expr: first_arg, env }));
                 }
             }
         }
         
         // General case: collect args and apply
+        // Data: (builtin_encoded . (remaining_args . (collected . (call_expr . eval_env))))
         let nil = self.lisp.nil()?;
-        let data_start = self.pack_builtin_force_arg(builtin, rest_args, nil, call_expr, env)?;
-        self.push_cont(Cont::BuiltinForceArg(data_start))?;
+        let builtin_encoded = Self::encode_builtin(builtin);
+        let data = self.pack5(builtin_encoded, rest_args, nil, call_expr, env)?;
+        self.push_cont(CONT_BUILTIN_FORCE_ARG, data, env)?;
         
         Ok(Some(TrampolineState::Eval { expr: first_arg, env }))
     }
