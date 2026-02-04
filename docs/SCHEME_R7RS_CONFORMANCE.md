@@ -392,7 +392,7 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
    - Supports both declarative (`syntax-rules`) and procedural (`lambda` + `syntax-case`) macros
    - Mark-based hygiene ensures lexical scoping
    - 20+ standard R7RS forms implemented as macros
-   - Minor limitation: nested ellipsis patterns have known edge cases (see `HYGIENIC_MACROS_IMPLEMENTATION.md`)
+   - Minor limitation: nested ellipsis patterns (e.g., `((a ...) ...)`) in template transcription have edge cases where ellipsis depth tracking may fail - workaround is to use recursive helper macros instead (see `HYGIENIC_MACROS_IMPLEMENTATION.md` Phase 7 notes)
    - Missing: `letrec-syntax` and `syntax-error` (not critical for most use cases)
 
 4. **Library System**: No module system yet.
