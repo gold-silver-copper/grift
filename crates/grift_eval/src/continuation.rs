@@ -176,6 +176,10 @@ pub const CONT_DYNAMIC_WIND_CALL_BODY: usize = 38;
 /// Data: (captured_continuation . return_val)
 pub const CONT_FINISH_CONTINUATION_RESTORE: usize = 39;
 
+/// After evaluating a with-syntax binding value, add to pattern bindings and continue
+/// Data: (remaining_bindings . (collected_bindings . (body . (env . existing_pattern_bindings))))
+pub const CONT_WITH_SYNTAX_BIND: usize = 40;
+
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {

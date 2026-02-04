@@ -540,3 +540,119 @@ fn test_list_to_string() {
     assert!(lisp.get(result).unwrap().is_string());
     assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length (list->string '(#\a #\b #\c)))"#), 3);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DYNAMIC RUNTIME SYNTAX-CASE TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test that macros can call builtins during expansion
+/// This is the primary acceptance test from DYNAMIC_RUNTIME_SYNTAX_CASE.md
+#[test]
+fn test_macro_with_display_during_expansion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define macro that uses display during expansion (no output in no_std, but should work)
+    eval.eval_str(r#"
+        (define-syntax my-add1
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n)
+                (begin
+                  (display "expanding\n")
+                  (syntax (+ n 1)))))))
+    "#).unwrap();
+    
+    // Use the macro
+    let result = eval.eval_str("(my-add1 10)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(11));
+}
+
+/// Test that macros can perform computation during expansion
+#[test]
+fn test_macro_with_computation_during_expansion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that computes during expansion
+    eval.eval_str(r#"
+        (define-syntax double-it
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n)
+               (with-syntax ((result (* n 2)))
+                 (syntax result))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(double-it 21)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+}
+
+/// Test that macros can use conditionals during expansion
+#[test]
+fn test_macro_with_conditional_during_expansion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that branches during expansion
+    eval.eval_str(r#"
+        (define-syntax sign-macro
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n)
+               (if (< n 0)
+                   (syntax 'negative)
+                   (syntax 'non-negative))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(sign-macro -5)").unwrap();
+    assert!(lisp.symbol_matches(result, "negative").unwrap());
+    
+    let result = eval.eval_str("(sign-macro 5)").unwrap();
+    assert!(lisp.symbol_matches(result, "non-negative").unwrap());
+}
+
+/// Test that nested procedural macro calls work correctly
+#[test]
+fn test_nested_procedural_macro_calls() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define two macros where one calls the other
+    eval.eval_str(r#"
+        (define-syntax add-one
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n) (syntax (+ n 1))))))
+    "#).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax add-two
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n) (syntax (add-one (add-one n)))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(add-two 10)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(12));
+}
+
+/// Test that macros can use all builtins (previously restricted)
+#[test]
+fn test_macro_uses_previously_restricted_builtins() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that uses builtins that were previously restricted
+    eval.eval_str(r#"
+        (define-syntax length-macro
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ lst)
+               (with-syntax ((len (length lst)))
+                 (syntax len))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(length-macro (1 2 3 4 5))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(5));
+}
