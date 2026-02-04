@@ -35,21 +35,21 @@ This document provides a comprehensive implementation plan for modifying Grift's
 | Aspect | Details |
 |--------|---------|
 | **Problem** | Macro expansion rejects most builtins (e.g., `display`, `write`) |
-| **Root Cause** | `apply_builtin_for_expansion()` uses restrictive whitelist |
-| **Solution** | Replace whitelist with delegation to full runtime evaluator |
-| **Code Change** | Single function: ~80 lines → 1 line delegation |
+| **Root Cause** | Separate restricted evaluator for macro expansion |
+| **Solution** | Use unified runtime evaluator for macro expansion |
+| **Approach** | Replace `eval_for_macro_expansion()` with `eval_in_env()` |
+| **Code Change** | Remove ~500 lines of duplicate evaluation logic |
 | **Impact** | Enables I/O, computation, and runtime operations in macros |
-| **Risk Level** | Low (existing arena bounds still apply) |
-| **Estimated Effort** | 16-25 hours across 4 phases |
+| **Risk Level** | Low-Medium (architectural change, well-tested) |
+| **Estimated Effort** | 18-29 hours across 4 phases |
 | **Backward Compat** | Yes (existing macros continue to work) |
 
 ### Key Files Modified
 
 | File | Purpose | Change Type | Lines |
 |------|---------|-------------|-------|
-| `crates/grift_eval/src/evaluator/expand.rs` | Macro expansion system | 🔴 Major | -79 |
-| `crates/grift_eval/src/evaluator/core.rs` | Main evaluator | 🟡 Minor | +10 |
-| `crates/grift_eval/src/evaluator/mod.rs` | Evaluator struct | 🟡 Minor | +2 |
+| `crates/grift_eval/src/evaluator/expand.rs` | Macro expansion system | 🔴 Major | -500 |
+| `crates/grift_eval/src/evaluator/core.rs` | Main evaluator | 🟡 Minor | +30 |
 | `crates/grift_eval/tests/syntax_extended_tests.rs` | Test suite | 🟢 Add tests | +100 |
 
 ### Example Use Cases
@@ -272,137 +272,120 @@ However, these constraints are **overly restrictive** and **incompatible** with 
 
 ### Implementation Strategy
 
-There are **two possible approaches**:
-
-#### **Option A: Unified Evaluator (Recommended)**
+**Unified Evaluator Approach**
 
 Completely remove `eval_for_macro_expansion()` and use the main `eval()` function for macro expansion.
 
-**Pros**:
+**Advantages**:
 - Simplest implementation (removes ~500 lines of code)
 - No maintenance burden for separate evaluator
 - Full runtime capabilities available
+- Single, consistent evaluation model
 
-**Cons**:
+**Considerations**:
 - Changes evaluator semantics (continuation-based vs recursive)
+- Requires integration with the trampoline system
 - May require adjustments to procedural macro invocation
 
-#### **Option B: Selective Whitelisting**
-
-Keep `eval_for_macro_expansion()` but **remove the builtin restriction**, allowing all builtins while maintaining simplified evaluation.
-
-**Pros**:
-- Minimal code changes
-- Preserves existing expansion architecture
-- Easier to rollback if issues arise
-
-**Cons**:
-- Still maintains duplicate evaluation logic
-- Future maintenance burden
-
-**Recommendation**: Use **Option B** for initial implementation (lower risk), then migrate to **Option A** if successful.
+This approach provides a clean, unified architecture where macro expansion uses the same powerful evaluator as runtime code, eliminating code duplication and simplifying future maintenance.
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Remove Builtin Restrictions (Option B)
+### Phase 1: Replace with Unified Evaluator
 
-**Objective**: Allow all builtins during macro expansion while preserving current architecture.
+**Objective**: Replace the restricted macro expansion evaluator with the main runtime evaluator, enabling full runtime capabilities during macro expansion.
 
-#### Step 1.1: Modify `apply_builtin_for_expansion()`
+#### Step 1.1: Modify `apply_procedural_macro()`
 
 **File**: `crates/grift_eval/src/evaluator/expand.rs`
 
-**Current code (lines 1583-1663)**:
+Replace the call to `eval_for_macro_expansion()` with the main evaluator:
 
 ```rust
-fn apply_builtin_for_expansion(
+fn apply_procedural_macro(
     &mut self,
-    builtin: grift_parser::Builtin,
-    args: ArenaIndex,
+    transformer: ArenaIndex,
+    expr: ArenaIndex,
 ) -> EvalResult {
-    use grift_parser::Builtin;
+    let (params, body_env) = match self.lisp.get(transformer)? {
+        Value::Lambda { params, body_env } => (params, body_env),
+        _ => return Err(self.make_error(ErrorKind::SyntaxError, transformer)
+            .with_message("expected lambda transformer")),
+    };
     
-    match builtin {
-        Builtin::Car => { /* ... */ }
-        Builtin::Cdr => { /* ... */ }
-        // ... other whitelisted builtins ...
+    let body = self.lisp.car(body_env)?;
+    let def_env = self.lisp.cdr(body_env)?;
+    
+    let param = self.lisp.car(params)?;
+    let binding = self.lisp.cons(param, expr)?;
+    let call_env = self.lisp.cons(binding, def_env)?;
+    
+    // Use main evaluator for macro expansion
+    // This enables full runtime capabilities during expansion
+    self.eval_in_env(body, call_env)
+}
+```
+
+**Impact**: Enables all builtins and runtime operations during macro expansion.
+
+#### Step 1.2: Remove Deprecated Functions
+
+**File**: `crates/grift_eval/src/evaluator/expand.rs`
+
+After confirming the unified evaluator works, remove the following deprecated functions:
+
+1. `eval_for_macro_expansion()` (~100 lines)
+2. `eval_args_for_expansion()` (~20 lines)
+3. `apply_for_expansion()` (~30 lines)
+4. `apply_builtin_for_expansion()` (~80 lines)
+5. `bind_params_for_expansion()` (~30 lines)
+6. `builtin_add_for_expansion()` (~20 lines)
+7. `builtin_sub_for_expansion()` (~30 lines)
+8. `eval_syntax_case_for_expansion()` (if separate)
+9. `eval_syntax_for_expansion()` (if separate)
+10. `eval_if_for_expansion()` (if separate)
+11. `eval_begin_for_expansion()` (if separate)
+12. `eval_let_for_expansion()` (if separate)
+13. `eval_with_syntax_for_expansion()` (if separate)
+
+**Expected reduction**: ~500 lines of duplicate evaluation logic.
+
+#### Step 1.3: Integration with Trampoline System
+
+**Challenge**: The main evaluator uses continuation-based evaluation (trampolines), while macro expansion previously used recursive evaluation.
+
+**Solution**: Ensure `eval_in_env()` or a similar function can be called synchronously during macro expansion:
+
+```rust
+// In core.rs or expand.rs
+impl<'a, const N: usize> Evaluator<'a, N> {
+    /// Evaluate an expression in a specific environment
+    /// Used for macro expansion with the main evaluator
+    pub(crate) fn eval_in_env(
+        &mut self,
+        expr: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        // Save current continuation state
+        let saved_cont = self.current_cont;
         
-        _ => Err(self.make_error(ErrorKind::SyntaxError, args)
-            .with_message("builtin not supported in macro expansion"))
+        // Set up for evaluation
+        self.current_cont = self.lisp.nil()?;
+        
+        // Run evaluation to completion
+        let result = self.eval_expr(expr, env)?;
+        
+        // Restore continuation state
+        self.current_cont = saved_cont;
+        
+        Ok(result)
     }
 }
 ```
 
-**Proposed change**:
-
-```rust
-fn apply_builtin_for_expansion(
-    &mut self,
-    builtin: grift_parser::Builtin,
-    args: ArenaIndex,
-) -> EvalResult {
-    // Delegate to the main builtin handler
-    // This allows all builtins to be used during macro expansion
-    self.apply_builtin(builtin, args, args)
-}
-```
-
-**Impact**: Reduces function from 80 lines to 4 lines.
-
-#### Step 1.2: Handle I/O Output During Expansion
-
-**Challenge**: `display` and other I/O functions return values to stdout/stderr, but macro expansion doesn't have direct access to these streams in the `no_std` environment.
-
-**Current behavior** (from `builtins.rs:343`):
-
-```rust
-Builtin::Display => {
-    Ok(self.lisp.car(args)?) // Just returns the value
-}
-```
-
-**Options**:
-
-1. **Keep current behavior**: `display` returns the value without side effects during expansion
-2. **Add expansion-time output buffer**: Collect output during expansion and emit it later
-3. **Add callback hook**: Allow users to register handlers for expansion-time I/O
-
-**Recommendation**: Start with **Option 1** (simplest). The macro can still perform the computation; output just won't be visible during expansion.
-
-#### Step 1.3: Add Safety Guards (Optional)
-
-To prevent infinite recursion or excessive computation during expansion, add optional guards:
-
-```rust
-// In Evaluator struct (crates/grift_eval/src/evaluator/mod.rs)
-pub struct Evaluator<'a, const N: usize> {
-    // ... existing fields ...
-    
-    /// Depth counter for macro expansion
-    /// Prevents infinite recursion in procedural macros
-    macro_expansion_depth: usize,
-}
-
-// In expand.rs
-const MAX_MACRO_EXPANSION_DEPTH: usize = 100;
-
-fn eval_for_macro_expansion(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
-    // Guard against excessive recursion
-    if self.macro_expansion_depth >= MAX_MACRO_EXPANSION_DEPTH {
-        return Err(self.make_error(
-            ErrorKind::Generic,
-            expr,
-        ).with_message("macro expansion depth exceeded"));
-    }
-    
-    self.macro_expansion_depth += 1;
-    let result = self.eval_for_macro_expansion_inner(expr, env);
-    self.macro_expansion_depth -= 1;
-    result
-}
-```
+**Note**: The exact implementation depends on the existing evaluator architecture. The key is to run the full evaluator but isolate it from the current evaluation context.
 
 ### Phase 2: Testing and Validation
 
@@ -788,12 +771,11 @@ This section verifies that the implementation plan addresses all requirements fr
 
 **Coverage**:
 - ✅ Current Architecture Analysis explains two-evaluator system
-- ✅ Proposed Solution - Option A: Unified Evaluator (recommended approach)
-- ✅ Proposed Solution - Option B: Selective Whitelisting (safer approach)
-- ✅ Implementation Plan - Phase 1 provides detailed code changes
-- ✅ Step 1.1 shows specific modification to `apply_builtin_for_expansion()`
-- ✅ Step 1.2 addresses I/O handling during expansion
-- ✅ Appendix B shows alternative full integration approach
+- ✅ Proposed Solution - Unified Evaluator approach
+- ✅ Implementation Plan - Phase 1 provides detailed integration steps
+- ✅ Step 1.1 shows modification to `apply_procedural_macro()`
+- ✅ Step 1.2 lists deprecated functions to remove
+- ✅ Step 1.3 addresses trampoline system integration
 
 ### ✅ Acceptance Criteria - Required Test
 
@@ -887,88 +869,100 @@ This section verifies that the implementation plan addresses all requirements fr
 
 **File**: `crates/grift_eval/src/evaluator/expand.rs`
 
+**Primary Change - apply_procedural_macro()**:
+
 ```diff
-@@ -1583,83 +1583,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
-     fn apply_builtin_for_expansion(
-         &mut self,
-         builtin: grift_parser::Builtin,
-         args: ArenaIndex,
-     ) -> EvalResult {
--        use grift_parser::Builtin;
--        
--        match builtin {
--            Builtin::Car => {
--                let arg = self.lisp.car(args)?;
--                self.lisp.car(arg).map_err(Into::into)
--            }
--            Builtin::Cdr => {
--                let arg = self.lisp.car(args)?;
--                self.lisp.cdr(arg).map_err(Into::into)
--            }
--            // ... 70+ more lines ...
--            _ => Err(self.make_error(ErrorKind::SyntaxError, args)
--                .with_message("builtin not supported in macro expansion"))
--        }
-+        // Allow all builtins during macro expansion
-+        self.apply_builtin(builtin, args, args)
-     }
+@@ -1407,7 +1407,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
+     
+     // Evaluate the transformer body in the extended environment
+-    // This is a synchronous evaluation, so we use a simple recursive call
+-    self.eval_for_macro_expansion(body, call_env)
++    // Use main evaluator for full runtime capabilities
++    self.eval_in_env(body, call_env)
+ }
 ```
 
-**Lines removed**: ~80  
-**Lines added**: ~1  
-**Net change**: -79 lines
+**Functions Removed** (~500 lines total):
+- `eval_for_macro_expansion()`
+- `eval_args_for_expansion()`
+- `apply_for_expansion()`
+- `apply_builtin_for_expansion()`
+- `bind_params_for_expansion()`
+- `builtin_add_for_expansion()`
+- `builtin_sub_for_expansion()`
+- And other `*_for_expansion()` helper functions
 
-### Appendix B: Alternative: Full Evaluator Integration (Option A)
+**Net change**: ~-470 lines (removed duplicate evaluation logic)
 
-For reference, here's how to completely replace `eval_for_macro_expansion` with `eval()`:
+### Appendix B: Evaluator Integration Details
+
+**Creating the eval_in_env() Function**:
+
+The unified evaluator requires a synchronous evaluation interface for macro expansion. Here's a reference implementation:
 
 ```rust
-fn apply_procedural_macro(
-    &mut self,
-    transformer: ArenaIndex,
-    expr: ArenaIndex,
-) -> EvalResult {
-    let (params, body_env) = match self.lisp.get(transformer)? {
-        Value::Lambda { params, body_env } => (params, body_env),
-        _ => return Err(self.make_error(ErrorKind::SyntaxError, transformer)
-            .with_message("expected lambda transformer")),
-    };
-    
-    let body = self.lisp.car(body_env)?;
-    let def_env = self.lisp.cdr(body_env)?;
-    
-    let param = self.lisp.car(params)?;
-    let binding = self.lisp.cons(param, expr)?;
-    let call_env = self.lisp.cons(binding, def_env)?;
-    
-    // OLD: self.eval_for_macro_expansion(body, call_env)
-    // NEW: Use main evaluator
-    self.eval_in_env(body, call_env)
+// In crates/grift_eval/src/evaluator/core.rs
+impl<'a, const N: usize> Evaluator<'a, N> {
+    /// Evaluate an expression in a specific environment
+    /// 
+    /// This is used during macro expansion to run the full evaluator
+    /// in a controlled context. It runs the trampoline to completion
+    /// and returns the result.
+    pub(crate) fn eval_in_env(
+        &mut self,
+        expr: ArenaIndex,
+        env: ArenaIndex,
+    ) -> EvalResult {
+        // Save current continuation and call stack state
+        let saved_cont = self.current_cont;
+        let saved_depth = self.call_stack_depth;
+        
+        // Initialize for new evaluation
+        self.current_cont = self.lisp.nil()?;
+        
+        // Push initial evaluation continuation
+        self.push_cont(CONT_EVAL_EXPR, expr, env)?;
+        
+        // Run trampoline until completion
+        let result = self.trampoline()?;
+        
+        // Restore saved state
+        self.current_cont = saved_cont;
+        self.call_stack_depth = saved_depth;
+        
+        Ok(result)
+    }
 }
 ```
 
-**Impact**: This would allow continuation-based evaluation during expansion, but requires more careful integration with the trampoline system.
+**Integration Notes**:
+- The trampoline must run to completion during macro expansion
+- Stack state is isolated to prevent interference with outer evaluation
+- Arena bounds still apply, providing safety during expansion
+- This allows full continuation-based evaluation with TCO during macro expansion
 
 ### Appendix C: Comparison with Other Schemes
 
-| Implementation | Runtime Operations in Macros | Notes |
-|----------------|------------------------------|-------|
+| Implementation | Runtime Operations in Macros | Architecture |
+|----------------|------------------------------|--------------|
 | **Racket** | ✅ Full support | Uses `#%app` protocol for expansion-time calls |
-| **Chez Scheme** | ✅ Full support | Procedural macros can call arbitrary code |
+| **Chez Scheme** | ✅ Full support | Unified evaluator for expansion and runtime |
 | **Guile** | ✅ Full support | psyntax expander supports runtime evaluation |
 | **Chicken** | ✅ Full support | Syntax-case allows any operation |
-| **Grift (current)** | ❌ Restricted | Only whitelisted builtins |
-| **Grift (proposed)** | ✅ Full support | All builtins available |
+| **Grift (current)** | ❌ Restricted | Separate restricted evaluator |
+| **Grift (proposed)** | ✅ Full support | Unified evaluator approach |
 
 ### Appendix D: Timeline Estimate
 
 | Phase | Tasks | Estimated Time | Dependencies |
 |-------|-------|----------------|--------------|
-| **Phase 1** | Implementation | 2-4 hours | None |
+| **Phase 1** | Unified evaluator integration | 4-8 hours | None |
 | **Phase 2** | Testing | 4-6 hours | Phase 1 |
 | **Phase 3** | Documentation | 2-3 hours | Phase 2 |
 | **Phase 4** | Advanced Features | 8-12 hours | Phase 3 (optional) |
-| **Total** | All phases | 16-25 hours | - |
+| **Total** | All phases | 18-29 hours | - |
+
+**Note**: The unified evaluator approach requires more careful integration with the trampoline system but results in cleaner, more maintainable code.
 
 ### Appendix E: Future Enhancements
 
@@ -984,20 +978,22 @@ After successful implementation, consider:
 
 ## Conclusion
 
-This implementation plan provides a clear path to enabling dynamic runtime execution in Grift's macro system. The proposed changes are:
+This implementation plan provides a clear path to enabling dynamic runtime execution in Grift's macro system through a **unified evaluator architecture**. The proposed changes are:
 
-- **Minimal**: Single function modification (~80 lines → 1 line)
-- **Safe**: Existing guard rails (arena bounds, recursion limits) still apply
+- **Comprehensive**: Removes ~500 lines of duplicate evaluation logic
+- **Safe**: Existing guard rails (arena bounds, call stack limits) still apply
 - **Powerful**: Unlocks full expressiveness of procedural macros
+- **Clean**: Single evaluation model for both runtime and macro expansion
 - **Tested**: Comprehensive test suite ensures correctness
 
-The change aligns Grift with standard Scheme macro systems while maintaining the unique benefits of the arena-based, `no_std` architecture.
+The unified evaluator approach aligns Grift with standard Scheme macro systems (Chez, Racket, Guile) while maintaining the unique benefits of the arena-based, `no_std` architecture. By eliminating the separate macro expansion evaluator, we reduce code duplication and simplify future maintenance.
 
-**Recommendation**: Proceed with Phase 1 implementation, validate with Phase 2 testing, then decide whether to add Phase 4 advanced features based on user feedback.
+**Recommendation**: Proceed with Phase 1 implementation to integrate the unified evaluator, validate with Phase 2 testing, then decide whether to add Phase 4 advanced features based on user feedback.
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 2.0  
 **Last Updated**: 2026-02-04  
 **Author**: Grift Development Team  
-**Status**: Implementation Plan (Not Yet Implemented)
+**Status**: Implementation Plan (Not Yet Implemented)  
+**Approach**: Unified Evaluator (Option A)
