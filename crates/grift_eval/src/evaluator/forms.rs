@@ -906,27 +906,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             CONT_WITH_SYNTAX_BIND => {
                 // val is the evaluated value for the current binding
-                // Data: (remaining_bindings . (collected_bindings . (body . (env . existing_pattern_bindings))))
+                // Data format: ((current_name . rest_bindings) . (collected . (body . (env . existing))))
                 let (remaining_bindings, collected_bindings, body, env, existing_pattern_bindings) = self.unpack5(data)?;
                 
-                // The current binding name was passed in the continuation
-                // Get the name from the first item of remaining bindings from the previous step
-                // Actually, we need to track the current name - let's get it from the data
-                // We'll restructure: the first call stores (name . remaining) in remaining_bindings
-                // Actually, let me reconsider - we need the name that was being bound
-                // Let me look at the step_eval_with_syntax to see how we set this up
-                
-                // The data is: (remaining . (collected . (body . (env . (existing . current_name)))))
-                // Let's use: (current_name . (remaining . (collected . (body . (env . existing)))))
-                // Actually simpler: get from the remaining bindings list that we process
-                
-                // Get the current name from the data - we need to restructure
-                // Let's simplify: pass current binding name explicitly
-                // Data should be: (current_name . (remaining_bindings . (collected_bindings . (body . (env . existing_pattern_bindings)))))
-                
-                // Re-unpacking with 6 elements
-                // Actually let me use the existing unpack5 but interpret differently
-                // remaining_bindings is actually (current_name . actual_remaining)
+                // Extract current binding name from the packed data
                 let current_name = self.lisp.car(remaining_bindings)?;
                 let actual_remaining = self.lisp.cdr(remaining_bindings)?;
                 
