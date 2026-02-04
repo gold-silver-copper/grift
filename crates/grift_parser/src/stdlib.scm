@@ -31,16 +31,22 @@
       acc  ;; Base case: return accumulator
       (fold f (f acc (car lst)) (cdr lst))))  ;; Apply f to acc and car, recurse
 
+;;; (fold-left f acc lst) - Left fold over lst (R7RS name, same as fold)
+;;; f takes (accumulator, element) and returns new accumulator
+(define (fold-left f acc lst)
+  (if (null? lst)
+      acc
+      (fold-left f (f acc (car lst)) (cdr lst))))
+
 ;;; (length lst) - Return length of lst (tail-recursive)
 (define (length lst)
   (define (length-iter lst acc)
     (if (null? lst) acc (length-iter (cdr lst) (+ acc 1))))
   (length-iter lst 0))
 
-;;; (append a b) - Concatenate two lists (tail-recursive, self-contained)
-;;; Note: R7RS requires variadic append, but this implementation only supports 2 arguments
-;;; For variadic concatenation, use (concatenate (list a b c ...))
-(define (append a b)
+;;; (append-two a b) - Internal: Concatenate exactly two lists (tail-recursive)
+;;; This is the workhorse for the variadic append macro.
+(define (append-two a b)
   (define (rev-helper lst acc)
     (if (null? lst) acc (rev-helper (cdr lst) (cons (car lst) acc))))
   (define (append-iter lst acc)
@@ -496,7 +502,7 @@
 
 ;;; (concatenate lsts) - Append all lists in lsts
 (define (concatenate lsts)
-  (fold-right append '() lsts))
+  (fold-right append-two '() lsts))
 
 ;;; (flatten lst) - Flatten a nested list structure (O(n) tail-recursive)
 (define (flatten lst)

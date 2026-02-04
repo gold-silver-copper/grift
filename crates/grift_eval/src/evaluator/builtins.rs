@@ -1029,6 +1029,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let input = self.lisp.car(args)?;
                 self.generate_temporaries(input)
             }
+            
+            Builtin::SymbolToString => {
+                // (symbol->string sym) - Convert symbol to string
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Symbol(chars) => {
+                        // The symbol stores a reference to a String value
+                        // We return that string directly
+                        Ok(chars)
+                    }
+                    _ => Err(self.type_error(call_expr, "symbol", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::StringToSymbol => {
+                // (string->symbol str) - Convert string to symbol
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::String { .. } => {
+                        // Create/intern a symbol with this string
+                        self.lisp.symbol_from_string(arg).map_err(Into::into)
+                    }
+                    _ => Err(self.type_error(call_expr, "string", self.lisp.get(arg)?.type_name())),
+                }
+            }
         }
     }
     

@@ -231,6 +231,31 @@
      (%do-vars bindings () () test (result ...) body ...))))
 
 ;; ============================================================
+;; Variadic Append (R7RS compliant)
+;; ============================================================
+
+;; append - Concatenate any number of lists
+;; 
+;; (append) => ()
+;; (append lst) => lst  
+;; (append lst1 lst2) => concatenation of lst1 and lst2
+;; (append lst1 lst2 lst3 ...) => concatenation of all lists
+;;
+;; Implementation uses append-two from stdlib for the two-argument case,
+;; and recursively reduces longer argument lists.
+(define-syntax append
+  (syntax-rules ()
+    ;; Zero arguments
+    ((append) '())
+    ;; One argument - return as-is
+    ((append a) a)
+    ;; Two arguments - use internal append2
+    ((append a b) (append-two a b))
+    ;; Three or more arguments - fold right
+    ((append a b c ...)
+     (append-two a (append b c ...)))))
+
+;; ============================================================
 ;; Quasiquote
 ;; ============================================================
 
@@ -639,4 +664,60 @@
     ((with-syntax ((var expr) rest ...) body ...)
      (let ((var expr))
        (with-syntax (rest ...) body ...)))))
+
+;; ============================================================
+;; Exception Handling (R7RS Section 4.2.7)
+;; ============================================================
+
+;; guard - Exception handling syntax (R7RS)
+;;
+;; (guard (var cond-clause ...) body ...)
+;;
+;; Evaluates body with an exception handler. If an exception is raised,
+;; the exception is bound to var and the cond-clauses are evaluated.
+;; If no clause matches and there's no else clause, the exception is re-raised.
+;;
+;; IMPORTANT LIMITATION: This is a structural implementation only.
+;; Full exception handling requires raise/with-exception-handler infrastructure
+;; which is not yet implemented in Grift. Currently:
+;; - The body is evaluated normally
+;; - If body completes without error, its result is returned
+;; - Runtime errors (e.g., from (error ...)) will NOT be caught
+;; - The cond-clauses will NOT be evaluated for runtime errors
+;;
+;; This macro is provided for syntax compatibility. Full functionality
+;; will be available when raise/with-exception-handler are implemented.
+;;
+;; Example (will work when exception infrastructure is complete):
+;;   (guard (exn
+;;            ((string? exn) exn)
+;;            (else "unknown error"))
+;;     (raise "test error"))
+
+;; Helper: Evaluate guard cond clauses (used when exception is caught)
+;; Note: This is not currently reachable without raise/with-exception-handler
+(define-syntax %guard-cond
+  (syntax-rules (else)
+    ;; else clause - always matches
+    ((%guard-cond var (else result ...))
+     (begin result ...))
+    ;; Single non-else clause, no more clauses - re-raise if no match
+    ;; Note: Per R7RS, should re-raise the exception; using error as placeholder
+    ((%guard-cond var (test result ...))
+     (if test (begin result ...) (error "guard: unhandled exception (no matching clause)")))
+    ;; Multiple clauses
+    ((%guard-cond var (test result ...) rest ...)
+     (if test (begin result ...) (%guard-cond var rest ...)))))
+
+;; guard - placeholder implementation
+;; 
+;; Currently evaluates body directly without exception handling.
+;; Returns body's result if it completes normally.
+;; Runtime errors will propagate as usual (not caught).
+(define-syntax guard
+  (syntax-rules ()
+    ((guard (var clause ...) body ...)
+     ;; Without with-exception-handler, we can only evaluate the body directly.
+     ;; Exception handling will be added when the infrastructure is available.
+     (begin body ...))))
 
