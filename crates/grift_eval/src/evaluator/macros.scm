@@ -677,49 +677,47 @@
 ;; the exception is bound to var and the cond-clauses are evaluated.
 ;; If no clause matches and there's no else clause, the exception is re-raised.
 ;;
-;; Note: This is a structural implementation. Full exception handling 
-;; requires raise/with-exception-handler infrastructure. This version
-;; uses call/cc to implement early exit and provides the basic guard
-;; syntax transformation.
+;; IMPORTANT LIMITATION: This is a structural implementation only.
+;; Full exception handling requires raise/with-exception-handler infrastructure
+;; which is not yet implemented in Grift. Currently:
+;; - The body is evaluated normally
+;; - If body completes without error, its result is returned
+;; - Runtime errors (e.g., from (error ...)) will NOT be caught
+;; - The cond-clauses will NOT be evaluated for runtime errors
 ;;
-;; Example:
+;; This macro is provided for syntax compatibility. Full functionality
+;; will be available when raise/with-exception-handler are implemented.
+;;
+;; Example (will work when exception infrastructure is complete):
 ;;   (guard (exn
 ;;            ((string? exn) exn)
 ;;            (else "unknown error"))
-;;     (error "test error"))
-;;
-;; For now, since raise/with-exception-handler aren't implemented,
-;; this provides a simplified version that evaluates the body and
-;; catches explicit signals via a captured continuation.
+;;     (raise "test error"))
 
-;; Helper: Evaluate guard cond clauses
+;; Helper: Evaluate guard cond clauses (used when exception is caught)
+;; Note: This is not currently reachable without raise/with-exception-handler
 (define-syntax %guard-cond
   (syntax-rules (else)
     ;; else clause - always matches
     ((%guard-cond var (else result ...))
      (begin result ...))
-    ;; Single non-else clause, no more clauses
+    ;; Single non-else clause, no more clauses - re-raise if no match
+    ;; Note: Per R7RS, should re-raise the exception; using error as placeholder
     ((%guard-cond var (test result ...))
-     (if test (begin result ...) (error "guard: no matching clause")))
+     (if test (begin result ...) (error "guard: unhandled exception (no matching clause)")))
     ;; Multiple clauses
     ((%guard-cond var (test result ...) rest ...)
      (if test (begin result ...) (%guard-cond var rest ...)))))
 
-;; guard - simplified implementation using call/cc
+;; guard - placeholder implementation
 ;; 
-;; This version provides the guard syntax but relies on the user
-;; passing exception values through a custom signaling mechanism.
-;; Full integration with raise/with-exception-handler pending.
+;; Currently evaluates body directly without exception handling.
+;; Returns body's result if it completes normally.
+;; Runtime errors will propagate as usual (not caught).
 (define-syntax guard
   (syntax-rules ()
     ((guard (var clause ...) body ...)
-     (call/cc
-       (lambda (%guard-k)
-         ;; Define a local 'raise' that invokes the guard continuation
-         (let ((%raise (lambda (exn) (%guard-k exn))))
-           ;; Evaluate body - if it completes normally, return result
-           ;; If %raise is called, jump to guard handler
-           (let ((result (begin body ...)))
-             ;; Normal completion - return result
-             result)))))))
+     ;; Without with-exception-handler, we can only evaluate the body directly.
+     ;; Exception handling will be added when the infrastructure is available.
+     (begin body ...))))
 

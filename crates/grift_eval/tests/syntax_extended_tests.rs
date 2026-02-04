@@ -323,6 +323,8 @@ fn test_error_handling_with_guard() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Test guard macro with normal execution (no exception raised)
+    // The guard macro is currently a placeholder - it evaluates the body directly
+    // Full exception handling will be available when raise/with-exception-handler are implemented
     assert_eq!(eval_to_num(&lisp, &mut eval, "(guard (exn ((number? exn) exn)) (+ 1 2))"), 3);
     
     // Test guard with a single expression body
