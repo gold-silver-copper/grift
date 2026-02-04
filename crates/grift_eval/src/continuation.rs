@@ -140,6 +140,42 @@ pub const CONT_CALL_CC_APPLY: usize = 29;
 /// Data: captured_continuation (single value)
 pub const CONT_CONTINUATION_APPLY: usize = 30;
 
+/// After evaluating before thunk in dynamic-wind, call it (no args)
+/// Data: (body . (after . (env . saved_dw_chain)))
+pub const CONT_DYNAMIC_WIND_BEFORE: usize = 31;
+
+/// After calling before thunk, evaluate and call body thunk
+/// Data: (after . (env . saved_dw_chain))
+pub const CONT_DYNAMIC_WIND_BODY: usize = 32;
+
+/// After calling body thunk, evaluate and call after thunk
+/// Data: (body_result . saved_dw_chain)
+pub const CONT_DYNAMIC_WIND_AFTER: usize = 33;
+
+/// After evaluating after thunk, call it (no args) and return body result
+/// Data: (body_result . saved_dw_chain)
+pub const CONT_DYNAMIC_WIND_AFTER_CALL: usize = 34;
+
+/// Executing wind-in thunks (before thunks) during continuation restoration
+/// Data: (remaining_frames . (return_val . (target_chain . original_target_chain)))
+pub const CONT_WIND_IN: usize = 35;
+
+/// Executing wind-out thunks (after thunks) during continuation restoration  
+/// Data: (remaining_frames . (return_val . (target_chain . original_target_chain)))
+pub const CONT_WIND_OUT: usize = 36;
+
+/// After evaluating after_expr in dynamic-wind, evaluate and call body
+/// Data: (before_thunk . (body_expr . (env . saved_dw_chain)))
+pub const CONT_DYNAMIC_WIND_EVAL_AFTER: usize = 37;
+
+/// After evaluating body_expr in dynamic-wind, call body thunk
+/// Data: (after_thunk . (env . saved_dw_chain))
+pub const CONT_DYNAMIC_WIND_CALL_BODY: usize = 38;
+
+/// After winding out/in completes, finish restoring continuation
+/// Data: (captured_continuation . return_val)
+pub const CONT_FINISH_CONTINUATION_RESTORE: usize = 39;
+
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {

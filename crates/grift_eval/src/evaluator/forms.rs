@@ -1,7 +1,7 @@
 //! Special form handling for the evaluator.
 //!
 //! Contains step_return (continuation handling) and all step_eval_* forms
-//! (begin, quasiquote, apply, values, etc.)
+//! (begin, quasiquote, apply, values, dynamic-wind, etc.)
 //!
 //! Note: let, let*, letrec, letrec*, and, or, cond, case, do are now handled by macros.
 
@@ -18,6 +18,9 @@ use crate::continuation::{TrampolineState,
     CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
     CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
     CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
+    CONT_DYNAMIC_WIND_BEFORE, CONT_DYNAMIC_WIND_BODY, CONT_DYNAMIC_WIND_AFTER,
+    CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
+    CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE,
 };
 use crate::extract_args;
 
@@ -705,11 +708,200 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Data: captured_continuation
                 let captured_continuation = self.unpack1(data);
                 
-                // Restore the captured continuation
+                // Extract target dynamic-wind chain from the continuation
+                let (_cont_chain, _capture_env, target_dw_chain) = 
+                    self.lisp.continuation_parts(captured_continuation)?;
+                
+                // Check if we need to execute dynamic-wind thunks
+                if !self.dynamic_wind_chains_equal(self.dynamic_wind_chain, target_dw_chain)? {
+                    // Need to wind out of current chain and wind into target chain
+                    // First, compute the frames to wind out and wind in
+                    let (wind_out_frames, wind_in_frames) = 
+                        self.compute_wind_frames(self.dynamic_wind_chain, target_dw_chain)?;
+                    
+                    // Push continuation to finish restoration after winding
+                    let finish_data = self.pack2(captured_continuation, val)?;
+                    self.push_cont(CONT_FINISH_CONTINUATION_RESTORE, finish_data, self.global_env)?;
+                    
+                    // Start the winding process - first wind out, then wind in
+                    return self.start_wind_transition(wind_out_frames, wind_in_frames, val, target_dw_chain);
+                }
+                
+                // No dynamic-wind transitions needed - restore directly
                 self.restore_continuation(captured_continuation)?;
                 
                 // Return val as the result of the original call/cc
                 Ok(Some(TrampolineState::Return { val }))
+            }
+            
+            CONT_FINISH_CONTINUATION_RESTORE => {
+                // val is the result from winding (ignored)
+                // Data: (captured_continuation . return_val)
+                let (captured_continuation, return_val) = self.unpack2(data)?;
+                
+                // Dynamic-wind chain should already be updated by the winding process
+                // Just restore the continuation and return the value
+                self.restore_continuation(captured_continuation)?;
+                
+                // Return the original value that was passed to the continuation
+                Ok(Some(TrampolineState::Return { val: return_val }))
+            }
+            
+            CONT_DYNAMIC_WIND_BEFORE => {
+                // val is the evaluated before thunk
+                // Now we need to call it (no args) before running the body
+                // Data: (body_expr . (after_expr . (env . saved_dw_chain)))
+                let (body_expr, after_expr, env, saved_dw_chain) = self.unpack4(data)?;
+                
+                // Push continuation for after calling before thunk
+                // We need to pass body_expr and after_expr to the next stage
+                let data2 = self.pack4(body_expr, after_expr, env, saved_dw_chain)?;
+                // Also save the before thunk in the data so we can add it to the dw chain
+                let data3 = self.pack2(val, data2)?; // (before_thunk . (body_expr . (after_expr . (env . saved_dw_chain))))
+                self.push_cont(CONT_DYNAMIC_WIND_BODY, data3, env)?;
+                
+                // Call the before thunk (no args)
+                self.apply_thunk(val, env)
+            }
+            
+            CONT_DYNAMIC_WIND_BODY => {
+                // val is the result of calling the before thunk (ignored)
+                // Now we need to evaluate the body thunk
+                // Data: (before_thunk . (body_expr . (after_expr . (env . saved_dw_chain))))
+                let (before_thunk, rest) = self.unpack2(data)?;
+                let (body_expr, after_expr, env, saved_dw_chain) = self.unpack4(rest)?;
+                
+                // Now we need to evaluate after_expr, then body_expr, then call body
+                // But we also need to add (before, after) to the dynamic-wind chain
+                // before calling body.
+                
+                // Push continuation for after evaluating after_expr
+                // Data: (before_thunk . (body_expr . (env . saved_dw_chain)))
+                let data2 = self.pack4(before_thunk, body_expr, env, saved_dw_chain)?;
+                self.push_cont(CONT_DYNAMIC_WIND_EVAL_AFTER, data2, env)?;
+                
+                // Evaluate the after thunk expression
+                Ok(Some(TrampolineState::Eval { expr: after_expr, env }))
+            }
+            
+            CONT_DYNAMIC_WIND_EVAL_AFTER => {
+                // val is the evaluated after thunk
+                // Now we need to evaluate the body thunk
+                // Data: (before_thunk . (body_expr . (env . saved_dw_chain)))
+                let (before_thunk, body_expr, env, saved_dw_chain) = self.unpack4(data)?;
+                
+                // Push continuation for after evaluating body_expr
+                // Data: (before_thunk . (after_thunk . (env . saved_dw_chain)))
+                let data2 = self.pack4(before_thunk, val, env, saved_dw_chain)?;
+                self.push_cont(CONT_DYNAMIC_WIND_CALL_BODY, data2, env)?;
+                
+                // Evaluate the body thunk expression
+                Ok(Some(TrampolineState::Eval { expr: body_expr, env }))
+            }
+            
+            CONT_DYNAMIC_WIND_CALL_BODY => {
+                // val is the evaluated body thunk
+                // Now we need to push the dynamic-wind frame and call the body thunk
+                // Data: (before_thunk . (after_thunk . (env . saved_dw_chain)))
+                let (before_thunk, after_thunk, env, saved_dw_chain) = self.unpack4(data)?;
+                
+                // Create the before/after pair and push onto dynamic-wind chain
+                let before_after = self.lisp.cons(before_thunk, after_thunk)?;
+                self.dynamic_wind_chain = self.lisp.cons(before_after, saved_dw_chain)?;
+                
+                // Push continuation for after body thunk completes
+                // Data: (after_thunk . saved_dw_chain)
+                let data2 = self.pack2(after_thunk, saved_dw_chain)?;
+                self.push_cont(CONT_DYNAMIC_WIND_AFTER, data2, env)?;
+                
+                // Call the body thunk
+                self.apply_thunk(val, env)
+            }
+            
+            CONT_DYNAMIC_WIND_AFTER => {
+                // val is the result of calling the body thunk
+                // Now we need to call the after thunk (already evaluated)
+                // Data: (after_thunk . saved_dw_chain)
+                let (after_thunk, saved_dw_chain) = self.unpack2(data)?;
+                
+                // Save the body result for after the after thunk runs
+                let data2 = self.pack2(val, saved_dw_chain)?;
+                self.push_cont(CONT_DYNAMIC_WIND_AFTER_CALL, data2, self.global_env)?;
+                
+                // Call the after thunk (no args)
+                self.apply_thunk(after_thunk, self.global_env)
+            }
+            
+            CONT_DYNAMIC_WIND_AFTER_CALL => {
+                // val is the result of calling after thunk (ignored)
+                // Return the body result and restore dynamic-wind chain
+                // Data: (body_result . saved_dw_chain)
+                let (body_result, saved_dw_chain) = self.unpack2(data)?;
+                
+                // Restore the dynamic-wind chain
+                self.dynamic_wind_chain = saved_dw_chain;
+                
+                // Return the body's result
+                Ok(Some(TrampolineState::Return { val: body_result }))
+            }
+            
+            CONT_WIND_OUT => {
+                // val is result of calling an after thunk (ignored)
+                // Data: (remaining_frames . (return_val . (target_chain . wind_in_frames)))
+                let (remaining_frames, return_val, target_chain, wind_in_frames) = self.unpack4(data)?;
+                
+                if self.lisp.get(remaining_frames)?.is_nil() {
+                    // Done winding out, now wind in
+                    self.start_wind_in(wind_in_frames, return_val, target_chain)
+                } else {
+                    // More frames to wind out
+                    let frame = self.lisp.car(remaining_frames)?;
+                    let rest = self.lisp.cdr(remaining_frames)?;
+                    
+                    // Get the after thunk from this frame: ((before . after) . parent)
+                    let (before_after, _parent) = self.unpack2(frame)?;
+                    let (_before, after) = self.unpack2(before_after)?;
+                    
+                    // Pop this frame from the current dynamic-wind chain
+                    self.dynamic_wind_chain = self.lisp.cdr(self.dynamic_wind_chain)?;
+                    
+                    // Push continuation for next wind-out step
+                    let data2 = self.pack4(rest, return_val, target_chain, wind_in_frames)?;
+                    self.push_cont(CONT_WIND_OUT, data2, self.global_env)?;
+                    
+                    // Call the after thunk
+                    self.apply_thunk(after, self.global_env)
+                }
+            }
+            
+            CONT_WIND_IN => {
+                // val is result of calling a before thunk (ignored)
+                // Data: (remaining_frames . (return_val . (target_chain . original_target)))
+                let (remaining_frames, return_val, target_chain, original_target) = self.unpack4(data)?;
+                
+                if self.lisp.get(remaining_frames)?.is_nil() {
+                    // Done winding in, now we can complete the continuation restore
+                    self.dynamic_wind_chain = original_target;
+                    Ok(Some(TrampolineState::Return { val: return_val }))
+                } else {
+                    // More frames to wind in
+                    let frame = self.lisp.car(remaining_frames)?;
+                    let rest = self.lisp.cdr(remaining_frames)?;
+                    
+                    // Get the before thunk from this frame: ((before . after) . parent)
+                    let (before_after, _parent) = self.unpack2(frame)?;
+                    let (before, _after) = self.unpack2(before_after)?;
+                    
+                    // Push this frame onto the current dynamic-wind chain
+                    self.dynamic_wind_chain = self.lisp.cons(before_after, self.dynamic_wind_chain)?;
+                    
+                    // Push continuation for next wind-in step
+                    let data2 = self.pack4(rest, return_val, target_chain, original_target)?;
+                    self.push_cont(CONT_WIND_IN, data2, self.global_env)?;
+                    
+                    // Call the before thunk
+                    self.apply_thunk(before, self.global_env)
+                }
             }
             
             // Catch-all for unknown continuation types
@@ -942,24 +1134,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // The current continuation is already an arena-based ContFrame chain
         let cont_chain = self.current_cont;
         
-        // Create the continuation value
-        // For now, we don't have dynamic-wind support, so use nil for that field
-        let nil = self.lisp.nil()?;
-        let continuation = self.lisp.continuation(cont_chain, env, nil)?;
+        // Create the continuation value with the current dynamic-wind chain
+        let continuation = self.lisp.continuation(cont_chain, env, self.dynamic_wind_chain)?;
         
         Ok(continuation)
     }
     
     /// Restore a captured continuation
     /// 
-    /// With arena-based continuations, restore is O(1) - we just update
-    /// the current_cont pointer.
+    /// With arena-based continuations, restore is O(1) for the basic case.
+    /// If dynamic-wind is involved, we need to call appropriate before/after thunks.
     fn restore_continuation(&mut self, continuation: ArenaIndex) -> Result<(), EvalError> {
-        // Extract the cont_chain from the Continuation value
-        let (cont_chain, _capture_env, _dw_chain) = self.lisp.continuation_parts(continuation)?;
+        // Extract the cont_chain and dynamic-wind chain from the Continuation value
+        let (cont_chain, _capture_env, captured_dw_chain) = self.lisp.continuation_parts(continuation)?;
         
         // Restore the continuation chain
         self.current_cont = cont_chain;
+        
+        // Restore the dynamic-wind chain (for now, simple replacement)
+        // Full dynamic-wind handling with thunk execution is done via continuation types
+        self.dynamic_wind_chain = captured_dw_chain;
         
         Ok(())
     }
@@ -1386,5 +1580,255 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let result = self.transcribe_template(template, bindings, empty_renames, self.global_env)?;
 
         Ok(TrampolineState::Return { val: result })
+    }
+    
+    // ========================================================================
+    // dynamic-wind support
+    // ========================================================================
+    
+    /// Evaluate dynamic-wind
+    ///
+    /// (dynamic-wind before body after)
+    ///
+    /// Calls the before thunk, then the body thunk, then the after thunk.
+    /// Returns the value of the body thunk.
+    ///
+    /// When a continuation captured inside the body is invoked from outside,
+    /// the after thunk is called before leaving this dynamic extent.
+    /// When a continuation captured outside is invoked from inside the body,
+    /// the after thunk is called before leaving, and if the continuation
+    /// captured inside is invoked again, the before thunk is called to re-enter.
+    pub(super) fn step_eval_dynamic_wind(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> Result<TrampolineState, EvalError> {
+        // Parse arguments: (before body after)
+        if self.lisp.get(args)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("dynamic-wind requires 3 arguments"));
+        }
+        let before_expr = self.lisp.car(args)?;
+        let rest1 = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest1)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("dynamic-wind requires 3 arguments"));
+        }
+        let body_expr = self.lisp.car(rest1)?;
+        let rest2 = self.lisp.cdr(rest1)?;
+        
+        if self.lisp.get(rest2)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("dynamic-wind requires 3 arguments"));
+        }
+        let after_expr = self.lisp.car(rest2)?;
+        let rest3 = self.lisp.cdr(rest2)?;
+        
+        if !self.lisp.get(rest3)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("dynamic-wind requires 3 arguments"));
+        }
+        
+        // Save current dynamic-wind chain
+        let saved_dw_chain = self.dynamic_wind_chain;
+        
+        // Push continuation for when before thunk is evaluated
+        // Data: (body_expr . (after_expr . (env . saved_dw_chain)))
+        let data = self.pack4(body_expr, after_expr, env, saved_dw_chain)?;
+        self.push_cont(CONT_DYNAMIC_WIND_BEFORE, data, env)?;
+        
+        // Evaluate the before thunk
+        Ok(TrampolineState::Eval { expr: before_expr, env })
+    }
+    
+    /// Apply a thunk (zero-argument procedure)
+    fn apply_thunk(
+        &mut self,
+        thunk: ArenaIndex,
+        env: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        match self.lisp.get(thunk)? {
+            Value::Lambda { .. } => {
+                let (params, body, closure_env) = self.lisp.lambda_parts(thunk)?;
+                
+                // Check param count - should be exactly 0 for a thunk
+                if !self.lisp.get(params)?.is_nil() {
+                    return Err(self.make_error(ErrorKind::WrongArgCount, thunk)
+                        .with_message("dynamic-wind thunk must accept 0 arguments"));
+                }
+                
+                // Execute the lambda body
+                Ok(Some(TrampolineState::Eval { expr: body, env: closure_env }))
+            }
+            Value::Continuation { .. } => {
+                // Can't call a continuation as a thunk without an argument
+                Err(self.make_error(ErrorKind::WrongArgCount, thunk)
+                    .with_message("continuation requires 1 argument"))
+            }
+            _ => {
+                // For other callable types, construct a call expression
+                let nil = self.lisp.nil()?;
+                let call_expr = self.lisp.cons(thunk, nil)?;
+                self.push_frame(call_expr, thunk)?;
+                let data = self.pack3(nil, env, call_expr)?;
+                self.push_cont(CONT_APPLY_FORCED, data, env)?;
+                Ok(Some(TrampolineState::Return { val: thunk }))
+            }
+        }
+    }
+    
+    /// Check if two dynamic-wind chains are equal (by identity)
+    fn dynamic_wind_chains_equal(
+        &self,
+        chain1: ArenaIndex,
+        chain2: ArenaIndex,
+    ) -> Result<bool, EvalError> {
+        // Simple identity check for arena indices
+        Ok(chain1 == chain2)
+    }
+    
+    /// Compute the frames to wind out and wind in when transitioning between chains
+    ///
+    /// Returns (wind_out_frames, wind_in_frames) where:
+    /// - wind_out_frames: list of frames to exit (call after thunks)
+    /// - wind_in_frames: list of frames to enter (call before thunks)
+    fn compute_wind_frames(
+        &self,
+        from_chain: ArenaIndex,
+        to_chain: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        // Find common ancestor of the two chains
+        // For simplicity, compute depth of each chain
+        let from_depth = self.chain_depth(from_chain)?;
+        let to_depth = self.chain_depth(to_chain)?;
+        
+        // Build list of frames to wind out (from current to common ancestor)
+        let mut wind_out = self.lisp.nil()?;
+        let mut from = from_chain;
+        let mut from_d = from_depth;
+        
+        // Bring from_chain up to same depth as to_chain
+        while from_d > to_depth {
+            if !self.lisp.get(from)?.is_nil() {
+                wind_out = self.lisp.cons(from, wind_out)?;
+                from = self.lisp.cdr(from)?;
+                from_d -= 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Build list of frames to wind in (from common ancestor to target)
+        let mut wind_in = self.lisp.nil()?;
+        let mut to = to_chain;
+        let mut to_d = to_depth;
+        
+        // Bring to_chain up to same depth as from_chain
+        while to_d > from_d {
+            if !self.lisp.get(to)?.is_nil() {
+                // Prepend to wind_in list (we'll reverse later)
+                wind_in = self.lisp.cons(to, wind_in)?;
+                to = self.lisp.cdr(to)?;
+                to_d -= 1;
+            } else {
+                break;
+            }
+        }
+        
+        // Now find common ancestor
+        while from != to && !self.lisp.get(from)?.is_nil() && !self.lisp.get(to)?.is_nil() {
+            wind_out = self.lisp.cons(from, wind_out)?;
+            wind_in = self.lisp.cons(to, wind_in)?;
+            from = self.lisp.cdr(from)?;
+            to = self.lisp.cdr(to)?;
+        }
+        
+        // Reverse wind_out (we want to process from innermost to outermost)
+        wind_out = self.reverse_list(wind_out)?;
+        
+        // wind_in is already in the right order (from ancestor to target)
+        // But we need to reverse it since we built it backwards
+        wind_in = self.reverse_list(wind_in)?;
+        
+        Ok((wind_out, wind_in))
+    }
+    
+    /// Get the depth of a dynamic-wind chain
+    fn chain_depth(&self, mut chain: ArenaIndex) -> Result<usize, EvalError> {
+        let mut depth = 0;
+        while !self.lisp.get(chain)?.is_nil() {
+            depth += 1;
+            chain = self.lisp.cdr(chain)?;
+        }
+        Ok(depth)
+    }
+    
+    /// Start the wind-out/wind-in transition
+    fn start_wind_transition(
+        &mut self,
+        wind_out_frames: ArenaIndex,
+        wind_in_frames: ArenaIndex,
+        return_val: ArenaIndex,
+        target_chain: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        if self.lisp.get(wind_out_frames)?.is_nil() {
+            // No frames to wind out, start winding in
+            self.start_wind_in(wind_in_frames, return_val, target_chain)
+        } else {
+            // Get the first frame to wind out
+            let frame = self.lisp.car(wind_out_frames)?;
+            let rest = self.lisp.cdr(wind_out_frames)?;
+            
+            // Get the after thunk from this frame
+            // Frame format: ((before . after) . parent)
+            let (before_after, _parent) = self.unpack2(frame)?;
+            let (_before, after) = self.unpack2(before_after)?;
+            
+            // Pop this frame from the current dynamic-wind chain
+            if !self.lisp.get(self.dynamic_wind_chain)?.is_nil() {
+                self.dynamic_wind_chain = self.lisp.cdr(self.dynamic_wind_chain)?;
+            }
+            
+            // Push continuation for next wind-out step
+            let data = self.pack4(rest, return_val, target_chain, wind_in_frames)?;
+            self.push_cont(CONT_WIND_OUT, data, self.global_env)?;
+            
+            // Call the after thunk
+            self.apply_thunk(after, self.global_env)
+        }
+    }
+    
+    /// Start winding into the target chain
+    fn start_wind_in(
+        &mut self,
+        wind_in_frames: ArenaIndex,
+        return_val: ArenaIndex,
+        target_chain: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        if self.lisp.get(wind_in_frames)?.is_nil() {
+            // Done winding, set final chain and return
+            self.dynamic_wind_chain = target_chain;
+            Ok(Some(TrampolineState::Return { val: return_val }))
+        } else {
+            // Get the first frame to wind in
+            let frame = self.lisp.car(wind_in_frames)?;
+            let rest = self.lisp.cdr(wind_in_frames)?;
+            
+            // Get the before thunk from this frame
+            // Frame format: ((before . after) . parent)
+            let (before_after, _parent) = self.unpack2(frame)?;
+            let (before, _after) = self.unpack2(before_after)?;
+            
+            // Push this frame's thunks onto the current dynamic-wind chain
+            self.dynamic_wind_chain = self.lisp.cons(before_after, self.dynamic_wind_chain)?;
+            
+            // Push continuation for next wind-in step
+            let data = self.pack4(rest, return_val, target_chain, target_chain)?;
+            self.push_cont(CONT_WIND_IN, data, self.global_env)?;
+            
+            // Call the before thunk
+            self.apply_thunk(before, self.global_env)
+        }
     }
 }

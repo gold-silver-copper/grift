@@ -45,4 +45,9 @@ pub struct Evaluator<'a, const N: usize> {
     macro_env: ArenaIndex,
     /// Counter for generating unique symbols (gensym)
     gensym_counter: usize,
+    /// Dynamic-wind chain - arena-based linked list of (before . after) thunk pairs
+    /// Each entry is: ((before . after) . parent_chain)
+    /// Used to track dynamic extent for proper before/after thunk execution
+    /// when entering/exiting dynamic-wind scopes via call/cc
+    dynamic_wind_chain: ArenaIndex,
 }

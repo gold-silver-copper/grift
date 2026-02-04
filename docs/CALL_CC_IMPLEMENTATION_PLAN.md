@@ -114,13 +114,23 @@ The `Cont` enum represents different types of continuations:
 
 | Step | Description | Status |
 |------|-------------|--------|
-| 4.1 | Implement `dynamic-wind` | 🔲 Not started |
+| 4.1 | Implement `dynamic-wind` | ✅ Complete |
+
+### Phase 5 Progress Tracking
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 5.1 | Basic dynamic-wind tests | ✅ Complete |
+| 5.2 | Dynamic-wind with call/cc escape tests | ✅ Complete |
+| 5.3 | Dynamic-wind reentry tests | ✅ Complete |
+| 5.4 | Nested dynamic-wind tests | ✅ Complete |
 
 **Implementation Notes**:
 - Phase 1.5 uses a hybrid approach: the evaluator still uses array-based `cont_stack` and `data_stack`,
   but continuations are serialized to arena-based `ContFrame` chains when captured with `call/cc`
 - This hybrid approach provides correct semantics with less invasive changes to the evaluator
 - Full migration to arena-based continuations can be done later as an optimization
+- Phase 4 adds dynamic-wind support with proper before/after thunk execution during continuation transitions
 
 ## Implementation Strategy
 
