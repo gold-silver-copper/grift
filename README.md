@@ -233,6 +233,10 @@ See the detailed architecture documents:
 
 - **[ARENA_ARCHITECTURE.md](./docs/ARENA_ARCHITECTURE.md)** — How the arena allocator works
 - **[LISP_ARCHITECTURE.md](./docs/LISP_ARCHITECTURE.md)** — How the Lisp interpreter works
+- **[HYGIENIC_MACROS_IMPLEMENTATION.md](./docs/HYGIENIC_MACROS_IMPLEMENTATION.md)** — Macro system implementation (Phases 1-9)
+- **[EXTENDING_SCHEME_MACROS.md](./docs/EXTENDING_SCHEME_MACROS.md)** — Advanced macro patterns and syntax-case
+- **[PSYNTAX_MIGRATION_GUIDE.md](./docs/PSYNTAX_MIGRATION_GUIDE.md)** — Guide for replacing syntax-case with psyntax.scm
+- **[SCHEME_R7RS_CONFORMANCE.md](./docs/SCHEME_R7RS_CONFORMANCE.md)** — R7RS compliance status
 
 ## 📚 Standard Library
 
