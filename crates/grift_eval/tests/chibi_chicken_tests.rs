@@ -28,17 +28,6 @@ fn eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input:
     lisp.get(result).unwrap().is_false()
 }
 
-#[allow(dead_code)]
-fn eval_is_nil<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_nil()
-}
-
-#[allow(dead_code)]
-fn eval_ok<const N: usize>(eval: &mut Evaluator<N>, input: &str) -> bool {
-    eval.eval_str(input).is_ok()
-}
-
 // ============================================================================
 // R5RS Tests from Chibi-Scheme
 // https://github.com/ashinn/chibi-scheme/blob/master/tests/r5rs-tests.scm
