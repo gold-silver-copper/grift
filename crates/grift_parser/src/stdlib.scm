@@ -9,24 +9,27 @@
 
 ;;; (map f lst) - Apply f to each element of lst (tail-recursive)
 (define (map f lst)
-  (define (map-iter lst acc)
+  (define (map-iter lst acc)  ;; Helper function for tail-recursive iteration
     (if (null? lst)
-        (reverse acc)
-        (map-iter (cdr lst) (cons (f (car lst)) acc))))
-  (map-iter lst '()))
+        (reverse acc)  ;; Base case: reverse accumulated list
+        (map-iter (cdr lst) (cons (f (car lst)) acc))))  ;; Recursive case: apply f and continue
+  (map-iter lst '()))  ;; Start with empty accumulator
 
 ;;; (filter pred lst) - Return elements where pred is true (tail-recursive)
 (define (filter pred lst)
-  (define (filter-iter lst acc)
+  (define (filter-iter lst acc)  ;; Tail-recursive helper
     (if (null? lst)
-        (reverse acc)
-        (if (pred (car lst))
-            (filter-iter (cdr lst) (cons (car lst) acc))
-            (filter-iter (cdr lst) acc))))
-  (filter-iter lst '()))
+        (reverse acc)  ;; Base case
+        (if (pred (car lst))  ;; Test if element matches predicate
+            (filter-iter (cdr lst) (cons (car lst) acc))  ;; Include element
+            (filter-iter (cdr lst) acc))))  ;; Skip element
+  (filter-iter lst '()))  ;; Start with empty accumulator
 
 ;;; (fold f acc lst) - Left fold over lst
-(define (fold f acc lst) (if (null? lst) acc (fold f (f acc (car lst)) (cdr lst))))
+(define (fold f acc lst)  ;; Left-associative fold
+  (if (null? lst)
+      acc  ;; Base case: return accumulator
+      (fold f (f acc (car lst)) (cdr lst))))  ;; Apply f to acc and car, recurse
 
 ;;; (length lst) - Return length of lst (tail-recursive)
 (define (length lst)

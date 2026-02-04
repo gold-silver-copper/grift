@@ -15,8 +15,8 @@
 ;; Transforms ((name val) body...) into ((lambda (name) body...) val)
 (define-syntax %let-binding
   (syntax-rules ()
-    ((%let-binding (name val) body ...)
-     ((lambda (name) body ...) val))))
+    ((%let-binding (name val) body ...)  ;; Match a single binding
+     ((lambda (name) body ...) val))))  ;; Expand to lambda application
 
 ;; ============================================================
 ;; Binding Forms (let, let*)
@@ -119,19 +119,21 @@
 ;; Conditionals
 ;; ============================================================
 
+;; and - logical AND, short-circuits on first #f
 (define-syntax and
   (syntax-rules ()
-    ((and) #t)
-    ((and test) test)
-    ((and test rest ...)
-     (if test (and rest ...) #f))))
+    ((and) #t)  ;; No arguments: return true
+    ((and test) test)  ;; Single argument: return its value
+    ((and test rest ...)  ;; Multiple arguments: test first, then rest
+     (if test (and rest ...) #f))))  ;; Short-circuit if test is false
 
+;; or - logical OR, short-circuits on first truthy value
 (define-syntax or
   (syntax-rules ()
-    ((or) #f)
-    ((or test) test)
-    ((or test rest ...)
-     (let ((temp test))
+    ((or) #f)  ;; No arguments: return false
+    ((or test) test)  ;; Single argument: return its value
+    ((or test rest ...)  ;; Multiple arguments: test first, then rest
+     (let ((temp test))  ;; Evaluate test only once
        (if temp temp (or rest ...))))))
 
 (define-syntax when
