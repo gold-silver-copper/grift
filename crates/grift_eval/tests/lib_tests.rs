@@ -6295,3 +6295,199 @@ fn test_call_cc_wrong_args() {
     let result2 = eval.eval_str("(call/cc (lambda (k) k) extra)");
     assert!(result2.is_err());
 }
+
+
+// ==============================================================================
+// dynamic-wind tests
+// ==============================================================================
+
+/// Test basic dynamic-wind - all three thunks called in order
+#[test]
+fn test_dynamic_wind_basic() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Set up a log list
+    eval.eval_str("(define log '())").unwrap();
+    
+    // Run dynamic-wind
+    let result = eval.eval_str(
+        "(dynamic-wind
+           (lambda () (set! log (cons 'before log)))
+           (lambda () (set! log (cons 'body log)) 42)
+           (lambda () (set! log (cons 'after log))))"
+    ).unwrap();
+    
+    // Body should return 42
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    // Check the log - should be (after body before) since we cons onto front
+    let log = eval.eval_str("log").unwrap();
+    
+    // First element should be 'after
+    let first = lisp.car(log).unwrap();
+    assert!(lisp.symbol_matches(first, "after").unwrap());
+    
+    // Second element should be 'body
+    let second = lisp.car(lisp.cdr(log).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(second, "body").unwrap());
+    
+    // Third element should be 'before
+    let third = lisp.car(lisp.cdr(lisp.cdr(log).unwrap()).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(third, "before").unwrap());
+}
+
+/// Test dynamic-wind with escape via call/cc
+#[test]
+fn test_dynamic_wind_escape() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Set up a log list
+    eval.eval_str("(define log '())").unwrap();
+    
+    // Run dynamic-wind with escape via call/cc
+    let result = eval.eval_str(
+        "(call/cc (lambda (escape)
+           (dynamic-wind
+             (lambda () (set! log (cons 'before log)))
+             (lambda () (escape 'escaped))
+             (lambda () (set! log (cons 'after log))))))"
+    ).unwrap();
+    
+    // Should have escaped with 'escaped
+    assert!(lisp.symbol_matches(result, "escaped").unwrap());
+    
+    // Check the log - after thunk should still have been called
+    let log = eval.eval_str("log").unwrap();
+    
+    // First element should be 'after
+    let first = lisp.car(log).unwrap();
+    assert!(lisp.symbol_matches(first, "after").unwrap());
+    
+    // Second element should be 'before (body never ran to completion, so no 'body in log)
+    let second = lisp.car(lisp.cdr(log).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(second, "before").unwrap());
+}
+
+/// Test dynamic-wind returns body result
+#[test]
+fn test_dynamic_wind_returns_body() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Body returns a specific value
+    let result = eval.eval_str(
+        "(dynamic-wind
+           (lambda () 'ignored)
+           (lambda () (+ 1 2 3))
+           (lambda () 'also-ignored))"
+    ).unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(6));
+}
+
+/// Test nested dynamic-wind
+#[test]
+fn test_dynamic_wind_nested() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Set up a log list
+    eval.eval_str("(define log '())").unwrap();
+    
+    // Run nested dynamic-wind
+    let result = eval.eval_str(
+        "(dynamic-wind
+           (lambda () (set! log (cons 'before1 log)))
+           (lambda ()
+             (dynamic-wind
+               (lambda () (set! log (cons 'before2 log)))
+               (lambda () (set! log (cons 'body log)) 99)
+               (lambda () (set! log (cons 'after2 log)))))
+           (lambda () (set! log (cons 'after1 log))))"
+    ).unwrap();
+    
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(99));
+    
+    // Check the log order: after1 after2 body before2 before1 (reversed)
+    let log = eval.eval_str("log").unwrap();
+    
+    let e1 = lisp.car(log).unwrap();
+    assert!(lisp.symbol_matches(e1, "after1").unwrap());
+    
+    let rest1 = lisp.cdr(log).unwrap();
+    let e2 = lisp.car(rest1).unwrap();
+    assert!(lisp.symbol_matches(e2, "after2").unwrap());
+    
+    let rest2 = lisp.cdr(rest1).unwrap();
+    let e3 = lisp.car(rest2).unwrap();
+    assert!(lisp.symbol_matches(e3, "body").unwrap());
+}
+
+/// Test dynamic-wind error: wrong number of arguments
+#[test]
+fn test_dynamic_wind_wrong_args() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Too few arguments
+    let result = eval.eval_str("(dynamic-wind (lambda () 1) (lambda () 2))");
+    assert!(result.is_err());
+    
+    // Too many arguments
+    let result2 = eval.eval_str("(dynamic-wind (lambda () 1) (lambda () 2) (lambda () 3) (lambda () 4))");
+    assert!(result2.is_err());
+    
+    // No arguments
+    let result3 = eval.eval_str("(dynamic-wind)");
+    assert!(result3.is_err());
+}
+
+/// Test re-entering dynamic-wind via saved continuation
+#[test]
+fn test_dynamic_wind_reenter() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Set up a log and saved continuation
+    eval.eval_str("(define log '())").unwrap();
+    eval.eval_str("(define saved-k #f)").unwrap();
+    
+    // Run dynamic-wind and save a continuation inside
+    let result1 = eval.eval_str(
+        "(dynamic-wind
+           (lambda () (set! log (cons 'before log)))
+           (lambda ()
+             (call/cc (lambda (k)
+               (set! saved-k k)
+               'first-time)))
+           (lambda () (set! log (cons 'after log))))"
+    ).unwrap();
+    
+    // First result should be 'first-time
+    assert!(lisp.symbol_matches(result1, "first-time").unwrap());
+    
+    // Log should have before and after
+    let log1 = eval.eval_str("log").unwrap();
+    // Check first element is 'after
+    let e1 = lisp.car(log1).unwrap();
+    assert!(lisp.symbol_matches(e1, "after").unwrap());
+    
+    // Clear log and re-enter via saved continuation
+    eval.eval_str("(set! log '())").unwrap();
+    
+    // Now invoke the saved continuation - this should re-enter the dynamic-wind
+    // calling the before thunk again, then returning 'second-time, then calling after
+    let result2 = eval.eval_str("(saved-k 'second-time)").unwrap();
+    
+    assert!(lisp.symbol_matches(result2, "second-time").unwrap());
+    
+    // Log should show before and after were called again
+    let log2 = eval.eval_str("log").unwrap();
+    let e2_1 = lisp.car(log2).unwrap();
+    assert!(lisp.symbol_matches(e2_1, "after").unwrap());
+    
+    let e2_2 = lisp.car(lisp.cdr(log2).unwrap()).unwrap();
+    assert!(lisp.symbol_matches(e2_2, "before").unwrap());
+}

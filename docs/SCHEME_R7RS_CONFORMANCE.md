@@ -24,7 +24,7 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Lexical scoping with closures
 - ✅ Proper tail-call optimization (via trampolining)
 - ✅ Strict evaluation (call-by-value)
-- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`, `call-with-current-continuation` / `call/cc`
+- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`, `call-with-current-continuation` / `call/cc`, `dynamic-wind`
 
 #### Multiple Values (R7RS Section 6.10)
 - ✅ `values` - Return multiple values
@@ -275,7 +275,7 @@ the evaluator would need to support rest-argument syntax in lambda.
 - [x] Add `Value::Continuation` type for first-class continuations (Phase 2)
 - [x] Implement `call-with-current-continuation` / `call/cc` (Phase 3)
 - [ ] Migrate evaluator fully to arena-based continuations (optimization)
-- [ ] Implement `dynamic-wind` (Phase 4)
+- [x] Implement `dynamic-wind` (Phase 4)
 
 **Implementation Notes**:
 - See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for the detailed implementation plan
@@ -283,8 +283,8 @@ the evaluator would need to support rest-argument syntax in lambda.
 - Continuations can be captured, stored, and invoked multiple times
 - Uses a hybrid approach: evaluator uses array-based stacks, but continuations are
   serialized to arena-based `ContFrame` chains when captured
-- `dynamic-wind` is not yet implemented (before/after thunks are not called during
-  continuation jumps)
+- `dynamic-wind` is now implemented - before/after thunks are properly called during
+  continuation transitions (escape and reentry)
 
 #### 9.2 Lazy Evaluation (scheme lazy library) ✅ COMPLETED
 - [x] Implement `delay` / `force` - Basic delayed evaluation (macro-based)
@@ -350,8 +350,8 @@ the evaluator would need to support rest-argument syntax in lambda.
 
 ### Potential Challenges
 
-1. **Continuations**: ✅ **MOSTLY COMPLETED** - `call/cc` and `call-with-current-continuation` are fully functional.
-   - `dynamic-wind` not yet implemented (before/after thunks are not called during continuation jumps)
+1. **Continuations**: ✅ **COMPLETED** - `call/cc`, `call-with-current-continuation`, and `dynamic-wind` are fully functional.
+   - `dynamic-wind` properly handles before/after thunks during continuation transitions
    - See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for implementation details
    
 2. **Multiple Values**: ✅ **COMPLETED** - Full support via `call-with-values`, `let-values`, `let*-values`, `define-values`.

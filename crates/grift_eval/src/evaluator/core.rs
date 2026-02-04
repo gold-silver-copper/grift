@@ -34,6 +34,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             native_registry: NativeRegistry::new(),
             macro_env: nil,
             gensym_counter: 0,
+            dynamic_wind_chain: nil, // Empty dynamic-wind chain
         };
         
         // Initialize global environment with builtins
@@ -136,17 +137,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         &self.native_registry
     }
     
-    /// Run GC with minimal roots (global env, macro env, and current continuation)
+    /// Run GC with minimal roots (global env, macro env, current continuation, and dynamic-wind chain)
     /// 
     /// Use `gc_with_state()` during evaluation to also root the current expression/value.
     pub fn gc(&self) -> GcStats {
-        self.lisp.gc(&[self.global_env, self.macro_env, self.current_cont])
+        self.lisp.gc(&[self.global_env, self.macro_env, self.current_cont, self.dynamic_wind_chain])
     }
     
     /// Run GC during evaluation - marks continuation chain AND current state as roots
     /// 
     /// Roots array size is 8 to accommodate:
-    /// - global_env, macro_env, current_cont (3 static roots)
+    /// - global_env, macro_env, current_cont, dynamic_wind_chain (4 static roots)
     /// - expr, env from TrampolineState::Eval (2 roots)
     /// - val from TrampolineState::Return (1 root)
     /// Plus some headroom for future additions.
@@ -157,12 +158,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
-        // Always include global env, macro env, and current continuation chain
+        // Always include global env, macro env, current continuation chain, and dynamic-wind chain
         roots[root_count] = self.global_env;
         root_count += 1;
         roots[root_count] = self.macro_env;
         root_count += 1;
         roots[root_count] = self.current_cont;
+        root_count += 1;
+        roots[root_count] = self.dynamic_wind_chain;
         root_count += 1;
         
         // Include current state
@@ -665,6 +668,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
                 || self.lisp.symbol_matches(car, "call/cc")? {
                 return self.step_eval_call_cc(cdr, env);
+            }
+            
+            // dynamic-wind - establish dynamic extent with before/after thunks
+            if self.lisp.symbol_matches(car, "dynamic-wind")? {
+                return self.step_eval_dynamic_wind(cdr, env);
             }
         }
         
