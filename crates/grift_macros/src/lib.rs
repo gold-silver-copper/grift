@@ -191,6 +191,46 @@ fn parse_lisp_file(content: &str) -> Vec<StdlibEntry> {
     entries
 }
 
+/// Strip inline comments from a line while preserving string literals.
+/// Returns the line with comments removed, but preserves content inside strings.
+fn strip_inline_comment(line: &str) -> String {
+    let mut result = String::new();
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut chars = line.chars().peekable();
+    
+    while let Some(c) = chars.next() {
+        if escape_next {
+            // If we're escaping, add the character and continue
+            result.push(c);
+            escape_next = false;
+            continue;
+        }
+        
+        match c {
+            '\\' if in_string => {
+                // Start of escape sequence in string
+                result.push(c);
+                escape_next = true;
+            }
+            '"' => {
+                // Toggle string state
+                in_string = !in_string;
+                result.push(c);
+            }
+            ';' if !in_string => {
+                // Start of comment outside of string - stop processing this line
+                break;
+            }
+            _ => {
+                result.push(c);
+            }
+        }
+    }
+    
+    result
+}
+
 /// Parse a (define (name params...) body) expression
 fn parse_define<'a, I: Iterator<Item = &'a str>>(
     first_line: &str,
@@ -198,11 +238,12 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
     remaining_lines: &mut I,
 ) -> Option<StdlibEntry> {
     // Collect the full definition (may span multiple lines)
-    let mut full_def = first_line.to_string();
+    // Strip inline comments from the first line
+    let mut full_def = strip_inline_comment(first_line);
     
     // Count parentheses to find the end
     let mut paren_count = 0;
-    for c in first_line.chars() {
+    for c in full_def.chars() {
         match c {
             '(' => paren_count += 1,
             ')' => paren_count -= 1,
@@ -214,9 +255,11 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
     while paren_count > 0 {
         match remaining_lines.next() {
             Some(line) => {
+                // Strip inline comments from this line before adding it
+                let stripped = strip_inline_comment(line.trim());
                 full_def.push(' ');
-                full_def.push_str(line.trim());
-                for c in line.chars() {
+                full_def.push_str(&stripped);
+                for c in stripped.chars() {
                     match c {
                         '(' => paren_count += 1,
                         ')' => paren_count -= 1,
