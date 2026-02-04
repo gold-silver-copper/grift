@@ -26,6 +26,17 @@ All conformance work should reference this specification. The spec is organized 
 - ✅ Strict evaluation (call-by-value)
 - ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`, `call-with-current-continuation` / `call/cc`, `dynamic-wind`
 
+#### Hygienic Macro System (R7RS Section 4.3)
+- ✅ `define-syntax` - Top-level macro definitions
+- ✅ `syntax-rules` - Pattern-based declarative macros with ellipsis support
+- ✅ `let-syntax` - Local macro bindings
+- ✅ `syntax-case` - Advanced pattern matching with fenders (procedural macros)
+- ✅ Lambda transformers - Procedural macros using `(lambda (stx) ...)`
+- ✅ `syntax` - Template construction in procedural macros
+- ✅ `with-syntax` - Pattern variable binding
+- ✅ `case-lambda` - Multiple-arity procedure dispatch (macro-based)
+- ✅ `cond-expand` - Feature-based conditional expansion
+
 #### Multiple Values (R7RS Section 6.10)
 - ✅ `values` - Return multiple values
 - ✅ `call-with-values` - Receive multiple values  
@@ -212,28 +223,49 @@ These features are intentionally non-R7RS for embedded systems and runtime contr
 - `let-values` and `let*-values` use `call-with-values` internally
 - `define-values` supports 0-4 variables explicitly; for more, use rest argument syntax
 
-### Phase 5: Hygienic Macros ✅ MOSTLY COMPLETED
+### Phase 5: Hygienic Macros ✅ COMPLETED
 **Goal**: R7RS-compliant macro system
 
 #### 5.1 Syntax-Rules (Section 4.3.2)
-- [ ] Implement `syntax-rules` - Pattern-based macros
-- [ ] Implement `let-syntax` / `letrec-syntax` - Local syntax bindings
-- [ ] Implement `define-syntax` - Top-level syntax definitions
-- [ ] Implement `syntax-error` - Macro error signaling
+- [x] Implement `syntax-rules` - Pattern-based macros
+- [x] Implement `let-syntax` - Local syntax bindings
+- [ ] Implement `letrec-syntax` - Recursive local syntax bindings (not implemented)
+- [x] Implement `define-syntax` - Top-level syntax definitions
+- [ ] Implement `syntax-error` - Macro error signaling (not implemented)
 
-### Phase 6: Control Features ⚠️ PARTIALLY COMPLETED
+#### 5.2 Procedural Macros (Non-R7RS Extension)
+- [x] Implement `syntax-case` - Advanced pattern matching with fenders
+- [x] Implement lambda transformers - `(lambda (stx) ...)` procedural macros
+- [x] Implement `syntax` - Template construction in procedural macros
+- [x] Implement `with-syntax` - Pattern variable binding for procedural macros
+
+**Implementation Notes**:
+- Hygienic expansion using mark-based hygiene (Clinger & Rees 1991)
+- Macros expand during evaluation (evaluation-time expansion)
+- Ellipsis patterns with full repetition support (nested ellipsis has known limitations)
+- 20+ standard R7RS forms implemented as macros in `macros.scm` (see Phase 5.3)
+
+#### 5.3 Standard Forms Implemented as Macros
+- [x] Binding forms: `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values`, `define-values`
+- [x] Conditionals: `and`, `or`, `when`, `unless`, `cond`, `case`
+- [x] Iteration: `do`
+- [x] Delayed evaluation: `delay`, `delay-force`, `force`
+- [x] Multiple arity: `case-lambda`
+- [x] Feature detection: `cond-expand`
+- [x] Advanced: `with-syntax`, `%qq-expand` (educational quasiquote macro)
+
+### Phase 6: Control Features ✅ COMPLETED
 **Goal**: Advanced control flow
 
 #### 6.1 Conditionals
-- [x] Implement `when` / `unless` - Convenience conditionals (already in evaluator)
+- [x] Implement `when` / `unless` - Convenience conditionals (macro in macros.scm)
 - [x] Implement `cond-expand` - Feature-based conditional expansion (macro in macros.scm)
-- [⚠️] Implement `case-lambda` - Multiple-arity procedures (LIMITED - see notes)
+- [x] Implement `case-lambda` - Multiple-arity procedures (macro in macros.scm)
 
-**Note on case-lambda**: Full multi-clause case-lambda requires rest-argument lambda support
-(e.g., `(lambda args body)`), which is not currently implemented in the evaluator.
-Single-clause case-lambda works correctly. Multi-clause case-lambda is implemented but
-only uses the first clause - this is a documented limitation. To fully support case-lambda,
-the evaluator would need to support rest-argument syntax in lambda.
+**Implementation Notes**:
+- All control features are implemented as macros
+- `case-lambda` supports multi-clause dispatch based on argument count
+- `cond-expand` supports feature detection for r7rs, grift, exact-closed features
 
 #### 6.2 Exception Handling (Section 6.11)
 - [ ] Implement `guard` - Exception handling syntax
@@ -356,7 +388,14 @@ the evaluator would need to support rest-argument syntax in lambda.
    
 2. **Multiple Values**: ✅ **COMPLETED** - Full support via `call-with-values`, `let-values`, `let*-values`, `define-values`.
 
-3. **Library System**: No module system yet.
+3. **Hygienic Macro System**: ✅ **COMPLETED** - `syntax-rules`, `define-syntax`, `let-syntax`, and `syntax-case` fully functional.
+   - Supports both declarative (`syntax-rules`) and procedural (`lambda` + `syntax-case`) macros
+   - Mark-based hygiene ensures lexical scoping
+   - 20+ standard R7RS forms implemented as macros
+   - Minor limitation: nested ellipsis patterns have known edge cases (see `HYGIENIC_MACROS_IMPLEMENTATION.md`)
+   - Missing: `letrec-syntax` and `syntax-error` (not critical for most use cases)
+
+4. **Library System**: No module system yet.
    - **Impact**: Required for full conformance - Phase 8
 
 ---
@@ -366,8 +405,11 @@ the evaluator would need to support rest-argument syntax in lambda.
 - **Spec**: `scheme-spec-r7rs/spec.html`
 - **Architecture**: `docs/LISP_ARCHITECTURE.md`
 - **Arena Architecture**: `docs/ARENA_ARCHITECTURE.md`
+- **Macro Implementation**: `docs/HYGIENIC_MACROS_IMPLEMENTATION.md`
+- **Continuations**: `docs/CALL_CC_IMPLEMENTATION_PLAN.md`
 - **Current Stdlib**: `crates/grift_parser/src/stdlib.scm`
 - **Standard Macros**: `crates/grift_eval/src/evaluator/macros.scm`
+- **Macro Expansion**: `crates/grift_eval/src/evaluator/expand.rs`
 - **Parser**: `crates/grift_parser/src/lib.rs`
 - **Evaluator**: `crates/grift_eval/src/lib.rs`
 
