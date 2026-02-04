@@ -137,6 +137,9 @@ fn format_value_impl<const N: usize>(
             format_value(lisp, expr, buf);
             buf.push('>');
         }
+        Ok(Value::ContFrame { .. }) => {
+            buf.push_str("#<cont-frame>");
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

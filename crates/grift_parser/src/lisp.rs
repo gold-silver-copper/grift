@@ -613,6 +613,109 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    // ========================================================================
+    // Continuation Frame Methods (for call/cc support)
+    // ========================================================================
+    
+    /// Create a continuation frame for arena-based continuation stack
+    ///
+    /// Continuation frames form a linked list in the arena, enabling O(1) capture
+    /// for call/cc. Each frame stores the continuation type, associated data,
+    /// and a reference to the parent continuation.
+    ///
+    /// # Arguments
+    ///
+    /// * `cont_type` - The continuation type encoded as usize (e.g., 0=Done, 1=ApplyForced)
+    /// * `data` - ArenaIndex to continuation-specific data (or Nil if none)
+    /// * `parent` - ArenaIndex to parent ContFrame (or Nil for Done continuation)
+    /// * `env` - ArenaIndex to the environment at this continuation point
+    ///
+    /// # Internal Structure
+    ///
+    /// The cont_data field stores: ((Usize(cont_type) . data) . parent)
+    /// This allows extracting all information with minimal arena lookups.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Create a Done continuation (type 0, no data, no parent)
+    /// let nil = lisp.nil()?;
+    /// let done_cont = lisp.cont_frame(0, nil, nil, nil)?;
+    ///
+    /// // Create an IfBranch continuation (type 2) with data
+    /// let data = lisp.cons(then_expr, else_expr)?;
+    /// let if_cont = lisp.cont_frame(2, data, done_cont, env)?;
+    /// ```
+    pub fn cont_frame(
+        &self,
+        cont_type: usize,
+        data: ArenaIndex,
+        parent: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        // Create type_val as Usize
+        let type_val = self.arena.alloc(Value::Usize(cont_type))?;
+        // Pack type and data: (type . data)
+        let type_and_data = self.cons(type_val, data)?;
+        // Pack with parent: ((type . data) . parent)
+        let cont_data = self.cons(type_and_data, parent)?;
+        // Create the ContFrame
+        self.arena.alloc(Value::ContFrame { cont_data, env })
+    }
+    
+    /// Extract components from a ContFrame value
+    ///
+    /// Returns (cont_type, data, parent, env) unpacked from the internal structure.
+    ///
+    /// # Returns
+    ///
+    /// * `cont_type` - The continuation type as usize
+    /// * `data` - Continuation-specific data (or Nil)
+    /// * `parent` - Parent continuation (or Nil for Done)
+    /// * `env` - Environment at this continuation point
+    ///
+    /// # Errors
+    ///
+    /// Returns ArenaError::InvalidIndex if the index doesn't point to a ContFrame.
+    pub fn cont_frame_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(usize, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::ContFrame { cont_data, env } => {
+                // Unpack ((type . data) . parent)
+                let type_and_data = self.car(cont_data)?;
+                let parent = self.cdr(cont_data)?;
+                // Unpack (type . data)
+                let type_val = self.car(type_and_data)?;
+                let data = self.cdr(type_and_data)?;
+                // Get the usize value
+                match self.get(type_val)? {
+                    Value::Usize(cont_type) => Ok((cont_type, data, parent, env)),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get the parent continuation from a ContFrame
+    ///
+    /// This is a convenience method for walking up the continuation chain.
+    ///
+    /// # Returns
+    ///
+    /// The parent continuation ArenaIndex (or Nil if this is the Done continuation)
+    pub fn cont_frame_parent(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.get(idx)? {
+            Value::ContFrame { cont_data, .. } => {
+                self.cdr(cont_data)
+            }
+            Value::Nil => Ok(idx), // Nil represents end of chain
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Build a list from an iterator of indices
     pub fn list<I: IntoIterator<Item = ArenaIndex>>(&self, items: I) -> ArenaResult<ArenaIndex>
     where
