@@ -60,20 +60,151 @@ The `Cont` enum represents different types of continuations:
 ✅ **No Rust recursion**: All evaluation is iterative, making continuation capture feasible
 ✅ **Bounded stack**: Fixed-size continuation stack prevents unbounded growth
 
-### Challenges
+### Challenges with Current Design
 
 ❌ **Continuation stack is mutable array**: Cannot easily snapshot and restore
 ❌ **Data stack is separate**: Need to capture both cont_stack and data_stack together
 ❌ **Stack indices are transient**: Continuations reference data by offset, not absolute position
 ❌ **No continuation values in arena**: Need to add a new `Value::Continuation` variant
 
+### Proposed Arena-Based Design
+
+**Key Insight**: We can move the entire continuation stack into the arena as a linked list, eliminating the separate cont_stack and data_stack arrays entirely.
+
+**Benefits**:
+✅ **Natural snapshotting**: Continuations are already arena values that can be captured directly
+✅ **Unified storage**: No separate data_stack needed - all data is in the arena
+✅ **Persistent references**: ArenaIndex references are stable, not transient stack offsets
+✅ **Simpler capture/restore**: Just save/restore a single ArenaIndex to the current continuation
+
+**Design Constraint**: Following the same pattern as `Lambda { params, body_env }` and `Cons { car, cdr }`, continuation values must store at most **two ArenaIndex-sized fields** to maintain the 24-byte Value enum size and ensure cache-friendly memory layout.
+
 ## Implementation Strategy
 
-### Phase 1: Add Continuation Value Type
+### Phase 1: Migrate to Arena-Based Continuation Stack
 
-**Goal**: Represent captured continuations as first-class Lisp values
+**Goal**: Move the continuation stack from a separate array into the arena as a linked list structure
 
-#### 1.1 Extend Value Enum
+#### 1.1 Design Arena-Based Continuation Structure
+
+Instead of separate `cont_stack` and `data_stack` arrays, use arena-allocated continuation frames forming a linked list:
+
+```rust
+// Internal continuation frame stored in arena
+// Represented as a cons-like structure in the Value enum
+pub enum Value {
+    // ... existing variants ...
+    
+    /// Continuation frame - forms a linked list in the arena
+    /// Similar to Lambda, stores only 2 ArenaIndex fields.
+    /// cont_data is a cons cell containing (cont_type_and_data . parent_cont)
+    /// where cont_type_and_data encodes both the continuation type and its data
+    ContFrame { 
+        cont_data: ArenaIndex,   // Points to (cont_type_and_data . parent_cont) cons
+        env: ArenaIndex,         // Environment at this continuation point
+    },
+}
+```
+
+The continuation chain structure:
+- Each `ContFrame` points to its parent continuation via a cons cell
+- The `cont_type_and_data` field encodes the continuation type (Done, ApplyForced, etc.) and any associated data
+- For continuations needing more than 2 data values, use nested cons cells
+- The chain terminates with a `Done` continuation
+
+#### 1.2 Continuation Type Encoding
+
+Since we need to encode both the continuation type and its data in the arena, use tagged values:
+
+```rust
+// Continuation type encoded as Usize in arena
+// Each cont type has a unique tag value
+const CONT_DONE: usize = 0;
+const CONT_APPLY_FORCED: usize = 1;
+const CONT_IF_BRANCH: usize = 2;
+// ... etc.
+
+// For continuations with data, structure is:
+// cont_type_and_data -> (Usize(CONT_TYPE) . data_cons)
+// where data_cons is a cons cell containing the continuation's data
+//
+// Example: IfBranch needs [then_expr, else_expr, env] (3 elements)
+// cont_type_and_data -> (Usize(CONT_IF_BRANCH) . (then_expr . (else_expr . env)))
+```
+
+#### 1.3 Modify Evaluator Structure
+
+Remove the separate stacks and use a single ArenaIndex for the current continuation:
+
+```rust
+pub struct Evaluator<'a, const N: usize> {
+    lisp: &'a Lisp<N>,
+    global_env: ArenaIndex,
+    call_stack: [StackFrame; MAX_STACK_DEPTH],     // For error reporting
+    call_stack_depth: usize,
+    current_cont: ArenaIndex,                       // Current continuation (arena-based)
+    // REMOVED: cont_stack, cont_depth, data_stack, data_stack_top
+    // ...
+}
+```
+
+#### 1.4 Continuation Operations
+
+```rust
+impl<'a, const N: usize> Evaluator<'a, N> {
+    /// Push a new continuation frame onto the arena-based stack
+    fn push_cont(&mut self, cont_type: usize, data: ArenaIndex, env: ArenaIndex) 
+        -> Result<(), EvalError> {
+        // Create parent reference: (cont_type_and_data . old_current_cont)
+        let cont_data = self.lisp.cons(
+            self.lisp.cons(self.lisp.alloc(Value::Usize(cont_type))?, data)?,
+            self.current_cont
+        )?;
+        
+        // Create new ContFrame
+        let new_frame = self.lisp.alloc(Value::ContFrame { 
+            cont_data, 
+            env 
+        })?;
+        
+        self.current_cont = new_frame;
+        Ok(())
+    }
+    
+    /// Pop a continuation frame from the arena-based stack
+    fn pop_cont(&mut self) -> Result<(usize, ArenaIndex, ArenaIndex), EvalError> {
+        let frame = self.lisp.get(self.current_cont)?;
+        
+        match frame {
+            Value::ContFrame { cont_data, env } => {
+                // Extract (cont_type_and_data . parent_cont)
+                let (type_and_data, parent) = self.lisp.car_cdr(cont_data)?;
+                
+                // Extract (cont_type . data)
+                let (type_val, data) = self.lisp.car_cdr(type_and_data)?;
+                
+                let cont_type = if let Value::Usize(t) = self.lisp.get(type_val)? {
+                    t
+                } else {
+                    return Err(EvalError::InvalidContinuation);
+                };
+                
+                // Update current_cont to parent
+                self.current_cont = parent;
+                
+                Ok((cont_type, data, env))
+            }
+            _ => Err(EvalError::InvalidContinuation),
+        }
+    }
+}
+```
+
+### Phase 2: Add First-Class Continuation Value Type
+
+**Goal**: Represent captured continuations as first-class Lisp values that can be called
+
+#### 2.1 Extend Value Enum
 
 Add to `crates/grift_parser/src/lib.rs`:
 
@@ -81,49 +212,72 @@ Add to `crates/grift_parser/src/lib.rs`:
 pub enum Value {
     // ... existing variants ...
     
-    /// Captured continuation from call/cc
-    /// Contains a snapshot of the continuation stack and data stack
+    /// Captured continuation from call/cc - a first-class callable value
+    /// Following the 2-index constraint like Lambda and Cons.
+    /// cont_chain points to the continuation stack (ContFrame linked list)
+    /// metadata is a cons cell (capture_env . dynamic_wind_chain)
     Continuation {
-        cont_snapshot: ArenaIndex,    // Points to ContSnapshot
-        data_snapshot: ArenaIndex,    // Points to array of ArenaIndex values
-        cont_depth: usize,            // Number of continuations in snapshot
-        data_depth: usize,            // Number of data items in snapshot
-        capture_env: ArenaIndex,      // Environment at capture point
+        cont_chain: ArenaIndex,   // Points to ContFrame linked list (or Nil for empty)
+        metadata: ArenaIndex,     // Points to (capture_env . dynamic_wind_chain) cons
     },
 }
 ```
 
-#### 1.2 Create Snapshot Storage
+**Design Notes**:
+- `cont_chain` is the head of the continuation stack at capture time (an ArenaIndex to a `ContFrame`)
+- `metadata` encodes environment and dynamic-wind state as a cons cell
+- Only 2 ArenaIndex fields, matching Lambda's design ✓
+- When called, this continuation restores the captured `cont_chain` as the current continuation
 
-Since the arena can only store `Copy` types, we need to store continuation snapshots as arrays:
+#### 2.2 Continuation Capture and Restore
 
 ```rust
-// In evaluator
 impl<'a, const N: usize> Evaluator<'a, N> {
-    /// Capture the current continuation stack as an arena value
+    /// Capture the current continuation as a first-class value
     fn capture_continuation(&mut self) -> Result<ArenaIndex, EvalError> {
-        // Allocate array for continuation stack snapshot
-        // Store each Cont as a tagged enum + associated data
-        // Return Continuation value with pointers to snapshots
+        // Create metadata cons: (capture_env . dynamic_wind_chain)
+        let metadata = self.lisp.cons(
+            self.global_env,          // or current env
+            self.dynamic_wind_chain   // for dynamic-wind support (Phase 3)
+        )?;
+        
+        // Create Continuation value pointing to current continuation chain
+        self.lisp.alloc(Value::Continuation {
+            cont_chain: self.current_cont,
+            metadata,
+        })
     }
     
     /// Restore a captured continuation, replacing current stack
-    fn restore_continuation(&mut self, cont: ArenaIndex, return_val: ArenaIndex) 
+    fn restore_continuation(&mut self, cont_idx: ArenaIndex, return_val: ArenaIndex) 
         -> Result<TrampolineState, EvalError> {
-        // Validate continuation value
-        // Clear current cont_stack and data_stack
-        // Copy saved continuations back to cont_stack
-        // Copy saved data back to data_stack
-        // Return Continue state with return_val as the current value
+        let cont_val = self.lisp.get(cont_idx)?;
+        
+        match cont_val {
+            Value::Continuation { cont_chain, metadata } => {
+                // Extract capture_env and dynamic_wind_chain from metadata
+                let (capture_env, dw_chain) = self.lisp.car_cdr(metadata)?;
+                
+                // TODO Phase 3: Handle dynamic-wind transitions
+                // self.transition_dynamic_wind(self.dynamic_wind_chain, dw_chain)?;
+                
+                // Replace current continuation with captured one
+                self.current_cont = cont_chain;
+                
+                // Return the value as the result of the call/cc
+                Ok(TrampolineState::Continue(return_val, capture_env))
+            }
+            _ => Err(EvalError::NotAContinuation),
+        }
     }
 }
-```
 
-### Phase 2: Implement call/cc Special Form
+### Phase 3: Implement call/cc Special Form
 
 **Goal**: Add `call-with-current-continuation` and `call/cc` as special forms
 
-#### 2.1 Parser Recognition
+
+#### 3.1 Parser Recognition
 
 Add to `crates/grift_parser/src/lib.rs` or evaluator's form recognition:
 
@@ -135,7 +289,7 @@ if is_symbol(func, "call-with-current-continuation") ||
 }
 ```
 
-#### 2.2 Evaluator Implementation
+#### 3.2 Evaluator Implementation
 
 Add to `crates/grift_eval/src/evaluator/forms.rs`:
 
@@ -158,47 +312,48 @@ fn eval_call_cc(&mut self, proc_expr: ArenaIndex, env: ArenaIndex)
     
     // Step 2: Push continuation to evaluate proc_expr
     // After evaluating proc, we'll apply it to the captured continuation
-    self.push_cont_callcc_apply(cont, env)?;
+    // Data for CallCcApply: just the captured continuation
+    self.push_cont(CONT_CALLCC_APPLY, cont, env)?;
     
     // Step 3: Evaluate the procedure expression
     Ok(TrampolineState::Continue(proc_expr, env))
 }
 ```
 
-#### 2.3 Add Continuation Type
+#### 3.3 Add Continuation Type
 
 ```rust
-// Add to Cont enum in continuation.rs:
-pub enum Cont {
-    // ... existing variants ...
-    
-    /// After evaluating procedure for call/cc, apply it to captured continuation
-    /// Stack data: [captured_cont, env] (2 elements)
-    CallCcApply(usize),
-}
+// Add to continuation type constants:
+const CONT_CALLCC_APPLY: usize = /* next available ID */;
+
+// When handling CONT_CALLCC_APPLY after proc evaluation:
+// - data contains the captured continuation
+// - current value is the evaluated proc
+// - create args list (list captured-cont)
+// - apply proc to args
 ```
 
-#### 2.4 Continuation Application
+#### 3.4 Continuation Application
 
 When a captured continuation is called as a function:
 
 ```rust
 // In eval_apply or similar:
-Value::Continuation { cont_snapshot, data_snapshot, cont_depth, data_depth, .. } => {
+Value::Continuation { .. } => {
     // Get the argument (single argument to continuation)
     let return_val = self.lisp.car(args)?;
     
     // Validate that we got exactly one argument
     if !self.lisp.is_nil(self.lisp.cdr(args)?)? {
-        return Err("continuation expects exactly one argument");
+        return Err(EvalError::WrongNumberOfArgs);
     }
     
     // Restore the continuation and return the value
-    self.restore_continuation(cont, return_val)
+    self.restore_continuation(func, return_val)
 }
 ```
 
-### Phase 3: Implement dynamic-wind
+### Phase 4: Implement dynamic-wind
 
 **Goal**: Ensure before/after thunks are called when entering/exiting dynamic extent
 
@@ -215,19 +370,22 @@ When a continuation is captured or invoked, `dynamic-wind` ensures:
 - After thunks are called when exiting a dynamic extent
 - Before thunks are called when re-entering a dynamic extent
 
-#### 3.1 Track Dynamic Wind Chain
+#### 4.1 Track Dynamic Wind Chain
+
+Since we're now arena-based, the dynamic-wind chain is also stored in the arena:
 
 ```rust
 pub struct Evaluator<'a, const N: usize> {
     // ... existing fields ...
     
-    /// Stack of active dynamic-wind contexts
-    /// Each entry: (before_thunk, after_thunk, parent_chain)
-    dynamic_wind_chain: ArenaIndex,
+    /// Stack of active dynamic-wind contexts (arena-based linked list)
+    /// Each entry is a cons: ((before_thunk . after_thunk) . parent_chain)
+    /// Stored entirely in the arena
+    dynamic_wind_chain: ArenaIndex,  // Points to chain head, or Nil
 }
 ```
 
-#### 3.2 Implement dynamic-wind Special Form
+#### 4.2 Implement dynamic-wind Special Form
 
 ```rust
 fn eval_dynamic_wind(&mut self, 
@@ -235,23 +393,60 @@ fn eval_dynamic_wind(&mut self,
                      body: ArenaIndex, 
                      after: ArenaIndex,
                      env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-    // 1. Call before thunk
-    // 2. Add (before, after) to dynamic_wind_chain
-    // 3. Call body thunk
-    // 4. Remove from dynamic_wind_chain
-    // 5. Call after thunk
-    // 6. Return body result
+    // 1. Push continuation to call after thunk when body completes
+    // 2. Push continuation to evaluate body
+    // 3. Push continuation to add (before, after) to dynamic_wind_chain
+    // 4. Evaluate before thunk
+    // 
+    // The continuation structure ensures proper ordering:
+    // - before thunk runs first
+    // - then body thunk runs with updated chain
+    // - then after thunk runs
+    // - chain is restored
 }
 ```
 
-#### 3.3 Integrate with call/cc
+#### 4.3 Integrate with call/cc
 
-When capturing continuation, also capture `dynamic_wind_chain`.
-When restoring continuation, invoke necessary before/after thunks to transition between chains.
+The `dynamic_wind_chain` is automatically captured with each continuation since it's stored in the `Evaluator` struct. When capturing a continuation:
 
-### Phase 4: Testing Strategy
+```rust
+fn capture_continuation(&mut self) -> Result<ArenaIndex, EvalError> {
+    // Create metadata cons: (capture_env . dynamic_wind_chain)
+    let metadata = self.lisp.cons(
+        self.global_env,
+        self.dynamic_wind_chain  // Capture current dynamic-wind state
+    )?;
+    
+    self.lisp.alloc(Value::Continuation {
+        cont_chain: self.current_cont,
+        metadata,
+    })
+}
+```
 
-#### 4.1 Basic Tests
+When restoring, compare chains and invoke appropriate before/after thunks:
+
+```rust
+fn restore_continuation(&mut self, cont_idx: ArenaIndex, return_val: ArenaIndex) 
+    -> Result<TrampolineState, EvalError> {
+    let (cont_chain, metadata) = /* extract from continuation */;
+    let (_, captured_dw_chain) = self.lisp.car_cdr(metadata)?;
+    
+    // Find common ancestor of current and captured dynamic-wind chains
+    // Call after thunks for frames being exited
+    // Call before thunks for frames being entered
+    self.transition_dynamic_wind(self.dynamic_wind_chain, captured_dw_chain)?;
+    
+    self.current_cont = cont_chain;
+    self.dynamic_wind_chain = captured_dw_chain;
+    // ...
+}
+```
+
+### Phase 5: Testing Strategy
+
+#### 5.1 Basic Tests
 
 ```scheme
 ;; Test 1: Simple escape
@@ -272,7 +467,7 @@ When restoring continuation, invoke necessary before/after thunks to transition 
   (saved-cont 9))
 ```
 
-#### 4.2 Advanced Tests
+#### 5.2 Advanced Tests
 
 ```scheme
 ;; Test 4: Re-entrant continuation
@@ -296,7 +491,7 @@ When restoring continuation, invoke necessary before/after thunks to transition 
              'inner)))
 ```
 
-#### 4.3 dynamic-wind Tests
+#### 5.3 dynamic-wind Tests
 
 ```scheme
 ;; Test 6: Before/after thunks called
@@ -318,46 +513,76 @@ When restoring continuation, invoke necessary before/after thunks to transition 
 ;; after thunk should be called when escaping
 ```
 
-### Phase 5: Performance Considerations
+### Phase 6: Performance Considerations
 
-#### 5.1 Continuation Snapshot Size
+#### 6.1 Arena-Based Continuation Benefits
 
-Each continuation snapshot copies the entire cont_stack and data_stack. For deep continuations, this could be expensive.
+The arena-based design provides several performance advantages:
 
-**Optimization**: Use copy-on-write or incremental snapshots
-- Only copy frames that have changed since last snapshot
-- Use arena-allocated linked list of frames instead of array
+**Memory Efficiency**:
+- No separate cont_stack and data_stack arrays consuming fixed memory
+- Continuations only use arena space when actually created
+- Natural structure sharing - parent continuations are reused by multiple children
+- GC can reclaim unused continuation frames
 
-#### 5.2 Continuation Invocation
+**Capture Performance**:
+- Capturing a continuation is O(1) - just save a single ArenaIndex
+- No need to copy entire stack arrays
+- Continuation values are lightweight (just 2 ArenaIndex fields)
 
-Restoring a continuation requires clearing current stacks and copying saved stacks.
+**Restore Performance**:
+- Restoring is O(1) - just update current_cont pointer
+- No need to copy data back to stack arrays
+- Structure sharing means less memory allocation
 
-**Optimization**: Mark current continuation as "dead" and switch to saved continuation in place
+#### 6.2 Continuation Frame Size
 
-#### 5.3 Memory Usage
+Each continuation frame uses minimal arena space:
 
-Captured continuations can be large and long-lived, potentially causing arena exhaustion.
+```
+ContFrame value: 24 bytes (2 ArenaIndex + discriminant)
++ cons cell for cont_data: 24 bytes
++ cons cell for type_and_data: 24 bytes  
++ cons cells for data (varies by type)
+= ~72 bytes minimum per frame + data storage
+```
 
-**Consideration**: 
-- Ensure GC can trace through continuation snapshots
-- Consider continuation-specific memory limits
-- Document memory implications in user guide
+Compare to old design:
+- Separate arrays: (1024 * size_of(Cont)) + (8192 * 8) = significant fixed overhead
+- Arena design: Only allocates what's needed, freed by GC when unreachable
 
-### Phase 6: Documentation
+#### 6.3 Potential Optimizations
 
-#### 6.1 User Documentation
+**Optimization 1: Continuation Frame Pooling**
+- Keep a free-list of unused ContFrame structures
+- Reuse frames instead of always allocating new ones
+- Reduces GC pressure for programs with many continuations
+
+**Optimization 2: Compact Representation**
+- For common continuation types (ApplyForced, IfBranch), use specialized variants
+- Inline more data directly in the ContFrame variant
+- Trade enum size for fewer indirections
+
+**Optimization 3: Continuation Marking**
+- Add a "generation" counter to detect unreachable continuations early
+- Allow early reclamation during GC without full trace
+
+### Phase 7: Documentation
+
+#### 7.1 User Documentation
 
 - Add examples to REPL help
 - Document memory implications
 - Provide common use cases (exceptions, backtracking, generators)
 
-#### 6.2 Architecture Documentation
+#### 7.2 Architecture Documentation
 
-- Update LISP_ARCHITECTURE.md with continuation implementation details
-- Document continuation snapshot format
+- Update LISP_ARCHITECTURE.md with arena-based continuation implementation
+- Document ContFrame structure and continuation chain format
 - Explain dynamic-wind chain management
+- Document the 2-index design constraint and how it applies to continuations
 
-#### 6.3 Conformance Documentation
+#### 7.3 Conformance Documentation
 
 - Update SCHEME_R7RS_CONFORMANCE.md
 - Mark call/cc and dynamic-wind as implemented
@@ -367,46 +592,71 @@ Captured continuations can be large and long-lived, potentially causing arena ex
 
 | Phase | Description | Estimated Complexity | Priority |
 |-------|-------------|---------------------|----------|
-| 1 | Add Continuation value type | Medium | High |
-| 2 | Implement call/cc special form | High | High |
-| 3 | Implement dynamic-wind | High | Medium |
-| 4 | Comprehensive testing | Medium | High |
-| 5 | Performance optimization | Medium | Low |
-| 6 | Documentation | Low | Medium |
+| 1 | Migrate to arena-based continuation stack | High | High |
+| 2 | Add Continuation value type (2-index constraint) | Medium | High |
+| 3 | Implement call/cc special form | High | High |
+| 4 | Implement dynamic-wind | High | Medium |
+| 5 | Comprehensive testing | Medium | High |
+| 6 | Performance optimization | Medium | Low |
+| 7 | Documentation | Low | Medium |
 
 ## Alternative Approaches Considered
 
-### 1. Copy-on-Write Continuation Stacks
+### 1. Separate Array-Based Stacks (Original Design)
 
-Instead of copying the entire stack, use a linked list where each node shares structure with parent.
+Copy entire cont_stack and data_stack arrays when capturing a continuation.
 
-**Pros**: More efficient for deep stacks
-**Cons**: More complex implementation, harder to debug
+**Pros**: Simple implementation, matches current evaluator structure
+**Cons**: 
+- Expensive O(n) capture operation
+- High memory usage (duplicate entire stacks)
+- Violates 2-index constraint (needs 4+ fields)
+- Fixed memory overhead even when call/cc not used
 
-### 2. Delimited Continuations
+### 2. Arena-Based Linked List (Chosen Design)
+
+Store continuation frames as linked list in the arena.
+
+**Pros**: 
+- O(1) capture (just save a pointer)
+- Natural structure sharing between continuations
+- Respects 2-index constraint
+- Only uses memory when needed
+- GC can reclaim unused frames
+**Cons**: 
+- More complex implementation
+- Requires refactoring evaluator
+- Slightly more indirection per continuation access
+
+### 3. Hybrid: Stack for Current, Arena for Captured
+
+Keep array-based stacks for current continuation, copy to arena only when capturing.
+
+**Pros**: Fast normal evaluation, reasonable capture
+**Cons**: 
+- Most complex implementation
+- Still violates 2-index constraint
+- Two different continuation representations to maintain
+
+### 4. Delimited Continuations
 
 Implement `shift`/`reset` or `prompt`/`control` instead of full call/cc.
 
 **Pros**: More composable, easier to reason about
-**Cons**: Not R7RS standard, different semantics
-
-### 3. Stack Copying to Rust Heap
-
-Copy continuation stacks to `Vec` when capturing (only in std mode).
-
-**Pros**: Simpler implementation
-**Cons**: Breaks no_std compatibility, two implementations needed
+**Cons**: Not R7RS standard, different semantics from call/cc
 
 ## Risks and Mitigations
 
 ### Risk 1: Arena Memory Exhaustion
 
-Large continuation snapshots could exhaust arena memory quickly.
+Deep or numerous continuation captures could exhaust arena memory.
 
 **Mitigation**: 
-- Implement continuation-specific GC pressure monitoring
-- Add user-configurable limits on continuation depth
+- Arena-based design naturally benefits from GC - unused continuations are reclaimed
+- Continuation frames share structure, reducing duplication
+- Monitor arena pressure and trigger GC when threshold reached
 - Provide clear error messages when limits exceeded
+- Document memory implications in user guide
 
 ### Risk 2: Semantic Complexity
 
@@ -416,24 +666,30 @@ call/cc interacts with all other language features in subtle ways.
 - Comprehensive test suite covering edge cases
 - Study R7RS specification carefully
 - Test against reference implementations (Racket, Chez Scheme)
+- Start with simple cases and incrementally add complexity
 
-### Risk 3: Performance Degradation
+### Risk 3: Evaluator Refactoring Risk
 
-Continuation capture/restore could slow down normal evaluation.
+Moving from array-based to arena-based continuations requires significant refactoring.
 
 **Mitigation**:
-- Benchmark before/after implementation
-- Optimize hot paths
-- Consider lazy copying strategies
+- Implement incrementally with tests at each step
+- Keep old implementation in comments during transition
+- Extensive testing after each change
+- Benchmark performance before/after to detect regressions
+- Consider feature flag to toggle between implementations during development
 
 ## Success Criteria
 
+- [ ] Arena-based continuation stack replaces array-based cont_stack and data_stack
+- [ ] Continuation value type respects 2-index constraint (matches Lambda/Cons design)
 - [ ] `call-with-current-continuation` and `call/cc` work as per R7RS spec
 - [ ] `dynamic-wind` properly manages before/after thunks
 - [ ] All standard test cases pass
 - [ ] Re-entrant continuations work correctly
-- [ ] Memory usage is reasonable (no more than 2x current usage for typical programs)
-- [ ] Performance degradation < 10% for programs not using call/cc
+- [ ] GC correctly traces and reclaims continuation frames
+- [ ] Memory usage is reasonable (arena-based design should reduce fixed overhead)
+- [ ] Performance for programs not using call/cc is unchanged or improved
 - [ ] Comprehensive documentation added
 
 ## References
@@ -445,27 +701,37 @@ Continuation capture/restore could slow down normal evaluation.
 
 ## Open Questions
 
-1. **Should we support one-shot continuations?** Some implementations distinguish between continuations that can be called once vs. multiple times for performance.
+1. **Should we support one-shot continuations?** Some implementations distinguish between continuations that can be called once vs. multiple times for performance. With arena-based design, multi-shot is natural.
 
-2. **How should continuations interact with native functions?** If a continuation is captured across a native function boundary, what happens?
+2. **How should continuations interact with native functions?** If a continuation is captured across a native function boundary, what happens? May need continuation barriers.
 
-3. **Should we provide continuation-barrier forms?** Forms that prevent continuation capture from crossing certain boundaries (useful for FFI).
+3. **Should we provide continuation-barrier forms?** Forms that prevent continuation capture from crossing certain boundaries (useful for FFI and native functions).
 
-4. **Memory model for captured environments?** Should we deep-copy environments or share structure?
+4. **Continuation frame compaction?** Should we compress continuation frames periodically to reduce arena usage? The linked-list structure makes this feasible.
 
-5. **Stack depth limits?** Should there be separate limits for call_stack, cont_stack, and continuation snapshot depth?
+5. **Continuation depth limits?** Should there be a maximum continuation chain depth separate from arena capacity?
+
+6. **Garbage collection strategy?** Should we use a separate GC pass for continuation frames, or integrate with the main arena GC?
 
 ## Conclusion
 
-Implementing call/cc is a significant undertaking that will require careful design and extensive testing. The current trampolined architecture provides a solid foundation, but substantial work is needed to:
+Implementing call/cc requires a fundamental redesign of the continuation system to:
 
-1. Add continuation values to the arena
-2. Implement snapshot/restore logic for continuation stacks
-3. Integrate with the evaluator's control flow
-4. Implement dynamic-wind for proper cleanup
-5. Test exhaustively for correctness
+1. **Move continuation stack from arrays to arena** - Store continuation frames as a linked list in the arena instead of separate cont_stack and data_stack arrays
+2. **Respect the 2-index constraint** - Design Continuation values with only 2 ArenaIndex fields, matching Lambda and Cons
+3. **Enable natural snapshotting** - Capturing a continuation becomes O(1) by saving a single ArenaIndex
+4. **Improve memory efficiency** - Arena-based design eliminates fixed overhead and enables GC reclamation
+5. **Implement dynamic-wind** - Properly handle resource cleanup with before/after thunks
 
-The implementation should be done incrementally, with each phase thoroughly tested before moving to the next. Performance should be monitored throughout to ensure that programs not using call/cc are not significantly impacted.
+The arena-based design provides several key advantages over the original array-based approach:
+
+- **O(1) capture** instead of O(n) stack copying
+- **Natural structure sharing** between parent and child continuations  
+- **GC-friendly** - unused continuations are automatically reclaimed
+- **No fixed overhead** - only uses arena space when continuations are created
+- **Respects design constraints** - maintains the 2-index limit per Value variant
+
+The implementation should be done incrementally, with each phase thoroughly tested before moving to the next. The transition from array-based to arena-based continuations is the most complex phase but provides the foundation for efficient call/cc support.
 
 Once implemented, call/cc will enable powerful programming patterns in Grift including:
 - Exception handling (before native exception support)
@@ -474,4 +740,4 @@ Once implemented, call/cc will enable powerful programming patterns in Grift inc
 - Web continuation servers
 - Non-deterministic programming
 
-This feature will move Grift significantly closer to full R7RS compliance.
+This feature will move Grift significantly closer to full R7RS compliance while maintaining the no_std, no_alloc constraints that make Grift suitable for embedded systems.
