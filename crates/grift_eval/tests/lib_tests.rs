@@ -1691,9 +1691,65 @@ fn test_stdlib_member() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    assert!(eval_is_true(&lisp, &mut eval, "(member 2 '(1 2 3))"));
+    // R7RS: member should return the first sublist whose car is the object
+    // (member 2 '(1 2 3)) => (2 3)
+    let result = eval.eval_str("(member 2 '(1 2 3))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false()); // Not #f
+    // Verify it's the sublist starting with 2
+    assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 2);
+    
+    // member should return #f when element not found
     assert!(eval_is_false(&lisp, &mut eval, "(member 5 '(1 2 3))"));
     assert!(eval_is_false(&lisp, &mut eval, "(member 1 '())"));
+    
+    // member uses equal? for comparison (can find lists)
+    let result = eval.eval_str("(member '(a) '((x) (a) (b)))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false());
+}
+
+#[test]
+fn test_memq_memv_differences() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // memq uses eq? - returns sublist starting at match
+    let result = eval.eval_str("(memq 'a '(b a c))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false());
+    assert!(lisp.symbol_matches(lisp.car(result).unwrap(), "a").unwrap());
+    
+    // memq won't find structurally equal lists (uses eq? not equal?)
+    assert!(eval_is_false(&lisp, &mut eval, "(memq '(a) '((b) (a) (c)))"));
+    
+    // memv uses eqv? - returns sublist
+    let result = eval.eval_str("(memv 2 '(1 2 3))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false());
+    assert_eq!(lisp.get(lisp.car(result).unwrap()).unwrap().as_number().unwrap(), 2);
+}
+
+#[test]
+fn test_assoc_variants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // assoc uses equal? - can find complex keys
+    let result = eval.eval_str("(assoc '(a) '(((x) 1) ((a) 2) ((b) 3)))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false());
+    // Result should be ((a) 2) - verify the value
+    let value = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(value).unwrap().as_number().unwrap(), 2);
+    
+    // assoc returns #f when key not found
+    assert!(eval_is_false(&lisp, &mut eval, "(assoc 'x '((a 1) (b 2)))"));
+    
+    // assq uses eq? - for symbol keys
+    let result = eval.eval_str("(assq 'b '((a 1) (b 2) (c 3)))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false());
+    let value = lisp.car(lisp.cdr(result).unwrap()).unwrap();
+    assert_eq!(lisp.get(value).unwrap().as_number().unwrap(), 2);
+    
+    // assv uses eqv? - for numbers
+    let result = eval.eval_str("(assv 5 '((2 a) (5 b) (7 c)))").unwrap();
+    assert!(!lisp.get(result).unwrap().is_false());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

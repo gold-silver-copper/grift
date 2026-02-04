@@ -35,6 +35,8 @@
   (length-iter lst 0))
 
 ;;; (append a b) - Concatenate two lists (tail-recursive, self-contained)
+;;; Note: R7RS requires variadic append, but this implementation only supports 2 arguments
+;;; For variadic concatenation, use (concatenate (list a b c ...))
 (define (append a b)
   (define (rev-helper lst acc)
     (if (null? lst) acc (rev-helper (cdr lst) (cons (car lst) acc))))
@@ -71,12 +73,11 @@
 ;;; Member and Assoc Functions (Using Helpers)
 ;;; ============================================================
 
-;;; (member x lst) - Check if x is in lst using eq? (returns boolean)
-;;; Note: Unlike standard Scheme, this returns #t/#f instead of sublist
-(define (member x lst) (if (mem-helper eq? x lst) #t #f))
+;;; (member x lst) - Find x in lst using equal?, return sublist or #f
+(define (member x lst) (mem-helper equal? x lst))
 
-;;; (assoc key alist) - Look up key in association list using eq?
-(define (assoc key alist) (assoc-helper eq? key alist))
+;;; (assoc key alist) - Look up key in association list using equal?
+(define (assoc key alist) (assoc-helper equal? key alist))
 
 ;;; (range start end) - Generate list of integers [start, end) (tail-recursive)
 (define (range start end)
@@ -115,7 +116,9 @@
 ;;; ============================================================
 
 ;;; (for-each f lst) - Apply f to each element for side effects
-(define (for-each f lst) (if (null? lst) '() (begin (f (car lst)) (for-each f (cdr lst)))))
+;;; R7RS: The value returned is unspecified
+;;; We use (if #f #f) to produce an unspecified value (standard Scheme idiom)
+(define (for-each f lst) (if (null? lst) (if #f #f) (begin (f (car lst)) (for-each f (cdr lst)))))
 
 ;;; (list-tail lst k) - Return sublist starting at k-th element
 (define (list-tail lst k) (if (= k 0) lst (list-tail (cdr lst) (- k 1))))
