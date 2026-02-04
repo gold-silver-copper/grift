@@ -11,16 +11,8 @@ use crate::error::{
     ErrorKind, StackFrame, EvalError, EvalResult,
     MAX_STACK_DEPTH,
 };
-use crate::continuation::{TrampolineState, is_binary_builtin, 
-    CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_BUILTIN_FORCE_ARG,
-    CONT_BINARY_BUILTIN_FIRST, CONT_BINARY_BUILTIN_SECOND, CONT_LAMBDA_FIRST_BIND,
-    CONT_LAMBDA_BIND_ARG, CONT_LAMBDA_REST_COLLECT, CONT_EVAL_EXPR, CONT_BEGIN_SEQ,
-    CONT_APPLY_FIRST, CONT_APPLY_SECOND, CONT_VALUES_COLLECT, CONT_DEFINE_VALUE,
-    CONT_SET_VALUE, CONT_NATIVE_ARGS_COLLECT, CONT_QUASIQUOTE_CAR, CONT_QUASIQUOTE_CDR,
-    CONT_QUASIQUOTE_UNQUOTE_WRAP, CONT_QUASIQUOTE_NESTED_WRAP, CONT_QUASIQUOTE_SPLICE,
-    CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
-    CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
-    CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
+use crate::continuation::{TrampolineState,
+    CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_EVAL_EXPR,
 };
 use crate::native::{NativeRegistry, NativeFn, simple_hash};
 
@@ -411,12 +403,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let (cont_type, data, parent, env) = self.lisp.cont_frame_parts(self.current_cont)?;
         self.current_cont = parent;
         Ok((cont_type, data, env))
-    }
-    
-    /// Check if the continuation stack is empty (at Done state)
-    #[inline]
-    pub(super) fn is_cont_done(&self) -> bool {
-        self.current_cont.is_nil()
     }
     
     /// Evaluate an expression (entry point)
