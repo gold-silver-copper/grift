@@ -1655,7 +1655,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check param count - should be exactly 0 for a thunk
                 if !self.lisp.get(params)?.is_nil() {
                     return Err(self.make_error(ErrorKind::WrongArgCount, thunk)
-                        .with_message("dynamic-wind thunk must accept 0 arguments"));
+                        .with_message("thunk must accept 0 arguments (expected a zero-argument procedure)"));
                 }
                 
                 // Execute the lambda body
