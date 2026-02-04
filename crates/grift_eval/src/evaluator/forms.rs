@@ -8,23 +8,36 @@
 use grift_parser::{ArenaIndex, Value, parse};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::continuation::{Cont, TrampolineState};
+use crate::continuation::{TrampolineState,
+    CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_BUILTIN_FORCE_ARG,
+    CONT_BINARY_BUILTIN_FIRST, CONT_BINARY_BUILTIN_SECOND, CONT_LAMBDA_FIRST_BIND,
+    CONT_LAMBDA_BIND_ARG, CONT_LAMBDA_REST_COLLECT, CONT_EVAL_EXPR, CONT_BEGIN_SEQ,
+    CONT_APPLY_FIRST, CONT_APPLY_SECOND, CONT_VALUES_COLLECT, CONT_DEFINE_VALUE,
+    CONT_SET_VALUE, CONT_NATIVE_ARGS_COLLECT, CONT_QUASIQUOTE_CAR, CONT_QUASIQUOTE_CDR,
+    CONT_QUASIQUOTE_UNQUOTE_WRAP, CONT_QUASIQUOTE_NESTED_WRAP, CONT_QUASIQUOTE_SPLICE,
+    CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
+    CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
+    CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
+};
 use crate::extract_args;
 
 use super::Evaluator;
 
 impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
-        let cont = self.pop_cont();
+        // The cont_env field is stored for potential future use (e.g., debugging, stack traces)
+        // but is not currently used during normal continuation processing.
+        let (cont_type, data, _) = self.pop_cont()?;
         
-        match cont {
-            Cont::Done => {
+        match cont_type {
+            CONT_DONE => {
                 // No more continuations - we're done
                 Ok(None)
             }
             
-            Cont::IfBranch(data_start) => {
-                let (then_expr, else_expr, env) = self.unpack_if_branch(data_start);
+            CONT_IF_BRANCH => {
+                // Data: (then_expr . (else_expr . env))
+                let (then_expr, else_expr, env) = self.unpack3(data)?;
                 // val is the evaluated condition
                 let branch = if !self.is_false(val)? { then_expr } else { else_expr };
                 if branch.is_nil() {
@@ -35,8 +48,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::ApplyForced(data_start) => {
-                let (args_expr, env, call_expr) = self.unpack_apply_forced(data_start);
+            CONT_APPLY_FORCED => {
+                // Data: (args_expr . (env . call_expr))
+                let (args_expr, env, call_expr) = self.unpack3(data)?;
                 // val is the evaluated function
                 match self.lisp.get(val)? {
                     Value::Builtin(b) => {
@@ -74,10 +88,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 let rest_exprs = self.lisp.cdr(args_expr)?;
                                 let nil = self.lisp.nil()?;
                                 
-                                let data_start = self.pack_lambda_rest_collect(
-                                    rest_exprs, env, params, body, closure_env, nil, call_expr
-                                )?;
-                                self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                                // Data: (remaining_exprs . (eval_env . (rest_param . (body . (new_env . (collected . call_expr))))))
+                                let data = self.pack7(rest_exprs, env, params, body, closure_env, nil, call_expr)?;
+                                self.push_cont(CONT_LAMBDA_REST_COLLECT, data, env)?;
                                 
                                 Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                             }
@@ -103,13 +116,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            let data_start = self.pack_lambda_bind_arg(
-                                rest_exprs, env, rest_params, body, closure_env, call_expr
-                            )?;
-                            self.push_cont(Cont::LambdaBindArg(data_start))?;
+                            // Data for LambdaBindArg: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . call_expr)))))
+                            let data = self.pack6(rest_exprs, env, rest_params, body, closure_env, call_expr)?;
+                            self.push_cont(CONT_LAMBDA_BIND_ARG, data, env)?;
                             // Push binding continuation for first param
-                            let data_start = self.pack_lambda_first_bind(first_param)?;
-                            self.push_cont(Cont::LambdaFirstBind(data_start))?;
+                            // Data for LambdaFirstBind: param
+                            let data = self.pack1(first_param)?;
+                            self.push_cont(CONT_LAMBDA_FIRST_BIND, data, env)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
@@ -150,13 +163,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_params = self.lisp.cdr(params)?;
                             
                             // Start with closure_env, we'll extend as we bind
-                            let data_start = self.pack_lambda_bind_arg(
-                                rest_exprs, env, rest_params, body, closure_env, call_expr
-                            )?;
-                            self.push_cont(Cont::LambdaBindArg(data_start))?;
+                            let data = self.pack6(rest_exprs, env, rest_params, body, closure_env, call_expr)?;
+                            self.push_cont(CONT_LAMBDA_BIND_ARG, data, env)?;
                             // Push binding continuation for first param
-                            let data_start = self.pack_lambda_first_bind(first_param)?;
-                            self.push_cont(Cont::LambdaFirstBind(data_start))?;
+                            let data = self.pack1(first_param)?;
+                            self.push_cont(CONT_LAMBDA_FIRST_BIND, data, env)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
@@ -182,8 +193,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest = self.lisp.cdr(args_expr)?;
                             let nil = self.lisp.nil()?;
                             
-                            let data_start = self.pack_native_args_collect(rest, nil, id, env)?;
-                            self.push_cont(Cont::NativeArgsCollect(data_start))?;
+                            // Data: (remaining . (collected . (id_encoded . env)))
+                            let id_encoded = Self::encode_usize(id);
+                            let data = self.pack4(rest, nil, id_encoded, env)?;
+                            self.push_cont(CONT_NATIVE_ARGS_COLLECT, data, env)?;
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env }))
                         }
                     }
@@ -205,8 +218,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         
                         // Push continuation to restore when arg is evaluated
-                        let data_start = self.pack_continuation_apply(val)?;
-                        self.push_cont(Cont::ContinuationApply(data_start))?;
+                        // Data: captured_continuation
+                        let data = self.pack1(val)?;
+                        self.push_cont(CONT_CONTINUATION_APPLY, data, env)?;
                         
                         // Evaluate the argument
                         Ok(Some(TrampolineState::Eval { expr: arg_expr, env }))
@@ -218,15 +232,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::LambdaFirstBind(data_start) => {
-                let param = self.unpack_lambda_first_bind(data_start);
+            CONT_LAMBDA_FIRST_BIND => {
+                // Data: param
+                let param = self.unpack1(data);
                 // val is evaluated first arg - bind to param
                 // Pop LambdaBindArg, extend env, push it back
-                let cont = self.pop_cont();
-                if let Cont::LambdaBindArg(data_start) = cont {
-                    // Unpack the cons-list
+                let (next_type, next_data, _) = self.pop_cont()?;
+                if next_type == CONT_LAMBDA_BIND_ARG {
+                    // Data: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . call_expr)))))
                     let (remaining_exprs, eval_env, remaining_params, body, new_env, call_expr) = 
-                        self.unpack_lambda_bind_arg(data_start);
+                        self.unpack6(next_data)?;
                     
                     // Extend environment with binding
                     let extended_env = self.env_extend(new_env, param, val)?;
@@ -245,10 +260,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let rest_exprs = self.lisp.cdr(remaining_exprs)?;
                             let nil = self.lisp.nil()?;
                             
-                            let data_start = self.pack_lambda_rest_collect(
-                                rest_exprs, eval_env, remaining_params, body, extended_env, nil, call_expr
-                            )?;
-                            self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                            let data = self.pack7(rest_exprs, eval_env, remaining_params, body, extended_env, nil, call_expr)?;
+                            self.push_cont(CONT_LAMBDA_REST_COLLECT, data, eval_env)?;
                             
                             Ok(Some(TrampolineState::Eval { expr: first_expr, env: eval_env }))
                         }
@@ -273,12 +286,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let rest_exprs = self.lisp.cdr(remaining_exprs)?;
                         
                         // Continue with remaining args
-                        let new_data_start = self.pack_lambda_bind_arg(
-                            rest_exprs, eval_env, rest_params, body, extended_env, call_expr
-                        )?;
-                        self.push_cont(Cont::LambdaBindArg(new_data_start))?;
-                        let data_start = self.pack_lambda_first_bind(next_param)?;
-                        self.push_cont(Cont::LambdaFirstBind(data_start))?;
+                        let new_data = self.pack6(rest_exprs, eval_env, rest_params, body, extended_env, call_expr)?;
+                        self.push_cont(CONT_LAMBDA_BIND_ARG, new_data, eval_env)?;
+                        let data = self.pack1(next_param)?;
+                        self.push_cont(CONT_LAMBDA_FIRST_BIND, data, eval_env)?;
                         
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
                     }
@@ -288,15 +299,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::LambdaBindArg { .. } => {
+            CONT_LAMBDA_BIND_ARG => {
                 // This shouldn't be hit directly - LambdaFirstBind pops it
                 Err(self.make_error(ErrorKind::Generic, val))
             }
             
-            Cont::LambdaRestCollect(data_start) => {
+            CONT_LAMBDA_REST_COLLECT => {
                 // Collecting rest arguments into a list
+                // Data: (remaining_exprs . (eval_env . (rest_param . (body . (new_env . (collected . call_expr))))))
                 let (remaining_exprs, eval_env, rest_param, body, new_env, collected, call_expr) = 
-                    self.unpack_lambda_rest_collect(data_start);
+                    self.unpack7(data)?;
                 
                 // Add evaluated value to collected list
                 let new_collected = self.lisp.cons(val, collected)?;
@@ -311,17 +323,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_expr = self.lisp.car(remaining_exprs)?;
                     let rest_exprs = self.lisp.cdr(remaining_exprs)?;
                     
-                    let data_start = self.pack_lambda_rest_collect(
-                        rest_exprs, eval_env, rest_param, body, new_env, new_collected, call_expr
-                    )?;
-                    self.push_cont(Cont::LambdaRestCollect(data_start))?;
+                    let data = self.pack7(rest_exprs, eval_env, rest_param, body, new_env, new_collected, call_expr)?;
+                    self.push_cont(CONT_LAMBDA_REST_COLLECT, data, eval_env)?;
                     
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env: eval_env }))
                 }
             }
             
-            Cont::BuiltinForceArg(data_start) => {
-                let (builtin, remaining_args, collected, call_expr, eval_env) = self.unpack_builtin_force_arg(data_start);
+            CONT_BUILTIN_FORCE_ARG => {
+                // Data: (builtin_encoded . (remaining_args . (collected . (call_expr . eval_env))))
+                let (builtin_encoded, remaining_args, collected, call_expr, eval_env) = self.unpack5(data)?;
+                let builtin = Self::decode_builtin(builtin_encoded);
                 // val is an evaluated argument for a builtin
                 let new_collected = self.lisp.cons(val, collected)?;
                 
@@ -335,23 +347,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let next_arg = self.lisp.car(remaining_args)?;
                     let rest_args = self.lisp.cdr(remaining_args)?;
                     
-                    let data_start = self.pack_builtin_force_arg(builtin, rest_args, new_collected, call_expr, eval_env)?;
-                    self.push_cont(Cont::BuiltinForceArg(data_start))?;
+                    let builtin_encoded = Self::encode_builtin(builtin);
+                    let data = self.pack5(builtin_encoded, rest_args, new_collected, call_expr, eval_env)?;
+                    self.push_cont(CONT_BUILTIN_FORCE_ARG, data, eval_env)?;
                     
                     Ok(Some(TrampolineState::Eval { expr: next_arg, env: eval_env }))
                 }
             }
             
-            Cont::BinaryBuiltinFirst(data_start) => {
-                let (builtin, second_arg, call_expr, eval_env) = self.unpack_binary_builtin_first(data_start);
+            CONT_BINARY_BUILTIN_FIRST => {
+                // Data: (builtin_encoded . (second_arg . (call_expr . eval_env)))
+                let (builtin_encoded, second_arg, call_expr, eval_env) = self.unpack4(data)?;
                 // val is first evaluated arg - now evaluate second
-                let data_start = self.pack_binary_builtin_second(builtin, val, call_expr)?;
-                self.push_cont(Cont::BinaryBuiltinSecond(data_start))?;
+                // Data for BinaryBuiltinSecond: (builtin_encoded . (first_val . call_expr))
+                let data = self.pack3(builtin_encoded, val, call_expr)?;
+                self.push_cont(CONT_BINARY_BUILTIN_SECOND, data, eval_env)?;
                 Ok(Some(TrampolineState::Eval { expr: second_arg, env: eval_env }))
             }
             
-            Cont::BinaryBuiltinSecond(data_start) => {
-                let (builtin, first_val, call_expr) = self.unpack_binary_builtin_second(data_start);
+            CONT_BINARY_BUILTIN_SECOND => {
+                // Data: (builtin_encoded . (first_val . call_expr))
+                let (builtin_encoded, first_val, call_expr) = self.unpack3(data)?;
+                let builtin = Self::decode_builtin(builtin_encoded);
                 // val is second evaluated arg - apply binary operation directly
                 let result = self.apply_binary_builtin(builtin, first_val, val, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: result }))
@@ -363,14 +380,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Note: When, Unless, CondTest, And, Or continuations removed
             // These forms are now handled by macros during expansion
 
-            Cont::EvalExpr(data_start) => {
-                let env = self.unpack_eval_expr(data_start);
+            CONT_EVAL_EXPR => {
+                // Data: env
+                let env = self.unpack1(data);
                 // val is the evaluated expression - now evaluate it
                 Ok(Some(TrampolineState::Eval { expr: val, env }))
             }
 
-            Cont::BeginSeq(data_start) => {
-                let (remaining, env) = self.unpack_begin_seq(data_start);
+            CONT_BEGIN_SEQ => {
+                // Data: (remaining . env)
+                let (remaining, env) = self.unpack2(data)?;
                 // val is the result of the previous expression (discarded unless last)
                 if self.lisp.get(remaining)?.is_nil() {
                     // This was the last expression - return its value
@@ -384,8 +403,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                     } else {
                         // More after next - push continuation
-                        let data_start = self.pack_begin_seq(rest, env)?;
-                        self.push_cont(Cont::BeginSeq(data_start))?;
+                        let data = self.pack2(rest, env)?;
+                        self.push_cont(CONT_BEGIN_SEQ, data, env)?;
                         Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                     }
                 }
@@ -397,27 +416,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             // Note: CaseKey, DoInit, DoTestResult, DoBody, DoStep removed - now handled by macros (Phase 9)
 
-            Cont::ApplyFirst(data_start) => {
-                let (args_list_expr, env) = self.unpack_apply_first(data_start);
+            CONT_APPLY_FIRST => {
+                // Data: (args_list_expr . env)
+                let (args_list_expr, env) = self.unpack2(data)?;
                 // val is the evaluated function - now evaluate args list
-                let data_start = self.pack_apply_second(val, env)?;
-                self.push_cont(Cont::ApplySecond(data_start))?;
+                let data = self.pack2(val, env)?;
+                self.push_cont(CONT_APPLY_SECOND, data, env)?;
                 Ok(Some(TrampolineState::Eval { expr: args_list_expr, env }))
             }
 
-            Cont::ApplySecond(data_start) => {
-                let (func, env) = self.unpack_apply_second(data_start);
+            CONT_APPLY_SECOND => {
+                // Data: (func . env)
+                let (func, env) = self.unpack2(data)?;
                 // val is the evaluated args list - perform application
                 let args_list = val;
                 let call_expr = self.lisp.cons(func, args_list)?;
                 self.push_frame(call_expr, func)?;
-                let data_start = self.pack_apply_forced(args_list, env, call_expr)?;
-                self.push_cont(Cont::ApplyForced(data_start))?;
+                let data = self.pack3(args_list, env, call_expr)?;
+                self.push_cont(CONT_APPLY_FORCED, data, env)?;
                 Ok(Some(TrampolineState::Return { val: func }))
             }
 
-            Cont::ValuesCollect(data_start) => {
-                let (remaining, collected, env) = self.unpack_values_collect(data_start);
+            CONT_VALUES_COLLECT => {
+                // Data: (remaining . (collected . env))
+                let (remaining, collected, env) = self.unpack3(data)?;
                 // val is an evaluated value - collect and continue
                 let new_collected = self.lisp.cons(val, collected)?;
                 
@@ -429,45 +451,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More values to evaluate
                     let next_expr = self.lisp.car(remaining)?;
                     let rest = self.lisp.cdr(remaining)?;
-                    let data_start = self.pack_values_collect(rest, new_collected, env)?;
-                    self.push_cont(Cont::ValuesCollect(data_start))?;
+                    let data = self.pack3(rest, new_collected, env)?;
+                    self.push_cont(CONT_VALUES_COLLECT, data, env)?;
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
-            Cont::CallWithValuesProducer(data_start) => {
-                let (consumer_expr, env) = self.unpack_call_with_values_producer(data_start);
+            CONT_CALL_WITH_VALUES_PRODUCER => {
+                // Data: (consumer_expr . env)
+                let (consumer_expr, env) = self.unpack2(data)?;
                 // val is the producer function - call it with no arguments
                 // Build call expression: (producer)
                 let nil = self.lisp.nil()?;
                 let call_expr = self.lisp.cons(val, nil)?;
                 
                 // Push continuation to apply consumer after producer returns
-                let data_start = self.pack_call_with_values_consumer(consumer_expr, env)?;
-                self.push_cont(Cont::CallWithValuesConsumer(data_start))?;
+                let data = self.pack2(consumer_expr, env)?;
+                self.push_cont(CONT_CALL_WITH_VALUES_CONSUMER, data, env)?;
                 
                 // Apply the producer (no arguments)
                 self.push_frame(call_expr, val)?;
-                let data_start = self.pack_apply_forced(nil, env, call_expr)?;
-                self.push_cont(Cont::ApplyForced(data_start))?;
+                let data = self.pack3(nil, env, call_expr)?;
+                self.push_cont(CONT_APPLY_FORCED, data, env)?;
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            Cont::CallWithValuesConsumer(data_start) => {
-                let (consumer_expr, env) = self.unpack_call_with_values_consumer(data_start);
+            CONT_CALL_WITH_VALUES_CONSUMER => {
+                // Data: (consumer_expr . env)
+                let (consumer_expr, env) = self.unpack2(data)?;
                 // val is the result from producer - could be a single value or a list from (values ...)
                 // Now we need to evaluate consumer and apply it to the producer's result(s)
                 
                 // Store the producer result and push continuation to apply consumer
-                let data_start = self.pack_call_with_values_apply(val, env)?;
-                self.push_cont(Cont::CallWithValuesApply(data_start))?;
+                let data = self.pack2(val, env)?;
+                self.push_cont(CONT_CALL_WITH_VALUES_APPLY, data, env)?;
                 
                 // Evaluate the consumer expression
                 Ok(Some(TrampolineState::Eval { expr: consumer_expr, env }))
             }
 
-            Cont::CallWithValuesApply(data_start) => {
-                let (producer_result, env) = self.unpack_call_with_values_apply(data_start);
+            CONT_CALL_WITH_VALUES_APPLY => {
+                // Data: (producer_result . env)
+                let (producer_result, env) = self.unpack2(data)?;
                 // val is the consumer function - apply it to producer_result
                 // 
                 // The producer_result handling depends on how the producer returned:
@@ -492,27 +517,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let call_expr = self.lisp.cons(val, args_list)?;
                 
                 self.push_frame(call_expr, val)?;
-                let data_start = self.pack_apply_forced(args_list, env, call_expr)?;
-                self.push_cont(Cont::ApplyForced(data_start))?;
+                let data = self.pack3(args_list, env, call_expr)?;
+                self.push_cont(CONT_APPLY_FORCED, data, env)?;
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            Cont::DefineValue(data_start) => {
-                let name = self.unpack_define_value(data_start);
+            CONT_DEFINE_VALUE => {
+                // Data: name
+                let name = self.unpack1(data);
                 // val is the evaluated value - define the binding
                 self.define(name, val)?;
                 Ok(Some(TrampolineState::Return { val: name }))
             }
 
-            Cont::SetValue(data_start) => {
-                let (name, env) = self.unpack_set_value(data_start);
+            CONT_SET_VALUE => {
+                // Data: (name . env)
+                let (name, env) = self.unpack2(data)?;
                 // val is the evaluated value - set! the binding
                 self.env_set(env, name, val)?;
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            Cont::NativeArgsCollect(data_start) => {
-                let (remaining, collected, id, env) = self.unpack_native_args_collect(data_start);
+            CONT_NATIVE_ARGS_COLLECT => {
+                // Data: (remaining . (collected . (id_encoded . env)))
+                let (remaining, collected, id_encoded, env) = self.unpack4(data)?;
+                let id = Self::decode_usize(id_encoded);
                 // val is an evaluated argument - collect and continue
                 let new_collected = self.lisp.cons(val, collected)?;
                 
@@ -530,29 +559,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // More args to evaluate
                     let next_expr = self.lisp.car(remaining)?;
                     let rest = self.lisp.cdr(remaining)?;
-                    let data_start = self.pack_native_args_collect(rest, new_collected, id, env)?;
-                    self.push_cont(Cont::NativeArgsCollect(data_start))?;
+                    let id_encoded = Self::encode_usize(id);
+                    let data = self.pack4(rest, new_collected, id_encoded, env)?;
+                    self.push_cont(CONT_NATIVE_ARGS_COLLECT, data, env)?;
                     Ok(Some(TrampolineState::Eval { expr: next_expr, env }))
                 }
             }
 
-            Cont::QuasiquoteCar(data_start) => {
-                let (cdr, depth, env) = self.unpack_quasiquote_car(data_start);
+            CONT_QUASIQUOTE_CAR => {
+                // Data: (cdr . (depth_encoded . env))
+                let (cdr, depth_encoded, env) = self.unpack3(data)?;
+                let depth = Self::decode_usize(depth_encoded);
                 // val is the evaluated car - now process cdr
                 let car_val = val;
-                let data_start = self.pack_quasiquote_cdr(car_val)?;
-                self.push_cont(Cont::QuasiquoteCdr(data_start))?;
+                let data = self.pack1(car_val)?;
+                self.push_cont(CONT_QUASIQUOTE_CDR, data, env)?;
                 Ok(Some(self.step_quasiquote_trampoline(cdr, env, depth)?))
             }
 
-            Cont::QuasiquoteCdr(data_start) => {
-                let car_val = self.unpack_quasiquote_cdr(data_start);
+            CONT_QUASIQUOTE_CDR => {
+                // Data: car_val
+                let car_val = self.unpack1(data);
                 // val is the processed cdr - cons with car
                 let result = self.lisp.cons(car_val, val)?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::QuasiquoteUnquoteWrap => {
+            CONT_QUASIQUOTE_UNQUOTE_WRAP => {
                 // val is the inner processed value - wrap with unquote
                 let unquote_sym = self.lisp.symbol("unquote")?;
                 let nil = self.lisp.nil()?;
@@ -561,7 +594,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::QuasiquoteNestedWrap => {
+            CONT_QUASIQUOTE_NESTED_WRAP => {
                 // val is the inner processed value - wrap with quasiquote
                 let qq_sym = self.lisp.symbol("quasiquote")?;
                 let nil = self.lisp.nil()?;
@@ -570,41 +603,47 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::QuasiquoteSplice(data_start) => {
-                let (cdr, depth, env) = self.unpack_quasiquote_splice(data_start);
+            CONT_QUASIQUOTE_SPLICE => {
+                // Data: (cdr . (depth_encoded . env))
+                let (cdr, depth_encoded, env) = self.unpack3(data)?;
+                let depth = Self::decode_usize(depth_encoded);
                 // val is the evaluated splice expression - process cdr then append
                 let splice_val = val;
-                let data_start = self.pack_quasiquote_splice_append(splice_val)?;
-                self.push_cont(Cont::QuasiquoteSpliceAppend(data_start))?;
+                let data = self.pack1(splice_val)?;
+                self.push_cont(CONT_QUASIQUOTE_SPLICE_APPEND, data, env)?;
                 Ok(Some(self.step_quasiquote_trampoline(cdr, env, depth)?))
             }
 
-            Cont::QuasiquoteSpliceAppend(data_start) => {
-                let splice_val = self.unpack_quasiquote_splice_append(data_start);
+            CONT_QUASIQUOTE_SPLICE_APPEND => {
+                // Data: splice_val
+                let splice_val = self.unpack1(data);
                 // val is the processed cdr - append splice_val with it
                 let result = self.append_lists(splice_val, val)?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
-            Cont::LetSyntaxBody(data_start) => {
+            CONT_LET_SYNTAX_BODY => {
                 // Restore macro environment after let-syntax body evaluation
-                let saved_macro_env = self.unpack_let_syntax_body(data_start);
+                // Data: saved_macro_env
+                let saved_macro_env = self.unpack1(data);
                 self.macro_env = saved_macro_env;
                 // Return the value from the body
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            Cont::SyntaxCaseMatch(data_start) => {
+            CONT_SYNTAX_CASE_MATCH => {
                 // val is the evaluated stx-expr
                 // Now try to match it against clauses
-                let (literals, clauses, env, pattern_bindings) = self.unpack_syntax_case_match(data_start);
+                // Data: (literals . (clauses . (env . pattern_bindings)))
+                let (literals, clauses, env, pattern_bindings) = self.unpack4(data)?;
                 self.step_syntax_case_match(val, literals, clauses, env, pattern_bindings)
             }
             
-            Cont::SyntaxCaseFender(data_start) => {
+            CONT_SYNTAX_CASE_FENDER => {
                 // val is the evaluated fender result
                 // If truthy, evaluate the output. Otherwise, continue with remaining clauses.
-                let (output, bindings, literals, remaining_clauses, env, stx) = self.unpack_syntax_case_fender(data_start);
+                // Data: (output . (bindings . (literals . (remaining_clauses . (env . stx)))))
+                let (output, bindings, literals, remaining_clauses, env, stx) = self.unpack6(data)?;
                 
                 if self.is_false(val)? {
                     // Fender failed - continue with remaining clauses
@@ -616,10 +655,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Cont::CallCcApply(data_start) => {
+            CONT_CALL_CC_APPLY => {
                 // val is the evaluated procedure from (call/cc proc)
                 // We now need to apply it to the captured continuation
-                let captured_continuation = self.unpack_call_cc_apply(data_start);
+                // Data: captured_continuation
+                let captured_continuation = self.unpack1(data);
                 
                 // Create argument list with just the captured continuation
                 let nil = self.lisp.nil()?;
@@ -652,23 +692,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Create a call expression and go through ApplyForced
                         let call_expr = self.lisp.cons(val, args)?;
                         self.push_frame(call_expr, val)?;
-                        let data_start = self.pack_apply_forced(args, self.global_env, call_expr)?;
-                        self.push_cont(Cont::ApplyForced(data_start))?;
+                        let data = self.pack3(args, self.global_env, call_expr)?;
+                        self.push_cont(CONT_APPLY_FORCED, data, self.global_env)?;
                         Ok(Some(TrampolineState::Return { val }))
                     }
                 }
             }
             
-            Cont::ContinuationApply(data_start) => {
+            CONT_CONTINUATION_APPLY => {
                 // val is the evaluated argument to the captured continuation
                 // Now we restore the captured continuation and return val as the result
-                let captured_continuation = self.unpack_continuation_apply(data_start);
+                // Data: captured_continuation
+                let captured_continuation = self.unpack1(data);
                 
                 // Restore the captured continuation
                 self.restore_continuation(captured_continuation)?;
                 
                 // Return val as the result of the original call/cc
                 Ok(Some(TrampolineState::Return { val }))
+            }
+            
+            // Catch-all for unknown continuation types
+            _ => {
+                Err(self.make_error(ErrorKind::Generic, val)
+                    .with_message("unknown continuation type"))
             }
         }
     }
@@ -698,7 +745,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         return Ok(TrampolineState::Eval { expr: inner_expr, env });
                     } else {
                         // Nested quasiquote - decrease depth and process
-                        self.push_cont(Cont::QuasiquoteUnquoteWrap)?;
+                        let nil = self.lisp.nil()?;
+                        self.push_cont(CONT_QUASIQUOTE_UNQUOTE_WRAP, nil, env)?;
                         return self.step_quasiquote_trampoline(inner_expr, env, depth - 1);
                     }
                 }
@@ -714,7 +762,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 // Check for nested quasiquote
                 if self.lisp.symbol_matches(car, "quasiquote").unwrap_or(false) {
-                    self.push_cont(Cont::QuasiquoteNestedWrap)?;
+                    let nil = self.lisp.nil()?;
+                    self.push_cont(CONT_QUASIQUOTE_NESTED_WRAP, nil, env)?;
                     let inner_expr = self.lisp.car(cdr)?;
                     return self.step_quasiquote_trampoline(inner_expr, env, depth + 1);
                 }
@@ -726,15 +775,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
                         // Splice the result into the list
                         let splice_expr = self.lisp.car(inner_cdr)?;
-                        let data_start = self.pack_quasiquote_splice(cdr, depth, env)?;
-                        self.push_cont(Cont::QuasiquoteSplice(data_start))?;
+                        // Data: (cdr . (depth_encoded . env))
+                        let depth_encoded = Self::encode_usize(depth);
+                        let data = self.pack3(cdr, depth_encoded, env)?;
+                        self.push_cont(CONT_QUASIQUOTE_SPLICE, data, env)?;
                         return Ok(TrampolineState::Eval { expr: splice_expr, env });
                     }
                 }
                 
                 // Recursively process car and cdr
-                let data_start = self.pack_quasiquote_car(cdr, depth, env)?;
-                self.push_cont(Cont::QuasiquoteCar(data_start))?;
+                // Data: (cdr . (depth_encoded . env))
+                let depth_encoded = Self::encode_usize(depth);
+                let data = self.pack3(cdr, depth_encoded, env)?;
+                self.push_cont(CONT_QUASIQUOTE_CAR, data, env)?;
                 self.step_quasiquote_trampoline(car, env, depth)
             }
             _ => {
@@ -763,8 +816,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(TrampolineState::Eval { expr: first_expr, env })
         } else {
             // Multiple expressions - push continuation for the rest
-            let data_start = self.pack_begin_seq(rest, env)?;
-            self.push_cont(Cont::BeginSeq(data_start))?;
+            // Data: (remaining . env)
+            let data = self.pack2(rest, env)?;
+            self.push_cont(CONT_BEGIN_SEQ, data, env)?;
             Ok(TrampolineState::Eval { expr: first_expr, env })
         }
     }
@@ -797,8 +851,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
         // Push continuation to evaluate args_list after func is evaluated
-        let data_start = self.pack_apply_first(args_list_expr, env)?;
-        self.push_cont(Cont::ApplyFirst(data_start))?;
+        // Data: (args_list_expr . env)
+        let data = self.pack2(args_list_expr, env)?;
+        self.push_cont(CONT_APPLY_FIRST, data, env)?;
         
         // Evaluate function first
         Ok(TrampolineState::Eval { expr: func_expr, env })
@@ -817,8 +872,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let rest = self.lisp.cdr(args)?;
         let nil = self.lisp.nil()?;
         
-        let data_start = self.pack_values_collect(rest, nil, env)?;
-        self.push_cont(Cont::ValuesCollect(data_start))?;
+        // Data: (remaining . (collected . env))
+        let data = self.pack3(rest, nil, env)?;
+        self.push_cont(CONT_VALUES_COLLECT, data, env)?;
         Ok(TrampolineState::Eval { expr: first_expr, env })
     }
     
@@ -834,8 +890,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let consumer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
         // Push continuation to call consumer after producer is evaluated and called
-        let data_start = self.pack_call_with_values_producer(consumer_expr, env)?;
-        self.push_cont(Cont::CallWithValuesProducer(data_start))?;
+        // Data: (consumer_expr . env)
+        let data = self.pack2(consumer_expr, env)?;
+        self.push_cont(CONT_CALL_WITH_VALUES_PRODUCER, data, env)?;
         
         // Evaluate producer first
         Ok(TrampolineState::Eval { expr: producer_expr, env })
@@ -869,8 +926,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let captured_continuation = self.capture_continuation(env)?;
         
         // Push continuation to apply proc to the captured continuation after proc is evaluated
-        let data_start = self.pack_call_cc_apply(captured_continuation)?;
-        self.push_cont(Cont::CallCcApply(data_start))?;
+        // Data: captured_continuation
+        let data = self.pack1(captured_continuation)?;
+        self.push_cont(CONT_CALL_CC_APPLY, data, env)?;
         
         // Evaluate the procedure expression
         Ok(TrampolineState::Eval { expr: proc_expr, env })
@@ -878,12 +936,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Capture the current continuation as a first-class value
     /// 
-    /// Converts the current cont_stack and data_stack into an arena-based
-    /// ContFrame linked list, wraps it in a Value::Continuation, and returns it.
+    /// With arena-based continuations, capture is O(1) - we just save the
+    /// current_cont pointer as a Continuation value.
     fn capture_continuation(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        // Convert the current continuation stack to arena-based ContFrame chain
-        // We build from bottom (Done) up to current depth
-        let cont_chain = self.stack_to_arena_chain()?;
+        // The current continuation is already an arena-based ContFrame chain
+        let cont_chain = self.current_cont;
         
         // Create the continuation value
         // For now, we don't have dynamic-wind support, so use nil for that field
@@ -893,434 +950,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(continuation)
     }
     
-    /// Convert the current continuation stack to an arena-based ContFrame chain
-    /// 
-    /// This creates a linked list of ContFrame values in the arena, starting
-    /// from the Done continuation at the bottom and building up to the current
-    /// continuation depth.
-    fn stack_to_arena_chain(&self) -> Result<ArenaIndex, EvalError> {
-        // Start with Nil representing the Done continuation
-        let nil = self.lisp.nil()?;
-        let mut chain = nil;
-        
-        // Build the chain from bottom to top
-        // We iterate from 0 to cont_depth, which gives us the correct order
-        // (oldest continuation first, which becomes the innermost in the chain)
-        for i in 0..self.cont_depth {
-            let cont = self.cont_stack[i];
-            
-            // Encode the continuation type as a usize
-            let cont_type = self.cont_type_to_usize(cont);
-            
-            // Collect the data for this continuation
-            let data = self.cont_data_to_arena(cont)?;
-            
-            // For now, use nil as the env for each frame
-            // A more complete implementation would track the env at each point
-            let frame = self.lisp.cont_frame(cont_type, data, chain, nil)?;
-            chain = frame;
-        }
-        
-        Ok(chain)
-    }
-    
-    /// Convert a Cont variant to its type code
-    fn cont_type_to_usize(&self, cont: Cont) -> usize {
-        match cont {
-            Cont::Done => 0,
-            Cont::ApplyForced(_) => 1,
-            Cont::IfBranch(_) => 2,
-            Cont::BuiltinForceArg(_) => 3,
-            Cont::BinaryBuiltinFirst(_) => 4,
-            Cont::BinaryBuiltinSecond(_) => 5,
-            Cont::LambdaFirstBind(_) => 6,
-            Cont::LambdaBindArg(_) => 7,
-            Cont::LambdaRestCollect(_) => 8,
-            Cont::EvalExpr(_) => 9,
-            Cont::BeginSeq(_) => 10,
-            Cont::ApplyFirst(_) => 11,
-            Cont::ApplySecond(_) => 12,
-            Cont::ValuesCollect(_) => 13,
-            Cont::DefineValue(_) => 14,
-            Cont::SetValue(_) => 15,
-            Cont::NativeArgsCollect(_) => 16,
-            Cont::QuasiquoteCar(_) => 17,
-            Cont::QuasiquoteCdr(_) => 18,
-            Cont::QuasiquoteUnquoteWrap => 19,
-            Cont::QuasiquoteNestedWrap => 20,
-            Cont::QuasiquoteSplice(_) => 21,
-            Cont::QuasiquoteSpliceAppend(_) => 22,
-            Cont::LetSyntaxBody(_) => 23,
-            Cont::CallWithValuesProducer(_) => 24,
-            Cont::CallWithValuesConsumer(_) => 25,
-            Cont::CallWithValuesApply(_) => 26,
-            Cont::SyntaxCaseMatch(_) => 27,
-            Cont::SyntaxCaseFender(_) => 28,
-            Cont::CallCcApply(_) => 29,
-            Cont::ContinuationApply(_) => 30,
-        }
-    }
-    
-    /// Convert continuation data to arena representation
-    fn cont_data_to_arena(&self, cont: Cont) -> Result<ArenaIndex, EvalError> {
-        let nil = self.lisp.nil()?;
-        
-        match cont {
-            Cont::Done | Cont::QuasiquoteUnquoteWrap | Cont::QuasiquoteNestedWrap => {
-                // No data
-                Ok(nil)
-            }
-            Cont::LambdaFirstBind(ds) | Cont::EvalExpr(ds) | Cont::DefineValue(ds) |
-            Cont::QuasiquoteCdr(ds) | Cont::QuasiquoteSpliceAppend(ds) |
-            Cont::LetSyntaxBody(ds) | Cont::CallCcApply(ds) | Cont::ContinuationApply(ds) => {
-                // 1 element
-                Ok(self.data_stack[ds])
-            }
-            Cont::BeginSeq(ds) | Cont::ApplyFirst(ds) | Cont::ApplySecond(ds) |
-            Cont::SetValue(ds) | Cont::CallWithValuesProducer(ds) |
-            Cont::CallWithValuesConsumer(ds) | Cont::CallWithValuesApply(ds) => {
-                // 2 elements - build as cons cell
-                let a = self.data_stack[ds];
-                let b = self.data_stack[ds + 1];
-                self.lisp.cons(a, b).map_err(Into::into)
-            }
-            Cont::ApplyForced(ds) | Cont::IfBranch(ds) | Cont::BinaryBuiltinSecond(ds) |
-            Cont::ValuesCollect(ds) | Cont::QuasiquoteCar(ds) | Cont::QuasiquoteSplice(ds) => {
-                // 3 elements - build as list
-                let a = self.data_stack[ds];
-                let b = self.data_stack[ds + 1];
-                let c = self.data_stack[ds + 2];
-                let bc = self.lisp.cons(b, c)?;
-                self.lisp.cons(a, bc).map_err(Into::into)
-            }
-            Cont::BinaryBuiltinFirst(ds) | Cont::NativeArgsCollect(ds) | Cont::SyntaxCaseMatch(ds) => {
-                // 4 elements
-                let a = self.data_stack[ds];
-                let b = self.data_stack[ds + 1];
-                let c = self.data_stack[ds + 2];
-                let d = self.data_stack[ds + 3];
-                let cd = self.lisp.cons(c, d)?;
-                let bcd = self.lisp.cons(b, cd)?;
-                self.lisp.cons(a, bcd).map_err(Into::into)
-            }
-            Cont::BuiltinForceArg(ds) => {
-                // 5 elements
-                let a = self.data_stack[ds];
-                let b = self.data_stack[ds + 1];
-                let c = self.data_stack[ds + 2];
-                let d = self.data_stack[ds + 3];
-                let e = self.data_stack[ds + 4];
-                let de = self.lisp.cons(d, e)?;
-                let cde = self.lisp.cons(c, de)?;
-                let bcde = self.lisp.cons(b, cde)?;
-                self.lisp.cons(a, bcde).map_err(Into::into)
-            }
-            Cont::LambdaBindArg(ds) | Cont::SyntaxCaseFender(ds) => {
-                // 6 elements
-                let a = self.data_stack[ds];
-                let b = self.data_stack[ds + 1];
-                let c = self.data_stack[ds + 2];
-                let d = self.data_stack[ds + 3];
-                let e = self.data_stack[ds + 4];
-                let f = self.data_stack[ds + 5];
-                let ef = self.lisp.cons(e, f)?;
-                let def = self.lisp.cons(d, ef)?;
-                let cdef = self.lisp.cons(c, def)?;
-                let bcdef = self.lisp.cons(b, cdef)?;
-                self.lisp.cons(a, bcdef).map_err(Into::into)
-            }
-            Cont::LambdaRestCollect(ds) => {
-                // 7 elements
-                let a = self.data_stack[ds];
-                let b = self.data_stack[ds + 1];
-                let c = self.data_stack[ds + 2];
-                let d = self.data_stack[ds + 3];
-                let e = self.data_stack[ds + 4];
-                let f = self.data_stack[ds + 5];
-                let g = self.data_stack[ds + 6];
-                let fg = self.lisp.cons(f, g)?;
-                let efg = self.lisp.cons(e, fg)?;
-                let defg = self.lisp.cons(d, efg)?;
-                let cdefg = self.lisp.cons(c, defg)?;
-                let bcdefg = self.lisp.cons(b, cdefg)?;
-                self.lisp.cons(a, bcdefg).map_err(Into::into)
-            }
-        }
-    }
-    
     /// Restore a captured continuation
     /// 
-    /// Replaces the current cont_stack and data_stack with the contents
-    /// of the arena-based ContFrame chain stored in the captured continuation.
+    /// With arena-based continuations, restore is O(1) - we just update
+    /// the current_cont pointer.
     fn restore_continuation(&mut self, continuation: ArenaIndex) -> Result<(), EvalError> {
         // Extract the cont_chain from the Continuation value
         let (cont_chain, _capture_env, _dw_chain) = self.lisp.continuation_parts(continuation)?;
         
-        // Restore from arena chain to stack
-        self.arena_chain_to_stack(cont_chain)?;
+        // Restore the continuation chain
+        self.current_cont = cont_chain;
         
         Ok(())
-    }
-    
-    /// Restore the continuation stack from an arena-based ContFrame chain
-    fn arena_chain_to_stack(&mut self, chain: ArenaIndex) -> Result<(), EvalError> {
-        use crate::continuation::MAX_CONT_DEPTH;
-        
-        // First, collect all frames from the chain (they're in reverse order)
-        let mut frames: [(usize, ArenaIndex); MAX_CONT_DEPTH] = [(0, ArenaIndex::NIL); MAX_CONT_DEPTH];
-        let mut frame_count = 0;
-        let mut current = chain;
-        
-        while !current.is_nil() {
-            if frame_count >= MAX_CONT_DEPTH {
-                return Err(self.make_error(ErrorKind::StackOverflow, chain));
-            }
-            
-            let (cont_type, data, parent, _env) = self.lisp.cont_frame_parts(current)?;
-            frames[frame_count] = (cont_type, data);
-            frame_count += 1;
-            current = parent;
-        }
-        
-        // Now restore in reverse order (so oldest continuation is at index 0)
-        self.cont_depth = 0;
-        self.data_stack_top = 0;
-        
-        for i in (0..frame_count).rev() {
-            let (cont_type, data) = frames[i];
-            self.restore_single_cont(cont_type, data)?;
-        }
-        
-        Ok(())
-    }
-    
-    /// Restore a single continuation from its type code and data
-    fn restore_single_cont(&mut self, cont_type: usize, data: ArenaIndex) -> Result<(), EvalError> {
-        use crate::continuation::MAX_CONT_DEPTH;
-        
-        if self.cont_depth >= MAX_CONT_DEPTH {
-            return Err(self.make_error(ErrorKind::StackOverflow, data));
-        }
-        
-        let data_start = self.data_stack_top;
-        
-        match cont_type {
-            0 => {
-                // Done - no data
-                self.cont_stack[self.cont_depth] = Cont::Done;
-            }
-            1 => {
-                // ApplyForced - 3 elements
-                let (a, bc) = self.unpack_2_from_arena(data)?;
-                let (b, c) = self.unpack_2_from_arena(bc)?;
-                self.push_data(&[a, b, c])?;
-                self.cont_stack[self.cont_depth] = Cont::ApplyForced(data_start);
-            }
-            2 => {
-                // IfBranch - 3 elements
-                let (a, bc) = self.unpack_2_from_arena(data)?;
-                let (b, c) = self.unpack_2_from_arena(bc)?;
-                self.push_data(&[a, b, c])?;
-                self.cont_stack[self.cont_depth] = Cont::IfBranch(data_start);
-            }
-            3 => {
-                // BuiltinForceArg - 5 elements
-                let (a, bcde) = self.unpack_2_from_arena(data)?;
-                let (b, cde) = self.unpack_2_from_arena(bcde)?;
-                let (c, de) = self.unpack_2_from_arena(cde)?;
-                let (d, e) = self.unpack_2_from_arena(de)?;
-                self.push_data(&[a, b, c, d, e])?;
-                self.cont_stack[self.cont_depth] = Cont::BuiltinForceArg(data_start);
-            }
-            4 => {
-                // BinaryBuiltinFirst - 4 elements
-                let (a, bcd) = self.unpack_2_from_arena(data)?;
-                let (b, cd) = self.unpack_2_from_arena(bcd)?;
-                let (c, d) = self.unpack_2_from_arena(cd)?;
-                self.push_data(&[a, b, c, d])?;
-                self.cont_stack[self.cont_depth] = Cont::BinaryBuiltinFirst(data_start);
-            }
-            5 => {
-                // BinaryBuiltinSecond - 3 elements
-                let (a, bc) = self.unpack_2_from_arena(data)?;
-                let (b, c) = self.unpack_2_from_arena(bc)?;
-                self.push_data(&[a, b, c])?;
-                self.cont_stack[self.cont_depth] = Cont::BinaryBuiltinSecond(data_start);
-            }
-            6 => {
-                // LambdaFirstBind - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::LambdaFirstBind(data_start);
-            }
-            7 => {
-                // LambdaBindArg - 6 elements
-                let (a, bcdef) = self.unpack_2_from_arena(data)?;
-                let (b, cdef) = self.unpack_2_from_arena(bcdef)?;
-                let (c, def) = self.unpack_2_from_arena(cdef)?;
-                let (d, ef) = self.unpack_2_from_arena(def)?;
-                let (e, f) = self.unpack_2_from_arena(ef)?;
-                self.push_data(&[a, b, c, d, e, f])?;
-                self.cont_stack[self.cont_depth] = Cont::LambdaBindArg(data_start);
-            }
-            8 => {
-                // LambdaRestCollect - 7 elements
-                let (a, bcdefg) = self.unpack_2_from_arena(data)?;
-                let (b, cdefg) = self.unpack_2_from_arena(bcdefg)?;
-                let (c, defg) = self.unpack_2_from_arena(cdefg)?;
-                let (d, efg) = self.unpack_2_from_arena(defg)?;
-                let (e, fg) = self.unpack_2_from_arena(efg)?;
-                let (f, g) = self.unpack_2_from_arena(fg)?;
-                self.push_data(&[a, b, c, d, e, f, g])?;
-                self.cont_stack[self.cont_depth] = Cont::LambdaRestCollect(data_start);
-            }
-            9 => {
-                // EvalExpr - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::EvalExpr(data_start);
-            }
-            10 => {
-                // BeginSeq - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::BeginSeq(data_start);
-            }
-            11 => {
-                // ApplyFirst - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::ApplyFirst(data_start);
-            }
-            12 => {
-                // ApplySecond - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::ApplySecond(data_start);
-            }
-            13 => {
-                // ValuesCollect - 3 elements
-                let (a, bc) = self.unpack_2_from_arena(data)?;
-                let (b, c) = self.unpack_2_from_arena(bc)?;
-                self.push_data(&[a, b, c])?;
-                self.cont_stack[self.cont_depth] = Cont::ValuesCollect(data_start);
-            }
-            14 => {
-                // DefineValue - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::DefineValue(data_start);
-            }
-            15 => {
-                // SetValue - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::SetValue(data_start);
-            }
-            16 => {
-                // NativeArgsCollect - 4 elements
-                let (a, bcd) = self.unpack_2_from_arena(data)?;
-                let (b, cd) = self.unpack_2_from_arena(bcd)?;
-                let (c, d) = self.unpack_2_from_arena(cd)?;
-                self.push_data(&[a, b, c, d])?;
-                self.cont_stack[self.cont_depth] = Cont::NativeArgsCollect(data_start);
-            }
-            17 => {
-                // QuasiquoteCar - 3 elements
-                let (a, bc) = self.unpack_2_from_arena(data)?;
-                let (b, c) = self.unpack_2_from_arena(bc)?;
-                self.push_data(&[a, b, c])?;
-                self.cont_stack[self.cont_depth] = Cont::QuasiquoteCar(data_start);
-            }
-            18 => {
-                // QuasiquoteCdr - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::QuasiquoteCdr(data_start);
-            }
-            19 => {
-                // QuasiquoteUnquoteWrap - no data
-                self.cont_stack[self.cont_depth] = Cont::QuasiquoteUnquoteWrap;
-            }
-            20 => {
-                // QuasiquoteNestedWrap - no data
-                self.cont_stack[self.cont_depth] = Cont::QuasiquoteNestedWrap;
-            }
-            21 => {
-                // QuasiquoteSplice - 3 elements
-                let (a, bc) = self.unpack_2_from_arena(data)?;
-                let (b, c) = self.unpack_2_from_arena(bc)?;
-                self.push_data(&[a, b, c])?;
-                self.cont_stack[self.cont_depth] = Cont::QuasiquoteSplice(data_start);
-            }
-            22 => {
-                // QuasiquoteSpliceAppend - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::QuasiquoteSpliceAppend(data_start);
-            }
-            23 => {
-                // LetSyntaxBody - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::LetSyntaxBody(data_start);
-            }
-            24 => {
-                // CallWithValuesProducer - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::CallWithValuesProducer(data_start);
-            }
-            25 => {
-                // CallWithValuesConsumer - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::CallWithValuesConsumer(data_start);
-            }
-            26 => {
-                // CallWithValuesApply - 2 elements
-                let (a, b) = self.unpack_2_from_arena(data)?;
-                self.push_data(&[a, b])?;
-                self.cont_stack[self.cont_depth] = Cont::CallWithValuesApply(data_start);
-            }
-            27 => {
-                // SyntaxCaseMatch - 4 elements
-                let (a, bcd) = self.unpack_2_from_arena(data)?;
-                let (b, cd) = self.unpack_2_from_arena(bcd)?;
-                let (c, d) = self.unpack_2_from_arena(cd)?;
-                self.push_data(&[a, b, c, d])?;
-                self.cont_stack[self.cont_depth] = Cont::SyntaxCaseMatch(data_start);
-            }
-            28 => {
-                // SyntaxCaseFender - 6 elements
-                let (a, bcdef) = self.unpack_2_from_arena(data)?;
-                let (b, cdef) = self.unpack_2_from_arena(bcdef)?;
-                let (c, def) = self.unpack_2_from_arena(cdef)?;
-                let (d, ef) = self.unpack_2_from_arena(def)?;
-                let (e, f) = self.unpack_2_from_arena(ef)?;
-                self.push_data(&[a, b, c, d, e, f])?;
-                self.cont_stack[self.cont_depth] = Cont::SyntaxCaseFender(data_start);
-            }
-            29 => {
-                // CallCcApply - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::CallCcApply(data_start);
-            }
-            30 => {
-                // ContinuationApply - 1 element
-                self.push_data(&[data])?;
-                self.cont_stack[self.cont_depth] = Cont::ContinuationApply(data_start);
-            }
-            _ => {
-                // Unknown continuation type
-                return Err(self.make_error(ErrorKind::Generic, data)
-                    .with_message("unknown continuation type in captured continuation"));
-            }
-        }
-        
-        self.cont_depth += 1;
-        Ok(())
-    }
-    
-    /// Helper to unpack a cons cell from arena
-    fn unpack_2_from_arena(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let car = self.lisp.car(data)?;
-        let cdr = self.lisp.cdr(data)?;
-        Ok((car, cdr))
     }
     
     /// Evaluate lambda
@@ -1448,8 +1089,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Symbol(_) => {
                 let value_expr = self.lisp.car(rest)?;
                 // Push continuation and evaluate value
-                let data_start = self.pack_define_value(first)?;
-                self.push_cont(Cont::DefineValue(data_start))?;
+                // Data: name
+                let data = self.pack1(first)?;
+                self.push_cont(CONT_DEFINE_VALUE, data, env)?;
                 Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             // (define (name params...) body...) -> (define name (lambda (params...) body...))
@@ -1479,8 +1121,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(name)? {
             Value::Symbol(_) => {
                 // Push continuation and evaluate value
-                let data_start = self.pack_set_value(name, env)?;
-                self.push_cont(Cont::SetValue(data_start))?;
+                // Data: (name . env)
+                let data = self.pack2(name, env)?;
+                self.push_cont(CONT_SET_VALUE, data, env)?;
                 Ok(TrampolineState::Eval { expr: value_expr, env })
             }
             _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
@@ -1542,8 +1185,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         
         // Push continuation to restore macro environment after body evaluation
-        let data_start = self.pack_let_syntax_body(saved_macro_env)?;
-        self.push_cont(Cont::LetSyntaxBody(data_start))?;
+        // Data: saved_macro_env
+        let data = self.pack1(saved_macro_env)?;
+        self.push_cont(CONT_LET_SYNTAX_BODY, data, env)?;
         
         // Evaluate body with extended macro environment
         Ok(TrampolineState::Eval { expr: body, env })
@@ -1575,8 +1219,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let pattern_bindings = self.get_pattern_bindings_from_env(env)?;
 
         // Push continuation to handle pattern matching after stx-expr is evaluated
-        let data_start = self.pack_syntax_case_match(literals, clauses, env, pattern_bindings)?;
-        self.push_cont(Cont::SyntaxCaseMatch(data_start))?;
+        // Data: (literals . (clauses . (env . pattern_bindings)))
+        let data = self.pack4(literals, clauses, env, pattern_bindings)?;
+        self.push_cont(CONT_SYNTAX_CASE_MATCH, data, env)?;
 
         // Evaluate stx-expr first
         Ok(TrampolineState::Eval { expr: stx_expr, env })
@@ -1641,8 +1286,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let remaining_clauses = self.lisp.cdr(current)?;
                     
                     // Push continuation to handle fender result
-                    let data_start = self.pack_syntax_case_fender(output, bindings, literals, remaining_clauses, env, stx)?;
-                    self.push_cont(Cont::SyntaxCaseFender(data_start))?;
+                    // Data: (output . (bindings . (literals . (remaining_clauses . (env . stx)))))
+                    let data = self.pack6(output, bindings, literals, remaining_clauses, env, stx)?;
+                    self.push_cont(CONT_SYNTAX_CASE_FENDER, data, fender_env)?;
                     
                     // Evaluate fender with trampolined evaluation
                     return Ok(Some(TrampolineState::Eval { expr: fender_expr, env: fender_env }));

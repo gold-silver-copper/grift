@@ -2019,7 +2019,9 @@ fn test_gc_disabled_memory_grows() {
 fn test_gc_disabled_trampoline_respects_flag() {
     // Verify the trampoline's periodic GC check respects gc_enabled
     // This runs code that would normally trigger periodic GC
-    let lisp: Lisp<20000> = Lisp::new();
+    // Note: With arena-based continuations, we need enough arena since
+    // each push_cont allocates cons cells in the arena.
+    let lisp: Lisp<25000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Disable GC
@@ -2032,6 +2034,8 @@ fn test_gc_disabled_trampoline_respects_flag() {
     
     // Run a recursive function that creates garbage and takes many steps
     // This should trigger the periodic GC check in the trampoline
+    // Reduced iterations to avoid running out of arena with GC disabled
+    // (arena-based continuations use more memory per call).
     eval.eval_str("
         (define (make-garbage n)
           (if (<= n 0)
@@ -2041,7 +2045,7 @@ fn test_gc_disabled_trampoline_respects_flag() {
                 (make-garbage (- n 1)))))
     ").unwrap();
     
-    eval.eval_str("(make-garbage 500)").unwrap();
+    eval.eval_str("(make-garbage 100)").unwrap();
     
     // Memory should have grown since GC is disabled
     let stats_after = eval.eval_str("(arena-stats)").unwrap();
@@ -3599,7 +3603,7 @@ fn test_nested_stdlib_calls() {
 #[test]
 fn test_size_check() {
     use std::mem::{size_of, align_of};
-    use grift_eval::{Cont, TrampolineState};
+    use grift_eval::TrampolineState;
     use grift_parser::{Builtin, StdLib};
     
     println!("\n╔════════════════════════════════════════════════════════════╗");
@@ -3614,8 +3618,7 @@ fn test_size_check() {
     
     println!("╠════════════════════════════════════════════════════════════╣");
     println!("║ Continuation Types:                                        ║");
-    println!("║   Cont:            {:>3} bytes (align: {:>2})                  ║", 
-             size_of::<Cont>(), align_of::<Cont>());
+    println!("║   (Continuations are now arena-based, not stack-based)     ║");
     println!("║   TrampolineState: {:>3} bytes (align: {:>2})                  ║", 
              size_of::<TrampolineState>(), align_of::<TrampolineState>());
     
@@ -3641,10 +3644,6 @@ fn test_size_check() {
     println!("║   Value = {} usizes = discriminant + {} usizes payload   ║", 
              value_slots, value_slots - 1);
     
-    // Cont analysis
-    let cont_slots = size_of::<Cont>() / size_of::<usize>();
-    println!("║   Cont = {} usizes (discriminant + data_start offset)     ║", cont_slots);
-    
     // Cache line analysis (64 bytes typical)
     let values_per_cache_line = 64 / size_of::<Value>();
     println!("║   Values per 64-byte cache line: {}                        ║", values_per_cache_line);
@@ -3653,7 +3652,6 @@ fn test_size_check() {
     
     // Assertions to catch regressions
     assert!(size_of::<Value>() <= 32, "Value enum grew beyond 32 bytes!");
-    assert!(size_of::<Cont>() <= 16, "Cont enum grew beyond 16 bytes!");
     assert!(size_of::<ArenaIndex>() == 8, "ArenaIndex should be exactly 8 bytes");
 }
 

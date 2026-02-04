@@ -14,7 +14,6 @@ mod expand;
 use grift_parser::{ArenaIndex, Lisp};
 
 use crate::error::{StackFrame, MAX_STACK_DEPTH};
-use crate::continuation::{Cont, MAX_CONT_DEPTH, MAX_DATA_STACK};
 use crate::native::NativeRegistry;
 
 // ============================================================================
@@ -23,8 +22,12 @@ use crate::native::NativeRegistry;
 
 /// The Lisp evaluator with full trampolined TCO.
 ///
-/// This evaluator uses continuation-passing style with an explicit stack,
-/// enabling unlimited recursion depth without Rust stack overflow.
+/// This evaluator uses continuation-passing style with an arena-based
+/// continuation chain, enabling unlimited recursion depth without Rust
+/// stack overflow.
+///
+/// The continuation stack is stored entirely in the arena as a linked list
+/// of `ContFrame` values, enabling O(1) capture for call/cc.
 pub struct Evaluator<'a, const N: usize> {
     pub(crate) lisp: &'a Lisp<N>,
     /// Global environment
@@ -32,13 +35,9 @@ pub struct Evaluator<'a, const N: usize> {
     /// Call stack for error reporting
     call_stack: [StackFrame; MAX_STACK_DEPTH],
     call_stack_depth: usize,
-    /// Continuation stack for full trampolining
-    cont_stack: [Cont; MAX_CONT_DEPTH],
-    cont_depth: usize,
-    /// Data stack for continuation data (separate from arena for performance)
-    /// Stores raw ArenaIndex values without Value::Ref wrapper
-    data_stack: [ArenaIndex; MAX_DATA_STACK],
-    data_stack_top: usize,
+    /// Current continuation - arena-based ContFrame linked list
+    /// Points to the head of the continuation chain, or Nil if empty (Done)
+    current_cont: ArenaIndex,
     /// Native function registry
     native_registry: NativeRegistry<N>,
     /// Macro environment - stores (name . SyntaxRules) bindings
