@@ -778,3 +778,154 @@ fn test_macro_expansion_complex_side_effects() {
     let result2 = eval.eval_str("(debug-macro y 20)").unwrap();
     assert_eq!(lisp.get(result2).unwrap().as_number(), Some(30));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MACRO EXPANSION TIMING TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test that macro expansion happens at definition time, not at each call
+/// This verifies the fix for Problem 1 from the issue
+#[test]
+fn test_macro_expansion_timing_at_definition() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a counter to track expansion count
+    eval.eval_str("(define expansion-count 0)").unwrap();
+    
+    // Define a macro that increments the counter during expansion
+    eval.eval_str(r#"
+        (define-syntax counting-macro
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n)
+               (begin
+                 (set! expansion-count (+ expansion-count 1))
+                 (syntax (+ n 1)))))))
+    "#).unwrap();
+    
+    // Define a function that uses the macro
+    eval.eval_str("(define (foo) (counting-macro 10))").unwrap();
+    
+    // After defining foo, count should be 1 (expanded once)
+    let count = eval.eval_str("expansion-count").unwrap();
+    assert_eq!(lisp.get(count).unwrap().as_number(), Some(1));
+    
+    // Call foo multiple times
+    let r1 = eval.eval_str("(foo)").unwrap();
+    assert_eq!(lisp.get(r1).unwrap().as_number(), Some(11));
+    
+    let r2 = eval.eval_str("(foo)").unwrap();
+    assert_eq!(lisp.get(r2).unwrap().as_number(), Some(11));
+    
+    let r3 = eval.eval_str("(foo)").unwrap();
+    assert_eq!(lisp.get(r3).unwrap().as_number(), Some(11));
+    
+    // Counter should still be 1 (not re-expanded on each call)
+    let final_count = eval.eval_str("expansion-count").unwrap();
+    assert_eq!(lisp.get(final_count).unwrap().as_number(), Some(1));
+}
+
+/// Test that lambda expressions also expand macros at creation time
+#[test]
+fn test_macro_expansion_in_lambda() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a counter
+    eval.eval_str("(define lambda-expand-count 0)").unwrap();
+    
+    // Define a macro that increments counter
+    eval.eval_str(r#"
+        (define-syntax inc-macro
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n)
+               (begin
+                 (set! lambda-expand-count (+ lambda-expand-count 1))
+                 (syntax (+ n 5)))))))
+    "#).unwrap();
+    
+    // Create a lambda that uses the macro
+    eval.eval_str("(define my-fn (lambda (x) (inc-macro x)))").unwrap();
+    
+    // Counter should be 1 after lambda creation
+    let count = eval.eval_str("lambda-expand-count").unwrap();
+    assert_eq!(lisp.get(count).unwrap().as_number(), Some(1));
+    
+    // Call the lambda multiple times
+    let r1 = eval.eval_str("(my-fn 10)").unwrap();
+    assert_eq!(lisp.get(r1).unwrap().as_number(), Some(15));
+    
+    let r2 = eval.eval_str("(my-fn 20)").unwrap();
+    assert_eq!(lisp.get(r2).unwrap().as_number(), Some(25));
+    
+    // Counter should still be 1
+    let final_count = eval.eval_str("lambda-expand-count").unwrap();
+    assert_eq!(lisp.get(final_count).unwrap().as_number(), Some(1));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SYNTAX HASH-QUOTE READER TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test that #' reader syntax works as shorthand for (syntax ...)
+/// This verifies the fix for Problem 2 from the issue
+#[test]
+fn test_hash_quote_reader_syntax() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test basic #' syntax - should be equivalent to (syntax ...)
+    // Outside of macro context, syntax just returns the datum
+    let result = eval.eval_str("#'foo").unwrap();
+    assert!(lisp.symbol_matches(result, "foo").unwrap());
+    
+    // Test #' with a list
+    let result = eval.eval_str("#'(a b c)").unwrap();
+    assert!(lisp.get(result).unwrap().is_cons());
+}
+
+/// Test that syntax-e works as an alias for syntax->datum
+#[test]
+fn test_syntax_e_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test syntax-e extracts datum from syntax object (same as syntax->datum)
+    let result = eval.eval_str("(syntax-e (syntax foo))").unwrap();
+    assert!(lisp.symbol_matches(result, "foo").unwrap());
+    
+    // Test with #' shorthand
+    let result = eval.eval_str("(syntax-e #'bar)").unwrap();
+    assert!(lisp.symbol_matches(result, "bar").unwrap());
+}
+
+/// Test #' syntax inside macros for conditional expansion
+#[test]
+fn test_hash_quote_in_macro_conditional() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that uses #' and syntax-e for conditional expansion
+    eval.eval_str(r#"
+        (define-syntax conditional-macro
+          (lambda (x)
+            (syntax-case x ()
+              ((_ n)
+               (if (equal? (syntax-e #'n) 10)
+                   (syntax (+ n 1))
+                   (syntax 67))))))
+    "#).unwrap();
+    
+    // When n is 10, should return (+ 10 1) = 11
+    let result = eval.eval_str("(conditional-macro 10)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(11));
+    
+    // When n is anything else, should return 67
+    let result = eval.eval_str("(conditional-macro 5)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(67));
+    
+    let result = eval.eval_str("(conditional-macro 100)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(67));
+}
