@@ -784,7 +784,7 @@ fn main() {
         &mut eval,
         200,
         "(member 5 '(1 2 3 4 5 6))",
-        Some("#t"),
+        Some("(5 6)"),
     ));
 
     results.push(run_bench(
