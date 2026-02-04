@@ -35,6 +35,8 @@
   (length-iter lst 0))
 
 ;;; (append a b) - Concatenate two lists (tail-recursive, self-contained)
+;;; Note: R7RS requires variadic append, but this implementation only supports 2 arguments
+;;; For variadic concatenation, use (concatenate (list a b c ...))
 (define (append a b)
   (define (rev-helper lst acc)
     (if (null? lst) acc (rev-helper (cdr lst) (cons (car lst) acc))))
@@ -114,7 +116,8 @@
 ;;; ============================================================
 
 ;;; (for-each f lst) - Apply f to each element for side effects
-(define (for-each f lst) (if (null? lst) '() (begin (f (car lst)) (for-each f (cdr lst)))))
+;;; R7RS: The value returned is unspecified
+(define (for-each f lst) (if (null? lst) (if #f #f) (begin (f (car lst)) (for-each f (cdr lst)))))
 
 ;;; (list-tail lst k) - Return sublist starting at k-th element
 (define (list-tail lst k) (if (= k 0) lst (list-tail (cdr lst) (- k 1))))
