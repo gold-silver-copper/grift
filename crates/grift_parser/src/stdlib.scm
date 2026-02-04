@@ -117,6 +117,7 @@
 
 ;;; (for-each f lst) - Apply f to each element for side effects
 ;;; R7RS: The value returned is unspecified
+;;; We use (if #f #f) to produce an unspecified value (standard Scheme idiom)
 (define (for-each f lst) (if (null? lst) (if #f #f) (begin (f (car lst)) (for-each f (cdr lst)))))
 
 ;;; (list-tail lst k) - Return sublist starting at k-th element
