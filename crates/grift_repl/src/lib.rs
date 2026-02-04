@@ -214,7 +214,10 @@ pub fn value_to_string<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> Strin
 
 /// Output callback for display/newline during evaluation.
 /// 
-/// This function is called by the evaluator when display or newline is executed.
+/// This function is called by the evaluator when display or newline is executed,
+/// including during macro expansion phases. This allows output to be visible
+/// during both runtime evaluation and macro expansion.
+/// 
 /// We check if the value is nil (which represents a newline) or an actual value.
 fn output_callback<const N: usize>(lisp: &Lisp<N>, val: ArenaIndex) {
     use std::io::{self, Write};

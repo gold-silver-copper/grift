@@ -350,10 +350,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Newline => {
-                // Call output callback with nil (representing newline)
+                // Call output callback with nil (marker for newline)
                 if let Some(callback) = self.output_callback {
-                    // Use a special marker for newline - we'll use the nil value
-                    // The callback can check if the value is nil and print a newline
                     callback(self.lisp, self.lisp.nil()?);
                 }
                 self.lisp.nil().map_err(Into::into)

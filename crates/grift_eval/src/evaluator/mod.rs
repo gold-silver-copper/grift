@@ -22,8 +22,13 @@ use crate::native::NativeRegistry;
 
 /// Function pointer type for output callbacks
 /// 
-/// This function is called by `display` and `newline` builtins.
-/// The function receives the evaluator's lisp context and the value to display.
+/// This function is called by `display` and `newline` builtins during evaluation,
+/// including during macro expansion. The function receives the evaluator's lisp 
+/// context and the value to display.
+/// 
+/// **Special handling for newline**: The `newline` builtin passes `nil` as the
+/// value parameter. Callbacks should check `val.is_nil()` to distinguish between
+/// newline requests and actual display values.
 pub type OutputCallback<const N: usize> = fn(&Lisp<N>, ArenaIndex);
 
 /// The Lisp evaluator with full trampolined TCO.

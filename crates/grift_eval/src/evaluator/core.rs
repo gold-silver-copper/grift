@@ -148,14 +148,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// ```rust
     /// use grift_eval::{Lisp, Evaluator, ArenaIndex};
     ///
+    /// fn my_output_handler<const N: usize>(lisp: &Lisp<N>, val: ArenaIndex) {
+    ///     // Handle output - check if val.is_nil() for newline vs display
+    ///     // In a real std implementation, you would write to stdout here
+    /// }
+    ///
     /// let lisp: Lisp<10000> = Lisp::new();
     /// let mut eval = Evaluator::new(&lisp).unwrap();
     /// 
     /// // Set output callback
-    /// eval.set_output_callback(Some(|lisp, val| {
-    ///     // In a real implementation with std, you would print here
-    ///     // println!("{}", format_value(lisp, val));
-    /// }));
+    /// eval.set_output_callback(Some(my_output_handler));
     /// ```
     pub fn set_output_callback(&mut self, callback: Option<crate::evaluator::OutputCallback<N>>) {
         self.output_callback = callback;
