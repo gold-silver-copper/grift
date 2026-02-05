@@ -19,6 +19,11 @@ name = "grift"
 path = "src/main.rs"
 required-features = ["std"]
 
+[[bin]]
+name = "scheme-test-runner"
+path = "src/bin/scheme-test-runner.rs"
+required-features = ["std"]
+
 [features]
 default = []
 std = ["dep:grift_repl"]
