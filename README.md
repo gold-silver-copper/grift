@@ -235,6 +235,7 @@ See the detailed architecture documents:
 - **[LISP_ARCHITECTURE.md](./docs/LISP_ARCHITECTURE.md)** — How the Lisp interpreter works
 - **[HYGIENIC_MACROS_IMPLEMENTATION.md](./docs/HYGIENIC_MACROS_IMPLEMENTATION.md)** — Macro system implementation (Phases 1-9)
 - **[EXTENDING_SCHEME_MACROS.md](./docs/EXTENDING_SCHEME_MACROS.md)** — Advanced macro patterns and syntax-case
+- **[SYNTAX_RULES_MIGRATION_TO_SYNTAX_CASE.md](./docs/SYNTAX_RULES_MIGRATION_TO_SYNTAX_CASE.md)** — Guide for reimplementing syntax-rules via syntax-case
 - **[DYNAMIC_RUNTIME_SYNTAX_CASE.md](./docs/DYNAMIC_RUNTIME_SYNTAX_CASE.md)** — Plan for enabling runtime operations in macros
 - **[PSYNTAX_MIGRATION_GUIDE.md](./docs/PSYNTAX_MIGRATION_GUIDE.md)** — Guide for replacing syntax-case with psyntax.scm
 - **[SCHEME_R7RS_CONFORMANCE.md](./docs/SCHEME_R7RS_CONFORMANCE.md)** — R7RS compliance status
