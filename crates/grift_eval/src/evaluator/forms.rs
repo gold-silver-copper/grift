@@ -20,7 +20,7 @@ use crate::continuation::{TrampolineState,
     CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
     CONT_DYNAMIC_WIND_BEFORE, CONT_DYNAMIC_WIND_BODY, CONT_DYNAMIC_WIND_AFTER,
     CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
-    CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE, CONT_WITH_SYNTAX_BIND,
+    CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE,
 };
 use crate::extract_args;
 
@@ -904,64 +904,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            CONT_WITH_SYNTAX_BIND => {
-                // val is the evaluated value for the current binding
-                // Data format: ((current_name . rest_bindings) . (collected . (body . (env . existing))))
-                let (remaining_bindings, collected_bindings, body, env, existing_pattern_bindings) = self.unpack5(data)?;
-                
-                // Extract current binding name from the packed data
-                let current_name = self.lisp.car(remaining_bindings)?;
-                let actual_remaining = self.lisp.cdr(remaining_bindings)?;
-                
-                // Add the binding to collected pattern bindings
-                let binding_pair = self.lisp.cons(current_name, val)?;
-                let new_collected = self.lisp.cons(binding_pair, collected_bindings)?;
-                
-                if self.lisp.get(actual_remaining)?.is_nil() {
-                    // All bindings evaluated - now evaluate the body
-                    // Build the final environment with #:pattern-bindings updated
-                    
-                    // Merge new bindings with existing pattern bindings
-                    let mut final_pattern_bindings = existing_pattern_bindings;
-                    let mut current = new_collected;
-                    while let Value::Cons { .. } = self.lisp.get(current)? {
-                        let pair = self.lisp.car(current)?;
-                        final_pattern_bindings = self.lisp.cons(pair, final_pattern_bindings)?;
-                        current = self.lisp.cdr(current)?;
-                    }
-                    
-                    // Add the variables to the regular environment too
-                    let mut extended_env = env;
-                    current = new_collected;
-                    while let Value::Cons { .. } = self.lisp.get(current)? {
-                        let pair = self.lisp.car(current)?;
-                        extended_env = self.lisp.cons(pair, extended_env)?;
-                        current = self.lisp.cdr(current)?;
-                    }
-                    
-                    // Update #:pattern-bindings in the environment
-                    let key = self.lisp.symbol("#:pattern-bindings")?;
-                    let bindings_pair = self.lisp.cons(key, final_pattern_bindings)?;
-                    extended_env = self.lisp.cons(bindings_pair, extended_env)?;
-                    
-                    // Evaluate the body (which may be multiple expressions)
-                    Ok(Some(self.step_eval_begin(body, extended_env)?))
-                } else {
-                    // More bindings to evaluate
-                    let next_binding = self.lisp.car(actual_remaining)?;
-                    let next_name = self.lisp.car(next_binding)?;
-                    let next_val_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
-                    let rest_bindings = self.lisp.cdr(actual_remaining)?;
-                    
-                    // Pack data for continuation: (next_name . rest_bindings) as the remaining
-                    let next_remaining = self.lisp.cons(next_name, rest_bindings)?;
-                    let data = self.pack5(next_remaining, new_collected, body, env, existing_pattern_bindings)?;
-                    self.push_cont(CONT_WITH_SYNTAX_BIND, data, env)?;
-                    
-                    // Evaluate the next binding value
-                    Ok(Some(TrampolineState::Eval { expr: next_val_expr, env }))
-                }
-            }
+            // Note: CONT_WITH_SYNTAX_BIND was removed - with-syntax is now a macro
             
             // Catch-all for unknown continuation types
             _ => {
@@ -1401,8 +1344,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = self.lisp.car(args)?;
         let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
+        // Expand the transformer expression if it's not already a lambda
+        let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
+        
         // Parse the transformer
-        let transformer = self.parse_transformer(transformer_expr)?;
+        let transformer = self.parse_transformer(final_transformer_expr)?;
         
         // Add to macro environment
         let binding = self.lisp.cons(name, transformer)?;
@@ -1432,7 +1378,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let name = self.lisp.car(binding)?;
             let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
             
-            let transformer = self.parse_transformer(transformer_expr)?;
+            // Expand the transformer expression if it's not already a lambda
+            let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
+            
+            let transformer = self.parse_transformer(final_transformer_expr)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
             
@@ -1651,50 +1600,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(TrampolineState::Return { val: result })
     }
     
-    /// Evaluate (with-syntax ((pattern expr) ...) body ...)
-    ///
-    /// This binds pattern variables for use in syntax templates.
-    /// Each expr is evaluated and bound to the corresponding pattern variable.
-    /// The bindings are added to both the regular environment and the
-    /// #:pattern-bindings for use by the (syntax ...) form.
-    ///
-    /// This is a special form (not a macro) because it needs to properly
-    /// update the #:pattern-bindings mechanism used by syntax templates.
-    pub(super) fn step_eval_with_syntax(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> Result<TrampolineState, EvalError> {
-        let bindings_expr = self.lisp.car(args)?;
-        let body = self.lisp.cdr(args)?;
-        
-        // Get existing pattern bindings
-        let existing_pattern_bindings = self.get_pattern_bindings_from_env(env)?;
-        
-        // If no bindings, just evaluate the body
-        if self.lisp.get(bindings_expr)?.is_nil() {
-            return self.step_eval_begin(body, env);
-        }
-        
-        // Start evaluating bindings
-        let first_binding = self.lisp.car(bindings_expr)?;
-        let rest_bindings = self.lisp.cdr(bindings_expr)?;
-        
-        let first_name = self.lisp.car(first_binding)?;
-        let first_val_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
-        
-        // Pack data for continuation:
-        // (first_name . rest_bindings) - first_name paired with remaining bindings
-        // collected_bindings - starts empty
-        // body, env, existing_pattern_bindings
-        let collected = self.lisp.nil()?;
-        let remaining = self.lisp.cons(first_name, rest_bindings)?;
-        let data = self.pack5(remaining, collected, body, env, existing_pattern_bindings)?;
-        self.push_cont(CONT_WITH_SYNTAX_BIND, data, env)?;
-        
-        // Evaluate the first binding value
-        Ok(TrampolineState::Eval { expr: first_val_expr, env })
-    }
+    // Note: step_eval_with_syntax was removed - with-syntax is now a macro in macros.scm
+    // that uses syntax-case directly to bind patterns.
     
     // ========================================================================
     // dynamic-wind support

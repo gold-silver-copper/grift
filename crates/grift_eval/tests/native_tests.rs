@@ -371,7 +371,7 @@ fn test_register_native_stateful_with_evaluator() {
     
     use grift_eval::Evaluator;
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Register the stateful native functions
@@ -482,7 +482,7 @@ fn test_simplified_stateful_with_evaluator() {
     
     use grift_eval::Evaluator;
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Register simplified stateful functions
@@ -640,7 +640,7 @@ fn test_with_lisp_range() {
 fn test_with_lisp_functions_in_evaluator() {
     use grift_eval::Evaluator;
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Register our custom functions
@@ -697,7 +697,7 @@ fn test_stateful_with_lisp_context() {
     
     use grift_eval::Evaluator;
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.register_native("stateful-cons", native_stateful_cons).unwrap();

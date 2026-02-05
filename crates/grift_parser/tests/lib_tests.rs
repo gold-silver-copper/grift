@@ -651,7 +651,7 @@ fn test_symbol_to_bytes() {
 
 #[test]
 fn test_contiguous_symbol_uses_less_memory() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     
     // Get initial allocation count (includes reserved slots)
     let initial = lisp.arena().len();

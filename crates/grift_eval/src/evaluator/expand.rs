@@ -56,7 +56,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// use grift_parser::Lisp;
     /// use grift_eval::Evaluator;
     /// 
-    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let lisp: Lisp<20000> = Lisp::new();
     /// let mut eval = Evaluator::new(&lisp).unwrap();
     /// 
     /// let sym1 = eval.gensym("tmp").unwrap();
@@ -469,10 +469,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Check if symbol is in literals list
     fn is_literal(&self, sym: ArenaIndex, literals: ArenaIndex) -> Result<bool, EvalError> {
-        let mut current = literals;
+        self.symbol_in_list(sym, literals)
+    }
+
+    /// Check if a symbol is a member of a list of symbols
+    fn symbol_in_list(&self, sym: ArenaIndex, list: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = list;
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            let lit = self.lisp.car(current)?;
-            if self.symbols_eq(sym, lit)? {
+            let item = self.lisp.car(current)?;
+            if self.symbols_eq(sym, item)? {
                 return Ok(true);
             }
             current = self.lisp.cdr(current)?;
@@ -1018,7 +1023,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         match self.lisp.get(val)? {
                             Value::Cons { .. } | Value::Nil => {
                                 // Add to result if not already there
-                                if self.bindings_lookup(*result, current)?.is_none() {
+                                // Note: result is a simple list of symbols, not an alist
+                                if !self.symbol_in_list(current, *result)? {
                                     *result = self.lisp.cons(current, *result)?;
                                 }
                             }
@@ -1627,8 +1633,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = self.lisp.car(args)?;
         let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
 
+        // Expand the transformer expression if it's not already a lambda
+        let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
+
         // Parse the transformer
-        let transformer = self.parse_transformer(transformer_expr)?;
+        let transformer = self.parse_transformer(final_transformer_expr)?;
 
         // Add to macro environment
         let binding = self.lisp.cons(name, transformer)?;
@@ -1636,6 +1645,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Return unspecified value
         Ok(self.lisp.nil()?)
+    }
+
+    /// Expand a transformer expression if it's not already a lambda.
+    /// 
+    /// This allows macros like `syntax-rules` to be used to define other macros.
+    /// If the expression is already a lambda, it's returned as-is to avoid
+    /// expanding pattern variables in the lambda body.
+    pub(super) fn expand_transformer_if_needed(&mut self, transformer_expr: ArenaIndex) -> EvalResult {
+        if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
+            let head = self.lisp.car(transformer_expr)?;
+            if self.lisp.symbol_matches(head, "lambda")? {
+                // Already a lambda - use as-is (don't expand body)
+                Ok(transformer_expr)
+            } else {
+                // Not a lambda - expand it (e.g., syntax-rules call)
+                self.expand(transformer_expr)
+            }
+        } else {
+            Ok(transformer_expr)
+        }
     }
 
     /// Parse a transformer expression (lambda (x) ...)

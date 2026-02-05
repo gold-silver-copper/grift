@@ -7,7 +7,7 @@ use serial_test::serial;
 fn test_peek_poke() {
     reset_mock_hardware();
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
@@ -25,7 +25,7 @@ fn test_peek_poke() {
 fn test_peek_poke_32() {
     reset_mock_hardware();
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
@@ -43,7 +43,7 @@ fn test_peek_poke_32() {
 fn test_gpio_read_write() {
     reset_mock_hardware();
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
@@ -61,7 +61,7 @@ fn test_gpio_read_write() {
 fn test_gpio_bit_operations() {
     reset_mock_hardware();
     
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
@@ -95,7 +95,7 @@ fn test_gpio_bit_operations() {
 
 #[test]
 fn test_bit_set() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
@@ -114,7 +114,7 @@ fn test_bit_set() {
 
 #[test]
 fn test_bit_extract() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     
@@ -127,7 +127,7 @@ fn test_bit_extract() {
 
 #[test]
 fn test_bit_insert() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     register_embedded_natives(&mut eval).unwrap();
     

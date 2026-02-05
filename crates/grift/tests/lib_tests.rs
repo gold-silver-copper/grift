@@ -12,7 +12,7 @@ fn eval_check<const N: usize>(_lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &
 
 #[test]
 fn test_basic_arithmetic() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval_check(&lisp, &mut eval, "(+ 1 2 3)");
@@ -27,7 +27,7 @@ fn test_basic_arithmetic() {
 
 #[test]
 fn test_define_and_call() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval_check(&lisp, &mut eval, "(define (square x) (* x x))");
@@ -37,7 +37,7 @@ fn test_define_and_call() {
 
 #[test]
 fn test_factorial() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval_check(&lisp, &mut eval, "(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))");
@@ -47,7 +47,7 @@ fn test_factorial() {
 
 #[test]
 fn test_list_operations() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Test cons
@@ -65,7 +65,7 @@ fn test_list_operations() {
 
 #[test]
 fn test_closures() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval_check(&lisp, &mut eval, "(define (make-adder n) (lambda (x) (+ x n)))");
@@ -76,7 +76,7 @@ fn test_closures() {
 
 #[test]
 fn test_booleans() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Only #f is false
@@ -93,7 +93,7 @@ fn test_booleans() {
 
 #[test]
 fn test_strings() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval_check(&lisp, &mut eval, "(string-length \"hello\")");
@@ -105,7 +105,7 @@ fn test_strings() {
 
 #[test]
 fn test_gc_control() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // GC control functions should work
