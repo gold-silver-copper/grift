@@ -728,3 +728,110 @@
      ;; Exception handling will be added when the infrastructure is available.
      (begin body ...))))
 
+;; ============================================================
+;; syntax-rules as Procedural Macro (Phase 3 - Migration)
+;; ============================================================
+
+;; This defines syntax-rules using syntax-case, allowing the native Rust
+;; implementation to be removed. This is the key step in the migration
+;; from native Rust syntax-rules to self-hosted Scheme.
+;;
+;; NOTE: This definition must come AFTER all other macros that use
+;; syntax-rules, since those need the native implementation during bootstrap.
+;; Once loaded, this version shadows the native implementation.
+
+;; syntax-error - report compile-time errors from macros
+;; This is needed by syntax-rules for the syntax-error template support.
+(define-syntax syntax-error
+  (lambda (x)
+    (syntax-case x ()
+      ;; Extended internal syntax which provides the original form
+      ;; as the first operand, for improved error reporting.
+      ((_ (keyword . operands) message arg ...)
+       (string? (syntax->datum #'message))
+       #'(error message arg ...))
+      ;; Standard R7RS syntax - message and optional irritants
+      ((_ message arg ...)
+       (string? (syntax->datum #'message))
+       #'(error message arg ...)))))
+
+;; syntax-rules - pattern-based macro transformer
+;;
+;; R7RS syntax:
+;;   (syntax-rules (literal ...) clause ...)
+;;   (syntax-rules ellipsis (literal ...) clause ...)
+;;   (syntax-rules (literal ...) docstring clause ...)
+;;   (syntax-rules ellipsis (literal ...) docstring clause ...)
+;;
+;; Each clause is: ((keyword . pattern) template)
+;;
+;; This implementation transforms syntax-rules into a lambda that uses
+;; syntax-case for pattern matching. This is the standard approach used
+;; by mature Scheme implementations like Guile and Racket.
+(define-syntax syntax-rules
+  (lambda (xx)
+    (define (expand-clause clause)
+      ;; Convert a syntax-rules clause into a syntax-case clause.
+      (syntax-case clause (syntax-error)
+        ;; If the template is a syntax-error form, use the extended
+        ;; internal syntax, which adds the original form as the first
+        ;; operand for improved error reporting.
+        (((keyword . pattern) (syntax-error message arg ...))
+         (string? (syntax->datum #'message))
+         #'((dummy . pattern) #'(syntax-error (dummy . pattern) message arg ...)))
+        ;; Normal case
+        (((keyword . pattern) template)
+         #'((dummy . pattern) #'template))))
+    (define (expand-syntax-rules dots keys docstrings clauses)
+      (with-syntax
+          (((k ...) keys)
+           ((docstring ...) docstrings)
+           ((((keyword . pattern) template) ...) clauses)
+           ((clause ...) (map expand-clause clauses)))
+        (with-syntax
+            ((form #'(lambda (x)
+                       docstring ...        ; optional docstring
+                       (syntax-case x (k ...)
+                         clause ...))))
+          (if dots
+              (with-syntax ((dots dots))
+                #'(with-ellipsis dots form))
+              #'form))))
+    (syntax-case xx ()
+      ;; Basic form: (syntax-rules (k ...) clause ...)
+      ((_ (k ...) ((keyword . pattern) template) ...)
+       (expand-syntax-rules #f #'(k ...) #'() #'(((keyword . pattern) template) ...)))
+      ;; With docstring: (syntax-rules (k ...) docstring clause ...)
+      ((_ (k ...) docstring ((keyword . pattern) template) ...)
+       (string? (syntax->datum #'docstring))
+       (expand-syntax-rules #f #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...)))
+      ;; Custom ellipsis: (syntax-rules dots (k ...) clause ...)
+      ((_ dots (k ...) ((keyword . pattern) template) ...)
+       (identifier? #'dots)
+       (expand-syntax-rules #'dots #'(k ...) #'() #'(((keyword . pattern) template) ...)))
+      ;; Custom ellipsis with docstring
+      ((_ dots (k ...) docstring ((keyword . pattern) template) ...)
+       (and (identifier? #'dots) (string? (syntax->datum #'docstring)))
+       (expand-syntax-rules #'dots #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...))))))
+
+;; define-syntax-rule - convenience macro for single-clause syntax-rules
+;;
+;; (define-syntax-rule (name . pattern) template)
+;; is equivalent to:
+;; (define-syntax name
+;;   (syntax-rules ()
+;;     ((_ . pattern) template)))
+(define-syntax define-syntax-rule
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (name . pattern) template)
+       #'(define-syntax name
+           (syntax-rules ()
+             ((_ . pattern) template))))
+      ((_ (name . pattern) docstring template)
+       (string? (syntax->datum #'docstring))
+       #'(define-syntax name
+           (syntax-rules ()
+             docstring
+             ((_ . pattern) template)))))))
+
