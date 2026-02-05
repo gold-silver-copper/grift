@@ -132,7 +132,7 @@ fn test_peroxide_r5rs_documentation() {
     println!("  - List operations");
     println!("  - Numeric operations");
     println!("  - Quoting and quasiquoting");
-    println!("  - Macros (define-syntax, syntax-rules)");
+    println!("  - Macros (define-syntax, syntax-case)");
     println!("  - Continuations (call/cc, dynamic-wind)");
     println!("  - And more...");
 }

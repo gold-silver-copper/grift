@@ -195,8 +195,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// ```scheme
     /// (define-syntax test
-    ///   (syntax-rules ()
-    ///     ((test x) (let ((x 1)) x))))
+    ///   (lambda (stx)
+    ///     (syntax-case stx ()
+    ///       ((test x) (syntax (let ((x 1)) x))))))
     /// (let ((x 2)) (test x))  ; returns 1, not 2
     /// ```
     pub fn bound_identifier_eq(

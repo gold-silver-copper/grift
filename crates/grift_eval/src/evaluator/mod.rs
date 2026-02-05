@@ -4,7 +4,7 @@
 //! - `core.rs`: Core evaluation logic (constructor, GC, environment, trampoline)
 //! - `builtins.rs`: Builtin function implementations
 //! - `forms.rs`: Special form handling (continuations, let, case, do, etc.)
-//! - `expand.rs`: Macro expansion (define-syntax, syntax-rules)
+//! - `expand.rs`: Macro expansion (define-syntax, syntax-case)
 
 mod core;
 mod builtins;
