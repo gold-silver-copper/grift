@@ -919,7 +919,130 @@ If some edge cases don't work in Scheme:
 
 ---
 
-## Appendix A: Related Forms
+## Appendix A: Prerequisites
+
+Before implementing the new `syntax-rules` definition, the following features must be available:
+
+### Required Special Forms (Already Implemented)
+
+#### 1. `syntax-case`
+- **Type**: Special form (implemented in Rust)
+- **Location**: `crates/grift_eval/src/evaluator/forms.rs::step_eval_syntax_case()`
+- **Purpose**: Pattern matching for procedural macros
+- **Status**: ✅ Implemented
+
+#### 2. `define-syntax`
+- **Type**: Special form (implemented in Rust)
+- **Location**: `crates/grift_eval/src/evaluator/expand.rs::expand_define_syntax()`
+- **Purpose**: Define macro transformers
+- **Status**: ✅ Implemented
+
+### Required Builtins (Already Implemented)
+
+The new `syntax-rules` implementation depends on these builtin functions:
+
+#### 1. `identifier?`
+- **Type**: Builtin predicate
+- **Location**: `crates/grift_eval/src/evaluator/builtins.rs`
+- **Signature**: `(identifier? x) -> boolean`
+- **Purpose**: Check if a syntax object is an identifier
+- **Status**: ✅ Implemented
+
+#### 2. `string?`
+- **Type**: Builtin predicate
+- **Location**: `crates/grift_eval/src/evaluator/builtins.rs`
+- **Signature**: `(string? x) -> boolean`
+- **Purpose**: Check if a value is a string
+- **Status**: ✅ Implemented
+
+#### 3. `syntax->datum`
+- **Type**: Builtin conversion
+- **Signature**: `(syntax->datum syntax-obj) -> datum`
+- **Purpose**: Extract underlying datum from syntax object
+- **Status**: ✅ Implemented
+
+#### 4. `map`
+- **Type**: Standard library function
+- **Signature**: `(map proc list) -> list`
+- **Purpose**: Apply function to each element of list
+- **Status**: ✅ Implemented
+
+### Required Helper Macros
+
+#### 1. `with-syntax` (Special Form Preferred)
+
+The implementation uses `with-syntax` for binding pattern variables. This can be either:
+
+**Option A**: Special form (current implementation)
+- **Location**: `crates/grift_eval/src/evaluator/macros.scm`
+- **Status**: ✅ Implemented as special form
+
+**Option B**: Macro definition (fallback)
+```scheme
+(define-syntax with-syntax
+  (syntax-rules ()
+    ((with-syntax ((pattern expr) ...) body ...)
+     (syntax-case (list expr ...) ()
+       ((pattern ...) (begin body ...))))))
+```
+
+#### 2. `with-ellipsis` (Optional)
+
+Required only if custom ellipsis identifiers are supported:
+
+**Status**: ⚠️ **May need to be implemented**
+
+If not already present, add to `macros.scm`:
+```scheme
+(define-syntax with-ellipsis
+  (syntax-rules ()
+    ((with-ellipsis ellipsis-id body)
+     ;; Implementation depends on how ellipsis is tracked
+     ;; May require special form support
+     body)))
+```
+
+**Alternative**: If `with-ellipsis` is too complex, remove custom ellipsis support from the first three patterns of `syntax-rules` and only support the basic form.
+
+### Verification Checklist
+
+Before starting the migration, verify these are working:
+
+```scheme
+;; Test 1: syntax-case works
+(define-syntax test-syntax-case
+  (lambda (x)
+    (syntax-case x ()
+      ((_ a b) #'(list a b)))))
+
+(test-syntax-case 1 2)  ; Should return (1 2)
+
+;; Test 2: identifier? works
+(identifier? #'foo)     ; Should return #t
+
+;; Test 3: string? works
+(string? "hello")       ; Should return #t
+
+;; Test 4: syntax->datum works
+(syntax->datum #'(a b c))  ; Should return (a b c)
+
+;; Test 5: map works
+(map (lambda (x) (+ x 1)) '(1 2 3))  ; Should return (2 3 4)
+
+;; Test 6: with-syntax works
+(define-syntax test-with-syntax
+  (lambda (x)
+    (with-syntax ((a #'1) (b #'2))
+      #'(+ a b))))
+
+(test-with-syntax)  ; Should expand to (+ 1 2) and return 3
+```
+
+If all tests pass, the prerequisites are satisfied.
+
+---
+
+## Appendix B: Related Forms
 
 The following forms depend on or relate to `syntax-rules`:
 
@@ -938,16 +1061,17 @@ The following forms depend on or relate to `syntax-rules`:
 
 ### `with-syntax` (Depends on `syntax-case`)
 - Helper macro for procedural macros
-- No changes needed
+- Required by new `syntax-rules` implementation
+- Must be implemented before migration
 
 ### `with-ellipsis` (Custom ellipsis identifier)
 - Used when `syntax-rules` has custom ellipsis
 - Referenced in new implementation
-- Verify it's implemented!
+- Verify it's implemented or remove custom ellipsis support
 
 ---
 
-## Appendix B: Performance Considerations
+## Appendix C: Performance Considerations
 
 ### Macro Expansion Timing
 
@@ -980,7 +1104,7 @@ If macro expansion performance becomes critical:
 
 ---
 
-## Appendix C: Scheme Code Walkthrough
+## Appendix D: Scheme Code Walkthrough
 
 ### Example Expansion
 
@@ -1109,7 +1233,7 @@ When user writes `(when #t (display "hi"))`, the evaluator:
 
 ---
 
-## Appendix D: FAQ
+## Appendix E: FAQ
 
 ### Q: Why remove a working implementation?
 
