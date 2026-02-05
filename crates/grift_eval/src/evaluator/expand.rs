@@ -119,7 +119,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Allocates 2 arena slots: one for the new mark, one for the cons cell
     pub fn mark_syntax(&mut self, stx: ArenaIndex) -> EvalResult {
-        let (expr, marks, subst) = self.lisp.syntax_parts(stx)?;
+        let (expr, marks, subst, lex_env) = self.lisp.syntax_parts_with_env(stx)?;
 
         // Generate fresh mark
         let new_mark = self.gensym_simple()?;
@@ -127,8 +127,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Add to marks list (prepend for efficiency)
         let new_marks = self.lisp.cons(new_mark, marks)?;
 
-        // Create new syntax object with updated marks
-        self.lisp.syntax(expr, new_marks, subst).map_err(Into::into)
+        // Create new syntax object with updated marks, preserving lexical environment
+        self.lisp.syntax_with_env(expr, new_marks, subst, lex_env).map_err(Into::into)
     }
 
     /// Check if two marks lists are equal
@@ -231,7 +231,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Resolve an identifier to its binding in the current environment
     ///
     /// This function looks up an identifier in the substitution environment
-    /// associated with the syntax object, or in the global environment.
+    /// associated with the syntax object, then in its captured lexical environment,
+    /// and finally in the global environment.
     ///
     /// # Arguments
     ///
@@ -241,16 +242,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// `Some(binding)` if the identifier is bound, `None` if unbound
     fn resolve_identifier(&self, id: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
-        // If it's a syntax object, check its substitution environment first
+        // If it's a syntax object, check its substitution environment first,
+        // then its captured lexical environment
         if let Value::Syntax { .. } = self.lisp.get(id)? {
-            let (name, _marks, subst) = self.lisp.syntax_parts(id)?;
+            let (name, _marks, subst, lex_env) = self.lisp.syntax_parts_with_env(id)?;
             
-            // Check substitution environment
+            // 1. Check substitution environment (explicit renames)
             if let Some(binding) = self.lookup_in_subst(name, subst)? {
                 return Ok(Some(binding));
             }
             
-            // Fall through to check global environment using the unwrapped name
+            // 2. Check captured lexical environment (lexical scope preservation)
+            if let Some(binding) = self.lookup_in_env(name, lex_env)? {
+                return Ok(Some(binding));
+            }
+            
+            // 3. Fall through to check global environment
             return self.lookup_in_env(name, self.global_env);
         }
         
@@ -261,7 +268,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Look up a name in a substitution environment
     ///
     /// The substitution environment is an alist of (name . binding) pairs.
-    fn lookup_in_subst(
+    pub(super) fn lookup_in_subst(
         &self,
         name: ArenaIndex,
         subst: ArenaIndex,
@@ -870,6 +877,209 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Other atoms pass through unchanged
             _ => Ok(template),
         }
+    }
+    
+    /// Transcribe a template with matched bindings, capturing lexical environment
+    /// for free variables.
+    ///
+    /// This version creates syntax objects with captured lexical environment
+    /// for identifiers that are:
+    /// 1. Not pattern variables
+    /// 2. Bound in the current lexical environment
+    ///
+    /// This enables lexically-scoped syntax objects as required by R6RS.
+    ///
+    /// NOTE: This function is not currently used but provides infrastructure
+    /// for future implementation of macro transformer lexical capture.
+    #[allow(dead_code)]
+    pub(super) fn transcribe_template_with_env(
+        &mut self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(template)? {
+            Value::Symbol(_) => {
+                self.transcribe_symbol_with_env(template, bindings, renames, def_env, lex_env)
+            }
+
+            Value::Nil => Ok(self.lisp.nil()?),
+
+            Value::Cons { .. } => {
+                self.transcribe_list_with_env(template, bindings, renames, def_env, lex_env)
+            }
+            
+            // Syntax objects: preserve their existing context
+            Value::Syntax { .. } => Ok(template),
+
+            // Other atoms pass through unchanged
+            _ => Ok(template),
+        }
+    }
+    
+    /// Transcribe a symbol, potentially wrapping it in a syntax object with
+    /// captured lexical environment.
+    #[allow(dead_code)]
+    fn transcribe_symbol_with_env(
+        &mut self,
+        sym: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: ArenaIndex,
+    ) -> EvalResult {
+        // 1. Check if it's a pattern variable
+        if let Some(val) = self.bindings_lookup(bindings, sym)? {
+            return Ok(val);
+        }
+
+        // 2. Check if already renamed
+        let renamed = self.rename_lookup(sym, renames)?;
+        if !self.symbols_eq(renamed, sym)? {
+            return Ok(renamed);
+        }
+
+        // 3. Check if bound in the current lexical environment
+        // If so, wrap it in a syntax object that captures that environment
+        if self.env_bound_anywhere(lex_env, sym)? {
+            let nil = self.lisp.nil()?;
+            return self.lisp.syntax_with_env(sym, nil, nil, lex_env).map_err(Into::into);
+        }
+
+        // 4. Check if bound in macro's definition environment
+        // If so, keep original (it refers to macro's binding)
+        if self.env_bound_anywhere(def_env, sym)? {
+            return Ok(sym);
+        }
+
+        // 5. Otherwise, it's introduced by the macro - keep as-is
+        Ok(sym)
+    }
+    
+    /// Transcribe a list with lexical environment capture.
+    #[allow(dead_code)]
+    fn transcribe_list_with_env(
+        &mut self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: ArenaIndex,
+    ) -> EvalResult {
+        let car = self.lisp.car(template)?;
+        let cdr = self.lisp.cdr(template)?;
+
+        // Check for ellipsis
+        if self.has_ellipsis(cdr)? {
+            return self.transcribe_ellipsis_with_env(car, cdr, bindings, renames, def_env, lex_env);
+        }
+
+        // Check for binding forms that need special handling
+        if self.is_binding_keyword(car)? {
+            return self.transcribe_binding_form_with_env(
+                template, bindings, renames, def_env, lex_env
+            );
+        }
+
+        // Regular list: transcribe each element iteratively
+        let mut elements = [ArenaIndex::new(0); 128];
+        let mut count = 0;
+        let mut current = template;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, template));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            
+            current = self.lisp.cdr(current)?;
+            
+            // Check if we've hit a special form
+            if count > 0 {
+                if let Value::Cons { .. } = self.lisp.get(current)? {
+                    let next_car = self.lisp.car(current)?;
+                    let next_cdr = self.lisp.cdr(current)?;
+                    
+                    if self.has_ellipsis(next_cdr)? || self.is_binding_keyword(next_car)? {
+                        let rest_transcribed = self.transcribe_template_with_env(current, bindings, renames, def_env, lex_env)?;
+                        let mut result = rest_transcribed;
+                        
+                        for i in (0..count).rev() {
+                            let transcribed = self.transcribe_template_with_env(elements[i], bindings, renames, def_env, lex_env)?;
+                            result = self.lisp.cons(transcribed, result)?;
+                        }
+                        
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+        
+        // Transcribe all collected elements
+        for i in 0..count {
+            elements[i] = self.transcribe_template_with_env(elements[i], bindings, renames, def_env, lex_env)?;
+        }
+        
+        // Rebuild the list from the end
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            self.transcribe_template_with_env(current, bindings, renames, def_env, lex_env)?
+        };
+        
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
+    }
+    
+    /// Transcribe ellipsis with lexical environment capture
+    ///
+    /// NOTE: The `lex_env` parameter is not currently used. Ellipsis transcription
+    /// expands pattern variables which already have their values bound. The lexical
+    /// environment is not needed for ellipsis expansion itself - it would only be
+    /// relevant for free variables in the repeated template, which are handled by
+    /// the recursive call to transcribe_template_with_env.
+    #[allow(dead_code)]
+    fn transcribe_ellipsis_with_env(
+        &mut self,
+        before: ArenaIndex,
+        after: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        _lex_env: ArenaIndex,
+    ) -> EvalResult {
+        // Delegate to standard transcribe_ellipsis - the lexical environment
+        // would only matter for free variables in the template, which is a
+        // future enhancement
+        self.transcribe_ellipsis(before, after, bindings, renames, def_env)
+    }
+    
+    /// Transcribe binding form with lexical environment capture
+    ///
+    /// NOTE: The `lex_env` parameter is not currently used. Binding forms
+    /// (lambda, let, etc.) create new scopes, and the lexical environment
+    /// capture only affects free variables. The current implementation
+    /// delegates to standard transcribe_binding_form which handles hygiene
+    /// via gensym renaming. Full lexical capture in binding forms is a
+    /// future enhancement.
+    #[allow(dead_code)]
+    fn transcribe_binding_form_with_env(
+        &mut self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        _lex_env: ArenaIndex,
+    ) -> EvalResult {
+        // Delegate to standard transcribe_binding_form - lexical capture
+        // in binding forms is a future enhancement
+        self.transcribe_binding_form(template, bindings, renames, def_env)
     }
 
     /// Transcribe a symbol in template
@@ -1671,13 +1881,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// All macro transformers are procedural (lambda-based) using syntax-case.
     pub(super) fn parse_transformer(&mut self, expr: ArenaIndex) -> EvalResult {
+        // Use global environment for backward compatibility
+        self.parse_transformer_with_env(expr, self.global_env)
+    }
+    
+    /// Parse a transformer expression with a specific lexical environment.
+    /// 
+    /// This variant allows macro transformers to capture lexical variables
+    /// from their definition site, enabling tests like:
+    /// ```scheme
+    /// (let ((val 123))
+    ///   (define-syntax test-macro
+    ///     (lambda (_) val))  ; val should be resolved from let binding
+    ///   (test-macro))
+    /// ```
+    pub(super) fn parse_transformer_with_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
         let head = self.lisp.car(expr)?;
 
         // Check for lambda (procedural transformer)
         if self.lisp.symbol_matches(head, "lambda")? {
-            // Evaluate the lambda to create a closure
-            // The lambda will be called with the syntax object as its argument
-            let lambda_result = self.eval_lambda_for_transformer(expr)?;
+            // Evaluate the lambda to create a closure with the given environment
+            let lambda_result = self.eval_lambda_for_transformer_with_env(expr, env)?;
             return Ok(lambda_result);
         }
 
@@ -1688,7 +1912,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate a lambda expression to create a transformer closure
     /// 
     /// This creates a Lambda value that can be invoked as a procedural macro.
+    #[allow(dead_code)]
     fn eval_lambda_for_transformer(&self, lambda_expr: ArenaIndex) -> EvalResult {
+        self.eval_lambda_for_transformer_with_env(lambda_expr, self.global_env)
+    }
+    
+    /// Evaluate a lambda expression to create a transformer closure with a specific environment.
+    fn eval_lambda_for_transformer_with_env(&self, lambda_expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
         let rest = self.lisp.cdr(lambda_expr)?;
         let params = self.lisp.car(rest)?;
         let body_list = self.lisp.cdr(rest)?;
@@ -1707,8 +1937,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.lisp.cons(begin, body_list)?
         };
         
-        // Create Lambda value using the proper API (params, body, env)
-        self.lisp.lambda(params, body, self.global_env).map_err(Into::into)
+        // Create Lambda value with the provided lexical environment
+        self.lisp.lambda(params, body, env).map_err(Into::into)
     }
 
     /// Handle (let-syntax ((name transformer) ...) body ...)
@@ -1898,27 +2128,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         template_id: ArenaIndex,
         datum: ArenaIndex,
     ) -> EvalResult {
-        // Get the context from template_id
-        let (marks, subst) = match self.lisp.get(template_id)? {
-            Value::Syntax { context, .. } => {
-                let marks = self.lisp.car(context)?;
-                let subst = self.lisp.cdr(context)?;
-                (marks, subst)
+        // Get the context from template_id (including lexical environment)
+        let (marks, subst, lex_env) = match self.lisp.get(template_id)? {
+            Value::Syntax { .. } => {
+                let (_, marks, subst, lex_env) = self.lisp.syntax_parts_with_env(template_id)?;
+                (marks, subst, lex_env)
             }
             // If template_id is just a symbol, use empty context
             Value::Symbol(_) => {
                 let nil = self.lisp.nil()?;
-                (nil, nil)
+                (nil, nil, nil)
             }
             _ => {
                 // Non-identifier - use empty context
                 let nil = self.lisp.nil()?;
-                (nil, nil)
+                (nil, nil, nil)
             }
         };
 
-        // Recursively wrap the datum
-        self.datum_to_syntax_with_context(datum, marks, subst)
+        // Recursively wrap the datum with full context including lexical environment
+        self.datum_to_syntax_with_context(datum, marks, subst, lex_env)
     }
 
     /// Helper to wrap a datum with a given context (iterative)
@@ -1929,12 +2158,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         datum: ArenaIndex,
         marks: ArenaIndex,
         subst: ArenaIndex,
+        lex_env: ArenaIndex,
     ) -> EvalResult {
         // Handle simple cases directly
         match self.lisp.get(datum)? {
-            // Symbols become syntax objects
+            // Symbols become syntax objects with captured lexical environment
             Value::Symbol(_) => {
-                return self.lisp.syntax(datum, marks, subst).map_err(Into::into);
+                return self.lisp.syntax_with_env(datum, marks, subst, lex_env).map_err(Into::into);
             }
             Value::Cons { .. } => {
                 // Process list iteratively
@@ -1953,8 +2183,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Buffer full - fall back to recursive for remainder
                 let car = self.lisp.car(current)?;
                 let cdr = self.lisp.cdr(current)?;
-                let wrapped_car = self.datum_to_syntax_with_context(car, marks, subst)?;
-                let wrapped_cdr = self.datum_to_syntax_with_context(cdr, marks, subst)?;
+                let wrapped_car = self.datum_to_syntax_with_context(car, marks, subst, lex_env)?;
+                let wrapped_cdr = self.datum_to_syntax_with_context(cdr, marks, subst, lex_env)?;
                 let tail = self.lisp.cons(wrapped_car, wrapped_cdr)?;
                 
                 // Build result from collected elements
@@ -1972,14 +2202,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Process all collected elements
         for i in 0..count {
-            elements[i] = self.datum_to_syntax_with_context(elements[i], marks, subst)?;
+            elements[i] = self.datum_to_syntax_with_context(elements[i], marks, subst, lex_env)?;
         }
         
         // Handle tail
         let tail = if self.lisp.get(current)?.is_nil() {
             self.lisp.nil()?
         } else {
-            self.datum_to_syntax_with_context(current, marks, subst)?
+            self.datum_to_syntax_with_context(current, marks, subst, lex_env)?
         };
         
         // Rebuild list
@@ -2025,6 +2255,121 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Reverse the list to maintain order
         self.reverse_list(result)
+    }
+    
+    /// Wrap a datum with the given lexical environment to create a lexically-scoped syntax object.
+    ///
+    /// This function wraps symbols in syntax objects that capture the provided lexical
+    /// environment. This is essential for creating syntax templates (#') that preserve
+    /// their creation-site bindings.
+    ///
+    /// For lists, it recursively wraps all symbols in the tree.
+    /// For non-symbol atoms, they pass through unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `datum` - The datum to wrap
+    /// * `lex_env` - The lexical environment to capture
+    ///
+    /// # Returns
+    ///
+    /// A value where all symbols have been wrapped as syntax objects with the captured environment.
+    #[allow(dead_code)]
+    pub(super) fn wrap_with_lexical_env(
+        &mut self,
+        datum: ArenaIndex,
+        lex_env: ArenaIndex,
+    ) -> EvalResult {
+        let nil = self.lisp.nil()?;
+        
+        match self.lisp.get(datum)? {
+            // Symbols get wrapped as syntax objects with captured environment
+            Value::Symbol(_) => {
+                self.lisp.syntax_with_env(datum, nil, nil, lex_env).map_err(Into::into)
+            }
+            
+            // Syntax objects already have context - update their lexical environment
+            // but keep their existing marks and substitutions.
+            // 
+            // PRECEDENCE RULE: If the syntax object already has a non-nil lexical
+            // environment, we preserve it rather than replacing with lex_env.
+            // This ensures that syntax objects maintain their original creation-site
+            // scope even when passed through multiple wrapping operations.
+            // This matches R6RS semantics where the innermost scope wins.
+            Value::Syntax { .. } => {
+                let (expr, marks, subst, existing_env) = self.lisp.syntax_parts_with_env(datum)?;
+                // Preserve existing env if present (creation-site takes precedence)
+                let final_env = if self.lisp.get(existing_env)?.is_nil() {
+                    lex_env
+                } else {
+                    existing_env
+                };
+                self.lisp.syntax_with_env(expr, marks, subst, final_env).map_err(Into::into)
+            }
+            
+            // Lists: recursively wrap each element
+            Value::Cons { .. } => {
+                self.wrap_list_with_lexical_env(datum, lex_env)
+            }
+            
+            // Other atoms pass through unchanged
+            _ => Ok(datum)
+        }
+    }
+    
+    /// Helper to wrap a list recursively with lexical environment
+    #[allow(dead_code)]
+    fn wrap_list_with_lexical_env(
+        &mut self,
+        list: ArenaIndex,
+        lex_env: ArenaIndex,
+    ) -> EvalResult {
+        // Collect list elements
+        let mut elements = [ArenaIndex::new(0); 64];
+        let mut count = 0;
+        let mut current = list;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                // Buffer overflow - fall back to recursive for remainder
+                let car = self.lisp.car(current)?;
+                let cdr = self.lisp.cdr(current)?;
+                let wrapped_car = self.wrap_with_lexical_env(car, lex_env)?;
+                let wrapped_cdr = self.wrap_with_lexical_env(cdr, lex_env)?;
+                let tail = self.lisp.cons(wrapped_car, wrapped_cdr)?;
+                
+                // Build result from collected elements
+                let mut result = tail;
+                for i in (0..count).rev() {
+                    result = self.lisp.cons(elements[i], result)?;
+                }
+                return Ok(result);
+            }
+            
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Wrap all collected elements
+        for i in 0..count {
+            elements[i] = self.wrap_with_lexical_env(elements[i], lex_env)?;
+        }
+        
+        // Handle tail
+        let tail = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            self.wrap_with_lexical_env(current, lex_env)?
+        };
+        
+        // Rebuild list
+        let mut result = tail;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 }
 

@@ -1340,15 +1340,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This allows macros to be defined during evaluation rather than
     /// only during pre-expansion.
-    pub(super) fn step_eval_define_syntax(&mut self, args: ArenaIndex, _env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+    pub(super) fn step_eval_define_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let name = self.lisp.car(args)?;
         let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
         // Expand the transformer expression if it's not already a lambda
         let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
         
-        // Parse the transformer
-        let transformer = self.parse_transformer(final_transformer_expr)?;
+        // Parse the transformer with the current lexical environment
+        // This allows macro transformers to capture lexical variables
+        let transformer = self.parse_transformer_with_env(final_transformer_expr, env)?;
         
         // Add to macro environment
         let binding = self.lisp.cons(name, transformer)?;
@@ -1381,7 +1382,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Expand the transformer expression if it's not already a lambda
             let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
             
-            let transformer = self.parse_transformer(final_transformer_expr)?;
+            // Parse with current lexical environment to capture lexical variables
+            let transformer = self.parse_transformer_with_env(final_transformer_expr, env)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
             
@@ -1582,6 +1584,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// The pattern bindings are stored under the special `#:pattern-bindings`
     /// key by `extend_env_with_bindings` when syntax-case matches.
+    ///
+    /// Note: For lexically-scoped syntax objects, the lexical environment
+    /// is currently stored in the syntax object structure but not yet
+    /// used during transcription to avoid breaking existing behavior.
     pub(super) fn step_eval_syntax(
         &mut self,
         args: ArenaIndex,
@@ -1594,6 +1600,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let bindings = self.get_pattern_bindings_from_env(env)?;
 
         // Transcribe the template with pattern bindings
+        // Note: Using standard transcribe_template for backward compatibility
         let empty_renames = self.lisp.nil()?;
         let result = self.transcribe_template(template, bindings, empty_renames, self.global_env)?;
 
