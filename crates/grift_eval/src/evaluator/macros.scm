@@ -749,20 +749,6 @@
 ;; Note: Custom ellipsis identifiers are not yet supported. 
 ;; This implementation handles the most common cases.
 
-;; Helper: Transform a single clause from syntax-rules format to syntax-case format
-;; Input:  ((keyword . pattern) template)
-;; Output: ((dummy . pattern) #'template)
-;;
-;; The keyword is replaced with 'dummy' because syntax-case already
-;; binds the first element from the input form.
-(define-syntax %sr-transform-clause
-  (lambda (stx)
-    (syntax-case stx ()
-      ((_ ((keyword . pattern) template))
-       ;; Build: ((dummy . pattern) #'template)
-       ;; We need to construct this at expansion time
-       #'(quote ((dummy . pattern) #'template))))))
-
 ;; syntax-rules macro
 ;; Transforms:
 ;;   (syntax-rules (lit ...) ((kw . pat) tmpl) ...)
@@ -770,6 +756,8 @@
 ;;   (lambda (x) (syntax-case x (lit ...) ((dummy . pat) #'tmpl) ...))
 ;;
 ;; Implementation uses helper macros to build the syntax-case clauses.
+;; The keyword is replaced with 'dummy' because syntax-case already
+;; binds the first element from the input form.
 
 ;; Helper to build single-clause syntax-rules
 (define-syntax %syntax-rules-1
