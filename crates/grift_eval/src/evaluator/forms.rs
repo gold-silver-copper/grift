@@ -1451,7 +1451,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// In syntax-case, pattern bindings are stored in the environment.
     /// Uses a gensym-style internal symbol `#:pattern-bindings` to avoid
     /// conflicts with user code.
-    fn get_pattern_bindings_from_env(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+    pub(super) fn get_pattern_bindings_from_env(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         // Look for #:pattern-bindings in env (internal gensym-style name)
         let key = self.lisp.symbol("#:pattern-bindings")?;
         let mut current = env;

@@ -2460,8 +2460,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         match self.lisp.get(datum)? {
             // Symbols: only wrap if bound in the LOCAL lexical environment
-            // (not globals or macros)
+            // (not globals, macros, or pattern variables)
             Value::Symbol(_) => {
+                // Check if this is a pattern variable - pattern variables should NOT be wrapped
+                // because they are meant to be substituted during template transcription
+                let pattern_bindings = self.get_pattern_bindings_from_env(lex_env)?;
+                if let Some(_) = self.bindings_lookup(pattern_bindings, datum)? {
+                    // This is a pattern variable - keep as-is for later substitution
+                    return Ok(datum);
+                }
+                
                 // Only wrap symbols that are bound locally (not in global env)
                 let bound_locally = self.env_bound_anywhere(lex_env, datum)? &&
                                    !self.env_bound_anywhere(self.global_env, datum)?;
