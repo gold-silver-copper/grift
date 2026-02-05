@@ -271,13 +271,9 @@ fn test_6_2_free_identifier_eq() {
 /// Test 7.1: Syntax Objects with Mutation
 ///
 /// Mutating a global variable to store a syntax object must preserve its scope.
-///
-/// NOTE: This test requires macro input expressions to carry their lexical context,
-/// which requires deeper changes to how macro expansion handles identifiers.
-/// The pattern variable `val` gets bound to `x`, but `x` from the caller's code
-/// doesn't carry the lexical scope where `x=333`.
+/// Macro input expressions now carry their lexical context, so pattern variables
+/// bound to identifiers preserve the call-site bindings.
 #[test]
-#[ignore = "requires macro input expressions to carry lexical context"]
 fn test_7_1_syntax_with_mutation() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -333,16 +329,16 @@ fn test_7_2_deep_nesting() {
 ///
 /// Recursive macros with captured syntax must maintain scope correctness.
 ///
-/// NOTE: This test is ignored because it triggers a stack overflow in macro expansion.
-/// This is a known limitation of the current macro expansion approach where recursive
-/// macros create deep expansion chains. Future work could address this by:
-/// 1. Implementing iterative macro expansion
-/// 2. Adding expansion depth limits
-/// 3. Tail-call optimization in macro expansion
+/// NOTE: This test hits the MAX_STACK_DEPTH (64) limit because recursive macro
+/// expansion creates deep call stacks. The actual macro logic is correct, but
+/// the evaluator's call stack limit prevents deep recursion. Future work could:
+/// 1. Increase MAX_STACK_DEPTH (requires more memory for stack frames)
+/// 2. Implement iterative macro expansion
+/// 3. Add tail-call optimization for macro expansion
 #[test]
-#[ignore = "recursive macro causes stack overflow - known limitation of expansion depth"]
+#[ignore = "recursive macro hits MAX_STACK_DEPTH limit of 64"]
 fn test_7_3_recursive_macro() {
-    let lisp: Lisp<30000> = Lisp::new();
+    let lisp: Lisp<60000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str(r#"

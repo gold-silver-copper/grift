@@ -700,6 +700,207 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
+    /// Syntax-aware pattern matching for syntax-case
+    ///
+    /// This is like `match_pattern`, but it preserves syntax objects when binding
+    /// pattern variables. This ensures that pattern variables bound to identifiers
+    /// preserve their lexical context (from the macro call site).
+    ///
+    /// The key difference from `match_pattern`:
+    /// - Pattern variables bind to the original syntax object, not the unwrapped datum
+    /// - Structure matching (car/cdr) looks through syntax wrappers
+    pub(crate) fn match_pattern_syntax(
+        &self,
+        pattern: ArenaIndex,
+        stx: ArenaIndex,
+        literals: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> Result<Option<ArenaIndex>, EvalError> {
+        // Get the underlying datum for structural matching
+        let expr = self.lisp.syntax_to_datum(stx)?;
+        
+        match self.lisp.get(pattern)? {
+            // Wildcard: matches anything, binds nothing
+            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "_")? => {
+                Ok(Some(bindings))
+            }
+
+            // Ellipsis symbol itself: error (shouldn't appear here)
+            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "...")? => {
+                Err(self.make_error(ErrorKind::SyntaxError, pattern)
+                    .with_message("misplaced ellipsis in pattern"))
+            }
+
+            // Literal keyword: must match exactly
+            Value::Symbol(_) if self.is_literal(pattern, literals)? => {
+                match self.lisp.get(expr)? {
+                    Value::Symbol(_) if self.symbols_eq(pattern, expr)? => {
+                        Ok(Some(bindings))
+                    }
+                    _ => Ok(None),
+                }
+            }
+
+            // Pattern variable: bind to the ORIGINAL syntax object (not unwrapped datum)
+            // This preserves lexical context for identifiers
+            Value::Symbol(_) => {
+                let new_bindings = self.bindings_extend(bindings, pattern, stx)?;
+                Ok(Some(new_bindings))
+            }
+
+            // Empty list: must match empty list
+            Value::Nil => {
+                if self.lisp.get(expr)?.is_nil() {
+                    Ok(Some(bindings))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            // List pattern
+            Value::Cons { .. } => {
+                self.match_list_pattern_syntax(pattern, stx, literals, bindings)
+            }
+
+            // Other constants: must be eqv?
+            _ => {
+                if self.lisp.eqv(pattern, expr)? {
+                    Ok(Some(bindings))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    /// Syntax-aware list pattern matching
+    fn match_list_pattern_syntax(
+        &self,
+        pattern: ArenaIndex,
+        stx: ArenaIndex,
+        literals: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> Result<Option<ArenaIndex>, EvalError> {
+        // Get the underlying datum for structural checks
+        let expr = self.lisp.syntax_to_datum(stx)?;
+        
+        let pat_car = self.lisp.car(pattern)?;
+        let pat_cdr = self.lisp.cdr(pattern)?;
+
+        // Check for ellipsis FIRST - ellipsis can match empty lists
+        if self.has_ellipsis(pat_cdr)? {
+            return self.match_ellipsis_pattern_syntax(
+                pat_car, pat_cdr, stx, literals, bindings
+            );
+        }
+        
+        // For non-ellipsis patterns, expression must be a non-empty list
+        if !matches!(self.lisp.get(expr)?, Value::Cons { .. }) {
+            return Ok(None);
+        }
+
+        // Get sub-expressions from the original stx to preserve syntax context
+        // If stx is a syntax object wrapping a list, get its parts
+        let (expr_car, expr_cdr) = match self.lisp.get(stx)? {
+            Value::Syntax { .. } => {
+                // Get car/cdr of the wrapped datum
+                let datum = self.lisp.syntax_to_datum(stx)?;
+                (self.lisp.car(datum)?, self.lisp.cdr(datum)?)
+            }
+            Value::Cons { .. } => {
+                (self.lisp.car(stx)?, self.lisp.cdr(stx)?)
+            }
+            _ => return Ok(None),
+        };
+
+        match self.match_pattern_syntax(pat_car, expr_car, literals, bindings)? {
+            Some(bindings1) => {
+                self.match_pattern_syntax(pat_cdr, expr_cdr, literals, bindings1)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Syntax-aware ellipsis pattern matching
+    fn match_ellipsis_pattern_syntax(
+        &self,
+        sub_pattern: ArenaIndex,
+        pat_cdr: ArenaIndex,
+        stx: ArenaIndex,
+        literals: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> Result<Option<ArenaIndex>, EvalError> {
+        // Get the underlying datum for structural checks
+        let expr = self.lisp.syntax_to_datum(stx)?;
+        
+        // Get the rest pattern after ...
+        let rest_pattern = match self.lisp.get(pat_cdr)? {
+            Value::Symbol(_) => self.lisp.nil()?,
+            Value::Cons { .. } => self.lisp.cdr(pat_cdr)?,
+            _ => self.lisp.nil()?,
+        };
+
+        // Count how many elements the rest pattern needs
+        let rest_len = self.pattern_min_length(rest_pattern, literals)?;
+
+        // Count expression length
+        let expr_len = self.list_length(expr)?;
+
+        if expr_len < rest_len {
+            return Ok(None);
+        }
+
+        let ellipsis_count = expr_len - rest_len;
+
+        // Collect pattern variables
+        let pattern_vars = self.collect_pattern_vars(sub_pattern, literals)?;
+
+        // Initialize accumulators
+        let mut var_accums = self.lisp.nil()?;
+        let mut pv_current = pattern_vars;
+        while let Value::Cons { .. } = self.lisp.get(pv_current)? {
+            let var = self.lisp.car(pv_current)?;
+            let empty = self.lisp.nil()?;
+            var_accums = self.bindings_extend(var_accums, var, empty)?;
+            pv_current = self.lisp.cdr(pv_current)?;
+        }
+
+        // Match ellipsis elements - get elements from the original stx to preserve syntax
+        let mut current = match self.lisp.get(stx)? {
+            Value::Syntax { .. } => expr,
+            _ => stx,
+        };
+        
+        for _ in 0..ellipsis_count {
+            let elem = self.lisp.car(current)?;
+            let empty = self.lisp.nil()?;
+
+            match self.match_pattern_syntax(sub_pattern, elem, literals, empty)? {
+                Some(elem_bindings) => {
+                    var_accums = self.merge_ellipsis_bindings(var_accums, elem_bindings)?;
+                }
+                None => return Ok(None),
+            }
+
+            current = self.lisp.cdr(current)?;
+        }
+
+        // Reverse accumulated lists and merge with bindings
+        let mut result = bindings;
+        let mut va_current = var_accums;
+        while let Value::Cons { .. } = self.lisp.get(va_current)? {
+            let pair = self.lisp.car(va_current)?;
+            let var = self.lisp.car(pair)?;
+            let vals = self.lisp.cdr(pair)?;
+            let reversed = self.reverse_list(vals)?;
+            result = self.bindings_extend(result, var, reversed)?;
+            va_current = self.lisp.cdr(va_current)?;
+        }
+
+        // Match rest pattern
+        self.match_pattern_syntax(rest_pattern, current, literals, result)
+    }
+
     /// Match a list pattern, handling ellipsis
     fn match_list_pattern(
         &self,
@@ -2250,7 +2451,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// # Returns
     ///
     /// A value where all symbols have been wrapped as syntax objects with the captured environment.
-    #[allow(dead_code)]
     pub(super) fn wrap_with_lexical_env(
         &mut self,
         datum: ArenaIndex,
@@ -2259,9 +2459,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let nil = self.lisp.nil()?;
         
         match self.lisp.get(datum)? {
-            // Symbols get wrapped as syntax objects with captured environment
+            // Symbols: only wrap if bound in the LOCAL lexical environment
+            // (not globals or macros)
             Value::Symbol(_) => {
-                self.lisp.syntax_with_env(datum, nil, nil, lex_env).map_err(Into::into)
+                // Only wrap symbols that are bound locally (not in global env)
+                let bound_locally = self.env_bound_anywhere(lex_env, datum)? &&
+                                   !self.env_bound_anywhere(self.global_env, datum)?;
+                if bound_locally {
+                    self.lisp.syntax_with_env(datum, nil, nil, lex_env).map_err(Into::into)
+                } else {
+                    // Keep symbol as-is (it's a global, macro keyword, or free identifier)
+                    Ok(datum)
+                }
             }
             
             // Syntax objects already have context - update their lexical environment
@@ -2294,7 +2503,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Helper to wrap a list recursively with lexical environment
-    #[allow(dead_code)]
     fn wrap_list_with_lexical_env(
         &mut self,
         list: ArenaIndex,

@@ -602,7 +602,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Symbol - variable lookup
             Value::Symbol(_) => {
                 let val = self.env_lookup(env, expr)?;
-                Ok(TrampolineState::Return { val })
+                // If the looked-up value is a syntax object, evaluate it
+                // This allows syntax objects returned from macros to resolve to their values
+                match self.lisp.get(val)? {
+                    Value::Syntax { .. } => {
+                        Ok(TrampolineState::Eval { expr: val, env })
+                    }
+                    _ => Ok(TrampolineState::Return { val })
+                }
             }
             
             // List - special form or function application
@@ -728,7 +735,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Variable bindings shadow macros, so only expand if not bound as a variable
             if !is_var_bound {
                 if let Some(transformer) = self.lookup_macro(car)? {
-                    let expanded = self.apply_macro(transformer, expr)?;
+                    // Wrap the input expression with lexical context before macro expansion
+                    // This enables macro input expressions to carry their call-site bindings
+                    let wrapped_expr = self.wrap_with_lexical_env(expr, env)?;
+                    let expanded = self.apply_macro(transformer, wrapped_expr)?;
                     // Continue evaluating the expanded form
                     return Ok(TrampolineState::Eval { expr: expanded, env });
                 }
