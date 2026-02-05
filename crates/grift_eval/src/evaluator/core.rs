@@ -602,14 +602,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Symbol - variable lookup
             Value::Symbol(_) => {
                 let val = self.env_lookup(env, expr)?;
-                // If the looked-up value is a syntax object, evaluate it
-                // This allows syntax objects returned from macros to resolve to their values
-                match self.lisp.get(val)? {
-                    Value::Syntax { .. } => {
-                        Ok(TrampolineState::Eval { expr: val, env })
-                    }
-                    _ => Ok(TrampolineState::Return { val })
-                }
+                // Return the looked-up value directly, even if it's a syntax object.
+                // This allows syntax objects to be passed as arguments to functions
+                // like bound-identifier=? that expect syntax object data.
+                Ok(TrampolineState::Return { val })
             }
             
             // List - special form or function application
