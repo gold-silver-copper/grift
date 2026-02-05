@@ -1274,7 +1274,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Transform internal defines at the start of a body to letrec
     /// 
     /// (define a 1) (define b 2) expr... -> (letrec ((a 1) (b 2)) expr...)
-    fn transform_internal_defines(&self, body_list: ArenaIndex) -> EvalResult {
+    pub(super) fn transform_internal_defines(&self, body_list: ArenaIndex) -> EvalResult {
         // Collect internal defines
         let mut defines = self.lisp.nil()?;
         let mut remaining = body_list;

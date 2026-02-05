@@ -8,6 +8,18 @@
 ;;; implementations for binding forms instead of the standard R7RS patterns.
 
 ;; ============================================================
+;; Runtime Functions (Required for Macros)
+;; ============================================================
+
+;; map - Apply a function to each element of a list
+;; This is required by the syntax-rules macro implementation.
+;; Defined early so it's available during macro expansion.
+(define (map f lst)
+  (if (null? lst)
+      '()
+      (cons (f (car lst)) (map f (cdr lst)))))
+
+;; ============================================================
 ;; Internal Helpers
 ;; ============================================================
 
@@ -701,47 +713,49 @@
 ;;
 ;; Implementation based on Guile's psyntax.scm.
 ;; The macro transforms syntax-rules into syntax-case for pattern matching.
-;;
-;; NOTE: This implementation avoids using `map` by using pure syntax-case
-;; pattern matching with ellipsis to transform all clauses at once.
-;; This enables the macro to be placed at the top of macros.scm without
-;; any runtime function dependencies.
+;; This implementation uses `map` for clause transformation.
 
 (define-syntax syntax-rules
   (lambda (xx)
+    (define (expand-clause clause)
+      ;; Convert a 'syntax-rules' clause into a 'syntax-case' clause.
+      (syntax-case clause (syntax-error)
+        ;; If the template is a 'syntax-error' form, use the extended
+        ;; internal syntax, which adds the original form as the first
+        ;; operand for improved error reporting.
+        (((keyword . pattern) (syntax-error message arg ...))
+         (string? (syntax->datum #'message))
+         #'((dummy . pattern) #'(syntax-error (dummy . pattern) message arg ...)))
+        ;; Normal case
+        (((keyword . pattern) template)
+         #'((dummy . pattern) #'template))))
+    (define (expand-syntax-rules dots keys docstrings clauses)
+      (with-syntax
+          (((k ...) keys)
+           ((docstring ...) docstrings)
+           ((((keyword . pattern) template) ...) clauses)
+           ((clause ...) (map expand-clause clauses)))
+        (with-syntax
+            ((form #'(lambda (x)
+                       docstring ...        ; optional docstring
+                       (syntax-case x (k ...)
+                         clause ...))))
+          (if dots
+              (with-syntax ((dots dots))
+                #'(with-ellipsis dots form))
+              #'form))))
     (syntax-case xx ()
-      ;; Basic form: (syntax-rules (literal ...) clause ...)
-      ;; Each clause is ((keyword . pattern) template)
-      ;; We transform to: (lambda (x) (syntax-case x (k ...) ((dummy . pattern) (syntax template)) ...))
       ((_ (k ...) ((keyword . pattern) template) ...)
-       (syntax (lambda (x)
-                 (syntax-case x (k ...)
-                   ((dummy . pattern) (syntax template)) ...))))
-      
-      ;; With docstring: (syntax-rules (literal ...) "doc" clause ...)
+       (expand-syntax-rules #f #'(k ...) #'() #'(((keyword . pattern) template) ...)))
       ((_ (k ...) docstring ((keyword . pattern) template) ...)
-       (string? (syntax->datum (syntax docstring)))
-       (syntax (lambda (x)
-                 docstring
-                 (syntax-case x (k ...)
-                   ((dummy . pattern) (syntax template)) ...))))
-      
-      ;; With custom ellipsis: (syntax-rules ellipsis (literal ...) clause ...)
+       (string? (syntax->datum #'docstring))
+       (expand-syntax-rules #f #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...)))
       ((_ dots (k ...) ((keyword . pattern) template) ...)
-       (identifier? (syntax dots))
-       (syntax (with-ellipsis dots
-                 (lambda (x)
-                   (syntax-case x (k ...)
-                     ((dummy . pattern) (syntax template)) ...)))))
-      
-      ;; With custom ellipsis and docstring
+       (identifier? #'dots)
+       (expand-syntax-rules #'dots #'(k ...) #'() #'(((keyword . pattern) template) ...)))
       ((_ dots (k ...) docstring ((keyword . pattern) template) ...)
-       (and (identifier? (syntax dots)) (string? (syntax->datum (syntax docstring))))
-       (syntax (with-ellipsis dots
-                 (lambda (x)
-                   docstring
-                   (syntax-case x (k ...)
-                     ((dummy . pattern) (syntax template)) ...))))))))
+       (and (identifier? #'dots) (string? (syntax->datum #'docstring)))
+       (expand-syntax-rules #'dots #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...))))))
 
 ;; ============================================================
 ;; Exception Handling (R7RS Section 4.2.7)

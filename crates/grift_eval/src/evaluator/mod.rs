@@ -72,4 +72,10 @@ pub struct Evaluator<'a, const N: usize> {
     /// Used during pattern matching and template transcription to
     /// recognize the ellipsis operator.
     current_ellipsis: ArenaIndex,
+    /// Saved continuation root for nested evaluations
+    /// 
+    /// When eval_for_macro creates a nested trampoline evaluation,
+    /// the outer continuation chain needs to remain rooted during GC.
+    /// This field holds the saved continuation to keep it alive.
+    saved_cont_root: ArenaIndex,
 }
