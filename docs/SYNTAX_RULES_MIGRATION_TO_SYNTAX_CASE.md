@@ -53,7 +53,9 @@ Replace the native implementation with a **self-hosted Scheme implementation** o
 | Scheme Code | ~0 lines | ~60 lines | +60 lines |
 | Value Variants | `SyntaxRules` + `Syntax` | `Syntax` only | -1 variant |
 | Maintenance Burden | High (Rust + Scheme) | Low (Scheme only) | ↓ 40% |
-| Performance | Native speed | Interpreted speed | ~10-20% slower |
+| Performance | Native speed | Interpreted speed | Est. ~10-20% slower* |
+
+\* *Estimated based on typical interpreted vs native code performance. Actual impact should be measured during Phase 1.*
 
 ---
 
@@ -244,10 +246,11 @@ The evaluator sees a `lambda` transformer (which it already supports) and uses t
 
 ### Trade-offs
 
-#### 1. **Performance** (~10-20% slower)
+#### 1. **Performance** (Estimated ~10-20% slower for macro expansion)
 - Native Rust pattern matching is faster than interpreted Scheme
 - For typical use cases, the difference is negligible
 - Macros are expanded once, not on every call
+- **Note**: This is an estimate; actual performance should be measured during Phase 1 benchmarking
 
 #### 2. **Bootstrap Dependency**
 - `syntax-case` must work before `syntax-rules` can be defined
@@ -1081,17 +1084,19 @@ Macros are expanded **once** when a macro form is first encountered during evalu
 - **One-time cost**: Slower expansion is acceptable
 - **Amortized**: Cost is spread over all uses
 
-### Typical Overhead
+### Typical Overhead (Estimated)
 
-Expected performance impact:
+**Note**: These are rough estimates based on typical interpreter overhead. Actual performance should be measured during Phase 1 benchmarking.
 
-| Operation | Native Rust | Scheme | Overhead |
-|-----------|-------------|--------|----------|
-| Pattern matching | ~100 ns | ~150 ns | +50% |
-| Template transcription | ~200 ns | ~300 ns | +50% |
-| Full macro expansion | ~500 ns | ~750 ns | +50% |
+Estimated performance impact:
 
-**Total impact on program**: Negligible, as macros expand once.
+| Operation | Native Rust | Scheme (Est.) | Overhead (Est.) |
+|-----------|-------------|---------------|-----------------|
+| Pattern matching | ~100 ns | ~150-200 ns | +50-100% |
+| Template transcription | ~200 ns | ~300-400 ns | +50-100% |
+| Full macro expansion | ~500 ns | ~750-1000 ns | +50-100% |
+
+**Total impact on program**: Negligible, as macros expand once at evaluation time, not on every call.
 
 ### When Performance Matters
 
