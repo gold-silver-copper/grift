@@ -4,10 +4,6 @@
 ;;; macro-based implementations of common forms.
 ;;;
 ;;; All macros use syntax-case for pattern matching and template expansion.
-;;;
-;;; Note: Due to a bug in nested ellipsis pattern matching (see 
-;;; HYGIENIC_MACROS_IMPLEMENTATION.md Phase 7), we use recursive 
-;;; implementations for binding forms instead of the standard R7RS patterns.
 
 ;; ============================================================
 ;; syntax-rules - Declarative Macro Definition (R7RS)
@@ -19,92 +15,15 @@
 ;; where each clause is ((keyword . pattern) template)
 ;;
 ;; This expands to a lambda that uses syntax-case internally.
-;;
-;; Implementation note: Due to a bug in nested ellipsis pattern matching
-;; (see HYGIENIC_MACROS_IMPLEMENTATION.md Phase 7), we cannot use the
-;; standard R7RS approach of matching ((keyword . pattern) template) ...
-;; Instead, we explicitly enumerate patterns for 1-8 clauses. This covers
-;; the vast majority of real-world macros. Macros with more than 8 clauses
-;; should use syntax-case directly.
+;; The implementation uses nested ellipsis patterns to handle any number of clauses.
 (define-syntax syntax-rules
   (lambda (form)
     (syntax-case form ()
-      ;; 1 clause
-      ((syntax-rules (lit ...) ((kw1 . p1) t1))
+      ((syntax-rules (lit ...) ((keyword . pattern) template) ...)
        (syntax 
          (lambda (x)
            (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))))))
-      ;; 2 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))))))
-      ;; 3 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))
-             ((dummy . p3) (syntax t3))))))
-      ;; 4 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))
-             ((dummy . p3) (syntax t3))
-             ((dummy . p4) (syntax t4))))))
-      ;; 5 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))
-             ((dummy . p3) (syntax t3))
-             ((dummy . p4) (syntax t4))
-             ((dummy . p5) (syntax t5))))))
-      ;; 6 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5) ((kw6 . p6) t6))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))
-             ((dummy . p3) (syntax t3))
-             ((dummy . p4) (syntax t4))
-             ((dummy . p5) (syntax t5))
-             ((dummy . p6) (syntax t6))))))
-      ;; 7 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5) ((kw6 . p6) t6) ((kw7 . p7) t7))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))
-             ((dummy . p3) (syntax t3))
-             ((dummy . p4) (syntax t4))
-             ((dummy . p5) (syntax t5))
-             ((dummy . p6) (syntax t6))
-             ((dummy . p7) (syntax t7))))))
-      ;; 8 clauses
-      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5) ((kw6 . p6) t6) ((kw7 . p7) t7) ((kw8 . p8) t8))
-       (syntax 
-         (lambda (x)
-           (syntax-case x (lit ...)
-             ((dummy . p1) (syntax t1))
-             ((dummy . p2) (syntax t2))
-             ((dummy . p3) (syntax t3))
-             ((dummy . p4) (syntax t4))
-             ((dummy . p5) (syntax t5))
-             ((dummy . p6) (syntax t6))
-             ((dummy . p7) (syntax t7))
-             ((dummy . p8) (syntax t8)))))))))
+             ((dummy . pattern) (syntax template)) ...)))))))
 
 ;; define-syntax-rule - Convenient single-clause macro definition
 ;;
@@ -774,9 +693,25 @@
 
 ;; with-syntax - bind pattern variables for use in syntax templates
 ;;
-;; NOTE: with-syntax is now a special form (not a macro) to properly
-;; update #:pattern-bindings for use by (syntax ...) templates.
-;; The special form implementation is in forms.rs.
+;; (with-syntax ((pattern expr) ...) body ...)
+;;
+;; Evaluates each expr and binds the result to the corresponding pattern.
+;; The bindings are available in the body expressions.
+;; This is implemented as a macro that uses syntax-case internally.
+(define-syntax with-syntax
+  (lambda (x)
+    (syntax-case x ()
+      ;; No bindings: just evaluate the body
+      ((_ () e1 e2 ...)
+       (syntax (let () e1 e2 ...)))
+      ;; Single binding: use syntax-case directly
+      ((_ ((out in)) e1 e2 ...)
+       (syntax (syntax-case in ()
+                 (out (let () e1 e2 ...)))))
+      ;; Multiple bindings: use syntax-case with a list
+      ((_ ((out in) ...) e1 e2 ...)
+       (syntax (syntax-case (list in ...) ()
+                 ((out ...) (let () e1 e2 ...))))))))
 
 ;; ============================================================
 ;; Exception Handling (R7RS Section 4.2.7)

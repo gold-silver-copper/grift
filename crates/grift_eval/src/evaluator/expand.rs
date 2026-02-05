@@ -469,10 +469,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Check if symbol is in literals list
     fn is_literal(&self, sym: ArenaIndex, literals: ArenaIndex) -> Result<bool, EvalError> {
-        let mut current = literals;
+        self.symbol_in_list(sym, literals)
+    }
+
+    /// Check if a symbol is a member of a list of symbols
+    fn symbol_in_list(&self, sym: ArenaIndex, list: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = list;
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            let lit = self.lisp.car(current)?;
-            if self.symbols_eq(sym, lit)? {
+            let item = self.lisp.car(current)?;
+            if self.symbols_eq(sym, item)? {
                 return Ok(true);
             }
             current = self.lisp.cdr(current)?;
@@ -1018,7 +1023,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         match self.lisp.get(val)? {
                             Value::Cons { .. } | Value::Nil => {
                                 // Add to result if not already there
-                                if self.bindings_lookup(*result, current)?.is_none() {
+                                // Note: result is a simple list of symbols, not an alist
+                                if !self.symbol_in_list(current, *result)? {
                                     *result = self.lisp.cons(current, *result)?;
                                 }
                             }

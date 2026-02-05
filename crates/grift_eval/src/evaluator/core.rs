@@ -635,11 +635,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.step_eval_syntax(cdr, env);
                 }
                 
-                // with-syntax - bind pattern variables for use in syntax templates
-                // This updates #:pattern-bindings so that (syntax ...) can access them
-                if self.lisp.symbol_matches(car, "with-syntax")? {
-                    return self.step_eval_with_syntax(cdr, env);
-                }
+                // Note: with-syntax is now implemented as a macro in macros.scm
+                // It uses syntax-case directly to bind patterns.
                 
                 // if - condition evaluated, then one branch selected
                 if self.lisp.symbol_matches(car, "if")? {
