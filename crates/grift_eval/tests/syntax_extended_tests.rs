@@ -1075,3 +1075,49 @@ fn test_syntax_rules_custom_ellipsis() {
     let len = lisp.list_len(result).unwrap();
     assert_eq!(len, 3);
 }
+
+/// Test syntax-rules with docstring support
+#[test]
+fn test_syntax_rules_with_docstring() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with a docstring
+    eval.eval_str(r#"
+        (define-syntax my-when-doc
+          (syntax-rules ()
+            "Evaluates body expressions if test is true"
+            ((my-when-doc test body ...)
+             (if test (begin body ...)))))
+    "#).unwrap();
+    
+    // Test that the macro works correctly with docstring
+    let result = eval.eval_str("(my-when-doc #t 42)").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(42));
+    
+    let result = eval.eval_str("(my-when-doc #f 42)").unwrap();
+    assert!(lisp.get(result).unwrap().is_nil());
+}
+
+/// Test syntax-rules with docstring and literals
+#[test]
+fn test_syntax_rules_docstring_with_literals() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro with docstring and literals
+    eval.eval_str(r#"
+        (define-syntax my-case-doc
+          (syntax-rules (=>)
+            "Case macro with arrow syntax"
+            ((my-case-doc val (key => result))
+             (if (eq? val key) result 'no-match))))
+    "#).unwrap();
+    
+    // Test the macro
+    let result = eval.eval_str("(my-case-doc 1 (1 => 'one))").unwrap();
+    assert!(lisp.symbol_matches(result, "one").unwrap());
+    
+    let result = eval.eval_str("(my-case-doc 2 (1 => 'one))").unwrap();
+    assert!(lisp.symbol_matches(result, "no-match").unwrap());
+}

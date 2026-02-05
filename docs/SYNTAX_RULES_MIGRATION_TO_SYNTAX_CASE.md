@@ -27,10 +27,15 @@ The following features have been implemented:
   - Transforms syntax-rules to syntax-case internally
   - Custom ellipsis support via with-ellipsis
 
+- [x] **Docstring support** - Native syntax-rules now supports optional docstrings
+  - Syntax: `(syntax-rules (literals...) "docstring" clause ...)`
+  - Docstrings are properly skipped during parsing
+
 ### Remaining Work (Optional)
 
 - [ ] Remove redundant native Rust syntax-rules code (if performance acceptable)
-- [ ] Add full docstring support in transformed macros
+  - Note: Requires resolving bootstrapping issues with macros.scm loading
+  - The native implementation is currently used for bootstrapping
 - [ ] Performance benchmarking
 
 ---
