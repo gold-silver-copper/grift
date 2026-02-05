@@ -906,16 +906,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             CONT_WITH_SYNTAX_BIND => {
                 // val is the evaluated value for the current binding
-                // Data format: ((current_name . rest_bindings) . (collected . (body . (env . existing))))
+                // Data format: ((current_pattern . rest_bindings) . (collected . (body . (env . existing))))
                 let (remaining_bindings, collected_bindings, body, env, existing_pattern_bindings) = self.unpack5(data)?;
                 
-                // Extract current binding name from the packed data
-                let current_name = self.lisp.car(remaining_bindings)?;
+                // Extract current binding pattern from the packed data
+                let current_pattern = self.lisp.car(remaining_bindings)?;
                 let actual_remaining = self.lisp.cdr(remaining_bindings)?;
                 
-                // Add the binding to collected pattern bindings
-                let binding_pair = self.lisp.cons(current_name, val)?;
-                let new_collected = self.lisp.cons(binding_pair, collected_bindings)?;
+                // Match the evaluated value against the pattern
+                // This supports both simple identifiers like `a` and complex patterns like `(a b ...)`
+                let empty_literals = self.lisp.nil()?;
+                let match_result = self.match_pattern(current_pattern, val, empty_literals, collected_bindings)?;
+                
+                let new_collected = match match_result {
+                    Some(bindings) => bindings,
+                    None => {
+                        return Err(self.make_error(ErrorKind::SyntaxError, current_pattern)
+                            .with_message("with-syntax: pattern did not match value"));
+                    }
+                };
                 
                 if self.lisp.get(actual_remaining)?.is_nil() {
                     // All bindings evaluated - now evaluate the body
@@ -949,12 +958,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 } else {
                     // More bindings to evaluate
                     let next_binding = self.lisp.car(actual_remaining)?;
-                    let next_name = self.lisp.car(next_binding)?;
+                    let next_pattern = self.lisp.car(next_binding)?;
                     let next_val_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
                     let rest_bindings = self.lisp.cdr(actual_remaining)?;
                     
-                    // Pack data for continuation: (next_name . rest_bindings) as the remaining
-                    let next_remaining = self.lisp.cons(next_name, rest_bindings)?;
+                    // Pack data for continuation: (next_pattern . rest_bindings) as the remaining
+                    let next_remaining = self.lisp.cons(next_pattern, rest_bindings)?;
                     let data = self.pack5(next_remaining, new_collected, body, env, existing_pattern_bindings)?;
                     self.push_cont(CONT_WITH_SYNTAX_BIND, data, env)?;
                     
@@ -1654,12 +1663,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate (with-syntax ((pattern expr) ...) body ...)
     ///
     /// This binds pattern variables for use in syntax templates.
-    /// Each expr is evaluated and bound to the corresponding pattern variable.
+    /// Each expr is evaluated and matched against the corresponding pattern.
     /// The bindings are added to both the regular environment and the
     /// #:pattern-bindings for use by the (syntax ...) form.
     ///
     /// This is a special form (not a macro) because it needs to properly
     /// update the #:pattern-bindings mechanism used by syntax templates.
+    ///
+    /// Unlike the simple version that only supported single identifiers,
+    /// this version supports full pattern matching with ellipsis, allowing
+    /// patterns like ((a b ...) expr) where expr evaluates to a list.
     pub(super) fn step_eval_with_syntax(
         &mut self,
         args: ArenaIndex,
@@ -1680,15 +1693,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first_binding = self.lisp.car(bindings_expr)?;
         let rest_bindings = self.lisp.cdr(bindings_expr)?;
         
-        let first_name = self.lisp.car(first_binding)?;
+        // Pattern is the first element of the binding (can be a symbol or a pattern list)
+        let first_pattern = self.lisp.car(first_binding)?;
         let first_val_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
         
         // Pack data for continuation:
-        // (first_name . rest_bindings) - first_name paired with remaining bindings
+        // (first_pattern . rest_bindings) - pattern paired with remaining bindings
         // collected_bindings - starts empty
         // body, env, existing_pattern_bindings
         let collected = self.lisp.nil()?;
-        let remaining = self.lisp.cons(first_name, rest_bindings)?;
+        let remaining = self.lisp.cons(first_pattern, rest_bindings)?;
         let data = self.pack5(remaining, collected, body, env, existing_pattern_bindings)?;
         self.push_cont(CONT_WITH_SYNTAX_BIND, data, env)?;
         

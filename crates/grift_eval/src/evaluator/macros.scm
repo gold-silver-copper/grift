@@ -728,3 +728,200 @@
      ;; Exception handling will be added when the infrastructure is available.
      (begin body ...))))
 
+;; ============================================================
+;; syntax-rules - Pattern-based Macro Transformer (via syntax-case)
+;; ============================================================
+
+;; syntax-rules: Pattern-based macro transformer
+;; 
+;; Implements R7RS syntax-rules as a macro that expands to a procedural
+;; transformer using syntax-case. This provides a pure Scheme implementation
+;; that complements the native Rust implementation.
+;;
+;; Syntax:
+;;   (syntax-rules (literal ...) clause ...)
+;;
+;; Each clause is: ((keyword . pattern) template)
+;;
+;; The implementation transforms syntax-rules into a lambda that uses
+;; syntax-case internally for pattern matching.
+;;
+;; Note: Custom ellipsis identifiers are not yet supported. 
+;; This implementation handles the most common cases.
+
+;; Helper: Transform a single clause from syntax-rules format to syntax-case format
+;; Input:  ((keyword . pattern) template)
+;; Output: ((dummy . pattern) #'template)
+;;
+;; The keyword is replaced with 'dummy' because syntax-case already
+;; binds the first element from the input form.
+(define-syntax %sr-transform-clause
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ ((keyword . pattern) template))
+       ;; Build: ((dummy . pattern) #'template)
+       ;; We need to construct this at expansion time
+       #'(quote ((dummy . pattern) #'template))))))
+
+;; syntax-rules macro
+;; Transforms:
+;;   (syntax-rules (lit ...) ((kw . pat) tmpl) ...)
+;; Into:
+;;   (lambda (x) (syntax-case x (lit ...) ((dummy . pat) #'tmpl) ...))
+;;
+;; Implementation uses helper macros to build the syntax-case clauses.
+
+;; Helper to build single-clause syntax-rules
+(define-syntax %syntax-rules-1
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) ((keyword . pattern) template))
+       #'(lambda (x)
+           (syntax-case x (k ...)
+             ((dummy . pattern) #'template)))))))
+
+;; Helper to build two-clause syntax-rules
+(define-syntax %syntax-rules-2
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) ((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2))
+       #'(lambda (x)
+           (syntax-case x (k ...)
+             ((dummy . pat1) #'tmpl1)
+             ((dummy . pat2) #'tmpl2)))))))
+
+;; Helper to build three-clause syntax-rules
+(define-syntax %syntax-rules-3
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) ((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2) ((kw3 . pat3) tmpl3))
+       #'(lambda (x)
+           (syntax-case x (k ...)
+             ((dummy . pat1) #'tmpl1)
+             ((dummy . pat2) #'tmpl2)
+             ((dummy . pat3) #'tmpl3)))))))
+
+;; Helper to build four-clause syntax-rules
+(define-syntax %syntax-rules-4
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) ((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2) ((kw3 . pat3) tmpl3) ((kw4 . pat4) tmpl4))
+       #'(lambda (x)
+           (syntax-case x (k ...)
+             ((dummy . pat1) #'tmpl1)
+             ((dummy . pat2) #'tmpl2)
+             ((dummy . pat3) #'tmpl3)
+             ((dummy . pat4) #'tmpl4)))))))
+
+;; Helper to build five-clause syntax-rules
+(define-syntax %syntax-rules-5
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) c1 c2 c3 c4 c5)
+       (syntax-case #'(c1 c2 c3 c4 c5) ()
+         ((((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2) ((kw3 . pat3) tmpl3) 
+           ((kw4 . pat4) tmpl4) ((kw5 . pat5) tmpl5))
+          #'(lambda (x)
+              (syntax-case x (k ...)
+                ((dummy . pat1) #'tmpl1)
+                ((dummy . pat2) #'tmpl2)
+                ((dummy . pat3) #'tmpl3)
+                ((dummy . pat4) #'tmpl4)
+                ((dummy . pat5) #'tmpl5)))))))))
+
+;; Helper to build six-clause syntax-rules
+(define-syntax %syntax-rules-6
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) c1 c2 c3 c4 c5 c6)
+       (syntax-case #'(c1 c2 c3 c4 c5 c6) ()
+         ((((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2) ((kw3 . pat3) tmpl3) 
+           ((kw4 . pat4) tmpl4) ((kw5 . pat5) tmpl5) ((kw6 . pat6) tmpl6))
+          #'(lambda (x)
+              (syntax-case x (k ...)
+                ((dummy . pat1) #'tmpl1)
+                ((dummy . pat2) #'tmpl2)
+                ((dummy . pat3) #'tmpl3)
+                ((dummy . pat4) #'tmpl4)
+                ((dummy . pat5) #'tmpl5)
+                ((dummy . pat6) #'tmpl6)))))))))
+
+;; Helper to build seven-clause syntax-rules
+(define-syntax %syntax-rules-7
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) c1 c2 c3 c4 c5 c6 c7)
+       (syntax-case #'(c1 c2 c3 c4 c5 c6 c7) ()
+         ((((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2) ((kw3 . pat3) tmpl3) 
+           ((kw4 . pat4) tmpl4) ((kw5 . pat5) tmpl5) ((kw6 . pat6) tmpl6)
+           ((kw7 . pat7) tmpl7))
+          #'(lambda (x)
+              (syntax-case x (k ...)
+                ((dummy . pat1) #'tmpl1)
+                ((dummy . pat2) #'tmpl2)
+                ((dummy . pat3) #'tmpl3)
+                ((dummy . pat4) #'tmpl4)
+                ((dummy . pat5) #'tmpl5)
+                ((dummy . pat6) #'tmpl6)
+                ((dummy . pat7) #'tmpl7)))))))))
+
+;; Helper to build eight-clause syntax-rules
+(define-syntax %syntax-rules-8
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (k ...) c1 c2 c3 c4 c5 c6 c7 c8)
+       (syntax-case #'(c1 c2 c3 c4 c5 c6 c7 c8) ()
+         ((((kw1 . pat1) tmpl1) ((kw2 . pat2) tmpl2) ((kw3 . pat3) tmpl3) 
+           ((kw4 . pat4) tmpl4) ((kw5 . pat5) tmpl5) ((kw6 . pat6) tmpl6)
+           ((kw7 . pat7) tmpl7) ((kw8 . pat8) tmpl8))
+          #'(lambda (x)
+              (syntax-case x (k ...)
+                ((dummy . pat1) #'tmpl1)
+                ((dummy . pat2) #'tmpl2)
+                ((dummy . pat3) #'tmpl3)
+                ((dummy . pat4) #'tmpl4)
+                ((dummy . pat5) #'tmpl5)
+                ((dummy . pat6) #'tmpl6)
+                ((dummy . pat7) #'tmpl7)
+                ((dummy . pat8) #'tmpl8)))))))))
+
+;; Note: The native Rust implementation of syntax-rules remains the primary
+;; implementation. This Scheme version is provided for compatibility and
+;; as a demonstration of how syntax-rules can be implemented in terms of
+;; syntax-case.
+;;
+;; To use this Scheme implementation instead of the native one, you would
+;; need to rename/remove the native syntax-rules detection in the evaluator.
+;;
+;; The implementation below provides explicit dispatch based on the number
+;; of clauses, supporting up to 8 clauses which covers most practical use cases.
+
+(define-syntax %scheme-syntax-rules
+  (lambda (stx)
+    (syntax-case stx ()
+      ;; Single clause
+      ((_ (k ...) clause1)
+       #'(%syntax-rules-1 (k ...) clause1))
+      ;; Two clauses
+      ((_ (k ...) clause1 clause2)
+       #'(%syntax-rules-2 (k ...) clause1 clause2))
+      ;; Three clauses
+      ((_ (k ...) clause1 clause2 clause3)
+       #'(%syntax-rules-3 (k ...) clause1 clause2 clause3))
+      ;; Four clauses
+      ((_ (k ...) clause1 clause2 clause3 clause4)
+       #'(%syntax-rules-4 (k ...) clause1 clause2 clause3 clause4))
+      ;; Five clauses
+      ((_ (k ...) clause1 clause2 clause3 clause4 clause5)
+       #'(%syntax-rules-5 (k ...) clause1 clause2 clause3 clause4 clause5))
+      ;; Six clauses
+      ((_ (k ...) clause1 clause2 clause3 clause4 clause5 clause6)
+       #'(%syntax-rules-6 (k ...) clause1 clause2 clause3 clause4 clause5 clause6))
+      ;; Seven clauses
+      ((_ (k ...) clause1 clause2 clause3 clause4 clause5 clause6 clause7)
+       #'(%syntax-rules-7 (k ...) clause1 clause2 clause3 clause4 clause5 clause6 clause7))
+      ;; Eight clauses  
+      ((_ (k ...) clause1 clause2 clause3 clause4 clause5 clause6 clause7 clause8)
+       #'(%syntax-rules-8 (k ...) clause1 clause2 clause3 clause4 clause5 clause6 clause7 clause8)))))
+
+
