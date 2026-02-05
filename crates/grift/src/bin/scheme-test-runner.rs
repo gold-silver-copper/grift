@@ -11,6 +11,7 @@ use grift_eval::*;
 use grift_parser::Lisp;
 use std::env;
 use std::fs;
+use std::thread;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -23,7 +24,26 @@ fn main() {
         std::process::exit(1);
     }
     
-    let test_file = &args[1];
+    let test_file = args[1].clone();
+    
+    // Run with increased stack size to handle complex macro expansions
+    // during initialization
+    let builder = thread::Builder::new()
+        .name("scheme-test-runner".into())
+        .stack_size(32 * 1024 * 1024); // 32 MB stack
+    
+    let handle = builder.spawn(move || run_tests(&test_file)).unwrap();
+    
+    match handle.join() {
+        Ok(_) => {},
+        Err(e) => {
+            eprintln!("Thread panicked: {:?}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_tests(test_file: &str) {
     
     println!("═══════════════════════════════════════════════════════════");
     println!("  Grift Scheme Test Runner");
@@ -42,8 +62,9 @@ fn main() {
     };
     
     // Create evaluator with large arena
-    let lisp: Lisp<100000> = Lisp::new();
-    let mut eval = match Evaluator::new(&lisp) {
+    // Use Box to allocate on heap to avoid stack overflow
+    let lisp: Box<Lisp<100000>> = Box::new(Lisp::new());
+    let mut eval = match Evaluator::new(&*lisp) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to create evaluator: {:?}", e);
