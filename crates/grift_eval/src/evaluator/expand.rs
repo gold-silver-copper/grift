@@ -1693,32 +1693,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let head = self.lisp.car(expr)?;
 
         // Check for syntax-rules (declarative transformer)
-        // Supports:
+        // Supported syntax:
         //   (syntax-rules (literals...) clause ...)
         //   (syntax-rules (literals...) "docstring" clause ...)
         //
-        // Note: Custom ellipsis (syntax-rules ellipsis (literals...) ...) is not 
-        // fully supported in the native implementation. Use the Scheme-level
-        // syntax-rules macro with with-ellipsis for custom ellipsis support.
+        // NOT supported (use with-ellipsis wrapper instead):
+        //   (syntax-rules my-ellipsis (literals...) clause ...)
+        //   Example: (with-ellipsis ooo (syntax-rules () ((foo x ooo) (list x ooo))))
         if self.lisp.symbol_matches(head, "syntax-rules")? {
             let rest = self.lisp.cdr(expr)?;
             let literals = self.lisp.car(rest)?;
             let after_literals = self.lisp.cdr(rest)?;
             
-            // Check for optional docstring after literals
-            // Syntax can be: (syntax-rules (lits) clause ...)
-            //            or: (syntax-rules (lits) "doc" clause ...)
-            let rules_raw = if !self.lisp.get(after_literals)?.is_nil() {
-                let first_after_literals = self.lisp.car(after_literals)?;
-                if matches!(self.lisp.get(first_after_literals)?, Value::String { .. }) {
-                    // Skip the docstring
-                    self.lisp.cdr(after_literals)?
-                } else {
-                    after_literals
-                }
-            } else {
-                after_literals
-            };
+            // Skip optional docstring if present
+            let rules_raw = self.skip_docstring(after_literals)?;
 
             // Parse rules into (pattern . template) pairs
             let mut rules = self.lisp.nil()?;
@@ -1753,6 +1741,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         Err(self.make_error(ErrorKind::SyntaxError, expr)
             .with_message("expected (syntax-rules ...) or (lambda ...)"))
+    }
+    
+    /// Skip an optional docstring in a list, returning the rest
+    ///
+    /// If the first element of `list` is a string, returns cdr(list).
+    /// Otherwise returns `list` unchanged.
+    fn skip_docstring(&self, list: ArenaIndex) -> EvalResult {
+        if self.lisp.get(list)?.is_nil() {
+            return Ok(list);
+        }
+        let first = self.lisp.car(list)?;
+        if matches!(self.lisp.get(first)?, Value::String { .. }) {
+            self.lisp.cdr(list).map_err(Into::into)
+        } else {
+            Ok(list)
+        }
     }
 
     /// Evaluate a lambda expression to create a transformer closure
