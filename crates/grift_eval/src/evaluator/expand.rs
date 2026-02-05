@@ -479,6 +479,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(false)
     }
 
+    /// Check if a symbol is the current ellipsis identifier
+    fn is_ellipsis(&self, sym: ArenaIndex) -> Result<bool, EvalError> {
+        // Compare against the current ellipsis symbol
+        // Both are symbols, so we need to compare their string values
+        if let (Value::Symbol(s1), Value::Symbol(s2)) = 
+            (self.lisp.get(sym)?, self.lisp.get(self.ellipsis_sym)?) 
+        {
+            Ok(s1 == s2)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Check if pattern cdr starts with ellipsis
     fn has_ellipsis(&self, pat_cdr: ArenaIndex) -> Result<bool, EvalError> {
         match self.lisp.get(pat_cdr)? {
@@ -486,12 +499,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Pattern like: (a ... rest) parsed as (a . (... . rest))
             Value::Cons { .. } => {
                 let first = self.lisp.car(pat_cdr)?;
-                self.lisp.symbol_matches(first, "...").map_err(Into::into)
+                self.is_ellipsis(first)
             }
             // Case 2: pat_cdr IS the ellipsis symbol itself
             // Pattern like: (a ...) parsed as improper list (a . ...)
             Value::Symbol(_) => {
-                self.lisp.symbol_matches(pat_cdr, "...").map_err(Into::into)
+                self.is_ellipsis(pat_cdr)
             }
             _ => Ok(false),
         }

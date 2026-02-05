@@ -6,7 +6,35 @@ This document provides guidance for removing Grift's current native Rust impleme
 
 **Target Audience**: Grift maintainers and contributors familiar with the evaluator architecture and macro system.
 
-**Document Status**: Implementation Plan (Not Yet Implemented)
+**Document Status**: Phase 1 Complete - Scheme Implementation Added
+
+## Implementation Progress
+
+The following features have been implemented:
+
+- [x] **with-syntax enhanced** - supports list pattern matching on the LHS
+  - Simple bindings: `(with-syntax ((name value)) body)`
+  - Destructuring: `(with-syntax (((a b) (list 1 2))) body)`
+  - Ellipsis patterns: `(with-syntax (((a ...) (list 1 2 3))) body)`
+  
+- [x] **with-ellipsis implemented** - New special form for custom ellipsis
+  - Syntax: `(with-ellipsis id body ...)`
+  - Changes the ellipsis identifier within the body scope
+  - Properly restores original ellipsis after body evaluation
+
+- [x] **syntax-rules as procedural macro** - Implemented in macros.scm
+  - Supports R7RS syntax including optional docstrings
+  - Transforms syntax-rules to syntax-case internally
+  - Custom ellipsis support via with-ellipsis
+  
+- [x] **syntax-error implemented** - Macro for compile-time error reporting
+
+- [x] **define-syntax-rule** - Convenience macro for single-clause syntax-rules
+
+**Next Steps (Phase 2)**: Remove native Rust implementation of `syntax-rules`:
+- Remove `Value::SyntaxRules` variant from `value.rs`
+- Remove `syntax_rules()` and `syntax_rules_parts()` from `lisp.rs`
+- Simplify `expand.rs` to only handle lambda transformers
 
 ---
 

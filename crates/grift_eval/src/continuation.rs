@@ -180,6 +180,10 @@ pub const CONT_FINISH_CONTINUATION_RESTORE: usize = 39;
 /// Data: (remaining_bindings . (collected_bindings . (body . (env . existing_pattern_bindings))))
 pub const CONT_WITH_SYNTAX_BIND: usize = 40;
 
+/// After evaluating with-ellipsis body, restore original ellipsis
+/// Data: original_ellipsis_sym
+pub const CONT_WITH_ELLIPSIS_RESTORE: usize = 41;
+
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {
