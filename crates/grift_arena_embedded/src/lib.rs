@@ -20,7 +20,7 @@
 //! use grift_eval::{Lisp, Evaluator};
 //! use grift_arena_embedded::register_embedded_natives;
 //!
-//! let lisp: Lisp<10000> = Lisp::new();
+//! let lisp: Lisp<20000> = Lisp::new();
 //! let mut eval = Evaluator::new(&lisp).unwrap();
 //!
 //! // Register all embedded native functions
@@ -301,7 +301,7 @@ register_native!(native_bit_insert, (value: isize, insert: isize, start: isize, 
 // use grift_eval::{Lisp, Evaluator};
 // use grift_arena_embedded::register_embedded_natives;
 
-// let lisp: Lisp<10000> = Lisp::new();
+// let lisp: Lisp<20000> = Lisp::new();
 // let mut eval = Evaluator::new(&lisp).unwrap();
 // register_embedded_natives(&mut eval).unwrap();
 

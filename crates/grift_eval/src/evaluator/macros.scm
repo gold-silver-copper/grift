@@ -248,54 +248,51 @@
 
 ;; and - logical AND, short-circuits on first #f
 (define-syntax and
-  (lambda (x)
-    (syntax-case x ()
-      ((and) (syntax #t))  ;; No arguments: return true
-      ((and test) (syntax test))  ;; Single argument: return its value
-      ((and test rest ...)  ;; Multiple arguments: test first, then rest
-       (syntax (if test (and rest ...) #f))))))  ;; Short-circuit if test is false
+  (syntax-rules ()
+    ((and) #t)
+    ((and test) test)
+    ((and test rest ...)
+     (if test (and rest ...) #f))))
 
 ;; or - logical OR, short-circuits on first truthy value
 (define-syntax or
-  (lambda (x)
-    (syntax-case x ()
-      ((or) (syntax #f))  ;; No arguments: return false
-      ((or test) (syntax test))  ;; Single argument: return its value
-      ((or test rest ...)  ;; Multiple arguments: test first, then rest
-       (syntax (let ((temp test))  ;; Evaluate test only once
-                 (if temp temp (or rest ...))))))))
+  (syntax-rules ()
+    ((or) #f)
+    ((or test) test)
+    ((or test rest ...)
+     (let ((temp test))
+       (if temp temp (or rest ...))))))
 
+;; when - conditional execution when test is true
 (define-syntax when
-  (lambda (x)
-    (syntax-case x ()
-      ((when test body ...)
-       (syntax (if test (begin body ...)))))))
+  (syntax-rules ()
+    ((when test body ...)
+     (if test (begin body ...)))))
 
+;; unless - conditional execution when test is false
 (define-syntax unless
-  (lambda (x)
-    (syntax-case x ()
-      ((unless test body ...)
-       (syntax (if (not test) (begin body ...)))))))
+  (syntax-rules ()
+    ((unless test body ...)
+     (if (not test) (begin body ...)))))
 
 ;; Simplified cond that doesn't use begin with ellipsis in results
 ;; to avoid expansion issues
 (define-syntax cond
-  (lambda (x)
-    (syntax-case x (else)
-      ((cond (else result))
-       (syntax result))
-      ((cond (else result1 result2 ...))
-       (syntax (begin result1 result2 ...)))
-      ((cond (test result))
-       (syntax (if test result #f)))
-      ((cond (test result1 result2 ...))
-       (syntax (if test (begin result1 result2 ...) #f)))
-      ((cond (test result) rest ...)
-       (syntax (if test result (cond rest ...))))
-      ((cond (test result1 result2 ...) rest ...)
-       (syntax (if test (begin result1 result2 ...) (cond rest ...))))
-      ((cond)
-       (syntax #f)))))
+  (syntax-rules (else)
+    ((cond (else result))
+     result)
+    ((cond (else result1 result2 ...))
+     (begin result1 result2 ...))
+    ((cond (test result))
+     (if test result #f))
+    ((cond (test result1 result2 ...))
+     (if test (begin result1 result2 ...) #f))
+    ((cond (test result) rest ...)
+     (if test result (cond rest ...)))
+    ((cond (test result1 result2 ...) rest ...)
+     (if test (begin result1 result2 ...) (cond rest ...)))
+    ((cond)
+     #f)))
 
 ;; ============================================================
 ;; case - Pattern matching on values
@@ -305,19 +302,15 @@
 ;; Pattern: (case key ((datum ...) result ...) ... (else result ...))
 ;; Simplified to 3 patterns for better maintainability
 (define-syntax case
-  (lambda (x)
-    (syntax-case x (else)
-      ;; No clauses - return unspecified
-      ((case key)
-       (syntax (if #f #f)))
-      ;; Else clause - always matches
-      ((case key (else result ...))
-       (syntax (begin result ...)))
-      ;; Regular clause - check membership, recurse on remaining clauses
-      ((case key ((datum ...) result ...) . rest)
-       (syntax (if (memv key '(datum ...))
-                   (begin result ...)
-                   (case key . rest)))))))
+  (syntax-rules (else)
+    ((case key)
+     (if #f #f))
+    ((case key (else result ...))
+     (begin result ...))
+    ((case key ((datum ...) result ...) . rest)
+     (if (memv key '(datum ...))
+         (begin result ...)
+         (case key . rest)))))
 
 ;; ============================================================
 ;; do - Iteration construct
@@ -380,17 +373,12 @@
 ;; Implementation uses append-two from stdlib for the two-argument case,
 ;; and recursively reduces longer argument lists.
 (define-syntax append
-  (lambda (x)
-    (syntax-case x ()
-      ;; Zero arguments
-      ((append) (syntax '()))
-      ;; One argument - return as-is
-      ((append a) (syntax a))
-      ;; Two arguments - use internal append2
-      ((append a b) (syntax (append-two a b)))
-      ;; Three or more arguments - fold right
-      ((append a b c ...)
-       (syntax (append-two a (append b c ...)))))))
+  (syntax-rules ()
+    ((append) '())
+    ((append a) a)
+    ((append a b) (append-two a b))
+    ((append a b c ...)
+     (append-two a (append b c ...)))))
 
 ;; ============================================================
 ;; Quasiquote
@@ -455,19 +443,19 @@
 ;; Delayed Evaluation
 ;; ============================================================
 
+;; delay - create a promise (memoizing thunk)
 (define-syntax delay
-  (lambda (x)
-    (syntax-case x ()
-      ((delay expr)
-       (syntax (let ((forced #f)
-                     (value #f))
-                 (lambda ()
-                   (if forced
-                       value
-                       (begin
-                         (set! value expr)
-                         (set! forced #t)
-                         value)))))))))
+  (syntax-rules ()
+    ((delay expr)
+     (let ((forced #f)
+           (value #f))
+       (lambda ()
+         (if forced
+             value
+             (begin
+               (set! value expr)
+               (set! forced #t)
+               value)))))))
 
 ;; ============================================================
 ;; Multiple Values (R7RS Section 4.2.2 and 5.3.3)
@@ -483,22 +471,18 @@
 ;; Uses call-with-values to capture multiple values and bind them.
 ;; Implementation note: We use a recursive approach to handle multiple bindings.
 (define-syntax let-values
-  (lambda (x)
-    (syntax-case x ()
-      ;; Base case: no bindings, just evaluate body
-      ((let-values () body ...)
-       (syntax (begin body ...)))
-      ;; Single binding case
-      ((let-values ((formals init)) body ...)
-       (syntax (call-with-values
-                 (lambda () init)
-                 (lambda formals body ...))))
-      ;; Multiple bindings: handle first, then recurse
-      ((let-values ((formals init) rest ...) body ...)
-       (syntax (call-with-values
-                 (lambda () init)
-                 (lambda formals
-                   (let-values (rest ...) body ...))))))))
+  (syntax-rules ()
+    ((let-values () body ...)
+     (begin body ...))
+    ((let-values ((formals init)) body ...)
+     (call-with-values
+       (lambda () init)
+       (lambda formals body ...)))
+    ((let-values ((formals init) rest ...) body ...)
+     (call-with-values
+       (lambda () init)
+       (lambda formals
+         (let-values (rest ...) body ...))))))
 
 ;; let*-values - sequential binding of multiple values
 ;;
@@ -510,17 +494,14 @@
 ;;   c)
 ;; => 3
 (define-syntax let*-values
-  (lambda (x)
-    (syntax-case x ()
-      ;; Base case: no bindings
-      ((let*-values () body ...)
-       (syntax (begin body ...)))
-      ;; Single or first binding: use let-values then recurse
-      ((let*-values ((formals init) rest ...) body ...)
-       (syntax (call-with-values
-                 (lambda () init)
-                 (lambda formals
-                   (let*-values (rest ...) body ...))))))))
+  (syntax-rules ()
+    ((let*-values () body ...)
+     (begin body ...))
+    ((let*-values ((formals init) rest ...) body ...)
+     (call-with-values
+       (lambda () init)
+       (lambda formals
+         (let*-values (rest ...) body ...))))))
 
 ;; define-values - define multiple values at top level
 ;;
@@ -567,10 +548,9 @@
 
 ;; force - force evaluation of a delayed expression
 (define-syntax force
-  (lambda (x)
-    (syntax-case x ()
-      ((force promise)
-       (syntax (promise))))))
+  (syntax-rules ()
+    ((force promise)
+     (promise))))
 
 ;; ============================================================
 ;; Case-Lambda (R7RS Section 4.2.9)
@@ -688,6 +668,7 @@
 
 ;; Check if a feature is supported
 ;; Returns #t or #f at expansion time based on pattern matching
+;; Note: Uses syntax-case directly because it has many clauses (more than syntax-rules supports)
 (define-syntax %feature-check
   (lambda (x)
     (syntax-case x (and or not library r7rs grift exact-closed exact-complex ratios ieee-float)
@@ -720,20 +701,18 @@
       ((%feature-check other) (syntax #f)))))
 
 ;; Main cond-expand macro
+;; Note: Uses syntax-case to properly expand %feature-check at macro-expansion time
 (define-syntax cond-expand
   (lambda (x)
     (syntax-case x (else)
-      ;; No clauses - unspecified behavior, we return #f
-      ((cond-expand) (syntax (if #f #f)))
-      ;; Else clause - always matches
+      ((cond-expand)
+       (syntax (if #f #f)))
       ((cond-expand (else body ...))
        (syntax (begin body ...)))
-      ;; Single non-else clause
       ((cond-expand (req body ...))
        (syntax (if (%feature-check req)
                    (begin body ...)
                    (if #f #f))))
-      ;; Multiple clauses - check first, recurse on rest
       ((cond-expand (req body ...) rest ...)
        (syntax (if (%feature-check req)
                    (begin body ...)
@@ -768,23 +747,20 @@
 ;; when forced, evaluates its expression and if the result is itself a promise,
 ;; forces that recursively. This achieves the tail-call-like behavior.
 (define-syntax delay-force
-  (lambda (x)
-    (syntax-case x ()
-      ((delay-force expr)
-       (syntax (let ((forced #f)
-                     (value #f))
-                 (lambda ()
-                   (if forced
-                       value
-                       (let ((result expr))
-                         ;; If result is a promise (procedure), force it
-                         ;; This implements the iterative forcing behavior
-                         (let ((final-value (if (procedure? result)
-                                                (result)
-                                                result)))
-                           (set! value final-value)
-                           (set! forced #t)
-                           final-value))))))))))
+  (syntax-rules ()
+    ((delay-force expr)
+     (let ((forced #f)
+           (value #f))
+       (lambda ()
+         (if forced
+             value
+             (let ((result expr))
+               (let ((final-value (if (procedure? result)
+                                      (result)
+                                      result)))
+                 (set! value final-value)
+                 (set! forced #t)
+                 final-value))))))))
 
 ;; ============================================================
 ;; syntax-case Support (Phase 3)
@@ -828,18 +804,13 @@
 ;; Helper: Evaluate guard cond clauses (used when exception is caught)
 ;; Note: This is not currently reachable without raise/with-exception-handler
 (define-syntax %guard-cond
-  (lambda (x)
-    (syntax-case x (else)
-      ;; else clause - always matches
-      ((%guard-cond var (else result ...))
-       (syntax (begin result ...)))
-      ;; Single non-else clause, no more clauses - re-raise if no match
-      ;; Note: Per R7RS, should re-raise the exception; using error as placeholder
-      ((%guard-cond var (test result ...))
-       (syntax (if test (begin result ...) (error "guard: unhandled exception (no matching clause)"))))
-      ;; Multiple clauses
-      ((%guard-cond var (test result ...) rest ...)
-       (syntax (if test (begin result ...) (%guard-cond var rest ...)))))))
+  (syntax-rules (else)
+    ((%guard-cond var (else result ...))
+     (begin result ...))
+    ((%guard-cond var (test result ...))
+     (if test (begin result ...) (error "guard: unhandled exception (no matching clause)")))
+    ((%guard-cond var (test result ...) rest ...)
+     (if test (begin result ...) (%guard-cond var rest ...)))))
 
 ;; guard - placeholder implementation
 ;; 
@@ -847,10 +818,7 @@
 ;; Returns body's result if it completes normally.
 ;; Runtime errors will propagate as usual (not caught).
 (define-syntax guard
-  (lambda (x)
-    (syntax-case x ()
-      ((guard (var clause ...) body ...)
-       ;; Without with-exception-handler, we can only evaluate the body directly.
-       ;; Exception handling will be added when the infrastructure is available.
-       (syntax (begin body ...))))))
+  (syntax-rules ()
+    ((guard (var clause ...) body ...)
+     (begin body ...))))
 

@@ -56,7 +56,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// use grift_parser::Lisp;
     /// use grift_eval::Evaluator;
     /// 
-    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let lisp: Lisp<20000> = Lisp::new();
     /// let mut eval = Evaluator::new(&lisp).unwrap();
     /// 
     /// let sym1 = eval.gensym("tmp").unwrap();

@@ -107,7 +107,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///     (n * 2).to_lisp(lisp)
     /// }
     ///
-    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let lisp: Lisp<20000> = Lisp::new();
     /// let mut eval = Evaluator::new(&lisp).unwrap();
     /// eval.register_native("my-double", my_double).unwrap();
     ///
@@ -153,7 +153,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///     // In a real std implementation, you would write to stdout here
     /// }
     ///
-    /// let lisp: Lisp<10000> = Lisp::new();
+    /// let lisp: Lisp<20000> = Lisp::new();
     /// let mut eval = Evaluator::new(&lisp).unwrap();
     /// 
     /// // Set output callback

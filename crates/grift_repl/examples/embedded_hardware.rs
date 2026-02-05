@@ -15,7 +15,7 @@ fn main() {
     reset_mock_hardware();
     
     // Create a Lisp context with a 10,000 cell arena
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Register all embedded native functions

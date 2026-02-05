@@ -18,8 +18,8 @@
 //! ```rust
 //! use grift::{Lisp, Evaluator, Value};
 //!
-//! // Create a Lisp interpreter with a 10,000-cell arena
-//! let lisp: Lisp<10000> = Lisp::new();
+//! // Create a Lisp interpreter with a 20,000-cell arena
+//! let lisp: Lisp<20000> = Lisp::new();
 //! let mut eval = Evaluator::new(&lisp).unwrap();
 //!
 //! // Evaluate expressions
