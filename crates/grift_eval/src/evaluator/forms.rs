@@ -1579,15 +1579,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Evaluate (syntax template) - create syntax object from template
     ///
-    /// This is similar to transcribe_template but operates at runtime
-    /// using pattern bindings from the current environment.
+    /// This creates syntax objects from templates, capturing the current lexical
+    /// environment for proper scope preservation.
     /// 
     /// The pattern bindings are stored under the special `#:pattern-bindings`
     /// key by `extend_env_with_bindings` when syntax-case matches.
     ///
-    /// Note: For lexically-scoped syntax objects, the lexical environment
-    /// is currently stored in the syntax object structure but not yet
-    /// used during transcription to avoid breaking existing behavior.
+    /// For lexically-scoped syntax objects, identifiers that are bound in the
+    /// current lexical environment get wrapped in syntax objects with the
+    /// captured environment, enabling proper scope preservation.
     pub(super) fn step_eval_syntax(
         &mut self,
         args: ArenaIndex,
@@ -1599,10 +1599,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // This contains only the pattern variable bindings, not other env bindings
         let bindings = self.get_pattern_bindings_from_env(env)?;
 
-        // Transcribe the template with pattern bindings
-        // Note: Using standard transcribe_template for backward compatibility
+        // Transcribe the template with pattern bindings and capture lexical environment
+        // This enables lexically-scoped syntax objects where identifiers resolve
+        // in their creation context, not the expansion context
         let empty_renames = self.lisp.nil()?;
-        let result = self.transcribe_template(template, bindings, empty_renames, self.global_env)?;
+        let result = self.transcribe_template_with_env(
+            template, bindings, empty_renames, self.global_env, env
+        )?;
 
         Ok(TrampolineState::Return { val: result })
     }

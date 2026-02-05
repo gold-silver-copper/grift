@@ -888,10 +888,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 2. Bound in the current lexical environment
     ///
     /// This enables lexically-scoped syntax objects as required by R6RS.
-    ///
-    /// NOTE: This function is not currently used but provides infrastructure
-    /// for future implementation of macro transformer lexical capture.
-    #[allow(dead_code)]
     pub(super) fn transcribe_template_with_env(
         &mut self,
         template: ArenaIndex,
@@ -921,7 +917,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Transcribe a symbol, potentially wrapping it in a syntax object with
     /// captured lexical environment.
-    #[allow(dead_code)]
     fn transcribe_symbol_with_env(
         &mut self,
         sym: ArenaIndex,
@@ -941,9 +936,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(renamed);
         }
 
-        // 3. Check if bound in the current lexical environment
-        // If so, wrap it in a syntax object that captures that environment
-        if self.env_bound_anywhere(lex_env, sym)? {
+        // 3. Check if bound in the LOCAL part of the lexical environment
+        // (i.e., bound in lex_env but NOT in global_env)
+        // This ensures we only wrap lexical bindings, not globals like `list`, `+`, etc.
+        let bound_locally = self.env_bound_anywhere(lex_env, sym)? && 
+                           !self.env_bound_anywhere(self.global_env, sym)?;
+        if bound_locally {
             let nil = self.lisp.nil()?;
             return self.lisp.syntax_with_env(sym, nil, nil, lex_env).map_err(Into::into);
         }
@@ -959,7 +957,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Transcribe a list with lexical environment capture.
-    #[allow(dead_code)]
     fn transcribe_list_with_env(
         &mut self,
         template: ArenaIndex,
@@ -1044,7 +1041,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// environment is not needed for ellipsis expansion itself - it would only be
     /// relevant for free variables in the repeated template, which are handled by
     /// the recursive call to transcribe_template_with_env.
-    #[allow(dead_code)]
     fn transcribe_ellipsis_with_env(
         &mut self,
         before: ArenaIndex,
@@ -1068,7 +1064,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// delegates to standard transcribe_binding_form which handles hygiene
     /// via gensym renaming. Full lexical capture in binding forms is a
     /// future enhancement.
-    #[allow(dead_code)]
     fn transcribe_binding_form_with_env(
         &mut self,
         template: ArenaIndex,
@@ -1674,9 +1669,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Ok(expr);
                         }
 
-                        if self.lisp.symbol_matches(head, "define-syntax")? {
-                            return self.expand_define_syntax(args);
-                        }
+                        // define-syntax is NOT processed during expansion - see step_eval_define_syntax
+                        // in forms.rs for the evaluation-time implementation that captures lexical scope.
 
                         if self.lisp.symbol_matches(head, "let-syntax")? {
                             return self.expand_let_syntax(args, renames);
@@ -1835,27 +1829,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // - eval_begin_for_expansion()
     // - eval_let_for_expansion()
     // - eval_with_syntax_for_expansion()
+    // - expand_define_syntax() - now handled at evaluation time by step_eval_define_syntax
     //
     // Procedural macro expansion now uses the unified evaluator via eval_for_macro().
-
-    /// Handle (define-syntax name transformer)
-    fn expand_define_syntax(&mut self, args: ArenaIndex) -> EvalResult {
-        let name = self.lisp.car(args)?;
-        let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
-
-        // Expand the transformer expression if it's not already a lambda
-        let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
-
-        // Parse the transformer
-        let transformer = self.parse_transformer(final_transformer_expr)?;
-
-        // Add to macro environment
-        let binding = self.lisp.cons(name, transformer)?;
-        self.macro_env = self.lisp.cons(binding, self.macro_env)?;
-
-        // Return unspecified value
-        Ok(self.lisp.nil()?)
-    }
 
     /// Expand a transformer expression if it's not already a lambda.
     /// 

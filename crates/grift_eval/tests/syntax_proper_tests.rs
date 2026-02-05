@@ -35,7 +35,6 @@ fn eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input:
 /// The macro expansion phase in grift occurs before evaluation, so lexical
 /// variables don't exist yet when define-syntax processes the transformer.
 #[test]
-#[ignore = "requires macro transformer lexical capture (not yet implemented)"]
 fn test_1_1_syntax_preserves_creation_context() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -61,7 +60,6 @@ fn test_1_1_syntax_preserves_creation_context() {
 /// Each syntax object created by make-syntax-getter must preserve its own
 /// distinct lexical environment.
 #[test]
-#[ignore = "requires macro transformer lexical capture"]
 fn test_1_2_syntax_through_procedures() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -100,7 +98,6 @@ fn test_1_2_syntax_through_procedures() {
 /// The syntax object created inside helper must resolve 'secret' in its
 /// original lexical scope, not at the macro use site.
 #[test]
-#[ignore = "requires macro transformer lexical capture"]
 fn test_2_1_helper_function_returns_syntax() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -127,7 +124,6 @@ fn test_2_1_helper_function_returns_syntax() {
 ///
 /// Syntax objects stored in a list must preserve their individual bindings.
 #[test]
-#[ignore = "requires macro transformer lexical capture"]
 fn test_2_2_syntax_in_data_structures() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -240,8 +236,13 @@ fn test_6_1_bound_identifier_eq() {
 /// Test 6.2: free-identifier=? with Different Lexical Contexts
 ///
 /// x from user vs. x from macro's internal binding should not be free-identifier=?.
+///
+/// NOTE: This test requires more sophisticated scope tracking where identifiers
+/// carry their lexical context. The current implementation doesn't properly
+/// distinguish between the pattern-bound `x` (from user) and the locally-bound
+/// `x` (from macro's let).
 #[test]
-#[ignore = "requires macro transformer lexical capture"]
+#[ignore = "requires scope tracking for pattern variables vs local bindings"]
 fn test_6_2_free_identifier_eq() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -270,8 +271,13 @@ fn test_6_2_free_identifier_eq() {
 /// Test 7.1: Syntax Objects with Mutation
 ///
 /// Mutating a global variable to store a syntax object must preserve its scope.
+///
+/// NOTE: This test requires macro input expressions to carry their lexical context,
+/// which requires deeper changes to how macro expansion handles identifiers.
+/// The pattern variable `val` gets bound to `x`, but `x` from the caller's code
+/// doesn't carry the lexical scope where `x=333`.
 #[test]
-#[ignore = "requires macro transformer lexical capture"]
+#[ignore = "requires macro input expressions to carry lexical context"]
 fn test_7_1_syntax_with_mutation() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -303,7 +309,6 @@ fn test_7_1_syntax_with_mutation() {
 ///
 /// Deep lexical nesting must be preserved through syntax object creation.
 #[test]
-#[ignore = "requires macro transformer lexical capture"]
 fn test_7_2_deep_nesting() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
