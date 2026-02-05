@@ -21,6 +21,7 @@ use crate::continuation::{TrampolineState,
     CONT_DYNAMIC_WIND_BEFORE, CONT_DYNAMIC_WIND_BODY, CONT_DYNAMIC_WIND_AFTER,
     CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
     CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE, CONT_WITH_SYNTAX_BIND,
+    CONT_WITH_ELLIPSIS_BODY,
 };
 use crate::extract_args;
 
@@ -906,16 +907,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             CONT_WITH_SYNTAX_BIND => {
                 // val is the evaluated value for the current binding
-                // Data format: ((current_name . rest_bindings) . (collected . (body . (env . existing))))
+                // Data format: ((current_pattern . rest_bindings) . (collected . (body . (env . existing))))
                 let (remaining_bindings, collected_bindings, body, env, existing_pattern_bindings) = self.unpack5(data)?;
                 
-                // Extract current binding name from the packed data
-                let current_name = self.lisp.car(remaining_bindings)?;
+                // Extract current binding pattern from the packed data
+                let current_pattern = self.lisp.car(remaining_bindings)?;
                 let actual_remaining = self.lisp.cdr(remaining_bindings)?;
                 
-                // Add the binding to collected pattern bindings
-                let binding_pair = self.lisp.cons(current_name, val)?;
-                let new_collected = self.lisp.cons(binding_pair, collected_bindings)?;
+                // Match the pattern against the value using syntax-case pattern matching
+                // This supports both simple identifiers and list patterns like (a b)
+                let nil = self.lisp.nil()?;
+                let matched_bindings = self.match_pattern(current_pattern, val, nil, nil)?;
+                
+                let new_collected = match matched_bindings {
+                    Some(bindings) => {
+                        // Merge matched bindings into collected
+                        let mut result = collected_bindings;
+                        let mut current = bindings;
+                        while let Value::Cons { .. } = self.lisp.get(current)? {
+                            let pair = self.lisp.car(current)?;
+                            result = self.lisp.cons(pair, result)?;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        result
+                    }
+                    None => {
+                        return Err(self.make_error(ErrorKind::SyntaxError, current_pattern)
+                            .with_message("with-syntax: pattern did not match"));
+                    }
+                };
                 
                 if self.lisp.get(actual_remaining)?.is_nil() {
                     // All bindings evaluated - now evaluate the body
@@ -949,18 +969,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 } else {
                     // More bindings to evaluate
                     let next_binding = self.lisp.car(actual_remaining)?;
-                    let next_name = self.lisp.car(next_binding)?;
+                    let next_pattern = self.lisp.car(next_binding)?;
                     let next_val_expr = self.lisp.car(self.lisp.cdr(next_binding)?)?;
                     let rest_bindings = self.lisp.cdr(actual_remaining)?;
                     
-                    // Pack data for continuation: (next_name . rest_bindings) as the remaining
-                    let next_remaining = self.lisp.cons(next_name, rest_bindings)?;
+                    // Pack data for continuation: (next_pattern . rest_bindings) as the remaining
+                    let next_remaining = self.lisp.cons(next_pattern, rest_bindings)?;
                     let data = self.pack5(next_remaining, new_collected, body, env, existing_pattern_bindings)?;
                     self.push_cont(CONT_WITH_SYNTAX_BIND, data, env)?;
                     
                     // Evaluate the next binding value
                     Ok(Some(TrampolineState::Eval { expr: next_val_expr, env }))
                 }
+            }
+            
+            CONT_WITH_ELLIPSIS_BODY => {
+                // val is the result of evaluating the body
+                // Data: saved_ellipsis (the previous ellipsis symbol to restore)
+                let saved_ellipsis = self.unpack1(data);
+                
+                // Restore the original ellipsis symbol
+                self.current_ellipsis = saved_ellipsis;
+                
+                // Return the body's result
+                Ok(Some(TrampolineState::Return { val }))
             }
             
             // Catch-all for unknown continuation types
@@ -1654,7 +1686,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate (with-syntax ((pattern expr) ...) body ...)
     ///
     /// This binds pattern variables for use in syntax templates.
-    /// Each expr is evaluated and bound to the corresponding pattern variable.
+    /// Each expr is evaluated and matched against the corresponding pattern.
+    /// Patterns can be:
+    /// - Simple identifiers: (name value) binds name to value
+    /// - List patterns: ((a b) value) destructures value and binds a, b
+    /// - Ellipsis patterns: ((a ...) value) matches a list
+    ///
     /// The bindings are added to both the regular environment and the
     /// #:pattern-bindings for use by the (syntax ...) form.
     ///
@@ -1680,20 +1717,72 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first_binding = self.lisp.car(bindings_expr)?;
         let rest_bindings = self.lisp.cdr(bindings_expr)?;
         
-        let first_name = self.lisp.car(first_binding)?;
+        let first_pattern = self.lisp.car(first_binding)?;
         let first_val_expr = self.lisp.car(self.lisp.cdr(first_binding)?)?;
         
         // Pack data for continuation:
-        // (first_name . rest_bindings) - first_name paired with remaining bindings
+        // (first_pattern . rest_bindings) - first_pattern paired with remaining bindings
         // collected_bindings - starts empty
         // body, env, existing_pattern_bindings
         let collected = self.lisp.nil()?;
-        let remaining = self.lisp.cons(first_name, rest_bindings)?;
+        let remaining = self.lisp.cons(first_pattern, rest_bindings)?;
         let data = self.pack5(remaining, collected, body, env, existing_pattern_bindings)?;
         self.push_cont(CONT_WITH_SYNTAX_BIND, data, env)?;
         
         // Evaluate the first binding value
         Ok(TrampolineState::Eval { expr: first_val_expr, env })
+    }
+    
+    /// Evaluate (with-ellipsis id body ...)
+    ///
+    /// Temporarily changes the ellipsis symbol used during macro expansion.
+    /// Within the body, the identifier `id` will be treated as the ellipsis
+    /// instead of `...`. This enables macros to produce ellipsis patterns
+    /// in their output.
+    ///
+    /// Example:
+    ///   (with-ellipsis :::
+    ///     (syntax-rules ()
+    ///       ((foo (a :::) body)
+    ///        (list a :::))))
+    pub(super) fn step_eval_with_ellipsis(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> Result<TrampolineState, EvalError> {
+        // Parse arguments: (id body ...)
+        if self.lisp.get(args)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("with-ellipsis requires at least 2 arguments"));
+        }
+        
+        let new_ellipsis = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+        
+        // Verify new_ellipsis is an identifier
+        if !matches!(self.lisp.get(new_ellipsis)?, Value::Symbol(_)) {
+            return Err(self.make_error(ErrorKind::TypeError, new_ellipsis)
+                .with_message("with-ellipsis: first argument must be an identifier"));
+        }
+        
+        // Verify body is not empty
+        if self.lisp.get(body)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("with-ellipsis requires at least one body expression"));
+        }
+        
+        // Save the current ellipsis
+        let saved_ellipsis = self.current_ellipsis;
+        
+        // Set the new ellipsis
+        self.current_ellipsis = new_ellipsis;
+        
+        // Push continuation to restore original ellipsis after body evaluation
+        let data = self.pack1(saved_ellipsis)?;
+        self.push_cont(CONT_WITH_ELLIPSIS_BODY, data, env)?;
+        
+        // Evaluate the body (wrap in begin if multiple expressions)
+        self.step_eval_begin(body, env)
     }
     
     // ========================================================================

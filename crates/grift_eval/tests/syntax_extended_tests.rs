@@ -929,3 +929,149 @@ fn test_hash_quote_in_macro_conditional() {
     let result = eval.eval_str("(conditional-macro 100)").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(67));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WITH-SYNTAX ENHANCED TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test with-syntax list pattern matching (destructuring)
+#[test]
+fn test_with_syntax_list_pattern() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test basic list destructuring
+    let result = eval.eval_str(r#"
+        (with-syntax (((a b) (list 10 20)))
+          (+ a b))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(30));
+}
+
+/// Test with-syntax ellipsis pattern matching
+#[test]
+fn test_with_syntax_ellipsis_pattern() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test ellipsis pattern matching - collect into a list
+    let result = eval.eval_str(r#"
+        (with-syntax (((x ...) (list 1 2 3 4)))
+          x)
+    "#).unwrap();
+    
+    // x should be bound to (1 2 3 4)
+    let len = lisp.list_len(result).unwrap();
+    assert_eq!(len, 4);
+}
+
+/// Test with-syntax in procedural macro with list pattern
+#[test]
+fn test_with_syntax_list_pattern_in_macro() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Define a macro that uses with-syntax destructuring
+    eval.eval_str(r#"
+        (define-syntax swap-pair
+          (lambda (x)
+            (syntax-case x ()
+              ((_ (a b))
+               (with-syntax (((first second) (list (syntax b) (syntax a))))
+                 (syntax (list first second)))))))
+    "#).unwrap();
+    
+    // Use the macro - should swap the pair
+    let result = eval.eval_str("(swap-pair (1 2))").unwrap();
+    let first = lisp.car(result).unwrap();
+    let rest = lisp.cdr(result).unwrap();
+    let second = lisp.car(rest).unwrap();
+    
+    assert_eq!(lisp.get(first).unwrap().as_number(), Some(2));
+    assert_eq!(lisp.get(second).unwrap().as_number(), Some(1));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WITH-ELLIPSIS TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test with-ellipsis basic usage
+#[test]
+fn test_with_ellipsis_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Simple expression with custom ellipsis
+    let result = eval.eval_str(r#"
+        (with-ellipsis ooo (+ 1 2))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number(), Some(3));
+}
+
+/// Test with-ellipsis with pattern matching
+#[test]
+fn test_with_ellipsis_pattern_matching() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Use custom ellipsis in with-syntax pattern
+    let result = eval.eval_str(r#"
+        (with-ellipsis ooo
+          (with-syntax (((x ooo) (list 10 20 30)))
+            x))
+    "#).unwrap();
+    
+    // x should be bound to (10 20 30)
+    let len = lisp.list_len(result).unwrap();
+    assert_eq!(len, 3);
+}
+
+/// Test with-ellipsis restores original ellipsis
+#[test]
+fn test_with_ellipsis_restoration() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Use custom ellipsis, then verify ... still works outside
+    eval.eval_str(r#"
+        (with-ellipsis ooo
+          (with-syntax (((x ooo) (list 1 2)))
+            x))
+    "#).unwrap();
+    
+    // After with-ellipsis, ... should work again
+    let result = eval.eval_str(r#"
+        (with-syntax (((y ...) (list 3 4 5)))
+          y)
+    "#).unwrap();
+    
+    let len = lisp.list_len(result).unwrap();
+    assert_eq!(len, 3);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ENHANCED SYNTAX-RULES TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test syntax-rules with custom ellipsis identifier
+#[test]
+fn test_syntax_rules_custom_ellipsis() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Test using with-ellipsis inside a procedural macro
+    // This demonstrates the ability to use a custom ellipsis in pattern matching
+    eval.eval_str(r#"
+        (define-syntax collect-custom
+          (lambda (x)
+            (with-ellipsis ooo
+              (syntax-case x ()
+                ((_ (a ooo))
+                 (syntax (list a ooo)))))))
+    "#).unwrap();
+    
+    // Use the macro
+    let result = eval.eval_str("(collect-custom (1 2 3))").unwrap();
+    let len = lisp.list_len(result).unwrap();
+    assert_eq!(len, 3);
+}

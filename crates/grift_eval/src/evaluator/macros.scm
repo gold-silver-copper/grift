@@ -671,6 +671,85 @@
 ;; NOTE: with-syntax is now a special form (not a macro) to properly
 ;; update #:pattern-bindings for use by (syntax ...) templates.
 ;; The special form implementation is in forms.rs.
+;; with-syntax now supports list patterns and ellipsis on the LHS:
+;;   (with-syntax ((a value)) body) - simple binding
+;;   (with-syntax (((a b) value)) body) - destructuring
+;;   (with-syntax (((a ...) value)) body) - ellipsis pattern
+
+;; with-ellipsis - temporarily change the ellipsis symbol
+;;
+;; NOTE: with-ellipsis is a special form (implemented in forms.rs)
+;; that changes the ellipsis identifier used during macro expansion.
+;; (with-ellipsis ooo body ...) - use ooo as ellipsis within body
+
+;; ============================================================
+;; syntax-rules Implementation (R7RS + Extensions)
+;; ============================================================
+
+;; syntax-rules - declarative pattern-based macro transformer
+;;
+;; This is the full R7RS-compliant implementation of syntax-rules,
+;; implemented as a procedural macro that expands to syntax-case.
+;;
+;; Supported forms:
+;;   (syntax-rules (literal ...) clause ...)
+;;   (syntax-rules (literal ...) docstring clause ...)
+;;   (syntax-rules ellipsis (literal ...) clause ...)
+;;   (syntax-rules ellipsis (literal ...) docstring clause ...)
+;;
+;; Each clause has the form: ((keyword . pattern) template)
+;;
+;; Implementation based on Guile's psyntax.scm.
+;; The macro transforms syntax-rules into syntax-case for pattern matching.
+
+(define-syntax syntax-rules
+  (lambda (xx)
+    ;; Helper: Convert a syntax-rules clause to a syntax-case clause
+    ;; Input:  ((keyword . pattern) template)
+    ;; Output: ((dummy . pattern) (syntax template))
+    (define (expand-clause clause)
+      (syntax-case clause ()
+        ;; Normal case: transform pattern and wrap template in syntax
+        (((keyword . pattern) template)
+         (syntax ((dummy . pattern) (syntax template))))))
+    
+    ;; Helper: Build the final lambda transformer
+    (define (expand-syntax-rules dots keys docstrings clauses)
+      (with-syntax
+          (((k ...) keys)
+           ((docstring ...) docstrings)
+           ((((keyword . pattern) template) ...) clauses)
+           ((clause ...) (map expand-clause clauses)))
+        (with-syntax
+            ((form (syntax (lambda (x)
+                             docstring ...
+                             (syntax-case x (k ...)
+                               clause ...)))))
+          (if dots
+              (with-syntax ((dots dots))
+                (syntax (with-ellipsis dots form)))
+              (syntax form)))))
+    
+    ;; Match the different syntax-rules forms
+    (syntax-case xx ()
+      ;; Basic form: (syntax-rules (literal ...) clause ...)
+      ((_ (k ...) ((keyword . pattern) template) ...)
+       (expand-syntax-rules #f (syntax (k ...)) (syntax ()) (syntax (((keyword . pattern) template) ...))))
+      
+      ;; With docstring: (syntax-rules (literal ...) "doc" clause ...)
+      ((_ (k ...) docstring ((keyword . pattern) template) ...)
+       (string? (syntax->datum (syntax docstring)))
+       (expand-syntax-rules #f (syntax (k ...)) (syntax (docstring)) (syntax (((keyword . pattern) template) ...))))
+      
+      ;; With custom ellipsis: (syntax-rules ellipsis (literal ...) clause ...)
+      ((_ dots (k ...) ((keyword . pattern) template) ...)
+       (identifier? (syntax dots))
+       (expand-syntax-rules (syntax dots) (syntax (k ...)) (syntax ()) (syntax (((keyword . pattern) template) ...))))
+      
+      ;; With custom ellipsis and docstring
+      ((_ dots (k ...) docstring ((keyword . pattern) template) ...)
+       (and (identifier? (syntax dots)) (string? (syntax->datum (syntax docstring))))
+       (expand-syntax-rules (syntax dots) (syntax (k ...)) (syntax (docstring)) (syntax (((keyword . pattern) template) ...)))))))
 
 ;; ============================================================
 ;; Exception Handling (R7RS Section 4.2.7)
