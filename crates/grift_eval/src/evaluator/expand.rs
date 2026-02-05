@@ -498,27 +498,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Get minimum length a pattern requires
-    fn pattern_min_length(&self, pattern: ArenaIndex, literals: ArenaIndex) -> Result<usize, EvalError> {
-        match self.lisp.get(pattern)? {
-            Value::Nil => Ok(0),
-            Value::Cons { .. } => {
-                let cdr = self.lisp.cdr(pattern)?;
-                // Check for ellipsis which consumes variable number of elements
-                if self.has_ellipsis(cdr)? {
-                    // Pattern with ellipsis: element before ... is repeated
-                    // Get rest pattern (nil if cdr is just the symbol ...)
-                    let rest = match self.lisp.get(cdr)? {
-                        Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr
-                        Value::Cons { .. } => self.lisp.cdr(cdr)?,  // (... . rest)
-                        _ => self.lisp.nil()?,
-                    };
-                    return self.pattern_min_length(rest, literals);
+    /// Calculate minimum number of elements matched by a pattern
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested patterns.
+    fn pattern_min_length(&self, mut pattern: ArenaIndex, _literals: ArenaIndex) -> Result<usize, EvalError> {
+        let mut length = 0;
+        
+        loop {
+            match self.lisp.get(pattern)? {
+                Value::Nil => return Ok(length),
+                Value::Cons { .. } => {
+                    let cdr = self.lisp.cdr(pattern)?;
+                    // Check for ellipsis which consumes variable number of elements
+                    if self.has_ellipsis(cdr)? {
+                        // Pattern with ellipsis: element before ... is repeated
+                        // Get rest pattern (nil if cdr is just the symbol ...)
+                        let rest = match self.lisp.get(cdr)? {
+                            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr
+                            Value::Cons { .. } => self.lisp.cdr(cdr)?,  // (... . rest)
+                            _ => self.lisp.nil()?,
+                        };
+                        // Continue with rest pattern (tail recursion)
+                        pattern = rest;
+                        continue;
+                    }
+                    // Regular element: 1 + rest
+                    length += 1;
+                    pattern = cdr;
                 }
-                // Regular element: 1 + rest
-                let rest_len = self.pattern_min_length(cdr, literals)?;
-                Ok(1 + rest_len)
+                _ => return Ok(length),
             }
-            _ => Ok(0),
         }
     }
 
@@ -533,50 +542,86 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(vars)
     }
 
+    /// Collect pattern variables into a list
+    /// 
+    /// Iterative implementation using a work queue to avoid stack overflow.
     fn collect_pattern_vars_into(
         &self,
         pattern: ArenaIndex,
         literals: ArenaIndex,
         vars: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
-        match self.lisp.get(pattern)? {
-            Value::Symbol(_) => {
-                // Skip _, ..., and literals
-                if !self.lisp.symbol_matches(pattern, "_")?
-                    && !self.lisp.symbol_matches(pattern, "...")?
-                    && !self.is_literal(pattern, literals)?
-                {
-                    *vars = self.lisp.cons(pattern, *vars)?;
-                }
-                Ok(())
-            }
-            Value::Cons { .. } => {
-                let car = self.lisp.car(pattern)?;
-                let cdr = self.lisp.cdr(pattern)?;
-                self.collect_pattern_vars_into(car, literals, vars)?;
-                
-                // Handle ellipsis - two cases:
-                // 1. cdr is the symbol ... (improper list like (a . ...))
-                // 2. cdr is a list starting with ... (like (a ... rest))
-                match self.lisp.get(cdr)? {
-                    Value::Symbol(_) if self.lisp.symbol_matches(cdr, "...")? => {
-                        // Case 1: cdr IS the ellipsis symbol - no more vars to collect
-                        return Ok(());
+        // Use a work queue for depth-first traversal
+        let mut queue = [ArenaIndex::new(0); 64];
+        let mut queue_len = 1;
+        queue[0] = pattern;
+        
+        while queue_len > 0 {
+            // Pop from queue
+            queue_len -= 1;
+            let current = queue[queue_len];
+            
+            match self.lisp.get(current)? {
+                Value::Symbol(_) => {
+                    // Skip _, ..., and literals
+                    if !self.lisp.symbol_matches(current, "_")?
+                        && !self.lisp.symbol_matches(current, "...")?
+                        && !self.is_literal(current, literals)?
+                    {
+                        *vars = self.lisp.cons(current, *vars)?;
                     }
-                    Value::Cons { .. } => {
-                        let first = self.lisp.car(cdr)?;
-                        if self.lisp.symbol_matches(first, "...")? {
-                            // Case 2: cdr starts with ... - skip it and process rest
-                            let rest = self.lisp.cdr(cdr)?;
-                            return self.collect_pattern_vars_into(rest, literals, vars);
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    
+                    // Handle ellipsis - two cases:
+                    // 1. cdr is the symbol ... (improper list like (a . ...))
+                    // 2. cdr is a list starting with ... (like (a ... rest))
+                    let should_process_cdr = match self.lisp.get(cdr)? {
+                        Value::Symbol(_) if self.lisp.symbol_matches(cdr, "...")? => {
+                            // Case 1: cdr IS the ellipsis symbol - no more vars to collect
+                            false
                         }
+                        Value::Cons { .. } => {
+                            let first = self.lisp.car(cdr)?;
+                            if self.lisp.symbol_matches(first, "...")? {
+                                // Case 2: cdr starts with ... - skip it and process rest
+                                let rest = self.lisp.cdr(cdr)?;
+                                if queue_len < queue.len() {
+                                    queue[queue_len] = rest;
+                                    queue_len += 1;
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        _ => true,
+                    };
+                    
+                    // Add car and cdr to queue
+                    if queue_len + 2 > queue.len() {
+                        // Queue full - this is unlikely for normal patterns
+                        // Just process car now and continue with cdr
+                        self.collect_pattern_vars_into(car, literals, vars)?;
+                        if should_process_cdr {
+                            self.collect_pattern_vars_into(cdr, literals, vars)?;
+                        }
+                    } else {
+                        if should_process_cdr {
+                            queue[queue_len] = cdr;
+                            queue_len += 1;
+                        }
+                        queue[queue_len] = car;
+                        queue_len += 1;
                     }
-                    _ => {}
                 }
-                self.collect_pattern_vars_into(cdr, literals, vars)
+                _ => {}
             }
-            _ => Ok(()),
         }
+        
+        Ok(())
     }
 
     /// Match an expression against a pattern
@@ -852,6 +897,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Transcribe a list in template
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested templates.
     fn transcribe_list(
         &mut self,
         template: ArenaIndex,
@@ -874,10 +921,64 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             );
         }
 
-        // Regular list: transcribe each element
-        let new_car = self.transcribe_template(car, bindings, renames, def_env)?;
-        let new_cdr = self.transcribe_template(cdr, bindings, renames, def_env)?;
-        self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+        // Regular list: transcribe each element iteratively
+        // Collect all elements first
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
+        let mut count = 0;
+        let mut current = template;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, template));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            
+            current = self.lisp.cdr(current)?;
+            
+            // Check if we've hit a special form in the middle of the list
+            if count > 0 {
+                if let Value::Cons { .. } = self.lisp.get(current)? {
+                    let next_car = self.lisp.car(current)?;
+                    let next_cdr = self.lisp.cdr(current)?;
+                    
+                    // Stop if we hit ellipsis or binding keyword in middle
+                    if self.has_ellipsis(next_cdr)? || self.is_binding_keyword(next_car)? {
+                        // Process collected elements, then handle rest specially
+                        // Process the remaining special part
+                        let rest_transcribed = self.transcribe_template(current, bindings, renames, def_env)?;
+                        let mut result = rest_transcribed;
+                        
+                        // Add the collected elements in reverse
+                        for i in (0..count).rev() {
+                            let transcribed = self.transcribe_template(elements[i], bindings, renames, def_env)?;
+                            result = self.lisp.cons(transcribed, result)?;
+                        }
+                        
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+        
+        // Transcribe all collected elements
+        for i in 0..count {
+            elements[i] = self.transcribe_template(elements[i], bindings, renames, def_env)?;
+        }
+        
+        // Rebuild the list from the end
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            // Improper list - transcribe the tail
+            self.transcribe_template(current, bindings, renames, def_env)?
+        };
+        
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 
     /// Find pattern variables that have list bindings (from ellipsis matching)
@@ -887,43 +988,71 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
 
+    /// Find ellipsis vars in template (iterative)
+    /// 
+    /// Uses a work queue to avoid stack overflow.
     fn find_ellipsis_vars_into(
         &self,
         template: ArenaIndex,
         bindings: ArenaIndex,
         result: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
-        match self.lisp.get(template)? {
-            Value::Symbol(_) => {
-                // Check if this symbol is bound to a list (including empty list)
-                // An ellipsis variable can be bound to:
-                // - Cons (non-empty list) - from one or more matches
-                // - Nil (empty list) - from zero matches
-                if let Some(val) = self.bindings_lookup(bindings, template)? {
-                    match self.lisp.get(val)? {
-                        Value::Cons { .. } | Value::Nil => {
-                            // Add to result if not already there
-                            if self.bindings_lookup(*result, template)?.is_none() {
-                                *result = self.lisp.cons(template, *result)?;
+        // Use a work queue
+        let mut queue = [ArenaIndex::new(0); 64];
+        let mut queue_len = 1;
+        queue[0] = template;
+        
+        while queue_len > 0 {
+            // Pop from queue
+            queue_len -= 1;
+            let current = queue[queue_len];
+            
+            match self.lisp.get(current)? {
+                Value::Symbol(_) => {
+                    // Check if this symbol is bound to a list (including empty list)
+                    // An ellipsis variable can be bound to:
+                    // - Cons (non-empty list) - from one or more matches
+                    // - Nil (empty list) - from zero matches
+                    if let Some(val) = self.bindings_lookup(bindings, current)? {
+                        match self.lisp.get(val)? {
+                            Value::Cons { .. } | Value::Nil => {
+                                // Add to result if not already there
+                                if self.bindings_lookup(*result, current)?.is_none() {
+                                    *result = self.lisp.cons(current, *result)?;
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
-                Ok(())
-            }
-            Value::Cons { .. } => {
-                let car = self.lisp.car(template)?;
-                let cdr = self.lisp.cdr(template)?;
-                self.find_ellipsis_vars_into(car, bindings, result)?;
-                // Don't recurse into ellipsis
-                if !self.has_ellipsis(cdr)? {
-                    self.find_ellipsis_vars_into(cdr, bindings, result)?;
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    
+                    // Don't recurse into ellipsis
+                    let should_process_cdr = !self.has_ellipsis(cdr)?;
+                    
+                    // Add to queue
+                    if queue_len + 2 > queue.len() {
+                        // Queue full - fall back to recursive
+                        self.find_ellipsis_vars_into(car, bindings, result)?;
+                        if should_process_cdr {
+                            self.find_ellipsis_vars_into(cdr, bindings, result)?;
+                        }
+                    } else {
+                        if should_process_cdr {
+                            queue[queue_len] = cdr;
+                            queue_len += 1;
+                        }
+                        queue[queue_len] = car;
+                        queue_len += 1;
+                    }
                 }
-                Ok(())
+                _ => {}
             }
-            _ => Ok(()),
         }
+        
+        Ok(())
     }
 
     /// Create bindings for i-th iteration of ellipsis expansion
@@ -1221,17 +1350,62 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(false)
     }
 
-    /// Check if a symbol appears in an expression (recursively)
+    /// Check if a symbol appears in an expression
+    /// 
+    /// Iterative implementation using a work queue to avoid stack overflow.
     fn symbol_appears_in(&self, sym: ArenaIndex, expr: ArenaIndex) -> Result<bool, EvalError> {
+        // Use a fixed-size work queue for depth-first traversal
+        let mut queue = [ArenaIndex::new(0); 64];
+        let mut queue_len = 1;
+        queue[0] = expr;
+        
+        while queue_len > 0 {
+            // Pop from queue
+            queue_len -= 1;
+            let current = queue[queue_len];
+            
+            match self.lisp.get(current)? {
+                Value::Symbol(_) => {
+                    if self.symbols_eq(sym, current)? {
+                        return Ok(true);
+                    }
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    
+                    // Add both car and cdr to queue if there's space
+                    if queue_len + 2 > queue.len() {
+                        // Queue full - fall back to recursive check for this subtree
+                        if self.symbol_appears_in_recursive(sym, car)? || self.symbol_appears_in_recursive(sym, cdr)? {
+                            return Ok(true);
+                        }
+                    } else {
+                        queue[queue_len] = cdr;
+                        queue_len += 1;
+                        queue[queue_len] = car;
+                        queue_len += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        Ok(false)
+    }
+    
+    /// Recursive fallback for symbol_appears_in when queue is full
+    /// This should rarely be called for normal code.
+    fn symbol_appears_in_recursive(&self, sym: ArenaIndex, expr: ArenaIndex) -> Result<bool, EvalError> {
         match self.lisp.get(expr)? {
             Value::Symbol(_) => self.symbols_eq(sym, expr),
             Value::Cons { .. } => {
                 let car = self.lisp.car(expr)?;
                 let cdr = self.lisp.cdr(expr)?;
-                if self.symbol_appears_in(sym, car)? {
+                if self.symbol_appears_in_recursive(sym, car)? {
                     return Ok(true);
                 }
-                self.symbol_appears_in(sym, cdr)
+                self.symbol_appears_in_recursive(sym, cdr)
             }
             _ => Ok(false),
         }
@@ -1253,56 +1427,66 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Expand expression with rename environment
+    /// Expand an expression (iterative to avoid stack overflow)
+    /// 
+    /// This function uses a loop to handle tail recursion when macro expansion
+    /// produces another expression that needs expansion.
     fn expand_expr(
         &mut self,
-        expr: ArenaIndex,
+        mut expr: ArenaIndex,
         renames: ArenaIndex,
     ) -> EvalResult {
-        match self.lisp.get(expr)? {
-            Value::Symbol(_) => {
-                // Apply any pending renames
-                self.rename_lookup(expr, renames)
-            }
-
-            Value::Nil => Ok(self.lisp.nil()?),
-
-            Value::Cons { .. } => {
-                let head = self.lisp.car(expr)?;
-                let args = self.lisp.cdr(expr)?;
-
-                // Check for special forms that affect expansion
-                if let Value::Symbol(_) = self.lisp.get(head)? {
-                    if self.lisp.symbol_matches(head, "quote")? {
-                        // Don't expand inside quote
-                        return Ok(expr);
-                    }
-
-                    if self.lisp.symbol_matches(head, "define-syntax")? {
-                        return self.expand_define_syntax(args);
-                    }
-
-                    if self.lisp.symbol_matches(head, "let-syntax")? {
-                        return self.expand_let_syntax(args, renames);
-                    }
-
-                    // Check for macro invocation
-                    if let Some(transformer) = self.lookup_macro(head)? {
-                        let expanded = self.apply_macro(transformer, expr)?;
-                        // Re-expand the result
-                        return self.expand_expr(expanded, renames);
-                    }
+        // Loop to handle tail recursion from macro expansion
+        loop {
+            match self.lisp.get(expr)? {
+                Value::Symbol(_) => {
+                    // Apply any pending renames
+                    return self.rename_lookup(expr, renames);
                 }
 
-                // Not a macro - expand subexpressions
-                self.expand_application(expr, renames)
-            }
+                Value::Nil => return Ok(self.lisp.nil()?),
 
-            // Atoms pass through unchanged
-            _ => Ok(expr),
+                Value::Cons { .. } => {
+                    let head = self.lisp.car(expr)?;
+                    let args = self.lisp.cdr(expr)?;
+
+                    // Check for special forms that affect expansion
+                    if let Value::Symbol(_) = self.lisp.get(head)? {
+                        if self.lisp.symbol_matches(head, "quote")? {
+                            // Don't expand inside quote
+                            return Ok(expr);
+                        }
+
+                        if self.lisp.symbol_matches(head, "define-syntax")? {
+                            return self.expand_define_syntax(args);
+                        }
+
+                        if self.lisp.symbol_matches(head, "let-syntax")? {
+                            return self.expand_let_syntax(args, renames);
+                        }
+
+                        // Check for macro invocation
+                        if let Some(transformer) = self.lookup_macro(head)? {
+                            let expanded = self.apply_macro(transformer, expr)?;
+                            // Re-expand the result (tail recursion - loop back)
+                            expr = expanded;
+                            continue;
+                        }
+                    }
+
+                    // Not a macro - expand subexpressions
+                    return self.expand_application(expr, renames);
+                }
+
+                // Atoms pass through unchanged
+                _ => return Ok(expr),
+            }
         }
     }
 
     /// Expand a function application (non-macro)
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested lists.
     fn expand_application(
         &mut self,
         expr: ArenaIndex,
@@ -1312,13 +1496,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(self.lisp.nil()?);
         }
 
-        let car = self.lisp.car(expr)?;
-        let cdr = self.lisp.cdr(expr)?;
-
-        let new_car = self.expand_expr(car, renames)?;
-        let new_cdr = self.expand_application(cdr, renames)?;
-
-        self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+        // Collect all elements first (iteratively)
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
+        let mut count = 0;
+        let mut current = expr;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, expr));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Expand each element (this may recurse through expand_expr, but not through expand_application)
+        for i in 0..count {
+            elements[i] = self.expand_expr(elements[i], renames)?;
+        }
+        
+        // Rebuild the list from the end (iteratively)
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            // Improper list - keep the tail as-is
+            current
+        };
+        
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 
     /// Look up macro in macro environment
@@ -1587,6 +1796,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Expand a body (list of expressions)
+    /// Expand a body (list of expressions)
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested lists.
     fn expand_body(
         &mut self,
         body: ArenaIndex,
@@ -1596,13 +1808,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(self.lisp.nil()?);
         }
 
-        let first = self.lisp.car(body)?;
-        let rest = self.lisp.cdr(body)?;
-
-        let expanded_first = self.expand_expr(first, renames)?;
-        let expanded_rest = self.expand_body(rest, renames)?;
-
-        self.lisp.cons(expanded_first, expanded_rest).map_err(Into::into)
+        // Collect all elements first (iteratively)
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
+        let mut count = 0;
+        let mut current = body;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, body));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Expand each element
+        for i in 0..count {
+            elements[i] = self.expand_expr(elements[i], renames)?;
+        }
+        
+        // Rebuild the list from the end (iteratively)
+        let mut result = self.lisp.nil()?;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 }
 
@@ -1624,23 +1855,69 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// (syntax->datum #'(a b c))  ; => (a b c)
     /// (syntax->datum #'42)       ; => 42
     /// ```
+    /// Unwrap syntax objects to get datums (iterative)
+    /// 
+    /// Uses iteration for list traversal to avoid stack overflow.
     pub fn syntax_to_datum_recursive(&mut self, stx: ArenaIndex) -> EvalResult {
+        // Handle simple cases directly
         match self.lisp.get(stx)? {
-            // Syntax object - unwrap and recurse on the wrapped expression
             Value::Syntax { expr, .. } => {
-                self.syntax_to_datum_recursive(expr)
+                // Unwrap one level and continue
+                return self.syntax_to_datum_recursive(expr);
             }
-            // Pair - recurse on both car and cdr
             Value::Cons { .. } => {
-                let car = self.lisp.car(stx)?;
-                let cdr = self.lisp.cdr(stx)?;
-                let new_car = self.syntax_to_datum_recursive(car)?;
-                let new_cdr = self.syntax_to_datum_recursive(cdr)?;
-                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+                // Process list iteratively
             }
             // Atoms pass through unchanged
-            _ => Ok(stx),
+            _ => return Ok(stx),
         }
+        
+        // Process list iteratively
+        let mut elements = [ArenaIndex::new(0); 64];
+        let mut count = 0;
+        let mut current = stx;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                // Buffer full - fall back to recursive for remainder
+                let car = self.lisp.car(current)?;
+                let cdr = self.lisp.cdr(current)?;
+                let new_car = self.syntax_to_datum_recursive(car)?;
+                let new_cdr = self.syntax_to_datum_recursive(cdr)?;
+                let tail = self.lisp.cons(new_car, new_cdr)?;
+                
+                // Build result from collected elements
+                let mut result = tail;
+                for i in (0..count).rev() {
+                    result = self.lisp.cons(elements[i], result)?;
+                }
+                return Ok(result);
+            }
+            
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Process all collected elements
+        for i in 0..count {
+            elements[i] = self.syntax_to_datum_recursive(elements[i])?;
+        }
+        
+        // Handle tail
+        let tail = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            self.syntax_to_datum_recursive(current)?
+        };
+        
+        // Rebuild list
+        let mut result = tail;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 
     /// Wrap a datum with syntax context from a template identifier.
@@ -1687,29 +1964,74 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.datum_to_syntax_with_context(datum, marks, subst)
     }
 
-    /// Helper to recursively wrap a datum with a given context.
+    /// Helper to wrap a datum with a given context (iterative)
+    /// 
+    /// Uses iteration for list traversal to avoid stack overflow.
     fn datum_to_syntax_with_context(
         &mut self,
         datum: ArenaIndex,
         marks: ArenaIndex,
         subst: ArenaIndex,
     ) -> EvalResult {
+        // Handle simple cases directly
         match self.lisp.get(datum)? {
             // Symbols become syntax objects
             Value::Symbol(_) => {
-                self.lisp.syntax(datum, marks, subst).map_err(Into::into)
+                return self.lisp.syntax(datum, marks, subst).map_err(Into::into);
             }
-            // Pairs - recursively wrap car and cdr
             Value::Cons { .. } => {
-                let car = self.lisp.car(datum)?;
-                let cdr = self.lisp.cdr(datum)?;
-                let wrapped_car = self.datum_to_syntax_with_context(car, marks, subst)?;
-                let wrapped_cdr = self.datum_to_syntax_with_context(cdr, marks, subst)?;
-                self.lisp.cons(wrapped_car, wrapped_cdr).map_err(Into::into)
+                // Process list iteratively
             }
             // Other atoms pass through unchanged (numbers, strings, etc.)
-            _ => Ok(datum),
+            _ => return Ok(datum),
         }
+        
+        // Process list iteratively
+        let mut elements = [ArenaIndex::new(0); 64];
+        let mut count = 0;
+        let mut current = datum;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                // Buffer full - fall back to recursive for remainder
+                let car = self.lisp.car(current)?;
+                let cdr = self.lisp.cdr(current)?;
+                let wrapped_car = self.datum_to_syntax_with_context(car, marks, subst)?;
+                let wrapped_cdr = self.datum_to_syntax_with_context(cdr, marks, subst)?;
+                let tail = self.lisp.cons(wrapped_car, wrapped_cdr)?;
+                
+                // Build result from collected elements
+                let mut result = tail;
+                for i in (0..count).rev() {
+                    result = self.lisp.cons(elements[i], result)?;
+                }
+                return Ok(result);
+            }
+            
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Process all collected elements
+        for i in 0..count {
+            elements[i] = self.datum_to_syntax_with_context(elements[i], marks, subst)?;
+        }
+        
+        // Handle tail
+        let tail = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            self.datum_to_syntax_with_context(current, marks, subst)?
+        };
+        
+        // Rebuild list
+        let mut result = tail;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 
     /// Generate a list of fresh temporary identifiers.

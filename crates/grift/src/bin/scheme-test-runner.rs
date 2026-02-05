@@ -11,6 +11,7 @@ use grift_eval::*;
 use grift_parser::Lisp;
 use std::env;
 use std::fs;
+use std::thread;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -23,7 +24,26 @@ fn main() {
         std::process::exit(1);
     }
     
-    let test_file = &args[1];
+    let test_file = args[1].clone();
+    
+    // Run with increased stack size to handle complex macro expansions
+    // during initialization
+    let builder = thread::Builder::new()
+        .name("scheme-test-runner".into())
+        .stack_size(32 * 1024 * 1024); // 32 MB stack
+    
+    let handle = builder.spawn(move || run_tests(&test_file)).unwrap();
+    
+    match handle.join() {
+        Ok(_) => {},
+        Err(e) => {
+            eprintln!("Thread panicked: {:?}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_tests(test_file: &str) {
     
     println!("═══════════════════════════════════════════════════════════");
     println!("  Grift Scheme Test Runner");
@@ -42,8 +62,9 @@ fn main() {
     };
     
     // Create evaluator with large arena
-    let lisp: Lisp<100000> = Lisp::new();
-    let mut eval = match Evaluator::new(&lisp) {
+    // Use Box to allocate on heap to avoid stack overflow
+    let lisp: Box<Lisp<100000>> = Box::new(Lisp::new());
+    let mut eval = match Evaluator::new(&*lisp) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to create evaluator: {:?}", e);
@@ -188,7 +209,7 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
     (newline)
     (display "Tests passed: ")
     (display *tests-passed*)
-    (newline)))
+   (newline)))
 "#;
     
     // Execute the setup
@@ -203,6 +224,7 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
     let mut buffer = String::new();
     let mut in_test = false;
     let mut paren_count = 0;
+    let mut skip_current_form = false;
     
     for line in lines {
         let trimmed = line.trim();
@@ -210,6 +232,20 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
         // Skip comments and empty lines when not in a test
         if !in_test && (trimmed.is_empty() || trimmed.starts_with(';')) {
             continue;
+        }
+        
+        // Check if this is a form we should skip (macro definitions that conflict with our setup)
+        if paren_count == 0 && !in_test {
+            if trimmed.starts_with("(define-syntax test") || 
+               trimmed.starts_with("(define-syntax test-assert") ||
+               trimmed.starts_with("(define (test-begin") ||
+               trimmed.starts_with("(define (test-end") ||
+               trimmed.starts_with("(define *tests-run*") ||
+               trimmed.starts_with("(define *tests-passed*") ||
+               trimmed.starts_with("(define *test-results*") ||
+               trimmed.starts_with("(define (record-test") {
+                skip_current_form = true;
+            }
         }
         
         buffer.push_str(line);
@@ -226,13 +262,18 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
         
         // If parentheses are balanced and we have content, try to execute
         if paren_count == 0 && !buffer.trim().is_empty() {
-            match eval.eval_str(&buffer) {
-                Ok(_) => {
-                    // Success - continue
-                }
-                Err(e) => {
-                    eprintln!("Warning: Error in test block: {:?}", e);
-                    eprintln!("Skipping and continuing...");
+            if skip_current_form {
+                // Skip this form - it conflicts with our test infrastructure
+                skip_current_form = false;
+            } else {
+                match eval.eval_str(&buffer) {
+                    Ok(_) => {
+                        // Success - continue
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Error in test block: {:?}", e);
+                        eprintln!("Skipping and continuing...");
+                    }
                 }
             }
             buffer.clear();
