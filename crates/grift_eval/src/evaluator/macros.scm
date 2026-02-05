@@ -11,12 +11,23 @@
 ;; Internal Helpers
 ;; ============================================================
 
-;; Helper macro for processing a single binding
+;; Helper macro for processing a single binding (used by let*)
 ;; Transforms ((name val) body...) into ((lambda (name) body...) val)
 (define-syntax %let-binding
   (syntax-rules ()
     ((%let-binding (name val) body ...)  ;; Match a single binding
      ((lambda (name) body ...) val))))  ;; Expand to lambda application
+
+;; Helper for parallel let bindings (used by regular let)
+;; Collects all variables and values, then creates a single lambda application
+(define-syntax %let-parallel-helper
+  (syntax-rules ()
+    ;; Base case: all bindings processed, create lambda application
+    ((%let-parallel-helper () (vars ...) (vals ...) (body ...))
+     ((lambda (vars ...) body ...) vals ...))
+    ;; Recursive case: extract one var/val pair at a time
+    ((%let-parallel-helper ((var val) . rest) (vars ...) (vals ...) (body ...))
+     (%let-parallel-helper rest (vars ... var) (vals ... val) (body ...)))))
 
 ;; ============================================================
 ;; Binding Forms (let, let*)
@@ -36,7 +47,8 @@
     ((%named-let-helper loop ((var val) . rest) (vars ...) (vals ...) (body ...))
      (%named-let-helper loop rest (vars ... var) (vals ... val) (body ...)))))
 
-;; let - using recursive approach to avoid nested ellipsis bug
+;; let - R5RS parallel binding semantics
+;; All values are evaluated first, then all bindings happen simultaneously.
 ;; Supports both regular let and named let forms.
 ;; Pattern order matters: more specific patterns first.
 (define-syntax let
@@ -44,11 +56,23 @@
     ;; Empty bindings - just evaluate body
     ((let () body ...)
      (begin body ...))
-    ;; Regular let with one or more bindings - list as first arg after let
-    ;; This must come before named-let because ((first-binding . rest)) is more specific
+    ;; Regular let with bindings - use parallel binding helper
     ((let ((var val) . rest) body ...)
-     (%let-binding (var val) 
-       (let rest body ...)))
+     (%let-parallel-helper ((var val) . rest) () () (body ...)))
+    ;; Named let: (let name bindings body ...)
+    ;; name must be a symbol (not a list), followed by bindings
+    ((let loop bindings body ...)
+     (%named-let-helper loop bindings () () (body ...)))))
+
+;; Actually, let me simplify this. Let's use a different approach:
+(define-syntax let
+  (syntax-rules ()
+    ;; Empty bindings - just evaluate body
+    ((let () body ...)
+     (begin body ...))
+    ;; Regular let with bindings - check if first element is a list (binding pair)
+    ((let ((var val) . rest) body ...)
+     (%let-parallel-helper ((var val) . rest) () () (body ...)))
     ;; Named let: (let name bindings body ...)
     ;; name must be a symbol (not a list), followed by bindings
     ((let loop bindings body ...)

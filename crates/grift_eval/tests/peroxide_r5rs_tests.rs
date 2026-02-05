@@ -86,11 +86,9 @@ fn test_peroxide_r5rs_let_letrec() {
     // test 35 (let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x)))
     // In standard R5RS, regular let evaluates all bindings in the outer scope
     // So z = (+ 2 3) = 5, then x=7, result = (* 5 7) = 35
-    // However, grift currently implements let with sequential binding semantics
-    // So it behaves like let* and returns 70
+    // NOW FIXED: let uses proper parallel binding semantics
     let result = eval.eval_str("(let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x)))").unwrap();
-    // Note: This is a known difference from R5RS
-    assert_eq!(lisp.get(result).unwrap().as_number().unwrap(), 70);
+    assert_eq!(lisp.get(result).unwrap().as_number().unwrap(), 35);
     
     // test 70 (let ((x 2) (y 3)) (let* ((x 7) (z (+ x y))) (* z x)))
     // In let*, bindings are sequential
