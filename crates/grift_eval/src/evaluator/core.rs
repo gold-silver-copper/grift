@@ -593,7 +593,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if let Value::Symbol(_) = head {
             // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
             // Check if this symbol is bound as a variable. If so, skip macro expansion
-            // and treat it as a function application.
+            // and special form handling, treating it as a function application.
             let is_var_bound = self.is_variable_bound(env, car)?;
             
             // Check for macro invocation (evaluation-time expansion)
@@ -606,129 +606,133 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            // quote
-            if self.lisp.symbol_matches(car, "quote")? {
-                let val = self.lisp.car(cdr)?;
-                return Ok(TrampolineState::Return { val });
-            }
-            
-            // define-syntax - add macro to environment
-            if self.lisp.symbol_matches(car, "define-syntax")? {
-                return self.step_eval_define_syntax(cdr, env);
-            }
-            
-            // let-syntax - local macro bindings
-            if self.lisp.symbol_matches(car, "let-syntax")? {
-                return self.step_eval_let_syntax(cdr, env);
-            }
-            
-            // syntax-case - procedural macro pattern matching
-            if self.lisp.symbol_matches(car, "syntax-case")? {
-                return self.step_eval_syntax_case(cdr, env);
-            }
-            
-            // syntax - create syntax template
-            if self.lisp.symbol_matches(car, "syntax")? {
-                return self.step_eval_syntax(cdr, env);
-            }
-            
-            // with-syntax - bind pattern variables for use in syntax templates
-            // This updates #:pattern-bindings so that (syntax ...) can access them
-            if self.lisp.symbol_matches(car, "with-syntax")? {
-                return self.step_eval_with_syntax(cdr, env);
-            }
-            
-            // if - condition evaluated, then one branch selected
-            if self.lisp.symbol_matches(car, "if")? {
-                let cond_expr = self.lisp.car(cdr)?;
-                let rest = self.lisp.cdr(cdr)?;
-                let then_expr = self.lisp.car(rest)?;
-                let else_rest = self.lisp.cdr(rest)?;
-                let else_expr = if self.lisp.get(else_rest)?.is_nil() {
-                    self.lisp.nil()?
-                } else {
-                    self.lisp.car(else_rest)?
-                };
+            // Special forms can be shadowed by variable bindings (R5RS compliance)
+            // Only handle as special forms if NOT bound as a variable
+            if !is_var_bound {
+                // quote
+                if self.lisp.symbol_matches(car, "quote")? {
+                    let val = self.lisp.car(cdr)?;
+                    return Ok(TrampolineState::Return { val });
+                }
                 
-                // Push continuation for after condition is evaluated
-                // Data: (then_expr . (else_expr . env))
-                let data = self.pack3(then_expr, else_expr, env)?;
-                self.push_cont(CONT_IF_BRANCH, data, env)?;
+                // define-syntax - add macro to environment
+                if self.lisp.symbol_matches(car, "define-syntax")? {
+                    return self.step_eval_define_syntax(cdr, env);
+                }
                 
-                // Evaluate condition
-                return Ok(TrampolineState::Eval { expr: cond_expr, env });
-            }
-            
-            // lambda
-            if self.lisp.symbol_matches(car, "lambda")? {
-                let val = self.eval_lambda(cdr, env)?;
-                return Ok(TrampolineState::Return { val });
-            }
-            
-            // define
-            if self.lisp.symbol_matches(car, "define")? {
-                return self.eval_define(cdr, env);
-            }
-            
-            // set! - mutate variable binding
-            if self.lisp.symbol_matches(car, "set!")? {
-                return self.eval_set(cdr, env);
-            }
-            
-            // Note: let, let*, letrec, letrec* are now macros and
-            // are expanded during evaluation, so they never reach here.
-
-            // begin - continuation-based evaluation
-            if self.lisp.symbol_matches(car, "begin")? {
-                return self.step_eval_begin(cdr, env);
-            }
-
-            // Note: when, unless, and, or, cond are now macros and
-            // are expanded during evaluation, so they never reach here.
-            
-            // Note: case and do are now macros (Phase 9)
-            // and are expanded during evaluation, so they never reach here.
-            
-            // quasiquote - template with unquote (trampolined)
-            if self.lisp.symbol_matches(car, "quasiquote")? {
-                return self.eval_quasiquote(self.lisp.car(cdr)?, env);
-            }
-            
-            // eval - continuation-based evaluation at runtime
-            if self.lisp.symbol_matches(car, "eval")? {
-                let expr_to_eval = self.lisp.car(cdr)?;
-                // Push continuation to evaluate the result in global environment
-                // Data: env (single value)
-                let data = self.pack1(self.global_env)?;
-                self.push_cont(CONT_EVAL_EXPR, data, env)?;
-                // First evaluate the expression to get the code to eval
-                return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
-            }
-            
-            // apply - apply function to list of arguments
-            if self.lisp.symbol_matches(car, "apply")? {
-                return self.step_eval_apply(cdr, env);
-            }
-            
-            // values - return multiple values (as a special list)
-            if self.lisp.symbol_matches(car, "values")? {
-                return self.eval_values(cdr, env);
-            }
-            
-            // call-with-values - call producer, apply consumer to results
-            if self.lisp.symbol_matches(car, "call-with-values")? {
-                return self.step_eval_call_with_values(cdr, env);
-            }
-            
-            // call-with-current-continuation / call/cc - capture the current continuation
-            if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
-                || self.lisp.symbol_matches(car, "call/cc")? {
-                return self.step_eval_call_cc(cdr, env);
-            }
-            
-            // dynamic-wind - establish dynamic extent with before/after thunks
-            if self.lisp.symbol_matches(car, "dynamic-wind")? {
-                return self.step_eval_dynamic_wind(cdr, env);
+                // let-syntax - local macro bindings
+                if self.lisp.symbol_matches(car, "let-syntax")? {
+                    return self.step_eval_let_syntax(cdr, env);
+                }
+                
+                // syntax-case - procedural macro pattern matching
+                if self.lisp.symbol_matches(car, "syntax-case")? {
+                    return self.step_eval_syntax_case(cdr, env);
+                }
+                
+                // syntax - create syntax template
+                if self.lisp.symbol_matches(car, "syntax")? {
+                    return self.step_eval_syntax(cdr, env);
+                }
+                
+                // with-syntax - bind pattern variables for use in syntax templates
+                // This updates #:pattern-bindings so that (syntax ...) can access them
+                if self.lisp.symbol_matches(car, "with-syntax")? {
+                    return self.step_eval_with_syntax(cdr, env);
+                }
+                
+                // if - condition evaluated, then one branch selected
+                if self.lisp.symbol_matches(car, "if")? {
+                    let cond_expr = self.lisp.car(cdr)?;
+                    let rest = self.lisp.cdr(cdr)?;
+                    let then_expr = self.lisp.car(rest)?;
+                    let else_rest = self.lisp.cdr(rest)?;
+                    let else_expr = if self.lisp.get(else_rest)?.is_nil() {
+                        self.lisp.nil()?
+                    } else {
+                        self.lisp.car(else_rest)?
+                    };
+                    
+                    // Push continuation for after condition is evaluated
+                    // Data: (then_expr . (else_expr . env))
+                    let data = self.pack3(then_expr, else_expr, env)?;
+                    self.push_cont(CONT_IF_BRANCH, data, env)?;
+                    
+                    // Evaluate condition
+                    return Ok(TrampolineState::Eval { expr: cond_expr, env });
+                }
+                
+                // lambda
+                if self.lisp.symbol_matches(car, "lambda")? {
+                    let val = self.eval_lambda(cdr, env)?;
+                    return Ok(TrampolineState::Return { val });
+                }
+                
+                // define
+                if self.lisp.symbol_matches(car, "define")? {
+                    return self.eval_define(cdr, env);
+                }
+                
+                // set! - mutate variable binding
+                if self.lisp.symbol_matches(car, "set!")? {
+                    return self.eval_set(cdr, env);
+                }
+                
+                // Note: let, let*, letrec, letrec* are now macros and
+                // are expanded during evaluation, so they never reach here.
+    
+                // begin - continuation-based evaluation
+                if self.lisp.symbol_matches(car, "begin")? {
+                    return self.step_eval_begin(cdr, env);
+                }
+    
+                // Note: when, unless, and, or, cond are now macros and
+                // are expanded during evaluation, so they never reach here.
+                
+                // Note: case and do are now macros (Phase 9)
+                // and are expanded during evaluation, so they never reach here.
+                
+                // quasiquote - template with unquote (trampolined)
+                if self.lisp.symbol_matches(car, "quasiquote")? {
+                    return self.eval_quasiquote(self.lisp.car(cdr)?, env);
+                }
+                
+                // eval - continuation-based evaluation at runtime
+                if self.lisp.symbol_matches(car, "eval")? {
+                    let expr_to_eval = self.lisp.car(cdr)?;
+                    // Push continuation to evaluate the result in global environment
+                    // Data: env (single value)
+                    let data = self.pack1(self.global_env)?;
+                    self.push_cont(CONT_EVAL_EXPR, data, env)?;
+                    // First evaluate the expression to get the code to eval
+                    return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
+                }
+                
+                // apply - apply function to list of arguments
+                if self.lisp.symbol_matches(car, "apply")? {
+                    return self.step_eval_apply(cdr, env);
+                }
+                
+                // values - return multiple values (as a special list)
+                if self.lisp.symbol_matches(car, "values")? {
+                    return self.eval_values(cdr, env);
+                }
+                
+                // call-with-values - call producer, apply consumer to results
+                if self.lisp.symbol_matches(car, "call-with-values")? {
+                    return self.step_eval_call_with_values(cdr, env);
+                }
+                
+                // call-with-current-continuation / call/cc - capture the current continuation
+                if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
+                    || self.lisp.symbol_matches(car, "call/cc")? {
+                    return self.step_eval_call_cc(cdr, env);
+                }
+                
+                // dynamic-wind - establish dynamic extent with before/after thunks
+                if self.lisp.symbol_matches(car, "dynamic-wind")? {
+                    return self.step_eval_dynamic_wind(cdr, env);
+                }
             }
         }
         

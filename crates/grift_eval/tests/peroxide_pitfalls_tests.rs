@@ -29,14 +29,18 @@ fn test_peroxide_pitfalls_section_4_no_reserved_identifiers() {
     // (should-be 4.2 '(1 2 3) ((lambda (begin) (begin 1 2 3)) (lambda lambda lambda)))
     // When begin is a parameter, (begin 1 2 3) should call the function stored in begin
     // (lambda lambda lambda) is a function that returns its args as a list
-    // Note: In grift, special forms like begin cannot be shadowed even as lambda parameters
-    // This is a known limitation for simplicity
-    // Attempting the test would cause a parse error or return 3 instead of (1 2 3)
+    // NOW FIXED: Special forms can be shadowed by variable bindings
+    let result = eval.eval_str("((lambda (begin) (begin 1 2 3)) (lambda lambda lambda))").unwrap();
+    assert!(lisp.get(result).unwrap().is_cons());
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.get(first).unwrap().as_number().unwrap(), 1);
+    assert_eq!(lisp.list_len(result).unwrap(), 3);
     
     // Test 4.3: quote can be shadowed
     // (should-be 4.3 #f (let ((quote -)) (eqv? '1 1)))
-    // Note: In many implementations including grift, quote cannot be shadowed
-    // This is a known limitation for simplicity
+    // NOW FIXED: Special forms can be shadowed by variable bindings
+    let result = eval.eval_str("(let ((quote -)) (eqv? '1 1))").unwrap();
+    assert!(lisp.get(result).unwrap().is_false());
 }
 
 #[test]
