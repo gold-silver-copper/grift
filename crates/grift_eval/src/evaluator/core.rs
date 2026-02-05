@@ -25,6 +25,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
         let nil = lisp.nil()?;
+        let ellipsis = lisp.symbol("...")?;
         let mut eval = Evaluator {
             lisp,
             global_env: nil,
@@ -36,6 +37,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             gensym_counter: 0,
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
             output_callback: None, // No output callback by default
+            current_ellipsis: ellipsis, // Default ellipsis symbol
         };
         
         // Initialize global environment with builtins
@@ -639,6 +641,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // This updates #:pattern-bindings so that (syntax ...) can access them
                 if self.lisp.symbol_matches(car, "with-syntax")? {
                     return self.step_eval_with_syntax(cdr, env);
+                }
+                
+                // with-ellipsis - temporarily change the ellipsis symbol for macro expansion
+                // (with-ellipsis id body ...) - use id as ellipsis within body
+                if self.lisp.symbol_matches(car, "with-ellipsis")? {
+                    return self.step_eval_with_ellipsis(cdr, env);
                 }
                 
                 // if - condition evaluated, then one branch selected

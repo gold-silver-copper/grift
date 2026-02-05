@@ -479,19 +479,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(false)
     }
 
+    /// Check if a symbol matches the current ellipsis
+    fn is_ellipsis(&self, sym: ArenaIndex) -> Result<bool, EvalError> {
+        self.lisp.symbol_eq(sym, self.current_ellipsis).map_err(Into::into)
+    }
+
     /// Check if pattern cdr starts with ellipsis
     fn has_ellipsis(&self, pat_cdr: ArenaIndex) -> Result<bool, EvalError> {
         match self.lisp.get(pat_cdr)? {
-            // Case 1: pat_cdr is a list starting with ...
+            // Case 1: pat_cdr is a list starting with current ellipsis
             // Pattern like: (a ... rest) parsed as (a . (... . rest))
             Value::Cons { .. } => {
                 let first = self.lisp.car(pat_cdr)?;
-                self.lisp.symbol_matches(first, "...").map_err(Into::into)
+                self.is_ellipsis(first)
             }
             // Case 2: pat_cdr IS the ellipsis symbol itself
             // Pattern like: (a ...) parsed as improper list (a . ...)
             Value::Symbol(_) => {
-                self.lisp.symbol_matches(pat_cdr, "...").map_err(Into::into)
+                self.is_ellipsis(pat_cdr)
             }
             _ => Ok(false),
         }
@@ -563,9 +568,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             match self.lisp.get(current)? {
                 Value::Symbol(_) => {
-                    // Skip _, ..., and literals
+                    // Skip _, ellipsis, and literals
                     if !self.lisp.symbol_matches(current, "_")?
-                        && !self.lisp.symbol_matches(current, "...")?
+                        && !self.is_ellipsis(current)?
                         && !self.is_literal(current, literals)?
                     {
                         *vars = self.lisp.cons(current, *vars)?;
@@ -576,17 +581,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let cdr = self.lisp.cdr(current)?;
                     
                     // Handle ellipsis - two cases:
-                    // 1. cdr is the symbol ... (improper list like (a . ...))
-                    // 2. cdr is a list starting with ... (like (a ... rest))
+                    // 1. cdr is the ellipsis symbol (improper list like (a . ...))
+                    // 2. cdr is a list starting with ellipsis (like (a ... rest))
                     let should_process_cdr = match self.lisp.get(cdr)? {
-                        Value::Symbol(_) if self.lisp.symbol_matches(cdr, "...")? => {
+                        Value::Symbol(_) if self.is_ellipsis(cdr)? => {
                             // Case 1: cdr IS the ellipsis symbol - no more vars to collect
                             false
                         }
                         Value::Cons { .. } => {
                             let first = self.lisp.car(cdr)?;
-                            if self.lisp.symbol_matches(first, "...")? {
-                                // Case 2: cdr starts with ... - skip it and process rest
+                            if self.is_ellipsis(first)? {
+                                // Case 2: cdr starts with ellipsis - skip it and process rest
                                 let rest = self.lisp.cdr(cdr)?;
                                 if queue_len < queue.len() {
                                     queue[queue_len] = rest;
@@ -641,7 +646,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // Ellipsis symbol itself: error (shouldn't appear here)
-            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "...")? => {
+            Value::Symbol(_) if self.is_ellipsis(pattern)? => {
                 Err(self.make_error(ErrorKind::SyntaxError, pattern)
                     .with_message("misplaced ellipsis in pattern"))
             }

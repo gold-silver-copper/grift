@@ -66,4 +66,10 @@ pub struct Evaluator<'a, const N: usize> {
     /// When set, `display` and `newline` will call this function to produce output.
     /// This enables side effects during macro expansion to be visible.
     output_callback: Option<OutputCallback<N>>,
+    /// Current ellipsis symbol for macro expansion
+    /// 
+    /// Defaults to `...` but can be changed via `with-ellipsis`.
+    /// Used during pattern matching and template transcription to
+    /// recognize the ellipsis operator.
+    current_ellipsis: ArenaIndex,
 }
