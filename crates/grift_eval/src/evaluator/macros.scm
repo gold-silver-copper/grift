@@ -3,6 +3,8 @@
 ;;; These macros are loaded at startup and provide standard R7RS-compatible
 ;;; macro-based implementations of common forms.
 ;;;
+;;; All macros use syntax-case for pattern matching and template expansion.
+;;;
 ;;; Note: Due to a bug in nested ellipsis pattern matching (see 
 ;;; HYGIENIC_MACROS_IMPLEMENTATION.md Phase 7), we use recursive 
 ;;; implementations for binding forms instead of the standard R7RS patterns.
@@ -14,20 +16,22 @@
 ;; Helper macro for processing a single binding (used by let*)
 ;; Transforms ((name val) body...) into ((lambda (name) body...) val)
 (define-syntax %let-binding
-  (syntax-rules ()
-    ((%let-binding (name val) body ...)  ;; Match a single binding
-     ((lambda (name) body ...) val))))  ;; Expand to lambda application
+  (lambda (x)
+    (syntax-case x ()
+      ((%let-binding (name val) body ...)  ;; Match a single binding
+       (syntax ((lambda (name) body ...) val))))))  ;; Expand to lambda application
 
 ;; Helper for parallel let bindings (used by regular let)
 ;; Collects all variables and values, then creates a single lambda application
 (define-syntax %let-parallel-helper
-  (syntax-rules ()
-    ;; Base case: all bindings processed, create lambda application
-    ((%let-parallel-helper () (vars ...) (vals ...) (body ...))
-     ((lambda (vars ...) body ...) vals ...))
-    ;; Recursive case: extract one var/val pair at a time
-    ((%let-parallel-helper ((var val) . rest) (vars ...) (vals ...) (body ...))
-     (%let-parallel-helper rest (vars ... var) (vals ... val) (body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Base case: all bindings processed, create lambda application
+      ((%let-parallel-helper () (vars ...) (vals ...) (body ...))
+       (syntax ((lambda (vars ...) body ...) vals ...)))
+      ;; Recursive case: extract one var/val pair at a time
+      ((%let-parallel-helper ((var val) . rest) (vars ...) (vals ...) (body ...))
+       (syntax (%let-parallel-helper rest (vars ... var) (vals ... val) (body ...)))))))
 
 ;; ============================================================
 ;; Binding Forms (let, let*)
@@ -36,58 +40,47 @@
 ;; Helper for named let - single helper that builds the complete expansion
 ;; Replaces the old 3-helper chain (%named-let-build -> %named-let-expand -> %named-let-extract-and-call)
 (define-syntax %named-let-helper
-  (syntax-rules ()
-    ;; Base case: all bindings processed
-    ((%named-let-helper loop () (vars ...) (vals ...) (body ...))
-     ((lambda (vars ...)
-        (letrec ((loop (lambda (vars ...) . body)))
-          (loop vars ...)))
-      vals ...))
-    ;; Recursive case: extract one var/val pair at a time
-    ((%named-let-helper loop ((var val) . rest) (vars ...) (vals ...) (body ...))
-     (%named-let-helper loop rest (vars ... var) (vals ... val) (body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Base case: all bindings processed
+      ((%named-let-helper loop () (vars ...) (vals ...) (body ...))
+       (syntax ((lambda (vars ...)
+                  (letrec ((loop (lambda (vars ...) . body)))
+                    (loop vars ...)))
+                vals ...)))
+      ;; Recursive case: extract one var/val pair at a time
+      ((%named-let-helper loop ((var val) . rest) (vars ...) (vals ...) (body ...))
+       (syntax (%named-let-helper loop rest (vars ... var) (vals ... val) (body ...)))))))
 
 ;; let - R5RS parallel binding semantics
 ;; All values are evaluated first, then all bindings happen simultaneously.
 ;; Supports both regular let and named let forms.
 ;; Pattern order matters: more specific patterns first.
 (define-syntax let
-  (syntax-rules ()
-    ;; Empty bindings - just evaluate body
-    ((let () body ...)
-     (begin body ...))
-    ;; Regular let with bindings - use parallel binding helper
-    ((let ((var val) . rest) body ...)
-     (%let-parallel-helper ((var val) . rest) () () (body ...)))
-    ;; Named let: (let name bindings body ...)
-    ;; name must be a symbol (not a list), followed by bindings
-    ((let loop bindings body ...)
-     (%named-let-helper loop bindings () () (body ...)))))
-
-;; Actually, let me simplify this. Let's use a different approach:
-(define-syntax let
-  (syntax-rules ()
-    ;; Empty bindings - just evaluate body
-    ((let () body ...)
-     (begin body ...))
-    ;; Regular let with bindings - check if first element is a list (binding pair)
-    ((let ((var val) . rest) body ...)
-     (%let-parallel-helper ((var val) . rest) () () (body ...)))
-    ;; Named let: (let name bindings body ...)
-    ;; name must be a symbol (not a list), followed by bindings
-    ((let loop bindings body ...)
-     (%named-let-helper loop bindings () () (body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Empty bindings - just evaluate body
+      ((let () body ...)
+       (syntax (begin body ...)))
+      ;; Regular let with bindings - use parallel binding helper
+      ((let ((var val) . rest) body ...)
+       (syntax (%let-parallel-helper ((var val) . rest) () () (body ...))))
+      ;; Named let: (let name bindings body ...)
+      ;; name must be a symbol (not a list), followed by bindings
+      ((let loop bindings body ...)
+       (syntax (%named-let-helper loop bindings () () (body ...)))))))
 
 ;; let* - sequential binding (each binding can refer to previous ones)
 ;; Uses recursive self-reference (let* calls let*) to ensure each binding
 ;; is in scope for subsequent bindings. This matches R7RS semantics.
 (define-syntax let*
-  (syntax-rules ()
-    ((let* () body ...)
-     (begin body ...))
-    ((let* (first-binding . rest-bindings) body ...)
-     (%let-binding first-binding
-       (let* rest-bindings body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ((let* () body ...)
+       (syntax (begin body ...)))
+      ((let* (first-binding . rest-bindings) body ...)
+       (syntax (%let-binding first-binding
+                 (let* rest-bindings body ...)))))))
 
 ;; ============================================================
 ;; Recursive Binding Forms (letrec, letrec*)
@@ -99,45 +92,49 @@
 
 ;; Helper to create all undefined bindings first
 (define-syntax %letrec-names
-  (syntax-rules ()
-    ;; No more bindings - now do the assignments
-    ((%letrec-names () bindings body)
-     (%letrec-inits bindings body))
-    ;; Create binding for first name, recurse for rest
-    ((%letrec-names ((name init) . rest) bindings body)
-     (let ((name #f))
-       (%letrec-names rest bindings body)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; No more bindings - now do the assignments
+      ((%letrec-names () bindings body)
+       (syntax (%letrec-inits bindings body)))
+      ;; Create binding for first name, recurse for rest
+      ((%letrec-names ((name init) . rest) bindings body)
+       (syntax (let ((name #f))
+                 (%letrec-names rest bindings body)))))))
 
 ;; Helper to assign all values after all names are bound
 (define-syntax %letrec-inits
-  (syntax-rules ()
-    ;; No more bindings - evaluate body
-    ((%letrec-inits () body)
-     body)
-    ;; Assign first binding, recurse for rest
-    ((%letrec-inits ((name init) . rest) body)
-     (begin
-       (set! name init)
-       (%letrec-inits rest body)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; No more bindings - evaluate body
+      ((%letrec-inits () body)
+       (syntax body))
+      ;; Assign first binding, recurse for rest
+      ((%letrec-inits ((name init) . rest) body)
+       (syntax (begin
+                 (set! name init)
+                 (%letrec-inits rest body)))))))
 
 ;; letrec - mutually recursive local bindings
 ;; All variables are visible to all init expressions.
 (define-syntax letrec
-  (syntax-rules ()
-    ((letrec () body ...)
-     (begin body ...))
-    ((letrec bindings body ...)
-     (%letrec-names bindings bindings (begin body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ((letrec () body ...)
+       (syntax (begin body ...)))
+      ((letrec bindings body ...)
+       (syntax (%letrec-names bindings bindings (begin body ...)))))))
 
 ;; letrec* - sequential recursive local bindings  
 ;; Like letrec, but evaluates init expressions left-to-right.
 ;; In our implementation, this is the same as letrec.
 (define-syntax letrec*
-  (syntax-rules ()
-    ((letrec* () body ...)
-     (begin body ...))
-    ((letrec* bindings body ...)
-     (%letrec-names bindings bindings (begin body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ((letrec* () body ...)
+       (syntax (begin body ...)))
+      ((letrec* bindings body ...)
+       (syntax (%letrec-names bindings bindings (begin body ...)))))))
 
 ;; ============================================================
 ;; Conditionals
@@ -145,49 +142,54 @@
 
 ;; and - logical AND, short-circuits on first #f
 (define-syntax and
-  (syntax-rules ()
-    ((and) #t)  ;; No arguments: return true
-    ((and test) test)  ;; Single argument: return its value
-    ((and test rest ...)  ;; Multiple arguments: test first, then rest
-     (if test (and rest ...) #f))))  ;; Short-circuit if test is false
+  (lambda (x)
+    (syntax-case x ()
+      ((and) (syntax #t))  ;; No arguments: return true
+      ((and test) (syntax test))  ;; Single argument: return its value
+      ((and test rest ...)  ;; Multiple arguments: test first, then rest
+       (syntax (if test (and rest ...) #f))))))  ;; Short-circuit if test is false
 
 ;; or - logical OR, short-circuits on first truthy value
 (define-syntax or
-  (syntax-rules ()
-    ((or) #f)  ;; No arguments: return false
-    ((or test) test)  ;; Single argument: return its value
-    ((or test rest ...)  ;; Multiple arguments: test first, then rest
-     (let ((temp test))  ;; Evaluate test only once
-       (if temp temp (or rest ...))))))
+  (lambda (x)
+    (syntax-case x ()
+      ((or) (syntax #f))  ;; No arguments: return false
+      ((or test) (syntax test))  ;; Single argument: return its value
+      ((or test rest ...)  ;; Multiple arguments: test first, then rest
+       (syntax (let ((temp test))  ;; Evaluate test only once
+                 (if temp temp (or rest ...))))))))
 
 (define-syntax when
-  (syntax-rules ()
-    ((when test body ...)
-     (if test (begin body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ((when test body ...)
+       (syntax (if test (begin body ...)))))))
 
 (define-syntax unless
-  (syntax-rules ()
-    ((unless test body ...)
-     (if (not test) (begin body ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ((unless test body ...)
+       (syntax (if (not test) (begin body ...)))))))
 
 ;; Simplified cond that doesn't use begin with ellipsis in results
 ;; to avoid expansion issues
 (define-syntax cond
-  (syntax-rules (else)
-    ((cond (else result))
-     result)
-    ((cond (else result1 result2 ...))
-     (begin result1 result2 ...))
-    ((cond (test result))
-     (if test result #f))
-    ((cond (test result1 result2 ...))
-     (if test (begin result1 result2 ...) #f))
-    ((cond (test result) rest ...)
-     (if test result (cond rest ...)))
-    ((cond (test result1 result2 ...) rest ...)
-     (if test (begin result1 result2 ...) (cond rest ...)))
-    ((cond)
-     #f)))
+  (lambda (x)
+    (syntax-case x (else)
+      ((cond (else result))
+       (syntax result))
+      ((cond (else result1 result2 ...))
+       (syntax (begin result1 result2 ...)))
+      ((cond (test result))
+       (syntax (if test result #f)))
+      ((cond (test result1 result2 ...))
+       (syntax (if test (begin result1 result2 ...) #f)))
+      ((cond (test result) rest ...)
+       (syntax (if test result (cond rest ...))))
+      ((cond (test result1 result2 ...) rest ...)
+       (syntax (if test (begin result1 result2 ...) (cond rest ...))))
+      ((cond)
+       (syntax #f)))))
 
 ;; ============================================================
 ;; case - Pattern matching on values
@@ -197,18 +199,19 @@
 ;; Pattern: (case key ((datum ...) result ...) ... (else result ...))
 ;; Simplified to 3 patterns for better maintainability
 (define-syntax case
-  (syntax-rules (else)
-    ;; No clauses - return unspecified
-    ((case key)
-     (if #f #f))
-    ;; Else clause - always matches
-    ((case key (else result ...))
-     (begin result ...))
-    ;; Regular clause - check membership, recurse on remaining clauses
-    ((case key ((datum ...) result ...) . rest)
-     (if (memv key '(datum ...))
-         (begin result ...)
-         (case key . rest)))))
+  (lambda (x)
+    (syntax-case x (else)
+      ;; No clauses - return unspecified
+      ((case key)
+       (syntax (if #f #f)))
+      ;; Else clause - always matches
+      ((case key (else result ...))
+       (syntax (begin result ...)))
+      ;; Regular clause - check membership, recurse on remaining clauses
+      ((case key ((datum ...) result ...) . rest)
+       (syntax (if (memv key '(datum ...))
+                   (begin result ...)
+                   (case key . rest)))))))
 
 ;; ============================================================
 ;; do - Iteration construct
@@ -225,34 +228,37 @@
 ;; Helper to extract var/init pairs for named let bindings
 ;; Also collects step expressions
 (define-syntax %do-vars
-  (syntax-rules ()
-    ;; Base case - no more bindings
-    ((%do-vars () (pairs ...) (steps ...) test result body ...)
-     (%do-run (pairs ...) (steps ...) test result body ...))
-    ;; Binding with step
-    ((%do-vars ((var init step) . rest) (pairs ...) (steps ...) test result body ...)
-     (%do-vars rest (pairs ... (var init)) (steps ... step) test result body ...))
-    ;; Binding without step (step = var)
-    ((%do-vars ((var init) . rest) (pairs ...) (steps ...) test result body ...)
-     (%do-vars rest (pairs ... (var init)) (steps ... var) test result body ...))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Base case - no more bindings
+      ((%do-vars () (pairs ...) (steps ...) test result body ...)
+       (syntax (%do-run (pairs ...) (steps ...) test result body ...)))
+      ;; Binding with step
+      ((%do-vars ((var init step) . rest) (pairs ...) (steps ...) test result body ...)
+       (syntax (%do-vars rest (pairs ... (var init)) (steps ... step) test result body ...)))
+      ;; Binding without step (step = var)
+      ((%do-vars ((var init) . rest) (pairs ...) (steps ...) test result body ...)
+       (syntax (%do-vars rest (pairs ... (var init)) (steps ... var) test result body ...))))))
 
 ;; Helper to run the do loop using named let
 (define-syntax %do-run
-  (syntax-rules ()
-    ((%do-run (bindings ...) (steps ...) test (result ...) body ...)
-     (let %do-loop (bindings ...)
-       (if test
-           (begin (if #f #f) result ...)
-           (begin
-             body ...
-             (%do-loop steps ...)))))))
+  (lambda (x)
+    (syntax-case x ()
+      ((%do-run (bindings ...) (steps ...) test (result ...) body ...)
+       (syntax (let %do-loop (bindings ...)
+                 (if test
+                     (begin (if #f #f) result ...)
+                     (begin
+                       body ...
+                       (%do-loop steps ...)))))))))
 
 ;; do - iteration with variable bindings
 ;; Pattern: (do ((var init step) ...) (test result ...) body ...)
 (define-syntax do
-  (syntax-rules ()
-    ((do bindings (test result ...) body ...)
-     (%do-vars bindings () () test (result ...) body ...))))
+  (lambda (x)
+    (syntax-case x ()
+      ((do bindings (test result ...) body ...)
+       (syntax (%do-vars bindings () () test (result ...) body ...))))))
 
 ;; ============================================================
 ;; Variadic Append (R7RS compliant)
@@ -268,16 +274,17 @@
 ;; Implementation uses append-two from stdlib for the two-argument case,
 ;; and recursively reduces longer argument lists.
 (define-syntax append
-  (syntax-rules ()
-    ;; Zero arguments
-    ((append) '())
-    ;; One argument - return as-is
-    ((append a) a)
-    ;; Two arguments - use internal append2
-    ((append a b) (append-two a b))
-    ;; Three or more arguments - fold right
-    ((append a b c ...)
-     (append-two a (append b c ...)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Zero arguments
+      ((append) (syntax '()))
+      ;; One argument - return as-is
+      ((append a) (syntax a))
+      ;; Two arguments - use internal append2
+      ((append a b) (syntax (append-two a b)))
+      ;; Three or more arguments - fold right
+      ((append a b c ...)
+       (syntax (append-two a (append b c ...)))))))
 
 ;; ============================================================
 ;; Quasiquote
@@ -343,17 +350,18 @@
 ;; ============================================================
 
 (define-syntax delay
-  (syntax-rules ()
-    ((delay expr)
-     (let ((forced #f)
-           (value #f))
-       (lambda ()
-         (if forced
-             value
-             (begin
-               (set! value expr)
-               (set! forced #t)
-               value)))))))
+  (lambda (x)
+    (syntax-case x ()
+      ((delay expr)
+       (syntax (let ((forced #f)
+                     (value #f))
+                 (lambda ()
+                   (if forced
+                       value
+                       (begin
+                         (set! value expr)
+                         (set! forced #t)
+                         value)))))))))
 
 ;; ============================================================
 ;; Multiple Values (R7RS Section 4.2.2 and 5.3.3)
@@ -369,21 +377,22 @@
 ;; Uses call-with-values to capture multiple values and bind them.
 ;; Implementation note: We use a recursive approach to handle multiple bindings.
 (define-syntax let-values
-  (syntax-rules ()
-    ;; Base case: no bindings, just evaluate body
-    ((let-values () body ...)
-     (begin body ...))
-    ;; Single binding case
-    ((let-values ((formals init)) body ...)
-     (call-with-values
-       (lambda () init)
-       (lambda formals body ...)))
-    ;; Multiple bindings: handle first, then recurse
-    ((let-values ((formals init) rest ...) body ...)
-     (call-with-values
-       (lambda () init)
-       (lambda formals
-         (let-values (rest ...) body ...))))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Base case: no bindings, just evaluate body
+      ((let-values () body ...)
+       (syntax (begin body ...)))
+      ;; Single binding case
+      ((let-values ((formals init)) body ...)
+       (syntax (call-with-values
+                 (lambda () init)
+                 (lambda formals body ...))))
+      ;; Multiple bindings: handle first, then recurse
+      ((let-values ((formals init) rest ...) body ...)
+       (syntax (call-with-values
+                 (lambda () init)
+                 (lambda formals
+                   (let-values (rest ...) body ...))))))))
 
 ;; let*-values - sequential binding of multiple values
 ;;
@@ -395,16 +404,17 @@
 ;;   c)
 ;; => 3
 (define-syntax let*-values
-  (syntax-rules ()
-    ;; Base case: no bindings
-    ((let*-values () body ...)
-     (begin body ...))
-    ;; Single or first binding: use let-values then recurse
-    ((let*-values ((formals init) rest ...) body ...)
-     (call-with-values
-       (lambda () init)
-       (lambda formals
-         (let*-values (rest ...) body ...))))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Base case: no bindings
+      ((let*-values () body ...)
+       (syntax (begin body ...)))
+      ;; Single or first binding: use let-values then recurse
+      ((let*-values ((formals init) rest ...) body ...)
+       (syntax (call-with-values
+                 (lambda () init)
+                 (lambda formals
+                   (let*-values (rest ...) body ...))))))))
 
 ;; define-values - define multiple values at top level
 ;;
@@ -420,39 +430,41 @@
 ;; by mutating the list structure. This allows the ellipsis pattern to handle
 ;; any number of variables without explicit cases.
 (define-syntax define-values
-  (syntax-rules ()
-    ;; Empty formals - just evaluate for side effects
-    ((define-values () expr)
-     (define %define-values-dummy
-       (call-with-values (lambda () expr) (lambda args #f))))
-    ;; Single variable - extract using call-with-values
-    ((define-values (var) expr)
-     (define var (call-with-values (lambda () expr) (lambda (val) val))))
-    ;; Multiple variables (2 or more) - use ellipsis pattern for arbitrary arity
-    ;; var0 holds the list initially, then each var1... extracts and mutates,
-    ;; finally varn extracts the last value and sets var0 to its first element
-    ((define-values (var0 var1 ... varn) expr)
-     (begin
-       (define var0
-         (call-with-values (lambda () expr) list))
-       (define var1
-         (let ((v (cadr var0)))
-           (set-cdr! var0 (cddr var0))
-           v)) ...
-       (define varn
-         (let ((v (cadr var0)))
-           (set! var0 (car var0))
-           v))))
-    ;; Single identifier (not in a list) - capture all values as a list
-    ((define-values var expr)
-     (define var
-       (call-with-values (lambda () expr) list)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Empty formals - just evaluate for side effects
+      ((define-values () expr)
+       (syntax (define %define-values-dummy
+                 (call-with-values (lambda () expr) (lambda args #f)))))
+      ;; Single variable - extract using call-with-values
+      ((define-values (var) expr)
+       (syntax (define var (call-with-values (lambda () expr) (lambda (val) val)))))
+      ;; Multiple variables (2 or more) - use ellipsis pattern for arbitrary arity
+      ;; var0 holds the list initially, then each var1... extracts and mutates,
+      ;; finally varn extracts the last value and sets var0 to its first element
+      ((define-values (var0 var1 ... varn) expr)
+       (syntax (begin
+                 (define var0
+                   (call-with-values (lambda () expr) list))
+                 (define var1
+                   (let ((v (cadr var0)))
+                     (set-cdr! var0 (cddr var0))
+                     v)) ...
+                 (define varn
+                   (let ((v (cadr var0)))
+                     (set! var0 (car var0))
+                     v)))))
+      ;; Single identifier (not in a list) - capture all values as a list
+      ((define-values var expr)
+       (syntax (define var
+                 (call-with-values (lambda () expr) list)))))))
 
 ;; force - force evaluation of a delayed expression
 (define-syntax force
-  (syntax-rules ()
-    ((force promise)
-     (promise))))
+  (lambda (x)
+    (syntax-case x ()
+      ((force promise)
+       (syntax (promise))))))
 
 ;; ============================================================
 ;; Case-Lambda (R7RS Section 4.2.9)
@@ -488,48 +500,51 @@
 ;; Proper list formals (x y z) require exact match
 ;; Symbol formals or improper lists allow variable args
 (define-syntax %cl-arity-check
-  (syntax-rules ()
-    ;; Exact arity matches for proper lists
-    ((%cl-arity-check n ()) (= n 0))
-    ((%cl-arity-check n (a)) (= n 1))
-    ((%cl-arity-check n (a b)) (= n 2))
-    ((%cl-arity-check n (a b c)) (= n 3))
-    ((%cl-arity-check n (a b c d)) (= n 4))
-    ((%cl-arity-check n (a b c d e)) (= n 5))
-    ((%cl-arity-check n (a b c d e f)) (= n 6))
-    ((%cl-arity-check n (a b c d e f g)) (= n 7))
-    ((%cl-arity-check n (a b c d e f g h)) (= n 8))
-    ;; Catch-all: plain symbol (variadic) - matches any arity
-    ;; This matches formals like `args` in `(lambda args ...)`
-    ((%cl-arity-check n variadic) #t)))
+  (lambda (x)
+    (syntax-case x ()
+      ;; Exact arity matches for proper lists
+      ((%cl-arity-check n ()) (syntax (= n 0)))
+      ((%cl-arity-check n (a)) (syntax (= n 1)))
+      ((%cl-arity-check n (a b)) (syntax (= n 2)))
+      ((%cl-arity-check n (a b c)) (syntax (= n 3)))
+      ((%cl-arity-check n (a b c d)) (syntax (= n 4)))
+      ((%cl-arity-check n (a b c d e)) (syntax (= n 5)))
+      ((%cl-arity-check n (a b c d e f)) (syntax (= n 6)))
+      ((%cl-arity-check n (a b c d e f g)) (syntax (= n 7)))
+      ((%cl-arity-check n (a b c d e f g h)) (syntax (= n 8)))
+      ;; Catch-all: plain symbol (variadic) - matches any arity
+      ;; This matches formals like `args` in `(lambda args ...)`
+      ((%cl-arity-check n variadic) (syntax #t)))))
 
 ;; Helper: Recursively build clause dispatch
 ;; Tries each clause in order until one matches
 (define-syntax %cl-build
-  (syntax-rules ()
-    ;; No more clauses - error
-    ((%cl-build n args ())
-     (error "case-lambda: no matching clause for argument count"))
-    ;; Try first clause; if arity matches, apply it; otherwise try rest
-    ((%cl-build n args ((formals body ...) . rest))
-     (if (%cl-arity-check n formals)
-         (apply (lambda formals body ...) args)
-         (%cl-build n args rest)))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; No more clauses - error
+      ((%cl-build n args ())
+       (syntax (error "case-lambda: no matching clause for argument count")))
+      ;; Try first clause; if arity matches, apply it; otherwise try rest
+      ((%cl-build n args ((formals body ...) . rest))
+       (syntax (if (%cl-arity-check n formals)
+                   (apply (lambda formals body ...) args)
+                   (%cl-build n args rest)))))))
 
 ;; Main case-lambda macro
 (define-syntax case-lambda
-  (syntax-rules ()
-    ;; No clauses - error on any call
-    ((case-lambda)
-     (lambda args (error "case-lambda: no clauses provided")))
-    ;; Single clause - optimize to regular lambda
-    ((case-lambda (formals body ...))
-     (lambda formals body ...))
-    ;; Multiple clauses - dispatch based on argument count
-    ((case-lambda clause ...)
-     (lambda %args
-       (let ((%n (length %args)))
-         (%cl-build %n %args (clause ...)))))))
+  (lambda (x)
+    (syntax-case x ()
+      ;; No clauses - error on any call
+      ((case-lambda)
+       (syntax (lambda args (error "case-lambda: no clauses provided"))))
+      ;; Single clause - optimize to regular lambda
+      ((case-lambda (formals body ...))
+       (syntax (lambda formals body ...)))
+      ;; Multiple clauses - dispatch based on argument count
+      ((case-lambda clause ...)
+       (syntax (lambda %args
+                 (let ((%n (length %args)))
+                   (%cl-build %n %args (clause ...)))))))))
 
 ;; ============================================================
 ;; Cond-Expand (R7RS Section 4.2.1)
@@ -568,53 +583,55 @@
 ;; Check if a feature is supported
 ;; Returns #t or #f at expansion time based on pattern matching
 (define-syntax %feature-check
-  (syntax-rules (and or not library r7rs grift exact-closed exact-complex ratios ieee-float)
-    ;; Core features we support
-    ((%feature-check r7rs) #t)
-    ((%feature-check grift) #t)
-    ((%feature-check exact-closed) #t)
-    ;; Features we don't support
-    ((%feature-check exact-complex) #f)
-    ((%feature-check ratios) #f)
-    ((%feature-check ieee-float) #f)
-    ;; Compound requirements
-    ((%feature-check (and)) #t)
-    ((%feature-check (and req)) (%feature-check req))
-    ((%feature-check (and req1 req2 ...))
-     (if (%feature-check req1)
-         (%feature-check (and req2 ...))
-         #f))
-    ((%feature-check (or)) #f)
-    ((%feature-check (or req)) (%feature-check req))
-    ((%feature-check (or req1 req2 ...))
-     (if (%feature-check req1)
-         #t
-         (%feature-check (or req2 ...))))
-    ((%feature-check (not req))
-     (if (%feature-check req) #f #t))
-    ;; Library checks - we don't support any libraries yet
-    ((%feature-check (library name)) #f)
-    ;; Unknown feature
-    ((%feature-check other) #f)))
+  (lambda (x)
+    (syntax-case x (and or not library r7rs grift exact-closed exact-complex ratios ieee-float)
+      ;; Core features we support
+      ((%feature-check r7rs) (syntax #t))
+      ((%feature-check grift) (syntax #t))
+      ((%feature-check exact-closed) (syntax #t))
+      ;; Features we don't support
+      ((%feature-check exact-complex) (syntax #f))
+      ((%feature-check ratios) (syntax #f))
+      ((%feature-check ieee-float) (syntax #f))
+      ;; Compound requirements
+      ((%feature-check (and)) (syntax #t))
+      ((%feature-check (and req)) (syntax (%feature-check req)))
+      ((%feature-check (and req1 req2 ...))
+       (syntax (if (%feature-check req1)
+                   (%feature-check (and req2 ...))
+                   #f)))
+      ((%feature-check (or)) (syntax #f))
+      ((%feature-check (or req)) (syntax (%feature-check req)))
+      ((%feature-check (or req1 req2 ...))
+       (syntax (if (%feature-check req1)
+                   #t
+                   (%feature-check (or req2 ...)))))
+      ((%feature-check (not req))
+       (syntax (if (%feature-check req) #f #t)))
+      ;; Library checks - we don't support any libraries yet
+      ((%feature-check (library name)) (syntax #f))
+      ;; Unknown feature
+      ((%feature-check other) (syntax #f)))))
 
 ;; Main cond-expand macro
 (define-syntax cond-expand
-  (syntax-rules (else)
-    ;; No clauses - unspecified behavior, we return #f
-    ((cond-expand) (if #f #f))
-    ;; Else clause - always matches
-    ((cond-expand (else body ...))
-     (begin body ...))
-    ;; Single non-else clause
-    ((cond-expand (req body ...))
-     (if (%feature-check req)
-         (begin body ...)
-         (if #f #f)))
-    ;; Multiple clauses - check first, recurse on rest
-    ((cond-expand (req body ...) rest ...)
-     (if (%feature-check req)
-         (begin body ...)
-         (cond-expand rest ...)))))
+  (lambda (x)
+    (syntax-case x (else)
+      ;; No clauses - unspecified behavior, we return #f
+      ((cond-expand) (syntax (if #f #f)))
+      ;; Else clause - always matches
+      ((cond-expand (else body ...))
+       (syntax (begin body ...)))
+      ;; Single non-else clause
+      ((cond-expand (req body ...))
+       (syntax (if (%feature-check req)
+                   (begin body ...)
+                   (if #f #f))))
+      ;; Multiple clauses - check first, recurse on rest
+      ((cond-expand (req body ...) rest ...)
+       (syntax (if (%feature-check req)
+                   (begin body ...)
+                   (cond-expand rest ...)))))))
 
 ;; ============================================================
 ;; Lazy Evaluation Extensions (R7RS Section 4.2.5)
@@ -645,22 +662,23 @@
 ;; when forced, evaluates its expression and if the result is itself a promise,
 ;; forces that recursively. This achieves the tail-call-like behavior.
 (define-syntax delay-force
-  (syntax-rules ()
-    ((delay-force expr)
-     (let ((forced #f)
-           (value #f))
-       (lambda ()
-         (if forced
-             value
-             (let ((result expr))
-               ;; If result is a promise (procedure), force it
-               ;; This implements the iterative forcing behavior
-               (let ((final-value (if (procedure? result)
-                                      (result)
-                                      result)))
-                 (set! value final-value)
-                 (set! forced #t)
-                 final-value))))))))
+  (lambda (x)
+    (syntax-case x ()
+      ((delay-force expr)
+       (syntax (let ((forced #f)
+                     (value #f))
+                 (lambda ()
+                   (if forced
+                       value
+                       (let ((result expr))
+                         ;; If result is a promise (procedure), force it
+                         ;; This implements the iterative forcing behavior
+                         (let ((final-value (if (procedure? result)
+                                                (result)
+                                                result)))
+                           (set! value final-value)
+                           (set! forced #t)
+                           final-value))))))))))
 
 ;; ============================================================
 ;; syntax-case Support (Phase 3)
@@ -704,17 +722,18 @@
 ;; Helper: Evaluate guard cond clauses (used when exception is caught)
 ;; Note: This is not currently reachable without raise/with-exception-handler
 (define-syntax %guard-cond
-  (syntax-rules (else)
-    ;; else clause - always matches
-    ((%guard-cond var (else result ...))
-     (begin result ...))
-    ;; Single non-else clause, no more clauses - re-raise if no match
-    ;; Note: Per R7RS, should re-raise the exception; using error as placeholder
-    ((%guard-cond var (test result ...))
-     (if test (begin result ...) (error "guard: unhandled exception (no matching clause)")))
-    ;; Multiple clauses
-    ((%guard-cond var (test result ...) rest ...)
-     (if test (begin result ...) (%guard-cond var rest ...)))))
+  (lambda (x)
+    (syntax-case x (else)
+      ;; else clause - always matches
+      ((%guard-cond var (else result ...))
+       (syntax (begin result ...)))
+      ;; Single non-else clause, no more clauses - re-raise if no match
+      ;; Note: Per R7RS, should re-raise the exception; using error as placeholder
+      ((%guard-cond var (test result ...))
+       (syntax (if test (begin result ...) (error "guard: unhandled exception (no matching clause)"))))
+      ;; Multiple clauses
+      ((%guard-cond var (test result ...) rest ...)
+       (syntax (if test (begin result ...) (%guard-cond var rest ...)))))))
 
 ;; guard - placeholder implementation
 ;; 
@@ -722,9 +741,10 @@
 ;; Returns body's result if it completes normally.
 ;; Runtime errors will propagate as usual (not caught).
 (define-syntax guard
-  (syntax-rules ()
-    ((guard (var clause ...) body ...)
-     ;; Without with-exception-handler, we can only evaluate the body directly.
-     ;; Exception handling will be added when the infrastructure is available.
-     (begin body ...))))
+  (lambda (x)
+    (syntax-case x ()
+      ((guard (var clause ...) body ...)
+       ;; Without with-exception-handler, we can only evaluate the body directly.
+       ;; Exception handling will be added when the infrastructure is available.
+       (syntax (begin body ...))))))
 

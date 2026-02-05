@@ -4,7 +4,7 @@
 //! - `core.rs`: Core evaluation logic (constructor, GC, environment, trampoline)
 //! - `builtins.rs`: Builtin function implementations
 //! - `forms.rs`: Special form handling (continuations, let, case, do, etc.)
-//! - `expand.rs`: Macro expansion (define-syntax, syntax-rules)
+//! - `expand.rs`: Macro expansion (define-syntax, syntax-case)
 
 mod core;
 mod builtins;
@@ -51,8 +51,8 @@ pub struct Evaluator<'a, const N: usize> {
     current_cont: ArenaIndex,
     /// Native function registry
     native_registry: NativeRegistry<N>,
-    /// Macro environment - stores (name . SyntaxRules) bindings
-    /// Separate from value environment to allow shadowing
+    /// Macro environment - stores (name . transformer) bindings
+    /// Transformers are Lambda values (procedural macros via syntax-case)
     macro_env: ArenaIndex,
     /// Counter for generating unique symbols (gensym)
     gensym_counter: usize,

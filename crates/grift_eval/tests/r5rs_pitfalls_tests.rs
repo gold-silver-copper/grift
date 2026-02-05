@@ -54,7 +54,7 @@ fn test_pitfall_3_1_macro_hygiene() {
 #[test]
 fn test_pitfall_3_3_inner_macro_scope() {
     // Al Petrofsky
-    // In thread: An Advanced syntax-rules Primer for the Mildly Insane
+    // In thread: An Advanced syntax-case Primer for the Mildly Insane
     // Test inner macro scoping with outer let
     //
     // Note: This test checks complex nested macro scoping. 

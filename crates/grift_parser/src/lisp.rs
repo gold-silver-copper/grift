@@ -549,48 +549,6 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Create a syntax-rules macro transformer
-    ///
-    /// Packs rules and definition_env into a cons cell to maintain
-    /// the 2-index constraint (matching Lambda's layout).
-    ///
-    /// # Arguments
-    ///
-    /// * `literals` - List of literal keywords that must match exactly
-    /// * `rules` - List of (pattern . template) pairs
-    /// * `definition_env` - Environment where macro was defined
-    pub fn syntax_rules(
-        &self,
-        literals: ArenaIndex,
-        rules: ArenaIndex,
-        definition_env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        // Pack rules and env into cons cell: (rules . definition_env)
-        let rules_env = self.cons(rules, definition_env)?;
-        self.arena.alloc(Value::SyntaxRules {
-            literals,
-            rules_env,
-        })
-    }
-
-    /// Extract parts from a SyntaxRules value
-    ///
-    /// Returns (literals, rules, definition_env) unpacked from the internal structure.
-    pub fn syntax_rules_parts(
-        &self,
-        idx: ArenaIndex,
-    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
-        match self.get(idx)? {
-            Value::SyntaxRules { literals, rules_env } => {
-                // Unpack (rules . definition_env)
-                let rules = self.car(rules_env)?;
-                let definition_env = self.cdr(rules_env)?;
-                Ok((literals, rules, definition_env))
-            }
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
     /// Create a syntax object from an expression
     ///
     /// Syntax objects wrap an expression with lexical context information

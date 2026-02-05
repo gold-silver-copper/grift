@@ -1,7 +1,7 @@
-//! Hygienic macro expansion for syntax-rules.
+//! Hygienic macro expansion for syntax-case.
 //!
 //! This module implements the "Macros that Work" algorithm (Clinger & Rees, 1991)
-//! for R7RS-compatible hygienic macros.
+//! for R7RS-compatible hygienic macros using syntax-case.
 
 use grift_parser::{ArenaIndex, Value};
 
@@ -195,8 +195,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// ```scheme
     /// (define-syntax test
-    ///   (syntax-rules ()
-    ///     ((test x) (let ((x 1)) x))))
+    ///   (lambda (stx)
+    ///     (syntax-case stx ()
+    ///       ((test x) (syntax (let ((x 1)) x))))))
     /// (let ((x 2)) (test x))  ; returns 1, not 2
     /// ```
     pub fn bound_identifier_eq(
@@ -1551,62 +1552,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Apply a macro transformer to an expression
     /// 
-    /// Supports two types of transformers:
-    /// 1. SyntaxRules - pattern-based declarative macros
-    /// 2. Lambda - procedural macros (transformer receives the full expression)
+    /// All transformers are Lambda-based (procedural macros via syntax-case).
+    /// The transformer lambda is called with the full expression as its argument.
     pub(super) fn apply_macro(
         &mut self,
         transformer: ArenaIndex,
         expr: ArenaIndex,
     ) -> EvalResult {
         match self.lisp.get(transformer)? {
-            Value::SyntaxRules { .. } => {
-                self.apply_syntax_rules_macro(transformer, expr)
-            }
             Value::Lambda { .. } => {
                 self.apply_procedural_macro(transformer, expr)
             }
             _ => Err(self.make_error(ErrorKind::SyntaxError, transformer)
-                .with_message("expected syntax-rules or lambda transformer"))
+                .with_message("expected lambda transformer"))
         }
-    }
-    
-    /// Apply a syntax-rules based macro transformer
-    fn apply_syntax_rules_macro(
-        &mut self,
-        transformer: ArenaIndex,
-        expr: ArenaIndex,
-    ) -> EvalResult {
-        let (literals, rules, def_env) = self.lisp.syntax_rules_parts(transformer)?;
-
-        // Try each rule in order
-        let mut current = rules;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let rule = self.lisp.car(current)?;
-            let pattern = self.lisp.car(rule)?;
-            let template = self.lisp.cdr(rule)?;
-
-            // Match against pattern (skip the keyword in both)
-            let pat_args = self.lisp.cdr(pattern)?;
-            let expr_args = self.lisp.cdr(expr)?;
-
-            let empty = self.lisp.nil()?;
-            if let Some(bindings) = self.match_pattern(
-                pat_args, expr_args, literals, empty
-            )? {
-                // Match succeeded - transcribe template
-                let empty_renames = self.lisp.nil()?;
-                return self.transcribe_template(
-                    template, bindings, empty_renames, def_env
-                );
-            }
-
-            current = self.lisp.cdr(current)?;
-        }
-
-        // No rule matched
-        Err(self.make_error(ErrorKind::SyntaxError, expr)
-            .with_message("no matching syntax-rules clause"))
     }
     
     /// Apply a procedural (lambda-based) macro transformer
@@ -1679,42 +1638,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(self.lisp.nil()?)
     }
 
-    /// Parse a transformer expression (syntax-rules ...) or (lambda (x) ...)
+    /// Parse a transformer expression (lambda (x) ...)
     /// 
-    /// Supports two forms of macro transformers:
-    /// 1. `(syntax-rules ...)` - declarative pattern-based macros (R7RS)
-    /// 2. `(lambda (x) ...)` - procedural macros using syntax-case
+    /// All macro transformers are procedural (lambda-based) using syntax-case.
     pub(super) fn parse_transformer(&mut self, expr: ArenaIndex) -> EvalResult {
         let head = self.lisp.car(expr)?;
-
-        // Check for syntax-rules (declarative transformer)
-        if self.lisp.symbol_matches(head, "syntax-rules")? {
-            let rest = self.lisp.cdr(expr)?;
-            let literals = self.lisp.car(rest)?;
-            let rules_raw = self.lisp.cdr(rest)?;
-
-            // Parse rules into (pattern . template) pairs
-            let mut rules = self.lisp.nil()?;
-            let mut current = rules_raw;
-
-            while let Value::Cons { .. } = self.lisp.get(current)? {
-                let rule = self.lisp.car(current)?;
-                let pattern = self.lisp.car(rule)?;
-                let template = self.lisp.car(self.lisp.cdr(rule)?)?;
-
-                let pair = self.lisp.cons(pattern, template)?;
-                rules = self.lisp.cons(pair, rules)?;
-
-                current = self.lisp.cdr(current)?;
-            }
-
-            // Reverse to maintain definition order
-            let rules = self.reverse_list(rules)?;
-
-            // Create SyntaxRules value
-            return self.lisp.syntax_rules(literals, rules, self.global_env)
-                .map_err(Into::into);
-        }
 
         // Check for lambda (procedural transformer)
         if self.lisp.symbol_matches(head, "lambda")? {
@@ -1725,7 +1653,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         Err(self.make_error(ErrorKind::SyntaxError, expr)
-            .with_message("expected (syntax-rules ...) or (lambda ...)"))
+            .with_message("expected (lambda ...)"))
     }
 
     /// Evaluate a lambda expression to create a transformer closure

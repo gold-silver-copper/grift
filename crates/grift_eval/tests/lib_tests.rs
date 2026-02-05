@@ -890,7 +890,7 @@ fn test_eval_computed() {
 
 // ───────────────────────────────────────────────────────────────────────────
 // Note: defmacro and gensym have been removed for Scheme R7RS conformance.
-// Hygienic macros via syntax-rules will be implemented in a future phase.
+// Hygienic macros via syntax-case are implemented.
 // ───────────────────────────────────────────────────────────────────────────
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -4283,7 +4283,7 @@ fn test_nested_ellipsis_bug() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Test: Nested ellipsis - this reveals the bug
-    eval.eval_str("(define-syntax nest-test (syntax-rules () ((nest-test ((a) ...)) (quote (a ...)))))").unwrap();
+    eval.eval_str("(define-syntax nest-test (lambda (x) (syntax-case x () ((nest-test ((a) ...)) (syntax (quote (a ...))))))))").unwrap();
     let result = eval.eval_str("(nest-test ((1) (2) (3)))").unwrap();
     
     // Expected: (1 2 3)
@@ -4304,7 +4304,7 @@ fn test_check_pattern_binding_value() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Test with three elements to see the pattern
-    eval.eval_str("(define-syntax test3 (syntax-rules () ((test3 ((a) ...)) (quote (a ...)))))").unwrap();
+    eval.eval_str("(define-syntax test3 (lambda (x) (syntax-case x () ((test3 ((a) ...)) (syntax (quote (a ...))))))))").unwrap();
     let result = eval.eval_str("(test3 ((1) (2) (3)))").unwrap();
     
     eprintln!("Result for ((1) (2) (3)):");
@@ -4373,7 +4373,7 @@ fn test_nested_ellipsis_single_var() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Pattern ((a) ...) matches ((1) (2) (3)) and binds a to (1 2 3)
-    eval.eval_str("(define-syntax extract (syntax-rules () ((extract ((a) ...)) (quote (a ...)))))").unwrap();
+    eval.eval_str("(define-syntax extract (lambda (x) (syntax-case x () ((extract ((a) ...)) (syntax (quote (a ...))))))))").unwrap();
     
     // Single element
     let result = eval.eval_str("(extract ((1)))").unwrap();
@@ -4405,7 +4405,7 @@ fn test_nested_ellipsis_multiple_vars() {
     
     // Pattern ((a b) ...) matches ((1 2) (3 4)) and binds:
     // a to (1 3), b to (2 4)
-    eval.eval_str("(define-syntax pair-extract (syntax-rules () ((pair-extract ((a b) ...)) (quote ((a ...) (b ...))))))").unwrap();
+    eval.eval_str("(define-syntax pair-extract (lambda (x) (syntax-case x () ((pair-extract ((a b) ...)) (syntax (quote ((a ...) (b ...))))))))").unwrap();
     
     let result = eval.eval_str("(pair-extract ((1 2) (3 4)))").unwrap();
     
@@ -4432,7 +4432,7 @@ fn test_let_style_bindings() {
     
     // Test the nested ellipsis pattern for extracting names and values
     // This is the core pattern that let macros need
-    eval.eval_str("(define-syntax extract-bindings (syntax-rules () ((extract-bindings ((name val) ...)) (quote ((name ...) (val ...))))))").unwrap();
+    eval.eval_str("(define-syntax extract-bindings (lambda (x) (syntax-case x () ((extract-bindings ((name val) ...)) (syntax (quote ((name ...) (val ...))))))))").unwrap();
     
     // Single binding: ((x 1)) -> ((x) (1))
     let result = eval.eval_str("(extract-bindings ((x 1)))").unwrap();
@@ -4483,7 +4483,7 @@ fn test_empty_ellipsis() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Matching zero elements with ellipsis
-    eval.eval_str("(define-syntax zero-or-more (syntax-rules () ((zero-or-more a ...) (quote (a ...)))))").unwrap();
+    eval.eval_str("(define-syntax zero-or-more (lambda (x) (syntax-case x () ((zero-or-more a ...) (syntax (quote (a ...)))))))").unwrap();
     
     // Empty: should produce empty list
     let result = eval.eval_str("(zero-or-more)").unwrap();
@@ -5052,11 +5052,12 @@ fn test_recursive_helper_accumulator_pattern() {
     // This collects elements one at a time
     eval.eval_str(r#"
         (define-syntax collect-first
-          (syntax-rules ()
-            ((collect-first () (acc ...))
-             (quote (acc ...)))
-            ((collect-first (first . rest) (acc ...))
-             (collect-first rest (acc ... first)))))
+          (lambda (x)
+            (syntax-case x ()
+              ((collect-first () (acc ...))
+               (syntax (quote (acc ...))))
+              ((collect-first (first . rest) (acc ...))
+               (syntax (collect-first rest (acc ... first)))))))
     "#).unwrap();
     
     // Test with empty input
@@ -5088,11 +5089,12 @@ fn test_dual_accumulator_pattern() {
     // Define a macro that extracts two pieces from each binding
     eval.eval_str(r#"
         (define-syntax extract-pairs
-          (syntax-rules ()
-            ((extract-pairs () (firsts ...) (seconds ...))
-             (list (quote (firsts ...)) (quote (seconds ...))))
-            ((extract-pairs ((a b) . rest) (firsts ...) (seconds ...))
-             (extract-pairs rest (firsts ... a) (seconds ... b)))))
+          (lambda (x)
+            (syntax-case x ()
+              ((extract-pairs () (firsts ...) (seconds ...))
+               (syntax (list (quote (firsts ...)) (quote (seconds ...)))))
+              ((extract-pairs ((a b) . rest) (firsts ...) (seconds ...))
+               (syntax (extract-pairs rest (firsts ... a) (seconds ... b)))))))
     "#).unwrap();
     
     // Test with single pair
@@ -5130,10 +5132,11 @@ fn test_recursive_macro_hygiene() {
     // Define a recursive macro that introduces a binding
     eval.eval_str(r#"
         (define-syntax sum-list
-          (syntax-rules ()
-            ((sum-list () acc) acc)
-            ((sum-list (x . rest) acc)
-             (sum-list rest (+ acc x)))))
+          (lambda (x)
+            (syntax-case x ()
+              ((sum-list () acc) (syntax acc))
+              ((sum-list (x . rest) acc)
+               (syntax (sum-list rest (+ acc x)))))))
     "#).unwrap();
     
     // User defines 'acc' - should not be captured by macro's 'acc'
@@ -5189,12 +5192,13 @@ fn test_pattern_alternatives() {
     // Define a macro with multiple pattern alternatives
     eval.eval_str(r#"
         (define-syntax process-item
-          (syntax-rules ()
-            ((process-item ()) (quote empty))
-            ((process-item (a)) (quote one))
-            ((process-item (a b)) (quote two))
-            ((process-item (a b c)) (quote three))
-            ((process-item other) (quote many))))
+          (lambda (x)
+            (syntax-case x ()
+              ((process-item ()) (syntax (quote empty)))
+              ((process-item (a)) (syntax (quote one)))
+              ((process-item (a b)) (syntax (quote two)))
+              ((process-item (a b c)) (syntax (quote three)))
+              ((process-item other) (syntax (quote many))))))
     "#).unwrap();
     
     let result = eval.eval_str("(process-item ())").unwrap();
@@ -5214,7 +5218,7 @@ fn test_pattern_alternatives() {
 }
 
 /// Test literal keyword matching in patterns
-/// This tests literal handling as part of syntax-rules
+/// This tests literal handling as part of syntax-case
 #[test]
 fn test_literal_keywords() {
     let lisp: Lisp<20000> = Lisp::new();
@@ -5223,13 +5227,14 @@ fn test_literal_keywords() {
     // Define a macro with literal keywords
     eval.eval_str(r#"
         (define-syntax my-cond
-          (syntax-rules (else =>)
-            ((my-cond (else result)) result)
-            ((my-cond (test => proc))
-             (let ((temp test))
-               (if temp (proc temp) #f)))
-            ((my-cond (test result))
-             (if test result #f))))
+          (lambda (x)
+            (syntax-case x (else =>)
+              ((my-cond (else result)) (syntax result))
+              ((my-cond (test => proc))
+               (syntax (let ((temp test))
+                         (if temp (proc temp) #f))))
+              ((my-cond (test result))
+               (syntax (if test result #f))))))
     "#).unwrap();
     
     // Test else clause
@@ -5255,10 +5260,11 @@ fn test_nested_pattern_decomposition() {
     // Define a macro that decomposes nested patterns using helpers
     eval.eval_str(r#"
         (define-syntax flatten-pairs
-          (syntax-rules ()
-            ((flatten-pairs ()) (quote ()))
-            ((flatten-pairs ((a b) . rest))
-             (cons a (cons b (flatten-pairs rest))))))
+          (lambda (x)
+            (syntax-case x ()
+              ((flatten-pairs ()) (syntax (quote ())))
+              ((flatten-pairs ((a b) . rest))
+               (syntax (cons a (cons b (flatten-pairs rest))))))))
     "#).unwrap();
     
     let result = eval.eval_str("(flatten-pairs ((1 2) (3 4)))").unwrap();
@@ -5447,11 +5453,12 @@ fn test_hygiene_no_capture() {
     // Define a macro that uses 'temp' internally
     eval.eval_str(r#"
         (define-syntax swap
-          (syntax-rules ()
-            ((swap a b)
-             (let ((temp a))
-               (set! a b)
-               (set! b temp)))))
+          (lambda (x)
+            (syntax-case x ()
+              ((swap a b)
+               (syntax (let ((temp a))
+                         (set! a b)
+                         (set! b temp)))))))
     "#).unwrap();
     
     // Use swap with variables - the macro's temp should not capture user's temp

@@ -802,10 +802,10 @@ fn main() {
     // SECTION 11: Macros & Metaprogramming
     // ═══════════════════════════════════════════════════════════════════════
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Section 11: Hygienic Macros (syntax-rules & syntax-case)");
+    println!("Section 11: Hygienic Macros (syntax-case)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // syntax-rules macro: let form expansion
+    // syntax-case macro: let form expansion
     results.push(run_bench(
         "let macro expansion x 100",
         &lisp,
@@ -815,7 +815,7 @@ fn main() {
         Some("3"),
     ));
 
-    // syntax-rules macro: let* with sequential bindings
+    // syntax-case macro: let* with sequential bindings
     results.push(run_bench(
         "let* macro expansion x 100",
         &lisp,
@@ -825,7 +825,7 @@ fn main() {
         Some("3"),
     ));
 
-    // syntax-rules macro: letrec with mutual recursion
+    // syntax-case macro: letrec with mutual recursion
     results.push(run_bench(
         "letrec macro expansion x 50",
         &lisp,
@@ -835,7 +835,7 @@ fn main() {
         Some("#t"),
     ));
 
-    // syntax-rules macro: cond conditional
+    // syntax-case macro: cond conditional
     results.push(run_bench(
         "cond macro expansion x 100",
         &lisp,
@@ -845,7 +845,7 @@ fn main() {
         Some("third"),
     ));
 
-    // syntax-rules macro: case pattern matching
+    // syntax-case macro: case pattern matching
     results.push(run_bench(
         "case macro expansion x 100",
         &lisp,
@@ -855,7 +855,7 @@ fn main() {
         Some("2"),
     ));
 
-    // syntax-rules macro: do loop
+    // syntax-case macro: do loop
     results.push(run_bench(
         "do loop macro expansion x 50",
         &lisp,
@@ -865,7 +865,7 @@ fn main() {
         Some("45"),
     ));
 
-    // syntax-rules macro: and/or short-circuit
+    // syntax-case macro: and/or short-circuit
     results.push(run_bench(
         "and/or macro expansion x 100",
         &lisp,
@@ -875,7 +875,7 @@ fn main() {
         Some("#t"),
     ));
 
-    // syntax-rules macro: when/unless
+    // syntax-case macro: when/unless
     results.push(run_bench(
         "when/unless macro expansion x 100",
         &lisp,

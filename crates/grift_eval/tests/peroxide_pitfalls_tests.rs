@@ -72,10 +72,10 @@ fn test_peroxide_pitfalls_section_8_miscellaneous() {
     let result = eval.eval_str("(let - ((n (- 1))) n)").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number().unwrap(), -1);
     
-    // Test 8.3: let-syntax with define
+    // Test 8.3: let-syntax with define (uses syntax-case)
     // (should-be 8.3 1
     //   (let ((x 1))
-    //     (let-syntax ((foo (syntax-rules () ((_) 2))))
+    //     (let-syntax ((foo (lambda (stx) (syntax-case stx () ((_) (syntax 2))))))
     //       (define x (foo))
     //       3)
     //     x))
