@@ -907,7 +907,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             CONT_WITH_SYNTAX_BIND => {
                 // val is the evaluated value for the current binding
-                // Data format: ((current_pattern . rest_bindings) . (collected . (body . (env . existing))))
+                // Data format: ((current_pattern . rest_bindings) . (collected_bindings . (body . (env . existing_pattern_bindings))))
                 let (remaining_bindings, collected_bindings, body, env, existing_pattern_bindings) = self.unpack5(data)?;
                 
                 // Extract current binding pattern from the packed data

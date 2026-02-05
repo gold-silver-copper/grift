@@ -729,7 +729,7 @@
      (begin body ...))))
 
 ;; ============================================================
-;; syntax-rules as Procedural Macro (Phase 3 - Migration)
+;; syntax-rules as Procedural Macro (Phase 1 - Migration)
 ;; ============================================================
 
 ;; This defines syntax-rules using syntax-case, allowing the native Rust
