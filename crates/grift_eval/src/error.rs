@@ -181,7 +181,10 @@ impl From<ArenaError> for EvalError {
     fn from(e: ArenaError) -> Self {
         match e {
             ArenaError::OutOfMemory => EvalError::new(ErrorKind::OutOfMemory),
-            _ => EvalError::new(ErrorKind::Generic),
+            ArenaError::InvalidIndex => EvalError::new(ErrorKind::Generic)
+                .with_message("arena invalid index - possible use of freed/invalid reference"),
+            ArenaError::TraceError => EvalError::new(ErrorKind::Generic)
+                .with_message("arena trace error during GC"),
         }
     }
 }

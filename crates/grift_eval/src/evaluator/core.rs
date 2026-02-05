@@ -38,6 +38,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
             output_callback: None, // No output callback by default
             current_ellipsis: ellipsis, // Default ellipsis symbol
+            saved_cont_root: nil, // No saved continuation initially
         };
         
         // Initialize global environment with builtins
@@ -182,7 +183,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
         // With arena-based continuations, we just need to root the current_cont pointer.
         // The GC will trace through the ContFrame linked list automatically.
-        const MAX_ROOTS: usize = 8;
+        const MAX_ROOTS: usize = 10;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
@@ -195,6 +196,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         root_count += 1;
         roots[root_count] = self.dynamic_wind_chain;
         root_count += 1;
+        
+        // Include saved continuation root (for nested eval_for_macro calls)
+        // This ensures the outer continuation chain remains live during GC
+        if self.saved_cont_root != ArenaIndex::NIL {
+            roots[root_count] = self.saved_cont_root;
+            root_count += 1;
+        }
         
         // Include current state
         match state {
@@ -487,14 +495,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Save current continuation and call stack state
         let saved_cont = self.current_cont;
         let saved_depth = self.call_stack_depth;
+        let old_saved_root = self.saved_cont_root;
         
-        // Initialize for new evaluation
+        // Store saved_cont in the evaluator so it will be rooted during GC
+        // This is critical because we're about to set current_cont to nil,
+        // which would otherwise make saved_cont unreachable.
+        self.saved_cont_root = saved_cont;
+        
+        // Initialize for new evaluation with fresh continuation
         self.current_cont = self.lisp.nil()?;
         
         // Run trampoline until completion
         let result = self.trampoline(TrampolineState::Eval { expr, env });
         
         // Restore saved state
+        self.saved_cont_root = old_saved_root;
         self.current_cont = saved_cont;
         self.call_stack_depth = saved_depth;
         

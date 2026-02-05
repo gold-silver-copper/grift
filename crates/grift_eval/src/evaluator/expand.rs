@@ -1688,6 +1688,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// Supports two forms of macro transformers:
     /// 1. `(syntax-rules ...)` - declarative pattern-based macros (R7RS)
+    ///    - Uses the Scheme-level syntax-rules macro from macros.scm
+    ///    - The macro transforms syntax-rules to a lambda using syntax-case
     /// 2. `(lambda (x) ...)` - procedural macros using syntax-case
     pub(super) fn parse_transformer(&mut self, expr: ArenaIndex) -> EvalResult {
         let head = self.lisp.car(expr)?;
@@ -1696,11 +1698,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Supported syntax:
         //   (syntax-rules (literals...) clause ...)
         //   (syntax-rules (literals...) "docstring" clause ...)
-        //
-        // NOT supported (use with-ellipsis wrapper instead):
-        //   (syntax-rules my-ellipsis (literals...) clause ...)
-        //   Example: (with-ellipsis ooo (syntax-rules () ((foo x ooo) (list x ooo))))
+        //   (syntax-rules ellipsis (literals...) clause ...)
+        //   (syntax-rules ellipsis (literals...) "docstring" clause ...)
         if self.lisp.symbol_matches(head, "syntax-rules")? {
+            // TEMPORARILY DISABLED: Debug issue with Scheme-level syntax-rules
+            // Error occurs in apply_macro when applying the syntax-rules Lambda
+            let _use_scheme_level = false;  // Set to true to test
+            
+            if _use_scheme_level {
+                // Try to use the Scheme-level syntax-rules macro if it's defined
+                let syntax_rules_sym = self.lisp.symbol("syntax-rules")?;
+                if let Some(transformer) = self.lookup_macro(syntax_rules_sym)? {
+                    // Apply the Scheme-level syntax-rules macro
+                    // This transforms (syntax-rules ...) into a lambda expression
+                    let result = match self.apply_macro(transformer, expr) {
+                        Ok(r) => r,
+                        Err(e) => return Err(self.make_error(e.kind, expr)
+                            .with_message("error in Scheme-level syntax-rules: apply_macro failed")),
+                    };
+                    
+                    // The result is a syntax object containing a lambda expression
+                    // Unwrap it to get the raw lambda form
+                    let lambda_expr = match self.syntax_to_datum_recursive(result) {
+                        Ok(r) => r,
+                        Err(e) => return Err(self.make_error(e.kind, expr)
+                            .with_message("error in Scheme-level syntax-rules: syntax_to_datum failed")),
+                    };
+                    
+                    // Evaluate the lambda expression to create a Lambda value
+                    // The lambda captures the current environment for hygiene
+                    return self.eval_for_macro(lambda_expr, self.global_env).map_err(|e| {
+                        self.make_error(e.kind, expr)
+                            .with_message("error in Scheme-level syntax-rules: eval_for_macro failed")
+                    });
+                }
+            }
+            
+            // Use native implementation 
             let rest = self.lisp.cdr(expr)?;
             let literals = self.lisp.car(rest)?;
             let after_literals = self.lisp.cdr(rest)?;
@@ -1762,24 +1796,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluate a lambda expression to create a transformer closure
     /// 
     /// This creates a Lambda value that can be invoked as a procedural macro.
-    fn eval_lambda_for_transformer(&self, lambda_expr: ArenaIndex) -> EvalResult {
+    fn eval_lambda_for_transformer(&mut self, lambda_expr: ArenaIndex) -> EvalResult {
         let rest = self.lisp.cdr(lambda_expr)?;
         let params = self.lisp.car(rest)?;
         let body_list = self.lisp.cdr(rest)?;
         
-        // Check if body is a single expression (cdr is nil) or multiple
-        // This is more efficient than calling list_length which traverses the whole list
-        let first_body = self.lisp.car(body_list)?;
-        let rest_body = self.lisp.cdr(body_list)?;
-        
-        let body = if self.lisp.get(rest_body)?.is_nil() {
-            // Single expression - use directly
-            first_body
-        } else {
-            // Multiple expressions - wrap in begin
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
+        // Transform internal defines (like in regular lambda)
+        // This handles macros with bodies like:
+        //   (lambda (x)
+        //     (define (helper ...) ...)
+        //     (body ...))
+        let body = self.transform_internal_defines(body_list)?;
         
         // Create Lambda value using the proper API (params, body, env)
         self.lisp.lambda(params, body, self.global_env).map_err(Into::into)
