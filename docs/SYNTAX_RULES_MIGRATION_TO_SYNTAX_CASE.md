@@ -1381,65 +1381,90 @@ When attempting to remove native `Value::SyntaxRules` and use the Scheme-level `
 
 ```
 Failed to initialize evaluator: Error: error
+  arena invalid index - possible use of freed/invalid reference
 ```
 
-**Note**: This unhelpful error message is due to `ArenaError::InvalidIndex` being converted to `EvalError` with `ErrorKind::Generic` and an empty message (see `error.rs` line 184). Improving this error message would help debug the migration issue:
+The error occurs when the syntax-rules Lambda transformer is applied to macros defined after it (like `%guard-cond` at line 791).
 
-```rust
-// Current (unhelpful):
-_ => EvalError::new(ErrorKind::Generic),
+### Error Tracking Improvements (2026-02-05)
 
-// Better (would help debugging):
-ArenaError::InvalidIndex => EvalError::new(ErrorKind::Generic)
-    .with_message("arena invalid index"),
+Error messages have been improved:
+- `ArenaError::InvalidIndex` now shows "arena invalid index - possible use of freed/invalid reference"
+- `ArenaError::TraceError` now shows "arena trace error during GC"
+
+### Infrastructure Added
+
+1. **GC Rooting for Nested Evaluations**
+   - Added `saved_cont_root` field to Evaluator
+   - `eval_for_macro` now properly roots saved continuations during GC
+   - This prevents outer continuation chain from being collected during nested macro expansion
+
+2. **Internal Define Support**
+   - `transform_internal_defines` made `pub(super)` for use in expand.rs
+   - `eval_lambda_for_transformer` now transforms internal defines to letrec
+   - This enables macros with `(define ...)` forms in their bodies
+
+3. **map Function**
+   - Added `map` function to macros.scm
+   - Required for the specified syntax-rules macro implementation
+
+### Testing Results
+
+The infrastructure works correctly:
+- Procedural macros with internal defines work at the REPL
+- Macros using `map` work at the REPL
+- Macros using `with-syntax` work at the REPL
+
+Example that works:
+```scheme
+(define-syntax my-macro
+  (lambda (xx)
+    (define (helper x) x)
+    (syntax-case xx ()
+      ((_ a) (helper #'a)))))
+(my-macro 42)  ; => 42
 ```
-
-The error is `ErrorKind::Generic` with empty message, which is the conversion of `ArenaError::InvalidIndex` to `EvalError`.
-
-### Attempted Approach
-
-1. Move Scheme-level `syntax-rules` macro to top of `macros.scm`
-2. Update `parse_transformer` in `expand.rs`:
-   ```rust
-   if self.lisp.symbol_matches(head, "syntax-rules")? {
-       let syntax_rules_sym = self.lisp.symbol("syntax-rules")?;
-       if let Some(transformer) = self.lookup_macro(syntax_rules_sym)? {
-           let result = self.apply_macro(transformer, expr)?;
-           let lambda_expr = self.syntax_to_datum_recursive(result)?;
-           return self.eval_for_macro(lambda_expr, self.global_env);
-       }
-   }
-   ```
-3. Remove `Value::SyntaxRules` variant and related code
 
 ### Where Error Occurs
 
-The error occurs during `apply_macro` when evaluating the `syntax-rules` macro body:
-```scheme
-(syntax-case xx ()
-  ((_ (k ...) ((keyword . pattern) template) ...)
-   (syntax (lambda (x) ...))))
+The error occurs specifically when:
+1. The `syntax-rules` Lambda is applied via `apply_procedural_macro`
+2. The Lambda body (letrec form) is evaluated via `eval_for_macro`
+3. Inside the letrec, `expand-syntax-rules` calls `(map expand-clause clauses)`
+
+The failure happens during `apply_macro(transformer, expr)` before we even get to process the result.
+
+### Remaining Investigation
+
+The issue appears to be in the evaluation of the letrec body within the syntax-rules Lambda. Specific areas to investigate:
+
+1. **Environment handling in letrec expansion**
+   - The letrec macro expands to nested let/set! forms
+   - Check if bindings are properly scoped during expansion
+
+2. **with-syntax evaluation inside letrec**
+   - The `expand-syntax-rules` function uses `with-syntax`
+   - Pattern `((clause ...) (map expand-clause clauses))` evaluates `map`
+   - The result binds pattern variables
+
+3. **Arena slot management**
+   - The failed apply_macro might be corrupting arena state
+   - Even with fallback to native, subsequent operations fail
+   - This suggests the attempt itself causes problems
+
+### Workaround
+
+A fallback to native syntax-rules on error was implemented:
+```rust
+if let Ok(result) = self.apply_macro(transformer, expr) {
+    // Process Scheme-level result
+} 
+// Fall through to native implementation
 ```
 
-Specifically, the `ArenaError::InvalidIndex` likely occurs during:
-- Pattern matching with ellipsis
-- Template transcription with pattern variables
-- Building the output syntax object
+However, this causes issues with arena state - the test `test_auto_memoization_fibonacci` fails with invalid index even though it doesn't directly use syntax-rules.
 
-### Debugging Suggestions
+### Current Status
 
-1. Add tracing to `match_pattern` to see which pattern is failing
-2. Add tracing to `transcribe_template` to see template expansion
-3. Check if `syntax_to_datum_recursive` properly unwraps nested syntax objects
-4. Verify ellipsis pattern `((keyword . pattern) template) ...` matches correctly
-5. Check if pattern variables `k`, `keyword`, `pattern`, `template` are properly bound and substituted
-
-### Key Insight
-
-The Scheme-level `syntax-rules` macro produces output with:
-- Nested `(syntax ...)` forms
-- Ellipsis patterns in the generated code
-- Pattern variable references that need substitution
-
-All of these must work correctly for the migration to succeed.
+The Scheme-level `syntax-rules` path is disabled pending resolution of the arena corruption issue. All 71 tests pass with native implementation.
 
