@@ -1681,9 +1681,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Parse a transformer expression (syntax-rules ...) or (lambda (x) ...)
     /// 
-    /// Supports two forms of macro transformers:
+    /// Supports three forms of macro transformers:
     /// 1. `(syntax-rules ...)` - declarative pattern-based macros (R7RS)
     /// 2. `(lambda (x) ...)` - procedural macros using syntax-case
+    /// 3. `(macro-name ...)` - macro call that produces a lambda transformer
+    ///
+    /// The third form allows syntax-rules to be implemented as a macro in Scheme
+    /// that expands to a lambda.
     pub(super) fn parse_transformer(&mut self, expr: ArenaIndex) -> EvalResult {
         let head = self.lisp.car(expr)?;
 
@@ -1722,6 +1726,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // The lambda will be called with the syntax object as its argument
             let lambda_result = self.eval_lambda_for_transformer(expr)?;
             return Ok(lambda_result);
+        }
+
+        // Check if head is a macro - if so, expand it first and then parse the result
+        // This allows (define-syntax name (my-syntax-rules ...)) where my-syntax-rules
+        // is a macro that expands to (lambda (x) ...)
+        if let Value::Symbol(_) = self.lisp.get(head)? {
+            if let Some(transformer) = self.lookup_macro(head)? {
+                // Expand the macro call
+                let expanded = self.apply_macro(transformer, expr)?;
+                
+                // Recursively parse the result (should be a lambda)
+                return self.parse_transformer(expanded);
+            }
         }
 
         Err(self.make_error(ErrorKind::SyntaxError, expr)
