@@ -1627,20 +1627,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = self.lisp.car(args)?;
         let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
 
-        // Check if the transformer is already a lambda expression
-        // If not, try to expand it (allows syntax-rules macro to work)
-        let final_transformer_expr = if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
-            let head = self.lisp.car(transformer_expr)?;
-            if self.lisp.symbol_matches(head, "lambda")? {
-                // Already a lambda - use as-is (don't expand body)
-                transformer_expr
-            } else {
-                // Not a lambda - expand it (e.g., syntax-rules call)
-                self.expand(transformer_expr)?
-            }
-        } else {
-            transformer_expr
-        };
+        // Expand the transformer expression if it's not already a lambda
+        let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
 
         // Parse the transformer
         let transformer = self.parse_transformer(final_transformer_expr)?;
@@ -1651,6 +1639,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Return unspecified value
         Ok(self.lisp.nil()?)
+    }
+
+    /// Expand a transformer expression if it's not already a lambda.
+    /// 
+    /// This allows macros like `syntax-rules` to be used to define other macros.
+    /// If the expression is already a lambda, it's returned as-is to avoid
+    /// expanding pattern variables in the lambda body.
+    pub(super) fn expand_transformer_if_needed(&mut self, transformer_expr: ArenaIndex) -> EvalResult {
+        if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
+            let head = self.lisp.car(transformer_expr)?;
+            if self.lisp.symbol_matches(head, "lambda")? {
+                // Already a lambda - use as-is (don't expand body)
+                Ok(transformer_expr)
+            } else {
+                // Not a lambda - expand it (e.g., syntax-rules call)
+                self.expand(transformer_expr)
+            }
+        } else {
+            Ok(transformer_expr)
+        }
     }
 
     /// Parse a transformer expression (lambda (x) ...)

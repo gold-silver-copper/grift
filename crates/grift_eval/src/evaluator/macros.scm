@@ -19,7 +19,13 @@
 ;; where each clause is ((keyword . pattern) template)
 ;;
 ;; This expands to a lambda that uses syntax-case internally.
-;; Due to the nested ellipsis limitation, we support up to 6 clauses explicitly.
+;;
+;; Implementation note: Due to a bug in nested ellipsis pattern matching
+;; (see HYGIENIC_MACROS_IMPLEMENTATION.md Phase 7), we cannot use the
+;; standard R7RS approach of matching ((keyword . pattern) template) ...
+;; Instead, we explicitly enumerate patterns for 1-8 clauses. This covers
+;; the vast majority of real-world macros. Macros with more than 8 clauses
+;; should use syntax-case directly.
 (define-syntax syntax-rules
   (lambda (form)
     (syntax-case form ()
