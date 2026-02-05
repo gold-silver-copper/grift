@@ -183,6 +183,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
         // With arena-based continuations, we just need to root the current_cont pointer.
         // The GC will trace through the ContFrame linked list automatically.
+        //
+        // Root count breakdown:
+        // - 4 fixed: global_env, macro_env, current_cont, dynamic_wind_chain
+        // - 1 optional: saved_cont_root (for nested eval_for_macro)
+        // - 2 from Eval state: expr, env
+        // - 1 from Return state: val
+        // Total maximum: 4 + 1 + 2 = 7, with headroom = 10
         const MAX_ROOTS: usize = 10;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;

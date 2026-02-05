@@ -1701,36 +1701,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         //   (syntax-rules ellipsis (literals...) clause ...)
         //   (syntax-rules ellipsis (literals...) "docstring" clause ...)
         if self.lisp.symbol_matches(head, "syntax-rules")? {
-            // TEMPORARILY DISABLED: Debug issue with Scheme-level syntax-rules
-            // Error occurs in apply_macro when applying the syntax-rules Lambda
-            let _use_scheme_level = false;  // Set to true to test
+            // Feature flag for Scheme-level syntax-rules implementation
+            // Disabled pending investigation of arena corruption issue
+            // See docs/SYNTAX_RULES_MIGRATION_TO_SYNTAX_CASE.md Appendix F
+            let use_scheme_level = false;
             
-            if _use_scheme_level {
+            if use_scheme_level {
                 // Try to use the Scheme-level syntax-rules macro if it's defined
                 let syntax_rules_sym = self.lisp.symbol("syntax-rules")?;
                 if let Some(transformer) = self.lookup_macro(syntax_rules_sym)? {
-                    // Apply the Scheme-level syntax-rules macro
-                    // This transforms (syntax-rules ...) into a lambda expression
-                    let result = match self.apply_macro(transformer, expr) {
-                        Ok(r) => r,
-                        Err(e) => return Err(self.make_error(e.kind, expr)
-                            .with_message("error in Scheme-level syntax-rules: apply_macro failed")),
-                    };
-                    
-                    // The result is a syntax object containing a lambda expression
-                    // Unwrap it to get the raw lambda form
-                    let lambda_expr = match self.syntax_to_datum_recursive(result) {
-                        Ok(r) => r,
-                        Err(e) => return Err(self.make_error(e.kind, expr)
-                            .with_message("error in Scheme-level syntax-rules: syntax_to_datum failed")),
-                    };
-                    
-                    // Evaluate the lambda expression to create a Lambda value
-                    // The lambda captures the current environment for hygiene
-                    return self.eval_for_macro(lambda_expr, self.global_env).map_err(|e| {
-                        self.make_error(e.kind, expr)
-                            .with_message("error in Scheme-level syntax-rules: eval_for_macro failed")
-                    });
+                    // Try applying Scheme-level syntax-rules
+                    // On success, process the result
+                    // On failure, fall through to native implementation
+                    if let Ok(result) = self.apply_macro(transformer, expr) {
+                        // The result is a syntax object containing a lambda expression
+                        // Unwrap it to get the raw lambda form
+                        if let Ok(lambda_expr) = self.syntax_to_datum_recursive(result) {
+                            // Evaluate the lambda expression to create a Lambda value
+                            if let Ok(lambda_val) = self.eval_for_macro(lambda_expr, self.global_env) {
+                                return Ok(lambda_val);
+                            }
+                        }
+                    }
+                    // If any step failed, fall through to native implementation
                 }
             }
             
