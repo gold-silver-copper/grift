@@ -1401,8 +1401,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = self.lisp.car(args)?;
         let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
+        // Check if the transformer is already a lambda expression
+        // If not, try to expand it (allows syntax-rules macro to work)
+        let final_transformer_expr = if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
+            let head = self.lisp.car(transformer_expr)?;
+            if self.lisp.symbol_matches(head, "lambda")? {
+                // Already a lambda - use as-is (don't expand body)
+                transformer_expr
+            } else {
+                // Not a lambda - expand it (e.g., syntax-rules call)
+                self.expand(transformer_expr)?
+            }
+        } else {
+            transformer_expr
+        };
+        
         // Parse the transformer
-        let transformer = self.parse_transformer(transformer_expr)?;
+        let transformer = self.parse_transformer(final_transformer_expr)?;
         
         // Add to macro environment
         let binding = self.lisp.cons(name, transformer)?;
@@ -1432,7 +1447,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let name = self.lisp.car(binding)?;
             let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
             
-            let transformer = self.parse_transformer(transformer_expr)?;
+            // Check if the transformer is already a lambda expression
+            // If not, try to expand it (allows syntax-rules macro to work)
+            let final_transformer_expr = if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
+                let head = self.lisp.car(transformer_expr)?;
+                if self.lisp.symbol_matches(head, "lambda")? {
+                    transformer_expr
+                } else {
+                    self.expand(transformer_expr)?
+                }
+            } else {
+                transformer_expr
+            };
+            
+            let transformer = self.parse_transformer(final_transformer_expr)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
             

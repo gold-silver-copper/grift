@@ -10,6 +10,112 @@
 ;;; implementations for binding forms instead of the standard R7RS patterns.
 
 ;; ============================================================
+;; syntax-rules - Declarative Macro Definition (R7RS)
+;; ============================================================
+
+;; syntax-rules - Create pattern-based macro transformers
+;; 
+;; (syntax-rules (literals ...) clause ...)
+;; where each clause is ((keyword . pattern) template)
+;;
+;; This expands to a lambda that uses syntax-case internally.
+;; Due to the nested ellipsis limitation, we support up to 6 clauses explicitly.
+(define-syntax syntax-rules
+  (lambda (form)
+    (syntax-case form ()
+      ;; 1 clause
+      ((syntax-rules (lit ...) ((kw1 . p1) t1))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))))))
+      ;; 2 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))))))
+      ;; 3 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))
+             ((dummy . p3) (syntax t3))))))
+      ;; 4 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))
+             ((dummy . p3) (syntax t3))
+             ((dummy . p4) (syntax t4))))))
+      ;; 5 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))
+             ((dummy . p3) (syntax t3))
+             ((dummy . p4) (syntax t4))
+             ((dummy . p5) (syntax t5))))))
+      ;; 6 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5) ((kw6 . p6) t6))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))
+             ((dummy . p3) (syntax t3))
+             ((dummy . p4) (syntax t4))
+             ((dummy . p5) (syntax t5))
+             ((dummy . p6) (syntax t6))))))
+      ;; 7 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5) ((kw6 . p6) t6) ((kw7 . p7) t7))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))
+             ((dummy . p3) (syntax t3))
+             ((dummy . p4) (syntax t4))
+             ((dummy . p5) (syntax t5))
+             ((dummy . p6) (syntax t6))
+             ((dummy . p7) (syntax t7))))))
+      ;; 8 clauses
+      ((syntax-rules (lit ...) ((kw1 . p1) t1) ((kw2 . p2) t2) ((kw3 . p3) t3) ((kw4 . p4) t4) ((kw5 . p5) t5) ((kw6 . p6) t6) ((kw7 . p7) t7) ((kw8 . p8) t8))
+       (syntax 
+         (lambda (x)
+           (syntax-case x (lit ...)
+             ((dummy . p1) (syntax t1))
+             ((dummy . p2) (syntax t2))
+             ((dummy . p3) (syntax t3))
+             ((dummy . p4) (syntax t4))
+             ((dummy . p5) (syntax t5))
+             ((dummy . p6) (syntax t6))
+             ((dummy . p7) (syntax t7))
+             ((dummy . p8) (syntax t8)))))))))
+
+;; define-syntax-rule - Convenient single-clause macro definition
+;;
+;; (define-syntax-rule (name . pattern) template)
+;; =>
+;; (define-syntax name
+;;   (syntax-rules ()
+;;     ((name . pattern) template)))
+(define-syntax define-syntax-rule
+  (lambda (form)
+    (syntax-case form ()
+      ((define-syntax-rule (name . pattern) template)
+       (syntax (define-syntax name
+                 (syntax-rules ()
+                   ((name . pattern) template))))))))
+
+;; ============================================================
 ;; Internal Helpers
 ;; ============================================================
 
