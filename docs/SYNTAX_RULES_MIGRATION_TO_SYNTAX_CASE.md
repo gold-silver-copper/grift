@@ -1383,6 +1383,17 @@ When attempting to remove native `Value::SyntaxRules` and use the Scheme-level `
 Failed to initialize evaluator: Error: error
 ```
 
+**Note**: This unhelpful error message is due to `ArenaError::InvalidIndex` being converted to `EvalError` with `ErrorKind::Generic` and an empty message (see `error.rs` line 184). Improving this error message would help debug the migration issue:
+
+```rust
+// Current (unhelpful):
+_ => EvalError::new(ErrorKind::Generic),
+
+// Better (would help debugging):
+ArenaError::InvalidIndex => EvalError::new(ErrorKind::Generic)
+    .with_message("arena invalid index"),
+```
+
 The error is `ErrorKind::Generic` with empty message, which is the conversion of `ArenaError::InvalidIndex` to `EvalError`.
 
 ### Attempted Approach
