@@ -2465,7 +2465,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check if this is a pattern variable - pattern variables should NOT be wrapped
                 // because they are meant to be substituted during template transcription
                 let pattern_bindings = self.get_pattern_bindings_from_env(lex_env)?;
-                if let Some(_) = self.bindings_lookup(pattern_bindings, datum)? {
+                if self.bindings_lookup(pattern_bindings, datum)?.is_some() {
                     // This is a pattern variable - keep as-is for later substitution
                     return Ok(datum);
                 }
