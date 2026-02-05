@@ -60,6 +60,8 @@ cargo test --package grift_eval peroxide_r5rs
 
 ## Notes
 
+**Important**: The .scm test files are preserved as-is from their original sources for reference and documentation purposes. They may contain test syntax or macros that are specific to their original implementations. The actual test execution in grift is done through the Rust test infrastructure which selectively executes individual test expressions that are compatible with grift's implementation.
+
 Many of the tests in these files involve advanced features like:
 - `call/cc` (call-with-current-continuation)
 - `dynamic-wind`
