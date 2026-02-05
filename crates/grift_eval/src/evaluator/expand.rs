@@ -1693,10 +1693,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let head = self.lisp.car(expr)?;
 
         // Check for syntax-rules (declarative transformer)
+        // Supports:
+        //   (syntax-rules (literals...) clause ...)
+        //   (syntax-rules (literals...) "docstring" clause ...)
+        //
+        // Note: Custom ellipsis (syntax-rules ellipsis (literals...) ...) is not 
+        // fully supported in the native implementation. Use the Scheme-level
+        // syntax-rules macro with with-ellipsis for custom ellipsis support.
         if self.lisp.symbol_matches(head, "syntax-rules")? {
             let rest = self.lisp.cdr(expr)?;
             let literals = self.lisp.car(rest)?;
-            let rules_raw = self.lisp.cdr(rest)?;
+            let after_literals = self.lisp.cdr(rest)?;
+            
+            // Check for optional docstring after literals
+            // Syntax can be: (syntax-rules (lits) clause ...)
+            //            or: (syntax-rules (lits) "doc" clause ...)
+            let rules_raw = if !self.lisp.get(after_literals)?.is_nil() {
+                let first_after_literals = self.lisp.car(after_literals)?;
+                if matches!(self.lisp.get(first_after_literals)?, Value::String { .. }) {
+                    // Skip the docstring
+                    self.lisp.cdr(after_literals)?
+                } else {
+                    after_literals
+                }
+            } else {
+                after_literals
+            };
 
             // Parse rules into (pattern . template) pairs
             let mut rules = self.lisp.nil()?;
