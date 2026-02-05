@@ -1487,8 +1487,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let pattern = self.lisp.car(clause)?;
             let clause_cdr = self.lisp.cdr(clause)?;
 
-            // Match pattern against stx directly (syntax-aware matching)
-            // Pattern variables will bind to syntax objects that preserve their context
+            // Match pattern against stx (syntax-aware matching)
+            // Pattern variables will bind to the matched values
             let empty = self.lisp.nil()?;
             if let Some(bindings) = self.match_pattern_syntax(pattern, stx, literals, empty)? {
                 // Match succeeded! 

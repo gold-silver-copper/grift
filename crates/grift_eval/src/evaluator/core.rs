@@ -735,10 +735,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Variable bindings shadow macros, so only expand if not bound as a variable
             if !is_var_bound {
                 if let Some(transformer) = self.lookup_macro(car)? {
-                    // Wrap the input expression with lexical context before macro expansion
-                    // This enables macro input expressions to carry their call-site bindings
-                    let wrapped_expr = self.wrap_with_lexical_env(expr, env)?;
-                    let expanded = self.apply_macro(transformer, wrapped_expr)?;
+                    // DON'T wrap macro inputs with lexical context here.
+                    // The `syntax` form handles lexical capture when needed.
+                    // Wrapping all macro inputs causes issues when the macro
+                    // produces code that references the same identifiers
+                    // (e.g., set! on a lambda parameter).
+                    let expanded = self.apply_macro(transformer, expr)?;
                     // Continue evaluating the expanded form
                     return Ok(TrampolineState::Eval { expr: expanded, env });
                 }
