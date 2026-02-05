@@ -99,10 +99,11 @@ fn run_pitfall_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, co
     (set! test-results (cons (list id expected actual passed) test-results))))
 
 (define-syntax should-be
-  (syntax-rules ()
-    ((_ test-id expected-value expression)
-     (let ((actual-value expression))
-       (record-test 'test-id expected-value actual-value)))))
+  (lambda (x)
+    (syntax-case x ()
+      ((_ test-id expected-value expression)
+       (syntax (let ((actual-value expression))
+                 (record-test 'test-id expected-value actual-value)))))))
 
 (define call/cc call-with-current-continuation)
 "#;
@@ -183,18 +184,20 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
     (set! *test-results* (cons (list expr expected actual passed) *test-results*))))
 
 (define-syntax test
-  (syntax-rules ()
-    ((test name expect expr)
-     (test expect expr))
-    ((test expect expr)
-     (begin
-       (set! *tests-run* (+ *tests-run* 1))
-       (let ((res expr))
-         (record-test-result '*tests-run* expect res))))))
+  (lambda (x)
+    (syntax-case x ()
+      ((test name expect expr)
+       (syntax (test expect expr)))
+      ((test expect expr)
+       (syntax (begin
+                 (set! *tests-run* (+ *tests-run* 1))
+                 (let ((res expr))
+                   (record-test-result '*tests-run* expect res))))))))
 
 (define-syntax test-assert
-  (syntax-rules ()
-    ((test-assert expr) (test #t expr))))
+  (lambda (x)
+    (syntax-case x ()
+      ((test-assert expr) (syntax (test #t expr))))))
 
 (define (test-begin . name)
   (begin
