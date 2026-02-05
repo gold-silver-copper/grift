@@ -852,6 +852,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Transcribe a list in template
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested templates.
     fn transcribe_list(
         &mut self,
         template: ArenaIndex,
@@ -874,10 +876,64 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             );
         }
 
-        // Regular list: transcribe each element
-        let new_car = self.transcribe_template(car, bindings, renames, def_env)?;
-        let new_cdr = self.transcribe_template(cdr, bindings, renames, def_env)?;
-        self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+        // Regular list: transcribe each element iteratively
+        // Collect all elements first
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
+        let mut count = 0;
+        let mut current = template;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, template));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            
+            current = self.lisp.cdr(current)?;
+            
+            // Check if we've hit a special form in the middle of the list
+            if count > 0 {
+                if let Value::Cons { .. } = self.lisp.get(current)? {
+                    let next_car = self.lisp.car(current)?;
+                    let next_cdr = self.lisp.cdr(current)?;
+                    
+                    // Stop if we hit ellipsis or binding keyword in middle
+                    if self.has_ellipsis(next_cdr)? || self.is_binding_keyword(next_car)? {
+                        // Process collected elements, then handle rest specially
+                        // Process the remaining special part
+                        let rest_transcribed = self.transcribe_template(current, bindings, renames, def_env)?;
+                        let mut result = rest_transcribed;
+                        
+                        // Add the collected elements in reverse
+                        for i in (0..count).rev() {
+                            let transcribed = self.transcribe_template(elements[i], bindings, renames, def_env)?;
+                            result = self.lisp.cons(transcribed, result)?;
+                        }
+                        
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+        
+        // Transcribe all collected elements
+        for i in 0..count {
+            elements[i] = self.transcribe_template(elements[i], bindings, renames, def_env)?;
+        }
+        
+        // Rebuild the list from the end
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            // Improper list - transcribe the tail
+            self.transcribe_template(current, bindings, renames, def_env)?
+        };
+        
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 
     /// Find pattern variables that have list bindings (from ellipsis matching)
@@ -1253,56 +1309,66 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Expand expression with rename environment
+    /// Expand an expression (iterative to avoid stack overflow)
+    /// 
+    /// This function uses a loop to handle tail recursion when macro expansion
+    /// produces another expression that needs expansion.
     fn expand_expr(
         &mut self,
-        expr: ArenaIndex,
+        mut expr: ArenaIndex,
         renames: ArenaIndex,
     ) -> EvalResult {
-        match self.lisp.get(expr)? {
-            Value::Symbol(_) => {
-                // Apply any pending renames
-                self.rename_lookup(expr, renames)
-            }
-
-            Value::Nil => Ok(self.lisp.nil()?),
-
-            Value::Cons { .. } => {
-                let head = self.lisp.car(expr)?;
-                let args = self.lisp.cdr(expr)?;
-
-                // Check for special forms that affect expansion
-                if let Value::Symbol(_) = self.lisp.get(head)? {
-                    if self.lisp.symbol_matches(head, "quote")? {
-                        // Don't expand inside quote
-                        return Ok(expr);
-                    }
-
-                    if self.lisp.symbol_matches(head, "define-syntax")? {
-                        return self.expand_define_syntax(args);
-                    }
-
-                    if self.lisp.symbol_matches(head, "let-syntax")? {
-                        return self.expand_let_syntax(args, renames);
-                    }
-
-                    // Check for macro invocation
-                    if let Some(transformer) = self.lookup_macro(head)? {
-                        let expanded = self.apply_macro(transformer, expr)?;
-                        // Re-expand the result
-                        return self.expand_expr(expanded, renames);
-                    }
+        // Loop to handle tail recursion from macro expansion
+        loop {
+            match self.lisp.get(expr)? {
+                Value::Symbol(_) => {
+                    // Apply any pending renames
+                    return self.rename_lookup(expr, renames);
                 }
 
-                // Not a macro - expand subexpressions
-                self.expand_application(expr, renames)
-            }
+                Value::Nil => return Ok(self.lisp.nil()?),
 
-            // Atoms pass through unchanged
-            _ => Ok(expr),
+                Value::Cons { .. } => {
+                    let head = self.lisp.car(expr)?;
+                    let args = self.lisp.cdr(expr)?;
+
+                    // Check for special forms that affect expansion
+                    if let Value::Symbol(_) = self.lisp.get(head)? {
+                        if self.lisp.symbol_matches(head, "quote")? {
+                            // Don't expand inside quote
+                            return Ok(expr);
+                        }
+
+                        if self.lisp.symbol_matches(head, "define-syntax")? {
+                            return self.expand_define_syntax(args);
+                        }
+
+                        if self.lisp.symbol_matches(head, "let-syntax")? {
+                            return self.expand_let_syntax(args, renames);
+                        }
+
+                        // Check for macro invocation
+                        if let Some(transformer) = self.lookup_macro(head)? {
+                            let expanded = self.apply_macro(transformer, expr)?;
+                            // Re-expand the result (tail recursion - loop back)
+                            expr = expanded;
+                            continue;
+                        }
+                    }
+
+                    // Not a macro - expand subexpressions
+                    return self.expand_application(expr, renames);
+                }
+
+                // Atoms pass through unchanged
+                _ => return Ok(expr),
+            }
         }
     }
 
     /// Expand a function application (non-macro)
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested lists.
     fn expand_application(
         &mut self,
         expr: ArenaIndex,
@@ -1312,13 +1378,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(self.lisp.nil()?);
         }
 
-        let car = self.lisp.car(expr)?;
-        let cdr = self.lisp.cdr(expr)?;
-
-        let new_car = self.expand_expr(car, renames)?;
-        let new_cdr = self.expand_application(cdr, renames)?;
-
-        self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+        // Collect all elements first (iteratively)
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
+        let mut count = 0;
+        let mut current = expr;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, expr));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Expand each element (this may recurse through expand_expr, but not through expand_application)
+        for i in 0..count {
+            elements[i] = self.expand_expr(elements[i], renames)?;
+        }
+        
+        // Rebuild the list from the end (iteratively)
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            self.lisp.nil()?
+        } else {
+            // Improper list - keep the tail as-is
+            current
+        };
+        
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 
     /// Look up macro in macro environment
@@ -1587,6 +1678,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Expand a body (list of expressions)
+    /// Expand a body (list of expressions)
+    /// 
+    /// Iterative implementation to avoid stack overflow on deeply nested lists.
     fn expand_body(
         &mut self,
         body: ArenaIndex,
@@ -1596,13 +1690,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(self.lisp.nil()?);
         }
 
-        let first = self.lisp.car(body)?;
-        let rest = self.lisp.cdr(body)?;
-
-        let expanded_first = self.expand_expr(first, renames)?;
-        let expanded_rest = self.expand_body(rest, renames)?;
-
-        self.lisp.cons(expanded_first, expanded_rest).map_err(Into::into)
+        // Collect all elements first (iteratively)
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
+        let mut count = 0;
+        let mut current = body;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= elements.len() {
+                return Err(self.make_error(ErrorKind::Generic, body));
+            }
+            elements[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Expand each element
+        for i in 0..count {
+            elements[i] = self.expand_expr(elements[i], renames)?;
+        }
+        
+        // Rebuild the list from the end (iteratively)
+        let mut result = self.lisp.nil()?;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(elements[i], result)?;
+        }
+        
+        Ok(result)
     }
 }
 
