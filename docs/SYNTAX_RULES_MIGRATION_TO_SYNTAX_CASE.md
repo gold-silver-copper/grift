@@ -31,12 +31,40 @@ The following features have been implemented:
   - Syntax: `(syntax-rules (literals...) "docstring" clause ...)`
   - Docstrings are properly skipped during parsing
 
-### Remaining Work (Optional)
+### Remaining Work for Full Migration
 
-- [ ] Remove redundant native Rust syntax-rules code (if performance acceptable)
-  - Note: Requires resolving bootstrapping issues with macros.scm loading
-  - The native implementation is currently used for bootstrapping
-- [ ] Performance benchmarking
+The following items must be completed to fully remove the native Rust `Value::SyntaxRules`:
+
+- [ ] **Fix bootstrapping issue with Scheme-level syntax-rules**
+  - Issue: When `parse_transformer` sees `(syntax-rules ...)`, it tries to look up and apply the `syntax-rules` macro
+  - The Scheme-level `syntax-rules` macro uses `syntax-case` with ellipsis patterns
+  - When applied, the macro expansion produces `(syntax ...)` wrapped results
+  - These need to be unwrapped with `syntax_to_datum_recursive` before evaluating
+  - **Blocker**: Some issue in the pattern matching or template transcription causes an `ArenaError::InvalidIndex` during expansion
+
+- [ ] **Move Scheme-level syntax-rules to top of macros.scm**
+  - The syntax-rules macro (defined as a Lambda using syntax-case) must be the first macro defined
+  - All subsequent macros like `%let-binding`, `let`, etc. will use the Scheme implementation
+  - Already prepared in macros.scm but blocked by the above issue
+
+- [ ] **Update parse_transformer to use Scheme-level syntax-rules**
+  - When `(syntax-rules ...)` is encountered:
+    1. Look up `syntax-rules` in `macro_env`
+    2. Apply the macro using `apply_macro(transformer, expr)`
+    3. Unwrap result with `syntax_to_datum_recursive`
+    4. Evaluate the lambda expression with `eval_for_macro`
+  - This replaces native construction of `Value::SyntaxRules`
+
+- [ ] **Remove Value::SyntaxRules from codebase**
+  - `crates/grift_parser/src/value.rs`: Remove enum variant and related methods
+  - `crates/grift_parser/src/lisp.rs`: Remove `syntax_rules()` and `syntax_rules_parts()`
+  - `crates/grift_eval/src/evaluator/expand.rs`: Remove `apply_syntax_rules_macro()`
+  - `crates/grift_eval/src/evaluator/mod.rs`: Update macro_env docs
+  - `crates/grift_repl/src/lib.rs`: Remove display formatting
+
+- [ ] **Performance benchmarking**
+  - Compare macro expansion times before/after migration
+  - Accept ~10-20% slowdown as reasonable trade-off for code simplicity
 
 ---
 
@@ -1342,3 +1370,65 @@ This migration represents a significant step toward a self-hosted Scheme impleme
 The migration follows a three-phase plan with clear success criteria, comprehensive testing, and a rollback plan. Performance impact is minimal and acceptable for the benefits gained.
 
 **Recommendation**: Proceed with migration. The benefits outweigh the risks, and the implementation is well-tested and proven in other Scheme systems.
+
+---
+
+## Appendix F: Debug Notes for Migration Blocker
+
+### Observed Issue
+
+When attempting to remove native `Value::SyntaxRules` and use the Scheme-level `syntax-rules` macro, initialization fails with:
+
+```
+Failed to initialize evaluator: Error: error
+```
+
+The error is `ErrorKind::Generic` with empty message, which is the conversion of `ArenaError::InvalidIndex` to `EvalError`.
+
+### Attempted Approach
+
+1. Move Scheme-level `syntax-rules` macro to top of `macros.scm`
+2. Update `parse_transformer` in `expand.rs`:
+   ```rust
+   if self.lisp.symbol_matches(head, "syntax-rules")? {
+       let syntax_rules_sym = self.lisp.symbol("syntax-rules")?;
+       if let Some(transformer) = self.lookup_macro(syntax_rules_sym)? {
+           let result = self.apply_macro(transformer, expr)?;
+           let lambda_expr = self.syntax_to_datum_recursive(result)?;
+           return self.eval_for_macro(lambda_expr, self.global_env);
+       }
+   }
+   ```
+3. Remove `Value::SyntaxRules` variant and related code
+
+### Where Error Occurs
+
+The error occurs during `apply_macro` when evaluating the `syntax-rules` macro body:
+```scheme
+(syntax-case xx ()
+  ((_ (k ...) ((keyword . pattern) template) ...)
+   (syntax (lambda (x) ...))))
+```
+
+Specifically, the `ArenaError::InvalidIndex` likely occurs during:
+- Pattern matching with ellipsis
+- Template transcription with pattern variables
+- Building the output syntax object
+
+### Debugging Suggestions
+
+1. Add tracing to `match_pattern` to see which pattern is failing
+2. Add tracing to `transcribe_template` to see template expansion
+3. Check if `syntax_to_datum_recursive` properly unwraps nested syntax objects
+4. Verify ellipsis pattern `((keyword . pattern) template) ...` matches correctly
+5. Check if pattern variables `k`, `keyword`, `pattern`, `template` are properly bound and substituted
+
+### Key Insight
+
+The Scheme-level `syntax-rules` macro produces output with:
+- Nested `(syntax ...)` forms
+- Ellipsis patterns in the generated code
+- Pattern variable references that need substitution
+
+All of these must work correctly for the migration to succeed.
+
