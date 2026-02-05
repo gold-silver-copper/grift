@@ -192,10 +192,11 @@ fn test_chibi_let_nested_grift_behavior() {
     // Original R5RS test: (test 35 (let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x))))
     // In R5RS, let bindings are parallel, so z = (+ 2 3) = 5, then (* 5 7) = 35.
     // 
-    // Note: In grift, inner let bindings appear to be sequential rather than parallel,
-    // so this returns 70 instead of R5RS's 35. We test for grift's actual behavior.
-    // With grift's sequential let: z = (+ 7 3) = 10, then (* 10 7) = 70
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x)))"), 70);
+    // Grift now correctly implements R5RS parallel binding semantics:
+    // Outer let: x=2, y=3
+    // Inner let (parallel): x=7, z=(+ x y) where x and y refer to outer scope = (+ 2 3) = 5
+    // Result: (* z x) where z=5 and x=7 = (* 5 7) = 35
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let ((x 2) (y 3)) (let ((x 7) (z (+ x y))) (* z x)))"), 35);
 }
 
 #[test]

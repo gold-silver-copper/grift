@@ -552,7 +552,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         vars: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
         // Use a work queue for depth-first traversal
-        let mut queue = [ArenaIndex::new(0); 16];
+        let mut queue = [ArenaIndex::new(0); 64];
         let mut queue_len = 1;
         queue[0] = pattern;
         
@@ -923,7 +923,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Regular list: transcribe each element iteratively
         // Collect all elements first
-        let mut elements = [ArenaIndex::new(0); 32]; // Stack-allocated buffer
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
         let mut count = 0;
         let mut current = template;
         
@@ -998,7 +998,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         result: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
         // Use a work queue
-        let mut queue = [ArenaIndex::new(0); 16];
+        let mut queue = [ArenaIndex::new(0); 64];
         let mut queue_len = 1;
         queue[0] = template;
         
@@ -1355,7 +1355,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Iterative implementation using a work queue to avoid stack overflow.
     fn symbol_appears_in(&self, sym: ArenaIndex, expr: ArenaIndex) -> Result<bool, EvalError> {
         // Use a fixed-size work queue for depth-first traversal
-        let mut queue = [ArenaIndex::new(0); 16];
+        let mut queue = [ArenaIndex::new(0); 64];
         let mut queue_len = 1;
         queue[0] = expr;
         
@@ -1497,7 +1497,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Collect all elements first (iteratively)
-        let mut elements = [ArenaIndex::new(0); 32]; // Stack-allocated buffer
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
         let mut count = 0;
         let mut current = expr;
         
@@ -1809,7 +1809,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Collect all elements first (iteratively)
-        let mut elements = [ArenaIndex::new(0); 32]; // Stack-allocated buffer
+        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
         let mut count = 0;
         let mut current = body;
         
@@ -1873,7 +1873,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Process list iteratively
-        let mut elements = [ArenaIndex::new(0); 16];
+        let mut elements = [ArenaIndex::new(0); 64];
         let mut count = 0;
         let mut current = stx;
         
@@ -1987,7 +1987,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Process list iteratively
-        let mut elements = [ArenaIndex::new(0); 16];
+        let mut elements = [ArenaIndex::new(0); 64];
         let mut count = 0;
         let mut current = datum;
         

@@ -209,7 +209,7 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
     (newline)
     (display "Tests passed: ")
     (display *tests-passed*)
-    (newline)))
+   (newline)))
 "#;
     
     // Execute the setup
@@ -224,6 +224,7 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
     let mut buffer = String::new();
     let mut in_test = false;
     let mut paren_count = 0;
+    let mut skip_current_form = false;
     
     for line in lines {
         let trimmed = line.trim();
@@ -231,6 +232,20 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
         // Skip comments and empty lines when not in a test
         if !in_test && (trimmed.is_empty() || trimmed.starts_with(';')) {
             continue;
+        }
+        
+        // Check if this is a form we should skip (macro definitions that conflict with our setup)
+        if paren_count == 0 && !in_test {
+            if trimmed.starts_with("(define-syntax test") || 
+               trimmed.starts_with("(define-syntax test-assert") ||
+               trimmed.starts_with("(define (test-begin") ||
+               trimmed.starts_with("(define (test-end") ||
+               trimmed.starts_with("(define *tests-run*") ||
+               trimmed.starts_with("(define *tests-passed*") ||
+               trimmed.starts_with("(define *test-results*") ||
+               trimmed.starts_with("(define (record-test") {
+                skip_current_form = true;
+            }
         }
         
         buffer.push_str(line);
@@ -247,13 +262,18 @@ fn run_r5rs_tests<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, conte
         
         // If parentheses are balanced and we have content, try to execute
         if paren_count == 0 && !buffer.trim().is_empty() {
-            match eval.eval_str(&buffer) {
-                Ok(_) => {
-                    // Success - continue
-                }
-                Err(e) => {
-                    eprintln!("Warning: Error in test block: {:?}", e);
-                    eprintln!("Skipping and continuing...");
+            if skip_current_form {
+                // Skip this form - it conflicts with our test infrastructure
+                skip_current_form = false;
+            } else {
+                match eval.eval_str(&buffer) {
+                    Ok(_) => {
+                        // Success - continue
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Error in test block: {:?}", e);
+                        eprintln!("Skipping and continuing...");
+                    }
                 }
             }
             buffer.clear();
