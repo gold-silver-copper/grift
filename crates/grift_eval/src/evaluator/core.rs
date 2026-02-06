@@ -667,8 +667,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if count >= bindings.len() {
                 // Buffer overflow: too many local bindings to copy.
                 // Fall back to recursive processing for the remaining bindings.
-                let car = self.lisp.car(current)?;
-                let cdr = self.lisp.cdr(current)?;
+                let (car, cdr) = self.lisp.car_cdr(current)?;
                 let rest_merged = self.merge_environments(cdr, env2)?;
                 let mut result = rest_merged;
                 result = self.lisp.cons(car, result)?;
@@ -679,9 +678,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 return Ok(result);
             }
-            bindings[count] = self.lisp.car(current)?;
+            let (car, cdr) = self.lisp.car_cdr(current)?;
+            bindings[count] = car;
             count += 1;
-            current = self.lisp.cdr(current)?;
+            current = cdr;
         }
         
         // Build new env chain: bindings from env1 -> env2
@@ -948,9 +948,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 2 values from a cons cell: (a . b) -> (a, b)
     #[inline]
     pub(super) fn unpack2(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let b = self.lisp.cdr(data)?;
-        Ok((a, b))
+        self.lisp.car_cdr(data).map_err(Into::into)
     }
     
     /// Pack 3 values into nested cons: (a . (b . c))
@@ -963,10 +961,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 3 values from nested cons: (a . (b . c)) -> (a, b, c)
     #[inline]
     pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bc = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bc)?;
-        let c = self.lisp.cdr(bc)?;
+        let (a, bc) = self.lisp.car_cdr(data)?;
+        let (b, c) = self.lisp.car_cdr(bc)?;
         Ok((a, b, c))
     }
     
@@ -981,12 +977,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 4 values from nested cons
     #[inline]
     pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcd = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcd)?;
-        let cd = self.lisp.cdr(bcd)?;
-        let c = self.lisp.car(cd)?;
-        let d = self.lisp.cdr(cd)?;
+        let (a, bcd) = self.lisp.car_cdr(data)?;
+        let (b, cd) = self.lisp.car_cdr(bcd)?;
+        let (c, d) = self.lisp.car_cdr(cd)?;
         Ok((a, b, c, d))
     }
     
@@ -1002,14 +995,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 5 values from nested cons
     #[inline]
     pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcde = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcde)?;
-        let cde = self.lisp.cdr(bcde)?;
-        let c = self.lisp.car(cde)?;
-        let de = self.lisp.cdr(cde)?;
-        let d = self.lisp.car(de)?;
-        let e = self.lisp.cdr(de)?;
+        let (a, bcde) = self.lisp.car_cdr(data)?;
+        let (b, cde) = self.lisp.car_cdr(bcde)?;
+        let (c, de) = self.lisp.car_cdr(cde)?;
+        let (d, e) = self.lisp.car_cdr(de)?;
         Ok((a, b, c, d, e))
     }
     
@@ -1026,16 +1015,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 6 values from nested cons
     #[inline]
     pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcdef = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcdef)?;
-        let cdef = self.lisp.cdr(bcdef)?;
-        let c = self.lisp.car(cdef)?;
-        let def = self.lisp.cdr(cdef)?;
-        let d = self.lisp.car(def)?;
-        let ef = self.lisp.cdr(def)?;
-        let e = self.lisp.car(ef)?;
-        let f = self.lisp.cdr(ef)?;
+        let (a, bcdef) = self.lisp.car_cdr(data)?;
+        let (b, cdef) = self.lisp.car_cdr(bcdef)?;
+        let (c, def) = self.lisp.car_cdr(cdef)?;
+        let (d, ef) = self.lisp.car_cdr(def)?;
+        let (e, f) = self.lisp.car_cdr(ef)?;
         Ok((a, b, c, d, e, f))
     }
     
@@ -1053,18 +1037,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 7 values from nested cons
     #[inline]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcdefg = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcdefg)?;
-        let cdefg = self.lisp.cdr(bcdefg)?;
-        let c = self.lisp.car(cdefg)?;
-        let defg = self.lisp.cdr(cdefg)?;
-        let d = self.lisp.car(defg)?;
-        let efg = self.lisp.cdr(defg)?;
-        let e = self.lisp.car(efg)?;
-        let fg = self.lisp.cdr(efg)?;
-        let f = self.lisp.car(fg)?;
-        let g = self.lisp.cdr(fg)?;
+        let (a, bcdefg) = self.lisp.car_cdr(data)?;
+        let (b, cdefg) = self.lisp.car_cdr(bcdefg)?;
+        let (c, defg) = self.lisp.car_cdr(cdefg)?;
+        let (d, efg) = self.lisp.car_cdr(defg)?;
+        let (e, fg) = self.lisp.car_cdr(efg)?;
+        let (f, g) = self.lisp.car_cdr(fg)?;
         Ok((a, b, c, d, e, f, g))
     }
     

@@ -168,8 +168,7 @@ fn format_list_contents<const N: usize>(
                     buf.push(' ');
                 }
                 first = false;
-                let car = lisp.car(idx).unwrap_or(ArenaIndex::NIL);
-                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NIL);
+                let (car, cdr) = lisp.car_cdr(idx).unwrap_or((ArenaIndex::NIL, ArenaIndex::NIL));
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
                 count += 1;
