@@ -1,79 +1,18 @@
-//! Parser types and functions for parsing Lisp expressions
+//! Parser for Lisp expressions
 //!
-//! This module contains the parser state machine and related error types.
+//! This module contains the parser that builds arena-allocated AST nodes
+//! from a token stream produced by the [`Lexer`](crate::lexer::Lexer).
 
 use grift_arena::{ArenaIndex, ArenaError};
 use crate::Lisp;
+use crate::lexer::{Lexer, Token, LexError, LexErrorKind};
+
+// Re-export SourceLoc from lexer for backward compatibility
+pub use crate::lexer::SourceLoc;
 
 // ============================================================================
-// Character Classification Lookup Tables
+// Parser Error Types
 // ============================================================================
-
-/// Lookup table for symbol characters. Index by byte value, true if valid symbol char.
-/// Valid symbol chars: a-z, A-Z, 0-9, + - * / < > = ? ! _ & % ^ ~ .
-static SYMBOL_CHAR_TABLE: [bool; 256] = {
-    let mut table = [false; 256];
-    
-    // Letters a-z
-    table[b'a' as usize] = true; table[b'b' as usize] = true; table[b'c' as usize] = true;
-    table[b'd' as usize] = true; table[b'e' as usize] = true; table[b'f' as usize] = true;
-    table[b'g' as usize] = true; table[b'h' as usize] = true; table[b'i' as usize] = true;
-    table[b'j' as usize] = true; table[b'k' as usize] = true; table[b'l' as usize] = true;
-    table[b'm' as usize] = true; table[b'n' as usize] = true; table[b'o' as usize] = true;
-    table[b'p' as usize] = true; table[b'q' as usize] = true; table[b'r' as usize] = true;
-    table[b's' as usize] = true; table[b't' as usize] = true; table[b'u' as usize] = true;
-    table[b'v' as usize] = true; table[b'w' as usize] = true; table[b'x' as usize] = true;
-    table[b'y' as usize] = true; table[b'z' as usize] = true;
-    
-    // Letters A-Z
-    table[b'A' as usize] = true; table[b'B' as usize] = true; table[b'C' as usize] = true;
-    table[b'D' as usize] = true; table[b'E' as usize] = true; table[b'F' as usize] = true;
-    table[b'G' as usize] = true; table[b'H' as usize] = true; table[b'I' as usize] = true;
-    table[b'J' as usize] = true; table[b'K' as usize] = true; table[b'L' as usize] = true;
-    table[b'M' as usize] = true; table[b'N' as usize] = true; table[b'O' as usize] = true;
-    table[b'P' as usize] = true; table[b'Q' as usize] = true; table[b'R' as usize] = true;
-    table[b'S' as usize] = true; table[b'T' as usize] = true; table[b'U' as usize] = true;
-    table[b'V' as usize] = true; table[b'W' as usize] = true; table[b'X' as usize] = true;
-    table[b'Y' as usize] = true; table[b'Z' as usize] = true;
-    
-    // Digits 0-9
-    table[b'0' as usize] = true; table[b'1' as usize] = true; table[b'2' as usize] = true;
-    table[b'3' as usize] = true; table[b'4' as usize] = true; table[b'5' as usize] = true;
-    table[b'6' as usize] = true; table[b'7' as usize] = true; table[b'8' as usize] = true;
-    table[b'9' as usize] = true;
-    
-    // Special symbol characters: + - * / < > = ? ! _ & % ^ ~ .
-    table[b'+' as usize] = true; table[b'-' as usize] = true; table[b'*' as usize] = true;
-    table[b'/' as usize] = true; table[b'<' as usize] = true; table[b'>' as usize] = true;
-    table[b'=' as usize] = true; table[b'?' as usize] = true; table[b'!' as usize] = true;
-    table[b'_' as usize] = true; table[b'&' as usize] = true; table[b'%' as usize] = true;
-    table[b'^' as usize] = true; table[b'~' as usize] = true; table[b'.' as usize] = true;
-    
-    table
-};
-
-/// Lookup table for whitespace characters.
-static WHITESPACE_TABLE: [bool; 256] = {
-    let mut table = [false; 256];
-    table[b' ' as usize] = true;   // space
-    table[b'\t' as usize] = true;  // tab
-    table[b'\n' as usize] = true;  // newline
-    table[b'\r' as usize] = true;  // carriage return
-    table[0x0B] = true;            // vertical tab
-    table[0x0C] = true;            // form feed
-    table
-};
-
-// ============================================================================
-// Parser
-// ============================================================================
-
-/// Source location for error reporting
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SourceLoc {
-    pub line: usize,
-    pub column: usize,
-}
 
 /// Parser error with location
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,189 +63,162 @@ impl From<ArenaError> for ParseError {
     }
 }
 
-/// Parser state
+impl From<LexError> for ParseError {
+    fn from(e: LexError) -> Self {
+        ParseError {
+            kind: match e.kind {
+                LexErrorKind::UnexpectedEof => ParseErrorKind::UnexpectedEof,
+                LexErrorKind::UnexpectedChar(c) => ParseErrorKind::UnexpectedChar(c),
+                LexErrorKind::NumberOverflow => ParseErrorKind::NumberOverflow,
+                LexErrorKind::InvalidHashLiteral => ParseErrorKind::InvalidHashLiteral,
+                LexErrorKind::InvalidCharLiteral => ParseErrorKind::InvalidCharLiteral,
+                LexErrorKind::InvalidEscapeSequence => ParseErrorKind::InvalidEscapeSequence,
+                LexErrorKind::UnterminatedString => ParseErrorKind::UnterminatedString,
+                LexErrorKind::StringTooLong => ParseErrorKind::OutOfMemory,
+            },
+            loc: e.loc,
+        }
+    }
+}
+
+// ============================================================================
+// Parser
+// ============================================================================
+
+/// Parser state — wraps a [`Lexer`] and builds arena-allocated AST nodes.
+///
+/// The parser consumes tokens from the lexer and constructs S-expression
+/// trees in the arena. It handles list building, dotted pairs, quote
+/// desugaring, and vector literals.
 pub struct Parser<'a> {
-    input: &'a [u8],
-    pos: usize,
-    line: usize,
-    column: usize,
+    lexer: Lexer<'a>,
 }
 
 impl<'a> Parser<'a> {
     /// Create a new parser
     pub fn new(input: &'a str) -> Self {
-        Parser {
-            input: input.as_bytes(),
-            pos: 0,
-            line: 1,
-            column: 1,
-        }
+        Parser { lexer: Lexer::new(input) }
     }
     
     /// Create from bytes
     pub fn from_bytes(input: &'a [u8]) -> Self {
-        Parser { input, pos: 0, line: 1, column: 1 }
+        Parser { lexer: Lexer::from_bytes(input) }
     }
     
-    /// Get current source location
-    fn loc(&self) -> SourceLoc {
-        SourceLoc { line: self.line, column: self.column }
+    /// Get a reference to the underlying lexer
+    pub fn lexer(&self) -> &Lexer<'a> {
+        &self.lexer
     }
     
-    /// Create an error at current location
-    fn error(&self, kind: ParseErrorKind) -> ParseError {
-        ParseError { kind, loc: self.loc() }
-    }
-    
-    /// Peek at the current character
-    fn peek(&self) -> Option<u8> {
-        self.input.get(self.pos).copied()
-    }
-    
-    /// Peek at the next character (lookahead)
-    fn peek_next(&self) -> Option<u8> {
-        self.input.get(self.pos + 1).copied()
-    }
-    
-    /// Advance and return the current character
-    fn advance(&mut self) -> Option<u8> {
-        let c = self.peek()?;
-        self.pos += 1;
-        if c == b'\n' {
-            self.line += 1;
-            self.column = 1;
-        } else {
-            self.column += 1;
-        }
-        Some(c)
-    }
-    
-    /// Skip whitespace and comments
-    fn skip_whitespace(&mut self) {
-        while let Some(c) = self.peek() {
-            if WHITESPACE_TABLE[c as usize] {
-                self.advance();
-            } else if c == b';' {
-                // Comment - skip to end of line
-                while let Some(c) = self.advance() {
-                    if c == b'\n' {
-                        break;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-    }
-    
-    /// Check if a character can be part of a symbol.
-    /// Uses a 256-byte lookup table for O(1) classification.
-    #[inline]
-    fn is_symbol_char(c: u8) -> bool {
-        SYMBOL_CHAR_TABLE[c as usize]
+    /// Get a mutable reference to the underlying lexer
+    pub fn lexer_mut(&mut self) -> &mut Lexer<'a> {
+        &mut self.lexer
     }
     
     /// Parse a single expression
     pub fn parse<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.skip_whitespace();
+        let loc = self.lexer.loc();
+        let spanned = self.lexer.next_token()
+            .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc })??;
+        let token = spanned.token;
+        let loc = spanned.loc;
         
-        match self.peek() {
-            None => Err(self.error(ParseErrorKind::UnexpectedEof)),
-            
-            Some(b'(') => self.parse_list(lisp),
-            
-            Some(b')') => Err(self.error(ParseErrorKind::UnmatchedParen)),
-            
-            Some(b'"') => self.parse_string(lisp),
-            
-            Some(b'\'') => {
-                // Quote: 'x -> (quote x)
-                self.advance();
-                let expr = self.parse(lisp)?;
-                let quote_sym = lisp.symbol("quote")?;
-                let nil = lisp.nil()?;
-                let quoted = lisp.cons(expr, nil)?;
-                lisp.cons(quote_sym, quoted).map_err(Into::into)
+        self.parse_token(token, loc, lisp)
+    }
+    
+    /// Parse an expression starting from a given token
+    fn parse_token<const N: usize>(&mut self, token: Token, loc: SourceLoc, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        match token {
+            Token::LParen => self.parse_list(lisp),
+            Token::RParen => Err(ParseError { kind: ParseErrorKind::UnmatchedParen, loc }),
+            Token::Quote => self.parse_quote("quote", lisp),
+            Token::Quasiquote => self.parse_quote("quasiquote", lisp),
+            Token::Unquote => self.parse_quote("unquote", lisp),
+            Token::UnquoteSplice => self.parse_quote("unquote-splicing", lisp),
+            Token::SyntaxQuote => self.parse_quote("syntax", lisp),
+            Token::Dot => Err(ParseError { kind: ParseErrorKind::UnexpectedChar('.'), loc }),
+            Token::True => lisp.true_val().map_err(Into::into),
+            Token::False => lisp.false_val().map_err(Into::into),
+            Token::Number(n) => lisp.number(n).map_err(Into::into),
+            Token::Char(c) => lisp.char(c).map_err(Into::into),
+            Token::Symbol { len } => {
+                let name = self.lexer.symbol_bytes(len);
+                lisp.symbol_from_bytes(name).map_err(Into::into)
             }
-            
-            Some(b'`') => {
-                // Quasiquote: `x -> (quasiquote x)
-                self.advance();
-                let expr = self.parse(lisp)?;
-                let quasiquote_sym = lisp.symbol("quasiquote")?;
-                let nil = lisp.nil()?;
-                let quoted = lisp.cons(expr, nil)?;
-                lisp.cons(quasiquote_sym, quoted).map_err(Into::into)
+            Token::String { len } => {
+                let chars = self.lexer.string_chars(len);
+                lisp.string_from_chars(chars).map_err(Into::into)
             }
-            
-            Some(b',') => {
-                // Unquote: ,x -> (unquote x)
-                // Unquote-splicing: ,@x -> (unquote-splicing x)
-                self.advance();
-                if self.peek() == Some(b'@') {
-                    // ,@ -> unquote-splicing
-                    self.advance();
-                    let expr = self.parse(lisp)?;
-                    let unquote_splicing_sym = lisp.symbol("unquote-splicing")?;
-                    let nil = lisp.nil()?;
-                    let quoted = lisp.cons(expr, nil)?;
-                    lisp.cons(unquote_splicing_sym, quoted).map_err(Into::into)
-                } else {
-                    // , -> unquote
-                    let expr = self.parse(lisp)?;
-                    let unquote_sym = lisp.symbol("unquote")?;
-                    let nil = lisp.nil()?;
-                    let quoted = lisp.cons(expr, nil)?;
-                    lisp.cons(unquote_sym, quoted).map_err(Into::into)
-                }
-            }
-            
-            Some(b'#') => self.parse_hash_literal(lisp),
-            
-            Some(c) if c.is_ascii_digit() => self.parse_number(lisp),
-            
-            Some(b'-') => {
-                // Could be negative number or symbol
-                if self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
-                    self.parse_number(lisp)
-                } else {
-                    self.parse_symbol(lisp)
-                }
-            }
-            
-            Some(c) if Self::is_symbol_char(c) => self.parse_symbol(lisp),
-            
-            Some(c) => Err(self.error(ParseErrorKind::UnexpectedChar(c as char))),
+            Token::VectorOpen => self.parse_vector_literal(lisp),
         }
     }
     
-    /// Parse hash literals (#t, #f, #\char, #(vector), #'expr, etc.)
-    fn parse_hash_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.advance(); // consume '#'
+    /// Parse a quoted expression: 'x -> (quote x), etc.
+    fn parse_quote<const N: usize>(&mut self, sym_name: &str, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        let expr = self.parse(lisp)?;
+        let sym = lisp.symbol(sym_name)?;
+        let nil = lisp.nil()?;
+        let quoted = lisp.cons(expr, nil)?;
+        lisp.cons(sym, quoted).map_err(Into::into)
+    }
+    
+    /// Parse a list (after consuming the opening paren via the lexer)
+    fn parse_list<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        const MAX_LIST_DEPTH: usize = 128;
+        let mut elements: [ArenaIndex; MAX_LIST_DEPTH] = [ArenaIndex::NIL; MAX_LIST_DEPTH];
+        let mut count = 0;
         
-        match self.peek() {
-            Some(b't') | Some(b'T') => {
-                self.advance();
-                lisp.true_val().map_err(Into::into)
+        loop {
+            let loc = self.lexer.loc();
+            let spanned = self.lexer.next_token()
+                .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc })??;
+            let token = spanned.token;
+            let loc = spanned.loc;
+            
+            match token {
+                Token::RParen => break,
+                Token::Dot => {
+                    // Dotted pair: (a . b)
+                    if count == 0 {
+                        return Err(ParseError { kind: ParseErrorKind::UnexpectedChar('.'), loc });
+                    }
+                    
+                    let cdr = self.parse(lisp)?;
+                    
+                    // Expect closing paren
+                    let close_loc = self.lexer.loc();
+                    let closing = self.lexer.next_token()
+                        .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: close_loc })??;
+                    if !matches!(closing.token, Token::RParen) {
+                        return Err(ParseError { kind: ParseErrorKind::UnmatchedParen, loc: closing.loc });
+                    }
+                    
+                    // Build the dotted list
+                    let mut result = cdr;
+                    for i in (0..count).rev() {
+                        result = lisp.cons(elements[i], result)?;
+                    }
+                    return Ok(result);
+                }
+                other => {
+                    if count >= MAX_LIST_DEPTH {
+                        return Err(ParseError { kind: ParseErrorKind::OutOfMemory, loc });
+                    }
+                    elements[count] = self.parse_token(other, loc, lisp)?;
+                    count += 1;
+                }
             }
-            Some(b'f') | Some(b'F') => {
-                self.advance();
-                lisp.false_val().map_err(Into::into)
-            }
-            Some(b'\\') => self.parse_char_literal(lisp),
-            Some(b'(') => self.parse_vector_literal(lisp),
-            Some(b'\'') => {
-                // Syntax quote: #'x -> (syntax x)
-                self.advance(); // consume '\''
-                let expr = self.parse(lisp)?;
-                let syntax_sym = lisp.symbol("syntax")?;
-                let nil = lisp.nil()?;
-                let quoted = lisp.cons(expr, nil)?;
-                lisp.cons(syntax_sym, quoted).map_err(Into::into)
-            }
-            Some(_) => Err(self.error(ParseErrorKind::InvalidHashLiteral)),
-            None => Err(self.error(ParseErrorKind::UnexpectedEof)),
         }
+        
+        // Build proper list
+        if count == 0 {
+            return lisp.nil().map_err(Into::into);
+        }
+        let mut result = lisp.nil()?;
+        for i in (0..count).rev() {
+            result = lisp.cons(elements[i], result)?;
+        }
+        Ok(result)
     }
     
     /// Parse vector literal #(obj ...)
@@ -315,34 +227,35 @@ impl<'a> Parser<'a> {
     /// due to stack allocation constraints. Use `make-vector` or `vector` for
     /// larger vectors.
     fn parse_vector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.advance(); // consume '('
+        // The VectorOpen token has already consumed '#' but NOT '('
+        // We need to consume the '(' next
+        let open_loc = self.lexer.loc();
+        let opening = self.lexer.next_token()
+            .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: open_loc })??;
+        if !matches!(opening.token, Token::LParen) {
+            return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
+        }
         
-        // Parse elements into a stack-allocated array (no_std constraint)
-        // Maximum 256 elements for literals; use make-vector for larger vectors
         let mut elements: [ArenaIndex; 256] = [ArenaIndex::NIL; 256];
         let mut count = 0usize;
         
-        self.skip_whitespace();
-        while let Some(c) = self.peek() {
-            if c == b')' {
-                break;
+        loop {
+            let elem_loc = self.lexer.loc();
+            let spanned = self.lexer.next_token()
+                .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: elem_loc })??;
+            let token = spanned.token;
+            let loc = spanned.loc;
+            
+            match token {
+                Token::RParen => break,
+                other => {
+                    if count >= 256 {
+                        return Err(ParseError { kind: ParseErrorKind::VectorLiteralTooLarge, loc });
+                    }
+                    elements[count] = self.parse_token(other, loc, lisp)?;
+                    count += 1;
+                }
             }
-            
-            if count >= 256 {
-                return Err(self.error(ParseErrorKind::VectorLiteralTooLarge));
-            }
-            
-            let elem = self.parse(lisp)?;
-            elements[count] = elem;
-            count += 1;
-            
-            self.skip_whitespace();
-        }
-        
-        // Consume closing paren
-        match self.advance() {
-            Some(b')') => {}
-            _ => return Err(self.error(ParseErrorKind::UnmatchedParen)),
         }
         
         // Create the vector
@@ -357,365 +270,14 @@ impl<'a> Parser<'a> {
         Ok(vec)
     }
     
-    /// Parse character literal (#\a, #\space, #\newline, etc.)
-    fn parse_char_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.advance(); // consume '\'
-        
-        // First check for named characters
-        // We need to look ahead to see if there's a multi-char name
-        let start = self.pos;
-        
-        // Read characters that could form a name
-        while let Some(c) = self.peek() {
-            if Self::is_symbol_char(c) {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        
-        let name_len = self.pos - start;
-        
-        if name_len == 0 {
-            // #\ followed by non-symbol character like space: #\ 
-            return match self.peek() {
-                Some(c) => {
-                    self.advance();
-                    lisp.char(c as char).map_err(Into::into)
-                }
-                None => Err(self.error(ParseErrorKind::UnexpectedEof)),
-            };
-        }
-        
-        // Get the name as a slice
-        let name = &self.input[start..self.pos];
-        
-        // If it's a single character, return it directly
-        if name_len == 1 {
-            return lisp.char(name[0] as char).map_err(Into::into);
-        }
-        
-        // Check for named characters (R7RS Section 6.6)
-        match name {
-            b"alarm" => lisp.char('\x07').map_err(Into::into),
-            b"backspace" => lisp.char('\x08').map_err(Into::into),
-            b"delete" => lisp.char('\x7F').map_err(Into::into),
-            b"escape" => lisp.char('\x1B').map_err(Into::into),
-            b"newline" => lisp.char('\n').map_err(Into::into),
-            b"null" => lisp.char('\0').map_err(Into::into),
-            b"return" => lisp.char('\r').map_err(Into::into),
-            b"space" => lisp.char(' ').map_err(Into::into),
-            b"tab" => lisp.char('\t').map_err(Into::into),
-            _ => {
-                // Check for hex character #\xNN...
-                if name.len() >= 2 && (name[0] == b'x' || name[0] == b'X') {
-                    let hex_str = &name[1..];
-                    if let Some(code) = Self::parse_hex(hex_str)
-                        && let Some(c) = char::from_u32(code)
-                    {
-                        return lisp.char(c).map_err(Into::into);
-                    }
-                }
-                Err(self.error(ParseErrorKind::InvalidCharLiteral))
-            }
-        }
-    }
-    
-    /// Parse hex digits into a u32 value
-    fn parse_hex(bytes: &[u8]) -> Option<u32> {
-        if bytes.is_empty() {
-            return None;
-        }
-        let mut result: u32 = 0;
-        for &b in bytes {
-            let digit = match b {
-                b'0'..=b'9' => (b - b'0') as u32,
-                b'a'..=b'f' => (b - b'a' + 10) as u32,
-                b'A'..=b'F' => (b - b'A' + 10) as u32,
-                _ => return None,
-            };
-            result = result.checked_mul(16)?.checked_add(digit)?;
-        }
-        Some(result)
-    }
-    
-    /// Parse a string literal ("..." with escape sequences)
-    fn parse_string<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.advance(); // consume opening '"'
-        
-        // Collect characters into a fixed-size buffer
-        const MAX_STRING_LEN: usize = 1024;
-        let mut chars: [char; MAX_STRING_LEN] = ['\0'; MAX_STRING_LEN];
-        let mut len = 0;
-        
-        loop {
-            match self.peek() {
-                None => return Err(self.error(ParseErrorKind::UnterminatedString)),
-                Some(b'"') => {
-                    self.advance(); // consume closing '"'
-                    break;
-                }
-                Some(b'\\') => {
-                    // Escape sequence
-                    self.advance(); // consume '\'
-                    let c = match self.peek() {
-                        None => return Err(self.error(ParseErrorKind::UnterminatedString)),
-                        Some(b'a') => { self.advance(); '\x07' } // alarm
-                        Some(b'b') => { self.advance(); '\x08' } // backspace
-                        Some(b't') => { self.advance(); '\t' }   // tab
-                        Some(b'n') => { self.advance(); '\n' }   // newline
-                        Some(b'r') => { self.advance(); '\r' }   // return
-                        Some(b'"') => { self.advance(); '"' }    // double quote
-                        Some(b'\\') => { self.advance(); '\\' }  // backslash
-                        Some(b'|') => { self.advance(); '|' }    // vertical line
-                        Some(b'x') => {
-                            // Hex escape: \xNN;
-                            self.advance(); // consume 'x'
-                            let hex_start = self.pos;
-                            while let Some(c) = self.peek() {
-                                if c == b';' {
-                                    break;
-                                }
-                                if c.is_ascii_hexdigit() {
-                                    self.advance();
-                                } else {
-                                    return Err(self.error(ParseErrorKind::InvalidEscapeSequence));
-                                }
-                            }
-                            let hex_bytes = &self.input[hex_start..self.pos];
-                            if self.peek() != Some(b';') {
-                                return Err(self.error(ParseErrorKind::InvalidEscapeSequence));
-                            }
-                            self.advance(); // consume ';'
-                            match Self::parse_hex(hex_bytes) {
-                                Some(code) => {
-                                    match char::from_u32(code) {
-                                        Some(ch) => ch,
-                                        None => return Err(self.error(ParseErrorKind::InvalidEscapeSequence)),
-                                    }
-                                }
-                                None => return Err(self.error(ParseErrorKind::InvalidEscapeSequence)),
-                            }
-                        }
-                        Some(b'\n') | Some(b'\r') => {
-                            // Line continuation: skip the line ending and any intraline whitespace on next line
-                            // Per R7RS, skip only the first line ending, then intraline whitespace
-                            self.advance(); // consume the \n or \r
-                            // Handle \r\n as a single line ending
-                            if self.peek() == Some(b'\n') {
-                                self.advance();
-                            }
-                            // Skip intraline whitespace on next line (spaces and tabs only, not newlines)
-                            while let Some(c) = self.peek() {
-                                if c == b' ' || c == b'\t' {
-                                    self.advance();
-                                } else {
-                                    break;
-                                }
-                            }
-                            continue; // Don't add any character
-                        }
-                        Some(c) if c == b' ' || c == b'\t' => {
-                            // \<intraline whitespace>*<line ending> - skip whitespace until line ending
-                            while let Some(c) = self.peek() {
-                                if c == b' ' || c == b'\t' {
-                                    self.advance();
-                                } else if c == b'\n' || c == b'\r' {
-                                    self.advance();
-                                    // Handle \r\n as a single line ending
-                                    if c == b'\r' && self.peek() == Some(b'\n') {
-                                        self.advance();
-                                    }
-                                    // Skip trailing whitespace on next line (intraline only)
-                                    while let Some(c) = self.peek() {
-                                        if c == b' ' || c == b'\t' {
-                                            self.advance();
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                    break;
-                                } else {
-                                    return Err(self.error(ParseErrorKind::InvalidEscapeSequence));
-                                }
-                            }
-                            continue; // Don't add any character
-                        }
-                        Some(_) => return Err(self.error(ParseErrorKind::InvalidEscapeSequence)),
-                    };
-                    if len >= MAX_STRING_LEN {
-                        return Err(self.error(ParseErrorKind::OutOfMemory));
-                    }
-                    chars[len] = c;
-                    len += 1;
-                }
-                Some(c) => {
-                    if len >= MAX_STRING_LEN {
-                        return Err(self.error(ParseErrorKind::OutOfMemory));
-                    }
-                    chars[len] = c as char;
-                    len += 1;
-                    self.advance();
-                }
-            }
-        }
-        
-        // Allocate the string in the arena
-        lisp.string_from_chars(&chars[..len]).map_err(Into::into)
-    }
-    
-    /// Parse a list (including nil)
-    fn parse_list<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        self.advance(); // consume '('
-        self.skip_whitespace();
-        
-        if self.peek() == Some(b')') {
-            self.advance();
-            return lisp.nil().map_err(Into::into);
-        }
-        
-        // Parse elements and build list
-        const MAX_LIST_DEPTH: usize = 128;
-        let mut elements: [ArenaIndex; MAX_LIST_DEPTH] = [ArenaIndex::NIL; MAX_LIST_DEPTH];
-        let mut count = 0;
-        
-        loop {
-            self.skip_whitespace();
-            
-            match self.peek() {
-                None => return Err(self.error(ParseErrorKind::UnexpectedEof)),
-                Some(b')') => {
-                    self.advance();
-                    break;
-                }
-                Some(b'.') => {
-                    // Could be:
-                    // 1. Dotted pair indicator: (a . b) - single dot followed by whitespace
-                    // 2. Symbol starting with dot: ... or .foo
-                    
-                    // Peek ahead to check
-                    let next_pos = self.pos + 1;
-                    let is_dotted_pair = if next_pos < self.input.len() {
-                        let next_char = self.input[next_pos];
-                        // It's a dotted pair if the next char is whitespace or )
-                        WHITESPACE_TABLE[next_char as usize] || next_char == b')'
-                    } else {
-                        // End of input after dot - treat as dotted pair
-                        true
-                    };
-                    
-                    if is_dotted_pair {
-                        // Dotted pair: (a . b)
-                        self.advance(); // consume the dot
-                        self.skip_whitespace();
-                        
-                        if count == 0 {
-                            return Err(self.error(ParseErrorKind::UnexpectedChar('.')));
-                        }
-                        
-                        let cdr = self.parse(lisp)?;
-                        self.skip_whitespace();
-                        
-                        if self.advance() != Some(b')') {
-                            return Err(self.error(ParseErrorKind::UnmatchedParen));
-                        }
-                        
-                        // Build the dotted list
-                        let mut result = cdr;
-                        for i in (0..count).rev() {
-                            result = lisp.cons(elements[i], result)?;
-                        }
-                        return Ok(result);
-                    } else {
-                        // Symbol starting with dot (like ... or .foo)
-                        if count >= MAX_LIST_DEPTH {
-                            return Err(self.error(ParseErrorKind::OutOfMemory));
-                        }
-                        elements[count] = self.parse_symbol(lisp)?;
-                        count += 1;
-                    }
-                }
-                Some(_) => {
-                    if count >= MAX_LIST_DEPTH {
-                        return Err(self.error(ParseErrorKind::OutOfMemory));
-                    }
-                    elements[count] = self.parse(lisp)?;
-                    count += 1;
-                }
-            }
-        }
-        
-        // Build proper list
-        let mut result = lisp.nil()?;
-        for i in (0..count).rev() {
-            result = lisp.cons(elements[i], result)?;
-        }
-        Ok(result)
-    }
-    
-    /// Parse an integer number
-    fn parse_number<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        let negative = if self.peek() == Some(b'-') {
-            self.advance();
-            true
-        } else {
-            false
-        };
-        
-        // Parse integer
-        let mut int_value: isize = 0;
-        
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
-                self.advance();
-                int_value = int_value.checked_mul(10)
-                    .and_then(|v| v.checked_add((c - b'0') as isize))
-                    .ok_or_else(|| self.error(ParseErrorKind::NumberOverflow))?;
-            } else {
-                break;
-            }
-        }
-        
-        if negative {
-            int_value = -int_value;
-        }
-        lisp.number(int_value).map_err(Into::into)
-    }
-    
-    /// Parse a symbol
-    fn parse_symbol<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        const MAX_SYMBOL_LEN: usize = 64;
-        let mut buffer: [u8; MAX_SYMBOL_LEN] = [0; MAX_SYMBOL_LEN];
-        let mut len = 0;
-        
-        while let Some(c) = self.peek() {
-            if Self::is_symbol_char(c) && len < MAX_SYMBOL_LEN {
-                buffer[len] = c.to_ascii_lowercase();
-                len += 1;
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        
-        let name = &buffer[..len];
-        
-        // Note: In Scheme, nil is just a regular symbol.
-        // The empty list is written as () or '() only.
-        // No special handling for 'nil' - it's parsed as a regular symbol.
-        
-        lisp.symbol_from_bytes(name).map_err(Into::into)
-    }
-    
     /// Check if there's more input (after whitespace)
     pub fn has_more(&mut self) -> bool {
-        self.skip_whitespace();
-        self.peek().is_some()
+        self.lexer.has_more()
     }
     
     /// Get current position for error reporting
     pub fn position(&self) -> (usize, usize) {
-        (self.line, self.column)
+        self.lexer.position()
     }
 }
 

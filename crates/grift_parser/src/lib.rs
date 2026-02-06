@@ -72,6 +72,8 @@ pub use grift_core::{
     define_builtins, define_stdlib,
 };
 
+pub mod lexer;
 mod parser;
 
+pub use lexer::{Lexer, Token, SpannedToken, LexError, LexErrorKind};
 pub use parser::{Parser, ParseError, ParseErrorKind, SourceLoc, parse, parse_all};

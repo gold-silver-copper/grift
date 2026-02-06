@@ -87,11 +87,13 @@ pub mod core_types {
 // Parser Re-exports from grift_parser
 // ============================================================================
 
-/// Parser, value types, and built-in definitions.
+/// Parser, lexer, value types, and built-in definitions.
 pub mod parser {
     pub use grift_parser::{
         // Core types (re-exported from grift_core)
         Value, Builtin, StdLib, Lisp,
+        // Lexer
+        Lexer, Token, SpannedToken, LexError, LexErrorKind,
         // Parsing
         parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
         // Macros
@@ -101,6 +103,7 @@ pub mod parser {
 
 pub use parser::{
     Value, Builtin, StdLib, Lisp,
+    Lexer, Token, SpannedToken, LexError, LexErrorKind,
     parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
     define_builtins, define_stdlib,
 };
