@@ -909,9 +909,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             CONT_MACRO_RESULT => {
                 // val is the result of evaluating the macro transformer body
                 // We need to re-evaluate this result (it may be a macro invocation itself)
-                // Data: env (single value - the environment to continue evaluation in)
-                let env = self.unpack1(data);
-                Ok(Some(TrampolineState::Eval { expr: val, env }))
+                // Data: eval_env (the environment where the expanded code should be evaluated)
+                let eval_env = self.unpack1(data);
+                Ok(Some(TrampolineState::Eval { expr: val, env: eval_env }))
             }
             
             // Catch-all for unknown continuation types

@@ -2058,6 +2058,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Push continuation to re-evaluate the macro result in the original environment
         // Data: eval_env (the environment where the expanded code should run)
+        // Note: cont_env is set to eval_env (not call_env) because if an error occurs
+        // during re-evaluation, the relevant context is the expansion site, not the
+        // transformer body's scope.
         let data = self.pack1(eval_env)?;
         self.push_cont(CONT_MACRO_RESULT, data, eval_env)?;
         
