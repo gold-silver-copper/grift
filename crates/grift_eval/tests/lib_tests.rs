@@ -1419,8 +1419,9 @@ fn test_display() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // display returns its argument (R7RS compliant)
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(display 99)"), 99);
+    // display returns void (unspecified value) per R7RS
+    let result = eval.eval_str("(display 99)").unwrap();
+    assert!(lisp.get(result).unwrap().is_void());
 }
 
 #[test]
@@ -1428,8 +1429,9 @@ fn test_newline() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // newline returns void (unspecified value) per R7RS
     let result = eval.eval_str("(newline)").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    assert!(lisp.get(result).unwrap().is_void());
 }
 
 #[test]

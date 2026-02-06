@@ -44,25 +44,27 @@ pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
     /// Pre-allocated Nil slot (always slot 0)
     nil_slot: ArenaIndex,
-    /// Pre-allocated True slot (always slot 1)
+    /// Pre-allocated Void slot (always slot 1)
+    void_slot: ArenaIndex,
+    /// Pre-allocated True slot (always slot 2)
     true_slot: ArenaIndex,
-    /// Pre-allocated False slot (always slot 2)
+    /// Pre-allocated False slot (always slot 3)
     false_slot: ArenaIndex,
-    /// Intern table reference cell (slot 3)
+    /// Intern table reference cell (slot 4)
     /// This is a cons cell where car = intern table root (alist)
     /// Using a cons cell avoids needing RefCell for interior mutability
     intern_table_slot: ArenaIndex,
 }
 
 /// Number of reserved slots in the arena:
-/// - nil (1), true (1), false (1), intern_table_cons (1)
+/// - nil (1), void (1), true (1), false (1), intern_table_cons (1)
 /// Note: With inline cons, we no longer need separate data slots for the intern table
-pub const RESERVED_SLOTS: usize = 4;
+pub const RESERVED_SLOTS: usize = 5;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
-    /// Pre-allocates reserved slots for nil, true, false, and the intern table.
+    /// Pre-allocates reserved slots for nil, void, true, false, and the intern table.
     /// These slots are never freed and provide O(1) access to common values.
     /// 
     /// # Panics
@@ -73,15 +75,17 @@ impl<const N: usize> Lisp<N> {
         
         let arena = Arena::new(Value::Nil);
         
-        // Pre-allocate singleton values (slots 0, 1, 2)
+        // Pre-allocate singleton values (slots 0, 1, 2, 3)
         let nil_slot = arena.alloc(Value::Nil)
             .expect("Failed to pre-allocate Nil slot during Lisp initialization");
+        let void_slot = arena.alloc(Value::Void)
+            .expect("Failed to pre-allocate Void slot during Lisp initialization");
         let true_slot = arena.alloc(Value::True)
             .expect("Failed to pre-allocate True slot during Lisp initialization");
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate False slot during Lisp initialization");
         
-        // Pre-allocate intern table reference cell (slot 3)
+        // Pre-allocate intern table reference cell (slot 4)
         // With inline cons, we don't need separate data slots
         // This is a cons cell where car = intern table root (initially nil)
         let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
@@ -90,6 +94,7 @@ impl<const N: usize> Lisp<N> {
         Lisp {
             arena,
             nil_slot,
+            void_slot,
             true_slot,
             false_slot,
             intern_table_slot,
@@ -135,9 +140,18 @@ impl<const N: usize> Lisp<N> {
         Ok(self.nil_slot)
     }
     
+    /// Get the pre-allocated Void singleton (unspecified value)
+    /// 
+    /// Returns the reserved slot 1 which always contains `Value::Void`.
+    /// Used as return value for side-effect-only forms like `define`, `set!`, `display`.
+    #[inline]
+    pub fn void_val(&self) -> ArenaResult<ArenaIndex> {
+        Ok(self.void_slot)
+    }
+    
     /// Get the pre-allocated True singleton (#t)
     /// 
-    /// Returns the reserved slot 1 which always contains `Value::True`.
+    /// Returns the reserved slot 2 which always contains `Value::True`.
     #[inline]
     pub fn true_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.true_slot)
@@ -145,7 +159,7 @@ impl<const N: usize> Lisp<N> {
     
     /// Get the pre-allocated False singleton (#f)
     /// 
-    /// Returns the reserved slot 2 which always contains `Value::False`.
+    /// Returns the reserved slot 3 which always contains `Value::False`.
     #[inline]
     pub fn false_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.false_slot)
@@ -1034,15 +1048,17 @@ impl<const N: usize> Lisp<N> {
         const MAX_ROOTS: usize = 512;
         
         // Panic if too many roots - this indicates a programming error
-        // Account for 4 reserved roots (nil, true, false, intern_table)
-        assert!(roots.len() < MAX_ROOTS - 4, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 4 - 1);
+        // Account for 5 reserved roots (nil, void, true, false, intern_table)
+        assert!(roots.len() < MAX_ROOTS - 5, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 5 - 1);
         
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
         // Add reserved slots as roots to prevent them from being collected
         all_roots[root_count] = self.nil_slot;
+        root_count += 1;
+        all_roots[root_count] = self.void_slot;
         root_count += 1;
         all_roots[root_count] = self.true_slot;
         root_count += 1;
