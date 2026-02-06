@@ -178,6 +178,15 @@ pub const CONT_FINISH_CONTINUATION_RESTORE: usize = 39;
 
 // Note: CONT_WITH_SYNTAX_BIND (40) was removed - with-syntax is now a macro
 
+/// After evaluating macro transformer body, re-expand the result
+/// Data: env (single value - the environment to continue evaluation in)
+/// 
+/// This continuation enables iterative macro expansion without Rust stack recursion.
+/// When a macro invocation is encountered, we push this continuation and evaluate
+/// the transformer body. When the body returns, this continuation re-evaluates
+/// the expanded result (which may itself be a macro invocation).
+pub const CONT_MACRO_RESULT: usize = 40;
+
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {
