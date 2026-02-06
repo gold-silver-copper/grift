@@ -239,6 +239,98 @@ See the detailed architecture documents:
 - **[PSYNTAX_MIGRATION_GUIDE.md](./docs/PSYNTAX_MIGRATION_GUIDE.md)** — Guide for replacing syntax-case with psyntax.scm
 - **[SCHEME_R7RS_CONFORMANCE.md](./docs/SCHEME_R7RS_CONFORMANCE.md)** — R7RS compliance status
 
+## 🔍 Codebase Review & Optimization Opportunities (Prioritized)
+
+Below is a prioritized review focused on the `no_std` / `no_alloc` design constraints. Items are ordered by impact, with concrete examples where possible.
+
+### High Impact
+
+- **[Performance] Environment lookup is O(n) per variable access**  
+  `Evaluator::env_lookup` linearly scans cons cells and performs `symbol_eq` per binding. For hot loops and deep scopes, this dominates runtime. Consider introducing fixed-size *environment frames* (arrays stored in the arena) plus a parent pointer to keep lookup O(k) within a frame and avoid repeated cons allocation.
+  ```rust
+  #[derive(Clone, Copy)]
+  struct EnvFrame<const K: usize> {
+      parent: ArenaIndex,
+      len: usize,
+      keys: [ArenaIndex; K],
+      vals: [ArenaIndex; K],
+  }
+
+  // Lookup uses interned symbol indices (ArenaIndex equality is enough).
+  fn env_lookup_frame<const K: usize>(lisp: &Lisp<N>, frame: EnvFrame<K>, name: ArenaIndex) -> Option<ArenaIndex> {
+      for i in 0..frame.len {
+          if frame.keys[i] == name {
+              return Some(frame.vals[i]);
+          }
+      }
+      None
+  }
+  ```
+
+- **[Performance] Stdlib functions are parsed on every call**  
+  `Value::StdLib` defers parsing, but repeated calls (e.g., `map`, `fold`) re-parse the same source. A small per-evaluator cache avoids repeated parse/alloc overhead without heap allocation.
+  ```rust
+  // Pseudocode: store parsed AST once per StdLib entry.
+  struct Evaluator<'a, const N: usize> {
+      stdlib_cache: [ArenaIndex; StdLib::ALL.len()],
+      // ...
+  }
+
+  fn stdlib_expr(&mut self, func: StdLib) -> EvalResult {
+      let slot = &mut self.stdlib_cache[func as usize];
+      if self.lisp.get(*slot)?.is_nil() {
+          *slot = parse(self.lisp, func.source())?;
+      }
+      Ok(*slot)
+  }
+  ```
+
+- **[Performance] Macro expander keyword comparisons repeatedly scan strings**  
+  Hot paths in `expand.rs` compare symbols via `symbol_matches` (string comparisons). Pre-intern frequently used keywords (`"..."`, `"_"`, `"syntax"`, `"quote"`) once and compare indices directly during expansion.
+
+### Medium Impact
+
+- **[Architecture] Parser and evaluator share `Value` as both AST and runtime**  
+  This simplifies the pipeline but hides source locations and makes optimization harder. A lightweight AST that carries `SourceLoc` (in parser) and a compile step to `Value` can improve error reporting and enable pre-validation.
+  ```rust
+  struct Expr {
+      loc: SourceLoc,
+      kind: ExprKind,
+  }
+
+  enum ExprKind {
+      Symbol(ArenaIndex),
+      List(ArenaIndex),
+      Quote(ArenaIndex),
+  }
+  ```
+
+- **[Memory] Syntax objects allocate a cons cell for context**  
+  `Value::Syntax` currently stores `(marks . substitutions)` via an extra cons. Packing `marks`, `substitutions`, and `lex_env` directly into the `Syntax` variant would save an allocation per syntax object while staying within the 2-index inline strategy used elsewhere.
+
+- **[Memory] `string->symbol` copies strings to maintain symbol immutability**  
+  This is correct, but it is a hotspot for large symbol usage. One option is to mark strings as immutable (e.g., a flag in `Value::String`) so `string->symbol` can safely reuse immutable strings without copying.
+
+### Lower Impact / Code Quality
+
+- **[Errors] Preserve more context when converting `ArenaError`/`ParseError`**  
+  `ParseError::from(ArenaError)` collapses many cases to `OutOfMemory`. Consider mapping `InvalidIndex` to `UnexpectedChar` or adding an `Arena` variant to `ParseErrorKind` for clearer diagnostics in the REPL.
+
+- **[Clarity] Reduce repeated `self.lisp.get` in tight matches**  
+  In some builtins, the same index is loaded multiple times for type-name and value inspection. Caching the retrieved `Value` in a local variable reduces arena reads without changing behavior.
+
+### Testing & Robustness
+
+- **Property-based parsing tests**: Round-trip `(read -> print -> read)` to ensure parser stability across whitespace/comment variations.
+- **GC invariants**: Ensure `collect_garbage` never frees reachable `Value::Continuation` or `Value::Syntax` graphs via randomized graphs.
+- **Macro edge cases**: Add targeted tests for `syntax-case` patterns with nested ellipses and literal keyword shadowing.
+
+### Features & Functionality
+
+- **R7RS gaps**: `string->number`, `number->string`, `vector-map`, `vector-for-each`, and `read`/`write` are common and can be implemented in stdlib without violating `no_std`.
+- **Macro ergonomics**: Provide `syntax-parse`-style helpers or `syntax->list` utilities to reduce boilerplate in complex macros.
+- **Tail-call auditing**: Continue to ensure new special forms preserve tail positions (already strong in `forms.rs`).
+
 ## 📚 Standard Library
 
 The standard library is defined as static Lisp code, parsed on-demand:
