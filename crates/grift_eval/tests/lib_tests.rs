@@ -6614,3 +6614,169 @@ fn test_effect_sequence() {
     assert_eq!(eval_to_num(&lisp, &mut eval, 
         "(run-io (effect-sequence (list (io/pure 1) (io/pure 2) (io/pure 3))))"), 3);
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// STATE EFFECT HANDLER
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_state_effect_constructors() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // state/get creates an effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(state/get)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (state/get)) 'state/get)"));
+    
+    // state/put creates an effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(state/put 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (state/put 42)) 'state/put)"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(effect-data (state/put 42))"), 42);
+    
+    // state/modify creates an effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(state/modify (lambda (x) (+ x 1)))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (state/modify (lambda (x) x))) 'state/modify)"));
+}
+
+#[test]
+fn test_run_state_pure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // run-state returns (value . final-state)
+    // (run-state initial-state effect) where effect is io/pure returns (value . initial-state)
+    let _ = eval.eval_str("(define result (run-state 10 (io/pure 42)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car result)"), 42);  // returned value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr result)"), 10);  // state unchanged
+}
+
+#[test]
+fn test_run_state_get() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // state/get returns current state
+    let _ = eval.eval_str("(define result (run-state 42 (state/get)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car result)"), 42);  // got the state
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr result)"), 42);  // state unchanged
+}
+
+#[test]
+fn test_run_state_put() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // state/put updates state
+    let _ = eval.eval_str("(define result (run-state 10 (state/put 99)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr result)"), 99);  // new state
+}
+
+#[test]
+fn test_run_state_sequencing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Sequence: get state, put incremented state, return old state
+    let _ = eval.eval_str(r#"
+        (define result 
+          (run-state 5 
+            (io/bind (state/get) 
+              (lambda (s) 
+                (io/bind (state/put (+ s 1)) 
+                  (lambda (_) (io/pure s)))))))
+    "#).unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car result)"), 5);  // returned old state
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cdr result)"), 6);  // new state is s+1
+}
+
+#[test]
+fn test_eval_state_convenience() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // eval-state returns just the value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(eval-state 10 (io/pure 42))"), 42);
+    
+    // exec-state returns just the final state
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(exec-state 10 (state/put 99))"), 99);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// ERROR EFFECT HANDLER
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_error_effect_constructor() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // error/raise creates an effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(error/raise 'test-error)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (error/raise 'oops)) 'error/raise)"));
+}
+
+#[test]
+fn test_run_error_success() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Successful computation returns (ok value)
+    let _ = eval.eval_str("(define result (run-error (io/pure 42)))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car result) 'ok)"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr result))"), 42);
+}
+
+#[test]
+fn test_run_error_failure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Failed computation returns (error error-value)
+    let _ = eval.eval_str("(define result (run-error (error/raise 'test-error)))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car result) 'error)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car (cdr result)) 'test-error)"));
+}
+
+#[test]
+fn test_run_error_propagation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Error in a bind chain short-circuits the rest
+    let _ = eval.eval_str(r#"
+        (define result 
+          (run-error 
+            (io/bind (io/pure 10) 
+              (lambda (x) 
+                (io/bind (error/raise 'boom) 
+                  (lambda (_) (io/pure (* x 2))))))))
+    "#).unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car result) 'error)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car (cdr result)) 'boom)"));
+}
+
+#[test]
+fn test_run_error_with_non_effect() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Non-effect values are treated as success
+    let _ = eval.eval_str("(define result (run-error 42))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car result) 'ok)"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car (cdr result))"), 42);
+}
+
+#[test]
+fn test_try_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // try-error allows handling errors gracefully
+    // Success case
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(run-io (try-error (io/pure 42) (lambda (e) (io/pure 0))))"), 42);
+    
+    // Failure case - handler is called
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(run-io (try-error (error/raise 'oops) (lambda (e) (io/pure 99))))"), 99);
+}

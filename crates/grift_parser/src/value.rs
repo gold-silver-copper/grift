@@ -245,6 +245,18 @@ define_builtins! {
     EffectTag => "effect-tag",
     /// effect-data - Get the data of an effect (internal)
     EffectData => "effect-data",
+    
+    // State effect constructors
+    /// state/get - Create effect description for reading current state
+    StateGet => "state/get",
+    /// state/put - Create effect description for updating state
+    StatePut => "state/put",
+    /// state/modify - Create effect description for modifying state with a function
+    StateModify => "state/modify",
+    
+    // Error effect constructors
+    /// error/raise - Create effect description for raising an error
+    ErrorRaise => "error/raise",
 }
 
 // Define all standard library functions using the include_stdlib! macro.

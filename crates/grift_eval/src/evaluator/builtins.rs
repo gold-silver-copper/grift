@@ -1053,6 +1053,46 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     _ => Err(self.type_error(call_expr, "effect", self.lisp.get(arg)?.type_name())),
                 }
             }
+            
+            // ============================================================
+            // State Effect Constructors
+            // ============================================================
+            
+            Builtin::StateGet => {
+                // (state/get) - Create effect description for reading current state
+                // Creates Effect { tag: 'state/get, data: nil }
+                let nil = self.lisp.nil()?;
+                let tag = self.lisp.symbol("state/get")?;
+                self.lisp.effect(tag, nil).map_err(Into::into)
+            }
+            
+            Builtin::StatePut => {
+                // (state/put value) - Create effect description for updating state
+                // Creates Effect { tag: 'state/put, data: value }
+                let value = self.lisp.car(args)?;
+                let tag = self.lisp.symbol("state/put")?;
+                self.lisp.effect(tag, value).map_err(Into::into)
+            }
+            
+            Builtin::StateModify => {
+                // (state/modify fn) - Create effect description for modifying state with a function
+                // Creates Effect { tag: 'state/modify, data: fn }
+                let func = self.lisp.car(args)?;
+                let tag = self.lisp.symbol("state/modify")?;
+                self.lisp.effect(tag, func).map_err(Into::into)
+            }
+            
+            // ============================================================
+            // Error Effect Constructors
+            // ============================================================
+            
+            Builtin::ErrorRaise => {
+                // (error/raise error-value) - Create effect description for raising an error
+                // Creates Effect { tag: 'error/raise, data: error-value }
+                let error_value = self.lisp.car(args)?;
+                let tag = self.lisp.symbol("error/raise")?;
+                self.lisp.effect(tag, error_value).map_err(Into::into)
+            }
         }
     }
     

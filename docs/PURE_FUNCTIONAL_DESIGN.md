@@ -8,7 +8,9 @@ This document describes a multi-phase design for evolving Grift into a pure func
 |-------|--------|-------------|
 | Effects as Values | ✅ Implemented | `Value::Effect`, `io/pure`, `io/bind`, `io/print`, `io/read-line` |
 | Direct-Style Syntax | ✅ Implemented | `eff` macro for monadic do-notation |
-| Effect Handlers | ✅ Implemented | `run-io` handler for IO effects |
+| IO Effect Handler | ✅ Implemented | `run-io` handler for IO effects |
+| State Effect Handler | ✅ Implemented | `run-state`, `eval-state`, `exec-state` |
+| Error Effect Handler | ✅ Implemented | `run-error`, `try-error` |
 | Immutability | ✅ Implemented | `set!`, `set-car!`, `set-cdr!`, etc. removed |
 | Pure `letrec` | ✅ Implemented | Y combinator-based recursive bindings |
 | Pure `do` loops | ✅ Implemented | Via Y combinator-based named let |
@@ -41,6 +43,26 @@ greet-effect  ; => #<effect:io/print "Hello, World!">
 (letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
          (odd? (lambda (n) (if (= n 0) #f (even? (- n 1))))))
   (even? 10))  ; => #t
+
+;; State effect handler - pure functional state
+(run-state 0
+  (eff
+    (s <- (state/get))
+    (state/put (+ s 1))
+    (io/pure s)))
+; => (0 . 1) - returned 0, final state is 1
+
+;; Error effect handler - pure error handling
+(run-error
+  (eff
+    (x <- (io/pure 10))
+    (if (> x 5) (error/raise 'too-big) (io/pure x))))
+; => (error too-big)
+
+(try-error
+  (error/raise 'oops)
+  (lambda (e) (io/pure 0)))  ; Handler returns 0 on error
+; => Returns (io/pure 0)
 ```
 
 ## Table of Contents
