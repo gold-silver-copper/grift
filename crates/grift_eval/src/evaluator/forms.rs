@@ -20,7 +20,7 @@ use crate::continuation::{TrampolineState,
     CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
     CONT_DYNAMIC_WIND_BEFORE, CONT_DYNAMIC_WIND_BODY, CONT_DYNAMIC_WIND_AFTER,
     CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
-    CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE,
+    CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE, CONT_MACRO_RESULT,
 };
 use crate::extract_args;
 
@@ -905,6 +905,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // Note: CONT_WITH_SYNTAX_BIND was removed - with-syntax is now a macro
+            
+            CONT_MACRO_RESULT => {
+                // val is the result of evaluating the macro transformer body
+                // We need to re-evaluate this result (it may be a macro invocation itself)
+                // Data: env (single value - the environment to continue evaluation in)
+                let env = self.unpack1(data);
+                Ok(Some(TrampolineState::Eval { expr: val, env }))
+            }
             
             // Catch-all for unknown continuation types
             _ => {

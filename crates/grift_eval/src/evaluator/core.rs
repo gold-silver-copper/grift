@@ -736,9 +736,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Wrapping all macro inputs causes issues when the macro
                     // produces code that references the same identifiers
                     // (e.g., set! on a lambda parameter).
-                    let expanded = self.apply_macro(transformer, expr)?;
-                    // Continue evaluating the expanded form
-                    return Ok(TrampolineState::Eval { expr: expanded, env });
+                    
+                    // Use continuation-based macro expansion to avoid Rust stack growth
+                    // for recursive macros. This pushes a CONT_MACRO_RESULT continuation
+                    // and evaluates the transformer body, allowing arbitrarily deep
+                    // macro recursion without stack overflow.
+                    return self.apply_macro_trampolined(transformer, expr, env);
                 }
             }
             

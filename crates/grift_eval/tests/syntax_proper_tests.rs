@@ -338,16 +338,18 @@ fn test_7_2_deep_nesting() {
 ///
 /// Recursive macros with captured syntax must maintain scope correctness.
 ///
-/// NOTE: This test hits the MAX_STACK_DEPTH (64) limit because recursive macro
-/// expansion creates deep call stacks. The actual macro logic is correct, but
-/// the evaluator's call stack limit prevents deep recursion. Future work could:
-/// 1. Increase MAX_STACK_DEPTH (requires more memory for stack frames)
-/// 2. Implement iterative macro expansion
-/// 3. Add tail-call optimization for macro expansion
+/// This test verifies that:
+/// 1. Recursive macro expansion uses continuation-based evaluation (no Rust stack overflow)
+/// 2. Pattern bindings are correctly propagated through recursion
+/// 3. The expanded code evaluates correctly
+///
+/// NOTE: The macro expansion is now continuation-based, allowing arbitrary recursion
+/// depth without hitting Rust stack limits. In debug mode with very large arenas,
+/// the stack may still overflow due to debug symbols; use release mode for stress testing.
 #[test]
-#[ignore = "recursive macro hits MAX_STACK_DEPTH limit of 64"]
 fn test_7_3_recursive_macro() {
-    let lisp: Lisp<60000> = Lisp::new();
+    // Use 30000 arena (same as other tests) - smaller footprint for debug mode
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str(r#"

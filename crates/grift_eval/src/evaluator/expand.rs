@@ -6,6 +6,7 @@
 use grift_parser::{ArenaIndex, Value};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
+use crate::continuation::{TrampolineState, CONT_MACRO_RESULT};
 use super::Evaluator;
 
 // ============================================================================
@@ -2009,6 +2010,60 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // This enables full runtime capabilities during expansion while maintaining
         // proper nesting of evaluations
         self.eval_for_macro(body, call_env)
+    }
+    
+    /// Apply a macro transformer using continuation-based evaluation.
+    /// 
+    /// This is the trampolined version of macro application that avoids Rust stack
+    /// recursion for deeply nested/recursive macros. Instead of calling `eval_for_macro`
+    /// (which creates a new nested trampoline), this pushes a continuation and returns
+    /// a TrampolineState to evaluate the transformer body within the current trampoline.
+    /// 
+    /// When the transformer body completes, the CONT_MACRO_RESULT continuation will
+    /// re-evaluate the result in the original environment. If the result is another
+    /// macro invocation, it will be expanded the same way - using continuations instead
+    /// of recursive function calls.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `transformer` - The macro transformer (must be a Lambda value)
+    /// * `expr` - The full macro invocation expression
+    /// * `eval_env` - The environment where the expanded code should be evaluated
+    /// 
+    /// # Returns
+    /// 
+    /// A TrampolineState::Eval to evaluate the transformer body, with a CONT_MACRO_RESULT
+    /// continuation pushed to handle the expansion result.
+    pub(super) fn apply_macro_trampolined(
+        &mut self,
+        transformer: ArenaIndex,
+        expr: ArenaIndex,
+        eval_env: ArenaIndex,
+    ) -> Result<TrampolineState, EvalError> {
+        // Get lambda components
+        let (params, body_env) = match self.lisp.get(transformer)? {
+            Value::Lambda { params, body_env } => (params, body_env),
+            _ => return Err(self.make_error(ErrorKind::SyntaxError, transformer)
+                .with_message("expected lambda transformer")),
+        };
+        
+        let body = self.lisp.car(body_env)?;
+        let def_env = self.lisp.cdr(body_env)?;
+        
+        // The parameter should be a single symbol (e.g., (lambda (x) ...))
+        // Bind it to the expression being expanded
+        let param = self.lisp.car(params)?;
+        let binding = self.lisp.cons(param, expr)?;
+        let call_env = self.lisp.cons(binding, def_env)?;
+        
+        // Push continuation to re-evaluate the macro result in the original environment
+        // Data: eval_env (the environment where the expanded code should run)
+        let data = self.pack1(eval_env)?;
+        self.push_cont(CONT_MACRO_RESULT, data, eval_env)?;
+        
+        // Evaluate the transformer body in the extended environment
+        // When this completes, CONT_MACRO_RESULT will re-evaluate the result
+        Ok(TrampolineState::Eval { expr: body, env: call_env })
     }
     
     // NOTE: The following functions have been removed as part of the unified
