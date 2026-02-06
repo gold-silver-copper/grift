@@ -238,6 +238,7 @@ See the detailed architecture documents:
 - **[DYNAMIC_RUNTIME_SYNTAX_CASE.md](./docs/DYNAMIC_RUNTIME_SYNTAX_CASE.md)** — Plan for enabling runtime operations in macros
 - **[PSYNTAX_MIGRATION_GUIDE.md](./docs/PSYNTAX_MIGRATION_GUIDE.md)** — Guide for replacing syntax-case with psyntax.scm
 - **[SCHEME_R7RS_CONFORMANCE.md](./docs/SCHEME_R7RS_CONFORMANCE.md)** — R7RS compliance status
+- **[PURE_FUNCTIONAL_DESIGN.md](./docs/PURE_FUNCTIONAL_DESIGN.md)** — Design for pure functional Grift with effect-typed continuations
 
 ## 📚 Standard Library
 
