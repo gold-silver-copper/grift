@@ -110,7 +110,7 @@ pub enum Token {
     /// Character literal (`#\a`, `#\space`, `#\newline`, etc.)
     Char(char),
     /// String literal — processed characters are in the lexer's string buffer.
-    /// Use [`Lexer::string_buffer`] to access the character data.
+    /// Use [`Lexer::string_chars`] to access the character data.
     ///
     /// Escape sequences are already processed.
     String {

@@ -227,8 +227,8 @@ impl<'a> Parser<'a> {
     /// due to stack allocation constraints. Use `make-vector` or `vector` for
     /// larger vectors.
     fn parse_vector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        // The VectorOpen token has already consumed '#' but NOT '('
-        // We need to consume the '(' next
+        // The VectorOpen token has consumed only the '#' character;
+        // the '(' must be consumed separately
         let open_loc = self.lexer.loc();
         let opening = self.lexer.next_token()
             .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: open_loc })??;
