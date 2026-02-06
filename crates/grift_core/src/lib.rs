@@ -1,9 +1,16 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-//! # Lisp Parser
+//! # Grift Core Types
 //!
-//! A classic Lisp parser with arena-allocated values.
+//! Core types and Lisp context for the Grift Scheme language.
+//!
+//! This crate contains the fundamental types shared between the parser and evaluator:
+//!
+//! - [`Value`] — The core value enum representing all Lisp types
+//! - [`Builtin`] — Enum of built-in functions  
+//! - [`StdLib`] — Enum of standard library functions
+//! - [`Lisp`] — The Lisp execution context wrapping an arena
 //!
 //! ## Design
 //!
@@ -13,11 +20,6 @@
 //! - Supports garbage collection via the `Trace` trait
 //! - Explicit boolean values (#t, #f) separate from nil/empty list
 //! - **Strict evaluation** - All arguments are evaluated before function application (call-by-value)
-//!
-//! ## Core Types
-//!
-//! Core types (`Value`, `Builtin`, `StdLib`, `Lisp`) are defined in the
-//! [`grift_core`] crate and re-exported here for backward compatibility.
 //!
 //! ## Value Representation
 //!
@@ -64,14 +66,16 @@
 //! - Recursive stdlib functions work via the global environment
 //! - Errors in static source strings are only caught at runtime
 
-// Re-export everything from grift_core for backward compatibility
-pub use grift_core::{
-    Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib,
-    Lisp, RESERVED_SLOTS,
-    define_builtins, define_stdlib,
-};
+pub use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
-mod parser;
+// Macros module (must be declared before other modules that use the macros)
+#[macro_use]
+mod macros;
 
-pub use parser::{Parser, ParseError, ParseErrorKind, SourceLoc, parse, parse_all};
+mod value;
+mod lisp;
+
+pub use value::{Value, Builtin, StdLib};
+// Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]
+
+pub use lisp::{Lisp, RESERVED_SLOTS};

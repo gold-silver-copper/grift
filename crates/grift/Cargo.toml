@@ -30,6 +30,7 @@ std = ["dep:grift_repl"]
 
 [dependencies]
 grift_arena = { version = "1.2.0", path = "../grift_arena" }
+grift_core = { version = "1.2.0", path = "../grift_core" }
 grift_parser = { version = "1.2.0", path = "../grift_parser" }
 grift_eval = { version = "1.2.0", path = "../grift_eval" }
 grift_repl = { version = "1.2.0", path = "../grift_repl", optional = true }
