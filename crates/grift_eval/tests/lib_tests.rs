@@ -618,7 +618,6 @@ fn test_let_bindings() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_petrofsky_let() {
     // The Petrofsky let test: ensures named-let doesn't introduce the loop name
     // too early in the scope. The initializer (- 1) should call the subtraction
@@ -642,7 +641,6 @@ fn test_petrofsky_let() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_named_let() {
     // Test that named let works correctly for recursion
     let lisp: Lisp<20000> = Lisp::new();
@@ -797,7 +795,6 @@ fn test_case_no_match() {
 // ───────────────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_do_basic() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -808,7 +805,6 @@ fn test_do_basic() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_do_accumulator() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -819,7 +815,6 @@ fn test_do_accumulator() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_do_factorial() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -2059,7 +2054,6 @@ fn test_gc_unconditional_ignores_disabled_flag() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_letrec_basic() {
     // letrec allows mutually recursive definitions
     let lisp: Lisp<20000> = Lisp::new();
@@ -2072,7 +2066,6 @@ fn test_letrec_basic() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_letrec_mutual_recursion() {
     // letrec supports mutually recursive definitions (R7RS example)
     let lisp: Lisp<20000> = Lisp::new();
@@ -2091,7 +2084,6 @@ fn test_letrec_mutual_recursion() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_letrec_star_basic() {
     // letrec* evaluates bindings sequentially
     let lisp: Lisp<20000> = Lisp::new();
@@ -2104,7 +2096,6 @@ fn test_letrec_star_basic() {
 }
 
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_letrec_star_mutual_recursion() {
     // letrec* also supports mutual recursion
     let lisp: Lisp<20000> = Lisp::new();
@@ -5023,7 +5014,6 @@ fn test_recursive_macro_hygiene() {
 /// Test that do loop with accumulators works correctly
 /// This validates the do macro implementation from EXTENDING_SCHEME_MACROS.md
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_do_loop_with_accumulator() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -5039,7 +5029,6 @@ fn test_do_loop_with_accumulator() {
 
 /// Test do loop without explicit step (step defaults to variable)
 #[test]
-#[ignore = "depends on set! internally"]
 fn test_do_loop_default_step() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();

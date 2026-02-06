@@ -9,8 +9,10 @@ This document describes a multi-phase design for evolving Grift into a pure func
 | Effects as Values | ✅ Implemented | `Value::Effect`, `io/pure`, `io/bind`, `io/print`, `io/read-line` |
 | Direct-Style Syntax | ✅ Implemented | `eff` macro for monadic do-notation |
 | Effect Handlers | ✅ Implemented | `run-io` handler for IO effects |
-| Delimited Continuations | ⚠️ Existing | Grift already has `call/cc`, `dynamic-wind` |
-| Referential Transparency | 📋 Planned | Requires isolating mutation to handlers |
+| Immutability | ✅ Implemented | `set!`, `set-car!`, `set-cdr!`, etc. removed |
+| Pure `letrec` | ✅ Implemented | Y combinator-based recursive bindings |
+| Pure `do` loops | ✅ Implemented | Via Y combinator-based named let |
+| Delimited Continuations | ⚠️ Partial | `call/cc` needs work after mutation removal |
 | Linear Continuations | 📋 Planned | Requires runtime tracking |
 | Effect Types | 📋 Planned | Requires type system extension |
 
@@ -30,6 +32,15 @@ greet-effect  ; => #<effect:io/print "Hello, World!">
     (io/print "Enter name: ")
     (name <- (io/read-line))
     (io/print (string-append "Hello, " name "!"))))
+
+;; Pure letrec works via Y combinator
+(letrec ((fact (lambda (n) (if (= n 0) 1 (* n (fact (- n 1)))))))
+  (fact 5))  ; => 120
+
+;; Mutual recursion also works
+(letrec ((even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
+         (odd? (lambda (n) (if (= n 0) #f (even? (- n 1))))))
+  (even? 10))  ; => #t
 ```
 
 ## Table of Contents
