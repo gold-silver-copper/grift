@@ -912,6 +912,41 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Create an effect value
+    ///
+    /// # Arguments
+    ///
+    /// * `tag` - Symbol identifying the effect operation (e.g., 'io/pure, 'io/print)
+    /// * `data` - Effect-specific data
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pure_tag = lisp.intern("io/pure")?;
+    /// let value = lisp.number(42)?;
+    /// let effect = lisp.effect(pure_tag, value)?;
+    /// ```
+    pub fn effect(
+        &self,
+        tag: ArenaIndex,
+        data: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Effect { tag, data })
+    }
+    
+    /// Extract the tag and data from an effect value
+    ///
+    /// Returns `(tag, data)` tuple, or error if not an Effect.
+    pub fn effect_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::Effect { tag, data } => Ok((tag, data)),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Build a list from an iterator of indices
     pub fn list<I: IntoIterator<Item = ArenaIndex>>(&self, items: I) -> ArenaResult<ArenaIndex>
     where

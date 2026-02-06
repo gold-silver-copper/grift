@@ -6500,3 +6500,197 @@ fn test_dynamic_wind_reenter() {
     let e2_2 = lisp.car(lisp.cdr(log2).unwrap()).unwrap();
     assert!(lisp.symbol_matches(e2_2, "before").unwrap());
 }
+
+// ========== Effect System Tests ==========
+
+fn eval_is_effect<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
+    let result = eval.eval_str(input).unwrap();
+    lisp.get(result).unwrap().is_effect()
+}
+
+#[test]
+fn test_effect_io_pure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // io/pure creates an effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/pure 42)"));
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/pure '(1 2 3))"));
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/pure (lambda (x) x))"));
+    
+    // effect? predicate works
+    assert!(eval_is_true(&lisp, &mut eval, "(effect? (io/pure 42))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(effect? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(effect? '())"));
+}
+
+#[test]
+fn test_effect_io_print() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // io/print creates an effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/print \"hello\")"));
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/print 42)"));
+    
+    // effect-tag and effect-data work
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (io/print \"hello\")) 'io/print)"));
+}
+
+#[test]
+fn test_effect_io_read_line() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // io/read-line creates an effect with nil data
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/read-line)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (io/read-line)) 'io/read-line)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(null? (effect-data (io/read-line)))"));
+}
+
+#[test]
+fn test_effect_io_bind() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // io/bind creates a sequencing effect
+    assert!(eval_is_effect(&lisp, &mut eval, "(io/bind (io/pure 1) (lambda (x) (io/pure (+ x 1))))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (io/bind (io/pure 1) (lambda (x) x))) 'io/bind)"));
+    
+    // The data should be (effect . continuation)
+    let _ = eval.eval_str("(define my-bind (io/bind (io/print \"hi\") (lambda (x) (io/pure x))))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(pair? (effect-data my-bind))"));
+}
+
+#[test]
+fn test_effects_are_values() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Effects can be stored in variables
+    let _ = eval.eval_str("(define my-effect (io/pure 42))").unwrap();
+    assert!(eval_is_effect(&lisp, &mut eval, "my-effect"));
+    
+    // Effects can be stored in lists
+    let _ = eval.eval_str("(define effect-list (list (io/pure 1) (io/pure 2) (io/pure 3)))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(effect? (car effect-list))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(effect? (car (cdr effect-list)))"));
+    
+    // Effects can be passed to functions
+    let _ = eval.eval_str("(define (get-tag e) (effect-tag e))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (get-tag (io/print \"hello\")) 'io/print)"));
+}
+
+#[test]
+fn test_effects_preserve_purity() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Creating an io/print effect should NOT actually print anything
+    // (We can't directly test this, but we verify the effect is just a value)
+    let _ = eval.eval_str("(define my-print (io/print \"This should not print\"))").unwrap();
+    assert!(eval_is_effect(&lisp, &mut eval, "my-print"));
+    
+    // Creating multiple identical effects should produce equal-ish results
+    // (They have same tag and same data)
+    let _ = eval.eval_str("(define print1 (io/print \"hello\"))").unwrap();
+    let _ = eval.eval_str("(define print2 (io/print \"hello\"))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag print1) (effect-tag print2))"));
+}
+
+#[test]
+fn test_effect_composition() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Complex effect composition
+    let _ = eval.eval_str(r#"
+        (define greet
+          (io/bind (io/print "What is your name? ")
+            (lambda (_)
+              (io/bind (io/read-line)
+                (lambda (name)
+                  (io/print (string-append "Hello, " name)))))))
+    "#).unwrap();
+    
+    assert!(eval_is_effect(&lisp, &mut eval, "greet"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag greet) 'io/bind)"));
+}
+
+#[test]
+fn test_eff_macro_single() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Single expression (base case)
+    assert!(eval_is_effect(&lisp, &mut eval, "(eff (io/pure 42))"));
+}
+
+#[test]
+fn test_eff_macro_binding() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Binding form: (x <- effect) rest
+    let result = eval.eval_str("(eff (x <- (io/pure 42)) (io/pure (+ x 1)))").unwrap();
+    assert!(lisp.get(result).unwrap().is_effect());
+    
+    // Multiple bindings
+    let result2 = eval.eval_str("(eff (a <- (io/pure 1)) (b <- (io/pure 2)) (io/pure (+ a b)))").unwrap();
+    assert!(lisp.get(result2).unwrap().is_effect());
+}
+
+#[test]
+fn test_eff_macro_sequencing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Non-binding form: effect rest (discard result)
+    let result = eval.eval_str(r#"(eff (io/print "hello") (io/pure 42))"#).unwrap();
+    assert!(lisp.get(result).unwrap().is_effect());
+}
+
+#[test]
+fn test_io_then_macro() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // io/then sequences two effects
+    let result = eval.eval_str(r#"(io/then (io/print "a") (io/print "b"))"#).unwrap();
+    assert!(lisp.get(result).unwrap().is_effect());
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag (io/then (io/pure 1) (io/pure 2))) 'io/bind)"));
+}
+
+#[test]
+fn test_io_map_macro() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // io/map applies a function to effect result
+    let result = eval.eval_str("(io/map (lambda (x) (+ x 1)) (io/pure 41))").unwrap();
+    assert!(lisp.get(result).unwrap().is_effect());
+    
+    // Complex io/map
+    let _ = eval.eval_str("(define doubled (io/map (lambda (x) (* x 2)) (io/pure 5)))").unwrap();
+    assert!(eval_is_effect(&lisp, &mut eval, "doubled"));
+}
+
+#[test]
+fn test_complex_eff_composition() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Complex effect composition using eff
+    let _ = eval.eval_str(r#"
+        (define greet-user
+          (eff
+            (io/print "Enter your name: ")
+            (name <- (io/read-line))
+            (io/print (string-append "Hello, " name "!"))))
+    "#).unwrap();
+    
+    assert!(eval_is_effect(&lisp, &mut eval, "greet-user"));
+    
+    // The result is an io/bind effect
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag greet-user) 'io/bind)"));
+}

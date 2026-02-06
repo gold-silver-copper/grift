@@ -141,6 +141,13 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Continuation { .. }) => {
             buf.push_str("#<continuation>");
         }
+        Ok(Value::Effect { tag, data }) => {
+            buf.push_str("#<effect:");
+            format_value(lisp, tag, buf);
+            buf.push(' ');
+            format_value(lisp, data, buf);
+            buf.push('>');
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

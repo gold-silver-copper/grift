@@ -241,6 +241,22 @@ define_builtins! {
     SymbolToString => "symbol->string",
     /// string->symbol - Convert string to symbol
     StringToSymbol => "string->symbol",
+    
+    // Effect system builtins (Pure Functional Grift)
+    /// effect? - Check if value is an effect description
+    Effectp => "effect?",
+    /// io/pure - Lift a pure value into an effect context
+    IoPure => "io/pure",
+    /// io/bind - Sequence two effects, passing result of first to continuation
+    IoBind => "io/bind",
+    /// io/print - Create effect description for printing
+    IoPrint => "io/print",
+    /// io/read-line - Create effect description for reading a line
+    IoReadLine => "io/read-line",
+    /// effect-tag - Get the tag of an effect (internal)
+    EffectTag => "effect-tag",
+    /// effect-data - Get the data of an effect (internal)
+    EffectData => "effect-data",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
@@ -515,6 +531,53 @@ pub enum Value {
         cont_chain: ArenaIndex,  // Points to ContFrame linked list head (or Nil for empty)
         metadata: ArenaIndex,    // cons cell: (capture_env . dynamic_wind_chain)
     },
+    
+    /// Effect value for pure functional IO and effect system
+    ///
+    /// Effects are first-class values that describe computations without executing them.
+    /// This enables referential transparency: `(io/print "hello")` returns a value that
+    /// describes printing, rather than actually printing.
+    ///
+    /// # Memory Layout
+    ///
+    /// Following the 2-index constraint like Lambda and Cons:
+    /// - `tag`: ArenaIndex to symbol identifying the effect operation (e.g., 'io/print, 'io/pure)
+    /// - `data`: ArenaIndex to effect-specific data
+    ///   - For io/pure: the wrapped value
+    ///   - For io/bind: cons cell (effect . continuation)
+    ///   - For io/print: the string/value to print
+    ///   - For io/read-line: nil (no data needed)
+    ///
+    /// # Semantics
+    ///
+    /// Effects are executed only by effect handlers (via `run-with-handler`).
+    /// In pure code, effects are inert data that can be:
+    /// - Stored in data structures
+    /// - Passed to functions
+    /// - Compared for equality
+    /// - Composed using io/bind
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// ;; Create effect descriptions (pure - no I/O happens)
+    /// (define hello-effect (io/print "Hello, World!"))
+    /// (define greet
+    ///   (io/bind (io/read-line)
+    ///     (lambda (name)
+    ///       (io/print (string-append "Hello, " name)))))
+    ///
+    /// ;; Execute effects through handler
+    /// (run-with-handler io-handler greet)
+    /// ```
+    ///
+    /// # References
+    ///
+    /// See docs/PURE_FUNCTIONAL_DESIGN.md for the full design document.
+    Effect {
+        tag: ArenaIndex,   // Symbol identifying the effect operation
+        data: ArenaIndex,  // Effect-specific data
+    },
 }
 
 impl Value {
@@ -704,6 +767,7 @@ impl Value {
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
             Value::Continuation { .. } => "continuation",
+            Value::Effect { .. } => "effect",
         }
     }
     
@@ -723,6 +787,12 @@ impl Value {
     #[inline]
     pub const fn is_continuation(&self) -> bool {
         matches!(self, Value::Continuation { .. })
+    }
+    
+    /// Check if this value is an effect description
+    #[inline]
+    pub const fn is_effect(&self) -> bool {
+        matches!(self, Value::Effect { .. })
     }
 }
 
@@ -778,6 +848,13 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // metadata points to a cons cell (capture_env . dynamic_wind_chain)
                 tracer(*cont_chain);
                 tracer(*metadata);
+            }
+            Value::Effect { tag, data } => {
+                // tag and data are inline ArenaIndex - trace both
+                // tag points to a symbol identifying the effect operation
+                // data points to effect-specific data
+                tracer(*tag);
+                tracer(*data);
             }
             Value::Array { len, data } => {
                 // For non-empty arrays, trace all elements
