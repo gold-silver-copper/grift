@@ -584,14 +584,45 @@ impl<const N: usize> Lisp<N> {
         marks: ArenaIndex,
         subst: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        // Pack marks and subst into cons cell: (marks . subst)
-        let context = self.cons(marks, subst)?;
+        // For backward compatibility, use nil as the lexical environment
+        let nil = self.nil()?;
+        self.syntax_with_env(expr, marks, subst, nil)
+    }
+    
+    /// Create a syntax object with full lexical scope information
+    ///
+    /// This is the preferred constructor for syntax objects that need to
+    /// preserve their creation-site lexical environment for proper scope
+    /// resolution.
+    ///
+    /// # Arguments
+    ///
+    /// * `expr` - The expression to wrap (the datum)
+    /// * `marks` - List of hygiene marks for tracking macro expansion scopes
+    /// * `subst` - Substitution environment for identifier resolution
+    /// * `lex_env` - The lexical environment at syntax object creation site
+    ///
+    /// # Memory Layout
+    ///
+    /// The context is packed as: (marks . (subst . lex_env))
+    pub fn syntax_with_env(
+        &self,
+        expr: ArenaIndex,
+        marks: ArenaIndex,
+        subst: ArenaIndex,
+        lex_env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        // Pack as: (marks . (subst . lex_env))
+        let subst_env = self.cons(subst, lex_env)?;
+        let context = self.cons(marks, subst_env)?;
         self.arena.alloc(Value::Syntax { expr, context })
     }
     
     /// Extract components from a syntax object
     ///
     /// Returns (expr, marks, subst) unpacked from the internal structure.
+    /// Note: This returns only 3 components for backward compatibility.
+    /// Use `syntax_parts_with_env` for full 4-component extraction.
     ///
     /// # Returns
     ///
@@ -604,10 +635,38 @@ impl<const N: usize> Lisp<N> {
     ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
         match self.get(idx)? {
             Value::Syntax { expr, context } => {
-                // Unpack (marks . subst)
+                // Unpack (marks . (subst . lex_env))
                 let marks = self.car(context)?;
-                let subst = self.cdr(context)?;
+                let subst_env = self.cdr(context)?;
+                let subst = self.car(subst_env)?;
                 Ok((expr, marks, subst))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Extract all components from a syntax object including lexical environment
+    ///
+    /// Returns (expr, marks, subst, lex_env) for full lexical scope support.
+    ///
+    /// # Returns
+    ///
+    /// * `expr` - The wrapped datum
+    /// * `marks` - List of hygiene marks
+    /// * `subst` - Substitution environment
+    /// * `lex_env` - The captured lexical environment
+    pub fn syntax_parts_with_env(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::Syntax { expr, context } => {
+                // Unpack (marks . (subst . lex_env))
+                let marks = self.car(context)?;
+                let subst_env = self.cdr(context)?;
+                let subst = self.car(subst_env)?;
+                let lex_env = self.cdr(subst_env)?;
+                Ok((expr, marks, subst, lex_env))
             }
             _ => Err(ArenaError::InvalidIndex),
         }

@@ -698,20 +698,24 @@
 ;; Evaluates each expr and binds the result to the corresponding pattern.
 ;; The bindings are available in the body expressions.
 ;; This is implemented as a macro that uses syntax-case internally.
+;; NOTE: We use (begin ...) instead of (let () ...) to preserve
+;; pattern bindings in the current environment scope. Using let
+;; would create a new lambda whose environment doesn't include
+;; the #:pattern-bindings from the syntax-case context.
 (define-syntax with-syntax
   (lambda (x)
     (syntax-case x ()
       ;; No bindings: just evaluate the body
       ((_ () e1 e2 ...)
-       (syntax (let () e1 e2 ...)))
+       (syntax (begin e1 e2 ...)))
       ;; Single binding: use syntax-case directly
       ((_ ((out in)) e1 e2 ...)
        (syntax (syntax-case in ()
-                 (out (let () e1 e2 ...)))))
+                 (out (begin e1 e2 ...)))))
       ;; Multiple bindings: use syntax-case with a list
       ((_ ((out in) ...) e1 e2 ...)
        (syntax (syntax-case (list in ...) ()
-                 ((out ...) (let () e1 e2 ...))))))))
+                 ((out ...) (begin e1 e2 ...))))))))
 
 ;; ============================================================
 ;; Exception Handling (R7RS Section 4.2.7)

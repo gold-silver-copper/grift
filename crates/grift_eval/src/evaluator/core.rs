@@ -564,13 +564,47 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
-            Value::Syntax { .. } | Value::ContFrame { .. } | Value::Continuation { .. } => {
+            Value::ContFrame { .. } | Value::Continuation { .. } => {
                 Ok(TrampolineState::Return { val: expr })
+            }
+            
+            // Syntax object - special handling for lexically-scoped identifiers
+            Value::Syntax { .. } => {
+                // Get the wrapped datum
+                let (datum, marks, subst, lex_env) = self.lisp.syntax_parts_with_env(expr)?;
+                
+                match self.lisp.get(datum)? {
+                    // Syntax-wrapped identifier: resolve in captured lexical environment
+                    // This enables lexically-scoped syntax objects
+                    Value::Symbol(_) => {
+                        self.eval_syntax_identifier(datum, marks, subst, lex_env, env)
+                    }
+                    
+                    // Syntax-wrapped list: this could be code that needs evaluation
+                    // We unwrap it and evaluate in the merged environment
+                    Value::Cons { .. } => {
+                        // Check if lex_env has any bindings
+                        if self.lisp.get(lex_env)?.is_nil() {
+                            // No captured environment - evaluate datum directly
+                            Ok(TrampolineState::Eval { expr: datum, env })
+                        } else {
+                            // Merge captured environment with current environment
+                            let merged_env = self.merge_environments(lex_env, env)?;
+                            Ok(TrampolineState::Eval { expr: datum, env: merged_env })
+                        }
+                    }
+                    
+                    // Other syntax-wrapped values are self-evaluating
+                    _ => Ok(TrampolineState::Return { val: datum })
+                }
             }
             
             // Symbol - variable lookup
             Value::Symbol(_) => {
                 let val = self.env_lookup(env, expr)?;
+                // Return the looked-up value directly, even if it's a syntax object.
+                // This allows syntax objects to be passed as arguments to functions
+                // like bound-identifier=? that expect syntax object data.
                 Ok(TrampolineState::Return { val })
             }
             
@@ -581,6 +615,103 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.step_eval_list(car, cdr, expr, env)
             }
         }
+    }
+    
+    /// Evaluate a syntax-wrapped identifier using its captured lexical environment
+    fn eval_syntax_identifier(
+        &self,
+        name: ArenaIndex,
+        _marks: ArenaIndex,
+        subst: ArenaIndex,
+        lex_env: ArenaIndex,
+        current_env: ArenaIndex,
+    ) -> Result<TrampolineState, EvalError> {
+        // 1. Check substitution environment (explicit renames from macros)
+        if let Some(val) = self.lookup_in_subst(name, subst)? {
+            return Ok(TrampolineState::Return { val });
+        }
+        
+        // 2. Check captured lexical environment (creation-site bindings)
+        // This is the key for lexically-scoped syntax objects
+        if !self.lisp.get(lex_env)?.is_nil() {
+            if let Some(val) = self.lookup_in_env_optional(lex_env, name)? {
+                return Ok(TrampolineState::Return { val });
+            }
+        }
+        
+        // 3. Fall back to current environment
+        if let Some(val) = self.lookup_in_env_optional(current_env, name)? {
+            return Ok(TrampolineState::Return { val });
+        }
+        
+        // 4. Finally, try global environment
+        self.env_lookup(self.global_env, name)
+            .map(|val| TrampolineState::Return { val })
+    }
+    
+    /// Merge two environments, with the first taking precedence
+    /// Creates a new environment where bindings from env1 shadow env2
+    fn merge_environments(&mut self, env1: ArenaIndex, env2: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // If env1 is nil, just return env2
+        if self.lisp.get(env1)?.is_nil() {
+            return Ok(env2);
+        }
+        
+        // Create a copy of env1 with its tail pointing to env2
+        // Collect env1 bindings
+        let mut bindings = [ArenaIndex::new(0); 64];
+        let mut count = 0;
+        let mut current = env1;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count >= bindings.len() {
+                // Buffer overflow: too many local bindings to copy.
+                // Fall back to recursive processing for the remaining bindings.
+                let car = self.lisp.car(current)?;
+                let cdr = self.lisp.cdr(current)?;
+                let rest_merged = self.merge_environments(cdr, env2)?;
+                let mut result = rest_merged;
+                result = self.lisp.cons(car, result)?;
+                
+                // Add the already-collected bindings in reverse order
+                for i in (0..count).rev() {
+                    result = self.lisp.cons(bindings[i], result)?;
+                }
+                return Ok(result);
+            }
+            bindings[count] = self.lisp.car(current)?;
+            count += 1;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Build new env chain: bindings from env1 -> env2
+        let mut result = env2;
+        for i in (0..count).rev() {
+            result = self.lisp.cons(bindings[i], result)?;
+        }
+        
+        Ok(result)
+    }
+    
+    /// Look up a symbol in an environment, returning None if not found
+    fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
+        let mut current = env;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let bound_name = self.lisp.car(binding)?;
+                
+                if self.lisp.symbol_eq(bound_name, name)? {
+                    return Ok(Some(self.lisp.cdr(binding)?));
+                }
+            }
+            
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Ok(None)
     }
     
     /// Evaluate a list (special form or application)
@@ -600,6 +731,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Variable bindings shadow macros, so only expand if not bound as a variable
             if !is_var_bound {
                 if let Some(transformer) = self.lookup_macro(car)? {
+                    // DON'T wrap macro inputs with lexical context here.
+                    // The `syntax` form handles lexical capture when needed.
+                    // Wrapping all macro inputs causes issues when the macro
+                    // produces code that references the same identifiers
+                    // (e.g., set! on a lambda parameter).
                     let expanded = self.apply_macro(transformer, expr)?;
                     // Continue evaluating the expanded form
                     return Ok(TrampolineState::Eval { expr: expanded, env });

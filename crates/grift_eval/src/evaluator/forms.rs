@@ -1175,11 +1175,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Check for internal defines and transform to letrec
         let body = self.transform_internal_defines(body_list)?;
         
-        // Expand macros in the body at lambda creation time (not at call time)
-        // This ensures macro side effects run during expansion, not during each call
-        let expanded_body = self.expand(body)?;
+        // NOTE: Macro expansion is now deferred until lambda call time.
+        // This is necessary for lexically-scoped syntax objects to work correctly,
+        // because macro input expressions need to carry their call-site lexical context.
+        // If we expanded here, the lambda parameters wouldn't be bound yet, and
+        // we couldn't wrap macro inputs with the proper lexical environment.
+        //
+        // The tradeoff is that macro expansion happens at each call, not just once.
+        // But this matches the semantics required for true lexically-scoped syntax.
         
-        self.lisp.lambda(params, expanded_body, env).map_err(Into::into)
+        self.lisp.lambda(params, body, env).map_err(Into::into)
     }
     
     /// Transform internal defines at the start of a body to letrec
@@ -1340,15 +1345,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This allows macros to be defined during evaluation rather than
     /// only during pre-expansion.
-    pub(super) fn step_eval_define_syntax(&mut self, args: ArenaIndex, _env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+    pub(super) fn step_eval_define_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
         let name = self.lisp.car(args)?;
         let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         
         // Expand the transformer expression if it's not already a lambda
         let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
         
-        // Parse the transformer
-        let transformer = self.parse_transformer(final_transformer_expr)?;
+        // Parse the transformer with the current lexical environment
+        // This allows macro transformers to capture lexical variables
+        let transformer = self.parse_transformer_with_env(final_transformer_expr, env)?;
         
         // Add to macro environment
         let binding = self.lisp.cons(name, transformer)?;
@@ -1381,7 +1387,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Expand the transformer expression if it's not already a lambda
             let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
             
-            let transformer = self.parse_transformer(final_transformer_expr)?;
+            // Parse with current lexical environment to capture lexical variables
+            let transformer = self.parse_transformer_with_env(final_transformer_expr, env)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
             
@@ -1444,7 +1451,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// In syntax-case, pattern bindings are stored in the environment.
     /// Uses a gensym-style internal symbol `#:pattern-bindings` to avoid
     /// conflicts with user code.
-    fn get_pattern_bindings_from_env(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+    pub(super) fn get_pattern_bindings_from_env(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         // Look for #:pattern-bindings in env (internal gensym-style name)
         let key = self.lisp.symbol("#:pattern-bindings")?;
         let mut current = env;
@@ -1480,12 +1487,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let pattern = self.lisp.car(clause)?;
             let clause_cdr = self.lisp.cdr(clause)?;
 
-            // Unwrap syntax object if present to get the datum
-            let datum = self.lisp.syntax_to_datum(stx)?;
-
-            // Try to match pattern against datum
+            // Match pattern against stx (syntax-aware matching)
+            // Pattern variables will bind to the matched values
             let empty = self.lisp.nil()?;
-            if let Some(bindings) = self.match_pattern(pattern, datum, literals, empty)? {
+            if let Some(bindings) = self.match_pattern_syntax(pattern, stx, literals, empty)? {
                 // Match succeeded! 
                 // Check for fender (optional guard) - clause is (pattern fender output) or (pattern output)
                 let (fender, output) = self.extract_fender_and_output(clause_cdr)?;
@@ -1545,15 +1550,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 1. Each binding is added directly for normal variable lookup
     /// 2. The full bindings alist is stored under `#:pattern-bindings` for
     ///    use by the `syntax` form for template transcription
+    ///
+    /// Pattern bindings are MERGED with existing bindings, so nested
+    /// syntax-case forms can access bindings from outer contexts.
     fn extend_env_with_bindings(
         &self,
         env: ArenaIndex,
         bindings: ArenaIndex,
     ) -> Result<ArenaIndex, EvalError> {
-        // bindings is an alist of (var . value) pairs
-        // Prepend each binding to env
-        let mut result = env;
+        // Get existing pattern bindings (if any) to merge with
+        let existing_bindings = self.get_pattern_bindings_from_env(env)?;
+        
+        // Merge new bindings with existing ones (new ones take precedence)
+        // New bindings go at the front so they shadow existing ones
+        let mut merged_bindings = existing_bindings;
         let mut current = bindings;
+        
+        // Collect new bindings in reverse to prepend them in correct order
+        let mut new_pairs = [ArenaIndex::new(0); 64];
+        let mut count = 0;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            if count < new_pairs.len() {
+                new_pairs[count] = self.lisp.car(current)?;
+                count += 1;
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        // Prepend new bindings to merged (in reverse order to maintain original order)
+        for i in (0..count).rev() {
+            merged_bindings = self.lisp.cons(new_pairs[i], merged_bindings)?;
+        }
+        
+        // bindings is an alist of (var . value) pairs
+        // Prepend each binding to env for normal variable lookup
+        let mut result = env;
+        current = bindings;
 
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let pair = self.lisp.car(current)?;
@@ -1561,11 +1594,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
 
-        // Also store the full bindings alist under #:pattern-bindings
-        // This allows the `syntax` form to retrieve just the pattern bindings
-        // without picking up other environment bindings (like builtins)
+        // Store the MERGED bindings under #:pattern-bindings
+        // This allows nested syntax-case forms to access outer bindings
         let key = self.lisp.symbol("#:pattern-bindings")?;
-        let binding_pair = self.lisp.cons(key, bindings)?;
+        let binding_pair = self.lisp.cons(key, merged_bindings)?;
         result = self.lisp.cons(binding_pair, result)?;
 
         Ok(result)
@@ -1577,11 +1609,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Evaluate (syntax template) - create syntax object from template
     ///
-    /// This is similar to transcribe_template but operates at runtime
-    /// using pattern bindings from the current environment.
+    /// This creates syntax objects from templates, capturing the current lexical
+    /// environment for proper scope preservation.
     /// 
     /// The pattern bindings are stored under the special `#:pattern-bindings`
     /// key by `extend_env_with_bindings` when syntax-case matches.
+    ///
+    /// For lexically-scoped syntax objects, identifiers that are bound in the
+    /// current lexical environment get wrapped in syntax objects with the
+    /// captured environment, enabling proper scope preservation.
     pub(super) fn step_eval_syntax(
         &mut self,
         args: ArenaIndex,
@@ -1593,9 +1629,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // This contains only the pattern variable bindings, not other env bindings
         let bindings = self.get_pattern_bindings_from_env(env)?;
 
-        // Transcribe the template with pattern bindings
+        // Transcribe the template with pattern bindings and capture lexical environment
+        // This enables lexically-scoped syntax objects where identifiers resolve
+        // in their creation context, not the expansion context
         let empty_renames = self.lisp.nil()?;
-        let result = self.transcribe_template(template, bindings, empty_renames, self.global_env)?;
+        let result = self.transcribe_template_with_env(
+            template, bindings, empty_renames, self.global_env, env
+        )?;
 
         Ok(TrampolineState::Return { val: result })
     }
