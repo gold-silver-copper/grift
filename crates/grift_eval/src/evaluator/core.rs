@@ -333,57 +333,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Set a variable in an environment (mutation operation)
-    /// Searches both local and global environments
-    /// Returns the new value on success
-    pub(super) fn env_set(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // First search local environment
-        let mut current = env;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found in local env, try global
-                    return self.env_set_global(name, value);
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
-    /// Set a variable in global environment only
-    fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found anywhere - error
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         // Check if already defined and update
@@ -807,11 +756,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // define
                 if self.lisp.symbol_matches(car, "define")? {
                     return self.eval_define(cdr, env);
-                }
-                
-                // set! - mutate variable binding
-                if self.lisp.symbol_matches(car, "set!")? {
-                    return self.eval_set(cdr, env);
                 }
                 
                 // Note: let, let*, letrec, letrec* are now macros and

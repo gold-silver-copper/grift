@@ -376,7 +376,7 @@ pub fn run_repl<const N: usize>() {
     
     println!("Grift Lisp");
     println!("========================");
-    println!("Features: TCO, strict (call-by-value), full mutation, rich errors");
+    println!("Features: TCO, strict (call-by-value), immutable, rich errors");
     println!("Truthiness: only #f is false (nil/'() are truthy!)");
     println!("Type :help for commands, Ctrl+D to exit.");
     println!("Arena capacity: {} cells", N);

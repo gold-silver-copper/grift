@@ -125,12 +125,6 @@ define_builtins! {
     /// error - Raise an error
     Error => "error",
     
-    // Mutation operations
-    /// set-car! - Mutate car of pair
-    SetCar => "set-car!",
-    /// set-cdr! - Mutate cdr of pair
-    SetCdr => "set-cdr!",
-    
     // Vector operations (R7RS Section 6.8)
     /// vector? - Check if value is a vector
     Vectorp => "vector?",
@@ -142,14 +136,10 @@ define_builtins! {
     VectorLength => "vector-length",
     /// vector-ref - Get element at index
     VectorRef => "vector-ref",
-    /// vector-set! - Set element at index
-    VectorSet => "vector-set!",
     /// vector->list - Convert vector to list
     VectorToList => "vector->list",
     /// list->vector - Convert list to vector
     ListToVector => "list->vector",
-    /// vector-fill! - Fill vector with value
-    VectorFill => "vector-fill!",
     /// vector-copy - Copy a vector
     VectorCopy => "vector-copy",
     
@@ -186,8 +176,6 @@ define_builtins! {
     StringLength => "string-length",
     /// string-ref - Get character at index
     StringRef => "string-ref",
-    /// string-set! - Set character at index
-    StringSet => "string-set!",
     /// string=? - String equality
     StringEq => "string=?",
     /// string<? - String less than
