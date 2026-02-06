@@ -807,3 +807,160 @@
     (if (eq? (car result) 'ok)
         (io/pure (car (cdr result)))
         (handler (car (cdr result))))))
+
+;; ============================================================================
+;; Effect Type System
+;; ============================================================================
+;;
+;; This section implements a foundation for effect types. Since Grift is
+;; dynamically typed, effect types are represented as data values that can
+;; be used for:
+;; 1. Documentation (annotating expected effects)
+;; 2. Runtime checking (validating effect handlers cover all effects)
+;; 3. Future static analysis
+;;
+;; Effect types are represented as tagged lists:
+;;   (effect-type io)                - IO effect
+;;   (effect-type state <state-type>) - Stateful computation
+;;   (effect-type error <error-type>) - May raise errors
+;;   (effect-type pure)              - No effects (pure computation)
+;;   (effect-type union <type1> <type2> ...) - Multiple effects
+
+;;; (eff-type/io) - Create an IO effect type
+(define (eff-type/io)
+  '(effect-type io))
+
+;;; (eff-type/state state-type) - Create a State effect type
+;;; state-type describes the type of state (e.g., 'int, 'string, etc.)
+(define (eff-type/state state-type)
+  (list 'effect-type 'state state-type))
+
+;;; (eff-type/error error-type) - Create an Error effect type  
+;;; error-type describes what errors may be raised
+(define (eff-type/error error-type)
+  (list 'effect-type 'error error-type))
+
+;;; (eff-type/pure) - Create a Pure (no effects) type
+(define (eff-type/pure)
+  '(effect-type pure))
+
+;;; (eff-type/union2 type1 type2) - Combine two effect types into a union
+;;; For combining more than 2 types, nest calls: (eff-type/union2 a (eff-type/union2 b c))
+(define (eff-type/union2 type1 type2)
+  (list 'effect-type 'union type1 type2))
+
+;;; (eff-type? x) - Check if x is an effect type
+(define (eff-type? x)
+  (and (pair? x) (eq? (car x) 'effect-type)))
+
+;;; (eff-type-kind type) - Get the kind of effect type (io, state, error, pure, union)
+(define (eff-type-kind type)
+  (if (eff-type? type)
+      (car (cdr type))
+      #f))
+
+;;; (eff-type-param type) - Get the parameter of an effect type (e.g., state-type)
+(define (eff-type-param type)
+  (if (and (eff-type? type) (pair? (cdr (cdr type))))
+      (car (cdr (cdr type)))
+      #f))
+
+;;; (eff-type-union-members type) - Get the member types of a union
+(define (eff-type-union-members type)
+  (if (and (eff-type? type) (eq? (eff-type-kind type) 'union))
+      (cdr (cdr type))
+      '()))
+
+;;; (effect-type effect) - Infer the effect type from an effect value
+;;; Returns the appropriate effect type for the given effect
+(define (effect-type effect)
+  (if (effect? effect)
+      (let ((tag (effect-tag effect)))
+        (cond
+          ;; IO effects
+          ((eq? tag 'io/pure) (eff-type/pure))
+          ((eq? tag 'io/print) (eff-type/io))
+          ((eq? tag 'io/read-line) (eff-type/io))
+          ((eq? tag 'io/bind) 
+           ;; For bind, the type is the union of inner effects
+           ;; This is a simplification - full inference would require monadic composition
+           (eff-type/io))
+          
+          ;; State effects
+          ((eq? tag 'state/get) (eff-type/state 'any))
+          ((eq? tag 'state/put) (eff-type/state 'any))
+          ((eq? tag 'state/modify) (eff-type/state 'any))
+          
+          ;; Error effects
+          ((eq? tag 'error/raise) (eff-type/error 'any))
+          
+          ;; Unknown effect - return generic type
+          (else (list 'effect-type 'unknown tag))))
+      ;; Not an effect - pure
+      (eff-type/pure)))
+
+;;; (eff-type-covers? handler-type effect-type) - Check if handler covers effect
+;;; Returns #t if the handler type covers all effects in effect-type
+(define (eff-type-covers? handler-type effect-type)
+  (let ((h-kind (eff-type-kind handler-type))
+        (e-kind (eff-type-kind effect-type)))
+    (cond
+      ;; Pure effects need no handler
+      ((eq? e-kind 'pure) #t)
+      
+      ;; Union effect requires all members to be covered
+      ((eq? e-kind 'union)
+       (eff-type-covers-all? handler-type (eff-type-union-members effect-type)))
+      
+      ;; Union handler covers anything in its members
+      ((eq? h-kind 'union)
+       (eff-type-covers-any? (eff-type-union-members handler-type) effect-type))
+      
+      ;; Direct match
+      (else (eq? h-kind e-kind)))))
+
+;;; (eff-type-covers-all? handler members) - Check if handler covers all member types
+(define (eff-type-covers-all? handler members)
+  (if (null? members)
+      #t
+      (and (eff-type-covers? handler (car members))
+           (eff-type-covers-all? handler (cdr members)))))
+
+;;; (eff-type-covers-any? members effect) - Check if any member covers the effect
+(define (eff-type-covers-any? members effect)
+  (if (null? members)
+      #f
+      (or (eff-type-covers? (car members) effect)
+          (eff-type-covers-any? (cdr members) effect))))
+
+;;; (eff-type->string type) - Convert effect type to string for display
+(define (eff-type->string type)
+  (if (eff-type? type)
+      (let ((kind (eff-type-kind type)))
+        (cond
+          ((eq? kind 'pure) "Pure")
+          ((eq? kind 'io) "IO")
+          ((eq? kind 'state) 
+           (string-append "State<" (symbol->string (or (eff-type-param type) 'any)) ">"))
+          ((eq? kind 'error)
+           (string-append "Error<" (symbol->string (or (eff-type-param type) 'any)) ">"))
+          ((eq? kind 'union)
+           (let ((members (eff-type-union-members type)))
+             (define (join-with sep lst)
+               (if (null? lst)
+                   ""
+                   (if (null? (cdr lst))
+                       (eff-type->string (car lst))
+                       (string-append (eff-type->string (car lst)) sep (join-with sep (cdr lst))))))
+             (string-append "(" (join-with " + " members) ")")))
+          (else (string-append "Unknown<" (symbol->string (or kind 'any)) ">"))))
+      "NotAnEffectType"))
+
+;;; (describe-effect effect) - Get a description of an effect including its type
+(define (describe-effect effect)
+  (if (effect? effect)
+      (list 'effect
+            (list 'tag (effect-tag effect))
+            (list 'type (eff-type->string (effect-type effect)))
+            (list 'data (effect-data effect)))
+      (list 'not-an-effect effect)))

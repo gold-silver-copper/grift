@@ -6897,3 +6897,100 @@ fn test_nested_reset() {
     // Inner shift captures only up to inner reset
     assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (reset (shift k (k 10)))))"), 11);
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// EFFECT TYPE SYSTEM
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_eff_type_constructors() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // eff-type/io creates IO effect type
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type? (eff-type/io))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (eff-type/io)) 'io)"));
+    
+    // eff-type/pure creates Pure effect type
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type? (eff-type/pure))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (eff-type/pure)) 'pure)"));
+    
+    // eff-type/state creates State effect type with parameter
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type? (eff-type/state 'int))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (eff-type/state 'int)) 'state)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-param (eff-type/state 'int)) 'int)"));
+    
+    // eff-type/error creates Error effect type
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type? (eff-type/error 'string))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (eff-type/error 'string)) 'error)"));
+}
+
+#[test]
+fn test_eff_type_union() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // eff-type/union2 creates a union of effect types
+    let _ = eval.eval_str("(define io+state (eff-type/union2 (eff-type/io) (eff-type/state 'int)))").unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type? io+state)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind io+state) 'union)"));
+    
+    // Union members can be retrieved
+    let _ = eval.eval_str("(define members (eff-type-union-members io+state))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(= (length members) 2)"));
+}
+
+#[test]
+fn test_effect_type_inference() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // effect-type infers types from effects
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (effect-type (io/pure 42))) 'pure)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (effect-type (io/print \"hi\"))) 'io)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (effect-type (io/read-line))) 'io)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (effect-type (state/get))) 'state)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (eff-type-kind (effect-type (error/raise 'oops))) 'error)"));
+}
+
+#[test]
+fn test_eff_type_covers() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Pure effects need no handler
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type-covers? (eff-type/io) (eff-type/pure))"));
+    
+    // Handler must match effect type
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type-covers? (eff-type/io) (eff-type/io))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(not (eff-type-covers? (eff-type/io) (eff-type/state 'int)))"));
+    
+    // Union handler covers any of its members
+    let _ = eval.eval_str("(define io+state (eff-type/union2 (eff-type/io) (eff-type/state 'any)))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type-covers? io+state (eff-type/io))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eff-type-covers? io+state (eff-type/state 'any))"));
+}
+
+#[test]
+fn test_eff_type_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Effect types can be converted to strings
+    assert!(eval_is_true(&lisp, &mut eval, "(string=? (eff-type->string (eff-type/io)) \"IO\")"));
+    assert!(eval_is_true(&lisp, &mut eval, "(string=? (eff-type->string (eff-type/pure)) \"Pure\")"));
+    assert!(eval_is_true(&lisp, &mut eval, "(string=? (eff-type->string (eff-type/state 'int)) \"State<int>\")"));
+}
+
+#[test]
+fn test_describe_effect() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // describe-effect provides complete info about an effect
+    let _ = eval.eval_str("(define desc (describe-effect (io/print \"hello\")))").unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car desc) 'effect)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(eq? (car (car (cdr desc))) 'tag)"));
+}
