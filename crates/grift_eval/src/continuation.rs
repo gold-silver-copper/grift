@@ -188,6 +188,32 @@ pub const CONT_FINISH_CONTINUATION_RESTORE: usize = 39;
 /// the expanded result (which may itself be a macro invocation).
 pub const CONT_MACRO_RESULT: usize = 40;
 
+// ============================================================================
+// Delimited Continuations - shift/reset
+// ============================================================================
+
+/// Prompt boundary for delimited continuations (reset)
+/// Data: env (the environment at the reset)
+/// 
+/// When a value returns to this continuation, return it as the result of reset.
+/// When shift captures up to this prompt, the capture stops here.
+pub const CONT_PROMPT: usize = 41;
+
+/// After evaluating the procedure passed to shift, apply it to the captured continuation
+/// Data: (captured_delimited_cont . prompt_env)
+/// 
+/// The captured continuation is a first-class procedure that, when called with
+/// a value, returns that value to the enclosing reset (or to the captured context).
+pub const CONT_SHIFT_APPLY: usize = 42;
+
+/// Applying a delimited continuation (one captured by shift)
+/// Data: (captured_cont_chain . prompt_env)
+/// 
+/// When a delimited continuation is invoked with a value:
+/// 1. Push a new reset (prompt boundary) around the captured frames
+/// 2. Resume from the captured frames
+pub const CONT_DELIMITED_APPLY: usize = 43;
+
 /// Trampoline state - what we're currently doing
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {

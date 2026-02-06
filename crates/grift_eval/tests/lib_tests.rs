@@ -6780,3 +6780,113 @@ fn test_try_error() {
     assert_eq!(eval_to_num(&lisp, &mut eval, 
         "(run-io (try-error (error/raise 'oops) (lambda (e) (io/pure 99))))"), 99);
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// DELIMITED CONTINUATIONS (shift/reset)
+// ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_reset_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // reset just returns the value of its body
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset 42)"), 42);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 2))"), 3);
+}
+
+#[test]
+fn test_shift_abort() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // shift that doesn't use k aborts to reset with that value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (shift k 42)))"), 42);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (* 100 (shift k 5)))"), 5);
+}
+
+#[test]
+fn test_shift_capture_simple() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // k captures (+ 1 [hole])
+    // (k 10) = (+ 1 10) = 11
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (shift k (k 10))))"), 11);
+    
+    // k captures (* 2 [hole])
+    // (k 10) = (* 2 10) = 20
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (* 2 (shift k (k 10))))"), 20);
+}
+
+#[test]
+fn test_shift_capture_nested() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // k captures (* 2 (+ 1 [hole]))
+    // (k 5) = (* 2 (+ 1 5)) = (* 2 6) = 12
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (* 2 (+ 1 (shift k (k 5)))))"), 12);
+    
+    // k captures (+ 1 (* 2 [hole]))
+    // (k 3) = (+ 1 (* 2 3)) = (+ 1 6) = 7
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (* 2 (shift k (k 3)))))"), 7);
+}
+
+#[test]
+fn test_shift_composable() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // k can be called multiple times (composable)
+    // k = (lambda (v) (+ 1 v))
+    // (k (k 10)) = (k 11) = 12
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (shift k (k (k 10)))))"), 12);
+    
+    // k = (lambda (v) (* 2 (+ 1 v)))
+    // (k (k 3)) = (k (* 2 4)) = (k 8) = (* 2 9) = 18
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (* 2 (+ 1 (shift k (k (k 3))))))"), 18);
+}
+
+#[test]
+fn test_shift_escape_reset() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // k can escape the reset and be called later
+    let _ = eval.eval_str("(define my-k (reset (* 10 (shift k k))))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-k 5)"), 50);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-k 7)"), 70);
+}
+
+#[test]
+fn test_delimited_continuation_is_value() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Delimited continuations are first-class values
+    let result = eval.eval_str("(reset (shift k k))").unwrap();
+    assert!(lisp.get(result).unwrap().is_delimited_continuation());
+}
+
+#[test]
+fn test_shift_with_computation_after_k() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Computation after k in the shift body
+    // k = (lambda (v) (+ 1 v))
+    // (+ 100 (k 5)) = (+ 100 6) = 106
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (shift k (+ 100 (k 5)))))"), 106);
+}
+
+#[test]
+fn test_nested_reset() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Nested resets - shift only captures up to nearest reset
+    // Outer reset contains inner reset
+    // Inner shift captures only up to inner reset
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(reset (+ 1 (reset (shift k (k 10)))))"), 11);
+}

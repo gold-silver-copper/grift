@@ -513,7 +513,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
-            Value::ContFrame { .. } | Value::Continuation { .. } | Value::Effect { .. } => {
+            Value::ContFrame { .. } | Value::Continuation { .. } | 
+            Value::DelimitedContinuation { .. } | Value::Effect { .. } => {
                 Ok(TrampolineState::Return { val: expr })
             }
             
@@ -804,9 +805,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // call-with-current-continuation / call/cc - capture the current continuation
+                // NOTE: Consider using reset/shift for delimited, composable continuations
                 if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
                     || self.lisp.symbol_matches(car, "call/cc")? {
                     return self.step_eval_call_cc(cdr, env);
+                }
+                
+                // reset - establish a prompt boundary for delimited continuations
+                // (reset expr) - evaluates expr with a new prompt boundary
+                if self.lisp.symbol_matches(car, "reset")? {
+                    return self.step_eval_reset(cdr, env);
+                }
+                
+                // shift - capture delimited continuation up to nearest reset
+                // (shift k body) - captures continuation up to reset, binds it to k, evaluates body
+                if self.lisp.symbol_matches(car, "shift")? {
+                    return self.step_eval_shift(cdr, env);
                 }
                 
                 // dynamic-wind - establish dynamic extent with before/after thunks

@@ -578,6 +578,38 @@ pub enum Value {
         tag: ArenaIndex,   // Symbol identifying the effect operation
         data: ArenaIndex,  // Effect-specific data
     },
+    
+    /// Delimited continuation captured by `shift` up to a `reset` prompt
+    ///
+    /// Unlike full continuations from `call/cc`, delimited continuations:
+    /// 1. Only capture up to the nearest `reset` boundary (not the entire call stack)
+    /// 2. When invoked, return the value to the enclosing reset (composable)
+    /// 3. Are designed for single-use (linear) semantics in the pure functional model
+    ///
+    /// # Memory Layout
+    ///
+    /// - `cont_chain`: Points to the captured ContFrame chain (up to but not including the prompt)
+    /// - `prompt_env`: The environment at the enclosing reset/prompt boundary
+    ///
+    /// # Semantics
+    ///
+    /// When a delimited continuation `k` is invoked with value `v`:
+    /// 1. A new reset boundary is installed (prompt-delimited semantics)
+    /// 2. The captured frames are restored
+    /// 3. `v` is returned through those frames
+    /// 4. The result returns to the original reset boundary
+    ///
+    /// This makes delimited continuations composable: `(+ 1 (reset (+ 2 (shift k (k (k 10))))))`
+    /// evaluates to 15 (10 -> 12 -> 14, then + 1 = 15).
+    ///
+    /// # References
+    ///
+    /// - Felleisen, M. "The Theory and Practice of First-Class Prompts"
+    /// - Danvy, O. & Filinski, A. "Abstracting Control"
+    DelimitedContinuation {
+        cont_chain: ArenaIndex,  // Captured frames up to prompt
+        prompt_env: ArenaIndex,  // Environment at the prompt boundary
+    },
 }
 
 impl Value {
@@ -768,6 +800,7 @@ impl Value {
             Value::ContFrame { .. } => "cont-frame",
             Value::Continuation { .. } => "continuation",
             Value::Effect { .. } => "effect",
+            Value::DelimitedContinuation { .. } => "delimited-continuation",
         }
     }
     
@@ -787,6 +820,12 @@ impl Value {
     #[inline]
     pub const fn is_continuation(&self) -> bool {
         matches!(self, Value::Continuation { .. })
+    }
+    
+    /// Check if this value is a delimited continuation (from shift)
+    #[inline]
+    pub const fn is_delimited_continuation(&self) -> bool {
+        matches!(self, Value::DelimitedContinuation { .. })
     }
     
     /// Check if this value is an effect description
@@ -855,6 +894,13 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // data points to effect-specific data
                 tracer(*tag);
                 tracer(*data);
+            }
+            Value::DelimitedContinuation { cont_chain, prompt_env } => {
+                // cont_chain and prompt_env are inline ArenaIndex - trace both
+                // cont_chain points to the captured continuation frames
+                // prompt_env is the environment at the prompt boundary
+                tracer(*cont_chain);
+                tracer(*prompt_env);
             }
             Value::Array { len, data } => {
                 // For non-empty arrays, trace all elements

@@ -947,6 +947,53 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Create a delimited continuation value (captured by shift up to reset)
+    ///
+    /// # Arguments
+    ///
+    /// * `cont_chain` - Captured continuation frames (up to but not including prompt)
+    /// * `prompt_env` - Environment at the prompt boundary
+    ///
+    /// # Semantics
+    ///
+    /// Unlike full continuations from `call/cc`, delimited continuations:
+    /// 1. Only capture up to the nearest reset boundary
+    /// 2. When invoked, return to a new reset boundary (composable)
+    /// 3. Are designed for single-use (linear) semantics
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (reset (+ 1 (shift k (k (k 10)))))
+    /// ;; => 12  (10 + 1 + 1 = 12)
+    /// ```
+    pub fn delimited_continuation(
+        &self,
+        cont_chain: ArenaIndex,
+        prompt_env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::DelimitedContinuation { cont_chain, prompt_env })
+    }
+    
+    /// Extract components from a DelimitedContinuation value
+    ///
+    /// Returns `(cont_chain, prompt_env)` tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns ArenaError::InvalidIndex if idx doesn't point to a DelimitedContinuation.
+    pub fn delimited_continuation_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        match self.get(idx)? {
+            Value::DelimitedContinuation { cont_chain, prompt_env } => {
+                Ok((cont_chain, prompt_env))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Build a list from an iterator of indices
     pub fn list<I: IntoIterator<Item = ArenaIndex>>(&self, items: I) -> ArenaResult<ArenaIndex>
     where
