@@ -49,6 +49,7 @@ fn format_value_impl<const N: usize>(
     
     match lisp.get(idx) {
         Ok(Value::Nil) => buf.push_str("()"),
+        Ok(Value::Void) => buf.push_str("#<void>"),
         Ok(Value::True) => buf.push_str("#t"),
         Ok(Value::False) => buf.push_str("#f"),
         Ok(Value::Number(n)) => {
@@ -429,7 +430,10 @@ pub fn run_repl<const N: usize>() {
                 // Evaluate
                 match eval.eval_str(input) {
                     Ok(result) => {
-                        println!("{}", value_to_string(&lisp, result));
+                        // Don't print anything for void values (from define, set!, display, etc.)
+                        if !matches!(lisp.get(result), Ok(Value::Void)) {
+                            println!("{}", value_to_string(&lisp, result));
+                        }
                     }
                     Err(e) => {
                         println!("{}", format_error(&lisp, &e));

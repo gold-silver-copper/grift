@@ -530,7 +530,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let name = self.unpack1(data);
                 // val is the evaluated value - define the binding
                 self.define(name, val)?;
-                Ok(Some(TrampolineState::Return { val: name }))
+                // Return void (unspecified value) per R7RS
+                let void = self.lisp.void_val()?;
+                Ok(Some(TrampolineState::Return { val: void }))
             }
 
             CONT_SET_VALUE => {
@@ -538,7 +540,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (name, env) = self.unpack2(data)?;
                 // val is the evaluated value - set! the binding
                 self.env_set(env, name, val)?;
-                Ok(Some(TrampolineState::Return { val }))
+                // Return void (unspecified value) per R7RS
+                let void = self.lisp.void_val()?;
+                Ok(Some(TrampolineState::Return { val: void }))
             }
 
             CONT_NATIVE_ARGS_COLLECT => {
@@ -1326,7 +1330,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 let lambda = self.lisp.lambda(params, expanded_body, env)?;
                 self.define(name, lambda)?;
-                Ok(TrampolineState::Return { val: name })
+                // Return void (unspecified value) per R7RS
+                let void = self.lisp.void_val()?;
+                Ok(TrampolineState::Return { val: void })
             }
             _ => Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
         }
@@ -1368,9 +1374,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let binding = self.lisp.cons(name, transformer)?;
         self.macro_env = self.lisp.cons(binding, self.macro_env)?;
         
-        // Return unspecified value (nil)
-        let nil = self.lisp.nil()?;
-        Ok(TrampolineState::Return { val: nil })
+        // Return void (unspecified value) per R7RS
+        let void = self.lisp.void_val()?;
+        Ok(TrampolineState::Return { val: void })
     }
     
     /// Evaluate (let-syntax ((name transformer) ...) body ...) at evaluation time

@@ -346,7 +346,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if let Some(callback) = self.output_callback {
                     callback(self.lisp, val);
                 }
-                Ok(val)
+                // Return void (unspecified value) per R7RS
+                self.lisp.void_val().map_err(Into::into)
             }
             
             Builtin::Newline => {
@@ -354,7 +355,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if let Some(callback) = self.output_callback {
                     callback(self.lisp, self.lisp.nil()?);
                 }
-                self.lisp.nil().map_err(Into::into)
+                // Return void (unspecified value) per R7RS
+                self.lisp.void_val().map_err(Into::into)
             }
             
             Builtin::Error => {

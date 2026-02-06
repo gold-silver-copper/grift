@@ -49,13 +49,15 @@ fn test_reserved_slots_have_correct_values() {
 fn test_reserved_slots_occupy_first_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // Nil, True, and False are pre-allocated in the first slots
+    // Nil, Void, True, and False are pre-allocated in the first slots
     assert_eq!(lisp.nil().unwrap().raw(), 0);
-    assert_eq!(lisp.true_val().unwrap().raw(), 1);
-    assert_eq!(lisp.false_val().unwrap().raw(), 2);
+    assert_eq!(lisp.void_val().unwrap().raw(), 1);
+    assert_eq!(lisp.true_val().unwrap().raw(), 2);
+    assert_eq!(lisp.false_val().unwrap().raw(), 3);
     
     // Verify they contain the expected values
     assert_eq!(lisp.get(lisp.nil().unwrap()).unwrap(), Value::Nil);
+    assert_eq!(lisp.get(lisp.void_val().unwrap()).unwrap(), Value::Void);
     assert_eq!(lisp.get(lisp.true_val().unwrap()).unwrap(), Value::True);
     assert_eq!(lisp.get(lisp.false_val().unwrap()).unwrap(), Value::False);
 }
@@ -64,24 +66,26 @@ fn test_reserved_slots_occupy_first_slots() {
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // After creating the Lisp context, 4 slots should be used
-    // (nil, true, false, intern_table_cons) - with inline cons, no separate data slots needed
-    assert_eq!(lisp.arena().len(), 4);
+    // After creating the Lisp context, 5 slots should be used
+    // (nil, void, true, false, intern_table_cons) - with inline cons, no separate data slots needed
+    assert_eq!(lisp.arena().len(), 5);
     
-    // Calling nil/true_val/false_val should NOT increase allocation count
+    // Calling nil/void_val/true_val/false_val should NOT increase allocation count
     // (they return pre-allocated slots)
     let _ = lisp.nil();
+    let _ = lisp.void_val();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 4);
+    assert_eq!(lisp.arena().len(), 5);
     
     // Calling many times should not increase count
     for _ in 0..100 {
         let _ = lisp.nil();
+        let _ = lisp.void_val();
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 4);
+    assert_eq!(lisp.arena().len(), 5);
 }
 
 #[test]
@@ -101,6 +105,7 @@ fn test_reserved_slots_survive_gc() {
     let lisp: Lisp<100> = Lisp::new();
     
     let nil = lisp.nil().unwrap();
+    let void_val = lisp.void_val().unwrap();
     let true_val = lisp.true_val().unwrap();
     let false_val = lisp.false_val().unwrap();
     
@@ -111,13 +116,14 @@ fn test_reserved_slots_survive_gc() {
     
     // Run GC with empty roots - reserved slots should NOT be collected
     // because they're implicitly roots
-    let stats = lisp.gc(&[nil, true_val, false_val]);
+    let stats = lisp.gc(&[nil, void_val, true_val, false_val]);
     
     // The numbers should be collected
     assert_eq!(stats.collected, 3);
     
     // Reserved slots should still be valid
     assert_eq!(lisp.get(nil).unwrap(), Value::Nil);
+    assert_eq!(lisp.get(void_val).unwrap(), Value::Void);
     assert_eq!(lisp.get(true_val).unwrap(), Value::True);
     assert_eq!(lisp.get(false_val).unwrap(), Value::False);
 }
@@ -126,14 +132,14 @@ fn test_reserved_slots_survive_gc() {
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // First regular allocation should be at slot 4 (after reserved 0-3)
-    // Slots: 0=nil, 1=true, 2=false, 3=intern_table_cons (with inline car/cdr)
+    // First regular allocation should be at slot 5 (after reserved 0-4)
+    // Slots: 0=nil, 1=void, 2=true, 3=false, 4=intern_table_cons (with inline car/cdr)
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 4);
+    assert_eq!(num.raw(), 5);
     
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 5);
+    assert_eq!(num2.raw(), 6);
 }
 
 // ========================================================================

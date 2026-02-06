@@ -263,6 +263,12 @@ pub enum Value {
     /// The empty list (NOT false - use False for that)
     Nil,
     
+    /// Void/Unspecified value (R7RS)
+    /// 
+    /// Returned by side-effect-only forms like `define`, `set!`, `display`, etc.
+    /// The REPL should not print anything when this is returned.
+    Void,
+    
     /// Boolean true (#t)
     True,
     
@@ -518,6 +524,15 @@ impl Value {
         matches!(self, Value::Nil)
     }
     
+    /// Check if this value is void (unspecified value)
+    /// 
+    /// Void is returned by side-effect-only forms like `define`, `set!`, `display`.
+    /// The REPL should not print anything when this value is returned.
+    #[inline]
+    pub const fn is_void(&self) -> bool {
+        matches!(self, Value::Void)
+    }
+    
     /// Check if this value is false (#f)
     /// This is the ONLY way to be false in this Lisp
     #[inline]
@@ -672,6 +687,7 @@ impl Value {
     pub const fn type_name(&self) -> &'static str {
         match self {
             Value::Nil => "nil",
+            Value::Void => "void",
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
             Value::Char(_) => "char",
@@ -717,7 +733,7 @@ impl Value {
 impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
-            Value::Nil | Value::True | Value::False | 
+            Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) => {
                 // No references
