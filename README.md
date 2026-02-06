@@ -257,7 +257,7 @@ Below is a prioritized review focused on the `no_std` / `no_alloc` design constr
   }
 
   // Lookup uses interned symbol indices (ArenaIndex equality is enough).
-  fn env_lookup_frame<const K: usize>(lisp: &Lisp<N>, frame: EnvFrame<K>, name: ArenaIndex) -> Option<ArenaIndex> {
+  fn env_lookup_frame<const K: usize>(frame: EnvFrame<K>, name: ArenaIndex) -> Option<ArenaIndex> {
       for i in 0..frame.len {
           if frame.keys[i] == name {
               return Some(frame.vals[i]);
