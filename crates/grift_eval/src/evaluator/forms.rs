@@ -21,6 +21,7 @@ use crate::continuation::{TrampolineState,
     CONT_DYNAMIC_WIND_BEFORE, CONT_DYNAMIC_WIND_BODY, CONT_DYNAMIC_WIND_AFTER,
     CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
     CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE, CONT_MACRO_RESULT,
+    CONT_PROMPT, CONT_SHIFT_APPLY, CONT_DELIMITED_APPLY,
 };
 
 use super::Evaluator;
@@ -223,6 +224,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Data: captured_continuation
                         let data = self.pack1(val)?;
                         self.push_cont(CONT_CONTINUATION_APPLY, data, env)?;
+                        
+                        // Evaluate the argument
+                        Ok(Some(TrampolineState::Eval { expr: arg_expr, env }))
+                    }
+                    Value::DelimitedContinuation { cont_chain, prompt_env } => {
+                        // Delimited continuation invocation: (k arg)
+                        // These are composable - invoking reinstalls the frames under a new prompt
+                        self.pop_frame();
+                        
+                        // Check we have exactly one argument
+                        if self.lisp.get(args_expr)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("delimited continuation requires exactly 1 argument"));
+                        }
+                        let arg_expr = self.lisp.car(args_expr)?;
+                        let rest = self.lisp.cdr(args_expr)?;
+                        if !self.lisp.get(rest)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("delimited continuation requires exactly 1 argument"));
+                        }
+                        
+                        // Push continuation to restore delimited frames when arg is evaluated
+                        // Data: (captured_cont_chain . prompt_env)
+                        let data = self.pack2(cont_chain, prompt_env)?;
+                        self.push_cont(CONT_DELIMITED_APPLY, data, env)?;
                         
                         // Evaluate the argument
                         Ok(Some(TrampolineState::Eval { expr: arg_expr, env }))
@@ -905,6 +931,81 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Data: eval_env (the environment where the expanded code should be evaluated)
                 let eval_env = self.unpack1(data);
                 Ok(Some(TrampolineState::Eval { expr: val, env: eval_env }))
+            }
+            
+            // ================================================================
+            // Delimited continuations (shift/reset)
+            // ================================================================
+            
+            CONT_PROMPT => {
+                // Prompt boundary - just return the value
+                // Data: env (just for debugging/metadata, not used)
+                // The value from the body of (reset ...) simply returns
+                Ok(Some(TrampolineState::Return { val }))
+            }
+            
+            CONT_SHIFT_APPLY => {
+                // val is the evaluated procedure from shift
+                // Now apply it to the captured delimited continuation
+                // Data: (captured_delimited_cont . prompt_env)
+                let (captured_dcont, prompt_env) = self.unpack2(data)?;
+                
+                // Create argument list with the captured delimited continuation
+                let nil = self.lisp.nil()?;
+                let args = self.lisp.cons(captured_dcont, nil)?;
+                
+                // Apply the procedure to the continuation
+                match self.lisp.get(val)? {
+                    Value::Lambda { .. } => {
+                        let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
+                        
+                        // Check param count - should be exactly 1
+                        if self.lisp.get(params)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, val)
+                                .with_message("shift procedure must accept 1 argument (the continuation)"));
+                        }
+                        let first_param = self.lisp.car(params)?;
+                        let rest_params = self.lisp.cdr(params)?;
+                        if !self.lisp.get(rest_params)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, val)
+                                .with_message("shift procedure must accept exactly 1 argument"));
+                        }
+                        
+                        // Bind the captured continuation to the parameter
+                        let extended_env = self.env_extend(closure_env, first_param, captured_dcont)?;
+                        
+                        // The body evaluates and returns to the prompt (which was already popped)
+                        // We're outside the reset now - the prompt was removed when we did capture
+                        Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
+                    }
+                    _ => {
+                        // For other callable types, use the standard apply mechanism
+                        let call_expr = self.lisp.cons(val, args)?;
+                        self.push_frame(call_expr, val)?;
+                        let data = self.pack3(args, prompt_env, call_expr)?;
+                        self.push_cont(CONT_APPLY_FORCED, data, prompt_env)?;
+                        Ok(Some(TrampolineState::Return { val }))
+                    }
+                }
+            }
+            
+            CONT_DELIMITED_APPLY => {
+                // val is the evaluated argument to a delimited continuation
+                // Data: (captured_cont_chain . prompt_env)
+                let (captured_cont_chain, prompt_env) = self.unpack2(data)?;
+                
+                // Install a new prompt and push the captured frames
+                // This makes delimited continuations composable (can be called multiple times
+                // within a reset, each returning to that reset)
+                
+                // Push a fresh prompt (the return point for this invocation)
+                self.push_cont(CONT_PROMPT, prompt_env, prompt_env)?;
+                
+                // Re-install the captured continuation frames on top of the prompt
+                self.reinstall_delimited_frames(captured_cont_chain)?;
+                
+                // Return val through the captured frames
+                Ok(Some(TrampolineState::Return { val }))
             }
             
             // Catch-all for unknown continuation types
@@ -1713,6 +1814,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Err(self.make_error(ErrorKind::WrongArgCount, thunk)
                     .with_message("continuation requires 1 argument"))
             }
+            Value::DelimitedContinuation { .. } => {
+                // Can't call a delimited continuation as a thunk without an argument
+                Err(self.make_error(ErrorKind::WrongArgCount, thunk)
+                    .with_message("delimited continuation requires 1 argument"))
+            }
             _ => {
                 // For other callable types, construct a call expression
                 let nil = self.lisp.nil()?;
@@ -1877,5 +1983,148 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Call the before thunk
             self.apply_thunk(before, self.global_env)
         }
+    }
+    
+    // ========================================================================
+    // Delimited Continuations: reset and shift
+    // ========================================================================
+    
+    /// Evaluate reset (prompt boundary for delimited continuations)
+    /// 
+    /// (reset expr) - establishes a prompt and evaluates expr within that boundary.
+    /// 
+    /// Any `shift` inside expr captures only up to this reset boundary.
+    /// The result of expr (or the result of shift's body) is returned.
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// (reset (+ 1 (shift k 42)))  ; => 42 (shift returns 42 directly to reset)
+    /// (reset (+ 1 (shift k (k 10))))  ; => 11 (k applied to 10 gives 11)
+    /// ```
+    pub(super) fn step_eval_reset(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        // Check we have exactly one argument
+        if self.lisp.get(args)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("reset requires exactly 1 argument"));
+        }
+        let body = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        if !self.lisp.get(rest)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("reset requires exactly 1 argument"));
+        }
+        
+        // Push prompt boundary continuation
+        // When the body evaluates to a value, CONT_PROMPT will just return it
+        self.push_cont(CONT_PROMPT, env, env)?;
+        
+        // Evaluate the body within the prompt
+        Ok(TrampolineState::Eval { expr: body, env })
+    }
+    
+    /// Evaluate shift (capture delimited continuation)
+    /// 
+    /// (shift k body) - captures continuation up to nearest reset, binds to k, evaluates body.
+    /// 
+    /// The captured continuation k is a procedure that, when called with a value,
+    /// returns that value to the original reset boundary (wrapped in a new reset).
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// (reset (+ 1 (shift k (k (k 10)))))
+    /// ;; => 12
+    /// ;; k = (lambda (v) (+ 1 v)), so (k (k 10)) = (k 11) = 12
+    /// ```
+    pub(super) fn step_eval_shift(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
+        // Parse: (shift k body)
+        if self.lisp.get(args)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("shift requires 2 arguments: (shift k body)"));
+        }
+        let k_name = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("shift requires 2 arguments: (shift k body)"));
+        }
+        let body = self.lisp.car(rest)?;
+        let rest2 = self.lisp.cdr(rest)?;
+        if !self.lisp.get(rest2)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, args)
+                .with_message("shift requires exactly 2 arguments: (shift k body)"));
+        }
+        
+        // Verify k_name is a symbol
+        if !matches!(self.lisp.get(k_name)?, Value::Symbol(_)) {
+            return Err(self.make_error(ErrorKind::TypeError, k_name)
+                .with_message("shift first argument must be a symbol for the continuation binding"));
+        }
+        
+        // Capture continuation up to the nearest CONT_PROMPT
+        let (captured_frames, prompt_env) = self.capture_delimited_continuation()?;
+        
+        // Create the delimited continuation value
+        let delimited_cont = self.lisp.delimited_continuation(captured_frames, prompt_env)?;
+        
+        // Bind k to the captured continuation in the environment
+        let extended_env = self.env_extend(env, k_name, delimited_cont)?;
+        
+        // Evaluate the body - result returns directly to what was after the reset
+        // (We've already popped the frames up to and including CONT_PROMPT)
+        Ok(TrampolineState::Eval { expr: body, env: extended_env })
+    }
+    
+    /// Capture continuation frames up to nearest CONT_PROMPT
+    /// 
+    /// Returns (captured_frames, prompt_env) where:
+    /// - captured_frames is a list of (type, data, env) tuples
+    /// - prompt_env is the environment at the prompt boundary
+    fn capture_delimited_continuation(&mut self) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let nil = self.lisp.nil()?;
+        let mut captured = nil;
+        
+        // Collect frames until we hit CONT_PROMPT
+        loop {
+            let (cont_type, data, env) = self.pop_cont()?;
+            
+            if cont_type == CONT_PROMPT {
+                // Found the prompt - return with its environment
+                return Ok((captured, env));
+            }
+            
+            if cont_type == CONT_DONE {
+                return Err(self.make_error(ErrorKind::Generic, nil)
+                    .with_message("shift without enclosing reset"));
+            }
+            
+            // Save this frame as a tuple (type_as_usize, data, env)
+            let type_num = Self::encode_usize(cont_type);
+            let frame_tuple = self.pack3(type_num, data, env)?;
+            captured = self.lisp.cons(frame_tuple, captured)?;
+        }
+        // Note: We never reach here - we either find CONT_PROMPT (early return)
+        // or CONT_DONE (error return). The loop always terminates via return.
+    }
+    
+    /// Reinstall captured continuation frames on top of current continuation
+    fn reinstall_delimited_frames(&mut self, frames: ArenaIndex) -> Result<(), EvalError> {
+        // frames is a list of (type, data, env) tuples in order
+        let mut current = frames;
+        
+        while !self.lisp.get(current)?.is_nil() {
+            let frame = self.lisp.car(current)?;
+            let (type_num, data, env) = self.unpack3(frame)?;
+            
+            // type_num is encoded using encode_usize, decode it
+            let cont_type = Self::decode_usize(type_num);
+            
+            self.push_cont(cont_type, data, env)?;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Ok(())
     }
 }

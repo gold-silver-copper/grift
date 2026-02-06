@@ -141,6 +141,9 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Continuation { .. }) => {
             buf.push_str("#<continuation>");
         }
+        Ok(Value::DelimitedContinuation { .. }) => {
+            buf.push_str("#<delimited-continuation>");
+        }
         Ok(Value::Effect { tag, data }) => {
             buf.push_str("#<effect:");
             format_value(lisp, tag, buf);

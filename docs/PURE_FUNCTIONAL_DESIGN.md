@@ -14,7 +14,7 @@ This document describes a multi-phase design for evolving Grift into a pure func
 | Immutability | ✅ Implemented | `set!`, `set-car!`, `set-cdr!`, etc. removed |
 | Pure `letrec` | ✅ Implemented | Y combinator-based recursive bindings |
 | Pure `do` loops | ✅ Implemented | Via Y combinator-based named let |
-| Delimited Continuations | ⚠️ Partial | `call/cc` needs work after mutation removal |
+| Delimited Continuations | ✅ Implemented | `reset`/`shift` primitives for composable control |
 | Linear Continuations | 📋 Planned | Requires runtime tracking |
 | Effect Types | 📋 Planned | Requires type system extension |
 
@@ -63,6 +63,18 @@ greet-effect  ; => #<effect:io/print "Hello, World!">
   (error/raise 'oops)
   (lambda (e) (io/pure 0)))  ; Handler returns 0 on error
 ; => Returns (io/pure 0)
+
+;; Delimited continuations with reset/shift
+(reset (+ 1 (shift k (k 10))))
+; => 11  (k captures (+ 1 [hole]), so (k 10) = (+ 1 10) = 11)
+
+;; Continuations are composable - can call k multiple times
+(reset (+ 1 (shift k (k (k 10)))))
+; => 12  ((k 10) = 11, (k 11) = 12)
+
+;; Capturing nested computations
+(reset (* 2 (+ 1 (shift k (k 5)))))
+; => 12  (k captures (* 2 (+ 1 [hole])), so (k 5) = (* 2 (+ 1 5)) = 12)
 ```
 
 ## Table of Contents
