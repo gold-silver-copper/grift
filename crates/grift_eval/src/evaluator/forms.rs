@@ -207,7 +207,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // REMOVED: call/cc is no longer supported
                         // Full continuations cannot be invoked - use delimited continuations instead
                         self.pop_frame();
-                        Err(self.make_error(ErrorKind::NotAFunction, val)
+                        Err(self.make_error(ErrorKind::Generic, val)
                             .with_message("call/cc continuations are no longer supported; use reset/shift for delimited continuations"))
                     }
                     Value::DelimitedContinuation { cont_chain, prompt_env } => {

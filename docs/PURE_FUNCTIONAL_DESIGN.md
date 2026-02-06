@@ -15,8 +15,8 @@ This document describes a multi-phase design for evolving Grift into a pure func
 | Pure `letrec` | ✅ Implemented | Y combinator-based recursive bindings |
 | Pure `do` loops | ✅ Implemented | Via Y combinator-based named let |
 | Delimited Continuations | ✅ Implemented | `reset`/`shift` primitives for composable control |
-| **call/cc Removed** | ✅ Complete | Only delimited continuations supported |
-| Effect Types | 📋 Planned | Requires type system extension |
+| call/cc Removed | ✅ Complete | Only delimited continuations supported |
+| **Effect Type System** | ✅ Implemented | Type constructors, inference, checking |
 
 ### Quick Start
 
@@ -75,6 +75,11 @@ greet-effect  ; => #<effect:io/print "Hello, World!">
 ;; Capturing nested computations
 (reset (* 2 (+ 1 (shift k (k 5)))))
 ; => 12  (k captures (* 2 (+ 1 [hole])), so (k 5) = (* 2 (+ 1 5)) = 12)
+
+;; Effect types
+(eff-type/io)              ; => (effect-type io)
+(effect-type (io/print "hi"))  ; => (effect-type io)
+(eff-type-covers? (eff-type/io) (eff-type/pure))  ; => #t
 ```
 
 ## Table of Contents
