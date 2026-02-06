@@ -17,10 +17,10 @@ use crate::continuation::{TrampolineState,
     CONT_QUASIQUOTE_UNQUOTE_WRAP, CONT_QUASIQUOTE_NESTED_WRAP, CONT_QUASIQUOTE_SPLICE,
     CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
     CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
-    CONT_SYNTAX_CASE_FENDER, CONT_CALL_CC_APPLY, CONT_CONTINUATION_APPLY,
+    CONT_SYNTAX_CASE_FENDER,
     CONT_DYNAMIC_WIND_BEFORE, CONT_DYNAMIC_WIND_BODY, CONT_DYNAMIC_WIND_AFTER,
     CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
-    CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE, CONT_MACRO_RESULT,
+    CONT_DYNAMIC_WIND_CALL_BODY, CONT_MACRO_RESULT,
     CONT_PROMPT, CONT_SHIFT_APPLY, CONT_DELIMITED_APPLY,
 };
 
@@ -204,29 +204,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                     Value::Continuation { .. } => {
-                        // Continuation invocation: (k arg)
-                        // Continuations take exactly one argument
+                        // REMOVED: call/cc is no longer supported
+                        // Full continuations cannot be invoked - use delimited continuations instead
                         self.pop_frame();
-                        
-                        // Check we have exactly one argument
-                        if self.lisp.get(args_expr)?.is_nil() {
-                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
-                                .with_message("continuation requires exactly 1 argument"));
-                        }
-                        let arg_expr = self.lisp.car(args_expr)?;
-                        let rest = self.lisp.cdr(args_expr)?;
-                        if !self.lisp.get(rest)?.is_nil() {
-                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
-                                .with_message("continuation requires exactly 1 argument"));
-                        }
-                        
-                        // Push continuation to restore when arg is evaluated
-                        // Data: captured_continuation
-                        let data = self.pack1(val)?;
-                        self.push_cont(CONT_CONTINUATION_APPLY, data, env)?;
-                        
-                        // Evaluate the argument
-                        Ok(Some(TrampolineState::Eval { expr: arg_expr, env }))
+                        Err(self.make_error(ErrorKind::NotAFunction, val)
+                            .with_message("call/cc continuations are no longer supported; use reset/shift for delimited continuations"))
                     }
                     Value::DelimitedContinuation { cont_chain, prompt_env } => {
                         // Delimited continuation invocation: (k arg)
@@ -677,94 +659,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            CONT_CALL_CC_APPLY => {
-                // val is the evaluated procedure from (call/cc proc)
-                // We now need to apply it to the captured continuation
-                // Data: captured_continuation
-                let captured_continuation = self.unpack1(data);
-                
-                // Create argument list with just the captured continuation
-                let nil = self.lisp.nil()?;
-                let args = self.lisp.cons(captured_continuation, nil)?;
-                
-                // Apply the procedure to the continuation
-                // We need to determine if it's a lambda, builtin, etc.
-                match self.lisp.get(val)? {
-                    Value::Lambda { .. } => {
-                        let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
-                        
-                        // Check param count - should be exactly 1
-                        if self.lisp.get(params)?.is_nil() {
-                            return Err(self.make_error(ErrorKind::WrongArgCount, val)
-                                .with_message("call/cc procedure must accept 1 argument"));
-                        }
-                        let first_param = self.lisp.car(params)?;
-                        let rest_params = self.lisp.cdr(params)?;
-                        if !self.lisp.get(rest_params)?.is_nil() {
-                            return Err(self.make_error(ErrorKind::WrongArgCount, val)
-                                .with_message("call/cc procedure must accept exactly 1 argument"));
-                        }
-                        
-                        // Bind the captured continuation to the parameter
-                        let extended_env = self.env_extend(closure_env, first_param, captured_continuation)?;
-                        Ok(Some(TrampolineState::Eval { expr: body, env: extended_env }))
-                    }
-                    _ => {
-                        // For other callable types, use the standard apply mechanism
-                        // Create a call expression and go through ApplyForced
-                        let call_expr = self.lisp.cons(val, args)?;
-                        self.push_frame(call_expr, val)?;
-                        let data = self.pack3(args, self.global_env, call_expr)?;
-                        self.push_cont(CONT_APPLY_FORCED, data, self.global_env)?;
-                        Ok(Some(TrampolineState::Return { val }))
-                    }
-                }
-            }
-            
-            CONT_CONTINUATION_APPLY => {
-                // val is the evaluated argument to the captured continuation
-                // Now we restore the captured continuation and return val as the result
-                // Data: captured_continuation
-                let captured_continuation = self.unpack1(data);
-                
-                // Extract target dynamic-wind chain from the continuation
-                let (_cont_chain, _capture_env, target_dw_chain) = 
-                    self.lisp.continuation_parts(captured_continuation)?;
-                
-                // Check if we need to execute dynamic-wind thunks
-                if !self.dynamic_wind_chains_equal(self.dynamic_wind_chain, target_dw_chain)? {
-                    // Need to wind out of current chain and wind into target chain
-                    // First, compute the frames to wind out and wind in
-                    let (wind_out_frames, wind_in_frames) = 
-                        self.compute_wind_frames(self.dynamic_wind_chain, target_dw_chain)?;
-                    
-                    // Push continuation to finish restoration after winding
-                    let finish_data = self.pack2(captured_continuation, val)?;
-                    self.push_cont(CONT_FINISH_CONTINUATION_RESTORE, finish_data, self.global_env)?;
-                    
-                    // Start the winding process - first wind out, then wind in
-                    return self.start_wind_transition(wind_out_frames, wind_in_frames, val, target_dw_chain);
-                }
-                
-                // No dynamic-wind transitions needed - restore directly
-                self.restore_continuation(captured_continuation)?;
-                
-                // Return val as the result of the original call/cc
-                Ok(Some(TrampolineState::Return { val }))
-            }
-            
-            CONT_FINISH_CONTINUATION_RESTORE => {
-                // val is the result from winding (ignored)
-                // Data: (captured_continuation . return_val)
-                let (captured_continuation, return_val) = self.unpack2(data)?;
-                
-                // Dynamic-wind chain should already be updated by the winding process
-                // Just restore the continuation and return the value
-                self.restore_continuation(captured_continuation)?;
-                
-                // Return the original value that was passed to the continuation
-                Ok(Some(TrampolineState::Return { val: return_val }))
-            }
+            // CONT_CALL_CC_APPLY (29), CONT_CONTINUATION_APPLY (30) - REMOVED
+            // call/cc is no longer supported - use reset/shift for delimited continuations
             
             CONT_DYNAMIC_WIND_BEFORE => {
                 // val is the evaluated before thunk
@@ -1194,73 +1090,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(TrampolineState::Eval { expr: producer_expr, env })
     }
     
-    /// Evaluate call-with-current-continuation (call/cc)
-    /// 
-    /// (call/cc proc) or (call-with-current-continuation proc)
-    /// 
-    /// Captures the current continuation as a first-class value and calls proc
-    /// with that continuation as its only argument. If proc returns normally,
-    /// that value becomes the result of call/cc. If the captured continuation
-    /// is ever called with a value, that value immediately becomes the result
-    /// of the call/cc, abandoning the current computation.
-    pub(super) fn step_eval_call_cc(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        // Check that we have exactly one argument (the procedure)
-        if self.lisp.get(args)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("call/cc requires exactly 1 argument"));
-        }
-        let proc_expr = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        if !self.lisp.get(rest)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("call/cc requires exactly 1 argument"));
-        }
-        
-        // Capture the current continuation BEFORE evaluating the procedure
-        // This is the continuation that will be restored when the captured
-        // continuation is invoked
-        let captured_continuation = self.capture_continuation(env)?;
-        
-        // Push continuation to apply proc to the captured continuation after proc is evaluated
-        // Data: captured_continuation
-        let data = self.pack1(captured_continuation)?;
-        self.push_cont(CONT_CALL_CC_APPLY, data, env)?;
-        
-        // Evaluate the procedure expression
-        Ok(TrampolineState::Eval { expr: proc_expr, env })
-    }
-    
-    /// Capture the current continuation as a first-class value
-    /// 
-    /// With arena-based continuations, capture is O(1) - we just save the
-    /// current_cont pointer as a Continuation value.
-    fn capture_continuation(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        // The current continuation is already an arena-based ContFrame chain
-        let cont_chain = self.current_cont;
-        
-        // Create the continuation value with the current dynamic-wind chain
-        let continuation = self.lisp.continuation(cont_chain, env, self.dynamic_wind_chain)?;
-        
-        Ok(continuation)
-    }
-    
-    /// Restore a captured continuation
-    /// 
-    /// With arena-based continuations, restore is O(1) for the basic case.
-    /// If dynamic-wind is involved, we need to call appropriate before/after thunks.
-    fn restore_continuation(&mut self, continuation: ArenaIndex) -> Result<(), EvalError> {
-        // Extract the cont_chain and dynamic-wind chain from the Continuation value
-        let (cont_chain, _capture_env, captured_dw_chain) = self.lisp.continuation_parts(continuation)?;
-        
-        // Restore the continuation chain
-        self.current_cont = cont_chain;
-        
-        // Restore the dynamic-wind chain (for now, simple replacement)
-        // Full dynamic-wind handling with thunk execution is done via continuation types
-        self.dynamic_wind_chain = captured_dw_chain;
-        
-        Ok(())
-    }
+    // REMOVED: step_eval_call_cc, capture_continuation, restore_continuation
+    // call/cc is no longer supported - use reset/shift for delimited continuations
+    // See docs/PURE_FUNCTIONAL_DESIGN.md for rationale
     
     /// Evaluate lambda
     /// 
@@ -1832,6 +1664,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Check if two dynamic-wind chains are equal (by identity)
+    /// Note: This was used by call/cc but is retained for potential future use
+    #[allow(dead_code)]
     fn dynamic_wind_chains_equal(
         &self,
         chain1: ArenaIndex,
@@ -1846,6 +1680,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Returns (wind_out_frames, wind_in_frames) where:
     /// - wind_out_frames: list of frames to exit (call after thunks)
     /// - wind_in_frames: list of frames to enter (call before thunks)
+    /// Note: This was used by call/cc but is retained for potential future use
+    #[allow(dead_code)]
     fn compute_wind_frames(
         &self,
         from_chain: ArenaIndex,
@@ -1908,6 +1744,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Get the depth of a dynamic-wind chain
+    /// Note: This was used by call/cc but is retained for potential future use
+    #[allow(dead_code)]
     fn chain_depth(&self, mut chain: ArenaIndex) -> Result<usize, EvalError> {
         let mut depth = 0;
         while !self.lisp.get(chain)?.is_nil() {
@@ -1918,6 +1756,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Start the wind-out/wind-in transition
+    /// Note: This was used by call/cc but is retained for potential future use
+    #[allow(dead_code)]
     fn start_wind_transition(
         &mut self,
         wind_out_frames: ArenaIndex,

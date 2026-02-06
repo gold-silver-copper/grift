@@ -804,12 +804,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.step_eval_call_with_values(cdr, env);
                 }
                 
-                // call-with-current-continuation / call/cc - capture the current continuation
-                // NOTE: Consider using reset/shift for delimited, composable continuations
-                if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
-                    || self.lisp.symbol_matches(car, "call/cc")? {
-                    return self.step_eval_call_cc(cdr, env);
-                }
+                // REMOVED: call/cc is no longer supported
+                // Use reset/shift for delimited, composable continuations instead
+                // See docs/PURE_FUNCTIONAL_DESIGN.md for rationale
                 
                 // reset - establish a prompt boundary for delimited continuations
                 // (reset expr) - evaluates expr with a new prompt boundary

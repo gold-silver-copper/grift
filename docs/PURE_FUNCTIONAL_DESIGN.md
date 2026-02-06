@@ -15,7 +15,7 @@ This document describes a multi-phase design for evolving Grift into a pure func
 | Pure `letrec` | ✅ Implemented | Y combinator-based recursive bindings |
 | Pure `do` loops | ✅ Implemented | Via Y combinator-based named let |
 | Delimited Continuations | ✅ Implemented | `reset`/`shift` primitives for composable control |
-| Linear Continuations | 📋 Planned | Requires runtime tracking |
+| **call/cc Removed** | ✅ Complete | Only delimited continuations supported |
 | Effect Types | 📋 Planned | Requires type system extension |
 
 ### Quick Start
@@ -265,49 +265,56 @@ Continuations are bounded by `reset`/`shift` (or `prompt`/`control`) constructs:
 ;; (k (k 5)) = (+ 1 (+ 1 5)) = 7
 ```
 
-### Continuation Restrictions
+### Continuation Properties
 
-#### 1. Linear Use (No Reuse)
+#### 1. Composable (Multiple Use Allowed)
 
-Continuations must be invoked exactly once:
+Unlike full `call/cc` continuations, delimited continuations are composable and can be invoked multiple times:
 
 ```scheme
-;; FORBIDDEN: reusing continuation
+;; ALLOWED: using continuation multiple times
 (reset
-  (let ((result (shift k 
-                  (cons (k 1) (k 2)))))  ; ERROR: k used twice
-    result))
-
-;; ALLOWED: single use
-(reset
-  (let ((result (shift k (k 1))))
-    result))
+  (+ 1 (shift k (k (k 5)))))
+;; k = (lambda (v) (+ 1 v))
+;; (k (k 5)) = (k 6) = 7
 ```
 
-#### 2. No Arbitrary Storage
+#### 2. Bounded by Reset
 
-Continuations cannot escape their handler scope:
+Continuations only capture up to the nearest `reset`:
 
 ```scheme
-;; FORBIDDEN: storing continuation
-(define stored-k #f)
-(reset
-  (shift k (set! stored-k k)))  ; ERROR: k escapes
+(+ 100 (reset (+ 1 (shift k (k 5)))))
+;; k only captures (+ 1 [hole]), not the outer (+ 100 ...)
+;; Result: (+ 100 (+ 1 5)) = 106
+```
 
-;; ALLOWED: immediate use within handler
+#### 3. Not Stored Across Reset Boundaries
+
+Since `set!` is removed, continuations cannot be stored globally:
+
+```scheme
+;; This is not possible since set! is removed:
+;; (define stored-k #f)
+;; (reset (shift k (set! stored-k k)))
+
+;; ALLOWED: immediate use within shift body
 (reset
   (shift k 
     (+ 10 (k 5))))  ; k used within shift body
 ```
 
-#### 3. Typed Effects
+#### 4. Why call/cc is Removed
 
-Each continuation carries type information about what effects it may perform:
+Full `call/cc` allows unbounded continuations that can escape and be stored, breaking:
+- Purity (stored continuations create implicit state)
+- Local reasoning (effects can jump anywhere)
+- Composability (unbounded continuations don't compose well)
 
-```scheme
-;; Type: (-> Int (Effect IO Int))
-;; This continuation, when resumed, performs IO and returns Int
-```
+Delimited continuations (`reset`/`shift`) are:
+- Composable (can be called multiple times)
+- Local (bounded by reset)
+- Well-typed (can track effects statically)
 
 ### Implementation in Arena
 

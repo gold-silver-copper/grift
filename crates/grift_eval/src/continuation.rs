@@ -4,8 +4,8 @@
 //! Each frame stores a continuation type (as usize), associated data, and a
 //! reference to the parent continuation.
 //!
-//! This design enables O(1) capture for call/cc (just save the current pointer)
-//! and natural structure sharing between continuations.
+//! This design enables O(1) capture for delimited continuations (reset/shift).
+//! Note: Full call/cc has been removed in favor of delimited continuations.
 
 use grift_parser::Builtin;
 
@@ -133,12 +133,14 @@ pub const CONT_SYNTAX_CASE_MATCH: usize = 27;
 /// Data: (output . (bindings . (literals . (remaining_clauses . (env . stx)))))
 pub const CONT_SYNTAX_CASE_FENDER: usize = 28;
 
-/// After evaluating the procedure argument of call/cc, apply it to the captured continuation
-/// Data: captured_continuation (single value)
+/// REMOVED: call/cc is no longer supported - use reset/shift for delimited continuations
+/// Slot 29 reserved for backwards compatibility
+#[allow(dead_code)]
 pub const CONT_CALL_CC_APPLY: usize = 29;
 
-/// After evaluating the argument to a captured continuation, restore and return
-/// Data: captured_continuation (single value)
+/// REMOVED: call/cc is no longer supported - use reset/shift for delimited continuations
+/// Slot 30 reserved for backwards compatibility
+#[allow(dead_code)]
 pub const CONT_CONTINUATION_APPLY: usize = 30;
 
 /// After evaluating before thunk in dynamic-wind, call it (no args)
@@ -173,8 +175,9 @@ pub const CONT_DYNAMIC_WIND_EVAL_AFTER: usize = 37;
 /// Data: (after_thunk . (env . saved_dw_chain))
 pub const CONT_DYNAMIC_WIND_CALL_BODY: usize = 38;
 
-/// After winding out/in completes, finish restoring continuation
+/// After winding out/in completes, finish restoring continuation (used by call/cc, now deprecated)
 /// Data: (captured_continuation . return_val)
+#[allow(dead_code)]
 pub const CONT_FINISH_CONTINUATION_RESTORE: usize = 39;
 
 // Note: CONT_WITH_SYNTAX_BIND (40) was removed - with-syntax is now a macro
