@@ -22,7 +22,7 @@ use std::io::{self, BufRead, Write};
 
 pub use grift_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    Value, Builtin, StdLib, Lisp, DisplayValue, ParseError, ParseErrorKind, SourceLoc, parse,
     EvalError, EvalResult, Evaluator, ErrorKind, StackFrame,
 };
 

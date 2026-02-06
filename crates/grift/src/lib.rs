@@ -79,6 +79,7 @@ pub use arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats, Trace};
 pub mod core_types {
     pub use grift_core::{
         Value, Builtin, StdLib, Lisp, RESERVED_SLOTS,
+        DisplayValue,
         define_builtins, define_stdlib,
     };
 }
@@ -91,7 +92,7 @@ pub mod core_types {
 pub mod parser {
     pub use grift_parser::{
         // Core types (re-exported from grift_core)
-        Value, Builtin, StdLib, Lisp,
+        Value, Builtin, StdLib, Lisp, DisplayValue,
         // Lexer
         Lexer, Token, SpannedToken, LexError, LexErrorKind,
         // Parsing
@@ -102,7 +103,7 @@ pub mod parser {
 }
 
 pub use parser::{
-    Value, Builtin, StdLib, Lisp,
+    Value, Builtin, StdLib, Lisp, DisplayValue,
     Lexer, Token, SpannedToken, LexError, LexErrorKind,
     parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
     define_builtins, define_stdlib,

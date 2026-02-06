@@ -69,6 +69,7 @@ pub use grift_core::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib,
     Lisp, RESERVED_SLOTS,
+    DisplayValue,
     define_builtins, define_stdlib,
 };
 

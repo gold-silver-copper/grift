@@ -60,7 +60,7 @@
 
 pub use grift_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    Value, Builtin, StdLib, Lisp, DisplayValue, ParseError, ParseErrorKind, SourceLoc, parse,
 };
 
 // Native function interop
