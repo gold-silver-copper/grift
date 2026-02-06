@@ -13,7 +13,7 @@ use crate::continuation::{TrampolineState,
     CONT_BINARY_BUILTIN_FIRST, CONT_BINARY_BUILTIN_SECOND, CONT_LAMBDA_FIRST_BIND,
     CONT_LAMBDA_BIND_ARG, CONT_LAMBDA_REST_COLLECT, CONT_EVAL_EXPR, CONT_BEGIN_SEQ,
     CONT_APPLY_FIRST, CONT_APPLY_SECOND, CONT_VALUES_COLLECT, CONT_DEFINE_VALUE,
-    CONT_SET_VALUE, CONT_NATIVE_ARGS_COLLECT, CONT_QUASIQUOTE_CAR, CONT_QUASIQUOTE_CDR,
+    CONT_NATIVE_ARGS_COLLECT, CONT_QUASIQUOTE_CAR, CONT_QUASIQUOTE_CDR,
     CONT_QUASIQUOTE_UNQUOTE_WRAP, CONT_QUASIQUOTE_NESTED_WRAP, CONT_QUASIQUOTE_SPLICE,
     CONT_QUASIQUOTE_SPLICE_APPEND, CONT_LET_SYNTAX_BODY, CONT_CALL_WITH_VALUES_PRODUCER,
     CONT_CALL_WITH_VALUES_CONSUMER, CONT_CALL_WITH_VALUES_APPLY, CONT_SYNTAX_CASE_MATCH,
@@ -22,7 +22,6 @@ use crate::continuation::{TrampolineState,
     CONT_DYNAMIC_WIND_AFTER_CALL, CONT_WIND_IN, CONT_WIND_OUT, CONT_DYNAMIC_WIND_EVAL_AFTER,
     CONT_DYNAMIC_WIND_CALL_BODY, CONT_FINISH_CONTINUATION_RESTORE, CONT_MACRO_RESULT,
 };
-use crate::extract_args;
 
 use super::Evaluator;
 
@@ -530,16 +529,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let name = self.unpack1(data);
                 // val is the evaluated value - define the binding
                 self.define(name, val)?;
-                // Return void (unspecified value) per R7RS
-                let void = self.lisp.void_val()?;
-                Ok(Some(TrampolineState::Return { val: void }))
-            }
-
-            CONT_SET_VALUE => {
-                // Data: (name . env)
-                let (name, env) = self.unpack2(data)?;
-                // val is the evaluated value - set! the binding
-                self.env_set(env, name, val)?;
                 // Return void (unspecified value) per R7RS
                 let void = self.lisp.void_val()?;
                 Ok(Some(TrampolineState::Return { val: void }))
@@ -1335,23 +1324,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(TrampolineState::Return { val: void })
             }
             _ => Err(self.type_error(first, "symbol or list", self.lisp.get(first)?.type_name())),
-        }
-    }
-    
-    /// Evaluate (set! name value) - mutate an existing variable binding (trampolined)
-    pub(super) fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        extract_args!(self, args, name, value_expr);
-        
-        // Verify name is a symbol
-        match self.lisp.get(name)? {
-            Value::Symbol(_) => {
-                // Push continuation and evaluate value
-                // Data: (name . env)
-                let data = self.pack2(name, env)?;
-                self.push_cont(CONT_SET_VALUE, data, env)?;
-                Ok(TrampolineState::Eval { expr: value_expr, env })
-            }
-            _ => Err(self.type_error(name, "symbol", self.lisp.get(name)?.type_name())),
         }
     }
     

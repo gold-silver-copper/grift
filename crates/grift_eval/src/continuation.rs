@@ -76,8 +76,9 @@ pub const CONT_VALUES_COLLECT: usize = 13;
 /// Data: name (single value)
 pub const CONT_DEFINE_VALUE: usize = 14;
 
-/// After evaluating value for set!
-/// Data: (name . env)
+/// REMOVED: set! is no longer supported (immutable language)
+/// Slot 15 reserved for backwards compatibility
+#[allow(dead_code)]
 pub const CONT_SET_VALUE: usize = 15;
 
 /// Evaluate arguments for native function call

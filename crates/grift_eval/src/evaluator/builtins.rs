@@ -364,32 +364,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Err(self.make_error(ErrorKind::UserError, msg))
             }
             
-            Builtin::SetCar => {
-                // (set-car! pair value) - mutate the car of a cons cell
-                extract_args!(self, args, pair, value);
-                
-                // Verify it's a pair
-                match self.lisp.get(pair)? {
-                    Value::Cons { .. } => {
-                        self.lisp.set_car(pair, value).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
-                }
-            }
-            
-            Builtin::SetCdr => {
-                // (set-cdr! pair value) - mutate the cdr of a cons cell
-                extract_args!(self, args, pair, value);
-                
-                // Verify it's a pair
-                match self.lisp.get(pair)? {
-                    Value::Cons { .. } => {
-                        self.lisp.set_cdr(pair, value).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
-                }
-            }
-            
             // ============================================================
             // Vector operations (R7RS Section 6.8)
             // ============================================================
@@ -482,25 +456,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::VectorSet => {
-                // (vector-set! vec k obj) - set element at index k
-                extract_args!(self, args, vec, index_val, value);
-                
-                let index = match self.lisp.get(index_val)? {
-                    Value::Number(n) if n >= 0 => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
-                
-                match self.lisp.get(vec)? {
-                    Value::Array { .. } => {
-                        self.lisp.array_set(vec, index, value)?;
-                        // R7RS: returns unspecified, we return the vector
-                        Ok(vec)
-                    }
-                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
-            }
-            
             Builtin::VectorToList => {
                 // (vector->list vec) - convert vector to list
                 let vec = self.lisp.car(args)?;
@@ -538,11 +493,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 
-                // Create vector with placeholder
+                // Handle empty list case
+                if count == 0 {
+                    let placeholder = self.lisp.number(0)?;
+                    return self.lisp.make_array(0, placeholder).map_err(Into::into);
+                }
+                
+                // Create vector with placeholder and fill from list
                 let placeholder = self.lisp.number(0)?;
                 let vec = self.lisp.make_array(count, placeholder)?;
                 
-                // Fill in the elements
+                // Fill in the elements (this is initialization of a new structure, not mutation)
                 current = lst;
                 for i in 0..count {
                     let val = self.lisp.car(current)?;
@@ -551,23 +512,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 Ok(vec)
-            }
-            
-            Builtin::VectorFill => {
-                // (vector-fill! vec fill) - fill vector with value
-                extract_args!(self, args, vec, fill);
-                
-                match self.lisp.get(vec)? {
-                    Value::Array { .. } => {
-                        let len = self.lisp.array_len(vec)?;
-                        for i in 0..len {
-                            self.lisp.array_set(vec, i, fill)?;
-                        }
-                        // R7RS: returns unspecified, we return the vector
-                        Ok(vec)
-                    }
-                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                }
             }
             
             Builtin::VectorCopy => {
@@ -778,31 +722,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Value::Char(c) => self.lisp.char(c).map_err(Into::into),
                             _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
                         }
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
-                }
-            }
-            
-            Builtin::StringSet => {
-                // (string-set! string k char) - Set character at index
-                let str_idx = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let k_idx = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
-                let char_arg = self.lisp.car(rest2)?;
-                
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 || (k as usize) >= len {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
-                        let c = self.get_char(char_arg, call_expr)?;
-                        // Characters start at data (no header with inline length)
-                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
-                        self.lisp.set(char_slot, Value::Char(c))?;
-                        // Return unspecified value (we use the string itself)
-                        Ok(str_idx)
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
