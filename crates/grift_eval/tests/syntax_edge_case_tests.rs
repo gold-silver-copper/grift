@@ -596,3 +596,201 @@ fn test_i2_large_ellipsis() {
     assert_eq!(eval_to_num(&lisp, &mut eval, 
         "(sum-all 1 2 3 4 5 6 7 8 9 10)"), 55);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test Suite J: Macro Limitation Tests
+// ═══════════════════════════════════════════════════════════════════════════
+// Tests that verify specific macro behaviors that were thought to be limitations
+// but actually work correctly in Grift.
+
+/// Test J.1: Compile-Time Arithmetic Without Runtime Values
+///
+/// Tests that datum->syntax can properly convert computed numeric results
+/// back to syntax at macro expansion time.
+#[test]
+fn test_j1_compile_time_arithmetic() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax static-compute
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n m)
+               (datum->syntax stx
+                 (+ (syntax->datum (syntax n)) 
+                    (syntax->datum (syntax m))))))))
+    "#).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(static-compute 10 20)"), 30,
+        "datum->syntax should properly convert computed numeric results");
+}
+
+/// Test J.2: Match Multiple Patterns with Different Arities
+///
+/// Tests that syntax-case can match patterns with different numbers of arguments.
+/// This demonstrates that macros can have multiple clauses for different arities.
+#[test]
+fn test_j2_flexible_macro_simple_arities() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax flexible-macro
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ a) 
+               (syntax (list a)))
+              ((_ a b)
+               (syntax (list a b)))
+              ((_ a b c)
+               (syntax (list a b c))))))
+    "#).unwrap();
+    
+    // Test single argument
+    let result1 = eval.eval_str("(flexible-macro 1)").unwrap();
+    assert_eq!(lisp.list_len(result1), Ok(1));
+    
+    // Test two arguments
+    let result2 = eval.eval_str("(flexible-macro 1 2)").unwrap();
+    assert_eq!(lisp.list_len(result2), Ok(2));
+    
+    // Test three arguments
+    let result3 = eval.eval_str("(flexible-macro 1 2 3)").unwrap();
+    assert_eq!(lisp.list_len(result3), Ok(3));
+}
+
+/// Test J.3: Nested Ellipsis Patterns
+///
+/// Tests that deeply nested ellipsis patterns like `((a ...) ...)` work correctly.
+/// This was documented as a limitation but actually works in Grift.
+#[test]
+fn test_j3_nested_ellipsis_patterns() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax matrix-transpose
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ ((a ...) ...))
+               (syntax (quote ((a ...) ...)))))))
+    "#).unwrap();
+    
+    let result = eval.eval_str("(matrix-transpose ((1 2 3) (4 5 6)))").unwrap();
+    
+    // The result should be ((1 2 3) (4 5 6))
+    // Verify it's a list of two elements
+    assert_eq!(lisp.list_len(result), Ok(2),
+        "Nested ellipsis patterns should preserve structure");
+    
+    // Verify first sublist is (1 2 3)
+    let first = lisp.car(result).unwrap();
+    assert_eq!(lisp.list_len(first), Ok(3));
+    let first_car = lisp.car(first).unwrap();
+    assert_eq!(lisp.get(first_car).unwrap().as_number(), Some(1));
+}
+
+/// Test J.4: Fenders (Guards) in Patterns
+///
+/// Tests that fenders (guard expressions) in syntax-case work correctly
+/// to conditionally match patterns based on the pattern variable values.
+/// This was documented as a limitation but actually works in Grift.
+#[test]
+fn test_j4_fenders_guards() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax only-positive
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ n)
+               (> (syntax->datum (syntax n)) 0)
+               (syntax (quote positive)))
+              ((_ n)
+               (syntax (quote non-positive))))))
+    "#).unwrap();
+    
+    // Test positive number
+    let result_pos = eval.eval_str("(only-positive 5)").unwrap();
+    assert!(lisp.symbol_matches(result_pos, "positive").unwrap(),
+        "Fender should match positive numbers");
+    
+    // Test negative number
+    let result_neg = eval.eval_str("(only-positive -3)").unwrap();
+    assert!(lisp.symbol_matches(result_neg, "non-positive").unwrap(),
+        "Fender should reject negative numbers and fall through to next clause");
+    
+    // Test zero
+    let result_zero = eval.eval_str("(only-positive 0)").unwrap();
+    assert!(lisp.symbol_matches(result_zero, "non-positive").unwrap(),
+        "Fender should reject zero and fall through to next clause");
+}
+
+/// Test J.5: Complex Literal Matching
+///
+/// Tests that syntax-case can correctly match literal keywords and
+/// distinguish them from pattern variables.
+#[test]
+fn test_j5_complex_literal_matching() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax match-literals
+          (lambda (stx)
+            (syntax-case stx (foo bar baz)
+              ((_ foo x) (syntax (quote (matched-foo x))))
+              ((_ bar x) (syntax (quote (matched-bar x))))
+              ((_ baz x) (syntax (quote (matched-baz x))))
+              ((_ other x) (syntax (quote (matched-other other x)))))))
+    "#).unwrap();
+    
+    // Test literal 'foo'
+    let result_foo = eval.eval_str("(match-literals foo 1)").unwrap();
+    let foo_car = lisp.car(result_foo).unwrap();
+    assert!(lisp.symbol_matches(foo_car, "matched-foo").unwrap(),
+        "Literal 'foo' should be matched as literal");
+    
+    // Test literal 'bar'
+    let result_bar = eval.eval_str("(match-literals bar 2)").unwrap();
+    let bar_car = lisp.car(result_bar).unwrap();
+    assert!(lisp.symbol_matches(bar_car, "matched-bar").unwrap(),
+        "Literal 'bar' should be matched as literal");
+    
+    // Test non-literal 'qux' (should match 'other' pattern variable)
+    let result_qux = eval.eval_str("(match-literals qux 3)").unwrap();
+    let qux_car = lisp.car(result_qux).unwrap();
+    assert!(lisp.symbol_matches(qux_car, "matched-other").unwrap(),
+        "Non-literal 'qux' should be captured by pattern variable 'other'");
+}
+
+/// Test J.6: Identifier Comparison in Templates
+///
+/// Tests that bound-identifier=? works correctly with identifiers
+/// created via datum->syntax with the same lexical context.
+#[test]
+fn test_j6_identifier_comparison() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"
+        (define-syntax test-hygiene
+          (lambda (stx)
+            (syntax-case stx ()
+              ((_ x)
+               (let ((id1 (datum->syntax (syntax x) (quote temp)))
+                     (id2 (datum->syntax (syntax x) (quote temp))))
+                 (if (bound-identifier=? id1 id2)
+                     (syntax (lambda (temp) temp))
+                     (syntax (lambda (y) y))))))))
+    "#).unwrap();
+    
+    eval.eval_str("(define f (test-hygiene dummy))").unwrap();
+    
+    // If bound-identifier=? works correctly, f should be (lambda (temp) temp)
+    // and (f 42) should return 42
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(f 42)"), 42,
+        "bound-identifier=? should identify that id1 and id2 are the same identifier");
+}

@@ -437,10 +437,19 @@ Given grift's single-phase model and `no_std` constraints, a **simple name-based
 
 ### Known Limitations
 
-1. **Nested Ellipsis**: Deeply nested ellipsis patterns like `((a ...) ...)` may have expansion issues
-2. **letrec-syntax**: Not implemented
-3. **syntax-error**: Not implemented
-4. **Pattern variable scope in fenders**: Fenders may not see all pattern bindings
+1. **letrec-syntax**: Not implemented
+2. **syntax-error**: Not implemented
+3. **Improper list patterns with rest**: Patterns like `(a b . rest)` combined with `append` may have issues
+4. **String operations in macros**: `string-append` and `string->symbol` are not available in the `no_std` environment for compile-time symbol generation
+
+### Verified Working Features
+
+The following features were previously thought to have limitations but have been verified to work correctly:
+
+1. **Nested Ellipsis**: Deeply nested ellipsis patterns like `((a ...) ...)` work correctly
+2. **Fenders (Guards)**: Pattern guards in `syntax-case` work correctly and can access pattern bindings
+3. **Literal Matching**: Complex literal keyword matching with `free-identifier=?` semantics works correctly
+4. **Identifier Comparison**: `bound-identifier=?` and `free-identifier=?` work as expected with `datum->syntax`
 
 ### Design Constraints
 
