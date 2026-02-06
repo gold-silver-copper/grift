@@ -827,6 +827,9 @@
 ;;   (effect-type union <type1> <type2> ...) - Multiple effects
 
 ;;; (eff-type/io) - Create an IO effect type
+;;; Note: This is a function rather than a constant to match the API of
+;;; parameterized types like eff-type/state. It also allows for future
+;;; extension if IO needs parameters (e.g., async vs sync).
 (define (eff-type/io)
   '(effect-type io))
 
