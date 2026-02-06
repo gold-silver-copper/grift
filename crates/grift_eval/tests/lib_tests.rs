@@ -6012,10 +6012,12 @@ fn test_procedural_quasiquote_matches_special_form() {
 
 // ==============================================================================
 // call/cc (call-with-current-continuation) tests
+// REMOVED: call/cc is no longer supported - use reset/shift for delimited continuations
 // ==============================================================================
 
 /// Test basic call/cc - escape continuation
 #[test]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_basic_escape() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6029,6 +6031,7 @@ fn test_call_cc_basic_escape() {
 
 /// Test call/cc when continuation is not invoked (normal return)
 #[test]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_no_escape() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6040,7 +6043,7 @@ fn test_call_cc_no_escape() {
 
 /// Test storing and using a continuation later
 #[test]
-#[ignore = "depends on set! internally"]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_stored_continuation() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6058,6 +6061,7 @@ fn test_call_cc_stored_continuation() {
 
 /// Test nested call/cc - inner escapes outer
 #[test]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_nested() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6071,6 +6075,7 @@ fn test_call_cc_nested() {
 
 /// Test call-with-current-continuation long form
 #[test]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_with_current_continuation() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6082,7 +6087,7 @@ fn test_call_with_current_continuation() {
 
 /// Test call/cc with multiple returns using same continuation
 #[test]
-#[ignore = "depends on set! internally"]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_multiple_returns() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6107,7 +6112,7 @@ fn test_call_cc_multiple_returns() {
 
 /// Test call/cc continuation is a procedure
 #[test]
-#[ignore = "depends on set! internally"]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_continuation_is_procedure() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6124,6 +6129,7 @@ fn test_call_cc_continuation_is_procedure() {
 
 /// Test call/cc with arithmetic in continuation
 #[test]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_arithmetic_context() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6135,7 +6141,7 @@ fn test_call_cc_arithmetic_context() {
 
 /// Test call/cc error: wrong number of arguments to continuation
 #[test]
-#[ignore = "depends on set! internally"]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_continuation_wrong_args() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6155,6 +6161,7 @@ fn test_call_cc_continuation_wrong_args() {
 
 /// Test call/cc error: wrong number of arguments to call/cc itself
 #[test]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_call_cc_wrong_args() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6212,7 +6219,7 @@ fn test_dynamic_wind_basic() {
 
 /// Test dynamic-wind with escape via call/cc
 #[test]
-#[ignore = "depends on set! internally"]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_dynamic_wind_escape() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
@@ -6321,7 +6328,7 @@ fn test_dynamic_wind_wrong_args() {
 
 /// Test re-entering dynamic-wind via saved continuation
 #[test]
-#[ignore = "depends on set! internally"]
+#[ignore = "call/cc removed - use reset/shift"]
 fn test_dynamic_wind_reenter() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
