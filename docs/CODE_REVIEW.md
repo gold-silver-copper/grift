@@ -287,7 +287,7 @@ if step_count % GC_CHECK_INTERVAL == 0 {
 ```
 
 **Issues:**
-- `%` (modulo) on every iteration is a division — use bitwise AND with a power-of-2 interval instead (e.g., `step_count & 511 == 0` for 512-step intervals).
+- `%` (modulo) on every iteration is a division — use bitwise AND with a power-of-2 interval instead (e.g., `step_count & 511 == 0` for a 512-step interval). Note: this technique requires the interval to be a power of 2.
 - The 60% threshold is static. Consider adaptive thresholds that increase after successful GC cycles with low collection rates.
 
 ```rust
@@ -457,7 +457,7 @@ The `gc_with_state()` method manually extracts roots from the current trampoline
 
 ```rust
 fn gc_with_state(&mut self, state: &TrampolineState) {
-    let mut roots = [self.lisp.nil_index(), ...; MAX_ROOTS];
+    let mut roots = [self.lisp.nil_index(); MAX_ROOTS];
     // Manually add: global_env, current_cont, intern_table, state.expr/env/val
 }
 ```
@@ -515,11 +515,11 @@ This is a significant undertaking but would improve throughput for interactive u
 
 #### 🟡 Suggestion: Use `core::num::NonZeroUsize` for `ArenaIndex`
 
-`ArenaIndex(usize)` uses slot 0 as `NIL`. Using `NonZeroUsize` for non-nil indices would enable niche optimization in `Option<ArenaIndex>`, making `Option<ArenaIndex>` the same size as `ArenaIndex`:
+`ArenaIndex(usize)` uses slot 0 as `NIL`. Using `NonZeroUsize` for non-nil indices would enable niche optimization in `Option<ArenaIndex>`, making `Option<ArenaIndex>` the same size as `ArenaIndex` (8 bytes on 64-bit platforms instead of 16 bytes with the discriminant and padding):
 
 ```rust
-// Current: Option<ArenaIndex> = 16 bytes (8 + discriminant + padding)
-// With NonZero: Option<ArenaIndex> = 8 bytes (0 represents None)
+// Current: Option<ArenaIndex> = 16 bytes on 64-bit (8 value + 8 discriminant/padding)
+// With NonZero: Option<ArenaIndex> = 8 bytes (0 represents None via niche)
 ```
 
 This requires careful handling since NIL maps to slot 0, but the optimization is valuable for types that store optional indices.
@@ -654,7 +654,9 @@ The arena exposes 46 public functions. Many are utility methods (`find`, `any`, 
 
 ```rust
 // Keep pub: alloc, dealloc, get, set, collect_garbage, stats, validate
-// Make pub(crate): find, any, all, count_where, for_each, allocated_indices
+// Consider pub(crate): find, any, all, count_where, for_each, allocated_indices
+// Note: verify these are not used by downstream crates before restricting visibility,
+// as this would be a breaking API change.
 ```
 
 This follows the principle of minimal public API surface.
