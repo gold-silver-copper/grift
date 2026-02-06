@@ -246,7 +246,7 @@ Below is a prioritized review focused on the `no_std` / `no_alloc` design constr
 ### High Impact
 
 - **[Performance] Environment lookup is O(n) per variable access**  
-  `Evaluator::env_lookup` linearly scans cons cells and performs `symbol_eq` per binding. For hot loops and deep scopes, this dominates runtime. Consider introducing fixed-size *environment frames* (arrays stored in the arena) plus a parent pointer to keep lookup O(k) within a frame and avoid repeated cons allocation.
+  `Evaluator::env_lookup` linearly scans cons cells and performs `symbol_eq` per binding. For hot loops and deep scopes, this dominates runtime. Introducing fixed-size *environment frames* (arrays stored in the arena) plus a parent pointer keeps lookup O(k) within a frame and avoids repeated cons allocation.
   ```rust
   #[derive(Clone, Copy)]
   struct EnvFrame<const K: usize> {
@@ -278,7 +278,7 @@ Below is a prioritized review focused on the `no_std` / `no_alloc` design constr
 
   fn stdlib_expr(&mut self, func: StdLib) -> EvalResult {
       let slot = &mut self.stdlib_cache[func as usize];
-      if self.lisp.get(*slot)?.is_nil() {
+      if matches!(self.lisp.get(*slot)?, Value::Nil) {
           *slot = parse(self.lisp, func.source())?;
       }
       Ok(*slot)
@@ -321,7 +321,7 @@ Below is a prioritized review focused on the `no_std` / `no_alloc` design constr
 
 ### Testing & Robustness
 
-- **Property-based parsing tests**: Round-trip `(read -> print -> read)` to ensure parser stability across whitespace/comment variations.
+- **Property-based parsing tests**: Round-trip `(read → print → read)` to ensure parser stability across whitespace/comment variations.
 - **GC invariants**: Ensure `collect_garbage` never frees reachable `Value::Continuation` or `Value::Syntax` graphs via randomized graphs.
 - **Macro edge cases**: Add targeted tests for `syntax-case` patterns with nested ellipses and literal keyword shadowing.
 
