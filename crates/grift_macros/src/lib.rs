@@ -352,7 +352,8 @@ fn to_pascal_case(name: &str) -> String {
     
     for c in name.chars() {
         match c {
-            '-' | '_' => {
+            '-' | '_' | '/' => {
+                // Treat these as word separators
                 capitalize_next = true;
             }
             '!' => {
