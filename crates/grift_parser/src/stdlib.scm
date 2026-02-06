@@ -682,3 +682,128 @@
 ;;; Returns unit (void-like) effect
 (define (effect-for-each f effects)
   (effect-sequence (map (lambda (e) (io/bind e (lambda (x) (io/pure (f x))))) effects)))
+
+;;; ============================================================
+;;; State Effect Handler
+;;; ============================================================
+
+;;; (run-state initial-state effect) - Run a stateful computation
+;;; Returns (cons final-value final-state)
+;;;
+;;; State effects:
+;;;   (state/get)       - Get current state value
+;;;   (state/put v)     - Set state to v, returns old state
+;;;   (state/modify f)  - Apply f to state, returns old state
+;;;
+;;; Example:
+;;;   (run-state 0
+;;;     (io/bind (state/get)
+;;;       (lambda (s)
+;;;         (io/bind (state/put (+ s 1))
+;;;           (lambda (_)
+;;;             (io/pure s))))))
+;;;   ; => (0 . 1) - returned 0 (initial state), final state is 1
+(define (run-state initial-state effect)
+  (letrec ((loop
+            (lambda (state current-effect)
+              (if (effect? current-effect)
+                  (let ((tag (effect-tag current-effect))
+                        (data (effect-data current-effect)))
+                    (cond
+                      ;; io/pure - return value with current state
+                      ((eq? tag 'io/pure)
+                       (cons data state))
+                      
+                      ;; io/bind - run first effect, pass result to continuation
+                      ((eq? tag 'io/bind)
+                       (let* ((first-effect (car data))
+                              (continuation (cdr data))
+                              (result-pair (loop state first-effect))
+                              (result (car result-pair))
+                              (new-state (cdr result-pair)))
+                         (loop new-state (continuation result))))
+                      
+                      ;; state/get - return current state
+                      ((eq? tag 'state/get)
+                       (cons state state))
+                      
+                      ;; state/put - update state, return void
+                      ((eq? tag 'state/put)
+                       (cons #f data))  ; Return void, new state is data
+                      
+                      ;; state/modify - apply function to state
+                      ((eq? tag 'state/modify)
+                       (cons state (data state)))  ; Return old state, new state is (data state)
+                      
+                      ;; Unknown effect - pass through as pure value
+                      (else
+                       (cons current-effect state))))
+                  ;; Not an effect - return as-is with state
+                  (cons current-effect state)))))
+    (loop initial-state effect)))
+
+;;; Convenience function: run-state returning just the value
+(define (eval-state initial-state effect)
+  (car (run-state initial-state effect)))
+
+;;; Convenience function: run-state returning just the final state  
+(define (exec-state initial-state effect)
+  (cdr (run-state initial-state effect)))
+
+;;; ============================================================
+;;; Error Effect Handler
+;;; ============================================================
+
+;;; (run-error effect) - Run a computation that may raise errors
+;;; Returns (list 'ok value) on success, (list 'error err) on error
+;;;
+;;; Error effects:
+;;;   (error/raise e) - Raise an error with value e
+;;;
+;;; Example:
+;;;   (run-error (io/pure 42))                ; => (ok 42)
+;;;   (run-error (error/raise 'not-found))    ; => (error not-found)
+(define (run-error effect)
+  (letrec ((loop
+            (lambda (current-effect)
+              (if (effect? current-effect)
+                  (let ((tag (effect-tag current-effect))
+                        (data (effect-data current-effect)))
+                    (cond
+                      ;; io/pure - return success with value
+                      ((eq? tag 'io/pure)
+                       (list 'ok data))
+                      
+                      ;; io/bind - run first effect, pass result to continuation if successful
+                      ((eq? tag 'io/bind)
+                       (let* ((first-effect (car data))
+                              (continuation (cdr data))
+                              (result (loop first-effect)))
+                         (if (eq? (car result) 'ok)
+                             (loop (continuation (car (cdr result))))
+                             result)))  ; Propagate error
+                      
+                      ;; error/raise - return error
+                      ((eq? tag 'error/raise)
+                       (list 'error data))
+                      
+                      ;; Unknown effect - treat as pure value
+                      (else
+                       (list 'ok current-effect))))
+                  ;; Not an effect - return as success
+                  (list 'ok current-effect)))))
+    (loop effect)))
+
+;;; (try-error effect handler) - Try to run effect, call handler on error
+;;; handler is a function that takes the error value and returns an effect
+;;;
+;;; Example:
+;;;   (try-error 
+;;;     (io/bind (io/pure 10)
+;;;       (lambda (x) (if (> x 5) (error/raise 'too-big) (io/pure x))))
+;;;     (lambda (err) (io/pure 0)))  ; Return 0 on any error
+(define (try-error effect handler)
+  (let ((result (run-error effect)))
+    (if (eq? (car result) 'ok)
+        (io/pure (car (cdr result)))
+        (handler (car (cdr result))))))
