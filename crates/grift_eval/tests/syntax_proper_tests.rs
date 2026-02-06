@@ -237,12 +237,10 @@ fn test_6_1_bound_identifier_eq() {
 ///
 /// x from user vs. x from macro's internal binding should not be free-identifier=?.
 ///
-/// NOTE: This test requires more sophisticated scope tracking where identifiers
-/// carry their lexical context. The current implementation doesn't properly
-/// distinguish between the pattern-bound `x` (from user) and the locally-bound
-/// `x` (from macro's let).
+/// This test verifies that when a macro has a pattern variable `x` from the input,
+/// and then introduces a local `let` binding for `x`, the `(syntax x)` form correctly
+/// distinguishes between them. The local binding should shadow the pattern variable.
 #[test]
-#[ignore = "requires scope tracking for pattern variables vs local bindings"]
 fn test_6_2_free_identifier_eq() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
