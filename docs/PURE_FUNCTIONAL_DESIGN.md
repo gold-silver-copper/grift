@@ -2,6 +2,36 @@
 
 This document describes a multi-phase design for evolving Grift into a pure functional programming language with lazy evaluation and IO via effect-typed continuations.
 
+## Implementation Status
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Effects as Values | ✅ Implemented | `Value::Effect`, `io/pure`, `io/bind`, `io/print`, `io/read-line` |
+| Direct-Style Syntax | ✅ Implemented | `eff` macro for monadic do-notation |
+| Effect Handlers | ✅ Implemented | `run-io` handler for IO effects |
+| Delimited Continuations | ⚠️ Existing | Grift already has `call/cc`, `dynamic-wind` |
+| Referential Transparency | 📋 Planned | Requires isolating mutation to handlers |
+| Linear Continuations | 📋 Planned | Requires runtime tracking |
+| Effect Types | 📋 Planned | Requires type system extension |
+
+### Quick Start
+
+```scheme
+;; Effects are first-class values
+(define greet-effect (io/print "Hello, World!"))
+greet-effect  ; => #<effect:io/print "Hello, World!">
+
+;; No side effects occurred! Execute with run-io:
+(run-io greet-effect)  ; Actually prints
+
+;; Use eff macro for direct-style composition
+(run-io
+  (eff
+    (io/print "Enter name: ")
+    (name <- (io/read-line))
+    (io/print (string-append "Hello, " name "!"))))
+```
+
 ## Table of Contents
 
 1. [Design Overview](#design-overview)
