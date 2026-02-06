@@ -1909,8 +1909,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Note: cont_env is set to eval_env (not call_env) because if an error occurs
         // during re-evaluation, the relevant context is the expansion site, not the
         // transformer body's scope.
-        let data = self.pack1(eval_env)?;
-        self.push_cont(CONT_MACRO_RESULT, data, eval_env)?;
+        self.cont(CONT_MACRO_RESULT, eval_env).data1(eval_env)?;
         
         // Evaluate the transformer body in the extended environment
         // When this completes, CONT_MACRO_RESULT will re-evaluate the result

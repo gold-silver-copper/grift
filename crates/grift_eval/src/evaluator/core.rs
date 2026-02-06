@@ -425,6 +425,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(())
     }
     
+    /// Create a continuation builder for the given type and environment.
+    ///
+    /// The builder packs data and pushes the continuation in a single chain,
+    /// making the data layout explicit and reducing pack+push boilerplate.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// // Instead of:
+    /// let data = self.pack3(then_expr, else_expr, env)?;
+    /// self.push_cont(CONT_IF_BRANCH, data, env)?;
+    ///
+    /// // Use:
+    /// self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
+    /// ```
+    #[inline]
+    pub(super) fn cont(&mut self, cont_type: usize, env: ArenaIndex) -> ContBuilder<'_, 'a, N> {
+        ContBuilder { evaluator: self, cont_type, env }
+    }
+    
     /// Pop a continuation from the arena-based stack
     ///
     /// Returns the continuation type, data, and environment from the current frame,
@@ -791,8 +811,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     
                     // Push continuation for after condition is evaluated
                     // Data: (then_expr . (else_expr . env))
-                    let data = self.pack3(then_expr, else_expr, env)?;
-                    self.push_cont(CONT_IF_BRANCH, data, env)?;
+                    self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
                     
                     // Evaluate condition
                     return Ok(TrampolineState::Eval { expr: cond_expr, env });
@@ -838,8 +857,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let expr_to_eval = self.lisp.car(cdr)?;
                     // Push continuation to evaluate the result in global environment
                     // Data: env (single value)
-                    let data = self.pack1(self.global_env)?;
-                    self.push_cont(CONT_EVAL_EXPR, data, env)?;
+                    let global = self.global_env;
+                    self.cont(CONT_EVAL_EXPR, env).data1(global)?;
                     // First evaluate the expression to get the code to eval
                     return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
                 }
@@ -877,8 +896,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Push continuation: after evaluating func, apply it
         // Data: (args_expr . (env . call_expr))
-        let data = self.pack3(cdr, env, expr)?;
-        self.push_cont(CONT_APPLY_FORCED, data, env)?;
+        self.cont(CONT_APPLY_FORCED, env).data3(cdr, env, expr)?;
         
         // Evaluate the function expression
         Ok(TrampolineState::Eval { expr: car, env })
@@ -1154,5 +1172,81 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+// ============================================================================
+// Continuation Builder
+// ============================================================================
+
+/// Builder for packing data and pushing a continuation in one step.
+///
+/// Created via [`Evaluator::cont`]. The builder consumes itself on each
+/// terminal method (`data1` through `data7`), releasing the mutable borrow
+/// on the evaluator.
+///
+/// # Data Layout
+///
+/// Each `dataN` method packs N values into nested cons cells and pushes
+/// the resulting continuation frame:
+///
+/// - `data1(a)` — single value (no packing)
+/// - `data2(a, b)` — `(a . b)`
+/// - `data3(a, b, c)` — `(a . (b . c))`
+/// - `data4(a, b, c, d)` — `(a . (b . (c . d)))`
+/// - etc.
+pub(super) struct ContBuilder<'e, 'a, const N: usize> {
+    evaluator: &'e mut Evaluator<'a, N>,
+    cont_type: usize,
+    env: ArenaIndex,
+}
+
+impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
+    /// Push with a single value (no packing needed).
+    #[inline]
+    pub fn data1(self, a: ArenaIndex) -> Result<(), EvalError> {
+        self.evaluator.push_cont(self.cont_type, a, self.env)
+    }
+    
+    /// Pack 2 values as `(a . b)` and push.
+    #[inline]
+    pub fn data2(self, a: ArenaIndex, b: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack2(a, b)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 3 values as `(a . (b . c))` and push.
+    #[inline]
+    pub fn data3(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack3(a, b, c)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 4 values as `(a . (b . (c . d)))` and push.
+    #[inline]
+    pub fn data4(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack4(a, b, c, d)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 5 values as `(a . (b . (c . (d . e))))` and push.
+    #[inline]
+    pub fn data5(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack5(a, b, c, d, e)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 6 values as `(a . (b . (c . (d . (e . f)))))` and push.
+    #[inline]
+    pub fn data6(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack6(a, b, c, d, e, f)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
+    #[inline]
+    pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
     }
 }
