@@ -17,17 +17,6 @@ fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &
     lisp.get(result).unwrap().as_number().unwrap()
 }
 
-fn _eval_is_true<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_true()
-}
-
-#[allow(dead_code)]
-fn _eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_false()
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Test Suite A: First-Class Syntax Object Manipulation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -448,10 +437,11 @@ fn test_f3_fixed_then_ellipsis() {
     
     let result = eval.eval_str("(first-then-rest 1 2 3 4)").unwrap();
     let car = lisp.car(result).unwrap();
-    let _cdr = lisp.cdr(result).unwrap();
+    let cdr = lisp.cdr(result).unwrap();
     
     assert_eq!(lisp.get(car).unwrap().as_number(), Some(1));
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(2 3 4))"), 3);
+    // Verify the rest is a list of (2 3 4)
+    assert_eq!(lisp.list_len(cdr).unwrap(), 3);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
