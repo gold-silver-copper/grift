@@ -960,39 +960,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         lex_env: ArenaIndex,
     ) -> EvalResult {
         // 1. Check if bound locally (in lex_env but NOT in global_env) AND
-        //    NOT a pattern variable. Local bindings shadow pattern variables.
+        //    if this local binding shadows a pattern variable.
+        //    Local bindings from `let`, `lambda`, etc. should shadow pattern variables.
         //    This is crucial for test 6.2: when a local `let` shadows a pattern
         //    variable, `(syntax x)` should refer to the local binding.
-        let is_pattern_var = self.bindings_lookup(bindings, sym)?.is_some();
+        let pattern_binding = self.bindings_lookup(bindings, sym)?;
         let bound_locally = self.env_bound_anywhere(lex_env, sym)? && 
                            !self.env_bound_anywhere(self.global_env, sym)?;
         
-        // A "truly local" binding is one that's in lex_env but shadows a pattern variable
-        // (or doesn't have a corresponding pattern variable at all)
-        // We detect shadowing by checking if the local binding is DIFFERENT from
-        // the pattern binding - this happens when a `let` introduces a new binding
-        // for a name that was also a pattern variable.
-        if bound_locally && is_pattern_var {
-            // Both local and pattern bindings exist. Check if the local binding
-            // shadows the pattern binding by looking at the actual binding in lex_env.
-            // If the env binding is different from the pattern binding, it's a shadow.
-            if let Some(env_binding) = self.lookup_in_env(sym, lex_env)? {
-                if let Some(pattern_binding) = self.bindings_lookup(bindings, sym)? {
-                    // If they're different, the local binding shadows the pattern binding
-                    if !self.lisp.eqv(env_binding, pattern_binding)? {
+        // Handle the case where both local and pattern bindings exist
+        if bound_locally {
+            if let Some(pattern_val) = pattern_binding {
+                // Both local and pattern bindings exist. Check if the local binding
+                // shadows the pattern binding by comparing the actual values.
+                // If they're different, the local binding takes precedence.
+                if let Some(env_binding) = self.lookup_in_env(sym, lex_env)? {
+                    if !self.lisp.eqv(env_binding, pattern_val)? {
                         let nil = self.lisp.nil()?;
                         return self.lisp.syntax_with_env(sym, nil, nil, lex_env).map_err(Into::into);
                     }
                 }
+            } else {
+                // Locally bound but NOT a pattern variable - wrap with lexical env
+                let nil = self.lisp.nil()?;
+                return self.lisp.syntax_with_env(sym, nil, nil, lex_env).map_err(Into::into);
             }
-        } else if bound_locally && !is_pattern_var {
-            // Locally bound but NOT a pattern variable - wrap with lexical env
-            let nil = self.lisp.nil()?;
-            return self.lisp.syntax_with_env(sym, nil, nil, lex_env).map_err(Into::into);
         }
 
-        // 2. Check if it's a pattern variable
-        if let Some(val) = self.bindings_lookup(bindings, sym)? {
+        // 2. Check if it's a pattern variable (reuse the earlier lookup result)
+        if let Some(val) = pattern_binding {
             return Ok(val);
         }
 
