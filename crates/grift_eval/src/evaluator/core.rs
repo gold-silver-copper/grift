@@ -947,6 +947,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Pack 1 value (just returns it as-is)
     #[inline]
+    #[allow(dead_code)]
     pub(super) fn pack1(&self, a: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         Ok(a)
     }
