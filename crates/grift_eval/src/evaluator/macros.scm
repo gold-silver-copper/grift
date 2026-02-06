@@ -767,3 +767,71 @@
     ((guard (var clause ...) body ...)
      (begin body ...))))
 
+
+;; ============================================================
+;; Effect System Macros (Pure Functional Grift)
+;; ============================================================
+
+;; eff - Direct-style effect composition (monadic do-notation)
+;;
+;; (eff
+;;   (x <- effect-expr)    ; Bind result of effect to x
+;;   effect-expr           ; Discard result (just sequence)
+;;   final-expr)           ; Final effect in the chain
+;;
+;; Desugars to io/bind chains:
+;;   (eff (x <- e1) e2)
+;;   => (io/bind e1 (lambda (x) e2))
+;;
+;;   (eff e1 e2)
+;;   => (io/bind e1 (lambda (_) e2))
+;;
+;; Example:
+;;   (eff
+;;     (io/print "What is your name? ")
+;;     (name <- (io/read-line))
+;;     (io/print (string-append "Hello, " name "!")))
+;;
+;; Expands to:
+;;   (io/bind (io/print "What is your name? ")
+;;     (lambda (_)
+;;       (io/bind (io/read-line)
+;;         (lambda (name)
+;;           (io/print (string-append "Hello, " name "!"))))))
+(define-syntax eff
+  (syntax-rules (<-)
+    ;; Base case: single expression (no more bindings)
+    ((eff expr)
+     expr)
+    
+    ;; Binding form: (name <- effect-expr) rest ...
+    ((eff (name <- effect-expr) rest ...)
+     (io/bind effect-expr (lambda (name) (eff rest ...))))
+    
+    ;; Non-binding form: just an effect expression, discard result
+    ((eff effect-expr rest ...)
+     (io/bind effect-expr (lambda (_) (eff rest ...))))))
+
+;; io/then - Sequence two effects, discarding the first result
+;; 
+;; (io/then effect1 effect2)
+;; => (io/bind effect1 (lambda (_) effect2))
+;;
+;; This is a convenience function for common sequencing patterns.
+(define-syntax io/then
+  (syntax-rules ()
+    ((io/then e1 e2)
+     (io/bind e1 (lambda (_) e2)))))
+
+;; io/map - Apply a pure function to an effect's result
+;;
+;; (io/map f effect)
+;; => (io/bind effect (lambda (x) (io/pure (f x))))
+;;
+;; Example:
+;;   (io/map string-upcase (io/read-line))
+;;   ; Returns an effect that reads a line and uppercases it
+(define-syntax io/map
+  (syntax-rules ()
+    ((io/map f effect)
+     (io/bind effect (lambda (x) (io/pure (f x)))))))

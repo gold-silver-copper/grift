@@ -1072,6 +1072,68 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     _ => Err(self.type_error(call_expr, "string", self.lisp.get(arg)?.type_name())),
                 }
             }
+            
+            // Effect system builtins
+            Builtin::Effectp => {
+                // (effect? x) - Check if x is an effect description
+                let arg = self.lisp.car(args)?;
+                self.lisp.boolean(self.lisp.get(arg)?.is_effect()).map_err(Into::into)
+            }
+            
+            Builtin::IoPure => {
+                // (io/pure value) - Lift a pure value into an effect context
+                // Creates Effect { tag: 'io/pure, data: value }
+                let value = self.lisp.car(args)?;
+                let tag = self.lisp.symbol("io/pure")?;
+                self.lisp.effect(tag, value).map_err(Into::into)
+            }
+            
+            Builtin::IoBind => {
+                // (io/bind effect continuation) - Sequence two effects
+                // Creates Effect { tag: 'io/bind, data: (effect . continuation) }
+                let effect = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let continuation = self.lisp.car(rest)?;
+                
+                // Create data as (effect . continuation)
+                let data = self.lisp.cons(effect, continuation)?;
+                let tag = self.lisp.symbol("io/bind")?;
+                self.lisp.effect(tag, data).map_err(Into::into)
+            }
+            
+            Builtin::IoPrint => {
+                // (io/print value) - Create effect description for printing
+                // Creates Effect { tag: 'io/print, data: value }
+                let value = self.lisp.car(args)?;
+                let tag = self.lisp.symbol("io/print")?;
+                self.lisp.effect(tag, value).map_err(Into::into)
+            }
+            
+            Builtin::IoReadLine => {
+                // (io/read-line) - Create effect description for reading a line
+                // Creates Effect { tag: 'io/read-line, data: nil }
+                let nil = self.lisp.nil()?;
+                let tag = self.lisp.symbol("io/read-line")?;
+                self.lisp.effect(tag, nil).map_err(Into::into)
+            }
+            
+            Builtin::EffectTag => {
+                // (effect-tag effect) - Get the tag of an effect
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Effect { tag, .. } => Ok(tag),
+                    _ => Err(self.type_error(call_expr, "effect", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::EffectData => {
+                // (effect-data effect) - Get the data of an effect
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Effect { data, .. } => Ok(data),
+                    _ => Err(self.type_error(call_expr, "effect", self.lisp.get(arg)?.type_name())),
+                }
+            }
         }
     }
     
