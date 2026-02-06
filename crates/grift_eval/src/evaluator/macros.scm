@@ -779,12 +779,10 @@
 ;;   effect-expr           ; Discard result (just sequence)
 ;;   final-expr)           ; Final effect in the chain
 ;;
-;; Desugars to io/bind chains:
-;;   (eff (x <- e1) e2)
-;;   => (io/bind e1 (lambda (x) e2))
-;;
-;;   (eff e1 e2)
-;;   => (io/bind e1 (lambda (_) e2))
+;; Desugars recursively to io/bind chains:
+;;   (eff (x <- e1) e2 ...) => (io/bind e1 (lambda (x) (eff e2 ...)))
+;;   (eff e1 e2 ...)        => (io/bind e1 (lambda (_) (eff e2 ...)))
+;;   (eff e)                => e
 ;;
 ;; Example:
 ;;   (eff

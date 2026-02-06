@@ -615,3 +615,70 @@
       obj
       (lambda () obj)))
 
+
+;;; ============================================================
+;;; Effect System Support (Pure Functional Grift)
+;;; ============================================================
+
+;;; (run-io effect) - Interpret and execute an IO effect
+;;; This is the standard IO effect handler that actually performs IO.
+;;; It's the boundary between pure code (effect descriptions) and the outside world.
+;;;
+;;; Supported effects:
+;;; - io/pure: Return the wrapped value
+;;; - io/bind: Sequence effects
+;;; - io/print: Print to output
+;;; - io/read-line: Read a line (currently returns empty string as placeholder)
+;;;
+;;; Example:
+;;;   (run-io (io/print "Hello, World!"))  ; Actually prints
+;;;   (run-io (io/pure 42))                ; => 42
+(define (run-io effect)
+  (if (effect? effect)
+      (let ((tag (effect-tag effect))
+            (data (effect-data effect)))
+        (cond
+          ;; io/pure - just return the value
+          ((eq? tag 'io/pure)
+           data)
+          
+          ;; io/bind - execute first effect, pass result to continuation
+          ((eq? tag 'io/bind)
+           (let ((first-effect (car data))
+                 (continuation (cdr data)))
+             (let ((result (run-io first-effect)))
+               (run-io (continuation result)))))
+          
+          ;; io/print - actually print the value
+          ((eq? tag 'io/print)
+           (display data)
+           (newline)
+           #t)  ; Return #t to indicate success
+          
+          ;; io/read-line - placeholder that returns empty string
+          ;; NOTE: Actual stdin reading requires I/O primitives not available in stdlib.
+          ;; For real input, use the REPL's input mechanism or implement a custom
+          ;; handler that calls native read-line functionality.
+          ((eq? tag 'io/read-line)
+           "")
+          
+          ;; Unknown effect - error
+          (else
+           (error "run-io: unknown effect type" tag))))
+      ;; Not an effect - return as-is
+      effect))
+
+;;; (effect-sequence effects) - Sequence a list of effects, return last result
+;;; Example: (effect-sequence (list (io/print "a") (io/print "b") (io/pure 42)))
+(define (effect-sequence effects)
+  (if (null? effects)
+      (io/pure #f)
+      (if (null? (cdr effects))
+          (car effects)
+          (io/bind (car effects)
+                   (lambda (_) (effect-sequence (cdr effects)))))))
+
+;;; (effect-for-each f effects) - Apply f to each effect's result for side effects
+;;; Returns unit (void-like) effect
+(define (effect-for-each f effects)
+  (effect-sequence (map (lambda (e) (io/bind e (lambda (x) (io/pure (f x))))) effects)))

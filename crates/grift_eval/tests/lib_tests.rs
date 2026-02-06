@@ -6694,3 +6694,56 @@ fn test_complex_eff_composition() {
     // The result is an io/bind effect
     assert!(eval_is_true(&lisp, &mut eval, "(eq? (effect-tag greet-user) 'io/bind)"));
 }
+
+#[test]
+fn test_run_io_pure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // run-io with io/pure returns the wrapped value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(run-io (io/pure 42))"), 42);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(run-io (io/pure (+ 1 2 3)))"), 6);
+}
+
+#[test]
+fn test_run_io_bind() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // run-io with io/bind sequences effects
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(run-io (io/bind (io/pure 10) (lambda (x) (io/pure (+ x 1)))))"), 11);
+    
+    // Complex binding
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(run-io (io/bind (io/pure 5) (lambda (a) (io/bind (io/pure 3) (lambda (b) (io/pure (* a b)))))))"), 15);
+}
+
+#[test]
+fn test_run_io_eff() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // run-io with eff macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(run-io (eff (x <- (io/pure 10)) (y <- (io/pure 20)) (io/pure (+ x y))))"), 30);
+}
+
+#[test]
+fn test_run_io_non_effect() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // run-io with non-effect returns value as-is
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(run-io 42)"), 42);
+}
+
+#[test]
+fn test_effect_sequence() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // effect-sequence combines multiple effects
+    assert_eq!(eval_to_num(&lisp, &mut eval, 
+        "(run-io (effect-sequence (list (io/pure 1) (io/pure 2) (io/pure 3))))"), 3);
+}
