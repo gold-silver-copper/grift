@@ -9,6 +9,7 @@ members = [
     "crates/grift_repl",
     "crates/grift",
     "crates/grift_arena_embedded",
+    "crates/grift_util",
 ]
 
 [workspace.package]
