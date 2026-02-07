@@ -293,25 +293,6 @@ impl<const N: usize> Default for NativeRegistry<N> {
 }
 
 // ============================================================================
-// Hash Function
-// ============================================================================
-
-/// Simple hash function for native function names.
-///
-/// Uses a simple djb2-like hash that's fast and produces good distribution.
-/// This is used for verification during native function calls.
-pub const fn simple_hash(s: &str) -> usize {
-    let bytes = s.as_bytes();
-    let mut hash: usize = 5381;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash = hash.wrapping_mul(33).wrapping_add(bytes[i] as usize);
-        i += 1;
-    }
-    hash
-}
-
-// ============================================================================
 // Helper Functions for Native Functions
 // ============================================================================
 
