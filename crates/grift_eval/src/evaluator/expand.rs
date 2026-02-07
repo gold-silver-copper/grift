@@ -791,8 +791,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Count how many elements the rest pattern needs
         let rest_len = self.pattern_min_length(rest_pattern, literals)?;
 
-        // Count expression length
-        let expr_len = self.list_length(expr)?;
+        // Count expression length. If the expression is not a proper list
+        // (e.g., a symbol or atom), the ellipsis pattern can't match.
+        let expr_len = match self.list_length(expr) {
+            Ok(len) => len,
+            Err(_) => return Ok(None),
+        };
 
         if expr_len < rest_len {
             return Ok(None);
