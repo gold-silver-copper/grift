@@ -1601,7 +1601,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Phase 1: Collect the transcribed names of user-provided binding variables
-        // (pattern variables in binding positions)
+        // (pattern variables in binding positions).
+        // Limited to 32 bindings per let form (no_std constraint - no Vec available).
+        // Bindings beyond this limit will not be checked for clashes.
         let mut user_var_names = [ArenaIndex::new(0); 32];
         let mut user_var_count = 0;
         let mut current = bindings_template;
