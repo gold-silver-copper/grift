@@ -135,3 +135,41 @@ fn test_identifier_syntax_with_set() {
     "#);
     assert_eq!(result, "(0 1)");
 }
+
+// Issue 7: Redefined cond with explicit free-identifier=? in fender
+// When cond is redefined using syntax-case with free-identifier=? to check
+// for `else`, a locally bound `else` should NOT match the macro's `else`.
+// This stress tests free-identifier=? with bare symbols from pattern variables
+// vs. template identifiers.
+#[test]
+fn test_redefined_cond_free_identifier_eq() {
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Redefine cond using syntax-case with explicit free-identifier=?
+    eval.eval_str(r#"
+        (define-syntax my-cond
+          (lambda (x)
+            (syntax-case x ()
+              ((_ (e0 e1 e2 ...))
+               (and (identifier? (syntax e0))
+                    (free-identifier=? (syntax e0) (syntax else)))
+               (syntax (begin e1 e2 ...)))
+              ((_ (e0 e1 e2 ...)) (syntax (if e0 (begin e1 e2 ...))))
+              ((_ (e0 e1 e2 ...) c1 c2 ...)
+               (syntax (if e0 (begin e1 e2 ...) (my-cond c1 c2 ...)))))))
+    "#).unwrap();
+
+    // Without local binding: else is the keyword, first clause should match
+    let result = eval_to_string(&lisp, &mut eval, "(my-cond (else 42))");
+    assert_eq!(result, "42");
+
+    // With local binding: else is #f, first clause should NOT match
+    // The second clause matches: (if else (begin 42)) => (if #f (begin 42)) => #f
+    let result = eval_to_string(&lisp, &mut eval, r#"
+        (let ((else #f))
+          (my-cond (else 42)))
+    "#);
+    assert_eq!(result, "#f",
+        "locally bound else should NOT match the else keyword in free-identifier=?");
+}

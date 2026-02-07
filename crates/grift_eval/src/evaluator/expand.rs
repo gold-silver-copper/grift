@@ -358,11 +358,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match (binding1, binding2) {
             // Both bound - compare bindings
             (Some(b1), Some(b2)) => self.lisp.eqv(b1, b2).map_err(Into::into),
-            // Both unbound - compare names
+            // Both unbound - compare names, then check call-site vs definition-site
             (None, None) => {
                 let name1 = self.lisp.syntax_to_datum(id1)?;
                 let name2 = self.lisp.syntax_to_datum(id2)?;
-                self.lisp.eqv(name1, name2).map_err(Into::into)
+                if !self.lisp.eqv(name1, name2)? {
+                    return Ok(false);
+                }
+                // Same name, both unbound in their resolved environments.
+                // Additionally check whether a local binding at the macro call site
+                // shadows this identifier. If the identifier is locally bound at the
+                // call site but not at the macro definition site (global env), the
+                // input identifier refers to a different binding than the template
+                // identifier, so they are not free-identifier=?.
+                // This handles: (let ((else #f)) (cond (else 42)))
+                if !self.lisp.get(self.call_site_env.0)?.is_nil() {
+                    let call_site_binding = self.lookup_in_env(name1, self.call_site_env.0)?;
+                    let def_site_binding = self.lookup_in_env(name1, self.global_env.0)?;
+                    match (call_site_binding, def_site_binding) {
+                        (Some(_), None) | (None, Some(_)) => return Ok(false),
+                        (Some(cb), Some(db)) => return self.lisp.eqv(cb, db).map_err(Into::into),
+                        (None, None) => {}
+                    }
+                }
+                Ok(true)
             }
             // One bound, one not - not equal
             _ => Ok(false),
@@ -2264,6 +2283,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // When syntax-rules patterns contain literals like `else`, the pattern
         // matcher needs to check if the input identifier is locally bound at the
         // call site to distinguish it from the unbound literal keyword.
+        let saved_call_site_env = self.call_site_env;
         self.call_site_env = eval_env;
         
         // Push continuation to re-evaluate the macro result in the original environment
@@ -2271,7 +2291,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Note: cont_env is set to eval_env (not call_env) because if an error occurs
         // during re-evaluation, the relevant context is the expansion site, not the
         // transformer body's scope.
-        self.cont(ContType::MacroResult, eval_env).data1(eval_env.0)?;
+        self.cont(ContType::MacroResult, eval_env).data2(eval_env.0, saved_call_site_env.0)?;
         
         // Evaluate the transformer body in the extended environment
         // When this completes, ContType::MacroResult will re-evaluate the result
