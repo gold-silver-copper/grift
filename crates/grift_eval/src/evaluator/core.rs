@@ -178,6 +178,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut root_count = 0;
         
         self.trace_roots(&mut |idx| {
+            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
             roots[root_count] = idx;
             root_count += 1;
         });
@@ -197,12 +198,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Collect evaluator roots via GcRoots trait
         self.trace_roots(&mut |idx| {
+            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
             roots[root_count] = idx;
             root_count += 1;
         });
         
         // Collect trampoline state roots via GcRoots trait
         state.trace_roots(&mut |idx| {
+            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
             roots[root_count] = idx;
             root_count += 1;
         });
