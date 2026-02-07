@@ -67,4 +67,12 @@ pub struct Evaluator<'a, const N: usize> {
     /// When set, `display` and `newline` will call this function to produce output.
     /// This enables side effects during macro expansion to be visible.
     output_callback: Option<OutputCallback<N>>,
+    /// Call-site environment for macro expansion.
+    /// 
+    /// Set in `apply_macro_trampolined` to the environment at the macro call site.
+    /// Used by `match_pattern_syntax` for free-identifier=? literal matching:
+    /// when a syntax-rules literal like `else` is locally bound at the call site,
+    /// the pattern matcher checks this environment to distinguish the bound identifier
+    /// from the unbound literal keyword.
+    call_site_env: EnvRef,
 }
