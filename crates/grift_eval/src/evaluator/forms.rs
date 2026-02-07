@@ -31,8 +31,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is the evaluated condition
                 let branch = if !self.is_false(val)? { then_expr } else { else_expr };
                 if branch.is_nil() {
-                    let nil = self.lisp.nil()?;
-                    Ok(Some(TrampolineState::Return { val: nil }))
+                    // No else branch and test was false: return #f
+                    // Per R7RS §4.1.5, the result is unspecified when the
+                    // alternative is omitted and the test is false.
+                    // We choose #f as the most useful unspecified value.
+                    let false_val = self.lisp.boolean(false)?;
+                    Ok(Some(TrampolineState::Return { val: false_val }))
                 } else {
                     Ok(Some(TrampolineState::Eval { expr: ExprRef(branch), env: EnvRef(env) }))
                 }

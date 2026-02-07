@@ -785,7 +785,7 @@ fn test_case_no_match() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     let result = eval.eval_str("(case 5 ((1) 10) ((2) 20))").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    assert!(lisp.get(result).unwrap().is_false());
 }
 
 // ───────────────────────────────────────────────────────────────────────────

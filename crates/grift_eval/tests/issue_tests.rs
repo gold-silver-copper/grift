@@ -165,13 +165,11 @@ fn test_redefined_cond_free_identifier_eq() {
     assert_eq!(result, "42");
 
     // With local binding: else is #f, first clause should NOT match
-    // The second clause produces (if #f (begin 42)) which is void/#f
+    // The second clause matches: (if else (begin 42)) => (if #f (begin 42)) => #f
     let result = eval_to_string(&lisp, &mut eval, r#"
         (let ((else #f))
           (my-cond (else 42)))
     "#);
-    // else is locally bound to #f, so the fender fails and the second clause
-    // matches: (if else (begin 42)) => (if #f 42) => void
-    assert_ne!(result, "42",
+    assert_eq!(result, "#f",
         "locally bound else should NOT match the else keyword in free-identifier=?");
 }
