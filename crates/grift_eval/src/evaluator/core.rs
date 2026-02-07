@@ -619,12 +619,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            // Symbol - variable lookup
+            // Symbol - variable lookup or identifier macro expansion
             Value::Symbol(_) => {
+                // Check for identifier macros (like identifier-syntax).
+                // A macro bound to this name can expand in identifier position
+                // if the symbol is not bound as a variable in the current environment.
+                let is_var_bound = self.is_variable_bound(env, expr)?;
+                if !is_var_bound {
+                    if let Some(transformer) = self.lookup_macro(expr)? {
+                        // Pass the bare identifier as the syntax form.
+                        // The transformer's syntax-case pattern (id (identifier? (syntax id)) ...)
+                        // will match this as a bare identifier.
+                        return self.apply_macro_trampolined(transformer, expr, env);
+                    }
+                }
                 let val = self.env_lookup(env, expr)?;
-                // Return the looked-up value directly, even if it's a syntax object.
-                // This allows syntax objects to be passed as arguments to functions
-                // like bound-identifier=? that expect syntax object data.
                 Ok(TrampolineState::Return { val })
             }
             

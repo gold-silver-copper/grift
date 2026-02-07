@@ -43,12 +43,13 @@ fn test_dolet_hygiene_returns_7() {
     assert_eq!(result, 7);
 }
 
-// Issue 3: identifier-syntax 
+// Issue 3: identifier-syntax - macros that expand in bare identifier position
 #[test]
 fn test_identifier_syntax_basic() {
     let lisp: Lisp<50000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
+    // Define identifier-syntax (R6RS form)
     eval.eval_str(r#"
         (define-syntax identifier-syntax
           (lambda (x)
@@ -58,22 +59,17 @@ fn test_identifier_syntax_basic() {
                  (lambda (x)
                    (syntax-case x ()
                      (id (identifier? (syntax id)) (syntax e))
-                     ((id x (... ...)) (identifier? (syntax id)) (syntax (e x (... ...)))))))))))
+                     ((id rest (... ...)) (identifier? (syntax id)) (syntax (e rest (... ...)))))))))))
     "#).unwrap();
     
-    let result = eval_to_num(&lisp, &mut eval, r#"
-        (let ((x 0))
-          (define-syntax x++
-            (identifier-syntax
-              (let ((t x)) (set! x (+ t 1)) t)))
-          (let ((a x++))
-            (list a x)))
-    "#);
-    // x++ should be expanded in identifier position, giving (let ((t x)) (set! x (+ t 1)) t)
-    // which gives t=0, sets x to 1, returns t=0
-    // So a=0, x=1, and (list a x) = (0 1)
-    // Actually just testing it works
-    println!("identifier-syntax result: {}", result);
+    // Simple test: identifier macro that evaluates to a constant
+    eval.eval_str(r#"
+        (define-syntax my-val
+          (identifier-syntax 42))
+    "#).unwrap();
+    
+    let result = eval_to_num(&lisp, &mut eval, "my-val");
+    assert_eq!(result, 42);
 }
 
 // Issue 4: Named let via syntax-rules - the named let form (let loop ((var val) ...) body ...)
