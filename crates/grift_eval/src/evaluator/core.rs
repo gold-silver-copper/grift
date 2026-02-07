@@ -784,6 +784,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.step_eval_let_syntax(cdr, env);
                 }
                 
+                // letrec-syntax - local macro bindings with mutual visibility
+                if self.lisp.symbol_matches(car, "letrec-syntax")? {
+                    return self.step_eval_letrec_syntax(cdr, env);
+                }
+                
                 // syntax-case - procedural macro pattern matching
                 if self.lisp.symbol_matches(car, "syntax-case")? {
                     return self.step_eval_syntax_case(cdr, env);

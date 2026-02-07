@@ -1726,6 +1726,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return self.expand_let_syntax(args, renames);
                         }
 
+                        if self.lisp.symbol_matches(head, "letrec-syntax")? {
+                            return self.expand_letrec_syntax(args, renames);
+                        }
+
                         // Check for macro invocation
                         if let Some(transformer) = self.lookup_macro(head)? {
                             let expanded = self.apply_macro(transformer, expr)?;
@@ -2024,6 +2028,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Handle (let-syntax ((name transformer) ...) body ...)
+    /// All transformers are parsed in the outer macro environment (parallel semantics).
     fn expand_let_syntax(
         &mut self,
         args: ArenaIndex,
@@ -2035,7 +2040,60 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Save current macro environment
         let saved_macro_env = self.macro_env;
 
-        // Add local macro bindings
+        // Phase 1: Parse ALL transformers in the outer (saved) macro environment
+        let mut parsed_bindings = [(ArenaIndex::new(0), ArenaIndex::new(0)); 32];
+        let mut binding_count = 0;
+        let mut current = bindings;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let binding = self.lisp.car(current)?;
+            let name = self.lisp.car(binding)?;
+            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+
+            let transformer = self.parse_transformer(transformer_expr)?;
+            if binding_count < parsed_bindings.len() {
+                parsed_bindings[binding_count] = (name, transformer);
+                binding_count += 1;
+            }
+
+            current = self.lisp.cdr(current)?;
+        }
+
+        // Phase 2: Install all bindings at once
+        for i in 0..binding_count {
+            let (name, transformer) = parsed_bindings[i];
+            let macro_binding = self.lisp.cons(name, transformer)?;
+            self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
+        }
+
+        // Expand body
+        let expanded_body = self.expand_body(body, renames)?;
+
+        // Restore macro environment
+        self.macro_env = saved_macro_env;
+
+        // Wrap in begin if multiple expressions
+        if self.list_length(expanded_body)? == 1 {
+            self.lisp.car(expanded_body).map_err(Into::into)
+        } else {
+            let begin_sym = self.lisp.symbol("begin")?;
+            self.lisp.cons(begin_sym, expanded_body).map_err(Into::into)
+        }
+    }
+
+    /// Handle (letrec-syntax ((name transformer) ...) body ...)
+    /// Transformers are installed sequentially so each can see previous bindings.
+    fn expand_letrec_syntax(
+        &mut self,
+        args: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        let bindings = self.lisp.car(args)?;
+        let body = self.lisp.cdr(args)?;
+
+        // Save current macro environment
+        let saved_macro_env = self.macro_env;
+
+        // Install bindings sequentially - each transformer can see previous bindings
         let mut current = bindings;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let binding = self.lisp.car(current)?;
