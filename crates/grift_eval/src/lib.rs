@@ -67,7 +67,7 @@ pub use grift_parser::{
 pub mod native;
 pub use native::{
     FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
-    extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+    extract_arg, args_empty, count_args, MAX_NATIVE_FUNCTIONS,
 };
 
 // Internal modules

@@ -120,14 +120,14 @@ pub mod eval {
         Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
         // Native FFI
         FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
-        extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+        extract_arg, args_empty, count_args, MAX_NATIVE_FUNCTIONS,
     };
 }
 
 pub use eval::{
     Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
     FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
-    extract_arg, args_empty, count_args, simple_hash, MAX_NATIVE_FUNCTIONS,
+    extract_arg, args_empty, count_args, MAX_NATIVE_FUNCTIONS,
 };
 
 // ============================================================================

@@ -33,7 +33,7 @@
 //! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
 //! - `Array { len, data }` - Vector with inline length
 //! - `String { len, data }` - String with inline length
-//! - `Native { id, name_hash }` - Native Rust function reference
+//! - `Native { id }` - Native Rust function reference
 //!
 //! ## Reserved Slots
 //!

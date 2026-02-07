@@ -377,16 +377,11 @@ pub enum Value {
     /// ```
     String { len: usize, data: ArenaIndex },
     
-    /// Native function with inline id and name_hash
+    /// Native function with inline id
     ///
     /// Native functions are registered at runtime and identified by their ID.
     /// The actual function pointer is stored in the evaluator's NativeRegistry.
-    ///
-    /// # Memory Savings
-    /// 
-    /// Previously: 1 slot for Native + 2 slots for [Usize(id), Usize(name_hash)] = 3 slots
-    /// Now: 1 slot for Native with inline id/name_hash = 1 slot (saves 2 slots)
-    Native { id: usize, name_hash: usize },
+    Native { id: usize },
     
     /// Raw arena index reference
     /// 
@@ -748,7 +743,7 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*cdr);
             }
             Value::Native { .. } => {
-                // id and name_hash are inline usize values, no arena references to trace
+                // id is an inline usize value, no arena references to trace
             }
             Value::Symbol(chars) => {
                 // chars points to a Value::String, which handles its own tracing

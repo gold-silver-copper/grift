@@ -510,13 +510,12 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a native function reference.
     ///
     /// Native functions are Rust functions registered with the evaluator.
-    /// The `id` is the index in the NativeRegistry, and `name_hash` is
-    /// a simple hash for verification.
+    /// The `id` is the index in the NativeRegistry.
     /// 
-    /// Both values are stored inline - no arena data slots needed.
+    /// The value is stored inline - no arena data slots needed.
     #[inline]
-    pub fn native(&self, id: usize, name_hash: usize) -> ArenaResult<ArenaIndex> {
-        self.alloc(Value::Native { id, name_hash })
+    pub fn native(&self, id: usize) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Native { id })
     }
     
     /// Get the id from a native function
@@ -524,15 +523,6 @@ impl<const N: usize> Lisp<N> {
     pub fn native_id(&self, native_idx: ArenaIndex) -> ArenaResult<usize> {
         match self.get(native_idx)? {
             Value::Native { id, .. } => Ok(id),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-    
-    /// Get the name_hash from a native function
-    /// O(1) access - name_hash is stored inline.
-    pub fn native_name_hash(&self, native_idx: ArenaIndex) -> ArenaResult<usize> {
-        match self.get(native_idx)? {
-            Value::Native { name_hash, .. } => Ok(name_hash),
             _ => Err(ArenaError::InvalidIndex),
         }
     }

@@ -14,7 +14,7 @@ use crate::error::{
 use crate::continuation::{TrampolineState,
     CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_EVAL_EXPR,
 };
-use crate::native::{NativeRegistry, NativeFn, simple_hash};
+use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
 
@@ -119,15 +119,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Get the ID before registering (it's the current count)
         let id = self.native_registry.len();
         
-        // Compute a simple hash of the name for verification
-        let name_hash = simple_hash(name);
-        
         // Register in the native registry
         self.native_registry.register(name, func);
         
         // Create a symbol and a Native value, then bind in global env
         let name_sym = self.lisp.symbol(name)?;
-        let native_val = self.lisp.native(id, name_hash)?;
+        let native_val = self.lisp.native(id)?;
         self.global_env = self.env_extend(self.global_env, name_sym, native_val)?;
         
         Ok(())
