@@ -1460,6 +1460,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
            || self.lisp.symbol_matches(sym, "define")?)
     }
 
+    /// Check if symbol is a core special form keyword that should be protected
+    /// from variable shadowing when introduced by a macro.
+    fn is_core_special_form(&self, sym: ArenaIndex) -> Result<bool, EvalError> {
+        if !matches!(self.lisp.get(sym)?, Value::Symbol(_)) {
+            return Ok(false);
+        }
+        Ok(self.lisp.symbol_matches(sym, "if")?)
+    }
+
     /// Handle binding forms (lambda, let, etc.) with hygienic renaming
     fn transcribe_binding_form(
         &mut self,
