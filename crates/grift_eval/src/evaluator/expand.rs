@@ -6,7 +6,7 @@
 use grift_parser::{ArenaIndex, Value};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::continuation::{TrampolineState, CONT_MACRO_RESULT};
+use crate::continuation::{TrampolineState, ContType};
 use super::Evaluator;
 
 // ============================================================================
@@ -2140,7 +2140,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// (which creates a new nested trampoline), this pushes a continuation and returns
     /// a TrampolineState to evaluate the transformer body within the current trampoline.
     /// 
-    /// When the transformer body completes, the CONT_MACRO_RESULT continuation will
+    /// When the transformer body completes, the ContType::MacroResult continuation will
     /// re-evaluate the result in the original environment. If the result is another
     /// macro invocation, it will be expanded the same way - using continuations instead
     /// of recursive function calls.
@@ -2153,7 +2153,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// # Returns
     /// 
-    /// A TrampolineState::Eval to evaluate the transformer body, with a CONT_MACRO_RESULT
+    /// A TrampolineState::Eval to evaluate the transformer body, with a ContType::MacroResult
     /// continuation pushed to handle the expansion result.
     pub(super) fn apply_macro_trampolined(
         &mut self,
@@ -2182,10 +2182,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Note: cont_env is set to eval_env (not call_env) because if an error occurs
         // during re-evaluation, the relevant context is the expansion site, not the
         // transformer body's scope.
-        self.cont(CONT_MACRO_RESULT, eval_env).data1(eval_env)?;
+        self.cont(ContType::MacroResult, eval_env).data1(eval_env)?;
         
         // Evaluate the transformer body in the extended environment
-        // When this completes, CONT_MACRO_RESULT will re-evaluate the result
+        // When this completes, ContType::MacroResult will re-evaluate the result
         Ok(TrampolineState::Eval { expr: body, env: call_env })
     }
     

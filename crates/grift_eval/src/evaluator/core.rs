@@ -11,9 +11,7 @@ use crate::error::{
     ErrorKind, StackFrame, EvalError, EvalResult,
     MAX_STACK_DEPTH,
 };
-use crate::continuation::{TrampolineState, GcRoots,
-    CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_EVAL_EXPR,
-};
+use crate::continuation::{TrampolineState, GcRoots, ContType};
 use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
@@ -424,8 +422,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Creates a new ContFrame in the arena and links it to the current continuation chain.
     /// This is O(1) allocation and enables O(1) capture for call/cc.
     #[inline]
-    pub(super) fn push_cont(&mut self, cont_type: usize, data: ArenaIndex, env: ArenaIndex) -> Result<(), EvalError> {
-        let new_frame = self.lisp.cont_frame(cont_type, data, self.current_cont, env)?;
+    pub(super) fn push_cont(&mut self, cont_type: ContType, data: ArenaIndex, env: ArenaIndex) -> Result<(), EvalError> {
+        let new_frame = self.lisp.cont_frame(cont_type.as_usize(), data, self.current_cont, env)?;
         self.current_cont = new_frame;
         Ok(())
     }
@@ -440,13 +438,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// ```text
     /// // Instead of:
     /// let data = self.pack3(then_expr, else_expr, env)?;
-    /// self.push_cont(CONT_IF_BRANCH, data, env)?;
+    /// self.push_cont(ContType::IfBranch, data, env)?;
     ///
     /// // Use:
-    /// self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
+    /// self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env)?;
     /// ```
     #[inline]
-    pub(super) fn cont(&mut self, cont_type: usize, env: ArenaIndex) -> ContBuilder<'_, 'a, N> {
+    pub(super) fn cont(&mut self, cont_type: ContType, env: ArenaIndex) -> ContBuilder<'_, 'a, N> {
         ContBuilder { evaluator: self, cont_type, env }
     }
     
@@ -455,16 +453,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Returns the continuation type, data, and environment from the current frame,
     /// then updates current_cont to point to the parent frame.
     ///
-    /// Returns (CONT_DONE, nil, nil) if the continuation stack is empty.
+    /// Returns (ContType::Done, nil, nil) if the continuation stack is empty.
     #[inline]
-    pub(super) fn pop_cont(&mut self) -> Result<(usize, ArenaIndex, ArenaIndex), EvalError> {
+    pub(super) fn pop_cont(&mut self) -> Result<(ContType, ArenaIndex, ArenaIndex), EvalError> {
         if self.current_cont.is_nil() {
             let nil = self.lisp.nil()?;
-            return Ok((CONT_DONE, nil, nil));
+            return Ok((ContType::Done, nil, nil));
         }
         
-        let (cont_type, data, parent, env) = self.lisp.cont_frame_parts(self.current_cont)?;
+        let (cont_type_raw, data, parent, env) = self.lisp.cont_frame_parts(self.current_cont)?;
         self.current_cont = parent;
+        let cont_type = ContType::from_usize(cont_type_raw)
+            .ok_or_else(|| self.make_error(crate::error::ErrorKind::Generic, data)
+                .with_message("invalid continuation type"))?;
         Ok((cont_type, data, env))
     }
     
@@ -855,7 +856,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Push continuation to evaluate the result in global environment
                     // Data: env (single value)
                     let global = self.global_env;
-                    self.cont(CONT_EVAL_EXPR, env).data1(global)?;
+                    self.cont(ContType::EvalExpr, env).data1(global)?;
                     // First evaluate the expression to get the code to eval
                     return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
                 }
@@ -893,7 +894,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Push continuation: after evaluating func, apply it
         // Data: (args_expr . (env . call_expr))
-        self.cont(CONT_APPLY_FORCED, env).data3(cdr, env, expr)?;
+        self.cont(ContType::ApplyForced, env).data3(cdr, env, expr)?;
         
         // Evaluate the function expression
         Ok(TrampolineState::Eval { expr: car, env })
@@ -919,7 +920,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             } else {
                 self.lisp.car(else_rest)?
             };
-            self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
+            self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env)?;
             return Ok(Some(TrampolineState::Eval { expr: cond_expr, env }));
         }
         Ok(None)
@@ -1219,7 +1220,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 /// - etc.
 pub(super) struct ContBuilder<'e, 'a, const N: usize> {
     evaluator: &'e mut Evaluator<'a, N>,
-    cont_type: usize,
+    cont_type: ContType,
     env: ArenaIndex,
 }
 
