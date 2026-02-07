@@ -872,8 +872,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             ContType::MacroResult => {
                 // val is the result of evaluating the macro transformer body
                 // We need to re-evaluate this result (it may be a macro invocation itself)
-                // Data: eval_env (the environment where the expanded code should be evaluated)
-                let eval_env = self.unpack1(data);
+                // Data: (eval_env . saved_call_site_env)
+                let (eval_env, saved_call_site_env) = self.unpack2(data)?;
+                // Restore the call-site environment from before this macro expansion.
+                // This ensures that nested macro expansions (e.g., `and` in a fender)
+                // don't permanently overwrite the outer macro's call-site context.
+                self.call_site_env = EnvRef(saved_call_site_env);
                 Ok(Some(TrampolineState::Eval { expr: ExprRef(val), env: EnvRef(eval_env) }))
             }
         }
