@@ -71,7 +71,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 // No args - bind to empty list
                                 let nil = self.lisp.nil()?;
                                 let extended_env = self.env_extend(EnvRef(closure_env), params, nil)?;
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env}))
+                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
                             } else {
                                 // Evaluate first arg and start collecting
                                 let first_expr = self.lisp.car(args_expr)?;
@@ -89,7 +89,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 let expected = self.count_list(params)?;
                                 return Err(self.arg_error(call_expr, expected, 0));
                             }
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env)}))
+                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env) }))
                         } else {
                             // Start evaluating first arg and binding
                             let first_expr = self.lisp.car(args_expr)?;
@@ -134,7 +134,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 let expected = self.count_list(params)?;
                                 return Err(self.arg_error(call_expr, expected, 0));
                             }
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: closure_env}))
+                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: closure_env }))
                         } else {
                             // Start evaluating first arg and binding
                             let first_expr = self.lisp.car(args_expr)?;
@@ -236,7 +236,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             // No more args - bind rest param to empty list
                             let nil = self.lisp.nil()?;
                             let final_env = self.env_extend(extended_env, remaining_params, nil)?;
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: final_env}))
+                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: final_env }))
                         } else {
                             // Start collecting rest args
                             let first_expr = self.lisp.car(remaining_exprs)?;
@@ -245,7 +245,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             
                             self.cont(ContType::LambdaRestCollect, EnvRef(eval_env)).data7(rest_exprs, eval_env, remaining_params, body, extended_env.0, nil, call_expr)?;
                             
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(eval_env)}))
+                            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(eval_env) }))
                         }
                     } else if self.lisp.get(remaining_exprs)?.is_nil() {
                         // No more args - check params match
@@ -254,7 +254,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Err(self.arg_error(call_expr, expected, 1));
                         }
                         // Evaluate body with extended env
-                        Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env}))
+                        Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
                     } else {
                         // More args - get next param
                         if self.lisp.get(remaining_params)?.is_nil() {
@@ -271,7 +271,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.cont(ContType::LambdaBindArg, EnvRef(eval_env)).data6(rest_exprs, eval_env, rest_params, body, extended_env.0, call_expr)?;
                         self.cont(ContType::LambdaFirstBind, EnvRef(eval_env)).data1(next_param)?;
                         
-                        Ok(Some(TrampolineState::Eval { expr: ExprRef(next_expr), env: EnvRef(eval_env)}))
+                        Ok(Some(TrampolineState::Eval { expr: ExprRef(next_expr), env: EnvRef(eval_env) }))
                     }
                 } else {
                     // This shouldn't happen
@@ -297,7 +297,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // No more args - reverse collected and bind to rest_param
                     let rest_list = self.reverse_list(new_collected)?;
                     let extended_env = self.env_extend(EnvRef(new_env), rest_param, rest_list)?;
-                    Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env}))
+                    Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
                 } else {
                     // More args to collect
                     let next_expr = self.lisp.car(remaining_exprs)?;
@@ -305,7 +305,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     
                     self.cont(ContType::LambdaRestCollect, EnvRef(eval_env)).data7(rest_exprs, eval_env, rest_param, body, new_env, new_collected, call_expr)?;
                     
-                    Ok(Some(TrampolineState::Eval { expr: ExprRef(next_expr), env: EnvRef(eval_env)}))
+                    Ok(Some(TrampolineState::Eval { expr: ExprRef(next_expr), env: EnvRef(eval_env) }))
                 }
             }
             
@@ -329,7 +329,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let builtin_encoded = Self::encode_builtin(builtin);
                     self.cont(ContType::BuiltinForceArg, EnvRef(eval_env)).data5(builtin_encoded, rest_args, new_collected, call_expr, eval_env)?;
                     
-                    Ok(Some(TrampolineState::Eval { expr: ExprRef(next_arg), env: EnvRef(eval_env)}))
+                    Ok(Some(TrampolineState::Eval { expr: ExprRef(next_arg), env: EnvRef(eval_env) }))
                 }
             }
             
@@ -339,7 +339,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is first evaluated arg - now evaluate second
                 // Data for BinaryBuiltinSecond: (builtin_encoded . (first_val . call_expr))
                 self.cont(ContType::BinaryBuiltinSecond, EnvRef(eval_env)).data3(builtin_encoded, val, call_expr)?;
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(second_arg), env: EnvRef(eval_env)}))
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(second_arg), env: EnvRef(eval_env) }))
             }
             
             ContType::BinaryBuiltinSecond => {
@@ -621,7 +621,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 } else {
                     // Fender passed - evaluate output with bindings
                     let output_env = self.extend_env_with_bindings(env, bindings)?;
-                    Ok(Some(TrampolineState::Eval { expr: ExprRef(output), env: EnvRef(output_env)}))
+                    Ok(Some(TrampolineState::Eval { expr: ExprRef(output), env: EnvRef(output_env) }))
                 }
             }
             
@@ -655,7 +655,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         
                         // Bind the captured continuation to the parameter
                         let extended_env = self.env_extend(EnvRef(closure_env), first_param, captured_continuation)?;
-                        Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env}))
+                        Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
                     }
                     _ => {
                         // For other callable types, use the standard apply mechanism
@@ -874,7 +874,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // We need to re-evaluate this result (it may be a macro invocation itself)
                 // Data: eval_env (the environment where the expanded code should be evaluated)
                 let eval_env = self.unpack1(data);
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(val), env: EnvRef(eval_env)}))
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(val), env: EnvRef(eval_env) }))
             }
         }
     }
@@ -1542,12 +1542,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.cont(ContType::SyntaxCaseFender, EnvRef(fender_env)).data6(output, bindings, literals, remaining_clauses, env, stx)?;
                     
                     // Evaluate fender with trampolined evaluation
-                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(fender_expr), env: EnvRef(fender_env)}));
+                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(fender_expr), env: EnvRef(fender_env) }));
                 }
 
                 // No fender - evaluate output expression with pattern bindings
                 let output_env = self.extend_env_with_bindings(env, bindings)?;
-                return Ok(Some(TrampolineState::Eval { expr: ExprRef(output), env: EnvRef(output_env)}));
+                return Ok(Some(TrampolineState::Eval { expr: ExprRef(output), env: EnvRef(output_env) }));
             }
 
             current = self.lisp.cdr(current)?;
@@ -1753,7 +1753,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // Execute the lambda body
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env)}))
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env) }))
             }
             Value::Continuation { .. } => {
                 // Can't call a continuation as a thunk without an argument
