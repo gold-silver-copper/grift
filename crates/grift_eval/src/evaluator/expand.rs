@@ -2071,20 +2071,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Save current macro environment
         let saved_macro_env = self.macro_env;
 
-        // Phase 1: Parse ALL transformers in the outer (saved) macro environment
-        let mut parsed_bindings = [(ArenaIndex::new(0), ArenaIndex::new(0)); 32];
+        // Phase 1: Parse ALL transformers in the outer (saved) macro environment.
+        // Stack-allocated buffer for parsed bindings (matches arena's fixed-size approach).
+        const MAX_LET_SYNTAX_BINDINGS: usize = 32;
+        let mut parsed_bindings = [(ArenaIndex::new(0), ArenaIndex::new(0)); MAX_LET_SYNTAX_BINDINGS];
         let mut binding_count = 0;
         let mut current = bindings;
         while let Value::Cons { .. } = self.lisp.get(current)? {
+            if binding_count >= MAX_LET_SYNTAX_BINDINGS {
+                return Err(self.make_error(ErrorKind::Generic, bindings)
+                    .with_message("let-syntax: too many bindings"));
+            }
             let binding = self.lisp.car(current)?;
             let name = self.lisp.car(binding)?;
             let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
 
             let transformer = self.parse_transformer(transformer_expr)?;
-            if binding_count < parsed_bindings.len() {
-                parsed_bindings[binding_count] = (name, transformer);
-                binding_count += 1;
-            }
+            parsed_bindings[binding_count] = (name, transformer);
+            binding_count += 1;
 
             current = self.lisp.cdr(current)?;
         }
