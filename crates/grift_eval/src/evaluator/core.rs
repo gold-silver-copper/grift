@@ -11,7 +11,7 @@ use crate::error::{
     ErrorKind, StackFrame, EvalError, EvalResult,
     MAX_STACK_DEPTH,
 };
-use crate::continuation::{TrampolineState, GcRoots, ContType};
+use crate::continuation::{TrampolineState, GcRoots, ContType, EnvRef, ExprRef};
 use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
@@ -21,8 +21,8 @@ const STANDARD_MACROS: &str = include_str!("macros.scm");
 
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
-        tracer(self.global_env);
-        tracer(self.macro_env);
+        tracer(self.global_env.0);
+        tracer(self.macro_env.0);
         tracer(self.current_cont);
         tracer(self.dynamic_wind_chain);
     }
@@ -34,22 +34,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let nil = lisp.nil()?;
         let mut eval = Evaluator {
             lisp,
-            global_env: nil,
+            global_env: EnvRef(nil),
             call_stack: [StackFrame::default(); MAX_STACK_DEPTH],
             call_stack_depth: 0,
             current_cont: nil, // Empty continuation (Done)
             native_registry: NativeRegistry::new(),
-            macro_env: nil,
+            macro_env: EnvRef(nil),
             gensym_counter: 0,
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
             output_callback: None, // No output callback by default
         };
         
         // Initialize global environment with builtins
-        eval.global_env = lisp.nil()?;
+        eval.global_env = EnvRef(lisp.nil()?);
         
         // Initialize macro environment
-        eval.macro_env = lisp.nil()?;
+        eval.macro_env = EnvRef(lisp.nil()?);
         
         for &builtin in Builtin::ALL {
             let name = lisp.symbol(builtin.name())?;
@@ -84,7 +84,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let form = self.lisp.car(current)?;
             // Evaluate the form - define-syntax is handled during evaluation
-            self.eval(form)?;
+            self.eval(ExprRef(form))?;
             current = self.lisp.cdr(current)?;
         }
         Ok(())
@@ -97,7 +97,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Get the global environment
     pub fn global_env(&self) -> ArenaIndex {
-        self.global_env
+        self.global_env.0
     }
     
     /// Register a native Rust function that can be called from Lisp.
@@ -251,14 +251,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Extend an environment with a binding
     #[inline]
-    pub(crate) fn env_extend(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
+    pub(crate) fn env_extend(&self, env: EnvRef, name: ArenaIndex, value: ArenaIndex) -> Result<EnvRef, EvalError> {
         let binding = self.lisp.cons(name, value)?;
-        self.lisp.cons(binding, env).map_err(Into::into)
+        Ok(EnvRef(self.lisp.cons(binding, env.0)?))
     }
     
     /// Look up a variable in an environment
-    pub(super) fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> EvalResult {
-        let mut current = env;
+    pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
+        let mut current = env.0;
         
         loop {
             match self.lisp.get(current)? {
@@ -282,7 +282,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Look up in global environment only
     fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env;
+        let mut current = self.global_env.0;
         
         loop {
             match self.lisp.get(current)? {
@@ -306,14 +306,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Check if a variable is bound in the environment (local or global)
     /// Returns true if the variable exists, false otherwise.
     /// This is used to determine if a variable binding shadows a macro.
-    pub(super) fn is_variable_bound(&self, env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
+    pub(super) fn is_variable_bound(&self, env: EnvRef, name: ArenaIndex) -> Result<bool, EvalError> {
         // Check local environment first
-        if self.env_contains(env, name)? {
+        if self.env_contains(env.0, name)? {
             return Ok(true);
         }
         
         // Check global environment
-        self.env_contains(self.global_env, name)
+        self.env_contains(self.global_env.0, name)
     }
     
     /// Helper to check if a name exists in a specific environment chain
@@ -339,9 +339,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Set a variable in an environment (mutation operation)
     /// Searches both local and global environments
     /// Returns the new value on success
-    pub(super) fn env_set(&self, env: ArenaIndex, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
+    pub(super) fn env_set(&self, env: EnvRef, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         // First search local environment
-        let mut current = env;
+        let mut current = env.0;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
@@ -365,7 +365,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Set a variable in global environment only
     fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env;
+        let mut current = self.global_env.0;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
@@ -390,7 +390,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
         // Check if already defined and update
-        let mut current = self.global_env;
+        let mut current = self.global_env.0;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
@@ -444,7 +444,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env)?;
     /// ```
     #[inline]
-    pub(super) fn cont(&mut self, cont_type: ContType, env: ArenaIndex) -> ContBuilder<'_, 'a, N> {
+    pub(super) fn cont(&mut self, cont_type: ContType, env: EnvRef) -> ContBuilder<'_, 'a, N> {
         ContBuilder { evaluator: self, cont_type, env }
     }
     
@@ -473,7 +473,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// Macros are now expanded during evaluation (not pre-processed).
     /// This enables evaluation-time macro expansion per the R7RS model.
-    pub fn eval(&mut self, expr: ArenaIndex) -> EvalResult {
+    pub fn eval(&mut self, expr: ExprRef) -> EvalResult {
         // Reset continuation to empty (Done)
         self.current_cont = self.lisp.nil()?;
         // Start evaluation - macros are expanded on-demand during eval
@@ -484,7 +484,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// This is now equivalent to `eval()` since macro expansion 
     /// happens during evaluation. Kept for API compatibility.
-    pub fn eval_expanded(&mut self, expr: ArenaIndex) -> EvalResult {
+    pub fn eval_expanded(&mut self, expr: ExprRef) -> EvalResult {
         // Reset continuation to empty (Done)
         self.current_cont = self.lisp.nil()?;
         // Start evaluation
@@ -495,7 +495,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Uses full trampolining - no Rust recursion
     /// 
     /// This is public so the REPL can evaluate expressions for display
-    pub fn eval_in_env(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
+    pub fn eval_in_env(&mut self, expr: ExprRef, env: EnvRef) -> EvalResult {
         // Reset continuation to empty (Done)
         self.current_cont = self.lisp.nil()?;
         self.trampoline(TrampolineState::Eval { expr, env })
@@ -507,7 +507,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// state so that macro expansion can be nested within outer evaluation.
     /// This is crucial when macro expansion happens while evaluating arguments
     /// or in other nested contexts.
-    pub(crate) fn eval_for_macro(&mut self, expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
+    pub(crate) fn eval_for_macro(&mut self, expr: ExprRef, env: EnvRef) -> EvalResult {
         // Save current continuation and call stack state
         let saved_cont = self.current_cont;
         let saved_depth = self.call_stack_depth;
@@ -580,8 +580,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// One step of evaluation
-    pub(super) fn step_eval(&mut self, expr: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let val = self.lisp.get(expr)?;
+    pub(super) fn step_eval(&mut self, expr: ExprRef, env: EnvRef) -> Result<TrampolineState, EvalError> {
+        let val = self.lisp.get(expr.0)?;
         
         match val {
             // Self-evaluating values
@@ -591,19 +591,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
             Value::ContFrame { .. } | Value::Continuation { .. } => {
-                Ok(TrampolineState::Return { val: expr })
+                Ok(TrampolineState::Return { val: expr.0 })
             }
             
             // Syntax object - special handling for lexically-scoped identifiers
             Value::Syntax { .. } => {
                 // Get the wrapped datum
-                let (datum, marks, subst, lex_env) = self.lisp.syntax_parts_with_env(expr)?;
+                let (datum, marks, subst, lex_env) = self.lisp.syntax_parts_with_env(expr.0)?;
                 
                 match self.lisp.get(datum)? {
                     // Syntax-wrapped identifier: resolve in captured lexical environment
                     // This enables lexically-scoped syntax objects
                     Value::Symbol(_) => {
-                        self.eval_syntax_identifier(datum, marks, subst, lex_env, env)
+                        self.eval_syntax_identifier(datum, marks, subst, lex_env, env.0)
                     }
                     
                     // Syntax-wrapped list: this could be code that needs evaluation
@@ -612,11 +612,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Check if lex_env has any bindings
                         if self.lisp.get(lex_env)?.is_nil() {
                             // No captured environment - evaluate datum directly
-                            Ok(TrampolineState::Eval { expr: datum, env })
+                            Ok(TrampolineState::Eval { expr: ExprRef(datum), env })
                         } else {
                             // Merge captured environment with current environment
-                            let merged_env = self.merge_environments(lex_env, env)?;
-                            Ok(TrampolineState::Eval { expr: datum, env: merged_env })
+                            let merged_env = self.merge_environments(lex_env, env.0)?;
+                            Ok(TrampolineState::Eval { expr: ExprRef(datum), env: EnvRef(merged_env) })
                         }
                     }
                     
@@ -630,23 +630,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check for identifier macros (like identifier-syntax).
                 // A macro bound to this name can expand in identifier position
                 // if the symbol is not bound as a variable in the current environment.
-                let is_var_bound = self.is_variable_bound(env, expr)?;
+                let is_var_bound = self.is_variable_bound(env, expr.0)?;
                 if !is_var_bound {
-                    if let Some(transformer) = self.lookup_macro(expr)? {
+                    if let Some(transformer) = self.lookup_macro(expr.0)? {
                         // Pass the bare identifier as the syntax form.
                         // The transformer's syntax-case pattern (id (identifier? (syntax id)) ...)
                         // will match this as a bare identifier.
-                        return self.apply_macro_trampolined(transformer, expr, env);
+                        return self.apply_macro_trampolined(transformer, expr.0, env);
                     }
                 }
-                let val = self.env_lookup(env, expr)?;
+                let val = self.env_lookup(env, expr.0)?;
                 Ok(TrampolineState::Return { val })
             }
             
             // List - special form or function application
             Value::Cons { .. } => {
-                let car = self.lisp.car(expr)?;
-                let cdr = self.lisp.cdr(expr)?;
+                let car = self.lisp.car(expr.0)?;
+                let cdr = self.lisp.cdr(expr.0)?;
                 self.step_eval_list(car, cdr, expr, env)
             }
         }
@@ -750,7 +750,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate a list (special form or application)
-    pub(super) fn step_eval_list(&mut self, car: ArenaIndex, cdr: ArenaIndex, expr: ArenaIndex, env: ArenaIndex) 
+    pub(super) fn step_eval_list(&mut self, car: ArenaIndex, cdr: ArenaIndex, expr: ExprRef, env: EnvRef) 
         -> Result<TrampolineState, EvalError> 
     {
         let head = self.lisp.get(car)?;
@@ -766,7 +766,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Variable bindings shadow macros, so only expand if not bound as a variable
             if !is_var_bound {
                 if let Some(transformer) = self.lookup_macro(car)? {
-                    return self.apply_macro_trampolined(transformer, expr, env);
+                    return self.apply_macro_trampolined(transformer, expr.0, env);
                 }
             }
             
@@ -855,10 +855,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let expr_to_eval = self.lisp.car(cdr)?;
                     // Push continuation to evaluate the result in global environment
                     // Data: env (single value)
-                    let global = self.global_env;
+                    let global = self.global_env.0;
                     self.cont(ContType::EvalExpr, env).data1(global)?;
                     // First evaluate the expression to get the code to eval
-                    return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
+                    return Ok(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env });
                 }
                 
                 // apply - apply function to list of arguments
@@ -890,14 +890,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Function application - HYBRID EVALUATION
-        self.push_frame(expr, car)?;
+        self.push_frame(expr.0, car)?;
         
         // Push continuation: after evaluating func, apply it
         // Data: (args_expr . (env . call_expr))
-        self.cont(ContType::ApplyForced, env).data3(cdr, env, expr)?;
+        self.cont(ContType::ApplyForced, env).data3(cdr, env.0, expr.0)?;
         
         // Evaluate the function expression
-        Ok(TrampolineState::Eval { expr: car, env })
+        Ok(TrampolineState::Eval { expr: ExprRef(car), env })
     }
     
     // Note: step_eval_cond removed - cond is now handled by macros
@@ -907,7 +907,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `if` is always recognized regardless of variable bindings - this ensures
     /// hygienic macros that use `if` (like `or`, `and`, `cond`) work correctly
     /// even when the user has locally rebound `if`.
-    fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: ArenaIndex) 
+    fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
         if self.lisp.symbol_matches(name, "if")? {
@@ -920,8 +920,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             } else {
                 self.lisp.car(else_rest)?
             };
-            self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env)?;
-            return Ok(Some(TrampolineState::Eval { expr: cond_expr, env }));
+            self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env.0)?;
+            return Ok(Some(TrampolineState::Eval { expr: ExprRef(cond_expr), env }));
         }
         Ok(None)
     }
@@ -1183,7 +1183,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Evaluate an expression with auto-GC retry on out of memory
     fn eval_with_gc_retry(&mut self, expr: ArenaIndex, input: &str) -> EvalResult {
-        match self.eval(expr) {
+        match self.eval(ExprRef(expr)) {
             Ok(result) => Ok(result),
             Err(e) if matches!(e.kind, ErrorKind::OutOfMemory) => {
                 // Auto-GC: Run GC and retry evaluation
@@ -1191,7 +1191,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.gc();
                 // Re-parse after GC since the old expr may have been garbage collected
                 let expr = self.parse_with_gc_retry(input)?;
-                self.eval(expr)
+                self.eval(ExprRef(expr))
             }
             Err(e) => Err(e),
         }
@@ -1221,55 +1221,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 pub(super) struct ContBuilder<'e, 'a, const N: usize> {
     evaluator: &'e mut Evaluator<'a, N>,
     cont_type: ContType,
-    env: ArenaIndex,
+    env: EnvRef,
 }
 
 impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
     /// Push with a single value (no packing needed).
     #[inline]
     pub fn data1(self, a: ArenaIndex) -> Result<(), EvalError> {
-        self.evaluator.push_cont(self.cont_type, a, self.env)
+        self.evaluator.push_cont(self.cont_type, a, self.env.0)
     }
     
     /// Pack 2 values as `(a . b)` and push.
     #[inline]
     pub fn data2(self, a: ArenaIndex, b: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack2(a, b)?;
-        self.evaluator.push_cont(self.cont_type, data, self.env)
+        self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 3 values as `(a . (b . c))` and push.
     #[inline]
     pub fn data3(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack3(a, b, c)?;
-        self.evaluator.push_cont(self.cont_type, data, self.env)
+        self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 4 values as `(a . (b . (c . d)))` and push.
     #[inline]
     pub fn data4(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack4(a, b, c, d)?;
-        self.evaluator.push_cont(self.cont_type, data, self.env)
+        self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 5 values as `(a . (b . (c . (d . e))))` and push.
     #[inline]
     pub fn data5(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack5(a, b, c, d, e)?;
-        self.evaluator.push_cont(self.cont_type, data, self.env)
+        self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 6 values as `(a . (b . (c . (d . (e . f)))))` and push.
     #[inline]
     pub fn data6(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack6(a, b, c, d, e, f)?;
-        self.evaluator.push_cont(self.cont_type, data, self.env)
+        self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
     #[inline]
     pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;
-        self.evaluator.push_cont(self.cont_type, data, self.env)
+        self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
 }

@@ -29,6 +29,81 @@ pub trait GcRoots {
 }
 
 // ============================================================================
+// Typed Index Newtypes
+// ============================================================================
+
+/// A typed wrapper around [`ArenaIndex`] representing an environment chain.
+///
+/// Environments are linked lists of `(name . value)` bindings stored in the
+/// arena. Using a distinct type prevents accidentally passing an expression
+/// where an environment is expected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnvRef(pub(crate) ArenaIndex);
+
+impl EnvRef {
+    /// Get the underlying [`ArenaIndex`].
+    #[inline]
+    pub const fn index(self) -> ArenaIndex {
+        self.0
+    }
+
+    /// Create an `EnvRef` from a raw [`ArenaIndex`].
+    #[inline]
+    pub const fn new(idx: ArenaIndex) -> Self {
+        EnvRef(idx)
+    }
+}
+
+impl From<ArenaIndex> for EnvRef {
+    #[inline]
+    fn from(idx: ArenaIndex) -> Self {
+        EnvRef(idx)
+    }
+}
+
+impl From<EnvRef> for ArenaIndex {
+    #[inline]
+    fn from(r: EnvRef) -> Self {
+        r.0
+    }
+}
+
+/// A typed wrapper around [`ArenaIndex`] representing an expression to evaluate.
+///
+/// Expressions are S-expressions stored in the arena. Using a distinct type
+/// prevents accidentally passing an environment where an expression is expected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExprRef(pub(crate) ArenaIndex);
+
+impl ExprRef {
+    /// Get the underlying [`ArenaIndex`].
+    #[inline]
+    pub const fn index(self) -> ArenaIndex {
+        self.0
+    }
+
+    /// Create an `ExprRef` from a raw [`ArenaIndex`].
+    #[inline]
+    pub const fn new(idx: ArenaIndex) -> Self {
+        ExprRef(idx)
+    }
+}
+
+impl From<ArenaIndex> for ExprRef {
+    #[inline]
+    fn from(idx: ArenaIndex) -> Self {
+        ExprRef(idx)
+    }
+}
+
+impl From<ExprRef> for ArenaIndex {
+    #[inline]
+    fn from(r: ExprRef) -> Self {
+        r.0
+    }
+}
+
+// ============================================================================
 // Continuation Type Enum
 // ============================================================================
 //
@@ -278,7 +353,7 @@ impl ContType {
 #[derive(Clone, Copy, Debug)]
 pub enum TrampolineState {
     /// Evaluate expression in environment
-    Eval { expr: grift_parser::ArenaIndex, env: grift_parser::ArenaIndex },
+    Eval { expr: ExprRef, env: EnvRef },
     /// Return a value to the continuation
     Return { val: grift_parser::ArenaIndex },
 }
@@ -287,8 +362,8 @@ impl GcRoots for TrampolineState {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
         match self {
             TrampolineState::Eval { expr, env } => {
-                tracer(*expr);
-                tracer(*env);
+                tracer(expr.0);
+                tracer(env.0);
             }
             TrampolineState::Return { val } => {
                 tracer(*val);
