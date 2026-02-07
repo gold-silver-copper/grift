@@ -83,4 +83,4 @@ mod macros;
 // Public re-exports
 pub use error::{ErrorKind, StackFrame, EvalError, EvalResult, ArgCountInfo};
 pub use evaluator::{Evaluator, OutputCallback};
-pub use continuation::TrampolineState;
+pub use continuation::{TrampolineState, GcRoots};

@@ -11,7 +11,7 @@ use crate::error::{
     ErrorKind, StackFrame, EvalError, EvalResult,
     MAX_STACK_DEPTH,
 };
-use crate::continuation::{TrampolineState,
+use crate::continuation::{TrampolineState, GcRoots,
     CONT_DONE, CONT_APPLY_FORCED, CONT_IF_BRANCH, CONT_EVAL_EXPR,
 };
 use crate::native::{NativeRegistry, NativeFn};
@@ -20,6 +20,15 @@ use super::Evaluator;
 
 /// Standard macro definitions (loaded at startup)
 const STANDARD_MACROS: &str = include_str!("macros.scm");
+
+impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
+    fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
+        tracer(self.global_env);
+        tracer(self.macro_env);
+        tracer(self.current_cont);
+        tracer(self.dynamic_wind_chain);
+    }
+}
 
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
@@ -160,47 +169,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.output_callback = callback;
     }
     
-    /// Run GC with minimal roots (global env, macro env, current continuation, and dynamic-wind chain)
+    /// Run GC with minimal roots (evaluator-owned roots only).
     /// 
     /// Use `gc_with_state()` during evaluation to also root the current expression/value.
     pub fn gc(&self) -> GcStats {
-        self.lisp.gc(&[self.global_env, self.macro_env, self.current_cont, self.dynamic_wind_chain])
-    }
-    
-    /// Run GC during evaluation - marks continuation chain AND current state as roots
-    /// 
-    /// Roots array size is 8 to accommodate:
-    /// - global_env, macro_env, current_cont, dynamic_wind_chain (4 static roots)
-    /// - expr, env from TrampolineState::Eval (2 roots)
-    /// - val from TrampolineState::Return (1 root)
-    /// Plus some headroom for future additions.
-    pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
-        // With arena-based continuations, we just need to root the current_cont pointer.
-        // The GC will trace through the ContFrame linked list automatically.
         const MAX_ROOTS: usize = 8;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
-        // Always include global env, macro env, current continuation chain, and dynamic-wind chain
-        roots[root_count] = self.global_env;
-        root_count += 1;
-        roots[root_count] = self.macro_env;
-        root_count += 1;
-        roots[root_count] = self.current_cont;
-        root_count += 1;
-        roots[root_count] = self.dynamic_wind_chain;
-        root_count += 1;
+        self.trace_roots(&mut |idx| {
+            roots[root_count] = idx;
+            root_count += 1;
+        });
         
-        // Include current state
-        match state {
-            TrampolineState::Eval { expr, env } => {
-                roots[root_count] = *expr; root_count += 1;
-                roots[root_count] = *env; root_count += 1;
-            }
-            TrampolineState::Return { val } => {
-                roots[root_count] = *val; root_count += 1;
-            }
-        }
+        self.lisp.gc(&roots[..root_count])
+    }
+    
+    /// Run GC during evaluation - marks both evaluator roots and current trampoline state as roots.
+    ///
+    /// Uses the [`GcRoots`] trait on both `self` and `state` so that adding a
+    /// new [`ArenaIndex`] field to either type only requires updating the
+    /// corresponding `trace_roots` implementation.
+    pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
+        const MAX_ROOTS: usize = 8;
+        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
+        let mut root_count = 0;
+        
+        // Collect evaluator roots via GcRoots trait
+        self.trace_roots(&mut |idx| {
+            roots[root_count] = idx;
+            root_count += 1;
+        });
+        
+        // Collect trampoline state roots via GcRoots trait
+        state.trace_roots(&mut |idx| {
+            roots[root_count] = idx;
+            root_count += 1;
+        });
         
         self.lisp.gc(&roots[..root_count])
     }

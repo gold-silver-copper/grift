@@ -7,7 +7,26 @@
 //! This design enables O(1) capture for call/cc (just save the current pointer)
 //! and natural structure sharing between continuations.
 
-use grift_parser::Builtin;
+use grift_parser::{ArenaIndex, Builtin};
+
+// ============================================================================
+// GC Root Tracking
+// ============================================================================
+
+/// Trait for types that contain GC roots.
+///
+/// Implementors should call `tracer` for each [`ArenaIndex`] that represents
+/// a live GC root. This ensures the garbage collector does not collect
+/// reachable objects.
+///
+/// By centralizing root enumeration in this trait, adding a new
+/// [`ArenaIndex`] field to a type will produce a compile-time reminder
+/// (or at least a single, obvious place) to update root tracking, rather
+/// than requiring updates in every GC call-site.
+pub trait GcRoots {
+    /// Call `tracer` once for every [`ArenaIndex`] that is a live GC root.
+    fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex));
+}
 
 // ============================================================================
 // Continuation Type Constants
@@ -194,6 +213,20 @@ pub enum TrampolineState {
     Eval { expr: grift_parser::ArenaIndex, env: grift_parser::ArenaIndex },
     /// Return a value to the continuation
     Return { val: grift_parser::ArenaIndex },
+}
+
+impl GcRoots for TrampolineState {
+    fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
+        match self {
+            TrampolineState::Eval { expr, env } => {
+                tracer(*expr);
+                tracer(*env);
+            }
+            TrampolineState::Return { val } => {
+                tracer(*val);
+            }
+        }
+    }
 }
 
 /// Check if a builtin is a binary operation (exactly 2 args, optimized path)
