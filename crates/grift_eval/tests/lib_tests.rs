@@ -1797,8 +1797,6 @@ fn test_gc_collects_unreachable() {
 
 #[test]
 fn test_gc_symbols_survive_in_env() {
-    // Larger arena needed: without symbol interning, stdlib init creates fresh
-    // symbols for each occurrence, using more arena space than with interning.
     let lisp: Lisp<40000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
