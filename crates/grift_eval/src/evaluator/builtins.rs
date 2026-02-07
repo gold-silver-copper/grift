@@ -1038,6 +1038,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.datum_to_syntax(template_id, datum)
             }
             
+            Builtin::DatumToSyntaxObject => {
+                // (datum->syntax-object template-id datum) - R6RS alias for datum->syntax
+                extract_args!(self, args, template_id, datum);
+                self.datum_to_syntax(template_id, datum)
+            }
+            
+            Builtin::SyntaxObjectToDatum => {
+                // (syntax-object->datum stx) - R6RS alias for syntax->datum
+                let stx = self.lisp.car(args)?;
+                self.syntax_to_datum_recursive(stx)
+            }
+            
             Builtin::GenerateTemporaries => {
                 // (generate-temporaries list) - Generate a list of fresh identifiers
                 // For each element in the input list, generate a unique temporary identifier

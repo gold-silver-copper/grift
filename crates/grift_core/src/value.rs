@@ -234,6 +234,10 @@ define_builtins! {
     SyntaxE => "syntax-e",
     /// datum->syntax - Wrap a datum with syntax context from a template identifier
     DatumToSyntax => "datum->syntax",
+    /// datum->syntax-object - R6RS alias for datum->syntax
+    DatumToSyntaxObject => "datum->syntax-object",
+    /// syntax-object->datum - R6RS alias for syntax->datum
+    SyntaxObjectToDatum => "syntax-object->datum",
     /// generate-temporaries - Generate a list of fresh identifiers
     GenerateTemporaries => "generate-temporaries",
     

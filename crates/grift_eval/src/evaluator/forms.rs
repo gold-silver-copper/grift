@@ -1259,19 +1259,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         
-        match self.lisp.get(first)? {
+        // Unwrap syntax objects to handle identifiers created by datum->syntax
+        let unwrapped = match self.lisp.get(first)? {
+            Value::Syntax { .. } => self.lisp.syntax_to_datum(first)?,
+            _ => first,
+        };
+        
+        match self.lisp.get(unwrapped)? {
             // (define name value)
             Value::Symbol(_) => {
                 let value_expr = self.lisp.car(rest)?;
                 // Push continuation and evaluate value
-                // Data: name
-                self.cont(ContType::DefineValue, env).data1(first)?;
+                // Data: name (use unwrapped symbol for proper binding)
+                self.cont(ContType::DefineValue, env).data1(unwrapped)?;
                 Ok(TrampolineState::Eval { expr: ExprRef(value_expr), env })
             }
             // (define (name params...) body...) -> (define name (lambda (params...) body...))
             Value::Cons { .. } => {
-                let name = self.lisp.car(first)?;
-                let params = self.lisp.cdr(first)?;
+                let name = self.lisp.car(unwrapped)?;
+                let params = self.lisp.cdr(unwrapped)?;
                 let body_list = rest;
                 
                 // Transform internal defines if needed
