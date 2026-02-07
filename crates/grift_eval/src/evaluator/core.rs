@@ -43,6 +43,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             gensym_counter: 0,
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
             output_callback: None, // No output callback by default
+            call_site_env: EnvRef(nil), // No call-site env initially
         };
         
         // Initialize global environment with builtins

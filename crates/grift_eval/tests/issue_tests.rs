@@ -49,19 +49,7 @@ fn test_identifier_syntax_basic() {
     let lisp: Lisp<50000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Define identifier-syntax (R6RS form)
-    eval.eval_str(r#"
-        (define-syntax identifier-syntax
-          (lambda (x)
-            (syntax-case x ()
-              ((_ e)
-               (syntax
-                 (lambda (x)
-                   (syntax-case x ()
-                     (id (identifier? (syntax id)) (syntax e))
-                     ((id rest (... ...)) (identifier? (syntax id)) (syntax (e rest (... ...)))))))))))
-    "#).unwrap();
-    
+    // identifier-syntax is now in the standard library (macros.scm)
     // Simple test: identifier macro that evaluates to a constant
     eval.eval_str(r#"
         (define-syntax my-val
@@ -108,4 +96,42 @@ fn test_named_let_via_syntax_rules() {
           (if (= i 5) sum (loop (+ i 1) (+ sum i))))
     "#);
     assert_eq!(r2, 10);
+}
+
+// Issue 5: cond with lexically bound else should NOT match the else literal
+// Per R7RS, syntax-rules literals are matched via free-identifier=?.
+// When `else` is locally bound (e.g., by let), it's a different identifier
+// than the `else` in the cond macro's literal list.
+#[test]
+fn test_cond_bound_else_not_matched() {
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // (let ((else #f)) (cond (else 42))) should NOT match the else clause
+    // because else is locally bound. Instead, else is used as a test expression
+    // and evaluates to #f, so the cond returns #f.
+    let result = eval_to_string(&lisp, &mut eval, r#"
+        (let ((else #f))
+          (cond (else 42)))
+    "#);
+    assert_eq!(result, "#f");
+}
+
+// Issue 6: identifier-syntax with set! and variable mutation
+// The full R6RS identifier-syntax example with x++
+#[test]
+fn test_identifier_syntax_with_set() {
+    let lisp: Lisp<80000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // identifier-syntax is now in the standard library (macros.scm)
+    let result = eval_to_string(&lisp, &mut eval, r#"
+        (let ((x 0))
+          (define-syntax x++
+            (identifier-syntax
+              (let ((t x)) (set! x (+ t 1)) t)))
+          (let ((a x++))
+            (list a x)))
+    "#);
+    assert_eq!(result, "(0 1)");
 }

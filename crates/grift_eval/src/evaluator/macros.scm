@@ -477,6 +477,29 @@
     ((force promise)
      (promise))))
 
+;; identifier-syntax - create macros that expand in identifier position (R6RS)
+;;
+;; (identifier-syntax e) creates a transformer that:
+;; - When referenced as a bare identifier, expands to e
+;; - When used in application position (id args ...), expands to (e args ...)
+;;
+;; Example:
+;;   (let ((x 0))
+;;     (define-syntax x++
+;;       (identifier-syntax
+;;         (let ((t x)) (set! x (+ t 1)) t)))
+;;     (let ((a x++))
+;;       (list a x)))  => (0 1)
+(define-syntax identifier-syntax
+  (lambda (x)
+    (syntax-case x ()
+      ((_ e)
+       (syntax
+         (lambda (x)
+           (syntax-case x ()
+             (id (identifier? (syntax id)) (syntax e))
+             ((id rest (... ...)) (identifier? (syntax id)) (syntax (e rest (... ...)))))))))))
+
 ;; ============================================================
 ;; Case-Lambda (R7RS Section 4.2.9)
 ;; ============================================================

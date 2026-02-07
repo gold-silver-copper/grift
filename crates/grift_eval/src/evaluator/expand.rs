@@ -669,11 +669,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     .with_message("misplaced ellipsis in pattern"))
             }
 
-            // Literal keyword: must match exactly
+            // Literal keyword: must match via free-identifier=?
+            // Per R7RS, a literal in a syntax-rules pattern matches only if
+            // the input identifier and the literal are free-identifier=?.
+            // Both identifiers are resolved: the input in the call-site env,
+            // the literal in the global env (where the macro was defined).
+            // They match if both resolve to the same binding, or both are unbound.
             Value::Symbol(_) if self.is_literal(pattern, literals)? => {
                 match self.lisp.get(expr)? {
                     Value::Symbol(_) if self.symbols_eq(pattern, expr)? => {
-                        Ok(Some(bindings))
+                        // Names match - check if they resolve to the same binding
+                        let input_binding = self.lookup_in_env(expr, self.call_site_env.0)?;
+                        let literal_binding = self.lookup_in_env(pattern, self.global_env.0)?;
+                        match (input_binding, literal_binding) {
+                            // Both bound - match only if they resolve to the same value
+                            (Some(ib), Some(lb)) => {
+                                if self.lisp.eqv(ib, lb)? {
+                                    Ok(Some(bindings))
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            // Both unbound - match (same name, same free reference)
+                            (None, None) => Ok(Some(bindings)),
+                            // One bound, one not - different bindings, no match
+                            _ => Ok(None),
+                        }
                     }
                     _ => Ok(None),
                 }
@@ -1745,8 +1766,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Now walk through transcribed params and identify which are macro-introduced
         // (symbols that weren't in the original bindings and need gensym for hygiene)
+        // Pass the original params_template so we can check which template params
+        // were pattern variable keys vs template-literal symbols.
         let (new_params, new_renames) = self.identify_and_rename_introduced_params(
-            transcribed_params, bindings, renames
+            params_template, transcribed_params, bindings, renames
         )?;
 
         // Transcribe body with extended renames
@@ -1761,15 +1784,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// # Arguments
     /// 
+    /// * `original_template` - The original (pre-transcription) parameter template
     /// * `params` - Already transcribed parameter list (e.g., `(n acc)` after expanding `(vars ...)`)
     /// * `bindings` - Original pattern variable bindings from macro matching
     /// * `renames` - Current rename environment
     /// 
-    /// After transcription, `params` is a list of actual symbols. We need to check each one
-    /// to see if it was in the original pattern bindings (user-provided) or if it's 
-    /// a macro-introduced symbol that needs gensym for hygiene.
+    /// To correctly identify whether a transcribed param is user-provided (from a pattern
+    /// variable) or macro-introduced (template literal), we check the ORIGINAL template:
+    /// - If the original template symbol was a pattern variable KEY → user-provided → keep
+    /// - If the original template symbol was NOT a pattern variable KEY → macro-introduced → rename
+    /// 
+    /// This avoids false positives from `symbol_appears_in_binding_values` where a
+    /// template-literal symbol happens to have the same name as a binding value.
     fn identify_and_rename_introduced_params(
         &mut self,
+        original_template: ArenaIndex,
         params: ArenaIndex,
         bindings: ArenaIndex,
         renames: ArenaIndex,
@@ -1781,7 +1810,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Handle plain symbol formals (e.g., `(lambda args ...)`)
         // In this case, params is just a symbol, not a list at all
         if let Value::Symbol(_) = self.lisp.get(params)? {
-            let is_from_pattern = self.symbol_appears_in_binding_values(params, bindings)?;
+            let is_from_pattern = self.is_param_from_pattern(original_template, params, bindings)?;
             let new_param = if is_from_pattern {
                 params
             } else {
@@ -1792,12 +1821,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok((new_param, new_renames));
         }
 
+        // Walk the original template and transcribed params together
+        let mut orig_current = original_template;
+        
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let param = self.lisp.car(current)?;
-
-            // Check if this param came from a pattern variable value
-            // by checking if it appears as a value in any of the bindings
-            let is_from_pattern = self.symbol_appears_in_binding_values(param, bindings)?;
+            
+            // Determine if this param was from a pattern variable by checking
+            // the original template at this position
+            let is_from_pattern = if let Value::Cons { .. } = self.lisp.get(orig_current)? {
+                let orig_param = self.lisp.car(orig_current)?;
+                let orig_cdr = self.lisp.cdr(orig_current)?;
+                
+                // Check if the original template has an ellipsis here
+                if self.has_ellipsis(orig_cdr)? {
+                    // Ellipsis: all remaining params are expanded from the pattern variable
+                    // If the sub-pattern is a pattern variable, all expanded values are user-provided
+                    self.bindings_lookup(bindings, orig_param)?.is_some()
+                    // Don't advance orig_current - the ellipsis covers all remaining
+                } else {
+                    // Normal (non-ellipsis): check if original param is a pattern variable key
+                    let result = self.bindings_lookup(bindings, orig_param)?.is_some();
+                    orig_current = orig_cdr;
+                    result
+                }
+            } else {
+                // Original template exhausted but transcribed has more
+                // (can happen with ellipsis expansion) - treat as from pattern
+                self.symbol_appears_in_binding_values(param, bindings)?
+            };
 
             let new_param = if is_from_pattern {
                 // User-provided name - keep as is
@@ -1816,7 +1868,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Handle rest parameter for improper lists (e.g., `(a b . rest)`)
         // After the loop, `current` may be a symbol (the rest param) instead of nil
         let rest_param = if let Value::Symbol(_) = self.lisp.get(current)? {
-            let is_from_pattern = self.symbol_appears_in_binding_values(current, bindings)?;
+            let is_from_pattern = self.is_param_from_pattern(original_template, current, bindings)?;
             if is_from_pattern {
                 Some(current)
             } else {
@@ -1831,6 +1883,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Reverse the proper list part and optionally append rest parameter
         let new_params = self.reverse_list_with_tail(new_params, rest_param)?;
         Ok((new_params, new_renames))
+    }
+
+    /// Check if a transcribed param originally came from a pattern variable.
+    /// 
+    /// For plain symbol templates, checks if the original template is a pattern variable key.
+    /// For list templates, walks the original to find the rest/tail position.
+    /// Falls back to `symbol_appears_in_binding_values` when the original template
+    /// structure doesn't provide enough information.
+    fn is_param_from_pattern(
+        &self,
+        original_template: ArenaIndex,
+        param: ArenaIndex,
+        bindings: ArenaIndex,
+    ) -> Result<bool, EvalError> {
+        // If the original template is a plain symbol, check if it's a pattern variable key
+        if let Value::Symbol(_) = self.lisp.get(original_template)? {
+            return Ok(self.bindings_lookup(bindings, original_template)?.is_some());
+        }
+        // For improper list rest params, check the tail of the original template
+        let mut current = original_template;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            current = self.lisp.cdr(current)?;
+        }
+        // current is now the tail (nil for proper lists, symbol for improper)
+        if let Value::Symbol(_) = self.lisp.get(current)? {
+            if self.bindings_lookup(bindings, current)?.is_some() {
+                return Ok(true);
+            }
+        }
+        // Fall back to checking binding values
+        self.symbol_appears_in_binding_values(param, bindings)
     }
 
     /// Reverse a list, optionally ending with an improper tail
@@ -2177,8 +2260,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let binding = self.lisp.cons(param, expr)?;
         let call_env = self.lisp.cons(binding, def_env)?;
         
+        // Save the call-site environment for free-identifier=? literal matching.
+        // When syntax-rules patterns contain literals like `else`, the pattern
+        // matcher needs to check if the input identifier is locally bound at the
+        // call site to distinguish it from the unbound literal keyword.
+        self.call_site_env = eval_env;
+        
         // Push continuation to re-evaluate the macro result in the original environment
-        // Data: eval_env (the environment where the expanded code should run)
+        // Data: (eval_env . saved_call_site_env)
         // Note: cont_env is set to eval_env (not call_env) because if an error occurs
         // during re-evaluation, the relevant context is the expansion site, not the
         // transformer body's scope.
