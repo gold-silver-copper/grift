@@ -1319,12 +1319,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Evaluate (define-syntax name transformer) at evaluation time
+    /// Also supports the shorthand (define-syntax (name stx) body)
+    /// which desugars to (define-syntax name (lambda (stx) body))
     /// 
     /// This allows macros to be defined during evaluation rather than
     /// only during pre-expansion.
     pub(super) fn step_eval_define_syntax(&mut self, args: ArenaIndex, env: ArenaIndex) -> Result<TrampolineState, EvalError> {
-        let name = self.lisp.car(args)?;
-        let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+        let first = self.lisp.car(args)?;
+        
+        // Check for shorthand: (define-syntax (name stx) body)
+        let (name, transformer_expr) = if let Value::Cons { .. } = self.lisp.get(first)? {
+            // (name stx) form - desugar to (lambda (stx) body)
+            let actual_name = self.lisp.car(first)?;
+            let lambda_params = self.lisp.cdr(first)?;
+            let body_list = self.lisp.cdr(args)?;
+            
+            // Build (lambda (params) body...)
+            let lambda_sym = self.lisp.symbol("lambda")?;
+            let lambda_with_params = self.lisp.cons(lambda_params, body_list)?;
+            let lambda_expr = self.lisp.cons(lambda_sym, lambda_with_params)?;
+            
+            (actual_name, lambda_expr)
+        } else {
+            // Standard form: (define-syntax name transformer)
+            let transformer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+            (first, transformer_expr)
+        };
         
         // Expand the transformer expression if it's not already a lambda
         let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;

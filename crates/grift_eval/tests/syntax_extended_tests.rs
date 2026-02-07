@@ -479,3 +479,79 @@ fn test_do_with_body() {
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "counter"), 3);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DEFINE-SYNTAX SHORTHAND FORM
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_define_syntax_shorthand_form() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // (define-syntax (name stx) body) shorthand
+    eval.eval_str(r#"
+        (define-syntax (my-ten stx)
+          (syntax-case stx ()
+            ((_) #'10)))
+    "#).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-ten)"), 10);
+}
+
+#[test]
+fn test_define_syntax_shorthand_multiple_clauses() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Shorthand with multiple syntax-case clauses
+    eval.eval_str(r#"
+        (define-syntax (my-val stx)
+          (syntax-case stx (foo)
+            ((_) #'10)
+            ((_ (foo)) #'67)))
+    "#).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-val)"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-val (foo))"), 67);
+}
+
+#[test]
+fn test_nested_define_syntax_via_syntax_rules() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Macro that generates another macro using syntax-rules
+    eval.eval_str(r#"
+        (define-syntax make-macro3
+          (syntax-rules (foo bar baz)
+            ((_ name)
+             (define-syntax name
+               (syntax-rules (foo bar baz)
+                 ((_) 100))))))
+    "#).unwrap();
+    
+    eval.eval_str("(make-macro3 my-hundred)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-hundred)"), 100);
+}
+
+#[test]
+fn test_nested_define_syntax_shorthand_via_syntax_rules() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Macro that generates another macro using the shorthand form
+    eval.eval_str(r#"
+        (define-syntax make-macro4
+          (syntax-rules ()
+            ((_ name)
+             (define-syntax (name stx)
+               (syntax-case stx (foo bar baz)
+                 ((_) #'10)
+                 ((_ (foo)) #'67))))))
+    "#).unwrap();
+    
+    eval.eval_str("(make-macro4 my-bar)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-bar)"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-bar (foo))"), 67);
+}
