@@ -346,48 +346,9 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
 
 /// Convert a lisp-style name to PascalCase
 /// e.g., "map" -> "Map", "set-car!" -> "SetCar", "null?" -> "NullP"
+///
+/// Delegates to [`grift_util::to_pascal_case`] to keep the conversion logic
+/// in a single place shared between compile-time and runtime code.
 fn to_pascal_case(name: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = true;
-    
-    for c in name.chars() {
-        match c {
-            '-' | '_' => {
-                capitalize_next = true;
-            }
-            '!' => {
-                // Skip exclamation marks
-            }
-            '?' => {
-                // Replace with 'P' (predicate convention)
-                result.push('P');
-                capitalize_next = true;
-            }
-            '=' => {
-                // Replace with 'Eq' for equality operators
-                result.push_str("Eq");
-                capitalize_next = true;
-            }
-            '>' => {
-                // Replace with 'Gt' for greater-than
-                result.push_str("Gt");
-                capitalize_next = true;
-            }
-            '<' => {
-                // Replace with 'Lt' for less-than
-                result.push_str("Lt");
-                capitalize_next = true;
-            }
-            _ => {
-                if capitalize_next {
-                    result.extend(c.to_uppercase());
-                    capitalize_next = false;
-                } else {
-                    result.push(c);
-                }
-            }
-        }
-    }
-    
-    result
+    grift_util::to_pascal_case(name)
 }

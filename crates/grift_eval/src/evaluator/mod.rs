@@ -13,6 +13,7 @@ mod expand;
 
 use grift_parser::{ArenaIndex, Lisp};
 
+use crate::continuation::EnvRef;
 use crate::error::{StackFrame, MAX_STACK_DEPTH};
 use crate::native::NativeRegistry;
 
@@ -42,7 +43,7 @@ pub type OutputCallback<const N: usize> = fn(&Lisp<N>, ArenaIndex);
 pub struct Evaluator<'a, const N: usize> {
     pub(crate) lisp: &'a Lisp<N>,
     /// Global environment
-    global_env: ArenaIndex,
+    global_env: EnvRef,
     /// Call stack for error reporting
     call_stack: [StackFrame; MAX_STACK_DEPTH],
     call_stack_depth: usize,
@@ -53,7 +54,7 @@ pub struct Evaluator<'a, const N: usize> {
     native_registry: NativeRegistry<N>,
     /// Macro environment - stores (name . transformer) bindings
     /// Transformers are Lambda values (procedural macros via syntax-case)
-    macro_env: ArenaIndex,
+    macro_env: EnvRef,
     /// Counter for generating unique symbols (gensym)
     gensym_counter: usize,
     /// Dynamic-wind chain - arena-based linked list of (before . after) thunk pairs

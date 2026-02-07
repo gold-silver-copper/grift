@@ -1,0 +1,12 @@
+[package]
+name = "grift_util"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared utilities for the Grift Scheme implementation"
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift_util"
+keywords = ["lisp", "scheme", "utility"]
+categories = ["development-tools"]
+
+[dependencies]

@@ -6,8 +6,7 @@
 use grift_parser::{ArenaIndex, Value, Builtin};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::continuation::{TrampolineState, is_binary_builtin,
-    CONT_BINARY_BUILTIN_FIRST, CONT_BUILTIN_FORCE_ARG};
+use crate::continuation::{TrampolineState, ContType, is_binary_builtin, EnvRef, ExprRef};
 use crate::helpers::{gcd_helper, int_pow, equal_recursive};
 use crate::{
     extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_int_identity, builtin_div_op,
@@ -18,7 +17,7 @@ use crate::{
 use super::Evaluator;
 
 impl<'a, const N: usize> Evaluator<'a, N> {
-    pub(super) fn apply_builtin_with_args(&mut self, builtin: Builtin, args_expr: ArenaIndex, env: ArenaIndex, call_expr: ArenaIndex) 
+    pub(super) fn apply_builtin_with_args(&mut self, builtin: Builtin, args_expr: ArenaIndex, env: EnvRef, call_expr: ArenaIndex) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
         // Get first arg expression
@@ -36,8 +35,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Evaluate second arg expr (store for later), then evaluate first
                     // Data: (builtin_encoded . (second_arg . (call_expr . eval_env)))
                     let builtin_encoded = Self::encode_builtin(builtin);
-                    self.cont(CONT_BINARY_BUILTIN_FIRST, env).data4(builtin_encoded, second_arg_expr, call_expr, env)?;
-                    return Ok(Some(TrampolineState::Eval { expr: first_arg, env }));
+                    self.cont(ContType::BinaryBuiltinFirst, env).data4(builtin_encoded, second_arg_expr, call_expr, env.0)?;
+                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(first_arg), env }));
                 }
             }
         }
@@ -46,9 +45,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Data: (builtin_encoded . (remaining_args . (collected . (call_expr . eval_env))))
         let nil = self.lisp.nil()?;
         let builtin_encoded = Self::encode_builtin(builtin);
-        self.cont(CONT_BUILTIN_FORCE_ARG, env).data5(builtin_encoded, rest_args, nil, call_expr, env)?;
+        self.cont(ContType::BuiltinForceArg, env).data5(builtin_encoded, rest_args, nil, call_expr, env.0)?;
         
-        Ok(Some(TrampolineState::Eval { expr: first_arg, env }))
+        Ok(Some(TrampolineState::Eval { expr: ExprRef(first_arg), env }))
     }
     
     /// Reverse a list (used for BuiltinForceArg fallback path)
