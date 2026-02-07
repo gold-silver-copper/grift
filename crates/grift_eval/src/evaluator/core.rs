@@ -425,6 +425,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(())
     }
     
+    /// Create a continuation builder for the given type and environment.
+    ///
+    /// The builder packs data and pushes the continuation in a single chain,
+    /// making the data layout explicit and reducing pack+push boilerplate.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// // Instead of:
+    /// let data = self.pack3(then_expr, else_expr, env)?;
+    /// self.push_cont(CONT_IF_BRANCH, data, env)?;
+    ///
+    /// // Use:
+    /// self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
+    /// ```
+    #[inline]
+    pub(super) fn cont(&mut self, cont_type: usize, env: ArenaIndex) -> ContBuilder<'_, 'a, N> {
+        ContBuilder { evaluator: self, cont_type, env }
+    }
+    
     /// Pop a continuation from the arena-based stack
     ///
     /// Returns the continuation type, data, and environment from the current frame,
@@ -667,8 +687,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if count >= bindings.len() {
                 // Buffer overflow: too many local bindings to copy.
                 // Fall back to recursive processing for the remaining bindings.
-                let car = self.lisp.car(current)?;
-                let cdr = self.lisp.cdr(current)?;
+                let (car, cdr) = self.lisp.car_cdr(current)?;
                 let rest_merged = self.merge_environments(cdr, env2)?;
                 let mut result = rest_merged;
                 result = self.lisp.cons(car, result)?;
@@ -679,9 +698,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 return Ok(result);
             }
-            bindings[count] = self.lisp.car(current)?;
+            let (car, cdr) = self.lisp.car_cdr(current)?;
+            bindings[count] = car;
             count += 1;
-            current = self.lisp.cdr(current)?;
+            current = cdr;
         }
         
         // Build new env chain: bindings from env1 -> env2
@@ -791,8 +811,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     
                     // Push continuation for after condition is evaluated
                     // Data: (then_expr . (else_expr . env))
-                    let data = self.pack3(then_expr, else_expr, env)?;
-                    self.push_cont(CONT_IF_BRANCH, data, env)?;
+                    self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
                     
                     // Evaluate condition
                     return Ok(TrampolineState::Eval { expr: cond_expr, env });
@@ -838,8 +857,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let expr_to_eval = self.lisp.car(cdr)?;
                     // Push continuation to evaluate the result in global environment
                     // Data: env (single value)
-                    let data = self.pack1(self.global_env)?;
-                    self.push_cont(CONT_EVAL_EXPR, data, env)?;
+                    let global = self.global_env;
+                    self.cont(CONT_EVAL_EXPR, env).data1(global)?;
                     // First evaluate the expression to get the code to eval
                     return Ok(TrampolineState::Eval { expr: expr_to_eval, env });
                 }
@@ -877,8 +896,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Push continuation: after evaluating func, apply it
         // Data: (args_expr . (env . call_expr))
-        let data = self.pack3(cdr, env, expr)?;
-        self.push_cont(CONT_APPLY_FORCED, data, env)?;
+        self.cont(CONT_APPLY_FORCED, env).data3(cdr, env, expr)?;
         
         // Evaluate the function expression
         Ok(TrampolineState::Eval { expr: car, env })
@@ -929,6 +947,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Pack 1 value (just returns it as-is)
     #[inline]
+    #[allow(dead_code)]
     pub(super) fn pack1(&self, a: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         Ok(a)
     }
@@ -948,9 +967,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 2 values from a cons cell: (a . b) -> (a, b)
     #[inline]
     pub(super) fn unpack2(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let b = self.lisp.cdr(data)?;
-        Ok((a, b))
+        self.lisp.car_cdr(data).map_err(Into::into)
     }
     
     /// Pack 3 values into nested cons: (a . (b . c))
@@ -963,10 +980,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 3 values from nested cons: (a . (b . c)) -> (a, b, c)
     #[inline]
     pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bc = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bc)?;
-        let c = self.lisp.cdr(bc)?;
+        let (a, bc) = self.lisp.car_cdr(data)?;
+        let (b, c) = self.lisp.car_cdr(bc)?;
         Ok((a, b, c))
     }
     
@@ -981,12 +996,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 4 values from nested cons
     #[inline]
     pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcd = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcd)?;
-        let cd = self.lisp.cdr(bcd)?;
-        let c = self.lisp.car(cd)?;
-        let d = self.lisp.cdr(cd)?;
+        let (a, bcd) = self.lisp.car_cdr(data)?;
+        let (b, cd) = self.lisp.car_cdr(bcd)?;
+        let (c, d) = self.lisp.car_cdr(cd)?;
         Ok((a, b, c, d))
     }
     
@@ -1002,14 +1014,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 5 values from nested cons
     #[inline]
     pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcde = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcde)?;
-        let cde = self.lisp.cdr(bcde)?;
-        let c = self.lisp.car(cde)?;
-        let de = self.lisp.cdr(cde)?;
-        let d = self.lisp.car(de)?;
-        let e = self.lisp.cdr(de)?;
+        let (a, bcde) = self.lisp.car_cdr(data)?;
+        let (b, cde) = self.lisp.car_cdr(bcde)?;
+        let (c, de) = self.lisp.car_cdr(cde)?;
+        let (d, e) = self.lisp.car_cdr(de)?;
         Ok((a, b, c, d, e))
     }
     
@@ -1026,16 +1034,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 6 values from nested cons
     #[inline]
     pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcdef = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcdef)?;
-        let cdef = self.lisp.cdr(bcdef)?;
-        let c = self.lisp.car(cdef)?;
-        let def = self.lisp.cdr(cdef)?;
-        let d = self.lisp.car(def)?;
-        let ef = self.lisp.cdr(def)?;
-        let e = self.lisp.car(ef)?;
-        let f = self.lisp.cdr(ef)?;
+        let (a, bcdef) = self.lisp.car_cdr(data)?;
+        let (b, cdef) = self.lisp.car_cdr(bcdef)?;
+        let (c, def) = self.lisp.car_cdr(cdef)?;
+        let (d, ef) = self.lisp.car_cdr(def)?;
+        let (e, f) = self.lisp.car_cdr(ef)?;
         Ok((a, b, c, d, e, f))
     }
     
@@ -1053,18 +1056,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Unpack 7 values from nested cons
     #[inline]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let a = self.lisp.car(data)?;
-        let bcdefg = self.lisp.cdr(data)?;
-        let b = self.lisp.car(bcdefg)?;
-        let cdefg = self.lisp.cdr(bcdefg)?;
-        let c = self.lisp.car(cdefg)?;
-        let defg = self.lisp.cdr(cdefg)?;
-        let d = self.lisp.car(defg)?;
-        let efg = self.lisp.cdr(defg)?;
-        let e = self.lisp.car(efg)?;
-        let fg = self.lisp.cdr(efg)?;
-        let f = self.lisp.car(fg)?;
-        let g = self.lisp.cdr(fg)?;
+        let (a, bcdefg) = self.lisp.car_cdr(data)?;
+        let (b, cdefg) = self.lisp.car_cdr(bcdefg)?;
+        let (c, defg) = self.lisp.car_cdr(cdefg)?;
+        let (d, efg) = self.lisp.car_cdr(defg)?;
+        let (e, fg) = self.lisp.car_cdr(efg)?;
+        let (f, g) = self.lisp.car_cdr(fg)?;
         Ok((a, b, c, d, e, f, g))
     }
     
@@ -1176,5 +1173,81 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+// ============================================================================
+// Continuation Builder
+// ============================================================================
+
+/// Builder for packing data and pushing a continuation in one step.
+///
+/// Created via [`Evaluator::cont`]. The builder consumes itself on each
+/// terminal method (`data1` through `data7`), releasing the mutable borrow
+/// on the evaluator.
+///
+/// # Data Layout
+///
+/// Each `dataN` method packs N values into nested cons cells and pushes
+/// the resulting continuation frame:
+///
+/// - `data1(a)` — single value (no packing)
+/// - `data2(a, b)` — `(a . b)`
+/// - `data3(a, b, c)` — `(a . (b . c))`
+/// - `data4(a, b, c, d)` — `(a . (b . (c . d)))`
+/// - etc.
+pub(super) struct ContBuilder<'e, 'a, const N: usize> {
+    evaluator: &'e mut Evaluator<'a, N>,
+    cont_type: usize,
+    env: ArenaIndex,
+}
+
+impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
+    /// Push with a single value (no packing needed).
+    #[inline]
+    pub fn data1(self, a: ArenaIndex) -> Result<(), EvalError> {
+        self.evaluator.push_cont(self.cont_type, a, self.env)
+    }
+    
+    /// Pack 2 values as `(a . b)` and push.
+    #[inline]
+    pub fn data2(self, a: ArenaIndex, b: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack2(a, b)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 3 values as `(a . (b . c))` and push.
+    #[inline]
+    pub fn data3(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack3(a, b, c)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 4 values as `(a . (b . (c . d)))` and push.
+    #[inline]
+    pub fn data4(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack4(a, b, c, d)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 5 values as `(a . (b . (c . (d . e))))` and push.
+    #[inline]
+    pub fn data5(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack5(a, b, c, d, e)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 6 values as `(a . (b . (c . (d . (e . f)))))` and push.
+    #[inline]
+    pub fn data6(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack6(a, b, c, d, e, f)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
+    }
+    
+    /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
+    #[inline]
+    pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
+        let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;
+        self.evaluator.push_cont(self.cont_type, data, self.env)
     }
 }

@@ -48,7 +48,8 @@
 //! This crate re-exports the complete Grift stack:
 //!
 //! - [`grift_arena`] — Arena allocator with GC
-//! - [`grift_parser`] — Lexer, parser, and value types
+//! - [`grift_core`] — Core types (`Value`, `Builtin`, `StdLib`, `Lisp`)
+//! - [`grift_parser`] — Lexer and parser
 //! - [`grift_eval`] — Trampolined evaluator
 //! - [`grift_repl`] — Interactive REPL (behind `std` feature)
 
@@ -71,24 +72,40 @@ pub mod arena {
 pub use arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats, Trace};
 
 // ============================================================================
+// Core Types Re-exports from grift_core
+// ============================================================================
+
+/// Core value types and Lisp context.
+pub mod core_types {
+    pub use grift_core::{
+        Value, Builtin, StdLib, Lisp, RESERVED_SLOTS,
+        DisplayValue,
+        define_builtins, define_stdlib,
+    };
+}
+
+// ============================================================================
 // Parser Re-exports from grift_parser
 // ============================================================================
 
-/// Parser, value types, and built-in definitions.
+/// Parser, lexer, value types, and built-in definitions.
 pub mod parser {
     pub use grift_parser::{
-        // Core types
-        Value, Builtin, StdLib, Lisp,
+        // Core types (re-exported from grift_core)
+        Value, Builtin, StdLib, Lisp, DisplayValue,
+        // Lexer
+        Lexer, Token, SpannedToken, LexError, LexErrorKind,
         // Parsing
-        parse, ParseError, ParseErrorKind, SourceLoc,
+        parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
         // Macros
         define_builtins, define_stdlib,
     };
 }
 
 pub use parser::{
-    Value, Builtin, StdLib, Lisp,
-    parse, ParseError, ParseErrorKind, SourceLoc,
+    Value, Builtin, StdLib, Lisp, DisplayValue,
+    Lexer, Token, SpannedToken, LexError, LexErrorKind,
+    parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
     define_builtins, define_stdlib,
 };
 

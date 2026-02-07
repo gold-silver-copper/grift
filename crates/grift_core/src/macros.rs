@@ -18,7 +18,7 @@
 /// # Syntax
 /// 
 /// ```rust
-/// use grift_parser::define_builtins;
+/// use grift_core::define_builtins;
 /// define_builtins! {
 ///     /// Documentation comment
 ///     VariantName => "lisp-name",
@@ -31,7 +31,7 @@
 /// To add a new builtin `my-builtin`:
 /// 
 /// ```rust
-/// use grift_parser::define_builtins;
+/// use grift_core::define_builtins;
 /// define_builtins! {
 ///     // ... existing builtins ...
 ///     /// (my-builtin x) - Does something with x
@@ -108,7 +108,7 @@ macro_rules! define_builtins {
 /// # Syntax
 /// 
 /// ```rust
-/// use grift_parser::define_stdlib;
+/// use grift_core::define_stdlib;
 /// define_stdlib! {
 ///     /// Documentation comment
 ///     VariantName("function-name", ["param1", "param2"], "lisp-body-code"),
@@ -121,7 +121,7 @@ macro_rules! define_builtins {
 /// To add a new function `(my-func x y)` that returns `(+ x y)`:
 /// 
 /// ```rust
-/// use grift_parser::define_stdlib;
+/// use grift_core::define_stdlib;
 /// define_stdlib! {
 ///     // ... existing functions ...
 ///     /// (my-func x y) - Add two numbers

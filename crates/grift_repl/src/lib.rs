@@ -22,7 +22,7 @@ use std::io::{self, BufRead, Write};
 
 pub use grift_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib, Lisp, ParseError, ParseErrorKind, SourceLoc, parse,
+    Value, Builtin, StdLib, Lisp, DisplayValue, ParseError, ParseErrorKind, SourceLoc, parse,
     EvalError, EvalResult, Evaluator, ErrorKind, StackFrame,
 };
 
@@ -168,8 +168,7 @@ fn format_list_contents<const N: usize>(
                     buf.push(' ');
                 }
                 first = false;
-                let car = lisp.car(idx).unwrap_or(ArenaIndex::NIL);
-                let cdr = lisp.cdr(idx).unwrap_or(ArenaIndex::NIL);
+                let (car, cdr) = lisp.car_cdr(idx).unwrap_or((ArenaIndex::NIL, ArenaIndex::NIL));
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
                 count += 1;

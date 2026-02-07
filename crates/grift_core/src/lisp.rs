@@ -577,7 +577,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_parser::{Lisp, Value};
+    /// use grift_core::{Lisp, Value};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
@@ -725,7 +725,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_parser::Lisp;
+    /// use grift_core::Lisp;
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
@@ -813,7 +813,7 @@ impl<const N: usize> Lisp<N> {
     ///
     /// The Nil case enables writing simple iteration loops that naturally terminate:
     /// ```
-    /// use grift_parser::{Lisp, Value};
+    /// use grift_core::{Lisp, Value};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
@@ -856,7 +856,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_parser::{Lisp, Value};
+    /// use grift_core::{Lisp, Value};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
@@ -1119,7 +1119,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     /// 
     /// ```rust
-    /// use grift_parser::Lisp;
+    /// use grift_core::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let hello = lisp.string("hello").unwrap();
     /// 
@@ -1391,7 +1391,7 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     /// 
     /// ```rust
-    /// use grift_parser::Lisp;
+    /// use grift_core::Lisp;
     /// let lisp = Lisp::<1000>::new();
     /// let arr = lisp.make_array(3, lisp.nil().unwrap()).unwrap();
     /// 
@@ -1498,6 +1498,27 @@ impl<const N: usize> Lisp<N> {
             }
             _ => Err(ArenaError::InvalidIndex),
         }
+    }
+    
+    /// Create a [`DisplayValue`](crate::DisplayValue) wrapper for formatting.
+    ///
+    /// The returned wrapper implements `core::fmt::Display`, enabling
+    /// standard formatting via `write!` and `format!` without needing
+    /// a separate `format_value` function.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use grift_core::Lisp;
+    ///
+    /// let lisp = Lisp::<1000>::new();
+    /// let val = lisp.number(42).unwrap();
+    /// let dv = lisp.display(val);
+    /// // write!(f, "{}", dv) or format!("{}", dv)
+    /// ```
+    #[inline]
+    pub fn display(&self, value: ArenaIndex) -> crate::display::DisplayValue<'_, N> {
+        crate::display::DisplayValue::new(value, self)
     }
 }
 
