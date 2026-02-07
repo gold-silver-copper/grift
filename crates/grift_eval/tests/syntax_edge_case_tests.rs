@@ -794,3 +794,121 @@ fn test_j6_identifier_comparison() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(f 42)"), 42,
         "bound-identifier=? should identify that id1 and id2 are the same identifier");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test Suite I: datum->syntax-object and syntax-object->datum (R6RS aliases)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Test I.1: datum->syntax-object basic usage
+///
+/// datum->syntax-object is the R6RS name for datum->syntax.
+#[test]
+fn test_i1_datum_to_syntax_object_basic() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str(r#"
+        (define-syntax make-ref
+          (lambda (stx)
+            (syntax-case stx ()
+              ((kw name)
+               (datum->syntax-object (syntax kw) (syntax-object->datum (syntax name)))))))
+    "#).unwrap();
+
+    eval.eval_str("(define foo 42)").unwrap();
+
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(make-ref foo)"), 42);
+}
+
+/// Test I.2: define-structure macro using datum->syntax-object
+///
+/// This is the full example from the R6RS specification demonstrating
+/// datum->syntax-object for hygienic identifier generation.
+#[test]
+fn test_i2_define_structure() {
+    let lisp: Lisp<80000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str(r#"
+        (define-syntax define-structure
+          (lambda (x)
+            (define gen-id
+              (lambda (template-id . args)
+                (datum->syntax-object template-id
+                  (string->symbol
+                    (apply string-append
+                           (map (lambda (x)
+                                  (if (string? x)
+                                      x
+                                      (symbol->string
+                                        (syntax-object->datum x))))
+                                args))))))
+            (syntax-case x ()
+              ((_ name field ...)
+               (with-syntax
+                 ((constructor (gen-id (syntax name) "make-" (syntax name)))
+                  (predicate (gen-id (syntax name) (syntax name) "?"))
+                  ((access ...)
+                   (map (lambda (x) (gen-id x (syntax name) "-" x))
+                        (syntax (field ...))))
+                  ((assign ...)
+                   (map (lambda (x) (gen-id x "set-" (syntax name) "-" x "!"))
+                        (syntax (field ...))))
+                  (structure-length (+ (length (syntax (field ...))) 1))
+                  ((index ...) (let f ((i 1) (ids (syntax (field ...))))
+                                 (if (null? ids)
+                                     '()
+                                     (cons i (f (+ i 1) (cdr ids)))))))
+                 (syntax (begin
+                           (define constructor
+                             (lambda (field ...)
+                               (vector 'name field ...)))
+                           (define predicate
+                             (lambda (x)
+                               (and (vector? x)
+                                    (= (vector-length x) structure-length)
+                                    (eq? (vector-ref x 0) 'name))))
+                           (define access
+                             (lambda (x)
+                               (vector-ref x index)))
+                           ...
+                           (define assign
+                             (lambda (x update)
+                               (vector-set! x index update)))
+                           ...)))))))
+    "#).unwrap();
+
+    // Define a tree structure
+    eval.eval_str("(define-structure tree left right)").unwrap();
+
+    // Create a nested tree
+    eval.eval_str(r#"
+        (define t
+          (make-tree
+            (make-tree 0 1)
+            (make-tree 2 3)))
+    "#).unwrap();
+
+    // Test tree? predicate
+    let result = eval.eval_str("(tree? t)").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::True));
+
+    // Test tree-left accessor
+    let result = eval.eval_str("(tree? (tree-left t))").unwrap();
+    assert!(matches!(lisp.get(result).unwrap(), Value::True));
+
+    // Test tree-left returns subtree with expected values
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tree-left (tree-left t))"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tree-right (tree-left t))"), 1);
+
+    // Test tree-right accessor
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tree-left (tree-right t))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tree-right (tree-right t))"), 3);
+
+    // Test set-tree-left! mutation
+    eval.eval_str("(set-tree-left! t 0)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tree-left t)"), 0);
+
+    // After mutation, tree-right should still be the original subtree
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(tree-left (tree-right t))"), 2);
+}
