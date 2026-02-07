@@ -619,12 +619,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            // Symbol - variable lookup
+            // Symbol - variable lookup or identifier macro expansion
             Value::Symbol(_) => {
+                // Check for identifier macros (like identifier-syntax).
+                // A macro bound to this name can expand in identifier position
+                // if the symbol is not bound as a variable in the current environment.
+                let is_var_bound = self.is_variable_bound(env, expr)?;
+                if !is_var_bound {
+                    if let Some(transformer) = self.lookup_macro(expr)? {
+                        // Pass the bare identifier as the syntax form.
+                        // The transformer's syntax-case pattern (id (identifier? (syntax id)) ...)
+                        // will match this as a bare identifier.
+                        return self.apply_macro_trampolined(transformer, expr, env);
+                    }
+                }
                 let val = self.env_lookup(env, expr)?;
-                // Return the looked-up value directly, even if it's a syntax object.
-                // This allows syntax objects to be passed as arguments to functions
-                // like bound-identifier=? that expect syntax object data.
                 Ok(TrampolineState::Return { val })
             }
             
@@ -751,22 +760,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Variable bindings shadow macros, so only expand if not bound as a variable
             if !is_var_bound {
                 if let Some(transformer) = self.lookup_macro(car)? {
-                    // DON'T wrap macro inputs with lexical context here.
-                    // The `syntax` form handles lexical capture when needed.
-                    // Wrapping all macro inputs causes issues when the macro
-                    // produces code that references the same identifiers
-                    // (e.g., set! on a lambda parameter).
-                    
-                    // Use continuation-based macro expansion to avoid Rust stack growth
-                    // for recursive macros. This pushes a CONT_MACRO_RESULT continuation
-                    // and evaluates the transformer body, allowing arbitrarily deep
-                    // macro recursion without stack overflow.
                     return self.apply_macro_trampolined(transformer, expr, env);
                 }
             }
             
-            // Special forms can be shadowed by variable bindings (R5RS compliance)
-            // Only handle as special forms if NOT bound as a variable
+            // Core special forms: these are always recognized regardless of variable bindings.
+            // This is essential for hygienic macros: when a macro template uses `if`, `begin`,
+            // etc., those should always refer to the special form even if the user has
+            // locally bound a variable with the same name. This matches the behavior of
+            // implementations like Chez Scheme and Guile.
+            if let Some(result) = self.try_dispatch_special_form(car, cdr, env)? {
+                return Ok(result);
+            }
+            
+            // Non-core special forms: can be shadowed by variable bindings
             if !is_var_bound {
                 // quote
                 if self.lisp.symbol_matches(car, "quote")? {
@@ -784,6 +791,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.step_eval_let_syntax(cdr, env);
                 }
                 
+                // letrec-syntax - local macro bindings with mutual visibility
+                if self.lisp.symbol_matches(car, "letrec-syntax")? {
+                    return self.step_eval_letrec_syntax(cdr, env);
+                }
+                
                 // syntax-case - procedural macro pattern matching
                 if self.lisp.symbol_matches(car, "syntax-case")? {
                     return self.step_eval_syntax_case(cdr, env);
@@ -796,26 +808,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 // Note: with-syntax is now implemented as a macro in macros.scm
                 // It uses syntax-case directly to bind patterns.
-                
-                // if - condition evaluated, then one branch selected
-                if self.lisp.symbol_matches(car, "if")? {
-                    let cond_expr = self.lisp.car(cdr)?;
-                    let rest = self.lisp.cdr(cdr)?;
-                    let then_expr = self.lisp.car(rest)?;
-                    let else_rest = self.lisp.cdr(rest)?;
-                    let else_expr = if self.lisp.get(else_rest)?.is_nil() {
-                        self.lisp.nil()?
-                    } else {
-                        self.lisp.car(else_rest)?
-                    };
-                    
-                    // Push continuation for after condition is evaluated
-                    // Data: (then_expr . (else_expr . env))
-                    self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
-                    
-                    // Evaluate condition
-                    return Ok(TrampolineState::Eval { expr: cond_expr, env });
-                }
                 
                 // lambda
                 if self.lisp.symbol_matches(car, "lambda")? {
@@ -903,6 +895,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     // Note: step_eval_cond removed - cond is now handled by macros
+    
+    /// Try to dispatch a symbol as the `if` special form.
+    /// Returns Some(TrampolineState) if the symbol is `if`, None otherwise.
+    /// `if` is always recognized regardless of variable bindings - this ensures
+    /// hygienic macros that use `if` (like `or`, `and`, `cond`) work correctly
+    /// even when the user has locally rebound `if`.
+    fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: ArenaIndex) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        if self.lisp.symbol_matches(name, "if")? {
+            let cond_expr = self.lisp.car(cdr)?;
+            let rest = self.lisp.cdr(cdr)?;
+            let then_expr = self.lisp.car(rest)?;
+            let else_rest = self.lisp.cdr(rest)?;
+            let else_expr = if self.lisp.get(else_rest)?.is_nil() {
+                self.lisp.nil()?
+            } else {
+                self.lisp.car(else_rest)?
+            };
+            self.cont(CONT_IF_BRANCH, env).data3(then_expr, else_expr, env)?;
+            return Ok(Some(TrampolineState::Eval { expr: cond_expr, env }));
+        }
+        Ok(None)
+    }
     
     // ========================================================================
     // Helpers
