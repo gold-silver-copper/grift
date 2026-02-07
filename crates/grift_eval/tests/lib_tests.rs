@@ -1796,11 +1796,11 @@ fn test_gc_collects_unreachable() {
 }
 
 #[test]
-fn test_gc_intern_table_survives() {
-    let lisp: Lisp<20000> = Lisp::new();
+fn test_gc_symbols_survive_in_env() {
+    let lisp: Lisp<40000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // Create some symbols
+    // Create some symbols via define (they're rooted through the global env)
     eval.eval_str("(define a 1)").unwrap();
     eval.eval_str("(define b 2)").unwrap();
     eval.eval_str("(define c 3)").unwrap();
@@ -1808,7 +1808,7 @@ fn test_gc_intern_table_survives() {
     // GC
     eval.gc();
     
-    // Symbols should still be usable
+    // Symbols should still be usable (protected by global env)
     assert_eq!(eval_to_num(&lisp, &mut eval, "(+ a b c)"), 6);
 }
 
@@ -4341,9 +4341,9 @@ fn test_check_pattern_binding_value() {
     }
 }
 
-// Check if symbol interning is working
+// Check that symbols with same name compare equal
 #[test]
-fn test_symbol_interning() {
+fn test_symbol_equality() {
     let lisp: Lisp<20000> = Lisp::new();
     
     // Create symbol 'a' multiple times
@@ -4355,11 +4355,8 @@ fn test_symbol_interning() {
     eprintln!("a2 = {:?}", a2);
     eprintln!("a3 = {:?}", a3);
     
-    // They should all be the same arena index
-    assert_eq!(a1, a2, "Symbols should be interned to same index");
-    assert_eq!(a2, a3, "Symbols should be interned to same index");
-    
-    // Also check symbol_eq
+    // Without interning, they are different arena indices
+    // but should compare equal by content
     assert!(lisp.symbol_eq(a1, a2).unwrap());
     assert!(lisp.symbol_eq(a2, a3).unwrap());
 }

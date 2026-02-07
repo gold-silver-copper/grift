@@ -66,9 +66,9 @@ fn test_reserved_slots_occupy_first_slots() {
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // After creating the Lisp context, 5 slots should be used
-    // (nil, void, true, false, intern_table_cons) - with inline cons, no separate data slots needed
-    assert_eq!(lisp.arena().len(), 5);
+    // After creating the Lisp context, 4 slots should be used
+    // (nil, void, true, false)
+    assert_eq!(lisp.arena().len(), 4);
     
     // Calling nil/void_val/true_val/false_val should NOT increase allocation count
     // (they return pre-allocated slots)
@@ -76,7 +76,7 @@ fn test_reserved_slots_not_reallocated() {
     let _ = lisp.void_val();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 5);
+    assert_eq!(lisp.arena().len(), 4);
     
     // Calling many times should not increase count
     for _ in 0..100 {
@@ -85,7 +85,7 @@ fn test_reserved_slots_not_reallocated() {
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 5);
+    assert_eq!(lisp.arena().len(), 4);
 }
 
 #[test]
@@ -132,14 +132,14 @@ fn test_reserved_slots_survive_gc() {
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // First regular allocation should be at slot 5 (after reserved 0-4)
-    // Slots: 0=nil, 1=void, 2=true, 3=false, 4=intern_table_cons (with inline car/cdr)
+    // First regular allocation should be at slot 4 (after reserved 0-3)
+    // Slots: 0=nil, 1=void, 2=true, 3=false
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 5);
+    assert_eq!(num.raw(), 4);
     
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 6);
+    assert_eq!(num2.raw(), 5);
 }
 
 // ========================================================================
@@ -533,20 +533,24 @@ fn test_set_cdr_on_non_pair_fails() {
 // ========================================================================
 
 #[test]
-fn test_symbol_interning_same_name_returns_same_index() {
+fn test_symbol_same_name_creates_new_symbols() {
     let lisp: Lisp<1000> = Lisp::new();
     
     let sym1 = lisp.symbol("foo").unwrap();
     let sym2 = lisp.symbol("foo").unwrap();
     let sym3 = lisp.symbol("foo").unwrap();
     
-    // Same symbol name should return the same index
-    assert_eq!(sym1, sym2);
-    assert_eq!(sym2, sym3);
+    // Without interning, each call creates a new symbol
+    assert_ne!(sym1, sym2);
+    assert_ne!(sym2, sym3);
+    
+    // But they should still match by content
+    assert!(lisp.symbol_eq(sym1, sym2).unwrap());
+    assert!(lisp.symbol_eq(sym2, sym3).unwrap());
 }
 
 #[test]
-fn test_symbol_interning_different_names_return_different_indices() {
+fn test_symbol_different_names_return_different_indices() {
     let lisp: Lisp<1000> = Lisp::new();
     
     let foo = lisp.symbol("foo").unwrap();
@@ -560,18 +564,19 @@ fn test_symbol_interning_different_names_return_different_indices() {
 }
 
 #[test]
-fn test_symbol_interning_from_bytes() {
+fn test_symbol_from_bytes_creates_symbol() {
     let lisp: Lisp<1000> = Lisp::new();
     
     let sym1 = lisp.symbol("test").unwrap();
     let sym2 = lisp.symbol_from_bytes(b"test").unwrap();
     
-    // Same content should return the same symbol
-    assert_eq!(sym1, sym2);
+    // Without interning, different indices but same content
+    assert_ne!(sym1, sym2);
+    assert!(lisp.symbol_eq(sym1, sym2).unwrap());
 }
 
 #[test]
-fn test_symbol_interning_preserves_content() {
+fn test_symbol_preserves_content() {
     let lisp: Lisp<1000> = Lisp::new();
     
     let sym = lisp.symbol("hello").unwrap();
@@ -582,10 +587,10 @@ fn test_symbol_interning_preserves_content() {
 }
 
 #[test]
-fn test_intern_table_is_gc_root() {
+fn test_symbols_survive_gc_when_rooted() {
     let lisp: Lisp<1000> = Lisp::new();
     
-    // Create some interned symbols
+    // Create some symbols
     let sym1 = lisp.symbol("a").unwrap();
     let sym2 = lisp.symbol("b").unwrap();
     let sym3 = lisp.symbol("c").unwrap();
@@ -595,11 +600,10 @@ fn test_intern_table_is_gc_root() {
         let _ = lisp.number(i);
     }
     
-    // Run GC with no explicit roots
-    let empty_roots: &[ArenaIndex] = &[];
-    lisp.gc(empty_roots);
+    // Run GC with symbols as explicit roots
+    lisp.gc(&[sym1, sym2, sym3]);
     
-    // Interned symbols should still be accessible
+    // Rooted symbols should still be accessible
     assert!(lisp.get(sym1).is_ok());
     assert!(lisp.get(sym2).is_ok());
     assert!(lisp.get(sym3).is_ok());
@@ -663,15 +667,14 @@ fn test_contiguous_symbol_uses_less_memory() {
     let initial = lisp.arena().len();
     
     // Create a symbol with contiguous strings
-    // "factorial" (9 chars) = 1 (length) + 9 (chars) + 1 (Symbol) = 11 slots
-    // Plus 2 slots for the intern table entry
+    // "factorial" (9 chars) = 9 (chars) + 1 (String) + 1 (Symbol) = 11 slots
     let _sym = lisp.symbol("factorial").unwrap();
     
     let after_symbol = lisp.arena().len();
     let slots_used = after_symbol - initial;
     
     // Old format would use: 9 Char + 9 Cons + 1 Symbol = 19 slots
-    // New format uses: 1 Number + 9 Char + 1 Symbol + 2 Cons (intern table) = 13 slots
+    // New format uses: 9 Char + 1 String + 1 Symbol = 11 slots
     // So we expect significantly fewer slots
     assert!(slots_used < 19, "Expected fewer than 19 slots, got {}", slots_used);
 }
