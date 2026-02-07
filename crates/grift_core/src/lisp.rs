@@ -24,13 +24,22 @@ use crate::value::{Value, Builtin, StdLib};
 /// 
 /// The first 4 slots of the arena are reserved for singleton values:
 /// - Slot 0: `Value::Nil` - empty list ()
-/// - Slot 1: `Value::Void` - void value
-/// - Slot 2: `Value::True` - boolean true (#t)
-/// - Slot 3: `Value::False` - boolean false (#f)
+/// - Slot 1: `Value::True` - boolean true (#t)
+/// - Slot 2: `Value::False` - boolean false (#f)
+/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `true_val()` and `false_val()`. This optimization
 /// avoids allocating new slots for these frequently-used values.
+/// 
+/// ## Symbol Interning
+/// 
+/// All symbols are interned in an association list stored in the arena.
+/// The `intern_table_slot` field points to a cons cell whose car is the alist 
+/// of `(string_index . symbol_index)` pairs. The cons cell is used as a 
+/// "reference cell" to allow updating the intern table without RefCell.
+/// When creating a symbol, we first check if it already exists in the table.
+/// This ensures that the same symbol name always returns the same index.
 pub struct Lisp<const N: usize> {
     arena: Arena<Value, N>,
     /// Pre-allocated Nil slot (always slot 0)
@@ -41,16 +50,21 @@ pub struct Lisp<const N: usize> {
     true_slot: ArenaIndex,
     /// Pre-allocated False slot (always slot 3)
     false_slot: ArenaIndex,
+    /// Intern table reference cell (slot 4)
+    /// This is a cons cell where car = intern table root (alist)
+    /// Using a cons cell avoids needing RefCell for interior mutability
+    intern_table_slot: ArenaIndex,
 }
 
 /// Number of reserved slots in the arena:
-/// - nil (1), void (1), true (1), false (1)
-pub const RESERVED_SLOTS: usize = 4;
+/// - nil (1), void (1), true (1), false (1), intern_table_cons (1)
+/// Note: With inline cons, we no longer need separate data slots for the intern table
+pub const RESERVED_SLOTS: usize = 5;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
     /// 
-    /// Pre-allocates reserved slots for nil, void, true, and false.
+    /// Pre-allocates reserved slots for nil, void, true, false, and the intern table.
     /// These slots are never freed and provide O(1) access to common values.
     /// 
     /// # Panics
@@ -71,12 +85,19 @@ impl<const N: usize> Lisp<N> {
         let false_slot = arena.alloc(Value::False)
             .expect("Failed to pre-allocate False slot during Lisp initialization");
         
+        // Pre-allocate intern table reference cell (slot 4)
+        // With inline cons, we don't need separate data slots
+        // This is a cons cell where car = intern table root (initially nil)
+        let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
+            .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
+        
         Lisp {
             arena,
             nil_slot,
             void_slot,
             true_slot,
             false_slot,
+            intern_table_slot,
         }
     }
     
@@ -255,44 +276,195 @@ impl<const N: usize> Lisp<N> {
     impl_pack_unpack_refs!(7, pack_refs7, unpack_refs7, set_contiguous7, get_contiguous7, [a, b, c, d, e, f, g]);
     
     // ========================================================================
-    // Symbol Creation
+    // Symbol Interning
     // ========================================================================
     
-    /// Create a symbol from a string slice
+    /// Get the intern table root (for GC roots)
     /// 
-    /// The symbol's `chars` field points to a Value::String with the symbol name.
-    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        let name_str = self.string(name)?;
-        self.alloc(Value::Symbol(name_str))
+    /// The intern table is stored in the car of the intern_table_slot cons cell.
+    pub fn intern_table(&self) -> ArenaIndex {
+        // intern_table_slot always exists and is slot 3
+        // Its car contains the actual intern table root
+        self.intern_table_slot
     }
     
-    /// Create a symbol from bytes (for parsing)
+    /// Get the current intern table root (the actual alist)
+    fn get_intern_table_root(&self) -> ArenaResult<ArenaIndex> {
+        self.car(self.intern_table_slot)
+    }
+    
+    /// Set the intern table root (update the car of the reference cell)
+    fn set_intern_table_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
+        self.set_car(self.intern_table_slot, new_root)?;
+        Ok(())
+    }
+    
+    /// Look up a string in the intern table
+    /// Returns Some(symbol_index) if found, None otherwise
+    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+        let mut current = self.get_intern_table_root()?;
+        
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons { .. } => {
+                    // car is (string_index . symbol_index)
+                    let car = self.car(current)?;
+                    let cdr = self.cdr(current)?;
+                    if let Value::Cons { .. } = self.get(car)? {
+                        let entry_string = self.car(car)?;
+                        let entry_symbol = self.cdr(car)?;
+                        if self.string_eq_contiguous(string_idx, entry_string)? {
+                            return Ok(Some(entry_symbol));
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Err(ArenaError::InvalidIndex),
+            }
+        }
+    }
+    
+    /// Look up bytes directly in the intern table without allocating a string first.
+    /// 
+    /// This is an optimization for `symbol_from_bytes` - on cache hits, we avoid
+    /// allocating a string entirely by comparing the bytes directly against
+    /// the interned strings.
+    /// 
+    /// Returns Some(symbol_index) if found, None otherwise
+    fn intern_table_lookup_bytes(&self, bytes: &[u8]) -> ArenaResult<Option<ArenaIndex>> {
+        let mut current = self.get_intern_table_root()?;
+        
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons { .. } => {
+                    // car is (string_index . symbol_index)
+                    let car = self.car(current)?;
+                    let cdr = self.cdr(current)?;
+                    if let Value::Cons { .. } = self.get(car)? {
+                        let entry_string = self.car(car)?;
+                        let entry_symbol = self.cdr(car)?;
+                        // Compare bytes directly without allocating
+                        if self.string_matches_bytes(entry_string, bytes)? {
+                            return Ok(Some(entry_symbol));
+                        }
+                    }
+                    current = cdr;
+                }
+                _ => return Err(ArenaError::InvalidIndex),
+            }
+        }
+    }
+    
+    /// Create or retrieve an interned symbol from a string slice
+    /// 
+    /// The symbol's `chars` field points to a Value::String with the symbol name.
+    /// 
+    /// Symbol interning ensures the same symbol name always returns the same index.
+    /// 
+    /// This method is optimized to avoid allocation on cache hits by comparing
+    /// the input string directly against interned symbols before allocating.
+    pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        // Fast path: check intern table by comparing bytes directly
+        // This avoids allocation entirely on cache hits
+        // Only works for ASCII symbols (which is typical for Lisp)
+        if name.is_ascii()
+            && let Some(existing_symbol) = self.intern_table_lookup_bytes(name.as_bytes())?
+        {
+            return Ok(existing_symbol);
+        }
+        
+        // Cache miss - need to create a new symbol
+        let name_str = self.string(name)?;
+        
+        // Double-check for non-ASCII case (we may have skipped the fast path)
+        if !name.is_ascii()
+            && let Some(existing_symbol) = self.intern_table_lookup(name_str)?
+        {
+            self.string_free(name_str)?;
+            return Ok(existing_symbol);
+        }
+        
+        // Not found - create new symbol
+        let symbol = self.alloc(Value::Symbol(name_str))?;
+        
+        // Add to intern table: (name_str . symbol)
+        let binding = self.cons(name_str, symbol)?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
+        
+        // Update intern table root
+        self.set_intern_table_root(new_table)?;
+        
+        Ok(symbol)
+    }
+    
+    /// Create or retrieve an interned symbol from bytes (for parsing)
+    /// 
+    /// This method is optimized to avoid allocation on cache hits by comparing
+    /// the input bytes directly against interned strings before allocating.
     pub fn symbol_from_bytes(&self, bytes: &[u8]) -> ArenaResult<ArenaIndex> {
+        // Fast path: check intern table by comparing bytes directly
+        // This avoids allocation entirely on cache hits
+        if let Some(existing_symbol) = self.intern_table_lookup_bytes(bytes)? {
+            return Ok(existing_symbol);
+        }
+        
+        // Cache miss - need to create a new symbol
         let char_count = bytes.len();
         
+        // Create a Value::String for the symbol name (with inline length)
         let name_str = if char_count == 0 {
+            // Empty string - len=0, data is NIL
             self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
         } else {
+            // Allocate contiguous block for chars only (no length header)
             let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+            
+            // Set characters in slots (starting at data)
             for (i, &b) in bytes.iter().enumerate() {
                 let char_idx = self.arena.index_at_offset(data, i)?;
                 self.arena.set(char_idx, Value::Char(b as char))?;
             }
+            
+            // Create the String value with inline length
             self.alloc(Value::String { len: char_count, data })?
         };
         
-        self.alloc(Value::Symbol(name_str))
+        // Create new symbol
+        let symbol = self.alloc(Value::Symbol(name_str))?;
+        
+        // Add to intern table: (name_str . symbol)
+        let binding = self.cons(name_str, symbol)?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
+        
+        // Update intern table root
+        self.set_intern_table_root(new_table)?;
+        
+        Ok(symbol)
     }
     
-    /// Create a symbol from an existing string index
+    /// Create or retrieve an interned symbol from an existing string index
     /// 
-    /// Used by string->symbol. Copies the string to create an independent symbol.
+    /// This method is used by string->symbol to create a symbol from an existing string.
+    /// It checks the intern table first to ensure proper symbol interning.
     pub fn symbol_from_string(&self, string_idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Verify it's a string
         match self.get(string_idx)? {
             Value::String { len, data } => {
+                // Check if a symbol with this string content already exists
+                if let Some(existing_symbol) = self.intern_table_lookup(string_idx)? {
+                    return Ok(existing_symbol);
+                }
+                
+                // Not found - need to create a new symbol
+                // First, copy the string to avoid sharing the mutable string
                 let new_str = if len == 0 {
                     self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
                 } else {
+                    // Copy the string content
                     let new_data = self.arena.alloc_contiguous(len, Value::Nil)?;
                     for i in 0..len {
                         let src_idx = self.arena.index_at_offset(data, i)?;
@@ -302,7 +474,19 @@ impl<const N: usize> Lisp<N> {
                     }
                     self.alloc(Value::String { len, data: new_data })?
                 };
-                self.alloc(Value::Symbol(new_str))
+                
+                // Create new symbol
+                let symbol = self.alloc(Value::Symbol(new_str))?;
+                
+                // Add to intern table: (new_str . symbol)
+                let binding = self.cons(new_str, symbol)?;
+                let current_table = self.get_intern_table_root()?;
+                let new_table = self.cons(binding, current_table)?;
+                
+                // Update intern table root
+                self.set_intern_table_root(new_table)?;
+                
+                Ok(symbol)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
@@ -835,9 +1019,11 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Run garbage collection
+    /// Run garbage collection with intern table as an additional root
     /// 
-    /// Reserved slots (nil, void, true, false) are always included as GC roots.
+    /// The intern table reference cell (slot 3) is always included as a GC root
+    /// to prevent interned symbols from being collected. The intern table is
+    /// stored as a cons cell whose car points to the alist of interned symbols.
     /// 
     /// # Panics
     /// 
@@ -845,16 +1031,16 @@ impl<const N: usize> Lisp<N> {
     /// This limit is chosen to balance stack usage in no_std environments
     /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
-        // Create a new roots array with reserved slots included
+        // Create a new roots array with reserved slots and intern table included
         // Using const-sized array to avoid alloc in no_std
         // 512 roots should be sufficient for most programs while keeping
         // stack usage reasonable (~8KB on 64-bit systems)
         const MAX_ROOTS: usize = 512;
         
         // Panic if too many roots - this indicates a programming error
-        // Account for 4 reserved roots (nil, void, true, false)
-        assert!(roots.len() < MAX_ROOTS - 4, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 4 - 1);
+        // Account for 5 reserved roots (nil, void, true, false, intern_table)
+        assert!(roots.len() < MAX_ROOTS - 5, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 5 - 1);
         
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
@@ -867,6 +1053,12 @@ impl<const N: usize> Lisp<N> {
         all_roots[root_count] = self.true_slot;
         root_count += 1;
         all_roots[root_count] = self.false_slot;
+        root_count += 1;
+        
+        // Add intern table reference cell as root
+        // This is a cons cell whose car is the intern table alist
+        // Tracing from this cell will reach all interned symbols
+        all_roots[root_count] = self.intern_table_slot;
         root_count += 1;
         
         // Copy provided roots
@@ -1067,6 +1259,48 @@ impl<const N: usize> Lisp<N> {
         Ok(true)
     }
     
+    /// Check if a string matches a byte slice directly.
+    /// 
+    /// This is an optimization for symbol interning - allows comparing
+    /// an interned string against input bytes without allocating a new string.
+    /// Assumes the bytes are ASCII (valid for Lisp symbols).
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the string index is invalid.
+    #[inline]
+    pub fn string_matches_bytes(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
+        match self.arena.get(str_idx)? {
+            Value::String { len, data } => {
+                // Quick length check (O(1) with inline len)
+                if len != bytes.len() {
+                    return Ok(false);
+                }
+                
+                // Handle empty string case
+                if len == 0 {
+                    return Ok(bytes.is_empty());
+                }
+                
+                // Compare each character (characters start at data, no header)
+                let base_idx = data.raw();
+                for (i, &byte) in bytes.iter().enumerate() {
+                    let char_slot = ArenaIndex::new(base_idx + i);
+                    match self.arena.get(char_slot)? {
+                        Value::Char(c) => {
+                            if c as u8 != byte {
+                                return Ok(false);
+                            }
+                        }
+                        _ => return Err(ArenaError::InvalidIndex),
+                    }
+                }
+                
+                Ok(true)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
     
     /// Copy a string's contents to a byte buffer.
     /// 

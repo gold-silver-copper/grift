@@ -15,6 +15,7 @@
 //! ## Design
 //!
 //! - Symbols use contiguous string storage for memory efficiency
+//! - Symbol interning ensures the same symbol name returns the same index
 //! - All values are stored in a `grift_arena` arena
 //! - Supports garbage collection via the `Trace` trait
 //! - Explicit boolean values (#t, #f) separate from nil/empty list
@@ -28,7 +29,7 @@
 //! - `Number(isize)` - Integer numbers
 //! - `Char(char)` - Single character
 //! - `Cons { car, cdr }` - Pair/list cell with inline indices
-//! - `Symbol(ArenaIndex)` - Symbol pointing to string
+//! - `Symbol(ArenaIndex)` - Symbol pointing to interned string
 //! - `Lambda { params, body_env }` - Closure with inline indices
 //! - `Builtin(Builtin)` - Optimized built-in function
 //! - `StdLib(StdLib)` - Standard library function (static code, parsed on-demand)
@@ -38,14 +39,14 @@
 //!
 //! ## Reserved Slots
 //!
-//! The Lisp singleton values (nil, void, true, false) are pre-allocated in reserved
+//! The Lisp singleton values (nil, true, false) are pre-allocated in reserved
 //! slots at initialization time.
 //!
 //! The first 4 slots of the arena are reserved:
 //! - Slot 0: `Value::Nil` - empty list singleton
-//! - Slot 1: `Value::Void` - void singleton
-//! - Slot 2: `Value::True` - boolean true singleton
-//! - Slot 3: `Value::False` - boolean false singleton
+//! - Slot 1: `Value::True` - boolean true singleton
+//! - Slot 2: `Value::False` - boolean false singleton
+//! - Slot 3: `Value::Cons` - intern table reference cell
 //!
 //! ## Pitfalls and Gotchas
 //!
@@ -56,7 +57,8 @@
 //!   - Empty strings
 //!
 //! ### Garbage Collection
-//! - Reserved slots (nil, void, true, false) are implicitly preserved
+//! - The intern table is always a GC root - interned symbols are never collected
+//! - Reserved slots (nil, true, false) are implicitly preserved
 //! - Run `gc()` with appropriate roots to reclaim memory
 //!
 //! ### StdLib Functions
