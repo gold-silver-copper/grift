@@ -365,15 +365,11 @@ fn test_sec8_3_dolet_hygiene() {
                                            (+ a b))))))))
           (dolet a))
     "#);
-    // Per the Dybvig book (Section 8.3), this should return 7 due to hygiene:
-    // the 'a' in the template (let ((a 3) (b 4)) ...) should be distinct from
-    // the 'a' passed as the argument to dolet. With full R6RS hygiene, the
-    // template 'a' is renamed so it doesn't capture the argument 'a', giving
-    // (let ((a_renamed 3) (a 4)) (+ a_renamed a)) = 3 + 4 = 7.
-    // Currently grift returns 8 because the template 'a' captures the argument,
-    // giving (let ((a 3) (a 4)) (+ a a)) where the second binding shadows,
-    // resulting in 4 + 4 = 8. This is a known limitation of the hygiene system.
-    assert_eq!(result, 8);
+    // Per the Dybvig book (Section 8.3), this returns 7 due to hygiene:
+    // the 'a' in the template (let ((a 3) (b 4)) ...) is macro-introduced and
+    // gets renamed so it doesn't capture the argument 'a' passed by the user.
+    // Result: (let ((a_gensym 3) (a 4)) (+ a_gensym a)) = 3 + 4 = 7.
+    assert_eq!(result, 7);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
