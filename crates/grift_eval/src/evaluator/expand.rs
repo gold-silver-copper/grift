@@ -725,6 +725,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let pat_car = self.lisp.car(pattern)?;
         let pat_cdr = self.lisp.cdr(pattern)?;
 
+        // Check for escaping ellipsis: (... <pattern>) matches <pattern> literally
+        // (... ...) in a pattern matches the literal symbol ...
+        if self.lisp.symbol_matches(pat_car, "...")? {
+            if let Value::Cons { .. } = self.lisp.get(pat_cdr)? {
+                let inner_pat = self.lisp.car(pat_cdr)?;
+                // Match the inner pattern literally (without ellipsis processing)
+                return self.match_pattern_syntax(inner_pat, stx, literals, bindings);
+            }
+        }
+
         // Check for ellipsis FIRST - ellipsis can match empty lists
         if self.has_ellipsis(pat_cdr)? {
             return self.match_ellipsis_pattern_syntax(
@@ -1019,6 +1029,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> EvalResult {
         let (car, cdr) = self.lisp.car_cdr(template)?;
 
+        // Check for escaping ellipsis: (... <template>) means treat <template> literally
+        // (... ...) produces the literal symbol ...
+        if self.lisp.symbol_matches(car, "...")? {
+            // The cdr should be a single element - return it without ellipsis processing
+            if let Value::Cons { .. } = self.lisp.get(cdr)? {
+                let inner = self.lisp.car(cdr)?;
+                return Ok(inner);
+            }
+            // (... . atom) - return the atom literally
+            return Ok(cdr);
+        }
+
         // Check for ellipsis
         if self.has_ellipsis(cdr)? {
             return self.transcribe_ellipsis_with_env(car, cdr, bindings, renames, def_env, lex_env);
@@ -1169,6 +1191,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         def_env: ArenaIndex,
     ) -> EvalResult {
         let (car, cdr) = self.lisp.car_cdr(template)?;
+
+        // Check for escaping ellipsis: (... <template>) means treat <template> literally
+        if self.lisp.symbol_matches(car, "...")? {
+            if let Value::Cons { .. } = self.lisp.get(cdr)? {
+                let inner = self.lisp.car(cdr)?;
+                return Ok(inner);
+            }
+            return Ok(cdr);
+        }
 
         // Check for ellipsis
         if self.has_ellipsis(cdr)? {
