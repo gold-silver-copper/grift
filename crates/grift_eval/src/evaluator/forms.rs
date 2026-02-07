@@ -54,7 +54,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Ok(Some(result))
                         } else {
                             // Evaluate args before applying builtin
-                            self.apply_builtin_with_args(b, args_expr, env, call_expr)
+                            self.apply_builtin_with_args(b, args_expr, EnvRef(env), call_expr)
                         }
                     }
                     Value::Lambda { .. } => {

@@ -6,7 +6,7 @@
 use grift_parser::{ArenaIndex, Value};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
-use crate::continuation::{TrampolineState, ContType};
+use crate::continuation::{TrampolineState, ContType, EnvRef, ExprRef};
 use super::Evaluator;
 
 // ============================================================================
@@ -259,11 +259,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // 3. Fall through to check global environment
-            return self.lookup_in_env(name, self.global_env);
+            return self.lookup_in_env(name, self.global_env.0);
         }
         
         // For plain symbols, check the global environment
-        self.lookup_in_env(id, self.global_env)
+        self.lookup_in_env(id, self.global_env.0)
     }
 
     /// Look up a name in a substitution environment
@@ -980,7 +980,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         //    variable, `(syntax x)` should refer to the local binding.
         let pattern_binding = self.bindings_lookup(bindings, sym)?;
         let bound_locally = self.env_bound_anywhere(lex_env, sym)? && 
-                           !self.env_bound_anywhere(self.global_env, sym)?;
+                           !self.env_bound_anywhere(self.global_env.0, sym)?;
         
         // Handle the case where both local and pattern bindings exist
         if bound_locally {
@@ -2070,7 +2070,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(None);
         }
 
-        let mut current = self.macro_env;
+        let mut current = self.macro_env.0;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let binding = self.lisp.car(current)?;
             let key = self.lisp.car(binding)?;
@@ -2130,7 +2130,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Use eval_for_macro which preserves outer continuation state
         // This enables full runtime capabilities during expansion while maintaining
         // proper nesting of evaluations
-        self.eval_for_macro(body, call_env)
+        self.eval_for_macro(ExprRef(body), EnvRef(call_env))
     }
     
     /// Apply a macro transformer using continuation-based evaluation.
@@ -2159,7 +2159,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         &mut self,
         transformer: ArenaIndex,
         expr: ArenaIndex,
-        eval_env: ArenaIndex,
+        eval_env: EnvRef,
     ) -> Result<TrampolineState, EvalError> {
         // Get lambda components
         let (params, body_env) = match self.lisp.get(transformer)? {
@@ -2182,11 +2182,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Note: cont_env is set to eval_env (not call_env) because if an error occurs
         // during re-evaluation, the relevant context is the expansion site, not the
         // transformer body's scope.
-        self.cont(ContType::MacroResult, eval_env).data1(eval_env)?;
+        self.cont(ContType::MacroResult, eval_env).data1(eval_env.0)?;
         
         // Evaluate the transformer body in the extended environment
         // When this completes, ContType::MacroResult will re-evaluate the result
-        Ok(TrampolineState::Eval { expr: body, env: call_env })
+        Ok(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(call_env) })
     }
     
     // NOTE: The following functions have been removed as part of the unified
@@ -2237,7 +2237,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// All macro transformers are procedural (lambda-based) using syntax-case.
     pub(super) fn parse_transformer(&mut self, expr: ArenaIndex) -> EvalResult {
         // Use global environment for backward compatibility
-        self.parse_transformer_with_env(expr, self.global_env)
+        self.parse_transformer_with_env(expr, self.global_env.0)
     }
     
     /// Parse a transformer expression with a specific lexical environment.
@@ -2269,7 +2269,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// This creates a Lambda value that can be invoked as a procedural macro.
     #[allow(dead_code)]
     fn eval_lambda_for_transformer(&self, lambda_expr: ArenaIndex) -> EvalResult {
-        self.eval_lambda_for_transformer_with_env(lambda_expr, self.global_env)
+        self.eval_lambda_for_transformer_with_env(lambda_expr, self.global_env.0)
     }
     
     /// Evaluate a lambda expression to create a transformer closure with a specific environment.
@@ -2335,7 +2335,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         for i in 0..binding_count {
             let (name, transformer) = parsed_bindings[i];
             let macro_binding = self.lisp.cons(name, transformer)?;
-            self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
+            self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
         }
 
         // Expand body
@@ -2375,7 +2375,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             let transformer = self.parse_transformer(transformer_expr)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
-            self.macro_env = self.lisp.cons(macro_binding, self.macro_env)?;
+            self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
 
             current = self.lisp.cdr(current)?;
         }
