@@ -1,424 +1,494 @@
-# Scheme R7RS Conformance Work
+# Scheme R7RS Conformance Status
 
-This document provides guidance for continuing work on Scheme R7RS conformance for the Grift Scheme implementation.
+This document tracks the R7RS conformance status of the Grift Scheme implementation. Grift is a `no_std`, `no_alloc` Scheme built on a custom arena allocator, targeting embedded systems, WebAssembly, and other constrained environments.
+
+> **Last updated**: February 2026
 
 ## Reference Specification
 
 The authoritative R7RS specification is located at:
-- **`scheme-spec-r7rs/spec.html`** - The complete Revised^7 Report on the Algorithmic Language Scheme
+- **`scheme-spec-r7rs/spec.html`** — The complete Revised⁷ Report on the Algorithmic Language Scheme
 
-All conformance work should reference this specification. The spec is organized into:
-- **Chapter 1-3**: Overview, lexical conventions, basic concepts
-- **Chapter 4**: Expressions (primitive and derived)
-- **Chapter 5**: Program structure (programs, libraries, REPL)
-- **Chapter 6**: Standard procedures (built-in functions)
-- **Chapter 7**: Formal syntax and semantics
-- **Appendix A**: Standard libraries and exported identifiers
-- **Appendix B**: Optional implementation features
+---
 
-## Current Implementation Status
+## Conformance Summary
 
-### ✅ Implemented Features
+| R7RS Area | Status | Notes |
+|-----------|--------|-------|
+| Lexical conventions (§2) | ✅ Mostly complete | Identifiers, booleans, numbers (integers only), characters, strings, vectors |
+| Basic concepts (§3) | ✅ Complete | Lexical scoping, tail-call optimization, strict evaluation |
+| Expressions (§4) | ✅ Mostly complete | All primitive and most derived expression types |
+| Program structure (§5) | ⚠️ Partial | `define`, `define-syntax` work; no library/module system |
+| Standard procedures (§6) | ⚠️ Partial | Strong coverage for lists, strings, chars, vectors; gaps in I/O, numeric tower |
+| Formal syntax (§7) | ✅ Mostly complete | Parser handles R7RS syntax with minor gaps |
+| Standard libraries (Appendix A) | ❌ Not implemented | No `define-library` / `import` / `export` |
 
-#### Core Language Features
-- ✅ Lexical scoping with closures
-- ✅ Proper tail-call optimization (via trampolining)
-- ✅ Strict evaluation (call-by-value)
-- ✅ Special forms: `quote`, `if`, `cond`, `case`, `lambda`, `define`, `set!`, `let`, `let*`, `letrec`, `letrec*`, `begin`, `and`, `or`, `when`, `unless`, `do`, `quasiquote`, `eval`, `apply`, `values`, `call-with-values`, `call-with-current-continuation` / `call/cc`, `dynamic-wind`
+---
 
-#### Hygienic Macro System (R7RS Sections 4.3 and 4.3.2)
-- ✅ `define-syntax` - Top-level macro definitions
-- ✅ `syntax-rules` - Pattern-based declarative macros with ellipsis support
-- ✅ `let-syntax` - Local macro bindings
-- ✅ `syntax-case` - Advanced pattern matching with fenders (procedural macros)
-- ✅ Lambda transformers - Procedural macros using `(lambda (stx) ...)`
-- ✅ `syntax` - Template construction in procedural macros
-- ✅ `with-syntax` - Pattern variable binding
-- ✅ `case-lambda` - Multiple-arity procedure dispatch (macro-based)
-- ✅ `cond-expand` - Feature-based conditional expansion
+## §2 — Lexical Conventions
 
-#### Multiple Values (R7RS Section 6.10)
-- ✅ `values` - Return multiple values
-- ✅ `call-with-values` - Receive multiple values  
-- ✅ `let-values` - Bind multiple values locally
-- ✅ `let*-values` - Sequential binding of multiple values
-- ✅ `define-values` - Define multiple values at top level
+| Feature | Status | Details |
+|---------|--------|---------|
+| Identifiers | ✅ | Standard identifiers, `+`, `-`, `...`, etc. |
+| Boolean literals `#t` / `#f` | ✅ | Also `#true` / `#false` forms |
+| Integer literals | ✅ | Decimal integers (`isize`); no radix prefixes `#b`, `#o`, `#x` for numbers |
+| Floating-point literals | ❌ | Not supported — integers only |
+| Character literals | ✅ | `#\a`, `#\space`, `#\newline`, `#\tab`, `#\return`, `#\null`, `#\alarm`, `#\backspace`, `#\delete`, `#\escape`, `#\x41` (hex) |
+| String literals | ✅ | Escape sequences: `\n`, `\t`, `\r`, `\"`, `\\`, `\a`, `\b`, `\|`, `\x41;` (hex), line continuation |
+| Vector literals `#(...)` | ✅ | Parsed at read time |
+| Bytevector literals `#u8(...)` | ❌ | Not supported |
+| Comments `;` | ✅ | Line comments |
+| Datum comments `#;` | ❌ | Not supported |
+| Block comments `#| ... |#` | ❌ | Not supported |
+| `#!fold-case` / `#!no-fold-case` | ❌ | Not supported |
 
-#### Built-in Procedures (Chapter 6)
-- ✅ **Equivalence**: `eq?`, `eqv?`, `equal?`
-- ✅ **Booleans**: `not`, `boolean?`
-- ✅ **Pairs/Lists**: `car`, `cdr`, `cons`, `list`, `null?`, `pair?`, `set-car!`, `set-cdr!`
-- ✅ **Numbers**: `+`, `-`, `*`, `/`, `modulo`, `remainder`, `quotient`, `=`, `<`, `>`, `<=`, `>=`, `number?`, `integer?`, `exact?`, `inexact?`, `exact-integer?`
-- ⚠️ **Numbers are integers only**: This implementation uses only exact integers (isize). Floating-point numbers are not supported.
-- ✅ **Number Operations**: `abs`, `max`, `min`, `gcd`, `lcm`, `expt`, `square`, `floor`, `ceiling`, `truncate`, `round`
-- ✅ **Number Predicates**: `zero?`, `positive?`, `negative?`, `odd?`, `even?`
-- ✅ **Type Predicates**: `symbol?`, `procedure?`
-- ✅ **Characters**: `char?`, `char=?`, `char<?`, `char>?`, `char<=?`, `char>=?`, `char->integer`, `integer->char`, `char-upcase`, `char-downcase`
-- ✅ **Strings**: `string?`, `make-string`, `string`, `string-length`, `string-ref`, `string-set!`, `string=?`, `string<?`, `string>?`, `string<=?`, `string>=?`, `string-append`, `string->list`, `list->string`, `substring`, `string-copy`
-- ✅ **Vectors**: `vector?`, `make-vector`, `vector`, `vector-length`, `vector-ref`, `vector-set!`, `vector->list`, `list->vector`, `vector-fill!`, `vector-copy`, `#(...)` literal syntax
-- ✅ **I/O**: `display`, `newline`, `error`
+---
 
-#### Standard Library Functions (`stdlib.scm`)
-- ✅ **List Operations**: `map`, `filter`, `fold`, `fold-right`, `reduce`, `length`, `append`, `reverse`, `nth`, `take`, `drop`, `zip`, `list?`, `list-ref`, `list-tail`, `list-copy`, `make-list`, `list-set!`, `last`, `last-pair`
-- ✅ **List Accessors**: `first`, `second`, `third`, `fourth`, `fifth`, `sixth`, `seventh`, `eighth`, `ninth`, `tenth`
-- ✅ **List Generators**: `iota1`, `iota2`, `iota3`, `list-tabulate`, `range`
-- ✅ **List Utilities**: `take-right`, `drop-right`, `split-at`, `concatenate`, `flatten`, `count`
-- ✅ **Search Functions**: `member`, `memq`, `memv`, `member-equal`, `assoc`, `assq`, `assv`, `assoc-equal`, `find`
-- ✅ **Higher-Order Functions**: `for-each`, `any`, `every`, `filter-map`, `partition`, `remove`, `delete`
-- ✅ **Utilities**: `compose`, `identity`, `constantly`, `flip`, `curry`, `sign`, `boolean-eq`
-- ✅ **Car/Cdr Compositions**: Full set of `caar`, `cadr`, `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `cdaar`, `cdadr`, `cddar`, `caddr`, `cdddr`, `cadddr`, `cddddr`
-- ✅ **Math Functions**: `sqrt` (integer square root), `square`, `cube`
-- ✅ **Numeric Utilities**: `sum`, `product`, `average`
-- ✅ **Character Predicates**: `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `digit-value`, `char-foldcase`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
-- ✅ **String Functions**: `string-upcase`, `string-downcase`, `string-foldcase`, `string-ci=?`, `string-map`, `string-for-each`, `string-null?`, `string-reverse`, `string-contains`, `string-join`, `string-split`, `string-trim`
+## §3 — Basic Concepts
 
-### 🔧 Implementation Extensions (Non-R7RS)
+| Feature | Status | Details |
+|---------|--------|---------|
+| Variables and binding | ✅ | Lexical scoping with closures |
+| Proper tail recursion | ✅ | Full TCO via trampolined evaluator |
+| Strict evaluation | ✅ | Call-by-value semantics |
+| Only `#f` is false | ✅ | `'()`, `0`, `nil` are all truthy |
+| Unspecified values | ✅ | `#<void>` returned for side-effect forms |
 
-These features are intentionally non-R7RS for embedded systems and runtime control:
+---
 
-#### GC Control (Embedded Extension)
-- `gc` - Manually trigger garbage collection
-- `gc-enable` - Enable automatic garbage collection
-- `gc-disable` - Disable automatic garbage collection
-- `gc-enabled?` - Check if GC is enabled
-- `arena-stats` - Get arena statistics as a list
+## §4 — Expressions
 
-#### Native Function FFI (Embedded Extension)
-- Native Rust functions can be registered and called from Lisp
+### §4.1 — Primitive Expression Types
+
+| Form | Status | Implementation |
+|------|--------|---------------|
+| `quote` | ✅ | Special form |
+| `lambda` | ✅ | Special form; supports rest args `(lambda (a b . rest) ...)` |
+| `if` | ✅ | Special form (also macro-expanded variant in macros.scm) |
+| Assignment `set!` | ✅ | Special form |
+| `include` / `include-ci` | ❌ | Not implemented |
+
+### §4.2 — Derived Expression Types
+
+| Form | Status | Implementation |
+|------|--------|---------------|
+| `cond` | ✅ | Macro (macros.scm) |
+| `case` | ✅ | Macro (macros.scm) |
+| `and` | ✅ | Macro (macros.scm); short-circuit |
+| `or` | ✅ | Macro (macros.scm); short-circuit |
+| `when` | ✅ | Macro (macros.scm) |
+| `unless` | ✅ | Macro (macros.scm) |
+| `cond-expand` | ✅ | Macro; features: `r7rs`, `grift`, `exact-closed`; compound: `and`, `or`, `not`; `(library ...)` → `#f` |
+| `let` | ✅ | Macro (macros.scm); including named `let` |
+| `let*` | ✅ | Macro (macros.scm) |
+| `letrec` | ✅ | Macro (macros.scm) |
+| `letrec*` | ✅ | Macro (macros.scm) |
+| `let-values` | ✅ | Macro (macros.scm) |
+| `let*-values` | ✅ | Macro (macros.scm) |
+| `begin` | ✅ | Special form |
+| `do` | ✅ | Macro (macros.scm); full R7RS syntax |
+| `delay` | ✅ | Macro (macros.scm) |
+| `delay-force` | ✅ | Macro (macros.scm) |
+| `force` | ✅ | Macro (macros.scm) |
+| `make-promise` | ✅ | Stdlib function |
+| `promise?` | ✅ | Stdlib function (returns `#t` for procedures) |
+| `case-lambda` | ✅ | Macro (macros.scm); multi-arity dispatch |
+| `define` | ✅ | Special form; variable and function shorthand |
+| `define-values` | ✅ | Macro (macros.scm); supports 0–4 variables explicitly |
+| `define-syntax` | ✅ | Special form |
+| `let-syntax` | ✅ | Special form |
+| `letrec-syntax` | ✅ | Special form |
+| `syntax-rules` | ✅ | Macro; pattern-based with ellipsis support |
+| `syntax-error` | ❌ | Not implemented |
+| `define-record-type` | ❌ | Not implemented |
+| `guard` | ⚠️ | Placeholder — expands to `(begin body ...)` without exception handling |
+| `parameterize` | ❌ | Not implemented |
+| `quasiquote` / `unquote` / `unquote-splicing` | ✅ | Special form + macro variant |
+
+---
+
+## §5 — Program Structure
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| Top-level `define` | ✅ | Variables and functions |
+| Top-level `define-syntax` | ✅ | Macro definitions |
+| `define-library` | ❌ | No module/library system |
+| `import` / `export` | ❌ | No module/library system |
+| `include` / `include-ci` | ❌ | Not implemented |
+| REPL interaction | ✅ | `grift_repl` crate with `std` support |
+
+---
+
+## §6 — Standard Procedures
+
+### §6.1 — Equivalence Predicates
+
+| Procedure | Status | Implementation |
+|-----------|--------|---------------|
+| `eqv?` | ✅ | Builtin |
+| `eq?` | ✅ | Builtin |
+| `equal?` | ✅ | Builtin |
+
+### §6.2 — Numbers
+
+**Numeric tower**: Grift supports **exact integers only** (`isize`). No floating-point, complex, or rational numbers. This is intentional for `no_std`/`no_alloc` constraints.
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `number?` | ✅ | Builtin |
+| `complex?` / `real?` / `rational?` | ❌ | Not implemented |
+| `integer?` | ✅ | Builtin |
+| `exact?` | ✅ | Always returns `#t` |
+| `inexact?` | ✅ | Always returns `#f` |
+| `exact-integer?` | ✅ | Builtin |
+| `=`, `<`, `>`, `<=`, `>=` | ✅ | Builtins; integer comparison |
+| `zero?`, `positive?`, `negative?`, `odd?`, `even?` | ✅ | Builtins |
+| `max`, `min` | ✅ | Builtins |
+| `+`, `-`, `*`, `/` | ✅ | Builtins; `/` is integer division |
+| `abs` | ✅ | Builtin |
+| `floor`, `ceiling`, `truncate`, `round` | ✅ | Builtins (identity for integers) |
+| `floor/`, `floor-quotient`, `floor-remainder` | ❌ | Not implemented |
+| `truncate/`, `truncate-quotient`, `truncate-remainder` | ❌ | Not implemented |
+| `quotient`, `remainder`, `modulo` | ✅ | Builtins (R5RS-style integer division) |
+| `gcd`, `lcm` | ✅ | Builtins |
+| `expt` | ✅ | Builtin (integer exponentiation) |
+| `square` | ✅ | Builtin |
+| `sqrt` | ✅ | Stdlib (integer square root via Newton-Raphson) |
+| `exact->inexact` / `inexact->exact` | ❌ | Not applicable (integers only) |
+| `number->string` | ❌ | Not implemented |
+| `string->number` | ❌ | Not implemented |
+| Radix prefixes `#b`, `#o`, `#x`, `#d` | ❌ | Not supported |
+| Exactness prefixes `#e`, `#i` | ❌ | Not supported |
+
+### §6.3 — Booleans
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `not` | ✅ | Builtin |
+| `boolean?` | ✅ | Builtin |
+| `boolean=?` | ⚠️ | Available as `boolean-eq` in stdlib (non-standard name) |
+
+### §6.4 — Pairs and Lists
+
+| Procedure | Status | Implementation |
+|-----------|--------|---------------|
+| `pair?` | ✅ | Builtin |
+| `cons` | ✅ | Builtin |
+| `car` / `cdr` | ✅ | Builtins |
+| `set-car!` / `set-cdr!` | ✅ | Builtins |
+| `caar` through `cddddr` | ✅ | Stdlib (full set up to 4 levels) |
+| `null?` | ✅ | Builtin |
+| `list?` | ✅ | Stdlib |
+| `make-list` | ✅ | Stdlib |
+| `list` | ✅ | Builtin |
+| `length` | ✅ | Stdlib |
+| `append` | ✅ | Macro (variadic, uses `append-two` from stdlib) |
+| `reverse` | ✅ | Stdlib |
+| `list-tail` | ✅ | Stdlib |
+| `list-ref` | ✅ | Stdlib |
+| `list-set!` | ✅ | Stdlib |
+| `list-copy` | ✅ | Stdlib |
+| `memq` / `memv` / `member` | ✅ | Stdlib |
+| `assq` / `assv` / `assoc` | ✅ | Stdlib |
+| `map` | ✅ | Stdlib (single list only; R7RS multi-list variant not supported) |
+| `for-each` | ✅ | Stdlib (single list only) |
+
+### §6.5 — Symbols
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `symbol?` | ✅ | Builtin |
+| `symbol=?` | ❌ | Not implemented (use `eq?` on symbols instead) |
+| `symbol->string` | ✅ | Builtin |
+| `string->symbol` | ✅ | Builtin |
+
+### §6.6 — Characters
+
+| Procedure | Status | Implementation |
+|-----------|--------|---------------|
+| `char?` | ✅ | Builtin |
+| `char=?`, `char<?`, `char>?`, `char<=?`, `char>=?` | ✅ | Builtins |
+| `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?` | ✅ | Stdlib |
+| `char-alphabetic?`, `char-numeric?`, `char-whitespace?` | ✅ | Stdlib |
+| `char-upper-case?`, `char-lower-case?` | ✅ | Stdlib |
+| `digit-value` | ✅ | Stdlib |
+| `char->integer` / `integer->char` | ✅ | Builtins |
+| `char-upcase` / `char-downcase` / `char-foldcase` | ✅ | Builtins (`char-foldcase` in stdlib) |
+
+### §6.7 — Strings
+
+| Procedure | Status | Implementation |
+|-----------|--------|---------------|
+| `string?` | ✅ | Builtin |
+| `make-string` | ✅ | Builtin |
+| `string` (constructor) | ✅ | Builtin |
+| `string-length` | ✅ | Builtin |
+| `string-ref` / `string-set!` | ✅ | Builtins |
+| `string=?`, `string<?`, `string>?`, `string<=?`, `string>=?` | ✅ | Builtins |
+| `string-ci=?`, `string-ci<?`, `string-ci>?`, `string-ci<=?`, `string-ci>=?` | ⚠️ | Only `string-ci=?` in stdlib; others missing |
+| `string-upcase` / `string-downcase` / `string-foldcase` | ✅ | Stdlib |
+| `substring` | ✅ | Builtin |
+| `string-append` | ✅ | Builtin |
+| `string->list` / `list->string` | ✅ | Builtins |
+| `string-copy` | ✅ | Builtin |
+| `string-copy!` | ❌ | Not implemented |
+| `string-fill!` | ❌ | Not implemented |
+| `string-map` / `string-for-each` | ✅ | Stdlib |
+| `number->string` / `string->number` | ❌ | Not implemented |
+
+### §6.8 — Vectors
+
+| Procedure | Status | Implementation |
+|-----------|--------|---------------|
+| `vector?` | ✅ | Builtin |
+| `make-vector` | ✅ | Builtin |
+| `vector` (constructor) | ✅ | Builtin |
+| `vector-length` | ✅ | Builtin |
+| `vector-ref` / `vector-set!` | ✅ | Builtins |
+| `vector->list` / `list->vector` | ✅ | Builtins |
+| `vector-fill!` | ✅ | Builtin |
+| `vector-copy` | ✅ | Builtin |
+| `vector-copy!` | ❌ | Not implemented |
+| `vector-append` | ❌ | Not implemented |
+| `vector-map` / `vector-for-each` | ❌ | Not implemented |
+| Vector literal `#(...)` | ✅ | Parser support |
+
+### §6.9 — Bytevectors
+
+Not implemented. No bytevector types, literals, or operations.
+
+### §6.10 — Control Features
+
+| Procedure | Status | Implementation |
+|-----------|--------|---------------|
+| `procedure?` | ✅ | Builtin |
+| `apply` | ✅ | Special form |
+| `map` | ✅ | Stdlib (single list only) |
+| `for-each` | ✅ | Stdlib (single list only) |
+| `string-map` / `string-for-each` | ✅ | Stdlib |
+| `vector-map` / `vector-for-each` | ❌ | Not implemented |
+| `call-with-current-continuation` / `call/cc` | ✅ | Special form |
+| `values` | ✅ | Special form |
+| `call-with-values` | ✅ | Special form |
+| `dynamic-wind` | ✅ | Special form |
+| `eval` | ✅ | Special form |
+
+### §6.11 — Exceptions
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `with-exception-handler` | ❌ | Not implemented |
+| `raise` | ❌ | Not implemented |
+| `raise-continuable` | ❌ | Not implemented |
+| `error` | ⚠️ | Builtin; takes message only, does **not** support irritant arguments |
+| `error-object?` | ❌ | Not implemented |
+| `error-object-message` | ❌ | Not implemented |
+| `error-object-irritants` | ❌ | Not implemented |
+| `error-object-type` | ❌ | Not implemented |
+| `guard` | ⚠️ | Placeholder macro — expands to `(begin body ...)`, no exception handling |
+
+### §6.12 — Environments and Evaluation
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `eval` | ✅ | Special form |
+| `environment` | ❌ | Not implemented |
+| `scheme-report-environment` | ❌ | Not implemented |
+| `null-environment` | ❌ | Not implemented |
+| `interaction-environment` | ❌ | Not implemented |
+
+### §6.13 — Input and Output
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `display` | ✅ | Builtin (via output callback) |
+| `newline` | ✅ | Builtin (via output callback) |
+| `write` | ❌ | Not implemented |
+| `write-shared` / `write-simple` | ❌ | Not implemented |
+| `read` | ❌ | Not implemented (parser exists but not exposed as Scheme procedure) |
+| Port types and predicates | ❌ | Not implemented |
+| `current-input-port` / `current-output-port` / `current-error-port` | ❌ | Not implemented |
+| `open-input-string` / `open-output-string` / `get-output-string` | ❌ | Not implemented |
+| `read-char` / `peek-char` / `write-char` | ❌ | Not implemented |
+| `read-line` / `read-string` | ❌ | Not implemented |
+| File I/O (`open-input-file`, etc.) | ❌ | Not implemented |
+
+### §6.14 — System Interface
+
+| Procedure | Status | Notes |
+|-----------|--------|-------|
+| `load` | ❌ | Not implemented |
+| `file-exists?` | ❌ | Not implemented |
+| `delete-file` | ❌ | Not implemented |
+| `command-line` | ❌ | Not implemented |
+| `exit` / `emergency-exit` | ❌ | Not implemented |
+| `get-environment-variable` / `get-environment-variables` | ❌ | Not implemented |
+| `current-second` / `current-jiffy` / `jiffies-per-second` | ❌ | Not implemented |
+| `features` | ❌ | Not implemented (but `cond-expand` recognizes features) |
+
+---
+
+## Hygienic Macro System
+
+Grift implements a comprehensive hygienic macro system using mark-based hygiene (Clinger & Rees 1991).
+
+### R7RS Standard (§4.3)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `define-syntax` | ✅ | Top-level syntax definitions |
+| `let-syntax` | ✅ | Local syntax bindings |
+| `letrec-syntax` | ✅ | Recursive local syntax bindings |
+| `syntax-rules` | ✅ | Pattern-based macros with ellipsis support |
+| `syntax-error` | ❌ | Not implemented |
+
+### Beyond R7RS (Procedural Macros)
+
+These extensions from R6RS / Chez Scheme are also supported:
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `syntax-case` | ✅ | Pattern matching with fenders |
+| Lambda transformers | ✅ | `(lambda (stx) ...)` procedural macros |
+| `syntax` | ✅ | Template construction |
+| `with-syntax` | ✅ | Pattern variable binding |
+| `identifier?` | ✅ | Builtin predicate |
+| `bound-identifier=?` / `free-identifier=?` | ✅ | Builtins |
+| `syntax->datum` / `datum->syntax` | ✅ | Builtins |
+| `generate-temporaries` | ✅ | Builtin |
+
+### Standard Forms Implemented as Macros
+
+The following R7RS forms are implemented as hygienic macros in `macros.scm`:
+
+- **Binding**: `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values`, `define-values`
+- **Conditionals**: `and`, `or`, `when`, `unless`, `cond`, `case`
+- **Iteration**: `do`
+- **Lazy evaluation**: `delay`, `delay-force`, `force`
+- **Multiple arity**: `case-lambda`
+- **Feature detection**: `cond-expand`
+- **Quoting**: `append` (variadic macro), `quasiquote` (educational variant)
+
+### Known Limitations
+
+- Nested ellipsis patterns (e.g., `((a ...) ...)`) in template transcription have edge cases where ellipsis depth tracking may fail. Workaround: use recursive helper macros instead.
+
+---
+
+## Continuations and Dynamic Wind
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `call-with-current-continuation` / `call/cc` | ✅ | Full first-class continuations |
+| Continuation capture and reinvocation | ✅ | Can be captured, stored, and invoked multiple times |
+| `dynamic-wind` | ✅ | Before/after thunks called during continuation transitions |
+
+**Implementation**: The evaluator uses array-based stacks internally, but continuations are serialized to arena-based `ContFrame` chains when captured.
+
+---
+
+## Standard Library Extensions (Non-R7RS)
+
+These features are intentionally non-R7RS, designed for embedded systems and runtime control:
+
+### GC Control
+| Procedure | Description |
+|-----------|-------------|
+| `gc` | Manually trigger garbage collection |
+| `gc-enable` / `gc-disable` | Enable/disable automatic GC |
+| `gc-enabled?` | Check if GC is enabled |
+| `arena-stats` | Get arena statistics as a list: `(capacity allocated free usage%)` |
+
+### Native Function FFI
+- Native Rust functions can be registered and called from Scheme
 - Used for hardware access in embedded contexts
 
----
+### Additional Stdlib Functions (SRFI-inspired)
 
-## Multi-Phase R7RS Conformance Plan
+Beyond R7RS, the stdlib provides many convenience functions:
 
-### Phase 1: Core Language Foundation ✅ COMPLETED
-**Goal**: Ensure all basic R7RS semantics are correctly implemented
-
-#### 1.1 Binding Constructs ✅
-- [x] Implement `letrec` - Recursive let binding (Section 4.2.2)
-- [x] Implement `letrec*` - Sequential recursive let binding
-- [x] Verify `let` and `let*` follow R7RS semantics exactly
-
-#### 1.2 Core Procedures ✅
-- [x] Implement `for-each` - Apply procedure for side effects
-- [x] Implement `list-tail` - Return sublist starting at index
-- [x] Implement `list-ref` - Return element at index
-- [x] Implement `list?` - Check if value is a proper list
-- [x] Implement `list-copy` - Create a copy of a list
-
-#### 1.3 Number Operations ✅
-- [x] Implement `abs` - Absolute value
-- [x] Implement `max` / `min` - Maximum and minimum
-- [x] Implement `quotient` - Integer quotient (alias for truncate-quotient)
-- [x] Implement `gcd` / `lcm` - Greatest common divisor / least common multiple
-- [x] Implement `floor` / `ceiling` / `truncate` / `round` - Rounding operations (identity for integers)
-- [x] Implement `expt` - Exponentiation
-- [x] Implement `square` - Square of a number
-- [x] Implement `zero?` / `positive?` / `negative?` / `odd?` / `even?` - Predicates
-
-#### 1.4 Numerical Tower (Section 6.2)
-**Status**: Integers only. No floating-point support. Do not implement numerical tower at this time.
-
-- [x] Integer arithmetic works correctly
-- [x] `exact?` always returns #t (all numbers are exact integers)
-- [x] `inexact?` always returns #f (no inexact numbers)
-- [ ] Floating-point numbers not implemented (no floats, NaN, infinity)
-- [ ] Complex numbers not implemented
-- [ ] Fractions/Rationals not implemented
-
-**Note**: This implementation intentionally supports only exact integers to maintain `no_std`, `no_alloc` constraints and simplicity.
-
-#### 1.5 Integer Math Functions
-- [x] `sqrt` - Integer square root (Newton-Raphson, returns largest integer whose square is ≤ x)
-- [x] `square`, `cube` - Power functions
-- [x] `expt` - Integer exponentiation
-
-#### 1.6 Convenience Conditionals ✅
-- [x] Implement `when` - Execute body when test is true
-- [x] Implement `unless` - Execute body when test is false
-
-#### 1.7 Additional Stdlib Functions ✅
-- [x] Implement `make-list` - Create a list of k elements with fill value
-- [x] Implement `list-set!` - Store obj at element k of list
-- [x] Implement `last` / `last-pair` - Access last element/pair
-- [x] Implement `any` / `every` - Higher-order predicates
-- [x] Implement `find` - Find first element matching predicate
-- [x] Implement `partition` - Split list by predicate
-- [x] Implement `remove` / `delete` - Remove elements from list
-- [x] Implement `fold-right` / `reduce` - Right fold operations
-- [x] Implement full c...r accessors (up to 4 levels: `cddddr`, `cadddr`)
-
-### Phase 2: String and Character Support ✅ COMPLETED
-**Goal**: Full R7RS string and character operations
-
-#### 2.1 Character Literal Parsing
-- [x] Character literal syntax: `#\a`, `#\A`, `#\0`, `#\(`, etc.
-- [x] Named characters: `#\newline`, `#\space`, `#\tab`, `#\return`, `#\null`, `#\alarm`, `#\backspace`, `#\delete`, `#\escape`
-- [x] Hex character literals: `#\x41` (for 'A'), `#\x20` (for space)
-
-#### 2.2 String Literal Parsing  
-- [x] Basic string literals: `"hello"`, `""` (empty string)
-- [x] Escape sequences: `\n`, `\t`, `\r`, `\"`, `\\`, `\a`, `\b`, `\|`
-- [x] Hex escapes: `\x41;` (note the terminating semicolon per R7RS)
-- [x] Line continuation: `\` followed by whitespace and newline
-
-#### 2.3 Character Operations (Section 6.6)
-- [x] Implement `char?` predicate (builtin)
-- [x] Implement `char=?` / `char<?` / `char>?` / `char<=?` / `char>=?` - Comparison (builtins)
-- [x] Implement `char->integer` / `integer->char` - Conversion (builtins)
-- [x] Implement `char-upcase` / `char-downcase` - Case conversion (builtins)
-- [x] Implement character predicates (stdlib): `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`
-- [x] Implement `digit-value` - Get numeric value of digit character (stdlib)
-- [x] Implement `char-foldcase` - Unicode simple case-folding (stdlib)
-- [x] Implement case-insensitive comparisons (stdlib): `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`
-
-#### 2.4 String Operations (Section 6.7)
-- [x] Implement `string?` predicate (builtin)
-- [x] Implement `make-string` - Create string with fill character (builtin)
-- [x] Implement `string` constructor - Create string from characters (builtin)
-- [x] Implement `string-length` (builtin)
-- [x] Implement `string-ref` / `string-set!` - Access and mutation (builtins)
-- [x] Implement `string=?` / `string<?` / `string>?` / `string<=?` / `string>=?` - Comparison (builtins)
-- [x] Implement `string-append` - Concatenation (builtin)
-- [x] Implement `string->list` / `list->string` - Conversion (builtins)
-- [x] Implement `substring` - Substring extraction (builtin)
-- [x] Implement `string-copy` - String copying (builtin)
-- [x] Implement `string-upcase` / `string-downcase` / `string-foldcase` - Case conversion (stdlib)
-- [x] Implement `string-ci=?` - Case-insensitive equality (stdlib)
-
-### Phase 3: Vector Support ✅ COMPLETED
-**Goal**: R7RS vector operations (distinct from arrays)
-
-#### 3.1 Vector Operations (Section 6.8)
-- [x] Implement `vector?` predicate
-- [x] Implement `make-vector` - Create vector with optional fill
-- [x] Implement `vector` constructor
-- [x] Implement `vector-length`
-- [x] Implement `vector-ref` / `vector-set!` - Access and mutation
-- [x] Implement `vector->list` / `list->vector` - Conversion
-- [x] Implement `vector-fill!` - Fill vector with value
-- [x] Implement `vector-copy` - Copy vector
-
-#### 3.2 Vector Literal Syntax (Section 2.3)
-- [x] Implement `#(obj ...)` vector literal parsing - Self-evaluating vector constants
-
-**Implementation Notes**:
-- Vectors use the `Value::Array` internal representation for O(1) indexed access
-- All vector operations are implemented as builtins for optimal performance
-- Vector literal `#(...)` is parsed at read time and creates a vector directly
-
-### Phase 4: Multiple Values ✅ COMPLETED
-**Goal**: Full multiple value support
-
-#### 4.1 Multiple Values (Section 6.10)
-- [x] Verify `values` implementation - Returns multiple values as a list
-- [x] Implement `call-with-values` - Receive multiple values (special form)
-- [x] Implement `let-values` / `let*-values` - Bind multiple values (macros in macros.scm)
-- [x] Implement `define-values` - Define multiple values (macro in macros.scm)
-
-**Implementation Notes**:
-- `call-with-values` is implemented as a special form with three continuation types
-- `values` returns a list, and `call-with-values` unwraps it to call the consumer
-- Single non-values returns are automatically wrapped in a list for the consumer
-- `let-values` and `let*-values` use `call-with-values` internally
-- `define-values` supports 0-4 variables explicitly; for more, use rest argument syntax
-
-### Phase 5: Hygienic Macros ✅ COMPLETED
-**Goal**: R7RS-compliant macro system
-
-#### 5.1 Syntax-Rules (Section 4.3.2)
-- [x] Implement `syntax-rules` - Pattern-based macros
-- [x] Implement `let-syntax` - Local syntax bindings
-- [ ] Implement `letrec-syntax` - Recursive local syntax bindings (not implemented)
-- [x] Implement `define-syntax` - Top-level syntax definitions
-- [ ] Implement `syntax-error` - Macro error signaling (not implemented)
-
-#### 5.2 Procedural Macros (Non-R7RS Extension)
-- [x] Implement `syntax-case` - Advanced pattern matching with fenders
-- [x] Implement lambda transformers - `(lambda (stx) ...)` procedural macros
-- [x] Implement `syntax` - Template construction in procedural macros
-- [x] Implement `with-syntax` - Pattern variable binding for procedural macros
-
-**Implementation Notes**:
-- Hygienic expansion using mark-based hygiene (Clinger & Rees 1991)
-- Macros expand during evaluation (evaluation-time expansion)
-- Ellipsis patterns with repetition support (see line 395 for nested ellipsis limitations)
-- 20+ standard R7RS forms implemented as macros in `macros.scm` (see Phase 5.3)
-
-#### 5.3 Standard Forms Implemented as Macros
-- [x] Binding forms: `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values`, `define-values`
-- [x] Conditionals: `and`, `or`, `when`, `unless`, `cond`, `case`
-- [x] Iteration: `do`
-- [x] Delayed evaluation: `delay`, `delay-force`, `force`
-- [x] Multiple arity: `case-lambda`
-- [x] Feature detection: `cond-expand`
-- [x] Advanced: `with-syntax`, `%qq-expand` (educational quasiquote macro)
-
-### Phase 6: Control Features ✅ COMPLETED
-**Goal**: Advanced control flow
-
-#### 6.1 Conditionals
-- [x] Implement `when` / `unless` - Convenience conditionals (macro in macros.scm)
-- [x] Implement `cond-expand` - Feature-based conditional expansion (macro in macros.scm)
-- [x] Implement `case-lambda` - Multiple-arity procedures (macro in macros.scm)
-
-**Implementation Notes**:
-- All control features are implemented as macros
-- `case-lambda` supports multi-clause dispatch based on argument count
-- `cond-expand` supports feature detection for r7rs, grift, exact-closed features
-
-#### 6.2 Exception Handling (Section 6.11)
-- [ ] Implement `guard` - Exception handling syntax
-- [ ] Implement `raise` / `raise-continuable` - Exception raising
-- [ ] Implement `with-exception-handler` - Exception handler installation
-- [ ] Implement `error-object?` / `error-object-message` / `error-object-irritants`
-
-#### 6.3 Dynamic Bindings (Section 4.2.6)
-- [ ] Implement `make-parameter` - Create parameter object
-- [ ] Implement `parameterize` - Dynamic binding
-
-### Phase 7: I/O System
-**Goal**: R7RS I/O operations
-
-#### 7.1 Ports (Section 6.13)
-- [ ] Implement port types and predicates
-- [ ] Implement `current-input-port` / `current-output-port` / `current-error-port`
-- [ ] Implement `open-input-string` / `open-output-string` / `get-output-string`
-- [ ] Implement `read-char` / `peek-char` / `write-char`
-- [ ] Implement `read-line` / `read-string`
-- [ ] Implement `write` / `write-simple` - Datum output
-- [ ] Implement `read` - Datum input
-
-### Phase 8: Library System
-**Goal**: R7RS module system
-
-#### 8.1 Libraries (Section 5.6)
-- [ ] Implement `define-library` syntax
-- [ ] Implement `import` declarations
-- [ ] Implement `export` declarations
-- [ ] Implement library name resolution
-- [ ] Implement `include` / `include-ci` - File inclusion
-
-### Phase 9: Advanced Features (Optional)
-**Goal**: Complete R7RS conformance
-
-#### 9.1 Continuations (MOSTLY COMPLETE)
-- [x] Add `Value::ContFrame` type for arena-based continuation stack (Phase 1 infrastructure)
-- [x] Add `Value::Continuation` type for first-class continuations (Phase 2)
-- [x] Implement `call-with-current-continuation` / `call/cc` (Phase 3)
-- [ ] Migrate evaluator fully to arena-based continuations (optimization)
-- [x] Implement `dynamic-wind` (Phase 4)
-
-**Implementation Notes**:
-- See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for the detailed implementation plan
-- `call/cc` and `call-with-current-continuation` are now fully functional
-- Continuations can be captured, stored, and invoked multiple times
-- Uses a hybrid approach: evaluator uses array-based stacks, but continuations are
-  serialized to arena-based `ContFrame` chains when captured
-- `dynamic-wind` is now implemented - before/after thunks are properly called during
-  continuation transitions (escape and reentry)
-
-#### 9.2 Lazy Evaluation (scheme lazy library) ✅ COMPLETED
-- [x] Implement `delay` / `force` - Basic delayed evaluation (macro-based)
-- [x] Implement `delay-force` - Optimized for recursive promises (macro in macros.scm)
-- [x] Implement `make-promise` / `promise?` (stdlib functions in stdlib.scm)
-
-**Implementation Notes**:
-- `delay-force` creates a promise that, when forced, evaluates its expression and if the result
-  is itself a promise (procedure), forces it iteratively. This prevents unbounded stack growth.
-- `promise?` returns `#t` for procedures, consistent with R7RS which says "promises are not
-  necessarily disjoint from other Scheme types such as procedures."
-- `make-promise` returns the object unchanged if it's already a promise, otherwise wraps it in a thunk.
-
-#### 9.3 Environments
-- [ ] Implement `environment` - Create evaluation environment
-- [ ] Implement `scheme-report-environment`
-- [ ] Implement `null-environment`
+- **List utilities**: `nth`, `take`, `drop`, `zip`, `take-right`, `drop-right`, `split-at`, `concatenate`, `flatten`, `count`, `last`, `last-pair`, `range`, `iota1`/`iota2`/`iota3`, `list-tabulate`
+- **List accessors**: `first` through `tenth`
+- **Higher-order**: `filter-map`, `partition`, `remove`, `delete`, `any`, `every`, `find`, `fold`, `fold-right`, `reduce`
+- **Composition**: `compose`, `identity`, `constantly`, `flip`, `curry`
+- **Math**: `cube`, `sum`, `product`, `average`, `sign`
+- **Strings**: `string-null?`, `string-reverse`, `string-contains`, `string-join`, `string-split`, `string-trim`
+- **Boolean**: `boolean-eq`
 
 ---
 
-## Implementation Guidelines
+## What's Missing for Full R7RS Conformance
 
-### For Special Forms
+### High Priority
 
-1. **Add to parser** (`crates/grift_parser/src/lib.rs`):
-   - Add syntax recognition in the parser
-   - Ensure proper AST representation
+1. **Exception system** (§6.11) — `with-exception-handler`, `raise`, `raise-continuable`, `guard`, error objects
+2. **I/O port system** (§6.13) — Ports, `read`, `write`, `read-char`, `write-char`, string ports
+3. **Library system** (§5.6) — `define-library`, `import`, `export`
+4. **Dynamic parameters** (§4.2.6) — `make-parameter`, `parameterize`
 
-2. **Add to evaluator** (`crates/grift_eval/src/lib.rs`):
-   - Add handling in `step_eval` for the new special form
-   - Implement semantics according to R7RS spec
-   - Add appropriate continuations if needed
+### Medium Priority
 
-3. **Add tests** (`crates/grift_eval/tests/lib_tests.rs`):
-   - Test basic functionality
-   - Test edge cases
-   - Test conformance with R7RS examples
+5. **Numeric conversions** — `number->string`, `string->number`
+6. **Multi-list `map`/`for-each`** — R7RS requires these to accept multiple list arguments
+7. **Record types** — `define-record-type` (§5.5)
+8. **Bytevectors** (§6.9) — Types, literals, and operations
+9. **Missing vector operations** — `vector-map`, `vector-for-each`, `vector-copy!`, `vector-append`
+10. **Missing string operations** — `string-copy!`, `string-fill!`, remaining `string-ci` comparisons
 
-### For Standard Procedures
+### Low Priority / Intentionally Deferred
 
-
-2. **Standard Library** (for less critical operations):
-   - Add definition to `crates/grift_parser/src/stdlib.scm`
-   - The `include_stdlib!` macro will automatically generate the enum variant
-   - Add tests
-
-### Testing Strategy
-
-1. **Unit Tests**: Test each feature in isolation
-2. **Conformance Tests**: Compare behavior with R7RS spec examples
-3. **Integration Tests**: Test features working together
-4. **Edge Cases**: Test error conditions, boundary cases
+11. **Full numeric tower** — Floating-point, rationals, complex numbers (conflicts with `no_std`/`no_alloc` design)
+12. **Environments** — `environment`, `scheme-report-environment`, `null-environment`
+13. **System interface** (§6.14) — `load`, `file-exists?`, `exit`, `command-line`, timing
+14. **Tail context tracking** — Full R7RS tail-position specification compliance
+15. **`syntax-error`** — Macro-time error signaling
+16. **Datum/block comments** — `#;` and `#| ... |#`
 
 ---
 
 ## Architecture Notes
 
-### Compatible Features
-- ✅ Trampolined evaluation supports proper tail recursion
-- ✅ Arena allocation supports all value types
-- ✅ GC integration supports long-running programs
-- ✅ Lexical scoping supports closures
+### Design Constraints
 
-### Potential Challenges
+- **`no_std`, `no_alloc`** — Core crates (`grift_arena`, `grift_parser`, `grift_eval`) use no heap allocation
+- **Arena-based** — All values allocated in a fixed-size arena with mark-and-sweep GC
+- **`Copy` types** — All arena-stored values implement `Copy`
+- **Integers only** — Numeric tower limited to exact integers (`isize`) by design
 
-1. **Continuations**: ✅ **COMPLETED** - `call/cc`, `call-with-current-continuation`, and `dynamic-wind` are fully functional.
-   - `dynamic-wind` properly handles before/after thunks during continuation transitions
-   - See `docs/CALL_CC_IMPLEMENTATION_PLAN.md` for implementation details
-   
-2. **Multiple Values**: ✅ **COMPLETED** - Full support via `call-with-values`, `let-values`, `let*-values`, `define-values`.
+### Crate Structure
 
-3. **Hygienic Macro System**: ✅ **COMPLETED** - `syntax-rules`, `define-syntax`, `let-syntax`, and `syntax-case` fully functional.
-   - Supports both declarative (`syntax-rules`) and procedural (`lambda` + `syntax-case`) macros
-   - Mark-based hygiene ensures lexical scoping
-   - 20+ standard R7RS forms implemented as macros
-   - Minor limitation: nested ellipsis patterns (e.g., `((a ...) ...)`) in template transcription have edge cases where ellipsis depth tracking may fail - workaround is to use recursive helper macros instead (see `HYGIENIC_MACROS_IMPLEMENTATION.md` Phase 7 notes)
-   - Missing: `letrec-syntax` and `syntax-error` (not critical for most use cases)
+| Crate | Role | `no_std` |
+|-------|------|----------|
+| `grift` | Unified re-export crate | ✅ |
+| `grift_arena` | Arena allocator with mark-and-sweep GC | ✅ |
+| `grift_core` | Core types: `Value`, `Builtin`, `StdLib`, `Lisp`, `DisplayValue` | ✅ |
+| `grift_parser` | Parser with symbol interning | ✅ |
+| `grift_eval` | Trampolined evaluator; includes `macros.scm` and `expand.rs` | ✅ |
+| `grift_macros` | Proc macros for stdlib generation | N/A |
+| `grift_repl` | Interactive REPL | ❌ (uses `std`) |
+| `grift_util` | Scheme-to-Rust name conversion utilities | ✅ |
+| `grift_arena_embedded` | Hardware access for embedded targets | ✅ |
 
-4. **Library System**: No module system yet.
-   - **Impact**: Required for full conformance - Phase 8
+### Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `crates/grift_eval/src/evaluator/core.rs` | Special form evaluation (`quote`, `lambda`, `define`, `set!`, `if`, `begin`, `call/cc`, `dynamic-wind`, `values`, `call-with-values`, `eval`, `apply`, `define-syntax`, `let-syntax`, `letrec-syntax`, `syntax-case`, `syntax`, `quasiquote`) |
+| `crates/grift_eval/src/evaluator/builtins.rs` | ~86 builtin function implementations |
+| `crates/grift_eval/src/evaluator/macros.scm` | ~35 macro definitions (standard R7RS forms) |
+| `crates/grift_eval/src/evaluator/expand.rs` | Macro expansion engine |
+| `crates/grift_core/src/stdlib.scm` | ~60 stdlib function definitions |
+| `crates/grift_core/src/value.rs` | `Value` enum, `Builtin` enum, `StdLib` enum |
+| `crates/grift_core/src/display.rs` | Value formatting/display |
+| `crates/grift_parser/src/lib.rs` | Parser (lexer + reader) |
 
 ---
 
 ## Resources
 
-- **Spec**: `scheme-spec-r7rs/spec.html`
-- **Architecture**: `docs/LISP_ARCHITECTURE.md`
+- **R7RS Spec**: `scheme-spec-r7rs/spec.html`
 - **Arena Architecture**: `docs/ARENA_ARCHITECTURE.md`
 - **Macro Implementation**: `docs/HYGIENIC_MACROS_IMPLEMENTATION.md`
-- **Continuations**: `docs/CALL_CC_IMPLEMENTATION_PLAN.md`
-- **Current Stdlib**: `crates/grift_parser/src/stdlib.scm`
-- **Standard Macros**: `crates/grift_eval/src/evaluator/macros.scm`
-- **Macro Expansion**: `crates/grift_eval/src/evaluator/expand.rs`
-- **Parser**: `crates/grift_parser/src/lib.rs`
-- **Evaluator**: `crates/grift_eval/src/lib.rs`
-
----
-
-## Notes
-
-- The implementation uses `no_std` - ensure any new features maintain this constraint
-- The arena has fixed capacity - consider memory usage for new features
-- GC integration is important - ensure new features properly mark roots
-- Performance matters - prefer builtins for hot paths, stdlib for convenience
-- Extensions (GC control, arrays, FFI) are intentionally kept for embedded use
+- **Continuations Plan**: `docs/CALL_CC_IMPLEMENTATION_PLAN.md`
+- **Syntax-case Details**: `docs/EXTENDING_SCHEME_MACROS.md`
