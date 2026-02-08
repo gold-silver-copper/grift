@@ -744,7 +744,7 @@
 ;; Exception Handling (R7RS Section 4.2.7)
 ;; ============================================================
 
-;; guard - Exception handling syntax (R7RS)
+;; guard - Exception handling syntax (R7RS §4.2.7)
 ;;
 ;; (guard (var cond-clause ...) body ...)
 ;;
@@ -752,18 +752,7 @@
 ;; the exception is bound to var and the cond-clauses are evaluated.
 ;; If no clause matches and there's no else clause, the exception is re-raised.
 ;;
-;; IMPORTANT LIMITATION: This is a structural implementation only.
-;; Full exception handling requires raise/with-exception-handler infrastructure
-;; which is not yet implemented in Grift. Currently:
-;; - The body is evaluated normally
-;; - If body completes without error, its result is returned
-;; - Runtime errors (e.g., from (error ...)) will NOT be caught
-;; - The cond-clauses will NOT be evaluated for runtime errors
-;;
-;; This macro is provided for syntax compatibility. Full functionality
-;; will be available when raise/with-exception-handler are implemented.
-;;
-;; Example (will work when exception infrastructure is complete):
+;; Example:
 ;;   (guard (exn
 ;;            ((string? exn) exn)
 ;;            (else "unknown error"))

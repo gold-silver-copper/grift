@@ -155,6 +155,9 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Continuation { .. }) => {
             buf.push_str("#<continuation>");
         }
+        Ok(Value::ErrorObject { .. }) => {
+            buf.push_str("#<error-object>");
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }
