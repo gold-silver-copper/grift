@@ -13,4 +13,4 @@ categories = ["development-tools::procedural-macro-helpers"]
 proc-macro = true
 
 [dependencies]
-grift_util = { path = "../grift_util" }
+grift_util = { version = "1.3.0", path = "../grift_util" }
