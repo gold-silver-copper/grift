@@ -18,6 +18,11 @@
 //! - **Iteration**: `do` loops for imperative-style iteration
 //! - **Meta-programming**: `eval` for runtime code evaluation, `quasiquote`/`unquote`
 //! - **Mutation**: `set!`, `set-car!`, `set-cdr!` for imperative programming
+//! - **Pluggable I/O**: Accepts any [`IoProvider`] at runtime for port
+//!   operations (`display`, `read`, `write`, string ports, etc.) without
+//!   breaking `no_std` compatibility
+//! - **Native FFI**: Register Rust functions callable from Scheme via
+//!   [`NativeRegistry`] and the [`FromLisp`]/[`ToLisp`] conversion traits
 //!
 //! ## Evaluation Strategy
 //!
