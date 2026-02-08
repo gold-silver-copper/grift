@@ -10,12 +10,10 @@
 //! 4. Phase violation tests (things that work in grift but not Racket/Guile)
 //! 5. Hygiene edge cases
 
-use grift_eval::*;
+mod common;
 
-fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().as_number().unwrap()
-}
+use grift_eval::*;
+use common::eval_to_num;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test Suite A: First-Class Syntax Object Manipulation

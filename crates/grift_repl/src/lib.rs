@@ -435,11 +435,11 @@ pub fn run_repl<const N: usize>() {
     
     let mut line_editor = Reedline::create();
     let default_prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("> ".to_string()),
+        DefaultPromptSegment::Basic("Λ ".to_string()),
         DefaultPromptSegment::Empty,
     );
     let continuation_prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("... ".to_string()),
+        DefaultPromptSegment::Basic("  ".to_string()),
         DefaultPromptSegment::Empty,
     );
     
