@@ -492,6 +492,20 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    /// Create a new unique symbol without checking the intern table.
+    /// 
+    /// This is an optimization for `gensym` — since generated symbol names are
+    /// guaranteed unique (via a monotonic counter), the intern table lookup
+    /// will always miss. Skipping the lookup avoids an O(N) scan of the table.
+    /// 
+    /// The symbol is NOT added to the intern table, which also prevents
+    /// bloating the table and slowing down future lookups.
+    pub fn symbol_new_unique(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        let name_str = self.string(name)?;
+        let symbol = self.alloc(Value::Symbol(name_str))?;
+        Ok(symbol)
+    }
+    
     /// Allocate a builtin function
     #[inline]
     pub fn builtin(&self, b: Builtin) -> ArenaResult<ArenaIndex> {
@@ -934,7 +948,7 @@ impl<const N: usize> Lisp<N> {
     /// Symbols are compared by their underlying string content.
     #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
-        // Fast path: same index means same symbol
+        // Fast path: same index means same symbol (common for interned symbols)
         if a == b {
             return Ok(true);
         }
@@ -944,6 +958,10 @@ impl<const N: usize> Lisp<N> {
         
         match (val_a, val_b) {
             (Value::Symbol(chars_a), Value::Symbol(chars_b)) => {
+                // Second fast path: same underlying string index
+                if chars_a == chars_b {
+                    return Ok(true);
+                }
                 self.string_eq_contiguous(chars_a, chars_b)
             }
             _ => Ok(false),
@@ -1218,18 +1236,38 @@ impl<const N: usize> Lisp<N> {
             return Ok(true);
         }
         
-        let len_a = self.string_len(a)?;
-        let len_b = self.string_len(b)?;
+        // Get both string headers once to avoid re-fetching per character
+        let (len_a, data_a) = match self.arena.get(a)? {
+            Value::String { len, data } => (len, data),
+            _ => return Err(ArenaError::InvalidIndex),
+        };
+        let (len_b, data_b) = match self.arena.get(b)? {
+            Value::String { len, data } => (len, data),
+            _ => return Err(ArenaError::InvalidIndex),
+        };
         
         if len_a != len_b {
             return Ok(false);
         }
         
+        if len_a == 0 {
+            return Ok(true);
+        }
+        
+        // Compare characters directly using raw index arithmetic
+        let base_a = data_a.raw();
+        let base_b = data_b.raw();
+        
         for i in 0..len_a {
-            let char_a = self.string_char_at(a, i)?;
-            let char_b = self.string_char_at(b, i)?;
-            if char_a != char_b {
-                return Ok(false);
+            let slot_a = self.arena.get(ArenaIndex::new(base_a + i))?;
+            let slot_b = self.arena.get(ArenaIndex::new(base_b + i))?;
+            match (slot_a, slot_b) {
+                (Value::Char(ca), Value::Char(cb)) => {
+                    if ca != cb {
+                        return Ok(false);
+                    }
+                }
+                _ => return Err(ArenaError::InvalidIndex),
             }
         }
         
