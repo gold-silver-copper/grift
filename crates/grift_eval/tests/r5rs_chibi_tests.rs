@@ -3,22 +3,10 @@
 //! These tests verify core R5RS Scheme compliance.
 //! Original tests by Alex Shinn, adapted for Grift.
 
+mod common;
+
 use grift_eval::*;
-
-fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().as_number().unwrap()
-}
-
-fn eval_is_true<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_true()
-}
-
-fn eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_false()
-}
+use common::{eval_to_num, eval_is_true, eval_is_false};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LAMBDA TESTS

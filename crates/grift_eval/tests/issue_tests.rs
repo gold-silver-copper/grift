@@ -1,14 +1,7 @@
+mod common;
+
 use grift_eval::*;
-
-fn eval_to_string<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> String {
-    let result = eval.eval_str(input).unwrap();
-    format!("{}", lisp.display(result))
-}
-
-fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().as_number().unwrap()
-}
+use common::{eval_to_string, eval_to_num};
 
 // Issue 1: or hygiene - when `if` is rebound, or's template `if` should still 
 // refer to the special form `if`, not the variable binding

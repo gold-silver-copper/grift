@@ -288,6 +288,75 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.make_error(ErrorKind::WrongArgCount, expr)
             .with_args(expected, got)
     }
+
+    /// Check whether an error kind is catchable by Scheme exception handlers.
+    ///
+    /// OutOfMemory and StackOverflow are not catchable because they represent
+    /// critical runtime conditions that cannot be safely recovered from.
+    fn is_catchable(kind: ErrorKind) -> bool {
+        !matches!(kind, ErrorKind::OutOfMemory | ErrorKind::StackOverflow)
+    }
+
+    /// Try to route a Rust EvalError through the Scheme exception handler chain.
+    ///
+    /// If there is an active exception handler installed, this converts the error
+    /// into an R7RS error object and invokes the handler.  If no handler is
+    /// installed, or if the error is not catchable, returns Err so that the
+    /// trampoline propagates it as a Rust-level error.
+    fn try_raise_eval_error(
+        &mut self,
+        err: EvalError,
+    ) -> Result<TrampolineState, EvalError> {
+        // Only route catchable errors; let critical ones propagate
+        if !Self::is_catchable(err.kind) {
+            return Err(err);
+        }
+
+        // Only route through handler if one is installed
+        if self.lisp.get(self.exception_handler_chain).map_or(true, |v| v.is_nil()) {
+            return Err(err);
+        }
+
+        // Build the message string for the error object
+        let msg_str = err.kind.as_str();
+        let message = match self.lisp.string(msg_str) {
+            Ok(m) => m,
+            Err(_) => return Err(err),
+        };
+
+        // Build irritants list from the error context
+        let nil = match self.lisp.nil() {
+            Ok(n) => n,
+            Err(_) => return Err(err),
+        };
+
+        let irritants = if !err.expr.is_nil() {
+            match self.lisp.cons(err.expr, nil) {
+                Ok(i) => i,
+                Err(_) => return Err(err),
+            }
+        } else {
+            nil
+        };
+
+        // Build the R7RS error object: (irritants . type)
+        let irritants_and_type = match self.lisp.cons(irritants, nil) {
+            Ok(it) => it,
+            Err(_) => return Err(err),
+        };
+        let error_obj = match self.lisp.alloc(Value::ErrorObject { message, irritants_and_type }) {
+            Ok(o) => o,
+            Err(_) => return Err(err),
+        };
+
+        // Route through the exception handler chain (non-continuable)
+        match self.invoke_exception_handler(error_obj, false) {
+            Ok(Some(state)) => Ok(state),
+            Ok(None) => Err(self.make_error(ErrorKind::UserError, error_obj)
+                .with_message("unhandled exception")),
+            Err(e) => Err(e),
+        }
+    }
     
     // ========================================================================
     // Environment Management
@@ -590,9 +659,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Err(e) if e.kind == ErrorKind::OutOfMemory => {
                             // Fallback: run GC and retry once
                             self.gc_with_state(&state);
-                            self.step_eval(expr, env)?
+                            match self.step_eval(expr, env) {
+                                Ok(s) => s,
+                                Err(e) => self.try_raise_eval_error(e)?,
+                            }
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => self.try_raise_eval_error(e)?,
                     }
                 }
                 TrampolineState::Return { val } => {
@@ -602,12 +674,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Err(e) if e.kind == ErrorKind::OutOfMemory => {
                             // Fallback: run GC and retry once
                             self.gc_with_state(&state);
-                            match self.step_return(val)? {
-                                Some(new_state) => new_state,
-                                None => return Ok(val),
+                            match self.step_return(val) {
+                                Ok(Some(new_state)) => new_state,
+                                Ok(None) => return Ok(val),
+                                Err(e) => self.try_raise_eval_error(e)?,
                             }
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => self.try_raise_eval_error(e)?,
                     }
                 }
             };

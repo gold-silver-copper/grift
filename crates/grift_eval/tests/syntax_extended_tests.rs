@@ -3,22 +3,10 @@
 //! These tests cover additional Scheme syntax features and edge cases
 //! inspired by chibi-scheme and chicken-scheme test suites.
 
+mod common;
+
 use grift_eval::*;
-
-fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().as_number().unwrap()
-}
-
-fn eval_is_true<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_true()
-}
-
-fn eval_is_false<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_false()
-}
+use common::{eval_to_num, eval_is_true, eval_is_false};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SYNTAX-CASE EXTENDED TESTS

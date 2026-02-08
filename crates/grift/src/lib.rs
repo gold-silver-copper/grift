@@ -1,7 +1,7 @@
 //! # Grift
 //!
-//! A minimal `no_std`, `no_alloc` Scheme implementation built on arena-based
-//! garbage collection. Perfect for embedded systems, WebAssembly, or any
+//! A minimal `no_std`, `no_alloc` R7RS-compliant Scheme implementation built on
+//! arena-based garbage collection. Perfect for embedded systems, WebAssembly, or any
 //! environment where heap allocation is unavailable or undesirable.
 //!
 //! ## Features
@@ -11,7 +11,12 @@
 //! - **Mark-and-sweep GC** — Controllable from Scheme code
 //! - **Proper tail-call optimization** — Via trampolining
 //! - **Lexical closures** — First-class functions with captured environments
-//! - **R7RS-inspired** — Scheme semantics with only `#f` as false
+//! - **R7RS-compliant** — Scheme semantics following the Revised⁷ Report
+//! - **Pluggable I/O** — Trait-based I/O boundary (`IoProvider`) keeps the
+//!   evaluator `no_std` while allowing real I/O on hosted platforms
+//! - **Native FFI** — Register Rust functions callable from Scheme
+//! - **Embedded support** — Optional hardware natives for GPIO, memory
+//!   peek/poke, and bit manipulation
 //!
 //! ## Quick Start
 //!
@@ -27,14 +32,19 @@
 //! assert!(matches!(lisp.get(result), Ok(Value::Number(6))));
 //! ```
 //!
-//! ## Optional REPL
+//! ## Optional `std` Feature
 //!
-//! Enable the `std` feature for an interactive REPL:
+//! Enable the `std` feature for an interactive REPL and real I/O:
 //!
 //! ```toml
 //! [dependencies]
-//! grift = { version = "1.2", features = ["std"] }
+//! grift = { version = "1.3", features = ["std"] }
 //! ```
+//!
+//! The `std` feature brings in:
+//! - [`grift_repl`] — Interactive REPL with line editing, GC commands, and help
+//! - [`grift_std`] — `StdIoProvider`, an [`IoProvider`] implementation using
+//!   `std::io` for stdin/stdout/stderr and dynamic string ports
 //!
 //! Then run:
 //!
@@ -43,15 +53,45 @@
 //! grift
 //! ```
 //!
+//! ## I/O Architecture
+//!
+//! The evaluator is fully `no_std` and performs no I/O itself. Instead, an
+//! [`IoProvider`] trait (defined in `grift_core`) abstracts all port
+//! operations:
+//!
+//! - **[`NullIoProvider`]** — No-op implementation that silently discards
+//!   output and rejects reads. Used in `no_std`/embedded contexts where
+//!   there is no real I/O.
+//! - **`StdIoProvider`** (behind `std` feature) — Full implementation
+//!   backed by `std::io`, providing stdin/stdout/stderr and dynamic string
+//!   ports.
+//!
+//! Pass any `IoProvider` to the evaluator at runtime:
+//!
+//! ```rust,ignore
+//! use grift::{Lisp, Evaluator, NullIoProvider};
+//!
+//! let lisp: Lisp<20000> = Lisp::new();
+//! let mut eval = Evaluator::new(&lisp).unwrap();
+//! let mut io = NullIoProvider;
+//! eval.set_io_provider(&mut io);
+//! ```
+//!
 //! ## Crate Organization
 //!
 //! This crate re-exports the complete Grift stack:
 //!
-//! - [`grift_arena`] — Arena allocator with GC
+//! - [`grift_arena`] — Fixed-size arena allocator with mark-and-sweep GC
 //! - [`grift_core`] — Core types (`Value`, `Builtin`, `StdLib`, `Lisp`)
+//!   and the `IoProvider` trait boundary
 //! - [`grift_parser`] — Lexer and parser
-//! - [`grift_eval`] — Trampolined evaluator
+//! - [`grift_eval`] — Fully-trampolined evaluator with native FFI
 //! - [`grift_repl`] — Interactive REPL (behind `std` feature)
+//! - [`grift_std`] — `StdIoProvider` for hosted I/O (behind `std` feature)
+//! - [`grift_macros`] — Procedural macros (`include_stdlib!`)
+//! - [`grift_util`] — Shared utilities (Scheme-name ↔ Rust-name conversion)
+//! - [`grift_arena_embedded`] — Embedded hardware natives (GPIO, peek/poke,
+//!   bit manipulation)
 
 #![no_std]
 #![forbid(unsafe_code)]

@@ -1,6 +1,6 @@
 # Scheme R7RS Conformance Status
 
-This document tracks the R7RS conformance status of the Grift Scheme implementation. Grift is a `no_std`, `no_alloc` Scheme built on a custom arena allocator, targeting embedded systems, WebAssembly, and other constrained environments.
+This document tracks the R7RS conformance status of the Grift Scheme implementation. Grift is an R7RS-compliant `no_std`, `no_alloc` Scheme built on a custom arena allocator, targeting embedded systems, WebAssembly, and other constrained environments.
 
 > **Last updated**: February 2026
 
@@ -38,8 +38,8 @@ The authoritative R7RS specification is located at:
 | Vector literals `#(...)` | ✅ | Parsed at read time |
 | Bytevector literals `#u8(...)` | ❌ | Not supported |
 | Comments `;` | ✅ | Line comments |
-| Datum comments `#;` | ❌ | Not supported |
-| Block comments `#| ... |#` | ❌ | Not supported |
+| Datum comments `#;` | ✅ | Parser skips next datum |
+| Block comments `#| ... |#` | ✅ | Nestable block comments |
 | `#!fold-case` / `#!no-fold-case` | ❌ | Not supported |
 
 ---
@@ -305,13 +305,14 @@ Not implemented. No bytevector types, literals, or operations.
 |-----------|--------|-------|
 | `display` | ✅ | Builtin (via output callback) |
 | `newline` | ✅ | Builtin (via output callback) |
-| `write` | ❌ | Not implemented |
+| `write` | ✅ | Builtin; machine-readable output with quotes |
 | `write-shared` / `write-simple` | ❌ | Not implemented |
 | `read` | ❌ | Not implemented (parser exists but not exposed as Scheme procedure) |
 | Port types and predicates | ❌ | Not implemented |
 | `current-input-port` / `current-output-port` / `current-error-port` | ❌ | Not implemented |
 | `open-input-string` / `open-output-string` / `get-output-string` | ❌ | Not implemented |
-| `read-char` / `peek-char` / `write-char` | ❌ | Not implemented |
+| `write-char` | ✅ | Builtin; writes a character to a port |
+| `read-char` / `peek-char` | ❌ | Not implemented |
 | `read-line` / `read-string` | ❌ | Not implemented |
 | File I/O (`open-input-file`, etc.) | ❌ | Not implemented |
 
@@ -342,7 +343,7 @@ Grift implements a comprehensive hygienic macro system using mark-based hygiene 
 | `let-syntax` | ✅ | Local syntax bindings |
 | `letrec-syntax` | ✅ | Recursive local syntax bindings |
 | `syntax-rules` | ✅ | Pattern-based macros with ellipsis support |
-| `syntax-error` | ❌ | Not implemented |
+| `syntax-error` | ✅ | Special form; raises compile-time/macro-expansion error |
 
 ### Beyond R7RS (Procedural Macros)
 
@@ -423,7 +424,7 @@ Beyond R7RS, the stdlib provides many convenience functions:
 
 ### High Priority
 
-1. **I/O port system** (§6.13) — Ports, `read`, `write`, `read-char`, `write-char`, string ports
+1. **I/O port system** (§6.13) — Ports, `read`, `read-char`, string ports (note: `write`, `write-char`, and `display` are implemented)
 2. **Library system** (§5.6) — `define-library`, `import`, `export`
 
 ### Medium Priority
@@ -439,7 +440,6 @@ Beyond R7RS, the stdlib provides many convenience functions:
 8. **Environments** — `environment`, `scheme-report-environment`, `null-environment`
 9. **System interface** (§6.14) — `load`, `file-exists?`, `exit`, `command-line`, timing
 10. **Tail context tracking** — Full R7RS tail-position specification compliance
-11. **Datum/block comments** — `#;` and `#| ... |#`
 
 ---
 
