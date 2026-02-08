@@ -762,6 +762,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             .ok_or(ArenaError::OutOfMemory)?;
         let end_idx = start_idx + count;
 
+        // Safety: find_contiguous_free_slots guarantees start_idx + count <= N
+        debug_assert!(end_idx <= N);
+
         // Remove all slots in [start_idx, end_idx) from the free list in one pass.
         // This is O(free_list_length) instead of O(count × free_list_length).
 
