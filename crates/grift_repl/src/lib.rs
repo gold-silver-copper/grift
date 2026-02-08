@@ -436,11 +436,18 @@ impl Validator for SchemeValidator {
             return Ok(ValidationResult::Valid(None));
         }
 
-        // Count parentheses (naive but matches original REPL behaviour)
+        // Count parentheses, skipping strings and comments
         let mut depth: i32 = 0;
         let mut in_string = false;
+        let mut in_line_comment = false;
         let mut escape = false;
         for c in input.chars() {
+            if in_line_comment {
+                if c == '\n' {
+                    in_line_comment = false;
+                }
+                continue;
+            }
             if escape {
                 escape = false;
                 continue;
@@ -455,6 +462,7 @@ impl Validator for SchemeValidator {
             }
             if !in_string {
                 match c {
+                    ';' => { in_line_comment = true; }
                     '(' => depth += 1,
                     ')' => depth -= 1,
                     _ => {}
@@ -507,7 +515,7 @@ pub fn run_repl<const N: usize>() {
                 }
                 
                 // Add to history
-                let _ = line_editor.add_history_entry(&line);
+                let _ = line_editor.add_history_entry(input);
                 
                 // Special commands
                 if input.starts_with(':') {
