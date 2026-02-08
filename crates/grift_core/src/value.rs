@@ -253,6 +253,10 @@ define_builtins! {
     SymbolToString => "symbol->string",
     /// string->symbol - Convert string to symbol
     StringToSymbol => "string->symbol",
+    /// number->string - Convert number to string
+    NumberToString => "number->string",
+    /// string->number - Convert string to number (or #f if invalid)
+    StringToNumber => "string->number",
 }
 
 // Define all standard library functions using the include_stdlib! macro.

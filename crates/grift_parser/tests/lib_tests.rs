@@ -66,9 +66,9 @@ fn test_reserved_slots_occupy_first_slots() {
 fn test_reserved_slots_not_reallocated() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // After creating the Lisp context, 5 slots should be used
-    // (nil, void, true, false, intern_table_cons) - with inline cons, no separate data slots needed
-    assert_eq!(lisp.arena().len(), 5);
+    // After creating the Lisp context, 6 slots should be used
+    // (nil, void, true, false, intern_table_cons, string_intern_table_cons)
+    assert_eq!(lisp.arena().len(), 6);
     
     // Calling nil/void_val/true_val/false_val should NOT increase allocation count
     // (they return pre-allocated slots)
@@ -76,7 +76,7 @@ fn test_reserved_slots_not_reallocated() {
     let _ = lisp.void_val();
     let _ = lisp.true_val();
     let _ = lisp.false_val();
-    assert_eq!(lisp.arena().len(), 5);
+    assert_eq!(lisp.arena().len(), 6);
     
     // Calling many times should not increase count
     for _ in 0..100 {
@@ -85,7 +85,7 @@ fn test_reserved_slots_not_reallocated() {
         let _ = lisp.true_val();
         let _ = lisp.false_val();
     }
-    assert_eq!(lisp.arena().len(), 5);
+    assert_eq!(lisp.arena().len(), 6);
 }
 
 #[test]
@@ -132,14 +132,14 @@ fn test_reserved_slots_survive_gc() {
 fn test_regular_allocation_starts_after_reserved_slots() {
     let lisp: Lisp<100> = Lisp::new();
     
-    // First regular allocation should be at slot 5 (after reserved 0-4)
-    // Slots: 0=nil, 1=void, 2=true, 3=false, 4=intern_table_cons (with inline car/cdr)
+    // First regular allocation should be at slot 6 (after reserved 0-5)
+    // Slots: 0=nil, 1=void, 2=true, 3=false, 4=intern_table_cons, 5=string_intern_table_cons
     let num = lisp.number(42).unwrap();
-    assert_eq!(num.raw(), 5);
+    assert_eq!(num.raw(), 6);
     
     // Next allocations continue from there
     let num2 = lisp.number(43).unwrap();
-    assert_eq!(num2.raw(), 6);
+    assert_eq!(num2.raw(), 7);
 }
 
 // ========================================================================
