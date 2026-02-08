@@ -192,8 +192,8 @@ This repository contains:
 
 ; Exception handling
 (guard (exn
-        ((string? (error-object-message exn)) "caught"))
-  (error "oops"))                              ; => "caught"
+        ((error-object? exn) (error-object-message exn)))
+  (error "oops"))                              ; => "oops"
 (with-exception-handler handler-proc thunk)
 (raise 'an-error)
 (raise-continuable 'warning)
