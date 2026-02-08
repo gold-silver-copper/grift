@@ -884,6 +884,46 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.call_site_env = EnvRef(saved_call_site_env);
                 Ok(Some(TrampolineState::Eval { expr: ExprRef(val), env: EnvRef(eval_env) }))
             }
+            
+            ContType::WithExceptionHandlerEvalThunk => {
+                // val = evaluated handler; now evaluate the thunk expression
+                // Data: (thunk_expr . env)
+                let (thunk_expr, env) = self.unpack2(data)?;
+                let handler = val;
+                self.cont(ContType::WithExceptionHandlerCallThunk, EnvRef(env))
+                    .data2(handler, env)?;
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(thunk_expr), env: EnvRef(env) }))
+            }
+            
+            ContType::WithExceptionHandlerCallThunk => {
+                // val = evaluated thunk; handler is in data
+                // Data: (handler . env)
+                let (handler, _env) = self.unpack2(data)?;
+                let thunk = val;
+                // Install handler, call thunk, restore handler on return
+                let saved_chain = self.exception_handler_chain;
+                self.exception_handler_chain = self.lisp.cons(handler, saved_chain)?;
+                // Push frame to restore handler chain when thunk returns
+                let global = self.global_env;
+                self.cont(ContType::ExceptionHandlerFrame, global).data2(handler, saved_chain)?;
+                // Call the thunk (zero-arg procedure)
+                self.apply_thunk(thunk, self.global_env)
+            }
+            
+            ContType::ExceptionHandlerFrame => {
+                // Thunk completed normally — restore handler chain
+                // Data: (handler . saved_handler_chain)
+                let (_handler, saved_chain) = self.unpack2(data)?;
+                self.exception_handler_chain = saved_chain;
+                Ok(Some(TrampolineState::Return { val }))
+            }
+            
+            ContType::RaiseEval => {
+                // val = evaluated exception object; invoke current handler
+                // data = Nil for non-continuable, non-Nil for continuable
+                let continuable = !self.lisp.get(data)?.is_nil();
+                self.invoke_exception_handler(val, continuable)
+            }
         }
     }
 
@@ -1936,6 +1976,331 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             // Call the before thunk
             self.apply_thunk(before, self.global_env)
+        }
+    }
+    
+    // ========================================================================
+    // Record types (R7RS §5.5)
+    // ========================================================================
+    
+    /// (define-record-type <name> (<ctor> <ctor-field> ...) <pred> <field-spec> ...)
+    ///
+    /// Records are represented as vectors: #(<tag> field1 field2 ...)
+    /// The tag is a unique gensym to distinguish record types.
+    pub(super) fn step_eval_define_record_type(
+        &mut self,
+        args: ArenaIndex,
+        env: EnvRef,
+    ) -> Result<TrampolineState, EvalError> {
+        // Parse: <name>
+        let _name = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        // Parse: (<constructor-name> <field-name> ...)
+        let ctor_spec = self.lisp.car(rest)?;
+        let ctor_name = self.lisp.car(ctor_spec)?;
+        let ctor_fields = self.lisp.cdr(ctor_spec)?;
+        let rest = self.lisp.cdr(rest)?;
+        
+        // Parse: <predicate-name>
+        let pred_name = self.lisp.car(rest)?;
+        let field_specs = self.lisp.cdr(rest)?;
+        
+        // Collect all field specs to determine field ordering
+        // field_specs is a list of (<field-name> <accessor> [<mutator>])
+        // Build field name list to compute indices
+        let mut all_fields: [ArenaIndex; 32] = [ArenaIndex::NIL; 32];
+        let mut num_fields = 0usize;
+        {
+            let mut cursor = field_specs;
+            while !self.lisp.get(cursor)?.is_nil() {
+                let spec = self.lisp.car(cursor)?;
+                let fname = self.lisp.car(spec)?;
+                if num_fields >= 32 {
+                    return Err(self.make_error(ErrorKind::Generic, _name)
+                        .with_message("define-record-type: too many fields (max 32)"));
+                }
+                all_fields[num_fields] = fname;
+                num_fields += 1;
+                cursor = self.lisp.cdr(cursor)?;
+            }
+        }
+        
+        // Create a unique tag for this record type
+        let tag = self.gensym("record")?;
+        
+        // Build the (begin ...) expression that defines everything:
+        // 1. constructor
+        // 2. predicate
+        // 3. accessors/mutators for each field
+        
+        let nil = self.lisp.nil()?;
+        let mut defs = nil; // list of definitions (will be reversed)
+        
+        // --- 1. Constructor ---
+        // (define (ctor-name ctor-fields ...) (vector tag ctor-field-values ...))
+        // The constructor takes field values in the order specified in the ctor spec,
+        // but must place them in the correct slot (field order from field specs).
+        {
+            // Build the vector call: (vector 'tag f1 f2 ... fn)
+            // Fields are in all_fields order; use ctor_fields to get param names
+            let quote_sym = self.lisp.symbol("quote")?;
+            let quoted_tag = self.lisp.cons(tag, nil)?;
+            let quoted_tag = self.lisp.cons(quote_sym, quoted_tag)?;
+            
+            let vector_sym = self.lisp.symbol("vector")?;
+            
+            // Build vector args: tag, then each field in field-spec order
+            // For each field in all_fields, find if it's in ctor_fields
+            let mut vec_args = nil;
+            for i in (0..num_fields).rev() {
+                let field = all_fields[i];
+                // Check if this field is in ctor_fields
+                let mut found = false;
+                let mut cursor = ctor_fields;
+                while !self.lisp.get(cursor)?.is_nil() {
+                    let cf = self.lisp.car(cursor)?;
+                    if self.lisp.symbol_eq(cf, field)? {
+                        found = true;
+                        break;
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                if found {
+                    vec_args = self.lisp.cons(field, vec_args)?;
+                } else {
+                    // Field not in constructor — default to #f
+                    let false_val = self.lisp.false_val()?;
+                    vec_args = self.lisp.cons(false_val, vec_args)?;
+                }
+            }
+            // Prepend quoted tag
+            vec_args = self.lisp.cons(quoted_tag, vec_args)?;
+            // Prepend 'vector' symbol
+            let vector_call = self.lisp.cons(vector_sym, vec_args)?;
+            
+            // Build params list from ctor_fields
+            let define_sym = self.lisp.symbol("define")?;
+            let ctor_name_and_params = self.lisp.cons(ctor_name, ctor_fields)?;
+            
+            // (define (ctor-name fields ...) (vector ...))
+            let body = self.lisp.cons(vector_call, nil)?;
+            let def = self.lisp.cons(ctor_name_and_params, body)?;
+            let def = self.lisp.cons(define_sym, def)?;
+            
+            defs = self.lisp.cons(def, defs)?;
+        }
+        
+        // --- 2. Predicate ---
+        // (define (pred? obj) (and (vector? obj) (> (vector-length obj) 0) (eq? (vector-ref obj 0) 'tag)))
+        {
+            let define_sym = self.lisp.symbol("define")?;
+            let obj_sym = self.lisp.symbol("%rec-obj")?;
+            let pred_params = self.lisp.cons(obj_sym, nil)?;
+            let pred_head = self.lisp.cons(pred_name, pred_params)?;
+            
+            let and_sym = self.lisp.symbol("and")?;
+            let vector_q_sym = self.lisp.symbol("vector?")?;
+            let vector_ref_sym = self.lisp.symbol("vector-ref")?;
+            let vector_length_sym = self.lisp.symbol("vector-length")?;
+            let eq_sym = self.lisp.symbol("eq?")?;
+            let gt_sym = self.lisp.symbol(">")?;
+            let quote_sym = self.lisp.symbol("quote")?;
+            let zero = self.lisp.number(0)?;
+            
+            // (vector? obj)
+            let check1 = self.lisp.cons(obj_sym, nil)?;
+            let check1 = self.lisp.cons(vector_q_sym, check1)?;
+            
+            // (> (vector-length obj) 0)
+            let vl = self.lisp.cons(obj_sym, nil)?;
+            let vl = self.lisp.cons(vector_length_sym, vl)?;
+            let check2 = self.lisp.cons(zero, nil)?;
+            let check2 = self.lisp.cons(vl, check2)?;
+            let check2 = self.lisp.cons(gt_sym, check2)?;
+            
+            // (eq? (vector-ref obj 0) 'tag)
+            let vr = self.lisp.cons(zero, nil)?;
+            let vr = self.lisp.cons(obj_sym, vr)?;
+            let vr = self.lisp.cons(vector_ref_sym, vr)?;
+            
+            let qtag = self.lisp.cons(tag, nil)?;
+            let qtag = self.lisp.cons(quote_sym, qtag)?;
+            
+            let check3 = self.lisp.cons(qtag, nil)?;
+            let check3 = self.lisp.cons(vr, check3)?;
+            let check3 = self.lisp.cons(eq_sym, check3)?;
+            
+            // (and check1 check2 check3)
+            let and_expr = self.lisp.cons(check3, nil)?;
+            let and_expr = self.lisp.cons(check2, and_expr)?;
+            let and_expr = self.lisp.cons(check1, and_expr)?;
+            let and_expr = self.lisp.cons(and_sym, and_expr)?;
+            
+            let body = self.lisp.cons(and_expr, nil)?;
+            let def = self.lisp.cons(pred_head, body)?;
+            let def = self.lisp.cons(define_sym, def)?;
+            
+            defs = self.lisp.cons(def, defs)?;
+        }
+        
+        // --- 3. Accessors and Mutators ---
+        {
+            let define_sym = self.lisp.symbol("define")?;
+            let vector_ref_sym = self.lisp.symbol("vector-ref")?;
+            let vector_set_sym = self.lisp.symbol("vector-set!")?;
+            let obj_sym = self.lisp.symbol("%rec-obj")?;
+            let val_sym = self.lisp.symbol("%rec-val")?;
+            
+            let mut cursor = field_specs;
+            let mut field_idx = 0usize;
+            while !self.lisp.get(cursor)?.is_nil() {
+                let spec = self.lisp.car(cursor)?;
+                let _fname = self.lisp.car(spec)?;
+                let spec_rest = self.lisp.cdr(spec)?;
+                let accessor = self.lisp.car(spec_rest)?;
+                let spec_rest2 = self.lisp.cdr(spec_rest)?;
+                
+                let idx_val = self.lisp.number((field_idx + 1) as isize)?; // +1 for tag at index 0
+                
+                // Accessor: (define (accessor obj) (vector-ref obj idx))
+                {
+                    let params = self.lisp.cons(obj_sym, nil)?;
+                    let head = self.lisp.cons(accessor, params)?;
+                    
+                    let vr = self.lisp.cons(idx_val, nil)?;
+                    let vr = self.lisp.cons(obj_sym, vr)?;
+                    let vr = self.lisp.cons(vector_ref_sym, vr)?;
+                    
+                    let body = self.lisp.cons(vr, nil)?;
+                    let def = self.lisp.cons(head, body)?;
+                    let def = self.lisp.cons(define_sym, def)?;
+                    
+                    defs = self.lisp.cons(def, defs)?;
+                }
+                
+                // Mutator (if present): (define (mutator obj val) (vector-set! obj idx val))
+                if !self.lisp.get(spec_rest2)?.is_nil() {
+                    let mutator = self.lisp.car(spec_rest2)?;
+                    
+                    let params = self.lisp.cons(val_sym, nil)?;
+                    let params = self.lisp.cons(obj_sym, params)?;
+                    let head = self.lisp.cons(mutator, params)?;
+                    
+                    let vs = self.lisp.cons(val_sym, nil)?;
+                    let vs = self.lisp.cons(idx_val, vs)?;
+                    let vs = self.lisp.cons(obj_sym, vs)?;
+                    let vs = self.lisp.cons(vector_set_sym, vs)?;
+                    
+                    let body = self.lisp.cons(vs, nil)?;
+                    let def = self.lisp.cons(head, body)?;
+                    let def = self.lisp.cons(define_sym, def)?;
+                    
+                    defs = self.lisp.cons(def, defs)?;
+                }
+                
+                field_idx += 1;
+                cursor = self.lisp.cdr(cursor)?;
+            }
+        }
+        
+        // Reverse defs list and wrap in (begin ...)
+        let mut reversed = nil;
+        while !self.lisp.get(defs)?.is_nil() {
+            let d = self.lisp.car(defs)?;
+            reversed = self.lisp.cons(d, reversed)?;
+            defs = self.lisp.cdr(defs)?;
+        }
+        
+        let begin_sym = self.lisp.symbol("begin")?;
+        let begin_expr = self.lisp.cons(begin_sym, reversed)?;
+        
+        Ok(TrampolineState::Eval { expr: ExprRef(begin_expr), env })
+    }
+    
+    // ========================================================================
+    // Exception handling (R7RS §6.11)
+    // ========================================================================
+    
+    /// (with-exception-handler handler thunk) — evaluate thunk with handler installed
+    pub(super) fn step_eval_with_exception_handler(
+        &mut self,
+        args: ArenaIndex,
+        env: EnvRef,
+    ) -> Result<TrampolineState, EvalError> {
+        let handler_expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let thunk_expr = self.lisp.car(rest)?;
+        
+        // Push continuation to evaluate thunk after handler is evaluated
+        self.cont(ContType::WithExceptionHandlerEvalThunk, env).data2(thunk_expr, env.0)?;
+        
+        // Evaluate the handler expression first
+        Ok(TrampolineState::Eval { expr: ExprRef(handler_expr), env })
+    }
+    
+    /// (raise obj) or (raise-continuable obj) — evaluate obj then invoke handler
+    pub(super) fn step_eval_raise(
+        &mut self,
+        args: ArenaIndex,
+        env: EnvRef,
+        continuable: bool,
+    ) -> Result<TrampolineState, EvalError> {
+        let obj_expr = self.lisp.car(args)?;
+        
+        // Marker: Nil = non-continuable, True = continuable
+        let marker = if continuable {
+            self.lisp.true_val()?
+        } else {
+            self.lisp.nil()?
+        };
+        
+        self.cont(ContType::RaiseEval, env).data1(marker)?;
+        Ok(TrampolineState::Eval { expr: ExprRef(obj_expr), env })
+    }
+    
+    /// Invoke the current exception handler with the given exception object
+    fn invoke_exception_handler(
+        &mut self,
+        obj: ArenaIndex,
+        _continuable: bool,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        if self.lisp.get(self.exception_handler_chain)?.is_nil() {
+            // No handler installed — fall back to Rust error
+            return Err(self.make_error(ErrorKind::UserError, obj)
+                .with_message("unhandled exception"));
+        }
+        
+        // Pop the current handler
+        let handler = self.lisp.car(self.exception_handler_chain)?;
+        let parent_chain = self.lisp.cdr(self.exception_handler_chain)?;
+        
+        // Pop handler before calling it (R7RS: handler runs with previous handler)
+        let saved_chain = self.exception_handler_chain;
+        self.exception_handler_chain = parent_chain;
+        
+        // Push a frame to restore the handler chain after the handler returns
+        let global = self.global_env;
+        self.cont(ContType::ExceptionHandlerFrame, global).data2(handler, saved_chain)?;
+        
+        // Call the handler with the exception object
+        match self.lisp.get(handler)? {
+            Value::Lambda { .. } => {
+                let (params, body, closure_env) = self.lisp.lambda_parts(handler)?;
+                let new_env = self.env_extend(EnvRef(closure_env), self.lisp.car(params)?, obj)?;
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: new_env }))
+            }
+            _ => {
+                // For other callable types (builtins, etc.), construct application
+                let nil = self.lisp.nil()?;
+                let arg_list = self.lisp.cons(obj, nil)?;
+                let call_expr = self.lisp.cons(handler, arg_list)?;
+                let global = self.global_env;
+                self.push_frame(call_expr, handler)?;
+                self.cont(ContType::ApplyForced, global)
+                    .data3(arg_list, global.0, call_expr)?;
+                Ok(Some(TrampolineState::Return { val: handler }))
+            }
         }
     }
 }

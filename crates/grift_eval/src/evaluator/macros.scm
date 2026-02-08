@@ -770,23 +770,51 @@
 ;;     (raise "test error"))
 
 ;; Helper: Evaluate guard cond clauses (used when exception is caught)
-;; Note: This is not currently reachable without raise/with-exception-handler
 (define-syntax %guard-cond
   (syntax-rules (else)
     ((%guard-cond var (else result ...))
      (begin result ...))
     ((%guard-cond var (test result ...))
-     (if test (begin result ...) (error "guard: unhandled exception (no matching clause)")))
+     (if test (begin result ...) (raise var)))
     ((%guard-cond var (test result ...) rest ...)
      (if test (begin result ...) (%guard-cond var rest ...)))))
 
-;; guard - placeholder implementation
-;; 
-;; Currently evaluates body directly without exception handling.
-;; Returns body's result if it completes normally.
-;; Runtime errors will propagate as usual (not caught).
+;; guard - full implementation using with-exception-handler
 (define-syntax guard
-  (syntax-rules ()
-    ((guard (var clause ...) body ...)
-     (begin body ...))))
+  (lambda (x)
+    (syntax-case x ()
+      ((guard (var clause ...) body ...)
+       (syntax
+         (with-exception-handler
+           (lambda (var) (%guard-cond var clause ...))
+           (lambda () body ...)))))))
+
+;; ============================================================
+;; Dynamic Parameters (R7RS Section 4.2.6)
+;; ============================================================
+
+;; parameterize - temporarily bind parameter values using dynamic-wind
+;;
+;; (parameterize ((param value) ...) body ...)
+;;
+;; Each param must be a parameter object created by make-parameter.
+;; The parameter is set to value for the dynamic extent of body,
+;; and restored afterwards (even if body raises an exception or
+;; invokes a continuation).
+(define-syntax parameterize
+  (lambda (x)
+    (syntax-case x ()
+      ((parameterize () body ...)
+       (syntax (begin body ...)))
+      ((parameterize ((param value)) body ...)
+       (syntax
+         (let ((saved (param)))
+           (dynamic-wind
+             (lambda () (param value))
+             (lambda () body ...)
+             (lambda () (param saved))))))
+      ((parameterize ((p1 v1) rest ...) body ...)
+       (syntax
+         (parameterize ((p1 v1))
+           (parameterize (rest ...) body ...)))))))
 
