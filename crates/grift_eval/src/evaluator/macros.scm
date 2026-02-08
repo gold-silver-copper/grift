@@ -775,7 +775,7 @@
     ((%guard-cond var (else result ...))
      (begin result ...))
     ((%guard-cond var (test result ...))
-     (if test (begin result ...) (raise var)))
+     (if test (begin result ...) (raise-continuable var)))
     ((%guard-cond var (test result ...) rest ...)
      (if test (begin result ...) (%guard-cond var rest ...)))))
 
