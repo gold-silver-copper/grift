@@ -100,6 +100,30 @@ pub trait IoProvider {
 
     /// Return `true` if the port is an output port.
     fn is_output_port(&self, port: PortId) -> bool;
+
+    /// Open an input port that reads from the given string.
+    ///
+    /// Returns a fresh [`PortId`] for the new port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_input_string(&mut self, _s: &str) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Open an output port that accumulates characters into a string buffer.
+    ///
+    /// Returns a fresh [`PortId`] for the new port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_output_string(&mut self) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Retrieve the accumulated string from an output string port.
+    ///
+    /// The port must have been created by [`open_output_string`](Self::open_output_string).
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn get_output_string(&self, _port: PortId) -> IoResult<&str> {
+        Err(IoErrorKind::Unsupported)
+    }
 }
 
 /// A no-op I/O provider that silently discards all output and returns

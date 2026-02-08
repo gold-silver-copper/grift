@@ -158,6 +158,13 @@ fn format_value_impl<const N: usize>(
         Ok(Value::ErrorObject { .. }) => {
             buf.push_str("#<error-object>");
         }
+        Ok(Value::Port(port_id)) => {
+            use std::fmt::Write;
+            write!(buf, "#<port:{}>", port_id.0).unwrap();
+        }
+        Ok(Value::Eof) => {
+            buf.push_str("#<eof>");
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

@@ -5,6 +5,7 @@
 //! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
 
 use grift_arena::{ArenaIndex, Trace};
+use crate::io::PortId;
 
 // Define all built-in functions using the macro.
 // To add a new builtin, add an entry here and implement its evaluation in grift_eval.
@@ -120,6 +121,48 @@ define_builtins! {
     Newline => "newline",
     /// display - Print value without quotes
     Display => "display",
+    
+    // Port operations (R7RS §6.13)
+    /// port? - Check if value is a port
+    Portp => "port?",
+    /// input-port? - Check if value is an input port
+    InputPortp => "input-port?",
+    /// output-port? - Check if value is an output port
+    OutputPortp => "output-port?",
+    /// current-input-port - Get current input port
+    CurrentInputPort => "current-input-port",
+    /// current-output-port - Get current output port
+    CurrentOutputPort => "current-output-port",
+    /// current-error-port - Get current error port
+    CurrentErrorPort => "current-error-port",
+    /// close-port - Close a port
+    ClosePort => "close-port",
+    /// close-input-port - Close an input port
+    CloseInputPort => "close-input-port",
+    /// close-output-port - Close an output port
+    CloseOutputPort => "close-output-port",
+    /// read-char - Read a character from a port
+    ReadChar => "read-char",
+    /// write-char - Write a character to a port
+    WriteChar => "write-char",
+    /// peek-char - Peek at next character without consuming it
+    PeekChar => "peek-char",
+    /// char-ready? - Check if a character is available
+    CharReadyp => "char-ready?",
+    /// write - Write value with machine-readable representation
+    Write => "write",
+    /// read - Read an S-expression from a port
+    Read => "read",
+    /// eof-object - Return the EOF object
+    EofObject => "eof-object",
+    /// eof-object? - Check if value is the EOF object
+    EofObjectp => "eof-object?",
+    /// open-input-string - Create an input port from a string
+    OpenInputString => "open-input-string",
+    /// open-output-string - Create an output string port
+    OpenOutputString => "open-output-string",
+    /// get-output-string - Get accumulated string from an output string port
+    GetOutputString => "get-output-string",
     
     // Error handling
     /// error - Raise an error
@@ -569,6 +612,18 @@ pub enum Value {
         cont_chain: ArenaIndex,  // Points to ContFrame linked list head (or Nil for empty)
         metadata: ArenaIndex,    // cons cell: (capture_env . dynamic_wind_chain)
     },
+
+    /// I/O Port (R7RS §6.13)
+    ///
+    /// A first-class port value identified by a [`PortId`].
+    /// Standard ports (stdin=0, stdout=1, stderr=2) are predefined;
+    /// additional ports can be opened for string or file I/O.
+    Port(PortId),
+
+    /// End-of-file object (R7RS §6.13)
+    ///
+    /// A unique value returned by read operations when the end of input is reached.
+    Eof,
 }
 
 impl Value {
@@ -766,6 +821,8 @@ impl Value {
             Value::ContFrame { .. } => "cont-frame",
             Value::Continuation { .. } => "continuation",
             Value::ErrorObject { .. } => "error-object",
+            Value::Port(_) => "port",
+            Value::Eof => "eof-object",
         }
     }
     
@@ -797,7 +854,7 @@ impl<const N: usize> Trace<Value, N> for Value {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::StdLib(_) | Value::Usize(_) => {
+            Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }
             Value::Ref(idx) => {

@@ -2023,7 +2023,7 @@ fn test_gc_disabled_trampoline_respects_flag() {
     // This runs code that would normally trigger periodic GC
     // Note: With arena-based continuations, we need enough arena since
     // each push_cont allocates cons cells in the arena.
-    let lisp: Lisp<25000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Disable GC

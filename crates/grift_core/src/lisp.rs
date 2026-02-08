@@ -7,6 +7,7 @@
 
 use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
+use crate::io::PortId;
 
 // ============================================================================
 // Lisp Context - Arena wrapper with helper methods
@@ -551,6 +552,18 @@ impl<const N: usize> Lisp<N> {
             Value::Native { id, .. } => Ok(id),
             _ => Err(ArenaError::InvalidIndex),
         }
+    }
+    
+    /// Allocate a port value.
+    #[inline]
+    pub fn port(&self, port_id: PortId) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Port(port_id))
+    }
+    
+    /// Allocate the EOF object.
+    #[inline]
+    pub fn eof(&self) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Eof)
     }
     
     /// Allocate a lambda

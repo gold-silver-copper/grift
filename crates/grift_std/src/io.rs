@@ -2,10 +2,27 @@
 //!
 //! [`StdIoProvider`] implements [`IoProvider`] for the three standard ports
 //! (stdin, stdout, stderr) using the locked handles from `std::io`.
+//! It also supports dynamically opened string ports via
+//! [`open_input_string`](IoProvider::open_input_string) and
+//! [`open_output_string`](IoProvider::open_output_string).
 
 use std::io::{self, BufRead, Read, Write};
 
 use grift_core::{IoErrorKind, IoProvider, IoResult, PortId};
+
+/// First dynamically-allocated port id (after STDIN=0, STDOUT=1, STDERR=2).
+const DYNAMIC_PORT_BASE: usize = 3;
+
+/// Maximum number of simultaneously open dynamic ports.
+const MAX_DYNAMIC_PORTS: usize = 64;
+
+/// A dynamically-opened port.
+enum DynPort {
+    /// Input port backed by a string buffer with a read cursor.
+    InputString { data: Vec<char>, cursor: usize, closed: bool },
+    /// Output port that accumulates characters.
+    OutputString { buf: String, closed: bool },
+}
 
 /// An [`IoProvider`] implementation backed by Rust's standard I/O.
 ///
@@ -17,18 +34,51 @@ use grift_core::{IoErrorKind, IoProvider, IoResult, PortId};
 /// | `STDOUT`  | output    | `std::io::stdout()` |
 /// | `STDERR`  | output    | `std::io::stderr()` |
 ///
-/// Additional (file) ports are not yet supported; attempts to use an
-/// unknown [`PortId`] return [`IoErrorKind::InvalidPort`].
+/// Additionally supports dynamically opened string ports.
 pub struct StdIoProvider {
     /// One-character peek buffer for stdin.
     /// `None` means nothing has been peeked.
     peeked: Option<char>,
+    /// Dynamically opened ports.
+    ports: Vec<Option<DynPort>>,
 }
 
 impl StdIoProvider {
     /// Create a new [`StdIoProvider`].
     pub fn new() -> Self {
-        StdIoProvider { peeked: None }
+        StdIoProvider { peeked: None, ports: Vec::new() }
+    }
+
+    /// Allocate a fresh [`PortId`] and store the given dynamic port.
+    fn alloc_port(&mut self, port: DynPort) -> IoResult<PortId> {
+        // Try to reuse a freed slot
+        for (i, slot) in self.ports.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(port);
+                return Ok(PortId(DYNAMIC_PORT_BASE + i));
+            }
+        }
+        // Allocate a new slot
+        if self.ports.len() >= MAX_DYNAMIC_PORTS {
+            return Err(IoErrorKind::Unsupported);
+        }
+        let id = DYNAMIC_PORT_BASE + self.ports.len();
+        self.ports.push(Some(port));
+        Ok(PortId(id))
+    }
+
+    /// Get a reference to a dynamic port, or `None` if not found.
+    fn get_dyn(&self, port: PortId) -> Option<&DynPort> {
+        if port.0 < DYNAMIC_PORT_BASE { return None; }
+        let idx = port.0 - DYNAMIC_PORT_BASE;
+        self.ports.get(idx).and_then(|s| s.as_ref())
+    }
+
+    /// Get a mutable reference to a dynamic port, or `None` if not found.
+    fn get_dyn_mut(&mut self, port: PortId) -> Option<&mut DynPort> {
+        if port.0 < DYNAMIC_PORT_BASE { return None; }
+        let idx = port.0 - DYNAMIC_PORT_BASE;
+        self.ports.get_mut(idx).and_then(|s| s.as_mut())
     }
 }
 
@@ -92,38 +142,61 @@ fn read_one_char() -> IoResult<char> {
 
 impl IoProvider for StdIoProvider {
     fn read_char(&mut self, port: PortId) -> IoResult<char> {
-        if port != PortId::STDIN {
-            return Err(IoErrorKind::InvalidPort);
+        if port == PortId::STDIN {
+            if let Some(c) = self.peeked.take() {
+                return Ok(c);
+            }
+            return read_one_char();
         }
-        if let Some(c) = self.peeked.take() {
-            return Ok(c);
+        // Dynamic port
+        match self.get_dyn_mut(port) {
+            Some(DynPort::InputString { data, cursor, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if *cursor >= data.len() { return Err(IoErrorKind::Eof); }
+                let c = data[*cursor];
+                *cursor += 1;
+                Ok(c)
+            }
+            _ => Err(IoErrorKind::InvalidPort),
         }
-        read_one_char()
     }
 
     fn peek_char(&mut self, port: PortId) -> IoResult<char> {
-        if port != PortId::STDIN {
-            return Err(IoErrorKind::InvalidPort);
-        }
-        if let Some(c) = self.peeked {
+        if port == PortId::STDIN {
+            if let Some(c) = self.peeked {
+                return Ok(c);
+            }
+            let c = read_one_char()?;
+            self.peeked = Some(c);
             return Ok(c);
         }
-        let c = read_one_char()?;
-        self.peeked = Some(c);
-        Ok(c)
+        // Dynamic port
+        match self.get_dyn(port) {
+            Some(DynPort::InputString { data, cursor, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if *cursor >= data.len() { return Err(IoErrorKind::Eof); }
+                Ok(data[*cursor])
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
     }
 
     fn char_ready(&mut self, port: PortId) -> IoResult<bool> {
-        if port != PortId::STDIN {
-            return Err(IoErrorKind::InvalidPort);
+        if port == PortId::STDIN {
+            if self.peeked.is_some() {
+                return Ok(true);
+            }
+            let stdin = io::stdin();
+            let mut handle = stdin.lock();
+            return Ok(!handle.fill_buf().map_or(true, |b| b.is_empty()));
         }
-        if self.peeked.is_some() {
-            return Ok(true);
+        // Dynamic port
+        match self.get_dyn(port) {
+            Some(DynPort::InputString { data, cursor, closed }) => {
+                Ok(!closed && *cursor < data.len())
+            }
+            _ => Err(IoErrorKind::InvalidPort),
         }
-        // Best-effort: check if the stdin buffer has data.
-        let stdin = io::stdin();
-        let mut handle = stdin.lock();
-        Ok(!handle.fill_buf().map_or(true, |b| b.is_empty()))
     }
 
     fn write_char(&mut self, port: PortId, c: char) -> IoResult<()> {
@@ -140,7 +213,17 @@ impl IoProvider for StdIoProvider {
             PortId::STDERR => io::stderr()
                 .write_all(s.as_bytes())
                 .map_err(|_| IoErrorKind::WriteFailed),
-            _ => Err(IoErrorKind::InvalidPort),
+            _ => {
+                // Dynamic port
+                match self.get_dyn_mut(port) {
+                    Some(DynPort::OutputString { buf, closed }) => {
+                        if *closed { return Err(IoErrorKind::PortClosed); }
+                        buf.push_str(s);
+                        Ok(())
+                    }
+                    _ => Err(IoErrorKind::InvalidPort),
+                }
+            }
         }
     }
 
@@ -148,20 +231,45 @@ impl IoProvider for StdIoProvider {
         match port {
             PortId::STDOUT => io::stdout().flush().map_err(|_| IoErrorKind::WriteFailed),
             PortId::STDERR => io::stderr().flush().map_err(|_| IoErrorKind::WriteFailed),
+            _ => Ok(()), // String ports don't need flushing
+        }
+    }
+
+    fn close_port(&mut self, port: PortId) -> IoResult<()> {
+        if port.0 < DYNAMIC_PORT_BASE {
+            return Err(IoErrorKind::Unsupported); // Can't close standard ports
+        }
+        let idx = port.0 - DYNAMIC_PORT_BASE;
+        match self.ports.get_mut(idx) {
+            Some(Some(DynPort::InputString { closed, .. })) => { *closed = true; Ok(()) }
+            Some(Some(DynPort::OutputString { closed, .. })) => { *closed = true; Ok(()) }
             _ => Err(IoErrorKind::InvalidPort),
         }
     }
 
-    fn close_port(&mut self, _port: PortId) -> IoResult<()> {
-        // Standard ports cannot be closed in this implementation.
-        Err(IoErrorKind::Unsupported)
-    }
-
     fn is_input_port(&self, port: PortId) -> bool {
-        port == PortId::STDIN
+        if port == PortId::STDIN { return true; }
+        matches!(self.get_dyn(port), Some(DynPort::InputString { closed: false, .. }))
     }
 
     fn is_output_port(&self, port: PortId) -> bool {
-        port == PortId::STDOUT || port == PortId::STDERR
+        if port == PortId::STDOUT || port == PortId::STDERR { return true; }
+        matches!(self.get_dyn(port), Some(DynPort::OutputString { closed: false, .. }))
+    }
+
+    fn open_input_string(&mut self, s: &str) -> IoResult<PortId> {
+        let data: Vec<char> = s.chars().collect();
+        self.alloc_port(DynPort::InputString { data, cursor: 0, closed: false })
+    }
+
+    fn open_output_string(&mut self) -> IoResult<PortId> {
+        self.alloc_port(DynPort::OutputString { buf: String::new(), closed: false })
+    }
+
+    fn get_output_string(&self, port: PortId) -> IoResult<&str> {
+        match self.get_dyn(port) {
+            Some(DynPort::OutputString { buf, .. }) => Ok(buf.as_str()),
+            _ => Err(IoErrorKind::InvalidPort),
+        }
     }
 }
