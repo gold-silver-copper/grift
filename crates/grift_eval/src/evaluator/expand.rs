@@ -271,27 +271,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Look up a name in a substitution environment
     ///
     /// The substitution environment is an alist of (name . binding) pairs.
+    /// This is identical in structure to a regular environment lookup.
     #[inline]
     pub(super) fn lookup_in_subst(
         &self,
         name: ArenaIndex,
         subst: ArenaIndex,
     ) -> Result<Option<ArenaIndex>, EvalError> {
-        let mut current = subst;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: key, cdr: val } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(key, name)?
-                    {
-                        return Ok(Some(val));
-                    }
-                    current = cdr;
-                }
-                _ => return Ok(None),
-            }
-        }
+        self.lookup_in_env_optional(subst, name)
     }
 
     /// Look up a name in an environment
@@ -301,21 +288,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         name: ArenaIndex,
         env: ArenaIndex,
     ) -> Result<Option<ArenaIndex>, EvalError> {
-        let mut current = env;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(Some(bound_value));
-                    }
-                    current = cdr;
-                }
-                _ => return Ok(None),
-            }
-        }
+        self.lookup_in_env_optional(env, name)
     }
 
     /// Check if two identifiers are free-identifier=?

@@ -379,12 +379,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::ErrorObjectP => {
-                // (error-object? obj) — R7RS §6.11
-                let arg = self.lisp.car(args)?;
-                match self.lisp.get(arg)? {
-                    Value::ErrorObject { .. } => self.lisp.true_val().map_err(Into::into),
-                    _ => self.lisp.false_val().map_err(Into::into),
-                }
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::ErrorObject { .. }))
             }
             
             Builtin::ErrorObjectMessage => {
@@ -449,10 +444,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // ============================================================
             
             Builtin::Vectorp => {
-                // (vector? x) - check if x is a vector
-                let val = self.lisp.car(args)?;
-                let is_vector = matches!(self.lisp.get(val)?, Value::Array { .. });
-                self.lisp.boolean(is_vector).map_err(Into::into)
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Array { .. }))
             }
             
             Builtin::MakeVector => {
@@ -477,33 +469,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Vector => {
                 // (vector obj ...) - create vector from arguments
-                // First count the arguments (args is always a proper list from evaluator)
-                let mut count = 0usize;
-                let mut current = args;
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => break,
-                        Value::Cons { .. } => {
-                            count += 1;
-                            current = self.lisp.cdr(current)?;
-                        }
-                        _ => break, // Should not happen for function args
-                    }
-                }
-                
-                // Create vector with placeholder
-                let placeholder = self.lisp.number(0)?;
-                let vec = self.lisp.make_array(count, placeholder)?;
-                
-                // Fill in the elements
-                current = args;
-                for i in 0..count {
-                    let val = self.lisp.car(current)?;
-                    self.lisp.array_set(vec, i, val)?;
-                    current = self.lisp.cdr(current)?;
-                }
-                
-                Ok(vec)
+                self.list_to_array(args, call_expr)
             }
             
             Builtin::VectorLength => {
@@ -577,34 +543,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::ListToVector => {
                 // (list->vector lst) - convert list to vector
                 let lst = self.lisp.car(args)?;
-                
-                // First count the list elements, validating it's a proper list
-                let mut count = 0usize;
-                let mut current = lst;
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => break,
-                        Value::Cons { .. } => {
-                            count += 1;
-                            current = self.lisp.cdr(current)?;
-                        }
-                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                    }
-                }
-                
-                // Create vector with placeholder
-                let placeholder = self.lisp.number(0)?;
-                let vec = self.lisp.make_array(count, placeholder)?;
-                
-                // Fill in the elements
-                current = lst;
-                for i in 0..count {
-                    let val = self.lisp.car(current)?;
-                    self.lisp.array_set(vec, i, val)?;
-                    current = self.lisp.cdr(current)?;
-                }
-                
-                Ok(vec)
+                self.list_to_array(lst, call_expr)
             }
             
             Builtin::VectorFill => {
@@ -1391,10 +1330,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             v => return Err(self.type_error(call_expr, "string", v.type_name())),
         };
         
-        let min_len = if len_a < len_b { len_a } else { len_b };
+        let min_len = len_a.min(len_b);
         
         for i in 0..min_len {
-            // Characters start at data (no header with inline length)
             let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
             let char_a = match self.lisp.get(slot_a)? {
                 Value::Char(c) => c,
@@ -1406,14 +1344,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
             
-            if char_a < char_b {
-                return Ok(core::cmp::Ordering::Less);
-            } else if char_a > char_b {
-                return Ok(core::cmp::Ordering::Greater);
+            match char_a.cmp(&char_b) {
+                core::cmp::Ordering::Equal => {}
+                ord => return Ok(ord),
             }
         }
         
         // All compared characters are equal, compare lengths
         Ok(len_a.cmp(&len_b))
+    }
+    
+    /// Convert a proper list to an array (vector).
+    /// Used by both `(vector obj ...)` and `(list->vector lst)`.
+    fn list_to_array(&self, list: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        // Count elements
+        let mut count = 0usize;
+        let mut current = list;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { .. } => {
+                    count += 1;
+                    current = self.lisp.cdr(current)?;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            }
+        }
+        
+        // Create vector and fill
+        let placeholder = self.lisp.number(0)?;
+        let vec = self.lisp.make_array(count, placeholder)?;
+        current = list;
+        for i in 0..count {
+            let val = self.lisp.car(current)?;
+            self.lisp.array_set(vec, i, val)?;
+            current = self.lisp.cdr(current)?;
+        }
+        Ok(vec)
     }
 }

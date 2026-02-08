@@ -723,7 +723,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Look up a symbol in an environment, returning None if not found
     #[inline]
-    fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
+    pub(super) fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = env;
         
         loop {
