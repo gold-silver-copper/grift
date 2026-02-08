@@ -357,6 +357,25 @@ pub enum Value {
     /// ```
     Array { len: usize, data: ArenaIndex },
     
+    /// Bytevector (R7RS §6.9) with inline length and data pointer
+    /// 
+    /// Bytevectors store exact integers in the range 0–255 as `Number` values
+    /// contiguously in the arena, reusing the same layout as `Array`.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `len`: Number of bytes (inline)
+    /// - `data`: Points directly to first `Number` value in arena
+    /// - Empty bytevectors have len=0 and data == NIL
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// #u8(0 10 5)           ; Bytevector literal
+    /// (bytevector-length #u8(1 2 3))  ; => 3
+    /// ```
+    Bytevector { len: usize, data: ArenaIndex },
+    
     /// String with inline length and data pointer
     /// 
     /// Strings store characters contiguously in the arena. The length is inlined
@@ -637,6 +656,12 @@ impl Value {
         matches!(self, Value::Array { .. })
     }
     
+    /// Check if this value is a bytevector
+    #[inline]
+    pub const fn is_bytevector(&self) -> bool {
+        matches!(self, Value::Bytevector { .. })
+    }
+    
     /// Check if this value is a string
     #[inline]
     pub const fn is_string(&self) -> bool {
@@ -697,6 +722,7 @@ impl Value {
             Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
+            Value::Bytevector { .. } => "bytevector",
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
@@ -785,6 +811,16 @@ impl<const N: usize> Trace<Value, N> for Value {
                     let base_idx = data.raw();
                     for i in 0..*len {
                         // Elements are at data, data+1, ..., data+len-1
+                        let elem_idx = ArenaIndex::new(base_idx + i);
+                        tracer(elem_idx);
+                    }
+                }
+            }
+            Value::Bytevector { len, data } => {
+                // Same layout as Array — trace all element slots
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
                         let elem_idx = ArenaIndex::new(base_idx + i);
                         tracer(elem_idx);
                     }

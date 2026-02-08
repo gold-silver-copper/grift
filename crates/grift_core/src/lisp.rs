@@ -1528,6 +1528,53 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
+    // ========================================================================
+    // Bytevector operations (R7RS §6.9)
+    // ========================================================================
+    
+    /// Create a bytevector of given length, each byte initialised to `default`.
+    pub fn make_bytevector(&self, len: usize, default: u8) -> ArenaResult<ArenaIndex> {
+        if len == 0 {
+            return self.alloc(Value::Bytevector { len: 0, data: ArenaIndex::NIL });
+        }
+        let default_val = Value::Number(default as isize);
+        let data = self.arena.alloc_contiguous(len, default_val)?;
+        self.alloc(Value::Bytevector { len, data })
+    }
+    
+    /// Get the length of a bytevector.
+    pub fn bytevector_len(&self, bv_idx: ArenaIndex) -> ArenaResult<usize> {
+        match self.arena.get(bv_idx)? {
+            Value::Bytevector { len, .. } => Ok(len),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get the byte (as ArenaIndex to a Number) at a given index.
+    pub fn bytevector_get(&self, bv_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(bv_idx)? {
+            Value::Bytevector { len, data } => {
+                if index >= len { return Err(ArenaError::InvalidIndex); }
+                if data.is_nil() { return Err(ArenaError::InvalidIndex); }
+                self.arena.index_at_offset(data, index)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Set the byte at a given index in a bytevector.
+    pub fn bytevector_set(&self, bv_idx: ArenaIndex, index: usize, byte: u8) -> ArenaResult<()> {
+        match self.arena.get(bv_idx)? {
+            Value::Bytevector { len, data } => {
+                if index >= len { return Err(ArenaError::InvalidIndex); }
+                if data.is_nil() { return Err(ArenaError::InvalidIndex); }
+                let elem_slot = self.arena.index_at_offset(data, index)?;
+                self.arena.set(elem_slot, Value::Number(byte as isize))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Create a [`DisplayValue`](crate::DisplayValue) wrapper for formatting.
     ///
     /// The returned wrapper implements `core::fmt::Display`, enabling

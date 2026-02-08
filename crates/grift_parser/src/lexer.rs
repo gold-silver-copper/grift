@@ -97,8 +97,12 @@ pub enum Token {
     False,
     /// `#(` (vector literal open)
     VectorOpen,
+    /// `#u8(` (bytevector literal open)
+    BytevectorOpen,
     /// `#'` (syntax quote)
     SyntaxQuote,
+    /// `#;` (datum comment — parser skips next datum)
+    DatumComment,
     /// Integer number literal (value already parsed)
     Number(isize),
     /// Symbol — raw bytes are in `input[start..start+len]` (not yet lowercased).
@@ -199,6 +203,8 @@ pub struct Lexer<'a> {
     pos: usize,
     line: usize,
     column: usize,
+    /// Whether symbol names are case-folded (lowercased). Controlled by `#!fold-case` / `#!no-fold-case`.
+    fold_case: bool,
     /// Internal buffer for lowercased symbol names
     symbol_buf: [u8; MAX_SYMBOL_LEN],
     /// Internal buffer for string literal characters
@@ -213,6 +219,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             line: 1,
             column: 1,
+            fold_case: true,
             symbol_buf: [0; MAX_SYMBOL_LEN],
             string_buf: ['\0'; MAX_STRING_LEN],
         }
@@ -225,6 +232,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             line: 1,
             column: 1,
+            fold_case: true,
             symbol_buf: [0; MAX_SYMBOL_LEN],
             string_buf: ['\0'; MAX_STRING_LEN],
         }
@@ -361,10 +369,72 @@ impl<'a> Lexer<'a> {
                         break;
                     }
                 }
+            } else if c == b'#' && self.peek_next() == Some(b'|') {
+                // Block comment #| ... |# (R7RS, nestable)
+                self.advance(); // consume '#'
+                self.advance(); // consume '|'
+                let mut depth = 1u32;
+                while depth > 0 {
+                    match self.advance() {
+                        None => break,
+                        Some(b'#') if self.peek() == Some(b'|') => {
+                            self.advance();
+                            depth += 1;
+                        }
+                        Some(b'|') if self.peek() == Some(b'#') => {
+                            self.advance();
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
+            } else if c == b'#' && self.peek_next() == Some(b'!') {
+                // #!fold-case or #!no-fold-case directive (R7RS §2.1)
+                if self.try_skip_fold_case_directive() {
+                    // Directive consumed, continue skipping whitespace
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
         }
+    }
+    
+    /// Try to consume a `#!fold-case` or `#!no-fold-case` directive.
+    /// Returns true if a directive was consumed, false otherwise (position unchanged).
+    fn try_skip_fold_case_directive(&mut self) -> bool {
+        let save_pos = self.pos;
+        let save_line = self.line;
+        let save_col = self.column;
+        
+        self.advance(); // consume '#'
+        self.advance(); // consume '!'
+        
+        let start = self.pos;
+        while let Some(c) = self.peek() {
+            if c == b'-' || c.is_ascii_alphabetic() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let directive = &self.input[start..self.pos];
+        
+        if directive == b"fold-case" {
+            self.fold_case = true;
+            return true;
+        }
+        if directive == b"no-fold-case" {
+            self.fold_case = false;
+            return true;
+        }
+        
+        // Not a recognized directive — restore position
+        self.pos = save_pos;
+        self.line = save_line;
+        self.column = save_col;
+        false
     }
     
     fn error(&self, kind: LexErrorKind) -> LexError {
@@ -404,7 +474,7 @@ impl<'a> Lexer<'a> {
         
         while let Some(c) = self.peek() {
             if is_symbol_char(c) && len < MAX_SYMBOL_LEN {
-                self.symbol_buf[len] = c.to_ascii_lowercase();
+                self.symbol_buf[len] = if self.fold_case { c.to_ascii_lowercase() } else { c };
                 len += 1;
                 self.advance();
             } else {
@@ -424,6 +494,30 @@ impl<'a> Lexer<'a> {
             Some(b'\\') => self.lex_char_literal(),
             Some(b'(') => { Ok(Token::VectorOpen) } // Don't consume '(' - parser handles it
             Some(b'\'') => { self.advance(); Ok(Token::SyntaxQuote) }
+            Some(b';') => { self.advance(); Ok(Token::DatumComment) }
+            Some(b'u') => {
+                // #u8( bytevector literal
+                let save_pos = self.pos;
+                let save_line = self.line;
+                let save_col = self.column;
+                self.advance(); // consume 'u'
+                if self.peek() == Some(b'8') {
+                    self.advance(); // consume '8'
+                    if self.peek() == Some(b'(') {
+                        Ok(Token::BytevectorOpen)
+                    } else {
+                        self.pos = save_pos;
+                        self.line = save_line;
+                        self.column = save_col;
+                        Err(self.error(LexErrorKind::InvalidHashLiteral))
+                    }
+                } else {
+                    self.pos = save_pos;
+                    self.line = save_line;
+                    self.column = save_col;
+                    Err(self.error(LexErrorKind::InvalidHashLiteral))
+                }
+            }
             Some(_) => Err(self.error(LexErrorKind::InvalidHashLiteral)),
             None => Err(self.error(LexErrorKind::UnexpectedEof)),
         }

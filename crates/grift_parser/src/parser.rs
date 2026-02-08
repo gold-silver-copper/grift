@@ -150,6 +150,12 @@ impl<'a> Parser<'a> {
                 lisp.string_from_chars(chars).map_err(Into::into)
             }
             Token::VectorOpen => self.parse_vector_literal(lisp),
+            Token::BytevectorOpen => self.parse_bytevector_literal(lisp),
+            Token::DatumComment => {
+                // Skip the next datum, then parse the one after it
+                self.parse(lisp)?; // parsed and discarded
+                self.parse(lisp)
+            }
         }
     }
     
@@ -268,6 +274,55 @@ impl<'a> Parser<'a> {
         }
         
         Ok(vec)
+    }
+    
+    /// Parse bytevector literal #u8(byte ...)
+    ///
+    /// Each element must be an exact integer in the range 0–255.
+    fn parse_bytevector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
+        // BytevectorOpen token consumed '#u8'; the '(' must be consumed separately
+        let open_loc = self.lexer.loc();
+        let opening = self.lexer.next_token()
+            .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: open_loc })??;
+        if !matches!(opening.token, Token::LParen) {
+            return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
+        }
+        
+        let mut bytes: [u8; 256] = [0; 256];
+        let mut count = 0usize;
+        
+        loop {
+            let elem_loc = self.lexer.loc();
+            let spanned = self.lexer.next_token()
+                .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: elem_loc })??;
+            let token = spanned.token;
+            let loc = spanned.loc;
+            
+            match token {
+                Token::RParen => break,
+                Token::Number(n) => {
+                    if count >= 256 {
+                        return Err(ParseError { kind: ParseErrorKind::VectorLiteralTooLarge, loc });
+                    }
+                    if !(0..=255).contains(&n) {
+                        return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc });
+                    }
+                    bytes[count] = n as u8;
+                    count += 1;
+                }
+                _ => {
+                    return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc });
+                }
+            }
+        }
+        
+        // Create the bytevector
+        let bv = lisp.make_bytevector(count, 0)?;
+        for i in 0..count {
+            lisp.bytevector_set(bv, i, bytes[i])?;
+        }
+        
+        Ok(bv)
     }
     
     /// Check if there's more input (after whitespace)
