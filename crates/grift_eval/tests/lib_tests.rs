@@ -2785,6 +2785,115 @@ fn test_string_set() {
 }
 
 // ============================================================
+// String Interning and Mutation Isolation Tests
+// ============================================================
+
+#[test]
+fn test_string_equal_structural() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // equal? compares strings structurally
+    assert!(eval_is_true(&lisp, &mut eval, r#"(equal? "hello" "hello")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(equal? "hello" "world")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(equal? "" "")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(equal? "hi" "hello")"#));
+}
+
+#[test]
+fn test_string_interning_eq() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Identical string literals should be eq? (interned data sharing)
+    assert!(eval_is_true(&lisp, &mut eval, 
+        r#"(let ((s1 "hello") (s2 "hello")) (eq? s1 s2))"#));
+    // Different string literals should not be eq?
+    assert!(eval_is_false(&lisp, &mut eval, 
+        r#"(let ((s1 "hello") (s2 "world")) (eq? s1 s2))"#));
+}
+
+#[test]
+fn test_string_mutation_isolation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Mutating one string should not affect another with same content (COW)
+    assert!(eval_is_true(&lisp, &mut eval, r#"
+        (let ((s1 "test") (s2 "test"))
+          (string-set! s1 0 #\T)
+          (and (equal? s1 "Test")
+               (equal? s2 "test")))
+    "#));
+}
+
+#[test]
+fn test_string_cow_breaks_eq() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // After COW mutation, eq? should return #f (different data pointers)
+    assert!(eval_is_false(&lisp, &mut eval, r#"
+        (let ((s1 "test") (s2 "test"))
+          (string-set! s1 0 #\T)
+          (eq? s1 s2))
+    "#));
+}
+
+#[test]
+fn test_string_direct_ref_shares_mutation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Direct reference (s2 = s1) should see mutation
+    assert!(eval_is_true(&lisp, &mut eval, r#"
+        (let* ((s1 "shared") (s2 s1))
+          (string-set! s1 0 #\S)
+          (and (equal? s2 "Shared")
+               (eq? s1 s2)))
+    "#));
+}
+
+#[test]
+fn test_string_nested_interning_cow() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Nested lets with same string literal - each mutation is isolated
+    assert!(eval_is_true(&lisp, &mut eval, r#"
+        (let ((s1 "nested"))
+          (let ((s2 "nested"))
+            (string-set! s1 0 #\N)
+            (let ((s3 "nested"))
+              (string-set! s3 1 #\E)
+              (and (equal? s1 "Nested")
+                   (equal? s2 "nested")
+                   (equal? s3 "nEsted")))))
+    "#));
+}
+
+#[test]
+fn test_number_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(number->string 42)"#, "42"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(number->string -10)"#, "-10"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(number->string 0)"#, "0"));
+}
+
+#[test]
+fn test_string_to_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string->number "123")"#), 123);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string->number "-42")"#), -42);
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string->number "abc")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string->number "")"#));
+}
+
+// ============================================================
 // Character Predicate Stdlib Tests
 // ============================================================
 
