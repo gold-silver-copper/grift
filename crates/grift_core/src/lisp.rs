@@ -1048,16 +1048,20 @@ impl<const N: usize> Lisp<N> {
     
     /// Get the first character of a symbol's name efficiently.
     /// 
-    /// This is optimized to avoid the overhead of `symbol_char_at` by
-    /// directly accessing the first character slot without a length check
-    /// (the length is verified to be > 0 first). Used for fast dispatch
-    /// in keyword matching.
+    /// Returns `Some(char)` if the symbol has at least one character,
+    /// or `None` if the value is not a symbol, the symbol name is empty,
+    /// or the underlying string data is invalid.
+    /// 
+    /// This is optimized over `symbol_char_at` by directly accessing the
+    /// first character slot (3 arena gets vs 4), without a redundant
+    /// length bounds check. Used for fast dispatch in keyword matching.
     #[inline]
     pub fn symbol_first_char(&self, sym: ArenaIndex) -> ArenaResult<Option<char>> {
         match self.get(sym)? {
             Value::Symbol(chars) => {
                 match self.arena.get(chars)? {
                     Value::String { len, data } => {
+                        // data.is_nil() is a safety check for inconsistent state
                         if len == 0 || data.is_nil() {
                             Ok(None)
                         } else {
