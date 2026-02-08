@@ -1284,3 +1284,155 @@ fn test_continuation_gc_survival() {
     let (chain, _, _) = lisp.continuation_parts(cont).unwrap();
     assert!(lisp.get(chain).unwrap().is_cont_frame());
 }
+
+// ========================================================================
+// Block Comment Tests (#| ... |#)
+// ========================================================================
+
+#[test]
+fn test_block_comment_basic() {
+    let lisp: Lisp<100> = Lisp::new();
+    // Block comment between tokens
+    let idx = parse(&lisp, "#| comment |# 42").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(42));
+}
+
+#[test]
+fn test_block_comment_nested() {
+    let lisp: Lisp<100> = Lisp::new();
+    // Nested block comments
+    let idx = parse(&lisp, "#| outer #| inner |# still outer |# 7").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(7));
+}
+
+#[test]
+fn test_block_comment_inline() {
+    let lisp: Lisp<200> = Lisp::new();
+    // Block comment inside a list
+    let idx = parse(&lisp, "(+ 1 #| skip |# 2)").unwrap();
+    // Should parse as (+ 1 2)
+    let (car, cdr) = lisp.car_cdr(idx).unwrap();
+    assert!(lisp.symbol_matches(car, "+").unwrap());
+    let (one, rest) = lisp.car_cdr(cdr).unwrap();
+    assert_eq!(lisp.get(one).unwrap(), Value::Number(1));
+    let (two, nil) = lisp.car_cdr(rest).unwrap();
+    assert_eq!(lisp.get(two).unwrap(), Value::Number(2));
+    assert!(lisp.get(nil).unwrap().is_nil());
+}
+
+#[test]
+fn test_block_comment_multiline() {
+    let lisp: Lisp<100> = Lisp::new();
+    let idx = parse(&lisp, "#|\nmultiline\ncomment\n|# 99").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(99));
+}
+
+// ========================================================================
+// Datum Comment Tests (#;)
+// ========================================================================
+
+#[test]
+fn test_datum_comment_number() {
+    let lisp: Lisp<200> = Lisp::new();
+    // #; skips the next datum (42), leaving 99
+    let idx = parse(&lisp, "#; 42 99").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(99));
+}
+
+#[test]
+fn test_datum_comment_list() {
+    let lisp: Lisp<200> = Lisp::new();
+    // #; skips the entire list (a b c)
+    let idx = parse(&lisp, "#; (a b c) 55").unwrap();
+    assert_eq!(lisp.get(idx).unwrap(), Value::Number(55));
+}
+
+#[test]
+fn test_datum_comment_symbol() {
+    let lisp: Lisp<200> = Lisp::new();
+    let idx = parse(&lisp, "#; foo bar").unwrap();
+    assert!(lisp.symbol_matches(idx, "bar").unwrap());
+}
+
+#[test]
+fn test_datum_comment_in_list() {
+    let lisp: Lisp<500> = Lisp::new();
+    // (1 #; 2 3) should parse as (1 3)
+    let idx = parse(&lisp, "(1 #; 2 3)").unwrap();
+    let (car, cdr) = lisp.car_cdr(idx).unwrap();
+    assert_eq!(lisp.get(car).unwrap(), Value::Number(1));
+    let (car2, nil) = lisp.car_cdr(cdr).unwrap();
+    assert_eq!(lisp.get(car2).unwrap(), Value::Number(3));
+    assert!(lisp.get(nil).unwrap().is_nil());
+}
+
+// ========================================================================
+// Bytevector Literal Tests (#u8(...))
+// ========================================================================
+
+#[test]
+fn test_bytevector_empty() {
+    let lisp: Lisp<200> = Lisp::new();
+    let idx = parse(&lisp, "#u8()").unwrap();
+    assert!(lisp.get(idx).unwrap().is_bytevector());
+    assert_eq!(lisp.bytevector_len(idx).unwrap(), 0);
+}
+
+#[test]
+fn test_bytevector_basic() {
+    let lisp: Lisp<200> = Lisp::new();
+    let idx = parse(&lisp, "#u8(0 10 5)").unwrap();
+    assert!(lisp.get(idx).unwrap().is_bytevector());
+    assert_eq!(lisp.bytevector_len(idx).unwrap(), 3);
+    // Check individual bytes
+    let b0 = lisp.bytevector_get(idx, 0).unwrap();
+    assert_eq!(lisp.get(b0).unwrap(), Value::Number(0));
+    let b1 = lisp.bytevector_get(idx, 1).unwrap();
+    assert_eq!(lisp.get(b1).unwrap(), Value::Number(10));
+    let b2 = lisp.bytevector_get(idx, 2).unwrap();
+    assert_eq!(lisp.get(b2).unwrap(), Value::Number(5));
+}
+
+#[test]
+fn test_bytevector_display() {
+    let lisp: Lisp<200> = Lisp::new();
+    let idx = parse(&lisp, "#u8(1 2 3)").unwrap();
+    let display = format!("{}", lisp.display(idx));
+    assert_eq!(display, "#u8(1 2 3)");
+}
+
+#[test]
+fn test_bytevector_empty_display() {
+    let lisp: Lisp<200> = Lisp::new();
+    let idx = parse(&lisp, "#u8()").unwrap();
+    let display = format!("{}", lisp.display(idx));
+    assert_eq!(display, "#u8()");
+}
+
+// ========================================================================
+// Fold-case Directive Tests
+// ========================================================================
+
+#[test]
+fn test_fold_case_default() {
+    let lisp: Lisp<100> = Lisp::new();
+    // By default, symbols are case-folded (lowercased)
+    let idx = parse(&lisp, "Hello").unwrap();
+    assert!(lisp.symbol_matches(idx, "hello").unwrap());
+}
+
+#[test]
+fn test_no_fold_case() {
+    let lisp: Lisp<100> = Lisp::new();
+    // #!no-fold-case preserves case
+    let idx = parse(&lisp, "#!no-fold-case Hello").unwrap();
+    assert!(lisp.symbol_matches(idx, "Hello").unwrap());
+}
+
+#[test]
+fn test_fold_case_restore() {
+    let lisp: Lisp<200> = Lisp::new();
+    // Turn off, then back on
+    let idx = parse(&lisp, "#!no-fold-case #!fold-case Hello").unwrap();
+    assert!(lisp.symbol_matches(idx, "hello").unwrap());
+}

@@ -6500,3 +6500,40 @@ fn test_dynamic_wind_reenter() {
     let e2_2 = lisp.car(lisp.cdr(log2).unwrap()).unwrap();
     assert!(lisp.symbol_matches(e2_2, "before").unwrap());
 }
+
+// ========================================================================
+// R7RS Lexer Feature Tests
+// ========================================================================
+
+#[test]
+fn test_eval_block_comment() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 #| this is a comment |# 2)"), 3);
+}
+
+#[test]
+fn test_eval_datum_comment() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // #; skips the next datum
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 #; 99 2)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ #; (+ 10 20) 1 2)"), 3);
+}
+
+#[test]
+fn test_eval_bytevector_self_evaluating() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    let result = eval.eval_str("#u8(1 2 3)").unwrap();
+    assert!(lisp.get(result).unwrap().is_bytevector());
+    assert_eq!(lisp.bytevector_len(result).unwrap(), 3);
+}
+
+#[test]
+fn test_eval_fold_case_directive() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Block comment should work in evaluated code
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#| comment |# 42"), 42);
+}
