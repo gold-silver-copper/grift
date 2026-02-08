@@ -72,9 +72,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn apply_builtin_trampolined(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> Result<TrampolineState, EvalError> 
     {
+        // Special handling for error - creates error object and raises through exception system
+        if matches!(builtin, Builtin::Error) {
+            return self.apply_error_builtin(args, call_expr);
+        }
+        
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
         Ok(TrampolineState::Return { val: result })
+    }
+    
+    /// Create an R7RS error object and raise it through the exception handler chain.
+    /// (error message obj ...) — R7RS §6.11
+    pub(super) fn apply_error_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        // First arg is the message
+        let msg = self.lisp.car(args)?;
+        // Rest are irritants
+        let irritants = self.lisp.cdr(args)?;
+        // Type is Nil for standard (error msg ...) calls
+        let nil = self.lisp.nil()?;
+        let irritants_and_type = self.lisp.cons(irritants, nil)?;
+        let error_obj = self.lisp.alloc(Value::ErrorObject { message: msg, irritants_and_type })?;
+        
+        // Raise through the exception handler chain
+        match self.invoke_exception_handler(error_obj, false)? {
+            Some(state) => Ok(state),
+            None => {
+                // No continuation to return to — shouldn't happen for raise
+                Err(self.make_error(ErrorKind::UserError, call_expr))
+            }
+        }
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -124,6 +153,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::Number(x), Value::Number(y)) => x == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
                     (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
+                        a == b || (la == lb && da == db)
+                    }
                     _ => a == b,
                 };
                 
@@ -144,6 +176,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::Number(x), Value::Number(y)) => x == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
                     (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
+                        a == b || (la == lb && da == db)
+                    }
                     _ => a == b,
                 };
                 
@@ -357,8 +392,54 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Error => {
+                // Fallback: if called directly without trampolining, create error object
+                // and return as Rust error. Normal path goes through apply_error_builtin.
                 let msg = self.lisp.car(args)?;
-                Err(self.make_error(ErrorKind::UserError, msg))
+                let irritants = self.lisp.cdr(args)?;
+                let nil = self.lisp.nil()?;
+                let irritants_and_type = self.lisp.cons(irritants, nil)?;
+                let error_obj = self.lisp.alloc(Value::ErrorObject { message: msg, irritants_and_type })?;
+                Err(self.make_error(ErrorKind::UserError, error_obj))
+            }
+            
+            Builtin::ErrorObjectP => {
+                // (error-object? obj) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { .. } => self.lisp.true_val().map_err(Into::into),
+                    _ => self.lisp.false_val().map_err(Into::into),
+                }
+            }
+            
+            Builtin::ErrorObjectMessage => {
+                // (error-object-message error-object) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { message, .. } => Ok(message),
+                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::ErrorObjectIrritants => {
+                // (error-object-irritants error-object) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        self.lisp.car(irritants_and_type).map_err(Into::into)
+                    }
+                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::ErrorObjectType => {
+                // (error-object-type error-object) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        self.lisp.cdr(irritants_and_type).map_err(Into::into)
+                    }
+                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
+                }
             }
             
             Builtin::SetCar => {
@@ -795,8 +876,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         let c = self.get_char(char_arg, call_expr)?;
+                        // Copy-on-write: if the data is shared (interned), make a private copy
+                        if self.lisp.string_data_is_interned(data)? {
+                            self.lisp.string_copy_data(str_idx)?;
+                        }
+                        // Re-read data after potential COW
+                        let current_data = match self.lisp.get(str_idx)? {
+                            Value::String { data: d, .. } => d,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        };
                         // Characters start at data (no header with inline length)
-                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                        let char_slot = self.lisp.arena_index_at_offset(current_data, k as usize)?;
                         self.lisp.set(char_slot, Value::Char(c))?;
                         // Return unspecified value (we use the string itself)
                         Ok(str_idx)
@@ -1081,6 +1171,85 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     _ => Err(self.type_error(call_expr, "string", self.lisp.get(arg)?.type_name())),
                 }
             }
+            
+            Builtin::NumberToString => {
+                // (number->string num) - Convert number to string
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => {
+                        // Convert integer to string using stack buffer (no_std compatible)
+                        let mut buf = [0u8; 21]; // enough for i64 including sign
+                        let mut pos = buf.len();
+                        let negative = n < 0;
+                        let mut val = if negative { 
+                            // Handle isize::MIN by working with unsigned
+                            (n as isize).unsigned_abs()
+                        } else { 
+                            n as usize 
+                        };
+                        
+                        if val == 0 {
+                            pos -= 1;
+                            buf[pos] = b'0';
+                        } else {
+                            while val > 0 {
+                                pos -= 1;
+                                buf[pos] = b'0' + (val % 10) as u8;
+                                val /= 10;
+                            }
+                        }
+                        
+                        if negative {
+                            pos -= 1;
+                            buf[pos] = b'-';
+                        }
+                        
+                        let len = buf.len() - pos;
+                        let mut chars = ['\0'; 21];
+                        for i in 0..len {
+                            chars[i] = buf[pos + i] as char;
+                        }
+                        self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+            
+            Builtin::StringToNumber => {
+                // (string->number str) - Convert string to number, or #f if invalid
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::String { len, data } => {
+                        if len == 0 {
+                            return self.lisp.false_val().map_err(Into::into);
+                        }
+                        // Read chars into stack buffer
+                        let mut buf = [0u8; 21];
+                        if len > buf.len() {
+                            return self.lisp.false_val().map_err(Into::into);
+                        }
+                        for i in 0..len {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => {
+                                    if !c.is_ascii() {
+                                        return self.lisp.false_val().map_err(Into::into);
+                                    }
+                                    buf[i] = c as u8;
+                                }
+                                _ => return self.lisp.false_val().map_err(Into::into),
+                            }
+                        }
+                        // Parse the number
+                        let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
+                        match s.parse::<isize>() {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.false_val().map_err(Into::into),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
         }
     }
     
@@ -1116,6 +1285,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::Number(x), Value::Number(y)) => x == y,
                     (Value::Char(x), Value::Char(y)) => x == y,
                     (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+                    (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
+                        a == b || (la == lb && da == db)
+                    }
                     _ => a == b,
                 };
                 

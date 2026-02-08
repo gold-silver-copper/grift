@@ -100,6 +100,20 @@ fn format_value_impl<const N: usize>(
             }
             buf.push(')');
         }
+        Ok(Value::Bytevector { .. }) => {
+            // Format as R7RS bytevector literal: #u8(byte ...)
+            buf.push_str("#u8(");
+            let len = lisp.bytevector_len(idx).unwrap_or(0);
+            for i in 0..len {
+                if i > 0 {
+                    buf.push(' ');
+                }
+                if let Ok(elem_idx) = lisp.bytevector_get(idx, i) {
+                    format_value(lisp, elem_idx, buf);
+                }
+            }
+            buf.push(')');
+        }
         Ok(Value::String { .. }) => {
             // Format string like in many Lisps: "..."
             buf.push('"');
@@ -140,6 +154,9 @@ fn format_value_impl<const N: usize>(
         }
         Ok(Value::Continuation { .. }) => {
             buf.push_str("#<continuation>");
+        }
+        Ok(Value::ErrorObject { .. }) => {
+            buf.push_str("#<error-object>");
         }
         Err(_) => buf.push_str("#<error>"),
     }

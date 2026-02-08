@@ -2785,6 +2785,115 @@ fn test_string_set() {
 }
 
 // ============================================================
+// String Interning and Mutation Isolation Tests
+// ============================================================
+
+#[test]
+fn test_string_equal_structural() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // equal? compares strings structurally
+    assert!(eval_is_true(&lisp, &mut eval, r#"(equal? "hello" "hello")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(equal? "hello" "world")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(equal? "" "")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(equal? "hi" "hello")"#));
+}
+
+#[test]
+fn test_string_interning_eq() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Identical string literals should be eq? (interned data sharing)
+    assert!(eval_is_true(&lisp, &mut eval, 
+        r#"(let ((s1 "hello") (s2 "hello")) (eq? s1 s2))"#));
+    // Different string literals should not be eq?
+    assert!(eval_is_false(&lisp, &mut eval, 
+        r#"(let ((s1 "hello") (s2 "world")) (eq? s1 s2))"#));
+}
+
+#[test]
+fn test_string_mutation_isolation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Mutating one string should not affect another with same content (COW)
+    assert!(eval_is_true(&lisp, &mut eval, r#"
+        (let ((s1 "test") (s2 "test"))
+          (string-set! s1 0 #\T)
+          (and (equal? s1 "Test")
+               (equal? s2 "test")))
+    "#));
+}
+
+#[test]
+fn test_string_cow_breaks_eq() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // After COW mutation, eq? should return #f (different data pointers)
+    assert!(eval_is_false(&lisp, &mut eval, r#"
+        (let ((s1 "test") (s2 "test"))
+          (string-set! s1 0 #\T)
+          (eq? s1 s2))
+    "#));
+}
+
+#[test]
+fn test_string_direct_ref_shares_mutation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Direct reference (s2 = s1) should see mutation
+    assert!(eval_is_true(&lisp, &mut eval, r#"
+        (let* ((s1 "shared") (s2 s1))
+          (string-set! s1 0 #\S)
+          (and (equal? s2 "Shared")
+               (eq? s1 s2)))
+    "#));
+}
+
+#[test]
+fn test_string_nested_interning_cow() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Nested lets with same string literal - each mutation is isolated
+    assert!(eval_is_true(&lisp, &mut eval, r#"
+        (let ((s1 "nested"))
+          (let ((s2 "nested"))
+            (string-set! s1 0 #\N)
+            (let ((s3 "nested"))
+              (string-set! s3 1 #\E)
+              (and (equal? s1 "Nested")
+                   (equal? s2 "nested")
+                   (equal? s3 "nEsted")))))
+    "#));
+}
+
+#[test]
+fn test_number_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(number->string 42)"#, "42"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(number->string -10)"#, "-10"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(number->string 0)"#, "0"));
+}
+
+#[test]
+fn test_string_to_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string->number "123")"#), 123);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string->number "-42")"#), -42);
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string->number "abc")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string->number "")"#));
+}
+
+// ============================================================
 // Character Predicate Stdlib Tests
 // ============================================================
 
@@ -6499,4 +6608,356 @@ fn test_dynamic_wind_reenter() {
     
     let e2_2 = lisp.car(lisp.cdr(log2).unwrap()).unwrap();
     assert!(lisp.symbol_matches(e2_2, "before").unwrap());
+}
+
+// ========================================================================
+// R7RS Lexer Feature Tests
+// ========================================================================
+
+#[test]
+fn test_eval_block_comment() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 #| this is a comment |# 2)"), 3);
+}
+
+#[test]
+fn test_eval_datum_comment() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // #; skips the next datum
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 #; 99 2)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ #; (+ 10 20) 1 2)"), 3);
+}
+
+#[test]
+fn test_eval_bytevector_self_evaluating() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    let result = eval.eval_str("#u8(1 2 3)").unwrap();
+    assert!(lisp.get(result).unwrap().is_bytevector());
+    assert_eq!(lisp.bytevector_len(result).unwrap(), 3);
+}
+
+#[test]
+fn test_eval_block_comment_in_eval() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Block comment should work in evaluated code
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#| comment |# 42"), 42);
+}
+
+// ========================================================================
+// syntax-error Tests (R7RS §4.3.1)
+// ========================================================================
+
+#[test]
+fn test_syntax_error_raises() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error should raise a SyntaxError
+    let result = eval.eval_str("(syntax-error \"bad syntax\")");
+    assert!(result.is_err());
+}
+
+// ========================================================================
+// Exception Handling Tests (R7RS §6.11)
+// ========================================================================
+
+#[test]
+fn test_with_exception_handler_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // with-exception-handler catches raised exceptions
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(with-exception-handler
+           (lambda (e) 42)
+           (lambda () (raise 99)))"),
+        42);
+}
+
+#[test]
+fn test_with_exception_handler_no_exception() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // When no exception, thunk result is returned
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(with-exception-handler
+           (lambda (e) 0)
+           (lambda () 42))"),
+        42);
+}
+
+#[test]
+fn test_raise_passes_exception_object() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // The exception object passed to raise is received by the handler
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(with-exception-handler
+           (lambda (e) (+ e 1))
+           (lambda () (raise 41)))"),
+        42);
+}
+
+#[test]
+fn test_raise_without_handler() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // raise without handler should produce an error
+    let result = eval.eval_str("(raise 42)");
+    assert!(result.is_err());
+}
+
+// ========================================================================
+// guard Tests (R7RS §4.2.7)
+// ========================================================================
+
+#[test]
+fn test_guard_catches_exception() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(guard (exn
+                 ((number? exn) (+ exn 1)))
+           (raise 41))"),
+        42);
+}
+
+#[test]
+fn test_guard_else_clause() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(guard (exn
+                 (else 99))
+           (raise \"error\"))"),
+        99);
+}
+
+#[test]
+fn test_guard_no_exception() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // When no exception is raised, body result is returned
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(guard (exn
+                 ((number? exn) 0))
+           42)"),
+        42);
+}
+
+#[test]
+fn test_guard_multiple_clauses() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // First matching clause wins
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(guard (exn
+                 ((string? exn) 1)
+                 ((number? exn) 2)
+                 (else 3))
+           (raise 42))"),
+        2);
+}
+
+// ========================================================================
+// R7RS Error Object Tests (§6.11)
+// ========================================================================
+
+#[test]
+fn test_error_object_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error creates an error object that is caught by guard
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (error-object? e)))
+             (error "test"))"#));
+}
+
+#[test]
+fn test_error_object_predicate_false() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Non-error-object values are not error objects
+    assert!(eval_is_false(&lisp, &mut eval,
+        "(error-object? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval,
+        r#"(error-object? "hello")"#));
+    assert!(eval_is_false(&lisp, &mut eval,
+        "(error-object? #t)"));
+}
+
+#[test]
+fn test_error_object_message() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error-object-message retrieves the message
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (string? (error-object-message e))))
+             (error "test message" 1 2 3))"#));
+}
+
+#[test]
+fn test_error_object_irritants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error-object-irritants retrieves the irritant list
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(guard (e (#t (car (error-object-irritants e))))
+             (error "test" 42))"#),
+        42);
+}
+
+#[test]
+fn test_error_object_irritants_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Multiple irritants form a list
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(guard (e (#t (+ (car (error-object-irritants e))
+                           (car (cdr (error-object-irritants e))))))
+             (error "test" 10 32))"#),
+        42);
+}
+
+#[test]
+fn test_error_object_no_irritants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // When no irritants, list is empty
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (null? (error-object-irritants e))))
+             (error "test"))"#));
+}
+
+#[test]
+fn test_error_object_type() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error-object-type for standard error returns nil
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (null? (error-object-type e))))
+             (error "test"))"#));
+}
+
+#[test]
+fn test_error_raises_through_handler() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error raises through the exception system
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(with-exception-handler
+             (lambda (e) (if (error-object? e) 42 0))
+             (lambda () (error "boom")))"#),
+        42);
+}
+
+#[test]
+fn test_error_without_handler() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error without handler should produce an error
+    let result = eval.eval_str(r#"(error "unhandled")"#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_guard_catches_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // guard catches error objects
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(guard (exn
+                  ((error-object? exn) 
+                   (car (error-object-irritants exn))))
+            (error "test" 42))"#),
+        42);
+}
+
+#[test]
+fn test_raise_continuable_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // raise-continuable allows the handler to return a value
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(with-exception-handler
+           (lambda (e) (+ e 1))
+           (lambda () (raise-continuable 41)))"),
+        42);
+}
+
+// ========================================================================
+// make-parameter and parameterize Tests (R7RS §4.2.6)
+// ========================================================================
+
+#[test]
+fn test_make_parameter_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.eval_str("(define p (make-parameter 10))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(p)"), 10);
+}
+
+#[test]
+fn test_parameterize_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.eval_str("(define p (make-parameter 10))").unwrap();
+    // Inside parameterize, p returns the new value
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(parameterize ((p 20)) (p))"),
+        20);
+    // After parameterize, p is restored to original value
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(p)"), 10);
+}
+
+#[test]
+fn test_parameterize_restores_on_exception() {
+    let lisp: Lisp<40000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.eval_str("(define p (make-parameter 10))").unwrap();
+    // parameterize restores even when exception is raised
+    eval.eval_str(
+        "(guard (exn (else #f))
+           (parameterize ((p 20))
+             (raise 'err)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(p)"), 10);
+}
+
+// ========================================================================
+// define-record-type Tests (R7RS §5.5)
+// ========================================================================
+
+#[test]
+fn test_define_record_type_basic() {
+    let lisp: Lisp<40000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.eval_str("(define-record-type <point> (make-point x y) point? (x point-x) (y point-y))").unwrap();
+    eval.eval_str("(define p (make-point 3 4))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(point? p)"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(point-x p)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(point-y p)"), 4);
+}
+
+#[test]
+fn test_define_record_type_predicate_false() {
+    let lisp: Lisp<40000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.eval_str("(define-record-type <point> (make-point x y) point? (x point-x) (y point-y))").unwrap();
+    // Non-record values should return #f
+    assert!(eval_is_false(&lisp, &mut eval, "(point? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(point? '())"));
+}
+
+#[test]
+fn test_define_record_type_with_mutator() {
+    let lisp: Lisp<40000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.eval_str("(define-record-type <point> (make-point x y) point? (x point-x) (y point-y point-set-y!))").unwrap();
+    eval.eval_str("(define p (make-point 3 4))").unwrap();
+    eval.eval_str("(point-set-y! p 99)").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(point-y p)"), 99);
+    // x should be unchanged
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(point-x p)"), 3);
 }

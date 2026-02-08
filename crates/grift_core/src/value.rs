@@ -124,6 +124,14 @@ define_builtins! {
     // Error handling
     /// error - Raise an error
     Error => "error",
+    /// error-object? - Check if value is an error object
+    ErrorObjectP => "error-object?",
+    /// error-object-message - Get message from error object
+    ErrorObjectMessage => "error-object-message",
+    /// error-object-irritants - Get irritants from error object
+    ErrorObjectIrritants => "error-object-irritants",
+    /// error-object-type - Get type from error object
+    ErrorObjectType => "error-object-type",
     
     // Mutation operations
     /// set-car! - Mutate car of pair
@@ -245,6 +253,10 @@ define_builtins! {
     SymbolToString => "symbol->string",
     /// string->symbol - Convert string to symbol
     StringToSymbol => "string->symbol",
+    /// number->string - Convert number to string
+    NumberToString => "number->string",
+    /// string->number - Convert string to number (or #f if invalid)
+    StringToNumber => "string->number",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
@@ -356,6 +368,25 @@ pub enum Value {
     /// #(1 2 3)                        ; Vector literal syntax
     /// ```
     Array { len: usize, data: ArenaIndex },
+    
+    /// Bytevector (R7RS §6.9) with inline length and data pointer
+    /// 
+    /// Bytevectors store exact integers in the range 0–255 as `Number` values
+    /// contiguously in the arena, reusing the same layout as `Array`.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `len`: Number of bytes (inline)
+    /// - `data`: Points directly to first `Number` value in arena
+    /// - Empty bytevectors have len=0 and data == NIL
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// #u8(0 10 5)           ; Bytevector literal
+    /// (bytevector-length #u8(1 2 3))  ; => 3
+    /// ```
+    Bytevector { len: usize, data: ArenaIndex },
     
     /// String with inline length and data pointer
     /// 
@@ -476,6 +507,30 @@ pub enum Value {
         env: ArenaIndex,        // environment at this continuation point
     },
     
+    /// R7RS error object (§6.11)
+    ///
+    /// Created by the `error` procedure. Stores the error message and
+    /// associated irritant values for structured exception handling.
+    ///
+    /// # Memory Layout
+    ///
+    /// - `message`: ArenaIndex to a Value::String or Value::Symbol containing the error message
+    /// - `irritants_and_type`: ArenaIndex to a cons cell `(irritants . error_type)`
+    ///   - car: list of irritant values passed to `error`
+    ///   - cdr: error type (Nil for standard `(error msg ...)` calls)
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (error "out of range" 42)       ; message="out of range", irritants=(42), type=()
+    /// (guard (e ((error-object? e) (error-object-message e)))
+    ///   (error "bad value" 1 2 3))    ; => "bad value"
+    /// ```
+    ErrorObject {
+        message: ArenaIndex,
+        irritants_and_type: ArenaIndex,
+    },
+
     /// Captured continuation from call/cc - a first-class callable value
     ///
     /// When `call-with-current-continuation` (call/cc) is invoked, the current
@@ -637,6 +692,12 @@ impl Value {
         matches!(self, Value::Array { .. })
     }
     
+    /// Check if this value is a bytevector
+    #[inline]
+    pub const fn is_bytevector(&self) -> bool {
+        matches!(self, Value::Bytevector { .. })
+    }
+    
     /// Check if this value is a string
     #[inline]
     pub const fn is_string(&self) -> bool {
@@ -697,12 +758,14 @@ impl Value {
             Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
+            Value::Bytevector { .. } => "bytevector",
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
             Value::Continuation { .. } => "continuation",
+            Value::ErrorObject { .. } => "error-object",
         }
     }
     
@@ -771,6 +834,11 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*cont_data);
                 tracer(*env);
             }
+            Value::ErrorObject { message, irritants_and_type } => {
+                // message and irritants_and_type are inline ArenaIndex - trace both
+                tracer(*message);
+                tracer(*irritants_and_type);
+            }
             Value::Continuation { cont_chain, metadata } => {
                 // cont_chain and metadata are inline ArenaIndex - trace both
                 // cont_chain points to ContFrame linked list
@@ -785,6 +853,16 @@ impl<const N: usize> Trace<Value, N> for Value {
                     let base_idx = data.raw();
                     for i in 0..*len {
                         // Elements are at data, data+1, ..., data+len-1
+                        let elem_idx = ArenaIndex::new(base_idx + i);
+                        tracer(elem_idx);
+                    }
+                }
+            }
+            Value::Bytevector { len, data } => {
+                // Same layout as Array — trace all element slots
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
                         let elem_idx = ArenaIndex::new(base_idx + i);
                         tracer(elem_idx);
                     }

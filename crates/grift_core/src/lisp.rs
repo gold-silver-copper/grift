@@ -22,11 +22,14 @@ use crate::value::{Value, Builtin, StdLib};
 /// 
 /// ## Reserved Slots
 /// 
-/// The first 4 slots of the arena are reserved for singleton values:
+/// The first 6 slots of the arena are reserved for singleton values:
 /// - Slot 0: `Value::Nil` - empty list ()
-/// - Slot 1: `Value::True` - boolean true (#t)
-/// - Slot 2: `Value::False` - boolean false (#f)
-/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
+/// - Slot 1: `Value::Void` - void value
+/// - Slot 2: `Value::True` - boolean true (#t)
+/// - Slot 3: `Value::False` - boolean false (#f)
+/// - Slot 4: `Value::Cons` - intern table reference cell (car = intern table root)
+/// - Slot 5: `Value::Cons` - string intern table reference cell
+///   (car = string intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `true_val()` and `false_val()`. This optimization
@@ -54,12 +57,15 @@ pub struct Lisp<const N: usize> {
     /// This is a cons cell where car = intern table root (alist)
     /// Using a cons cell avoids needing RefCell for interior mutability
     intern_table_slot: ArenaIndex,
+    /// String intern table reference cell (slot 5)
+    /// This is a cons cell where car = list of interned string headers
+    /// Used to share data between identical string literals
+    string_intern_table_slot: ArenaIndex,
 }
 
 /// Number of reserved slots in the arena:
-/// - nil (1), void (1), true (1), false (1), intern_table_cons (1)
-/// Note: With inline cons, we no longer need separate data slots for the intern table
-pub const RESERVED_SLOTS: usize = 5;
+/// - nil (1), void (1), true (1), false (1), intern_table_cons (1), string_intern_table_cons (1)
+pub const RESERVED_SLOTS: usize = 6;
 
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp context
@@ -91,6 +97,11 @@ impl<const N: usize> Lisp<N> {
         let intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
             .expect("Failed to pre-allocate intern table reference cell during Lisp initialization");
         
+        // Pre-allocate string intern table reference cell (slot 5)
+        // This is a cons cell where car = list of interned string headers
+        let string_intern_table_slot = arena.alloc(Value::Cons { car: nil_slot, cdr: nil_slot })
+            .expect("Failed to pre-allocate string intern table reference cell during Lisp initialization");
+        
         Lisp {
             arena,
             nil_slot,
@@ -98,6 +109,7 @@ impl<const N: usize> Lisp<N> {
             true_slot,
             false_slot,
             intern_table_slot,
+            string_intern_table_slot,
         }
     }
     
@@ -998,16 +1010,7 @@ impl<const N: usize> Lisp<N> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol(chars) => {
-                // Fast path for ASCII names (all Scheme keywords are ASCII):
-                // Uses O(1) length check via bytes.len() and avoids per-char
-                // string_char_at overhead.
-                if name.is_ascii() {
-                    self.string_matches_bytes(chars, name.as_bytes())
-                } else {
-                    self.string_matches(chars, name)
-                }
-            }
+            Value::Symbol(chars) => self.string_matches(chars, name),
             _ => Ok(false),
         }
     }
@@ -1046,38 +1049,6 @@ impl<const N: usize> Lisp<N> {
         }
     }
     
-    /// Get the first character of a symbol's name efficiently.
-    /// 
-    /// Returns `Some(char)` if the symbol has at least one character,
-    /// or `None` if the value is not a symbol, the symbol name is empty,
-    /// or the underlying string data is invalid.
-    /// 
-    /// This is optimized over `symbol_char_at` by directly accessing the
-    /// first character slot (3 arena gets vs 4), without a redundant
-    /// length bounds check. Used for fast dispatch in keyword matching.
-    #[inline]
-    pub fn symbol_first_char(&self, sym: ArenaIndex) -> ArenaResult<Option<char>> {
-        match self.get(sym)? {
-            Value::Symbol(chars) => {
-                match self.arena.get(chars)? {
-                    Value::String { len, data } => {
-                        // data.is_nil() is a safety check for inconsistent state
-                        if len == 0 || data.is_nil() {
-                            Ok(None)
-                        } else {
-                            match self.arena.get(ArenaIndex::new(data.raw()))? {
-                                Value::Char(c) => Ok(Some(c)),
-                                _ => Ok(None),
-                            }
-                        }
-                    }
-                    _ => Ok(None),
-                }
-            }
-            _ => Ok(None),
-        }
-    }
-    
     /// Run garbage collection with intern table as an additional root
     /// 
     /// The intern table reference cell (slot 3) is always included as a GC root
@@ -1097,9 +1068,9 @@ impl<const N: usize> Lisp<N> {
         const MAX_ROOTS: usize = 512;
         
         // Panic if too many roots - this indicates a programming error
-        // Account for 5 reserved roots (nil, void, true, false, intern_table)
-        assert!(roots.len() < MAX_ROOTS - 5, 
-            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 5 - 1);
+        // Account for 6 reserved roots (nil, void, true, false, intern_table, string_intern_table)
+        assert!(roots.len() < MAX_ROOTS - 6, 
+            "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 6 - 1);
         
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
@@ -1118,6 +1089,12 @@ impl<const N: usize> Lisp<N> {
         // This is a cons cell whose car is the intern table alist
         // Tracing from this cell will reach all interned symbols
         all_roots[root_count] = self.intern_table_slot;
+        root_count += 1;
+        
+        // Add string intern table reference cell as root
+        // This is a cons cell whose car is the list of interned string headers
+        // Tracing from this cell preserves interned string data
+        all_roots[root_count] = self.string_intern_table_slot;
         root_count += 1;
         
         // Copy provided roots
@@ -1176,8 +1153,7 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.string_char_at(hello, 0).unwrap(), 'h');
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        // For ASCII strings, s.len() == char count in O(1).
-        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
+        let char_count = s.chars().count();
         
         if char_count == 0 {
             // Empty string - len=0, data is NIL
@@ -1219,6 +1195,137 @@ impl<const N: usize> Lisp<N> {
         
         // Create the String value with inline length
         self.alloc(Value::String { len: char_count, data })
+    }
+    
+    // ============================================================================
+    // String interning support
+    // ============================================================================
+    
+    /// Get the current string intern table root
+    fn get_string_intern_root(&self) -> ArenaResult<ArenaIndex> {
+        self.car(self.string_intern_table_slot)
+    }
+    
+    /// Set the string intern table root
+    fn set_string_intern_root(&self, new_root: ArenaIndex) -> ArenaResult<()> {
+        self.set_car(self.string_intern_table_slot, new_root)?;
+        Ok(())
+    }
+    
+    /// Look up chars in the string intern table.
+    /// Returns Some(data) if an identical string data block exists, None otherwise.
+    fn string_intern_lookup(&self, chars: &[char]) -> ArenaResult<Option<ArenaIndex>> {
+        let mut current = self.get_string_intern_root()?;
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons { .. } => {
+                    let entry = self.car(current)?;
+                    let rest = self.cdr(current)?;
+                    // Each entry is a String header
+                    if let Value::String { len, data } = self.get(entry)? {
+                        if len == chars.len() && !data.is_nil() {
+                            // Compare char by char
+                            let mut matches = true;
+                            let base = data.raw();
+                            for (i, &c) in chars.iter().enumerate() {
+                                match self.arena.get(ArenaIndex::new(base + i))? {
+                                    Value::Char(existing) if existing == c => {}
+                                    _ => { matches = false; break; }
+                                }
+                            }
+                            if matches {
+                                return Ok(Some(data));
+                            }
+                        }
+                    }
+                    current = rest;
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+    
+    /// Allocate an interned string from a slice of chars.
+    /// 
+    /// If an identical string already exists in the intern table, the new string
+    /// header will share the same underlying data (copy-on-write semantics).
+    /// This is used for string literals during parsing.
+    pub fn string_from_chars_interned(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
+        let char_count = chars.len();
+        
+        if char_count == 0 {
+            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
+        }
+        
+        // Check if identical data already exists
+        if let Some(existing_data) = self.string_intern_lookup(chars)? {
+            // Reuse existing data, create new header
+            return self.alloc(Value::String { len: char_count, data: existing_data });
+        }
+        
+        // Not found - create new string and add to intern table
+        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+        for (i, &c) in chars.iter().enumerate() {
+            let char_idx = self.arena.index_at_offset(data, i)?;
+            self.arena.set(char_idx, Value::Char(c))?;
+        }
+        let str_idx = self.alloc(Value::String { len: char_count, data })?;
+        
+        // Add to intern table
+        let current_table = self.get_string_intern_root()?;
+        let new_table = self.cons(str_idx, current_table)?;
+        self.set_string_intern_root(new_table)?;
+        
+        Ok(str_idx)
+    }
+    
+    /// Copy string data, returning a new data ArenaIndex.
+    /// Used for copy-on-write when mutating an interned string.
+    pub fn string_copy_data(&self, str_idx: ArenaIndex) -> ArenaResult<()> {
+        match self.get(str_idx)? {
+            Value::String { len, data } => {
+                if len == 0 || data.is_nil() {
+                    return Ok(());
+                }
+                let new_data = self.arena.alloc_contiguous(len, Value::Nil)?;
+                let old_base = data.raw();
+                let new_base = new_data.raw();
+                for i in 0..len {
+                    let val = self.arena.get(ArenaIndex::new(old_base + i))?;
+                    self.arena.set(ArenaIndex::new(new_base + i), val)?;
+                }
+                // Update the string header to point to new data
+                self.set(str_idx, Value::String { len, data: new_data })?;
+                Ok(())
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Check if a string's data is shared with any interned string.
+    /// Returns true if the data pointer matches any entry in the string intern table.
+    pub fn string_data_is_interned(&self, data: ArenaIndex) -> ArenaResult<bool> {
+        if data.is_nil() {
+            return Ok(false);
+        }
+        let mut current = self.get_string_intern_root()?;
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(false),
+                Value::Cons { .. } => {
+                    let entry = self.car(current)?;
+                    let rest = self.cdr(current)?;
+                    if let Value::String { data: entry_data, .. } = self.get(entry)? {
+                        if entry_data == data {
+                            return Ok(true);
+                        }
+                    }
+                    current = rest;
+                }
+                _ => return Ok(false),
+            }
+        }
     }
     
     /// Get the length of a string.
@@ -1323,9 +1430,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns an error if the string index is invalid.
     pub fn string_matches(&self, str_idx: ArenaIndex, s: &str) -> ArenaResult<bool> {
         let len = self.string_len(str_idx)?;
-        // For ASCII strings, s.len() == char count in O(1).
-        // Only fall back to s.chars().count() for non-ASCII.
-        let s_len = if s.is_ascii() { s.len() } else { s.chars().count() };
+        let s_len = s.chars().count();
         
         if len != s_len {
             return Ok(false);
@@ -1567,6 +1672,53 @@ impl<const N: usize> Lisp<N> {
                 }
                 // Free the Array value itself
                 self.arena.free(arr_idx)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    // ========================================================================
+    // Bytevector operations (R7RS §6.9)
+    // ========================================================================
+    
+    /// Create a bytevector of given length, each byte initialised to `default`.
+    pub fn make_bytevector(&self, len: usize, default: u8) -> ArenaResult<ArenaIndex> {
+        if len == 0 {
+            return self.alloc(Value::Bytevector { len: 0, data: ArenaIndex::NIL });
+        }
+        let default_val = Value::Number(default as isize);
+        let data = self.arena.alloc_contiguous(len, default_val)?;
+        self.alloc(Value::Bytevector { len, data })
+    }
+    
+    /// Get the length of a bytevector.
+    pub fn bytevector_len(&self, bv_idx: ArenaIndex) -> ArenaResult<usize> {
+        match self.arena.get(bv_idx)? {
+            Value::Bytevector { len, .. } => Ok(len),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Get the byte (as ArenaIndex to a Number) at a given index.
+    pub fn bytevector_get(&self, bv_idx: ArenaIndex, index: usize) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(bv_idx)? {
+            Value::Bytevector { len, data } => {
+                if index >= len { return Err(ArenaError::InvalidIndex); }
+                if data.is_nil() { return Err(ArenaError::InvalidIndex); }
+                self.arena.index_at_offset(data, index)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
+    /// Set the byte at a given index in a bytevector.
+    pub fn bytevector_set(&self, bv_idx: ArenaIndex, index: usize, byte: u8) -> ArenaResult<()> {
+        match self.arena.get(bv_idx)? {
+            Value::Bytevector { len, data } => {
+                if index >= len { return Err(ArenaError::InvalidIndex); }
+                if data.is_nil() { return Err(ArenaError::InvalidIndex); }
+                let elem_slot = self.arena.index_at_offset(data, index)?;
+                self.arena.set(elem_slot, Value::Number(byte as isize))
             }
             _ => Err(ArenaError::InvalidIndex),
         }

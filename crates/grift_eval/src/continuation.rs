@@ -289,6 +289,22 @@ pub enum ContType {
     /// the transformer body. When the body returns, this continuation re-evaluates
     /// the expanded result (which may itself be a macro invocation).
     MacroResult = 40,
+
+    /// After evaluating handler-expr in with-exception-handler, evaluate thunk-expr
+    /// Data: (thunk_expr . env)
+    WithExceptionHandlerEvalThunk = 41,
+
+    /// After evaluating thunk-expr in with-exception-handler, call thunk with handler installed
+    /// Data: (handler . env)
+    WithExceptionHandlerCallThunk = 42,
+
+    /// Installed exception handler frame — marks the dynamic extent
+    /// Data: (handler . saved_handler_chain)
+    ExceptionHandlerFrame = 43,
+
+    /// After evaluating raise argument, invoke exception handler
+    /// Data: Nil (no data — continuable flag encoded as env marker)
+    RaiseEval = 44,
 }
 
 impl ContType {
@@ -338,6 +354,10 @@ impl ContType {
             38 => Some(ContType::DynamicWindCallBody),
             39 => Some(ContType::FinishContinuationRestore),
             40 => Some(ContType::MacroResult),
+            41 => Some(ContType::WithExceptionHandlerEvalThunk),
+            42 => Some(ContType::WithExceptionHandlerCallThunk),
+            43 => Some(ContType::ExceptionHandlerFrame),
+            44 => Some(ContType::RaiseEval),
             _ => None,
         }
     }
