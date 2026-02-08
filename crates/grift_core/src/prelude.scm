@@ -885,13 +885,38 @@
 (define (reverse lst) (fold (lambda (acc x) (cons x acc)) '() lst))
 
 ;;; (nth n lst) - Get nth element (0-indexed)
-(define (nth n lst) (if (= n 0) (car lst) (nth (- n 1) (cdr lst))))
+;;; Validates that n is a valid non-negative index.
+(define (nth n lst)
+  (if (not (and (integer? n) (exact? n) (>= n 0)))
+      (error "nth: invalid index" n)
+      (nth-iter n lst)))
+(define (nth-iter n lst)
+  (if (null? lst)
+      (error "nth: index out of range" n)
+      (if (= n 0) (car lst)
+          (nth-iter (- n 1) (cdr lst)))))
 
 ;;; (take n lst) - Take first n elements
-(define (take n lst) (if (= n 0) '() (if (null? lst) '() (cons (car lst) (take (- n 1) (cdr lst))))))
+;;; Validates that n is a non-negative integer.
+(define (take n lst)
+  (if (not (and (integer? n) (exact? n) (>= n 0)))
+      (error "take: expected non-negative integer" n)
+      (take-iter n lst '())))
+(define (take-iter n lst acc)
+  (if (= n 0) (reverse acc)
+      (if (null? lst) (reverse acc)
+          (take-iter (- n 1) (cdr lst) (cons (car lst) acc)))))
 
 ;;; (drop n lst) - Drop first n elements
-(define (drop n lst) (if (= n 0) lst (if (null? lst) '() (drop (- n 1) (cdr lst)))))
+;;; Validates that n is a non-negative integer.
+(define (drop n lst)
+  (if (not (and (integer? n) (exact? n) (>= n 0)))
+      (error "drop: expected non-negative integer" n)
+      (drop-iter n lst)))
+(define (drop-iter n lst)
+  (if (= n 0) lst
+      (if (null? lst) '()
+          (drop-iter (- n 1) (cdr lst)))))
 
 ;;; (zip a b) - Zip two lists into list of pairs
 (define (zip a b) (if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b))))))
@@ -958,10 +983,30 @@
 (define (for-each f lst) (if (null? lst) (if #f #f) (begin (f (car lst)) (for-each f (cdr lst)))))
 
 ;;; (list-tail lst k) - Return sublist starting at k-th element
-(define (list-tail lst k) (if (= k 0) lst (list-tail (cdr lst) (- k 1))))
+;;; Validates that k is a valid non-negative index.
+(define (list-tail lst k)
+  (if (not (and (integer? k) (exact? k) (>= k 0)))
+      (error "list-tail: invalid index" k)
+      (list-tail-iter lst k)))
+(define (list-tail-iter lst k)
+  (if (= k 0) lst
+      (if (null? lst)
+          (error "list-tail: index out of range" k)
+          (list-tail-iter (cdr lst) (- k 1)))))
 
 ;;; (list-ref lst k) - Return k-th element of lst (0-indexed)
-(define (list-ref lst k) (if (= k 0) (car lst) (list-ref (cdr lst) (- k 1))))
+;;; Validates that lst is a proper list and k is a valid non-negative index.
+(define (list-ref lst k)
+  (if (not (list? lst))
+      (error "list-ref: not a list" lst)
+      (if (not (and (integer? k) (exact? k) (>= k 0)))
+          (error "list-ref: invalid index" k)
+          (list-ref-iter lst k 0))))
+(define (list-ref-iter lst k i)
+  (if (null? lst)
+      (error "list-ref: index out of range" k)
+      (if (= i k) (car lst)
+          (list-ref-iter (cdr lst) k (+ i 1)))))
 
 ;;; (list? obj) - Check if obj is a proper list
 (define (list? obj) (if (null? obj) #t (if (pair? obj) (list? (cdr obj)) #f)))
@@ -1027,16 +1072,21 @@
 (define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
 
 ;;; (sqrt x) - Integer square root using Newton's method
-;;; Returns the largest integer whose square is <= x
+;;; Returns the largest integer whose square is <= x.
+;;; Raises an error if x is negative.
 (define (sqrt x)
-  (if (<= x 0)
-      0
-      (letrec ((iter (lambda (guess)
-                       (let ((next (/ (+ guess (/ x guess)) 2)))
-                         (if (>= next guess)
-                             guess
-                             (iter next))))))
-        (iter x))))
+  (if (not (and (integer? x) (exact? x)))
+      (error "sqrt: expected exact integer" x)
+      (if (negative? x)
+          (error "sqrt: negative argument" x)
+          (if (= x 0)
+              0
+              (sqrt-iter x x)))))
+(define (sqrt-iter x guess)
+  (let ((next (/ (+ guess (/ x guess)) 2)))
+    (if (>= next guess)
+        guess
+        (sqrt-iter x next))))
 
 ;;; (square x) - Return x squared
 (define (square x) (* x x))
@@ -1051,26 +1101,49 @@
 (define (product lst) (fold * 1 lst))
 
 ;;; (average lst) - Average of all elements in a list
-(define (average lst) (/ (sum lst) (length lst)))
+;;; Raises an error if the list is empty (division by zero).
+(define (average lst)
+  (if (null? lst)
+      (error "average: empty list")
+      (/ (sum lst) (length lst))))
 
 ;;; ============================================================
 ;;; Additional R7RS List Functions (Section 6.4)
 ;;; ============================================================
 
-;;; (make-list k fill) - Create a list of k elements, each initialized to fill. 
-;;; Note: k must be non-negative, negative values cause infinite recursion.
-(define (make-list k fill) (if (<= k 0) '() (cons fill (make-list (- k 1) fill))))
+;;; (make-list k fill) - Create a list of k elements, each initialized to fill.
+;;; Validates that k is a non-negative integer.
+(define (make-list k fill)
+  (if (not (and (integer? k) (exact? k)))
+      (error "make-list: expected exact integer" k)
+      (if (< k 0)
+          (error "make-list: expected non-negative integer" k)
+          (make-list-iter k fill '()))))
+(define (make-list-iter k fill acc)
+  (if (<= k 0)
+      acc
+      (make-list-iter (- k 1) fill (cons fill acc))))
 
 ;;; (list-set! lst k obj) - Store obj in element k of lst
-(define (list-set! lst k obj) (set-car! (list-tail lst k) obj))
+;;; Validates that k is a valid non-negative index.
+(define (list-set! lst k obj)
+  (if (not (and (integer? k) (exact? k) (>= k 0)))
+      (error "list-set!: invalid index" k)
+      (set-car! (list-tail lst k) obj)))
 
 ;;; (last-pair lst) - Return the last pair in a non-empty list
-;;; Note: Error if called on empty list.
-(define (last-pair lst) (if (null? (cdr lst)) lst (last-pair (cdr lst))))
+;;; Raises an error if called on an empty list.
+(define (last-pair lst)
+  (if (null? lst)
+      (error "last-pair: empty list")
+      (if (null? (cdr lst)) lst (last-pair (cdr lst)))))
 
 ;;; (last lst) - Return the last element of a non-empty list
-;;; Note: Error if called on empty list.
-(define (last lst) (car (last-pair lst)))
+;;; Raises an error if called on an empty list.
+(define (last lst)
+  (if (null? lst)
+      (error "last: empty list")
+      (car (last-pair lst))))
 
 ;;; ============================================================
 ;;; R7RS member/assoc with equal? (Section 6.4)

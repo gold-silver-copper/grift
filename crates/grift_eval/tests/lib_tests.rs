@@ -2449,9 +2449,9 @@ fn test_make_list_edge_cases() {
     let result = eval.eval_str("(make-list 0 'x)").unwrap();
     assert!(lisp.get(result).unwrap().is_nil());
     
-    // Negative k should return empty list (not infinite recursion)
-    let result = eval.eval_str("(make-list -5 'x)").unwrap();
-    assert!(lisp.get(result).unwrap().is_nil());
+    // Negative k should raise an error (R7RS: k must be non-negative)
+    let result = eval.eval_str("(make-list -5 'x)");
+    assert!(result.is_err());
 }
 
 // ============================================================

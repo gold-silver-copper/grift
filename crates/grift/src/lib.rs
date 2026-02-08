@@ -11,7 +11,7 @@
 //! - **Mark-and-sweep GC** — Controllable from Scheme code
 //! - **Proper tail-call optimization** — Via trampolining
 //! - **Lexical closures** — First-class functions with captured environments
-//! - **R7RS-inspired** — Scheme semantics with only `#f` as false
+//! - **R7RS-compliant** — Scheme semantics following the Revised⁷ Report
 //!
 //! ## Quick Start
 //!

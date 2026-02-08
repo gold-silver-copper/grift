@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/grift/badge.svg)](https://docs.rs/grift)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-A minimal `no_std`, `no_alloc` Scheme implementation built on a custom arena allocator. Grift demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
+A minimal `no_std`, `no_alloc` R7RS-compliant Scheme implementation built on a custom arena allocator. Grift demonstrates that you can build a feature-rich, garbage-collected language without requiring heap allocation — perfect for embedded systems, WebAssembly, or environments where `std` is unavailable.
 
 ## 📦 Installation
 
@@ -147,6 +147,12 @@ This repository contains:
 (vector? vec)                  ; => #t
 #(1 2 3)                       ; Vector literal syntax
 (make-vector 5 0)              ; Create vector of 5 zeros
+
+; I/O (R7RS Section 6.13)
+(display "hello")              ; Display value (human-readable)
+(write "hello")                ; Write value (machine-readable, with quotes)
+(write-char #\a)               ; Write a character
+(newline)                      ; Write a newline
 ```
 
 ### Special Forms
