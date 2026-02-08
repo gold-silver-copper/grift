@@ -164,6 +164,8 @@ fn format_value<const N: usize>(
         Ok(Value::ContFrame { .. }) => f.write_str("#<cont-frame>"),
         Ok(Value::Continuation { .. }) => f.write_str("#<continuation>"),
         Ok(Value::ErrorObject { .. }) => f.write_str("#<error-object>"),
+        Ok(Value::Port(port_id)) => write!(f, "#<port:{}>", port_id.0),
+        Ok(Value::Eof) => f.write_str("#<eof>"),
         Err(_) => f.write_str("#<error>"),
     }
 }

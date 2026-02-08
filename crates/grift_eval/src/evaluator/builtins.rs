@@ -1146,6 +1146,236 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
             }
+
+            // ================================================================
+            // Port operations (R7RS §6.13)
+            // ================================================================
+
+            Builtin::Portp => {
+                let arg = self.lisp.car(args)?;
+                let is_port = matches!(self.lisp.get(arg)?, Value::Port(_));
+                self.lisp.boolean(is_port).map_err(Into::into)
+            }
+
+            Builtin::InputPortp => {
+                let arg = self.lisp.car(args)?;
+                let result = match self.lisp.get(arg)? {
+                    Value::Port(pid) => {
+                        if let Some(ref io) = self.io { io.is_input_port(pid) } else { false }
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+
+            Builtin::OutputPortp => {
+                let arg = self.lisp.car(args)?;
+                let result = match self.lisp.get(arg)? {
+                    Value::Port(pid) => {
+                        if let Some(ref io) = self.io { io.is_output_port(pid) } else { false }
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(result).map_err(Into::into)
+            }
+
+            Builtin::CurrentInputPort => {
+                self.lisp.port(grift_parser::PortId::STDIN).map_err(Into::into)
+            }
+
+            Builtin::CurrentOutputPort => {
+                self.lisp.port(grift_parser::PortId::STDOUT).map_err(Into::into)
+            }
+
+            Builtin::CurrentErrorPort => {
+                self.lisp.port(grift_parser::PortId::STDERR).map_err(Into::into)
+            }
+
+            Builtin::ClosePort | Builtin::CloseInputPort | Builtin::CloseOutputPort => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Port(pid) => {
+                        if let Some(ref mut io) = self.io {
+                            io.close_port(pid).map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        }
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "port", v.type_name())),
+                }
+            }
+
+            Builtin::ReadChar => {
+                // (read-char) or (read-char port)
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        match io.read_char(pid) {
+                            Ok(c) => self.lisp.alloc(Value::Char(c)).map_err(Into::into),
+                            Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::PeekChar => {
+                // (peek-char) or (peek-char port)
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        match io.peek_char(pid) {
+                            Ok(c) => self.lisp.alloc(Value::Char(c)).map_err(Into::into),
+                            Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::CharReadyp => {
+                // (char-ready?) or (char-ready? port)
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let ready = io.char_ready(pid).unwrap_or(false);
+                        self.lisp.boolean(ready).map_err(Into::into)
+                    }
+                    None => self.lisp.boolean(false).map_err(Into::into),
+                }
+            }
+
+            Builtin::WriteChar => {
+                // (write-char char) or (write-char char port)
+                let ch_arg = self.lisp.car(args)?;
+                let c = match self.lisp.get(ch_arg)? {
+                    Value::Char(c) => c,
+                    v => return Err(self.type_error(call_expr, "char", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let pid = if self.lisp.get(rest)?.is_nil() {
+                    grift_parser::PortId::STDOUT
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                if let Some(ref mut io) = self.io {
+                    io.write_char(pid, c).map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                } else if let Some(callback) = self.output_callback {
+                    callback(self.lisp, ch_arg);
+                }
+                self.lisp.void_val().map_err(Into::into)
+            }
+
+            Builtin::Write => {
+                // (write obj) or (write obj port)
+                let val = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let pid = if self.lisp.get(rest)?.is_nil() {
+                    grift_parser::PortId::STDOUT
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                if let Some(ref mut io) = self.io {
+                    // Use DisplayValue (write mode with quotes) through a fmt::Write adapter
+                    let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                    let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                    use core::fmt::Write;
+                    let _ = write!(writer, "{}", dv);
+                    if writer.error {
+                        return Err(self.make_error(ErrorKind::Generic, call_expr));
+                    }
+                } else if let Some(callback) = self.output_callback {
+                    callback(self.lisp, val);
+                }
+                self.lisp.void_val().map_err(Into::into)
+            }
+
+            Builtin::Read => {
+                // (read) or (read port)
+                let pid = self.extract_input_port(args, call_expr)?;
+                self.apply_read_builtin(pid, call_expr)
+            }
+
+            Builtin::EofObject => {
+                self.lisp.eof().map_err(Into::into)
+            }
+
+            Builtin::EofObjectp => {
+                let arg = self.lisp.car(args)?;
+                let is_eof = matches!(self.lisp.get(arg)?, Value::Eof);
+                self.lisp.boolean(is_eof).map_err(Into::into)
+            }
+
+            Builtin::OpenInputString => {
+                // (open-input-string str)
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::String { len, data } => {
+                        // Extract string content into stack buffer
+                        let mut buf = [0u8; 1024];
+                        let mut byte_len = 0;
+                        for i in 0..len {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                let enc_len = c.len_utf8();
+                                if byte_len + enc_len > buf.len() { break; }
+                                c.encode_utf8(&mut buf[byte_len..]);
+                                byte_len += enc_len;
+                            }
+                        }
+                        let s = core::str::from_utf8(&buf[..byte_len])
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        match &mut self.io {
+                            Some(io) => {
+                                let pid = io.open_input_string(s)
+                                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                                self.lisp.port(pid).map_err(Into::into)
+                            }
+                            None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+
+            Builtin::OpenOutputString => {
+                // (open-output-string)
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_output_string()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::GetOutputString => {
+                // (get-output-string port)
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Port(pid) => {
+                        match &self.io {
+                            Some(io) => {
+                                let s = io.get_output_string(pid)
+                                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                                self.lisp.string(s).map_err(Into::into)
+                            }
+                            None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "port", v.type_name())),
+                }
+            }
         }
     }
     
@@ -1381,5 +1611,149 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
         Ok(vec)
+    }
+
+    /// Extract an input port from optional arguments.
+    /// Returns STDIN if no argument is provided.
+    fn extract_input_port(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
+        if self.lisp.get(args)?.is_nil() {
+            Ok(grift_parser::PortId::STDIN)
+        } else {
+            let port_arg = self.lisp.car(args)?;
+            match self.lisp.get(port_arg)? {
+                Value::Port(pid) => Ok(pid),
+                v => Err(self.type_error(call_expr, "port", v.type_name())),
+            }
+        }
+    }
+
+    /// Implement (read) by reading characters from a port and parsing.
+    fn apply_read_builtin(&mut self, pid: grift_parser::PortId, call_expr: ArenaIndex) -> EvalResult {
+        // Read characters into a stack buffer until we have a complete S-expression
+        let mut buf = [0u8; 2048];
+        let mut byte_len = 0;
+        let mut paren_depth: i32 = 0;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut got_token = false;
+
+        let io = match &mut self.io {
+            Some(io) => io,
+            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+        };
+
+        // Skip leading whitespace
+        loop {
+            match io.read_char(pid) {
+                Ok(c) => {
+                    if !c.is_whitespace() {
+                        // Put this char into the buffer
+                        let enc_len = c.len_utf8();
+                        if byte_len + enc_len > buf.len() {
+                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                        }
+                        c.encode_utf8(&mut buf[byte_len..]);
+                        byte_len += enc_len;
+
+                        if c == '(' || c == '[' {
+                            paren_depth += 1;
+                        } else if c == '"' {
+                            in_string = true;
+                        } else if paren_depth == 0 {
+                            got_token = true;
+                        }
+                        break;
+                    }
+                }
+                Err(grift_parser::IoErrorKind::Eof) => {
+                    return self.lisp.eof().map_err(Into::into);
+                }
+                Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            }
+        }
+
+        // Read remaining characters to form a complete expression
+        if paren_depth > 0 || in_string {
+            loop {
+                match io.read_char(pid) {
+                    Ok(c) => {
+                        let enc_len = c.len_utf8();
+                        if byte_len + enc_len > buf.len() {
+                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                        }
+                        c.encode_utf8(&mut buf[byte_len..]);
+                        byte_len += enc_len;
+
+                        if in_string {
+                            if escape {
+                                escape = false;
+                            } else if c == '\\' {
+                                escape = true;
+                            } else if c == '"' {
+                                in_string = false;
+                                if paren_depth == 0 { break; }
+                            }
+                        } else {
+                            if c == '(' || c == '[' {
+                                paren_depth += 1;
+                            } else if c == ')' || c == ']' {
+                                paren_depth -= 1;
+                                if paren_depth == 0 { break; }
+                            } else if c == '"' {
+                                in_string = true;
+                            }
+                        }
+                    }
+                    Err(grift_parser::IoErrorKind::Eof) => break,
+                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+        } else if got_token {
+            // Continue reading the token (number, symbol, etc.)
+            loop {
+                match io.peek_char(pid) {
+                    Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => break,
+                    Ok(c) => {
+                        let _ = io.read_char(pid);
+                        let enc_len = c.len_utf8();
+                        if byte_len + enc_len > buf.len() { break; }
+                        c.encode_utf8(&mut buf[byte_len..]);
+                        byte_len += enc_len;
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+
+        let s = core::str::from_utf8(&buf[..byte_len])
+            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+
+        if s.is_empty() {
+            return self.lisp.eof().map_err(Into::into);
+        }
+
+        // Parse the expression
+        match grift_parser::parse(self.lisp, s) {
+            Ok(expr) => Ok(expr),
+            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+        }
+    }
+}
+
+/// Adapter to write through an [`IoProvider`] port via [`core::fmt::Write`].
+struct IoPortWriter<'a> {
+    io: &'a mut dyn grift_parser::IoProvider,
+    port: grift_parser::PortId,
+    error: bool,
+}
+
+impl core::fmt::Write for IoPortWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.io.write_str(self.port, s).is_err() {
+            self.error = true;
+            Err(core::fmt::Error)
+        } else {
+            Ok(())
+        }
     }
 }
