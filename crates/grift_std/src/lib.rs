@@ -2,8 +2,8 @@
 
 //! # Grift Standard Library
 //!
-//! Standard library features for the Grift Scheme language that require
-//! Rust's `std` (I/O, filesystem, etc.).
+//! Standard library features for the Grift R7RS-compliant Scheme implementation
+//! that require Rust's `std` (I/O, filesystem, etc.).
 //!
 //! This crate implements the [`IoProvider`] trait from `grift_core` using
 //! Rust's standard I/O, giving the `no_std` evaluator access to real

@@ -17,7 +17,7 @@ Grift is a clean, portable Scheme interpreter that runs anywhere — from embedd
 | **Mark-and-Sweep GC** | Garbage collection controllable from Scheme |
 | **Proper Tail Calls** | Full TCO via trampolining — no stack overflow |
 | **Lexical Closures** | First-class functions with captured environments |
-| **R7RS-Inspired** | Scheme semantics with only `#f` as false |
+| **R7RS-Compliant** | Scheme semantics following the Revised⁷ Report |
 
 ## 🚀 Quick Start
 
