@@ -60,12 +60,16 @@ fn read_one_char() -> IoResult<char> {
     // Determine expected UTF-8 byte length from the leading byte.
     let char_len = if first < 0x80 {
         1
-    } else if first < 0xE0 {
+    } else if first >= 0xC2 && first < 0xE0 {
         2
-    } else if first < 0xF0 {
+    } else if first >= 0xE0 && first < 0xF0 {
         3
-    } else {
+    } else if first >= 0xF0 && first < 0xF5 {
         4
+    } else {
+        // Invalid leading byte (0x80-0xBF are continuation bytes,
+        // 0xC0-0xC1 are overlong, 0xF5-0xFF are invalid).
+        return Err(IoErrorKind::ReadFailed);
     };
 
     // Read remaining continuation bytes if needed.

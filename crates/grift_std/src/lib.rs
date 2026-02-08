@@ -12,15 +12,16 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use grift_eval::{Lisp, Evaluator};
 //! use grift_std::StdIoProvider;
 //! use grift_core::IoProvider;
 //!
-//! let lisp: Lisp<20000> = Lisp::new();
-//! let eval = Evaluator::new(&lisp).unwrap();
-//!
 //! // Create a standard I/O provider
-//! let io = StdIoProvider::new();
+//! let mut io = StdIoProvider::new();
+//!
+//! // Check port types
+//! use grift_core::PortId;
+//! assert!(io.is_input_port(PortId::STDIN));
+//! assert!(io.is_output_port(PortId::STDOUT));
 //! ```
 //!
 //! ## Crate Boundary
