@@ -5,6 +5,7 @@
 
 use grift_parser::{
     ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
+    PRELUDE_SOURCE,
 };
 
 use crate::error::{
@@ -15,9 +16,6 @@ use crate::continuation::{TrampolineState, GcRoots, ContType, EnvRef, ExprRef};
 use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
-
-/// Standard macro definitions (loaded at startup)
-const STANDARD_MACROS: &str = include_str!("macros.scm");
 
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
@@ -80,20 +78,56 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(eval)
     }
     
-    /// Load standard macro definitions from macros.scm
+    /// Load standard macro definitions from the combined prelude.
     /// 
-    /// These are evaluated (not just expanded) since define-syntax
-    /// is now handled during evaluation.
+    /// Only `define-syntax` forms are evaluated (not `define` forms, which are
+    /// already handled by the StdLib enum). This allows the prelude to contain
+    /// both macros and function definitions in a single file.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
-        let forms = parse_all(self.lisp, STANDARD_MACROS)?;
+        let forms = parse_all(self.lisp, PRELUDE_SOURCE)?;
         let mut current = forms;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let form = self.lisp.car(current)?;
-            // Evaluate the form - define-syntax is handled during evaluation
-            self.eval(ExprRef(form))?;
+            // Only evaluate define-syntax forms; skip plain define forms
+            // since those are already registered as StdLib builtins.
+            let should_eval = if let Ok(Value::Cons { .. }) = self.lisp.get(form) {
+                if let Ok(car) = self.lisp.car(form) {
+                    !self.is_define_symbol(car)
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if should_eval {
+                self.eval(ExprRef(form))?;
+            }
             current = self.lisp.cdr(current)?;
         }
         Ok(())
+    }
+    
+    /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
+    fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
+        if let Ok(Value::Symbol(chars)) = self.lisp.get(idx) {
+            let len = self.lisp.string_len(chars).unwrap_or(0);
+            if len != 6 {
+                return false;
+            }
+            // Check for exactly "define"
+            for (i, &expected) in b"define".iter().enumerate() {
+                if let Ok(c) = self.lisp.string_char_at(chars, i) {
+                    if c as u8 != expected {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
     
     /// Get the Lisp context

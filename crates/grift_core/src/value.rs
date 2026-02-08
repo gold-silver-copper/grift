@@ -308,7 +308,7 @@ define_builtins! {
 // Note: member/assoc use eq? for comparison (like Scheme's memq/assq).
 // This works for symbols and identical objects. For value comparison,
 // define a custom function or use fold with a predicate.
-grift_macros::include_stdlib!("src/stdlib.scm");
+grift_macros::include_stdlib!("src/prelude.scm");
 
 /// A Lisp value
 /// 
