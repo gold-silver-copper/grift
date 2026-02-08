@@ -7,7 +7,7 @@
 //! ## Features
 //!
 //! - Rich error display with stack traces
-//! - Line editing with arrow keys (via reedline)
+//! - Line editing with arrow keys (via rustyline)
 //! - GC commands and statistics
 //! - Help system
 //!
@@ -19,7 +19,9 @@
 //! run_repl::<10000>();
 //! ```
 
-use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
+use rustyline::error::ReadlineError;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{Completer, Editor, Helper, Highlighter, Hinter};
 
 pub use grift_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
@@ -416,6 +418,66 @@ pub fn is_only_comments_and_whitespace(input: &str) -> bool {
     true
 }
 
+/// A rustyline helper that validates Scheme parentheses for multiline input.
+///
+/// When parentheses are unbalanced (more opens than closes), rustyline will
+/// prompt for continuation lines instead of submitting. This also enables
+/// proper multiline paste support — pasted text with unbalanced parens is
+/// accumulated until balanced.
+#[derive(Completer, Helper, Highlighter, Hinter)]
+struct SchemeValidator;
+
+impl Validator for SchemeValidator {
+    fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+        let input = ctx.input();
+
+        // Empty or comment-only input is valid (submit immediately)
+        if input.trim().is_empty() || is_only_comments_and_whitespace(input) {
+            return Ok(ValidationResult::Valid(None));
+        }
+
+        // Count parentheses, skipping strings and comments
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut in_line_comment = false;
+        let mut escape = false;
+        for c in input.chars() {
+            if in_line_comment {
+                if c == '\n' {
+                    in_line_comment = false;
+                }
+                continue;
+            }
+            if escape {
+                escape = false;
+                continue;
+            }
+            if c == '\\' && in_string {
+                escape = true;
+                continue;
+            }
+            if c == '"' {
+                in_string = !in_string;
+                continue;
+            }
+            if !in_string {
+                match c {
+                    ';' => { in_line_comment = true; }
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+        }
+
+        if depth > 0 || in_string {
+            Ok(ValidationResult::Incomplete)
+        } else {
+            Ok(ValidationResult::Valid(None))
+        }
+    }
+}
+
 /// Run a REPL session
 pub fn run_repl<const N: usize>() {
     let lisp: Lisp<N> = Lisp::new();
@@ -433,15 +495,8 @@ pub fn run_repl<const N: usize>() {
     // Set I/O provider for port operations
     eval.set_io_provider(&mut io);
     
-    let mut line_editor = Reedline::create();
-    let default_prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("Λ ".to_string()),
-        DefaultPromptSegment::Empty,
-    );
-    let continuation_prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("  ".to_string()),
-        DefaultPromptSegment::Empty,
-    );
+    let mut line_editor = Editor::new().expect("Failed to create line editor");
+    line_editor.set_helper(Some(SchemeValidator));
     
     println!("Grift Lisp");
     println!("========================");
@@ -451,42 +506,20 @@ pub fn run_repl<const N: usize>() {
     println!("Arena capacity: {} cells", N);
     println!();
     
-    let mut input_buffer = String::new();
-    let mut continuation = false;
-    
     loop {
-        let prompt = if continuation { &continuation_prompt } else { &default_prompt };
-        
-        match line_editor.read_line(prompt) {
-            Ok(Signal::Success(line)) => {
-                if continuation {
-                    input_buffer.push('\n');
-                    input_buffer.push_str(&line);
-                } else {
-                    input_buffer = line;
-                }
-                
-                let input = input_buffer.trim();
+        match line_editor.readline("Λ ") {
+            Ok(line) => {
+                let input = line.trim();
                 if input.is_empty() || is_only_comments_and_whitespace(input) {
-                    continuation = false;
-                    input_buffer.clear();
                     continue;
                 }
                 
-                // Check for unbalanced parens (simple continuation)
-                let open = input.chars().filter(|&c| c == '(').count();
-                let close = input.chars().filter(|&c| c == ')').count();
-                if open > close {
-                    continuation = true;
-                    continue;
-                }
-                
-                continuation = false;
+                // Add to history
+                let _ = line_editor.add_history_entry(input);
                 
                 // Special commands
                 if input.starts_with(':') {
                     if handle_command(input, &lisp, &mut eval) {
-                        input_buffer.clear();
                         continue;
                     }
                     // If handle_command returns false, it's :quit
@@ -505,17 +538,14 @@ pub fn run_repl<const N: usize>() {
                         println!("{}", format_error(&lisp, &e));
                     }
                 }
-                
-                input_buffer.clear();
             }
-            Ok(Signal::CtrlD) => {
+            Err(ReadlineError::Eof) => {
                 println!("\nGoodbye!");
                 break;
             }
-            Ok(Signal::CtrlC) => {
-                // Cancel current input
-                continuation = false;
-                input_buffer.clear();
+            Err(ReadlineError::Interrupted) => {
+                // Cancel current input (Ctrl+C)
+                continue;
             }
             Err(e) => {
                 eprintln!("Read error: {}", e);
