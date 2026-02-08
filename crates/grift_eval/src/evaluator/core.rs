@@ -115,10 +115,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return false;
             }
             // Check for exactly "define"
-            let expected = [b'd', b'e', b'f', b'i', b'n', b'e'];
-            for i in 0..6 {
+            for (i, &expected) in b"define".iter().enumerate() {
                 if let Ok(c) = self.lisp.string_char_at(chars, i) {
-                    if c as u8 != expected[i] {
+                    if c as u8 != expected {
                         return false;
                     }
                 } else {

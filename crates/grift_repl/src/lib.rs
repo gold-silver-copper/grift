@@ -562,7 +562,10 @@ fn handle_command<const N: usize>(input: &str, lisp: &Lisp<N>, eval: &mut Evalua
             match std::fs::read_to_string(path) {
                 Ok(contents) => {
                     // Wrap in (begin ...) to evaluate all top-level forms
-                    let wrapped = format!("(begin {})", contents);
+                    let mut wrapped = String::with_capacity(contents.len() + 9);
+                    wrapped.push_str("(begin ");
+                    wrapped.push_str(&contents);
+                    wrapped.push(')');
                     match eval.eval_str(&wrapped) {
                         Ok(result) => {
                             if !matches!(lisp.get(result), Ok(Value::Void)) {
