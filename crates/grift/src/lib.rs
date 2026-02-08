@@ -81,6 +81,8 @@ pub mod core_types {
         Value, Builtin, StdLib, Lisp, RESERVED_SLOTS,
         DisplayValue,
         define_builtins, define_stdlib,
+        // I/O trait boundary
+        IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
     };
 }
 
@@ -150,3 +152,26 @@ pub use repl::{
     run_repl, Repl,
     format_value, format_error, value_to_string, eval_to_string,
 };
+
+// ============================================================================
+// I/O Trait Re-exports from grift_core (always available, no_std compatible)
+// ============================================================================
+
+pub use grift_core::{
+    IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
+};
+
+// ============================================================================
+// Standard I/O Re-exports from grift_std (std feature only)
+// ============================================================================
+
+/// Standard library I/O provider (requires `std` feature).
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod std_io {
+    pub use grift_std::{StdIoProvider};
+}
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub use std_io::StdIoProvider;

@@ -75,9 +75,11 @@ mod macros;
 mod value;
 mod lisp;
 mod display;
+pub mod io;
 
 pub use value::{Value, Builtin, StdLib};
 // Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]
 
 pub use lisp::{Lisp, RESERVED_SLOTS};
 pub use display::DisplayValue;
+pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort};
