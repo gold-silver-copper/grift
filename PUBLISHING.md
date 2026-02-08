@@ -67,8 +67,8 @@ cargo test --workspace
 The `publish.sh` script publishes crates in dependency order:
 
 1. `grift_arena` (no dependencies)
-2. `grift_macros` (depends on grift_util)
-3. `grift_util` (no dependencies)
+2. `grift_util` (no dependencies)
+3. `grift_macros` (depends on grift_util)
 4. `grift_core` (depends on grift_arena, grift_macros)
 5. `grift_parser` (depends on grift_arena, grift_macros, grift_core)
 6. `grift_std` (depends on grift_core)
