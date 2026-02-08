@@ -11,13 +11,15 @@ echo "1/10 Publishing grift_arena..."
 cargo publish -p grift_arena || echo "  (skipped or failed)"
 sleep 5
 
-echo "2/10 Publishing grift_macros..."
+echo "2/10 Publishing grift_util..."
+cargo publish -p grift_util || echo "  (skipped or failed)"
+sleep 5
+
+echo "3/10 Publishing grift_macros..."
 cargo publish -p grift_macros || echo "  (skipped or failed)"
 sleep 5
 
-echo "3/10 Publishing grift_util..."
-cargo publish -p grift_util || echo "  (skipped or failed)"
-sleep 5
+
 
 # Depends on grift_arena and grift_macros
 echo "4/10 Publishing grift_core..."
