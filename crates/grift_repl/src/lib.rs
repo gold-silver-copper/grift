@@ -158,6 +158,13 @@ fn format_value_impl<const N: usize>(
         Ok(Value::ErrorObject { .. }) => {
             buf.push_str("#<error-object>");
         }
+        Ok(Value::Port(port_id)) => {
+            use std::fmt::Write;
+            write!(buf, "#<port:{}>", port_id.0).unwrap();
+        }
+        Ok(Value::Eof) => {
+            buf.push_str("#<eof>");
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }
@@ -369,6 +376,7 @@ impl<const N: usize> Default for Repl<N> {
 /// Run a REPL session
 pub fn run_repl<const N: usize>() {
     let lisp: Lisp<N> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
     let mut eval = match Evaluator::new(&lisp) {
         Ok(e) => e,
         Err(e) => {
@@ -379,6 +387,8 @@ pub fn run_repl<const N: usize>() {
     
     // Set output callback for display/newline to enable side effects during macro expansion
     eval.set_output_callback(Some(output_callback));
+    // Set I/O provider for port operations
+    eval.set_io_provider(&mut io);
     
     let stdin = io::stdin();
     let mut stdout = io::stdout();

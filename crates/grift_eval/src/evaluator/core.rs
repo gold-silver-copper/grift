@@ -26,6 +26,7 @@ impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
         tracer(self.current_cont);
         tracer(self.dynamic_wind_chain);
         tracer(self.exception_handler_chain);
+        tracer(self.library_registry);
     }
 }
 
@@ -46,6 +47,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             output_callback: None, // No output callback by default
             call_site_env: EnvRef(nil), // No call-site env initially
             exception_handler_chain: nil, // Empty exception handler chain
+            io: None, // No I/O provider by default
+            library_registry: nil, // Empty library registry
         };
         
         // Initialize global environment with builtins
@@ -168,6 +171,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// ```
     pub fn set_output_callback(&mut self, callback: Option<crate::evaluator::OutputCallback<N>>) {
         self.output_callback = callback;
+    }
+    
+    /// Set the I/O provider for port operations.
+    ///
+    /// When set, port builtins (`read-char`, `write-char`, etc.) use this provider
+    /// for actual I/O. Without an I/O provider, port operations will raise errors.
+    pub fn set_io_provider(&mut self, io: &'a mut (dyn grift_parser::IoProvider + 'a)) {
+        self.io = Some(io);
     }
     
     /// Run GC with minimal roots (evaluator-owned roots only).
@@ -580,7 +591,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
-            Value::ContFrame { .. } | Value::Continuation { .. } | Value::ErrorObject { .. } => {
+            Value::ContFrame { .. } | Value::Continuation { .. } | Value::ErrorObject { .. } |
+            Value::Port(_) | Value::Eof => {
                 Ok(TrampolineState::Return { val: expr.0 })
             }
             
@@ -968,6 +980,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.symbol_matches(car, "define-record-type")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_define_record_type(cdr, env).map(Some);
+        }
+        
+        // define-library - library definition (R7RS §5.6)
+        if self.lisp.symbol_matches(car, "define-library")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_define_library(cdr, env).map(Some);
+        }
+        
+        // import - import library bindings (R7RS §5.6)
+        if self.lisp.symbol_matches(car, "import")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_import(cdr, env).map(Some);
         }
         
         Ok(None)

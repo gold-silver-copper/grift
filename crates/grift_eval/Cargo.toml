@@ -12,3 +12,6 @@ categories = ["no-std", "development-tools", "embedded"]
 [dependencies]
 grift_arena = { version = "1.2.0", path = "../grift_arena" }
 grift_parser = { version = "1.2.0", path = "../grift_parser" }
+
+[dev-dependencies]
+grift_std = { version = "1.2.0", path = "../grift_std" }
