@@ -513,7 +513,7 @@ pub enum Value {
     /// - `message`: ArenaIndex to a Value::String or Value::Symbol containing the error message
     /// - `irritants_and_type`: ArenaIndex to a cons cell `(irritants . error_type)`
     ///   - car: list of irritant values passed to `error`
-    ///   - cdr: error type (the first argument to `error` if it's a symbol, or Nil)
+    ///   - cdr: error type (Nil for standard `(error msg ...)` calls)
     ///
     /// # Example
     ///

@@ -426,7 +426,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::ErrorObjectType => {
-                // (error-object-type error-object)
+                // (error-object-type error-object) — R7RS §6.11
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::ErrorObject { irritants_and_type, .. } => {
