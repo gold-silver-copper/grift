@@ -121,6 +121,19 @@ fn format_value<const N: usize>(
             }
             f.write_str(")")
         }
+        Ok(Value::Bytevector { .. }) => {
+            f.write_str("#u8(")?;
+            let len = lisp.bytevector_len(idx).unwrap_or(0);
+            for i in 0..len {
+                if i > 0 {
+                    f.write_str(" ")?;
+                }
+                if let Ok(elem_idx) = lisp.bytevector_get(idx, i) {
+                    format_value(lisp, elem_idx, f, depth + 1)?;
+                }
+            }
+            f.write_str(")")
+        }
         Ok(Value::String { .. }) => {
             f.write_str("\"")?;
             let len = lisp.string_len(idx).unwrap_or(0);

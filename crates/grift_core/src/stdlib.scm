@@ -615,3 +615,18 @@
       obj
       (lambda () obj)))
 
+;;; ============================================================
+;;; Dynamic Parameters (R7RS Section 4.2.6)
+;;; ============================================================
+
+;;; (make-parameter init) - Create a parameter object (R7RS §4.2.6)
+;;; A parameter object is a procedure that:
+;;;   - With no arguments, returns the current value
+;;;   - With one argument, sets the value (via parameterize / internal use)
+(define (make-parameter init)
+  (let ((value init))
+    (lambda args
+      (if (null? args)
+          value
+          (set! value (car args))))))
+

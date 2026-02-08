@@ -75,4 +75,8 @@ pub struct Evaluator<'a, const N: usize> {
     /// the pattern matcher checks this environment to distinguish the bound identifier
     /// from the unbound literal keyword.
     call_site_env: EnvRef,
+    /// Exception handler chain — arena-based linked list of handler closures.
+    /// Each entry is: (handler . parent_chain)
+    /// Used by `raise` / `raise-continuable` to invoke the current handler.
+    exception_handler_chain: ArenaIndex,
 }

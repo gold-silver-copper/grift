@@ -25,6 +25,7 @@ impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
         tracer(self.macro_env.0);
         tracer(self.current_cont);
         tracer(self.dynamic_wind_chain);
+        tracer(self.exception_handler_chain);
     }
 }
 
@@ -44,6 +45,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
             output_callback: None, // No output callback by default
             call_site_env: EnvRef(nil), // No call-site env initially
+            exception_handler_chain: nil, // Empty exception handler chain
         };
         
         // Initialize global environment with builtins
@@ -591,7 +593,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
-            Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
+            Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
             Value::ContFrame { .. } | Value::Continuation { .. } => {
                 Ok(TrampolineState::Return { val: expr.0 })
@@ -950,6 +952,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.symbol_matches(car, "dynamic-wind")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_dynamic_wind(cdr, env).map(Some);
+        }
+        
+        // syntax-error - raise compile-time/macro-expansion error (R7RS §4.3.1)
+        if self.lisp.symbol_matches(car, "syntax-error")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return Err(self.make_error(ErrorKind::SyntaxError, car)
+                .with_message("syntax-error"));
+        }
+        
+        // with-exception-handler - install exception handler (R7RS §6.11)
+        if self.lisp.symbol_matches(car, "with-exception-handler")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_with_exception_handler(cdr, env).map(Some);
+        }
+        
+        // raise - raise an exception (R7RS §6.11)
+        if self.lisp.symbol_matches(car, "raise")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_raise(cdr, env, false).map(Some);
+        }
+        
+        // raise-continuable - raise a continuable exception (R7RS §6.11)
+        if self.lisp.symbol_matches(car, "raise-continuable")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_raise(cdr, env, true).map(Some);
+        }
+        
+        // define-record-type - record type definition (R7RS §5.5)
+        if self.lisp.symbol_matches(car, "define-record-type")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_define_record_type(cdr, env).map(Some);
         }
         
         Ok(None)
