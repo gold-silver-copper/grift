@@ -721,39 +721,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         None
     }
 
-    /// Remove a slot from the free list.
-    /// 
-    /// This is a helper for contiguous allocation that removes a specific
-    /// slot index from the free list by updating the linked list.
-    fn remove_from_free_list(&self, slot_idx: usize) {
-        let free_head = self.free_head.get();
-
-        // If the slot to remove is the head of the free list
-        if free_head == slot_idx {
-            if let Slot::Free { next_free } = self.slots[slot_idx].get() {
-                self.free_head.set(next_free);
-            }
-            return;
-        }
-
-        // Otherwise, search for the slot in the free list
-        let mut current = free_head;
-        while current != FREE_LIST_END {
-            if let Slot::Free { next_free } = self.slots[current].get() {
-                if next_free == slot_idx {
-                    // Found it! Update the previous slot to skip this one
-                    if let Slot::Free { next_free: removed_next } = self.slots[slot_idx].get() {
-                        self.slots[current].set(Slot::Free { next_free: removed_next });
-                    }
-                    return;
-                }
-                current = next_free;
-            } else {
-                break;
-            }
-        }
-    }
-
     /// Allocate a contiguous block of `count` slots.
     /// 
     /// Returns the starting `ArenaIndex` if successful. The allocated slots
@@ -793,12 +760,52 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         let start_idx = self.find_contiguous_free_slots(count)
             .ok_or(ArenaError::OutOfMemory)?;
+        let end_idx = start_idx + count;
 
-        // Remove all slots from free list and mark as occupied
-        for i in 0..count {
-            let idx = start_idx + i;
-            self.remove_from_free_list(idx);
-            self.slots[idx].set(Slot::Occupied { value: default });
+        // Safety: find_contiguous_free_slots guarantees start_idx + count <= N
+        debug_assert!(end_idx <= N);
+
+        // Remove all slots in [start_idx, end_idx) from the free list in one pass.
+        // This is O(free_list_length) instead of O(count × free_list_length).
+
+        // Skip any head nodes that fall in the range
+        let mut head = self.free_head.get();
+        while head != FREE_LIST_END && head >= start_idx && head < end_idx {
+            if let Slot::Free { next_free } = self.slots[head].get() {
+                head = next_free;
+            } else {
+                break;
+            }
+        }
+        self.free_head.set(head);
+
+        // Walk the rest of the free list, splicing out nodes in the range
+        let mut current = head;
+        while current != FREE_LIST_END {
+            if let Slot::Free { next_free } = self.slots[current].get() {
+                if next_free != FREE_LIST_END && next_free >= start_idx && next_free < end_idx {
+                    // Skip over all consecutive nodes in the range
+                    let mut skip = next_free;
+                    while skip != FREE_LIST_END && skip >= start_idx && skip < end_idx {
+                        if let Slot::Free { next_free: inner_next } = self.slots[skip].get() {
+                            skip = inner_next;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.slots[current].set(Slot::Free { next_free: skip });
+                    current = skip;
+                } else {
+                    current = next_free;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Mark all slots in the range as occupied
+        for i in start_idx..end_idx {
+            self.slots[i].set(Slot::Occupied { value: default });
         }
 
         // Update length

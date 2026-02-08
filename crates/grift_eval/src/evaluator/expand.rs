@@ -87,7 +87,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = cursor.as_str()
             .ok_or_else(|| self.make_error(ErrorKind::Generic, self.lisp.nil().unwrap()))?;
 
-        self.lisp.symbol(name).map_err(Into::into)
+        // Gensym names are unique by construction (monotonic counter),
+        // so skip the intern table lookup which would always miss.
+        self.lisp.symbol_new_unique(name).map_err(Into::into)
     }
 
     /// Generate a simple gensym with default prefix
