@@ -1,9 +1,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-//! # Lisp Parser
+//! # Scheme Parser
 //!
-//! A classic Lisp parser with arena-allocated values.
+//! An R7RS-compliant Scheme parser with arena-allocated values.
 //!
 //! ## Design
 //!

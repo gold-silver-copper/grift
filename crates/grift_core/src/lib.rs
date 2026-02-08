@@ -3,7 +3,7 @@
 
 //! # Grift Core Types
 //!
-//! Core types and Lisp context for the Grift Scheme language.
+//! Core types and Lisp context for the Grift R7RS-compliant Scheme implementation.
 //!
 //! This crate contains the fundamental types shared between the parser and evaluator:
 //!

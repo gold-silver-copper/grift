@@ -1,9 +1,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-//! # Lisp Evaluator
+//! # Scheme Evaluator
 //!
-//! A Lisp evaluator with **fully trampolined evaluation** - no Rust stack
+//! An R7RS-compliant Scheme evaluator with **fully trampolined evaluation** - no Rust stack
 //! recursion, enabling unlimited recursion depth (bounded only by heap/arena size).
 //!
 //! ## Key Features

@@ -2,7 +2,7 @@
 
 //! # Grift REPL
 //!
-//! A Read-Eval-Print-Loop for the grift Lisp interpreter.
+//! A Read-Eval-Print-Loop for the Grift R7RS-compliant Scheme interpreter.
 //!
 //! ## Features
 //!

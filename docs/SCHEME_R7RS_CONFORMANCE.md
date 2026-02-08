@@ -1,6 +1,6 @@
 # Scheme R7RS Conformance Status
 
-This document tracks the R7RS conformance status of the Grift Scheme implementation. Grift is a `no_std`, `no_alloc` Scheme built on a custom arena allocator, targeting embedded systems, WebAssembly, and other constrained environments.
+This document tracks the R7RS conformance status of the Grift Scheme implementation. Grift is an R7RS-compliant `no_std`, `no_alloc` Scheme built on a custom arena allocator, targeting embedded systems, WebAssembly, and other constrained environments.
 
 > **Last updated**: February 2026
 

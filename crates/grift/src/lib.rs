@@ -1,7 +1,7 @@
 //! # Grift
 //!
-//! A minimal `no_std`, `no_alloc` Scheme implementation built on arena-based
-//! garbage collection. Perfect for embedded systems, WebAssembly, or any
+//! A minimal `no_std`, `no_alloc` R7RS-compliant Scheme implementation built on
+//! arena-based garbage collection. Perfect for embedded systems, WebAssembly, or any
 //! environment where heap allocation is unavailable or undesirable.
 //!
 //! ## Features
