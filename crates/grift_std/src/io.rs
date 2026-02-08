@@ -249,12 +249,12 @@ impl IoProvider for StdIoProvider {
 
     fn is_input_port(&self, port: PortId) -> bool {
         if port == PortId::STDIN { return true; }
-        matches!(self.get_dyn(port), Some(DynPort::InputString { closed: false, .. }))
+        matches!(self.get_dyn(port), Some(DynPort::InputString { .. }))
     }
 
     fn is_output_port(&self, port: PortId) -> bool {
         if port == PortId::STDOUT || port == PortId::STDERR { return true; }
-        matches!(self.get_dyn(port), Some(DynPort::OutputString { closed: false, .. }))
+        matches!(self.get_dyn(port), Some(DynPort::OutputString { .. }))
     }
 
     fn open_input_string(&mut self, s: &str) -> IoResult<PortId> {
