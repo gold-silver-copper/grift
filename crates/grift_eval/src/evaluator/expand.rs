@@ -271,6 +271,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Look up a name in a substitution environment
     ///
     /// The substitution environment is an alist of (name . binding) pairs.
+    #[inline]
     pub(super) fn lookup_in_subst(
         &self,
         name: ArenaIndex,
@@ -278,21 +279,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = subst;
         
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let pair = self.lisp.car(current)?;
-            let key = self.lisp.car(pair)?;
-            
-            if self.lisp.symbol_eq(key, name)? {
-                return Ok(Some(self.lisp.cdr(pair)?));
+        loop {
+            match self.lisp.get(current)? {
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: key, cdr: val } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(key, name)?
+                    {
+                        return Ok(Some(val));
+                    }
+                    current = cdr;
+                }
+                _ => return Ok(None),
             }
-            
-            current = self.lisp.cdr(current)?;
         }
-        
-        Ok(None)
     }
 
     /// Look up a name in an environment
+    #[inline]
     fn lookup_in_env(
         &self,
         name: ArenaIndex,
@@ -300,21 +303,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = env;
         
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let binding = self.lisp.car(current)?;
-            
-            if let Value::Cons { .. } = self.lisp.get(binding)? {
-                let bound_name = self.lisp.car(binding)?;
-                
-                if self.lisp.symbol_eq(bound_name, name)? {
-                    return Ok(Some(self.lisp.cdr(binding)?));
+        loop {
+            match self.lisp.get(current)? {
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        return Ok(Some(bound_value));
+                    }
+                    current = cdr;
                 }
+                _ => return Ok(None),
             }
-            
-            current = self.lisp.cdr(current)?;
         }
-        
-        Ok(None)
     }
 
     /// Check if two identifiers are free-identifier=?
@@ -459,20 +460,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Check if a variable is bound anywhere in an environment
+    #[inline]
     fn env_bound_anywhere(&self, env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
         let mut current = env;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => return Ok(false),
-                Value::Cons { .. } => {
-                    let binding = self.lisp.car(current)?;
-                    if let Value::Cons { .. } = self.lisp.get(binding)? {
-                        let bound_name = self.lisp.car(binding)?;
-                        if self.lisp.symbol_eq(bound_name, name)? {
-                            return Ok(true);
-                        }
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        return Ok(true);
                     }
-                    current = self.lisp.cdr(current)?;
+                    current = cdr;
                 }
                 _ => return Ok(false),
             }

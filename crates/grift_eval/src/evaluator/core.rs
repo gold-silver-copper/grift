@@ -258,6 +258,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Look up a variable in an environment
+    #[inline]
     pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
         let mut current = env.0;
         
@@ -318,6 +319,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Helper to check if a name exists in a specific environment chain
+    #[inline]
     fn env_contains(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
         loop {
             match self.lisp.get(env)? {
@@ -627,21 +629,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // Symbol - variable lookup or identifier macro expansion
+            //
+            // Optimized: single-pass lookup instead of is_variable_bound + env_lookup.
+            // If the variable is found in local or global env, return immediately.
+            // Only check for identifier macros when the symbol is unbound.
             Value::Symbol(_) => {
-                // Check for identifier macros (like identifier-syntax).
-                // A macro bound to this name can expand in identifier position
-                // if the symbol is not bound as a variable in the current environment.
-                let is_var_bound = self.is_variable_bound(env, expr.0)?;
-                if !is_var_bound {
-                    if let Some(transformer) = self.lookup_macro(expr.0)? {
-                        // Pass the bare identifier as the syntax form.
-                        // The transformer's syntax-case pattern (id (identifier? (syntax id)) ...)
-                        // will match this as a bare identifier.
-                        return self.apply_macro_trampolined(transformer, expr.0, env);
-                    }
+                // Try local environment first
+                if let Some(val) = self.lookup_in_env_optional(env.0, expr.0)? {
+                    return Ok(TrampolineState::Return { val });
                 }
-                let val = self.env_lookup(env, expr.0)?;
-                Ok(TrampolineState::Return { val })
+                // Try global environment
+                if let Some(val) = self.lookup_in_env_optional(self.global_env.0, expr.0)? {
+                    return Ok(TrampolineState::Return { val });
+                }
+                // Not found as variable - check for identifier macros
+                if let Some(transformer) = self.lookup_macro(expr.0)? {
+                    return self.apply_macro_trampolined(transformer, expr.0, env);
+                }
+                Err(self.make_error(ErrorKind::UnboundVariable, expr.0))
             }
             
             // List - special form or function application
@@ -730,27 +735,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Look up a symbol in an environment, returning None if not found
+    #[inline]
     fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = env;
         
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let binding = self.lisp.car(current)?;
-            
-            if let Value::Cons { .. } = self.lisp.get(binding)? {
-                let bound_name = self.lisp.car(binding)?;
-                
-                if self.lisp.symbol_eq(bound_name, name)? {
-                    return Ok(Some(self.lisp.cdr(binding)?));
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons { car, cdr } => {
+                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
+                        && self.lisp.symbol_eq(bound_name, name)?
+                    {
+                        return Ok(Some(bound_value));
+                    }
+                    current = cdr;
                 }
+                _ => return Ok(None),
             }
-            
-            current = self.lisp.cdr(current)?;
         }
-        
-        Ok(None)
     }
     
     /// Evaluate a list (special form or application)
+    ///
+    /// Optimized: avoids expensive `is_variable_bound` env scan on every call.
+    /// Instead, checks macros first (small env), then keyword matches (cheap
+    /// string comparisons), and only calls `is_variable_bound` when a macro
+    /// or keyword actually matches — which is rare for regular function calls.
     pub(super) fn step_eval_list(&mut self, car: ArenaIndex, cdr: ArenaIndex, expr: ExprRef, env: EnvRef) 
         -> Result<TrampolineState, EvalError> 
     {
@@ -758,134 +768,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Check for special forms and macros
         if let Value::Symbol(_) = head {
+            // Macro check first (macro env is small, so this is cheap).
+            // Macros defined via let-syntax/define-syntax take priority over all
+            // special forms, including core forms like `if`. This matches R7RS
+            // semantics where syntactic bindings override built-in syntax.
             // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
-            // Check if this symbol is bound as a variable. If so, skip macro expansion
-            // and special form handling, treating it as a function application.
-            let is_var_bound = self.is_variable_bound(env, car)?;
-            
-            // Check for macro invocation (evaluation-time expansion)
-            // Variable bindings shadow macros, so only expand if not bound as a variable
-            if !is_var_bound {
-                if let Some(transformer) = self.lookup_macro(car)? {
+            // Only apply the macro if the symbol is NOT bound as a variable.
+            let macro_found = self.lookup_macro(car)?;
+            if let Some(transformer) = macro_found {
+                if !self.is_variable_bound(env, car)? {
                     return self.apply_macro_trampolined(transformer, expr.0, env);
                 }
+                // Variable shadows macro - fall through (core special forms still recognized)
             }
             
-            // Core special forms: these are always recognized regardless of variable bindings.
-            // This is essential for hygienic macros: when a macro template uses `if`, `begin`,
-            // etc., those should always refer to the special form even if the user has
-            // locally bound a variable with the same name. This matches the behavior of
-            // implementations like Chez Scheme and Guile.
+            // Core special forms: always recognized regardless of variable bindings.
+            // Only reached when no macro overrides this name (or macro was variable-shadowed).
             if let Some(result) = self.try_dispatch_special_form(car, cdr, env)? {
                 return Ok(result);
             }
             
-            // Non-core special forms: can be shadowed by variable bindings
-            if !is_var_bound {
-                // quote
-                if self.lisp.symbol_matches(car, "quote")? {
-                    let val = self.lisp.car(cdr)?;
-                    return Ok(TrampolineState::Return { val });
-                }
-                
-                // define-syntax - add macro to environment
-                if self.lisp.symbol_matches(car, "define-syntax")? {
-                    return self.step_eval_define_syntax(cdr, env);
-                }
-                
-                // let-syntax - local macro bindings
-                if self.lisp.symbol_matches(car, "let-syntax")? {
-                    return self.step_eval_let_syntax(cdr, env);
-                }
-                
-                // letrec-syntax - local macro bindings with mutual visibility
-                if self.lisp.symbol_matches(car, "letrec-syntax")? {
-                    return self.step_eval_letrec_syntax(cdr, env);
-                }
-                
-                // syntax-case - procedural macro pattern matching
-                if self.lisp.symbol_matches(car, "syntax-case")? {
-                    return self.step_eval_syntax_case(cdr, env);
-                }
-                
-                // syntax - create syntax template
-                if self.lisp.symbol_matches(car, "syntax")? {
-                    return self.step_eval_syntax(cdr, env);
-                }
-                
-                // Note: with-syntax is now implemented as a macro in macros.scm
-                // It uses syntax-case directly to bind patterns.
-                
-                // lambda
-                if self.lisp.symbol_matches(car, "lambda")? {
-                    let val = self.eval_lambda(cdr, env)?;
-                    return Ok(TrampolineState::Return { val });
-                }
-                
-                // define
-                if self.lisp.symbol_matches(car, "define")? {
-                    return self.eval_define(cdr, env);
-                }
-                
-                // set! - mutate variable binding
-                if self.lisp.symbol_matches(car, "set!")? {
-                    return self.eval_set(cdr, env);
-                }
-                
-                // Note: let, let*, letrec, letrec* are now macros and
-                // are expanded during evaluation, so they never reach here.
-    
-                // begin - continuation-based evaluation
-                if self.lisp.symbol_matches(car, "begin")? {
-                    return self.step_eval_begin(cdr, env);
-                }
-    
-                // Note: when, unless, and, or, cond are now macros and
-                // are expanded during evaluation, so they never reach here.
-                
-                // Note: case and do are now macros (Phase 9)
-                // and are expanded during evaluation, so they never reach here.
-                
-                // quasiquote - template with unquote (trampolined)
-                if self.lisp.symbol_matches(car, "quasiquote")? {
-                    return self.eval_quasiquote(self.lisp.car(cdr)?, env);
-                }
-                
-                // eval - continuation-based evaluation at runtime
-                if self.lisp.symbol_matches(car, "eval")? {
-                    let expr_to_eval = self.lisp.car(cdr)?;
-                    // Push continuation to evaluate the result in global environment
-                    // Data: env (single value)
-                    let global = self.global_env.0;
-                    self.cont(ContType::EvalExpr, env).data1(global)?;
-                    // First evaluate the expression to get the code to eval
-                    return Ok(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env });
-                }
-                
-                // apply - apply function to list of arguments
-                if self.lisp.symbol_matches(car, "apply")? {
-                    return self.step_eval_apply(cdr, env);
-                }
-                
-                // values - return multiple values (as a special list)
-                if self.lisp.symbol_matches(car, "values")? {
-                    return self.eval_values(cdr, env);
-                }
-                
-                // call-with-values - call producer, apply consumer to results
-                if self.lisp.symbol_matches(car, "call-with-values")? {
-                    return self.step_eval_call_with_values(cdr, env);
-                }
-                
-                // call-with-current-continuation / call/cc - capture the current continuation
-                if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
-                    || self.lisp.symbol_matches(car, "call/cc")? {
-                    return self.step_eval_call_cc(cdr, env);
-                }
-                
-                // dynamic-wind - establish dynamic extent with before/after thunks
-                if self.lisp.symbol_matches(car, "dynamic-wind")? {
-                    return self.step_eval_dynamic_wind(cdr, env);
+            // Non-core special forms: only checked when no macro with this name exists.
+            // Uses cheap keyword matching — only calls is_variable_bound (expensive)
+            // when a keyword actually matches, which is rare for regular function calls.
+            if macro_found.is_none() {
+                if let Some(result) = self.try_dispatch_non_core_form(car, cdr, env)? {
+                    return Ok(result);
                 }
             }
         }
@@ -924,6 +832,126 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env.0)?;
             return Ok(Some(TrampolineState::Eval { expr: ExprRef(cond_expr), env }));
         }
+        Ok(None)
+    }
+    
+    /// Try to dispatch a non-core special form (can be shadowed by variable bindings).
+    /// 
+    /// Unlike `try_dispatch_special_form`, these forms can be overridden by
+    /// variable bindings (per R7RS §4.3). This method uses cheap keyword matching
+    /// first, and only calls the expensive `is_variable_bound` when a keyword
+    /// actually matches — avoiding the full env scan for regular function calls.
+    fn try_dispatch_non_core_form(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        // quote
+        if self.lisp.symbol_matches(car, "quote")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            let val = self.lisp.car(cdr)?;
+            return Ok(Some(TrampolineState::Return { val }));
+        }
+        
+        // define-syntax - add macro to environment
+        if self.lisp.symbol_matches(car, "define-syntax")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_define_syntax(cdr, env).map(Some);
+        }
+        
+        // let-syntax - local macro bindings
+        if self.lisp.symbol_matches(car, "let-syntax")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_let_syntax(cdr, env).map(Some);
+        }
+        
+        // letrec-syntax - local macro bindings with mutual visibility
+        if self.lisp.symbol_matches(car, "letrec-syntax")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_letrec_syntax(cdr, env).map(Some);
+        }
+        
+        // syntax-case - procedural macro pattern matching
+        if self.lisp.symbol_matches(car, "syntax-case")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_syntax_case(cdr, env).map(Some);
+        }
+        
+        // syntax - create syntax template
+        if self.lisp.symbol_matches(car, "syntax")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_syntax(cdr, env).map(Some);
+        }
+        
+        // lambda
+        if self.lisp.symbol_matches(car, "lambda")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            let val = self.eval_lambda(cdr, env)?;
+            return Ok(Some(TrampolineState::Return { val }));
+        }
+        
+        // define
+        if self.lisp.symbol_matches(car, "define")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.eval_define(cdr, env).map(Some);
+        }
+        
+        // set! - mutate variable binding
+        if self.lisp.symbol_matches(car, "set!")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.eval_set(cdr, env).map(Some);
+        }
+        
+        // begin - continuation-based evaluation
+        if self.lisp.symbol_matches(car, "begin")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_begin(cdr, env).map(Some);
+        }
+        
+        // quasiquote - template with unquote (trampolined)
+        if self.lisp.symbol_matches(car, "quasiquote")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some);
+        }
+        
+        // eval - continuation-based evaluation at runtime
+        if self.lisp.symbol_matches(car, "eval")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            let expr_to_eval = self.lisp.car(cdr)?;
+            let global = self.global_env.0;
+            self.cont(ContType::EvalExpr, env).data1(global)?;
+            return Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }));
+        }
+        
+        // apply - apply function to list of arguments
+        if self.lisp.symbol_matches(car, "apply")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_apply(cdr, env).map(Some);
+        }
+        
+        // values - return multiple values (as a special list)
+        if self.lisp.symbol_matches(car, "values")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.eval_values(cdr, env).map(Some);
+        }
+        
+        // call-with-values - call producer, apply consumer to results
+        if self.lisp.symbol_matches(car, "call-with-values")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_call_with_values(cdr, env).map(Some);
+        }
+        
+        // call-with-current-continuation / call/cc - capture the current continuation
+        if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
+            || self.lisp.symbol_matches(car, "call/cc")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_call_cc(cdr, env).map(Some);
+        }
+        
+        // dynamic-wind - establish dynamic extent with before/after thunks
+        if self.lisp.symbol_matches(car, "dynamic-wind")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_dynamic_wind(cdr, env).map(Some);
+        }
+        
         Ok(None)
     }
     
