@@ -6531,7 +6531,7 @@ fn test_eval_bytevector_self_evaluating() {
 }
 
 #[test]
-fn test_eval_fold_case_directive() {
+fn test_eval_block_comment_in_eval() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     // Block comment should work in evaluated code

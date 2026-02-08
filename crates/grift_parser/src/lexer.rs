@@ -373,17 +373,17 @@ impl<'a> Lexer<'a> {
                 // Block comment #| ... |# (R7RS, nestable)
                 self.advance(); // consume '#'
                 self.advance(); // consume '|'
-                let mut depth = 1u32;
-                while depth > 0 {
+                let mut nesting_depth = 1u32;
+                while nesting_depth > 0 {
                     match self.advance() {
                         None => break,
                         Some(b'#') if self.peek() == Some(b'|') => {
                             self.advance();
-                            depth += 1;
+                            nesting_depth += 1;
                         }
                         Some(b'|') if self.peek() == Some(b'#') => {
                             self.advance();
-                            depth -= 1;
+                            nesting_depth -= 1;
                         }
                         _ => {}
                     }
