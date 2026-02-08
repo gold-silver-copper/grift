@@ -66,6 +66,9 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
         (Value::Symbol(_), Value::Symbol(_)) => lisp.symbol_eq(a, b).map_err(Into::into),
+        (Value::String { .. }, Value::String { .. }) => {
+            lisp.string_eq_contiguous(a, b).map_err(Into::into)
+        }
         (Value::Cons { .. }, Value::Cons { .. }) => {
             // Recursively check car and cdr
             let (car_a, cdr_a) = lisp.car_cdr(a)?;
@@ -98,6 +101,9 @@ pub fn values_equal<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
         (Value::Symbol(_), Value::Symbol(_)) => {
             lisp.symbol_eq(a, b).map_err(Into::into)
+        }
+        (Value::String { .. }, Value::String { .. }) => {
+            lisp.string_eq_contiguous(a, b).map_err(Into::into)
         }
         (Value::Cons { .. }, Value::Cons { .. }) => {
             // Recursively compare (limited depth to avoid stack overflow)

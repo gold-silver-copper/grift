@@ -147,7 +147,7 @@ impl<'a> Parser<'a> {
             }
             Token::String { len } => {
                 let chars = self.lexer.string_chars(len);
-                lisp.string_from_chars(chars).map_err(Into::into)
+                lisp.string_from_chars_interned(chars).map_err(Into::into)
             }
             Token::VectorOpen => self.parse_vector_literal(lisp),
             Token::BytevectorOpen => self.parse_bytevector_literal(lisp),
