@@ -12,15 +12,32 @@ categories = ["development-tools", "command-line-utilities"]
 [[bin]]
 name = "grift"
 path = "src/main.rs"
+doc-scrape-examples = false
 
 [[bin]]
 name = "grift-bench"
 path = "src/bench.rs"
+doc-scrape-examples = false
 
 [dependencies]
-grift_arena = { version = "1.3.0", path = "../grift_arena" }
-grift_parser = { version = "1.3.0", path = "../grift_parser" }
-grift_eval = { version = "1.3.0", path = "../grift_eval" }
-grift_arena_embedded = { version = "1.3.0", path = "../grift_arena_embedded" }
-grift_std = { version = "1.3.0", path = "../grift_std" }
+grift_arena = { version = "1.3.1", path = "../grift_arena" }
+grift_parser = { version = "1.3.1", path = "../grift_parser" }
+grift_eval = { version = "1.3.1", path = "../grift_eval" }
+grift_arena_embedded = { version = "1.3.1", path = "../grift_arena_embedded" }
+grift_std = { version = "1.3.1", path = "../grift_std" }
 rustyline = { version = "17.0.2", features = ["derive"] }
+
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples=disabled"]
+
+[[example]]
+name = "load_file"
+doc-scrape-examples = false
+
+[[example]]
+name = "native_interop"
+doc-scrape-examples = false
+
+[[example]]
+name = "embedded_hardware"
+doc-scrape-examples = false
