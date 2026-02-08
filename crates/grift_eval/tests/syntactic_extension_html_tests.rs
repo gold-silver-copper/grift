@@ -3,22 +3,10 @@
 //! These tests verify code samples from the Syntactic Extension HTML reference.
 //! Each test is annotated with the corresponding section and example from the text.
 
+mod common;
+
 use grift_eval::*;
-
-fn eval_to_string<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> String {
-    let result = eval.eval_str(input).unwrap();
-    format!("{}", lisp.display(result))
-}
-
-fn eval_to_num<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> isize {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().as_number().unwrap()
-}
-
-fn eval_is_true<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> bool {
-    let result = eval.eval_str(input).unwrap();
-    lisp.get(result).unwrap().is_true()
-}
+use common::{eval_to_string, eval_to_num, eval_is_true};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Section 8.1: Keyword Bindings
