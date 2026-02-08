@@ -998,7 +998,16 @@ impl<const N: usize> Lisp<N> {
         let val = self.get(sym)?;
         
         match val {
-            Value::Symbol(chars) => self.string_matches(chars, name),
+            Value::Symbol(chars) => {
+                // Fast path for ASCII names (all Scheme keywords are ASCII):
+                // Uses O(1) length check via bytes.len() and avoids per-char
+                // string_char_at overhead.
+                if name.is_ascii() {
+                    self.string_matches_bytes(chars, name.as_bytes())
+                } else {
+                    self.string_matches(chars, name)
+                }
+            }
             _ => Ok(false),
         }
     }
@@ -1031,6 +1040,34 @@ impl<const N: usize> Lisp<N> {
                     Ok(None)
                 } else {
                     Ok(Some(self.string_char_at(chars, index)?))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+    
+    /// Get the first character of a symbol's name efficiently.
+    /// 
+    /// This is optimized to avoid the overhead of `symbol_char_at` by
+    /// directly accessing the first character slot without a length check
+    /// (the length is verified to be > 0 first). Used for fast dispatch
+    /// in keyword matching.
+    #[inline]
+    pub fn symbol_first_char(&self, sym: ArenaIndex) -> ArenaResult<Option<char>> {
+        match self.get(sym)? {
+            Value::Symbol(chars) => {
+                match self.arena.get(chars)? {
+                    Value::String { len, data } => {
+                        if len == 0 || data.is_nil() {
+                            Ok(None)
+                        } else {
+                            match self.arena.get(ArenaIndex::new(data.raw()))? {
+                                Value::Char(c) => Ok(Some(c)),
+                                _ => Ok(None),
+                            }
+                        }
+                    }
+                    _ => Ok(None),
                 }
             }
             _ => Ok(None),
@@ -1135,7 +1172,8 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.string_char_at(hello, 0).unwrap(), 'h');
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        let char_count = s.chars().count();
+        // For ASCII strings, s.len() == char count in O(1).
+        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
         
         if char_count == 0 {
             // Empty string - len=0, data is NIL
@@ -1281,7 +1319,9 @@ impl<const N: usize> Lisp<N> {
     /// Returns an error if the string index is invalid.
     pub fn string_matches(&self, str_idx: ArenaIndex, s: &str) -> ArenaResult<bool> {
         let len = self.string_len(str_idx)?;
-        let s_len = s.chars().count();
+        // For ASCII strings, s.len() == char count in O(1).
+        // Only fall back to s.chars().count() for non-ASCII.
+        let s_len = if s.is_ascii() { s.len() } else { s.chars().count() };
         
         if len != s_len {
             return Ok(false);
