@@ -768,8 +768,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Check for special forms and macros
         if let Value::Symbol(_) = head {
-            // Check for macro invocation first (macro env is small, so this is cheap).
-            // Macros can override even core special forms like `if` (via let-syntax/define-syntax).
+            // Macro check first (macro env is small, so this is cheap).
+            // Macros defined via let-syntax/define-syntax take priority over all
+            // special forms, including core forms like `if`. This matches R7RS
+            // semantics where syntactic bindings override built-in syntax.
             // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
             // Only apply the macro if the symbol is NOT bound as a variable.
             let macro_found = self.lookup_macro(car)?;
@@ -780,13 +782,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Variable shadows macro - fall through (core special forms still recognized)
             }
             
-            // Core special forms: always recognized regardless of variable bindings,
-            // but can be overridden by macros (handled above).
+            // Core special forms: always recognized regardless of variable bindings.
+            // Only reached when no macro overrides this name (or macro was variable-shadowed).
             if let Some(result) = self.try_dispatch_special_form(car, cdr, env)? {
                 return Ok(result);
             }
             
-            // Non-core special forms: only when no macro overrides this name.
+            // Non-core special forms: only checked when no macro with this name exists.
             // Uses cheap keyword matching — only calls is_variable_bound (expensive)
             // when a keyword actually matches, which is rare for regular function calls.
             if macro_found.is_none() {
