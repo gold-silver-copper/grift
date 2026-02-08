@@ -1708,8 +1708,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 }
             }
-        } else if !got_token {
-            // Read a single token (number, symbol, etc.)
+        } else if got_token {
+            // Continue reading the token (number, symbol, etc.)
             loop {
                 match io.peek_char(pid) {
                     Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => break,

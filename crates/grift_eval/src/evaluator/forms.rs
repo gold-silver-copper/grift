@@ -2321,4 +2321,197 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
+
+    // ================================================================
+    // Library system (R7RS §5.6)
+    // ================================================================
+
+    /// Evaluate `(define-library <name> <declarations>...)`
+    ///
+    /// Creates a fresh environment, processes `export`, `import`, and `begin`
+    /// declarations, then registers the library by name.
+    pub(super) fn step_eval_define_library(&mut self, args: ArenaIndex, _env: EnvRef)
+        -> Result<TrampolineState, EvalError>
+    {
+        // (define-library <name> <decl> ...)
+        let lib_name = self.lisp.car(args)?;
+        let decls = self.lisp.cdr(args)?;
+
+        // Start with a copy of the global env (builtins + stdlib)
+        let mut lib_env = self.global_env;
+
+        let nil = self.lisp.nil()?;
+        let mut exports = nil; // list of export symbols
+
+        // First pass: collect exports and process imports
+        let mut current = decls;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let decl = self.lisp.car(current)?;
+            current = self.lisp.cdr(current)?;
+
+            if !matches!(self.lisp.get(decl)?, Value::Cons { .. }) { continue; }
+
+            let decl_head = self.lisp.car(decl)?;
+            let decl_body = self.lisp.cdr(decl)?;
+
+            if self.lisp.symbol_matches(decl_head, "export")? {
+                let mut names = decl_body;
+                while let Value::Cons { .. } = self.lisp.get(names)? {
+                    let name = self.lisp.car(names)?;
+                    exports = self.lisp.cons(name, exports)?;
+                    names = self.lisp.cdr(names)?;
+                }
+            } else if self.lisp.symbol_matches(decl_head, "import")? {
+                let mut sets = decl_body;
+                while let Value::Cons { .. } = self.lisp.get(sets)? {
+                    let import_set = self.lisp.car(sets)?;
+                    lib_env = self.import_library_into_env(import_set, lib_env)?;
+                    sets = self.lisp.cdr(sets)?;
+                }
+            }
+        }
+
+        // Second pass: evaluate begin bodies in the library environment
+        let mut current = decls;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let decl = self.lisp.car(current)?;
+            current = self.lisp.cdr(current)?;
+
+            if !matches!(self.lisp.get(decl)?, Value::Cons { .. }) { continue; }
+            let decl_head = self.lisp.car(decl)?;
+            let decl_body = self.lisp.cdr(decl)?;
+
+            if self.lisp.symbol_matches(decl_head, "begin")? {
+                let mut body = decl_body;
+                while let Value::Cons { .. } = self.lisp.get(body)? {
+                    let expr = self.lisp.car(body)?;
+                    body = self.lisp.cdr(body)?;
+
+                    let saved_global = self.global_env;
+                    self.global_env = lib_env;
+                    let _result = self.eval(crate::continuation::ExprRef(expr))?;
+                    lib_env = self.global_env; // capture defines
+                    self.global_env = saved_global;
+                }
+            }
+        }
+
+        // Build the exported environment
+        let mut lib_exported_env = EnvRef(nil);
+        let mut exp_list = exports;
+        while let Value::Cons { .. } = self.lisp.get(exp_list)? {
+            let name = self.lisp.car(exp_list)?;
+            exp_list = self.lisp.cdr(exp_list)?;
+
+            if let Some(val) = self.lookup_in_env_optional(lib_env.0, name)? {
+                lib_exported_env = self.env_extend(lib_exported_env, name, val)?;
+            }
+        }
+
+        // If no exports were specified, export everything
+        if self.lisp.get(exports)?.is_nil() {
+            lib_exported_env = lib_env;
+        }
+
+        // Register: library_registry = ((name . env) . library_registry)
+        let entry = self.lisp.cons(lib_name, lib_exported_env.0)?;
+        self.library_registry = self.lisp.cons(entry, self.library_registry)?;
+
+        let void = self.lisp.void_val()?;
+        Ok(TrampolineState::Return { val: void })
+    }
+
+    /// Evaluate `(import <import-set>...)`
+    ///
+    /// Each import-set is a library name (list of identifiers).
+    /// Looks up the library in the registry and binds exported names in the
+    /// current global environment.
+    pub(super) fn step_eval_import(&mut self, args: ArenaIndex, _env: EnvRef)
+        -> Result<TrampolineState, EvalError>
+    {
+        let mut sets = args;
+        while let Value::Cons { .. } = self.lisp.get(sets)? {
+            let import_set = self.lisp.car(sets)?;
+            sets = self.lisp.cdr(sets)?;
+
+            self.global_env = self.import_library_into_env(import_set, self.global_env)?;
+        }
+
+        let void = self.lisp.void_val()?;
+        Ok(TrampolineState::Return { val: void })
+    }
+
+    /// Import a library's exported bindings into the given environment.
+    fn import_library_into_env(&mut self, import_set: ArenaIndex, target: EnvRef)
+        -> Result<EnvRef, EvalError>
+    {
+        // Find the library in the registry
+        let lib_env = self.lookup_library(import_set)?;
+
+        // Copy all bindings from lib_env into target
+        let mut result = target;
+        let mut env = lib_env;
+        while let Value::Cons { .. } = self.lisp.get(env)? {
+            let binding = self.lisp.car(env)?;
+            env = self.lisp.cdr(env)?;
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let name = self.lisp.car(binding)?;
+                let val = self.lisp.cdr(binding)?;
+                result = self.env_extend(result, name, val)?;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Look up a library by name in the registry.
+    ///
+    /// Library names are compared structurally (lists of symbols matched pairwise).
+    fn lookup_library(&self, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let mut reg = self.library_registry;
+        while let Value::Cons { .. } = self.lisp.get(reg)? {
+            let entry = self.lisp.car(reg)?;
+            reg = self.lisp.cdr(reg)?;
+            if let Value::Cons { .. } = self.lisp.get(entry)? {
+                let lib_name = self.lisp.car(entry)?;
+                if self.library_names_equal(name, lib_name)? {
+                    return Ok(self.lisp.cdr(entry)?);
+                }
+            }
+        }
+        Err(self.make_error(ErrorKind::Generic, name))
+    }
+
+    /// Compare two library names for equality.
+    ///
+    /// Library names are lists of symbols; we compare element-wise.
+    fn library_names_equal(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+        let mut a_cur = a;
+        let mut b_cur = b;
+        loop {
+            let a_val = self.lisp.get(a_cur)?;
+            let b_val = self.lisp.get(b_cur)?;
+            match (a_val, b_val) {
+                (Value::Nil, Value::Nil) => return Ok(true),
+                (Value::Cons { .. }, Value::Cons { .. }) => {
+                    let a_head = self.lisp.car(a_cur)?;
+                    let b_head = self.lisp.car(b_cur)?;
+                    // Compare head elements
+                    match (self.lisp.get(a_head)?, self.lisp.get(b_head)?) {
+                        (Value::Symbol(_), Value::Symbol(_)) => {
+                            if !self.lisp.symbol_eq(a_head, b_head)? {
+                                return Ok(false);
+                            }
+                        }
+                        (Value::Number(x), Value::Number(y)) => {
+                            if x != y { return Ok(false); }
+                        }
+                        _ => return Ok(false),
+                    }
+                    a_cur = self.lisp.cdr(a_cur)?;
+                    b_cur = self.lisp.cdr(b_cur)?;
+                }
+                _ => return Ok(false),
+            }
+        }
+    }
 }

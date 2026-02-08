@@ -982,6 +982,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.step_eval_define_record_type(cdr, env).map(Some);
         }
         
+        // define-library - library definition (R7RS §5.6)
+        if self.lisp.symbol_matches(car, "define-library")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_define_library(cdr, env).map(Some);
+        }
+        
+        // import - import library bindings (R7RS §5.6)
+        if self.lisp.symbol_matches(car, "import")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_import(cdr, env).map(Some);
+        }
+        
         Ok(None)
     }
     
