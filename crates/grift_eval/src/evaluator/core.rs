@@ -174,17 +174,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// 
     /// Use `gc_with_state()` during evaluation to also root the current expression/value.
     pub fn gc(&self) -> GcStats {
-        const MAX_ROOTS: usize = 8;
-        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
-        let mut root_count = 0;
-        
-        self.trace_roots(&mut |idx| {
-            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
-            roots[root_count] = idx;
-            root_count += 1;
-        });
-        
-        self.lisp.gc(&roots[..root_count])
+        self.gc_with_roots(None)
     }
     
     /// Run GC during evaluation - marks both evaluator roots and current trampoline state as roots.
@@ -193,23 +183,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// new [`ArenaIndex`] field to either type only requires updating the
     /// corresponding `trace_roots` implementation.
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
+        self.gc_with_roots(Some(state))
+    }
+    
+    /// Shared GC implementation that collects roots from the evaluator
+    /// and optionally from a trampoline state.
+    fn gc_with_roots(&self, state: Option<&TrampolineState>) -> GcStats {
         const MAX_ROOTS: usize = 8;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
-        // Collect evaluator roots via GcRoots trait
         self.trace_roots(&mut |idx| {
             debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
             roots[root_count] = idx;
             root_count += 1;
         });
         
-        // Collect trampoline state roots via GcRoots trait
-        state.trace_roots(&mut |idx| {
-            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
-            roots[root_count] = idx;
-            root_count += 1;
-        });
+        if let Some(state) = state {
+            state.trace_roots(&mut |idx| {
+                debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
+                roots[root_count] = idx;
+                root_count += 1;
+            });
+        }
         
         self.lisp.gc(&roots[..root_count])
     }
@@ -482,17 +478,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Reset continuation to empty (Done)
         self.current_cont = self.lisp.nil()?;
         // Start evaluation - macros are expanded on-demand during eval
-        self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
-    }
-    
-    /// Evaluate an already-expanded expression (internal)
-    /// 
-    /// This is now equivalent to `eval()` since macro expansion 
-    /// happens during evaluation. Kept for API compatibility.
-    pub fn eval_expanded(&mut self, expr: ExprRef) -> EvalResult {
-        // Reset continuation to empty (Done)
-        self.current_cont = self.lisp.nil()?;
-        // Start evaluation
         self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
     
@@ -1028,13 +1013,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // storing continuation data. Each pack function returns an ArenaIndex
     // to the packed data, and each unpack function extracts values from
     // a packed ArenaIndex.
-    
-    /// Pack 1 value (just returns it as-is)
-    #[inline]
-    #[allow(dead_code)]
-    pub(super) fn pack1(&self, a: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        Ok(a)
-    }
     
     /// Unpack 1 value (just returns it as-is)
     #[inline]
