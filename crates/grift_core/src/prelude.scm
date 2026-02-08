@@ -885,16 +885,16 @@
 (define (reverse lst) (fold (lambda (acc x) (cons x acc)) '() lst))
 
 ;;; (nth n lst) - Get nth element (0-indexed)
-;;; Validates that n is a valid non-negative index.
+;;; Validates that n is a non-negative integer.
 (define (nth n lst)
   (if (not (and (integer? n) (exact? n) (>= n 0)))
       (error "nth: invalid index" n)
-      (nth-iter n lst)))
-(define (nth-iter n lst)
+      (nth-iter n lst n)))
+(define (nth-iter n lst original-n)
   (if (null? lst)
-      (error "nth: index out of range" n)
+      (error "nth: index out of range" original-n)
       (if (= n 0) (car lst)
-          (nth-iter (- n 1) (cdr lst)))))
+          (nth-iter (- n 1) (cdr lst) original-n))))
 
 ;;; (take n lst) - Take first n elements
 ;;; Validates that n is a non-negative integer.
@@ -995,18 +995,18 @@
           (list-tail-iter (cdr lst) (- k 1)))))
 
 ;;; (list-ref lst k) - Return k-th element of lst (0-indexed)
-;;; Validates that lst is a proper list and k is a valid non-negative index.
+;;; Validates that lst is a proper list and k is a non-negative integer.
 (define (list-ref lst k)
   (if (not (list? lst))
       (error "list-ref: not a list" lst)
       (if (not (and (integer? k) (exact? k) (>= k 0)))
           (error "list-ref: invalid index" k)
-          (list-ref-iter lst k 0))))
-(define (list-ref-iter lst k i)
+          (list-ref-iter lst k k))))
+(define (list-ref-iter lst k original-k)
   (if (null? lst)
-      (error "list-ref: index out of range" k)
-      (if (= i k) (car lst)
-          (list-ref-iter (cdr lst) k (+ i 1)))))
+      (error "list-ref: index out of range" original-k)
+      (if (= k 0) (car lst)
+          (list-ref-iter (cdr lst) (- k 1) original-k))))
 
 ;;; (list? obj) - Check if obj is a proper list
 (define (list? obj) (if (null? obj) #t (if (pair? obj) (list? (cdr obj)) #f)))
