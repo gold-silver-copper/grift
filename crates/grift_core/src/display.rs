@@ -163,6 +163,7 @@ fn format_value<const N: usize>(
         }
         Ok(Value::ContFrame { .. }) => f.write_str("#<cont-frame>"),
         Ok(Value::Continuation { .. }) => f.write_str("#<continuation>"),
+        Ok(Value::ErrorObject { .. }) => f.write_str("#<error-object>"),
         Err(_) => f.write_str("#<error>"),
     }
 }

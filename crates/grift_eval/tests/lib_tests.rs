@@ -6653,6 +6653,132 @@ fn test_guard_multiple_clauses() {
 }
 
 // ========================================================================
+// R7RS Error Object Tests (§6.11)
+// ========================================================================
+
+#[test]
+fn test_error_object_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error creates an error object that is caught by guard
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (error-object? e)))
+             (error "test"))"#));
+}
+
+#[test]
+fn test_error_object_predicate_false() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Non-error-object values are not error objects
+    assert!(eval_is_false(&lisp, &mut eval,
+        "(error-object? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval,
+        r#"(error-object? "hello")"#));
+    assert!(eval_is_false(&lisp, &mut eval,
+        "(error-object? #t)"));
+}
+
+#[test]
+fn test_error_object_message() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error-object-message retrieves the message
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (string? (error-object-message e))))
+             (error "test message" 1 2 3))"#));
+}
+
+#[test]
+fn test_error_object_irritants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error-object-irritants retrieves the irritant list
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(guard (e (#t (car (error-object-irritants e))))
+             (error "test" 42))"#),
+        42);
+}
+
+#[test]
+fn test_error_object_irritants_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Multiple irritants form a list
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(guard (e (#t (+ (car (error-object-irritants e))
+                           (car (cdr (error-object-irritants e))))))
+             (error "test" 10 32))"#),
+        42);
+}
+
+#[test]
+fn test_error_object_no_irritants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // When no irritants, list is empty
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (null? (error-object-irritants e))))
+             (error "test"))"#));
+}
+
+#[test]
+fn test_error_object_type() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error-object-type for standard error returns nil
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (e (#t (null? (error-object-type e))))
+             (error "test"))"#));
+}
+
+#[test]
+fn test_error_raises_through_handler() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error raises through the exception system
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(with-exception-handler
+             (lambda (e) (if (error-object? e) 42 0))
+             (lambda () (error "boom")))"#),
+        42);
+}
+
+#[test]
+fn test_error_without_handler() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // error without handler should produce an error
+    let result = eval.eval_str(r#"(error "unhandled")"#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_guard_catches_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // guard catches error objects
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(guard (exn
+                  ((error-object? exn) 
+                   (car (error-object-irritants exn))))
+            (error "test" 42))"#),
+        42);
+}
+
+#[test]
+fn test_raise_continuable_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // raise-continuable allows the handler to return a value
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(with-exception-handler
+           (lambda (e) (+ e 1))
+           (lambda () (raise-continuable 41)))"),
+        42);
+}
+
+// ========================================================================
 // make-parameter and parameterize Tests (R7RS §4.2.6)
 // ========================================================================
 

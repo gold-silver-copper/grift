@@ -72,9 +72,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn apply_builtin_trampolined(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> Result<TrampolineState, EvalError> 
     {
+        // Special handling for error - creates error object and raises through exception system
+        if matches!(builtin, Builtin::Error) {
+            return self.apply_error_builtin(args, call_expr);
+        }
+        
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
         Ok(TrampolineState::Return { val: result })
+    }
+    
+    /// Create an R7RS error object and raise it through the exception handler chain.
+    /// (error message obj ...) — R7RS §6.11
+    pub(super) fn apply_error_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        // First arg is the message
+        let msg = self.lisp.car(args)?;
+        // Rest are irritants
+        let irritants = self.lisp.cdr(args)?;
+        // Type is Nil for standard (error msg ...) calls
+        let nil = self.lisp.nil()?;
+        let irritants_and_type = self.lisp.cons(irritants, nil)?;
+        let error_obj = self.lisp.alloc(Value::ErrorObject { message: msg, irritants_and_type })?;
+        
+        // Raise through the exception handler chain
+        match self.invoke_exception_handler(error_obj, false)? {
+            Some(state) => Ok(state),
+            None => {
+                // No continuation to return to — shouldn't happen for raise
+                Err(self.make_error(ErrorKind::UserError, call_expr))
+            }
+        }
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -357,8 +386,54 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Error => {
+                // Fallback: if called directly without trampolining, create error object
+                // and return as Rust error. Normal path goes through apply_error_builtin.
                 let msg = self.lisp.car(args)?;
-                Err(self.make_error(ErrorKind::UserError, msg))
+                let irritants = self.lisp.cdr(args)?;
+                let nil = self.lisp.nil()?;
+                let irritants_and_type = self.lisp.cons(irritants, nil)?;
+                let error_obj = self.lisp.alloc(Value::ErrorObject { message: msg, irritants_and_type })?;
+                Err(self.make_error(ErrorKind::UserError, error_obj))
+            }
+            
+            Builtin::ErrorObjectP => {
+                // (error-object? obj) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { .. } => self.lisp.true_val().map_err(Into::into),
+                    _ => self.lisp.false_val().map_err(Into::into),
+                }
+            }
+            
+            Builtin::ErrorObjectMessage => {
+                // (error-object-message error-object) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { message, .. } => Ok(message),
+                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::ErrorObjectIrritants => {
+                // (error-object-irritants error-object) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        self.lisp.car(irritants_and_type).map_err(Into::into)
+                    }
+                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
+                }
+            }
+            
+            Builtin::ErrorObjectType => {
+                // (error-object-type error-object) — R7RS §6.11
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        self.lisp.cdr(irritants_and_type).map_err(Into::into)
+                    }
+                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
+                }
             }
             
             Builtin::SetCar => {

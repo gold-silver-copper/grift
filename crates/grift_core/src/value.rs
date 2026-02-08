@@ -124,6 +124,14 @@ define_builtins! {
     // Error handling
     /// error - Raise an error
     Error => "error",
+    /// error-object? - Check if value is an error object
+    ErrorObjectP => "error-object?",
+    /// error-object-message - Get message from error object
+    ErrorObjectMessage => "error-object-message",
+    /// error-object-irritants - Get irritants from error object
+    ErrorObjectIrritants => "error-object-irritants",
+    /// error-object-type - Get type from error object
+    ErrorObjectType => "error-object-type",
     
     // Mutation operations
     /// set-car! - Mutate car of pair
@@ -495,6 +503,30 @@ pub enum Value {
         env: ArenaIndex,        // environment at this continuation point
     },
     
+    /// R7RS error object (§6.11)
+    ///
+    /// Created by the `error` procedure. Stores the error message and
+    /// associated irritant values for structured exception handling.
+    ///
+    /// # Memory Layout
+    ///
+    /// - `message`: ArenaIndex to a Value::String or Value::Symbol containing the error message
+    /// - `irritants_and_type`: ArenaIndex to a cons cell `(irritants . error_type)`
+    ///   - car: list of irritant values passed to `error`
+    ///   - cdr: error type (Nil for standard `(error msg ...)` calls)
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (error "out of range" 42)       ; message="out of range", irritants=(42), type=()
+    /// (guard (e ((error-object? e) (error-object-message e)))
+    ///   (error "bad value" 1 2 3))    ; => "bad value"
+    /// ```
+    ErrorObject {
+        message: ArenaIndex,
+        irritants_and_type: ArenaIndex,
+    },
+
     /// Captured continuation from call/cc - a first-class callable value
     ///
     /// When `call-with-current-continuation` (call/cc) is invoked, the current
@@ -729,6 +761,7 @@ impl Value {
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
             Value::Continuation { .. } => "continuation",
+            Value::ErrorObject { .. } => "error-object",
         }
     }
     
@@ -796,6 +829,11 @@ impl<const N: usize> Trace<Value, N> for Value {
                 // cont_data points to a cons cell (type_and_data . parent_cont)
                 tracer(*cont_data);
                 tracer(*env);
+            }
+            Value::ErrorObject { message, irritants_and_type } => {
+                // message and irritants_and_type are inline ArenaIndex - trace both
+                tracer(*message);
+                tracer(*irritants_and_type);
             }
             Value::Continuation { cont_chain, metadata } => {
                 // cont_chain and metadata are inline ArenaIndex - trace both
