@@ -7,7 +7,7 @@ This document tracks the R7RS conformance status of the Grift Scheme implementat
 ## Reference Specification
 
 The authoritative R7RS specification is located at:
-- **`scheme-spec-r7rs/spec.html`** — The complete Revised⁷ Report on the Algorithmic Language Scheme
+- **`r7rs-spec.html`** — The complete Revised⁷ Report on the Algorithmic Language Scheme
 
 ---
 
