@@ -6876,6 +6876,103 @@ fn test_raise_continuable_basic() {
 }
 
 // ========================================================================
+// Rust Error → Scheme Exception Migration Tests
+// ========================================================================
+
+#[test]
+fn test_guard_catches_type_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // A type error (car of a number) should be catchable via guard
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn (#t #t))
+            (car 42))"#));
+}
+
+#[test]
+fn test_guard_catches_type_error_as_error_object() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Type error should produce an error object with a message
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn ((error-object? exn) #t))
+            (car 42))"#));
+}
+
+#[test]
+fn test_guard_catches_unbound_variable() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Unbound variable should be catchable
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn (#t #t))
+            undefined-variable-xyz)"#));
+}
+
+#[test]
+fn test_guard_catches_wrong_arg_count() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Wrong number of arguments should be catchable
+    eval.eval_str("(define (f x) x)").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn (#t #t))
+            (f 1 2 3))"#));
+}
+
+#[test]
+fn test_guard_catches_division_by_zero() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Division by zero should be catchable
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn (#t #t))
+            (/ 1 0))"#));
+}
+
+#[test]
+fn test_with_exception_handler_catches_type_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // with-exception-handler should catch type errors too
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        r#"(with-exception-handler
+             (lambda (e) 99)
+             (lambda () (car 42)))"#),
+        99);
+}
+
+#[test]
+fn test_error_object_message_from_type_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // The error object from a type error should have a meaningful message
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn
+                  ((error-object? exn)
+                   (string? (error-object-message exn))))
+            (car 42))"#));
+}
+
+#[test]
+fn test_uncaught_type_error_still_errors() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Without a handler, type error should still produce a Rust-level error
+    assert!(eval.eval_str("(car 42)").is_err());
+}
+
+#[test]
+fn test_guard_catches_not_a_function() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // Trying to call a non-function should be catchable
+    assert!(eval_is_true(&lisp, &mut eval,
+        r#"(guard (exn (#t #t))
+            (42 1 2))"#));
+}
+
+// ========================================================================
 // make-parameter and parameterize Tests (R7RS §4.2.6)
 // ========================================================================
 
