@@ -10,6 +10,9 @@
 //! - Line editing with arrow keys (via rustyline)
 //! - GC commands and statistics
 //! - Help system
+//! - Output callback for side effects during macro expansion
+//! - Integrated `StdIoProvider` from `grift_std` for port-based I/O
+//!   (stdin, stdout, stderr, and dynamic string ports)
 //!
 //! ## Usage
 //!

@@ -20,6 +20,10 @@
 //! - Supports garbage collection via the `Trace` trait
 //! - Explicit boolean values (#t, #f) separate from nil/empty list
 //! - **Strict evaluation** - All arguments are evaluated before function application (call-by-value)
+//! - **Pluggable I/O** - The [`io`] module defines the [`IoProvider`] trait so the
+//!   evaluator stays `no_std` while real I/O can be supplied on hosted platforms
+//!   (see `grift_std::StdIoProvider`). A [`NullIoProvider`] is provided for
+//!   environments without I/O.
 //!
 //! ## Value Representation
 //!
