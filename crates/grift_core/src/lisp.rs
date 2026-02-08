@@ -24,11 +24,12 @@ use crate::value::{Value, Builtin, StdLib};
 /// 
 /// The first 6 slots of the arena are reserved for singleton values:
 /// - Slot 0: `Value::Nil` - empty list ()
-/// - Slot 1: `Value::True` - boolean true (#t)
-/// - Slot 2: `Value::False` - boolean false (#f)
-/// - Slot 3: `Value::Cons` - intern table reference cell (car = intern table root)
-/// - Slot 4: `Value::Cons` - string intern table reference cell
-/// (car = string intern table root)
+/// - Slot 1: `Value::Void` - void value
+/// - Slot 2: `Value::True` - boolean true (#t)
+/// - Slot 3: `Value::False` - boolean false (#f)
+/// - Slot 4: `Value::Cons` - intern table reference cell (car = intern table root)
+/// - Slot 5: `Value::Cons` - string intern table reference cell
+///   (car = string intern table root)
 /// 
 /// These slots are pre-allocated during `Lisp::new()` and returned as
 /// constants from `true_val()` and `false_val()`. This optimization
