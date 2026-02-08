@@ -65,10 +65,12 @@ This repository contains:
 |-------|-------------|----------|
 | **`grift`** | Unified re-export crate (primary entry point) | ✅ default |
 | **`grift_arena`** | Arena allocator with mark-and-sweep GC | ✅ |
+| **`grift_core`** | Core types: `Value`, `Builtin`, `StdLib`, `Lisp` | ✅ |
 | **`grift_parser`** | Lisp parser with symbol interning | ✅ |
 | **`grift_eval`** | Trampolined evaluator with proper TCO | ✅ |
 | **`grift_repl`** | Interactive REPL | ❌ (uses std) |
 | **`grift_macros`** | Proc macros for stdlib generation | N/A |
+| **`grift_util`** | Scheme-to-Rust name conversion utilities | ✅ |
 | **`grift_arena_embedded`** | Hardware access for embedded targets | ✅ |
 
 ## ✨ Lisp Features
@@ -80,6 +82,11 @@ This repository contains:
 | **Proper Tail Calls** | Full TCO via trampolining — no stack overflow on deep recursion |
 | **Strict Evaluation** | Call-by-value semantics; arguments evaluated before function application |
 | **Lexical Closures** | First-class functions with captured environments |
+| **First-class Continuations** | `call/cc`, `dynamic-wind`, `values`, `call-with-values` |
+| **Hygienic Macros** | `syntax-rules`, `syntax-case`, lambda transformers with mark-based hygiene |
+| **Exception Handling** | `guard`, `with-exception-handler`, `raise`, `raise-continuable`, error objects |
+| **Record Types** | `define-record-type` with constructors, predicates, accessors, and mutators |
+| **Dynamic Parameters** | `make-parameter` and `parameterize` with `dynamic-wind` integration |
 | **Quasiquote** | `quasiquote`/`unquote` for template-based code generation |
 | **Pattern Matching** | `case` for value matching, `cond` for conditionals |
 | **Mutation** | `set!`, `set-car!`, `set-cdr!` for imperative programming |
@@ -112,6 +119,18 @@ This repository contains:
 (< 1 2)                ; => #t
 (= 5 5)                ; => #t
 (eq? 'a 'a)            ; => #t
+
+; Type conversions
+(number->string 42)    ; => "42"
+(string->number "123") ; => 123
+(string->number "abc") ; => #f
+(symbol->string 'foo)  ; => "foo"
+
+; Error objects
+(error "bad input" 42) ; raises error with message and irritants
+(error-object? obj)    ; => #t if obj is an error object
+(error-object-message obj)    ; get error message
+(error-object-irritants obj)  ; get error irritants
 
 ; Memory management
 (gc)                   ; => (marked collected before)
@@ -163,6 +182,34 @@ This repository contains:
 ; Runtime evaluation
 (eval '(+ 1 2))        ; => 3
 (apply + '(1 2 3))     ; => 6
+
+; Continuations and dynamic wind
+(call-with-current-continuation (lambda (k) (k 42)))  ; => 42
+(call/cc (lambda (k) (k 42)))                         ; => 42
+(dynamic-wind before-thunk thunk after-thunk)
+(values 1 2 3)
+(call-with-values (lambda () (values 1 2)) +)  ; => 3
+
+; Exception handling
+(guard (exn
+        ((error-object? exn) (error-object-message exn)))
+  (error "oops"))                              ; => "oops"
+(with-exception-handler handler-proc thunk)
+(raise 'an-error)
+(raise-continuable 'warning)
+
+; Dynamic parameters
+(define p (make-parameter 10))
+(p)                    ; => 10
+(parameterize ((p 20))
+  (p))                 ; => 20
+
+; Record types
+(define-record-type <point>
+  (make-point x y)
+  point?
+  (x point-x)
+  (y point-y))
 ```
 
 ## 🔥 Design Philosophy
@@ -232,11 +279,7 @@ Control the garbage collector directly from your Lisp code:
 See the detailed architecture documents:
 
 - **[ARENA_ARCHITECTURE.md](./docs/ARENA_ARCHITECTURE.md)** — How the arena allocator works
-- **[LISP_ARCHITECTURE.md](./docs/LISP_ARCHITECTURE.md)** — How the Lisp interpreter works
-- **[HYGIENIC_MACROS_IMPLEMENTATION.md](./docs/HYGIENIC_MACROS_IMPLEMENTATION.md)** — Macro system implementation (Phases 1-9)
-- **[EXTENDING_SCHEME_MACROS.md](./docs/EXTENDING_SCHEME_MACROS.md)** — Advanced macro patterns and syntax-case
-- **[DYNAMIC_RUNTIME_SYNTAX_CASE.md](./docs/DYNAMIC_RUNTIME_SYNTAX_CASE.md)** — Plan for enabling runtime operations in macros
-- **[PSYNTAX_MIGRATION_GUIDE.md](./docs/PSYNTAX_MIGRATION_GUIDE.md)** — Guide for replacing syntax-case with psyntax.scm
+- **[SYNTAX_CASE_AND_MACROS.md](./docs/SYNTAX_CASE_AND_MACROS.md)** — Hygienic macro system and syntax-case implementation
 - **[SCHEME_R7RS_CONFORMANCE.md](./docs/SCHEME_R7RS_CONFORMANCE.md)** — R7RS compliance status
 
 ## 📚 Standard Library
@@ -297,14 +340,16 @@ grift/
 ├── crates/
 │   ├── grift/           # Unified re-export crate (primary entry point)
 │   ├── grift_arena/     # Core arena allocator (no_std, no_alloc)
+│   ├── grift_core/      # Core types: Value, Builtin, StdLib, Lisp
 │   ├── grift_parser/    # Lisp parser and value types (no_std)
 │   ├── grift_eval/      # Trampolined evaluator (no_std)
 │   ├── grift_repl/      # Interactive REPL (uses std for I/O)
 │   ├── grift_macros/    # Proc macros for stdlib generation
+│   ├── grift_util/      # Scheme-to-Rust name conversion utilities
 │   └── grift_arena_embedded/  # Hardware access for embedded targets
 ├── docs/
 │   ├── ARENA_ARCHITECTURE.md
-│   ├── LISP_ARCHITECTURE.md
+│   ├── SYNTAX_CASE_AND_MACROS.md
 │   └── SCHEME_R7RS_CONFORMANCE.md
 └── README.md
 ```

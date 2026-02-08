@@ -7,7 +7,7 @@ This document tracks the R7RS conformance status of the Grift Scheme implementat
 ## Reference Specification
 
 The authoritative R7RS specification is located at:
-- **`scheme-spec-r7rs/spec.html`** — The complete Revised⁷ Report on the Algorithmic Language Scheme
+- **`r7rs-spec.html`** — The complete Revised⁷ Report on the Algorithmic Language Scheme
 
 ---
 
@@ -17,9 +17,9 @@ The authoritative R7RS specification is located at:
 |-----------|--------|-------|
 | Lexical conventions (§2) | ✅ Mostly complete | Identifiers, booleans, numbers (integers only), characters, strings, vectors |
 | Basic concepts (§3) | ✅ Complete | Lexical scoping, tail-call optimization, strict evaluation |
-| Expressions (§4) | ✅ Mostly complete | All primitive and most derived expression types |
-| Program structure (§5) | ⚠️ Partial | `define`, `define-syntax` work; no library/module system |
-| Standard procedures (§6) | ⚠️ Partial | Strong coverage for lists, strings, chars, vectors; gaps in I/O, numeric tower |
+| Expressions (§4) | ✅ Mostly complete | All primitive and most derived expression types; includes `define-record-type`, `guard`, `parameterize` |
+| Program structure (§5) | ⚠️ Partial | `define`, `define-syntax`, `define-record-type` work; no library/module system |
+| Standard procedures (§6) | ⚠️ Partial | Strong coverage for lists, strings, chars, vectors; exception system complete; gaps in I/O, numeric tower |
 | Formal syntax (§7) | ✅ Mostly complete | Parser handles R7RS syntax with minor gaps |
 | Standard libraries (Appendix A) | ❌ Not implemented | No `define-library` / `import` / `export` |
 
@@ -99,10 +99,11 @@ The authoritative R7RS specification is located at:
 | `let-syntax` | ✅ | Special form |
 | `letrec-syntax` | ✅ | Special form |
 | `syntax-rules` | ✅ | Macro; pattern-based with ellipsis support |
-| `syntax-error` | ❌ | Not implemented |
-| `define-record-type` | ❌ | Not implemented |
-| `guard` | ⚠️ | Placeholder — expands to `(begin body ...)` without exception handling |
-| `parameterize` | ❌ | Not implemented |
+| `syntax-error` | ✅ | Special form; raises compile-time/macro-expansion error |
+| `define-record-type` | ✅ | Special form; records represented as tagged vectors (max 32 fields) |
+| `guard` | ✅ | Macro (macros.scm); full implementation using `with-exception-handler` |
+| `make-parameter` | ✅ | Stdlib function; creates parameter objects (R7RS §4.2.6) |
+| `parameterize` | ✅ | Macro (macros.scm); uses `dynamic-wind` for safe restore |
 | `quasiquote` / `unquote` / `unquote-splicing` | ✅ | Special form + macro variant |
 
 ---
@@ -156,8 +157,8 @@ The authoritative R7RS specification is located at:
 | `square` | ✅ | Builtin |
 | `sqrt` | ✅ | Stdlib (integer square root via Newton-Raphson) |
 | `exact->inexact` / `inexact->exact` | ❌ | Not applicable (integers only) |
-| `number->string` | ❌ | Not implemented |
-| `string->number` | ❌ | Not implemented |
+| `number->string` | ✅ | Builtin (integer to decimal string) |
+| `string->number` | ✅ | Builtin (decimal string to integer, returns `#f` if invalid) |
 | Radix prefixes `#b`, `#o`, `#x`, `#d` | ❌ | Not supported |
 | Exactness prefixes `#e`, `#i` | ❌ | Not supported |
 
@@ -235,7 +236,7 @@ The authoritative R7RS specification is located at:
 | `string-copy!` | ❌ | Not implemented |
 | `string-fill!` | ❌ | Not implemented |
 | `string-map` / `string-for-each` | ✅ | Stdlib |
-| `number->string` / `string->number` | ❌ | Not implemented |
+| `number->string` / `string->number` | ✅ | Builtins |
 
 ### §6.8 — Vectors
 
@@ -278,15 +279,15 @@ Not implemented. No bytevector types, literals, or operations.
 
 | Procedure | Status | Notes |
 |-----------|--------|-------|
-| `with-exception-handler` | ❌ | Not implemented |
-| `raise` | ❌ | Not implemented |
-| `raise-continuable` | ❌ | Not implemented |
-| `error` | ⚠️ | Builtin; takes message only, does **not** support irritant arguments |
-| `error-object?` | ❌ | Not implemented |
-| `error-object-message` | ❌ | Not implemented |
-| `error-object-irritants` | ❌ | Not implemented |
-| `error-object-type` | ❌ | Not implemented |
-| `guard` | ⚠️ | Placeholder macro — expands to `(begin body ...)`, no exception handling |
+| `with-exception-handler` | ✅ | Special form; installs exception handler during thunk evaluation |
+| `raise` | ✅ | Special form; raises a non-continuable exception |
+| `raise-continuable` | ✅ | Special form; raises a continuable exception |
+| `error` | ✅ | Builtin; supports message and irritant arguments, creates error objects |
+| `error-object?` | ✅ | Builtin |
+| `error-object-message` | ✅ | Builtin |
+| `error-object-irritants` | ✅ | Builtin |
+| `error-object-type` | ✅ | Builtin |
+| `guard` | ✅ | Macro (macros.scm); full implementation using `with-exception-handler` |
 
 ### §6.12 — Environments and Evaluation
 
@@ -422,28 +423,23 @@ Beyond R7RS, the stdlib provides many convenience functions:
 
 ### High Priority
 
-1. **Exception system** (§6.11) — `with-exception-handler`, `raise`, `raise-continuable`, `guard`, error objects
-2. **I/O port system** (§6.13) — Ports, `read`, `write`, `read-char`, `write-char`, string ports
-3. **Library system** (§5.6) — `define-library`, `import`, `export`
-4. **Dynamic parameters** (§4.2.6) — `make-parameter`, `parameterize`
+1. **I/O port system** (§6.13) — Ports, `read`, `write`, `read-char`, `write-char`, string ports
+2. **Library system** (§5.6) — `define-library`, `import`, `export`
 
 ### Medium Priority
 
-5. **Numeric conversions** — `number->string`, `string->number`
-6. **Multi-list `map`/`for-each`** — R7RS requires these to accept multiple list arguments
-7. **Record types** — `define-record-type` (§5.5)
-8. **Bytevectors** (§6.9) — Types, literals, and operations
-9. **Missing vector operations** — `vector-map`, `vector-for-each`, `vector-copy!`, `vector-append`
-10. **Missing string operations** — `string-copy!`, `string-fill!`, remaining `string-ci` comparisons
+3. **Multi-list `map`/`for-each`** — R7RS requires these to accept multiple list arguments
+4. **Bytevectors** (§6.9) — Types, literals, and operations
+5. **Missing vector operations** — `vector-map`, `vector-for-each`, `vector-copy!`, `vector-append`
+6. **Missing string operations** — `string-copy!`, `string-fill!`, remaining `string-ci` comparisons
 
 ### Low Priority / Intentionally Deferred
 
-11. **Full numeric tower** — Floating-point, rationals, complex numbers (conflicts with `no_std`/`no_alloc` design)
-12. **Environments** — `environment`, `scheme-report-environment`, `null-environment`
-13. **System interface** (§6.14) — `load`, `file-exists?`, `exit`, `command-line`, timing
-14. **Tail context tracking** — Full R7RS tail-position specification compliance
-15. **`syntax-error`** — Macro-time error signaling
-16. **Datum/block comments** — `#;` and `#| ... |#`
+7. **Full numeric tower** — Floating-point, rationals, complex numbers (conflicts with `no_std`/`no_alloc` design)
+8. **Environments** — `environment`, `scheme-report-environment`, `null-environment`
+9. **System interface** (§6.14) — `load`, `file-exists?`, `exit`, `command-line`, timing
+10. **Tail context tracking** — Full R7RS tail-position specification compliance
+11. **Datum/block comments** — `#;` and `#| ... |#`
 
 ---
 
