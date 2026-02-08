@@ -71,6 +71,8 @@ pub use grift_core::{
     Lisp, RESERVED_SLOTS,
     DisplayValue,
     define_builtins, define_stdlib,
+    IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
+    PRELUDE_SOURCE,
 };
 
 pub mod lexer;

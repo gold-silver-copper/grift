@@ -7,6 +7,7 @@
 //! ## Features
 //!
 //! - Rich error display with stack traces
+//! - Line editing with arrow keys (via reedline)
 //! - GC commands and statistics
 //! - Help system
 //!
@@ -18,7 +19,7 @@
 //! run_repl::<10000>();
 //! ```
 
-use std::io::{self, BufRead, Write};
+use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 
 pub use grift_eval::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
@@ -100,6 +101,20 @@ fn format_value_impl<const N: usize>(
             }
             buf.push(')');
         }
+        Ok(Value::Bytevector { .. }) => {
+            // Format as R7RS bytevector literal: #u8(byte ...)
+            buf.push_str("#u8(");
+            let len = lisp.bytevector_len(idx).unwrap_or(0);
+            for i in 0..len {
+                if i > 0 {
+                    buf.push(' ');
+                }
+                if let Ok(elem_idx) = lisp.bytevector_get(idx, i) {
+                    format_value(lisp, elem_idx, buf);
+                }
+            }
+            buf.push(')');
+        }
         Ok(Value::String { .. }) => {
             // Format string like in many Lisps: "..."
             buf.push('"');
@@ -140,6 +155,16 @@ fn format_value_impl<const N: usize>(
         }
         Ok(Value::Continuation { .. }) => {
             buf.push_str("#<continuation>");
+        }
+        Ok(Value::ErrorObject { .. }) => {
+            buf.push_str("#<error-object>");
+        }
+        Ok(Value::Port(port_id)) => {
+            use std::fmt::Write;
+            write!(buf, "#<port:{}>", port_id.0).unwrap();
+        }
+        Ok(Value::Eof) => {
+            buf.push_str("#<eof>");
         }
         Err(_) => buf.push_str("#<error>"),
     }
@@ -349,9 +374,52 @@ impl<const N: usize> Default for Repl<N> {
     }
 }
 
+/// Check if a string contains only comments and whitespace.
+///
+/// Returns true if the input contains no actual Scheme expressions,
+/// only whitespace, line comments (`;`), and block comments (`#| ... |#`).
+pub fn is_only_comments_and_whitespace(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+            b';' => {
+                // Skip to end of line
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
+                // Skip nestable block comment #| ... |#
+                i += 2;
+                let mut depth: usize = 1;
+                while i + 1 < bytes.len() && depth > 0 {
+                    if bytes[i] == b'#' && bytes[i + 1] == b'|' {
+                        depth += 1;
+                        i += 2;
+                    } else if bytes[i] == b'|' && bytes[i + 1] == b'#' {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                // Handle last byte if only one left
+                if depth > 0 && i < bytes.len() {
+                    i += 1;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Run a REPL session
 pub fn run_repl<const N: usize>() {
     let lisp: Lisp<N> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
     let mut eval = match Evaluator::new(&lisp) {
         Ok(e) => e,
         Err(e) => {
@@ -362,9 +430,18 @@ pub fn run_repl<const N: usize>() {
     
     // Set output callback for display/newline to enable side effects during macro expansion
     eval.set_output_callback(Some(output_callback));
+    // Set I/O provider for port operations
+    eval.set_io_provider(&mut io);
     
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let mut line_editor = Reedline::create();
+    let default_prompt = DefaultPrompt::new(
+        DefaultPromptSegment::Basic("> ".to_string()),
+        DefaultPromptSegment::Empty,
+    );
+    let continuation_prompt = DefaultPrompt::new(
+        DefaultPromptSegment::Basic("... ".to_string()),
+        DefaultPromptSegment::Empty,
+    );
     
     println!("Grift Lisp");
     println!("========================");
@@ -378,29 +455,19 @@ pub fn run_repl<const N: usize>() {
     let mut continuation = false;
     
     loop {
-        if continuation {
-            print!("... ");
-        } else {
-            print!("> ");
-        }
-        stdout.flush().unwrap();
+        let prompt = if continuation { &continuation_prompt } else { &default_prompt };
         
-        let mut line = String::new();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) => {
-                // EOF
-                println!("\nGoodbye!");
-                break;
-            }
-            Ok(_) => {
+        match line_editor.read_line(prompt) {
+            Ok(Signal::Success(line)) => {
                 if continuation {
+                    input_buffer.push('\n');
                     input_buffer.push_str(&line);
                 } else {
                     input_buffer = line;
                 }
                 
                 let input = input_buffer.trim();
-                if input.is_empty() {
+                if input.is_empty() || is_only_comments_and_whitespace(input) {
                     continuation = false;
                     input_buffer.clear();
                     continue;
@@ -439,6 +506,15 @@ pub fn run_repl<const N: usize>() {
                     }
                 }
                 
+                input_buffer.clear();
+            }
+            Ok(Signal::CtrlD) => {
+                println!("\nGoodbye!");
+                break;
+            }
+            Ok(Signal::CtrlC) => {
+                // Cancel current input
+                continuation = false;
                 input_buffer.clear();
             }
             Err(e) => {
@@ -482,7 +558,30 @@ fn handle_command<const N: usize>(input: &str, lisp: &Lisp<N>, eval: &mut Evalua
                      count_env(lisp, eval.global_env()));
         }
         _ if cmd.starts_with(":load ") => {
-            println!("File loading not implemented in this version");
+            let path = cmd.trim_start_matches(":load ").trim();
+            match std::fs::read_to_string(path) {
+                Ok(contents) => {
+                    // Wrap in (begin ...) to evaluate all top-level forms
+                    let mut wrapped = String::with_capacity(contents.len() + 9);
+                    wrapped.push_str("(begin ");
+                    wrapped.push_str(&contents);
+                    wrapped.push(')');
+                    match eval.eval_str(&wrapped) {
+                        Ok(result) => {
+                            if !matches!(lisp.get(result), Ok(Value::Void)) {
+                                println!("{}", value_to_string(lisp, result));
+                            }
+                            println!("Loaded: {}", path);
+                        }
+                        Err(e) => {
+                            println!("Error loading {}: {}", path, format_error(lisp, &e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Cannot read file '{}': {}", path, e);
+                }
+            }
         }
         _ => {
             println!("Unknown command: {}", cmd);
@@ -577,11 +676,12 @@ fn print_help() {
     println!("      - Mutation: set!, set-car!, set-cdr! available");
     println!();
     println!("REPL Commands:");
-    println!("  :help, :h, :?  - Show this help");
-    println!("  :gc            - Run garbage collection");
-    println!("  :stats         - Show arena statistics");
-    println!("  :env           - Show environment size");
-    println!("  :quit, :q      - Exit");
+    println!("  :help, :h, :?     - Show this help");
+    println!("  :gc               - Run garbage collection");
+    println!("  :stats            - Show arena statistics");
+    println!("  :env              - Show environment size");
+    println!("  :load <file>      - Load and evaluate a .scm file");
+    println!("  :quit, :q         - Exit");
     println!();
     println!("Examples:");
     println!("  (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))");

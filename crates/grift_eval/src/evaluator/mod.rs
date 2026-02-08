@@ -11,7 +11,7 @@ mod builtins;
 mod forms;
 mod expand;
 
-use grift_parser::{ArenaIndex, Lisp};
+use grift_parser::{ArenaIndex, Lisp, IoProvider};
 
 use crate::continuation::EnvRef;
 use crate::error::{StackFrame, MAX_STACK_DEPTH};
@@ -75,4 +75,16 @@ pub struct Evaluator<'a, const N: usize> {
     /// the pattern matcher checks this environment to distinguish the bound identifier
     /// from the unbound literal keyword.
     call_site_env: EnvRef,
+    /// Exception handler chain — arena-based linked list of handler closures.
+    /// Each entry is: (handler . parent_chain)
+    /// Used by `raise` / `raise-continuable` to invoke the current handler.
+    exception_handler_chain: ArenaIndex,
+    /// Optional I/O provider for port operations (R7RS §6.13).
+    ///
+    /// When set, port builtins (read-char, write-char, etc.) use this provider.
+    /// The provider is borrowed from the caller and must outlive the evaluator.
+    io: Option<&'a mut (dyn IoProvider + 'a)>,
+    /// Library registry — arena-based association list of (name . env) pairs.
+    /// Used by `define-library` and `import` (R7RS §5.6).
+    library_registry: ArenaIndex,
 }

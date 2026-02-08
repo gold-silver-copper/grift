@@ -68,6 +68,12 @@
 
 pub use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
 
+/// The combined prelude source containing all macro and function definitions.
+///
+/// This is the raw content of `prelude.scm`, embedded at compile time.
+/// The evaluator uses this to load standard macros at startup.
+pub const PRELUDE_SOURCE: &str = include_str!("prelude.scm");
+
 // Macros module (must be declared before other modules that use the macros)
 #[macro_use]
 mod macros;
@@ -75,9 +81,11 @@ mod macros;
 mod value;
 mod lisp;
 mod display;
+pub mod io;
 
 pub use value::{Value, Builtin, StdLib};
 // Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]
 
 pub use lisp::{Lisp, RESERVED_SLOTS};
 pub use display::DisplayValue;
+pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort};

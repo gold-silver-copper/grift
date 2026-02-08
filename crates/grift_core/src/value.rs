@@ -5,6 +5,7 @@
 //! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
 
 use grift_arena::{ArenaIndex, Trace};
+use crate::io::PortId;
 
 // Define all built-in functions using the macro.
 // To add a new builtin, add an entry here and implement its evaluation in grift_eval.
@@ -121,9 +122,59 @@ define_builtins! {
     /// display - Print value without quotes
     Display => "display",
     
+    // Port operations (R7RS §6.13)
+    /// port? - Check if value is a port
+    Portp => "port?",
+    /// input-port? - Check if value is an input port
+    InputPortp => "input-port?",
+    /// output-port? - Check if value is an output port
+    OutputPortp => "output-port?",
+    /// current-input-port - Get current input port
+    CurrentInputPort => "current-input-port",
+    /// current-output-port - Get current output port
+    CurrentOutputPort => "current-output-port",
+    /// current-error-port - Get current error port
+    CurrentErrorPort => "current-error-port",
+    /// close-port - Close a port
+    ClosePort => "close-port",
+    /// close-input-port - Close an input port
+    CloseInputPort => "close-input-port",
+    /// close-output-port - Close an output port
+    CloseOutputPort => "close-output-port",
+    /// read-char - Read a character from a port
+    ReadChar => "read-char",
+    /// write-char - Write a character to a port
+    WriteChar => "write-char",
+    /// peek-char - Peek at next character without consuming it
+    PeekChar => "peek-char",
+    /// char-ready? - Check if a character is available
+    CharReadyp => "char-ready?",
+    /// write - Write value with machine-readable representation
+    Write => "write",
+    /// read - Read an S-expression from a port
+    Read => "read",
+    /// eof-object - Return the EOF object
+    EofObject => "eof-object",
+    /// eof-object? - Check if value is the EOF object
+    EofObjectp => "eof-object?",
+    /// open-input-string - Create an input port from a string
+    OpenInputString => "open-input-string",
+    /// open-output-string - Create an output string port
+    OpenOutputString => "open-output-string",
+    /// get-output-string - Get accumulated string from an output string port
+    GetOutputString => "get-output-string",
+    
     // Error handling
     /// error - Raise an error
     Error => "error",
+    /// error-object? - Check if value is an error object
+    ErrorObjectP => "error-object?",
+    /// error-object-message - Get message from error object
+    ErrorObjectMessage => "error-object-message",
+    /// error-object-irritants - Get irritants from error object
+    ErrorObjectIrritants => "error-object-irritants",
+    /// error-object-type - Get type from error object
+    ErrorObjectType => "error-object-type",
     
     // Mutation operations
     /// set-car! - Mutate car of pair
@@ -245,6 +296,10 @@ define_builtins! {
     SymbolToString => "symbol->string",
     /// string->symbol - Convert string to symbol
     StringToSymbol => "string->symbol",
+    /// number->string - Convert number to string
+    NumberToString => "number->string",
+    /// string->number - Convert string to number (or #f if invalid)
+    StringToNumber => "string->number",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
@@ -253,7 +308,7 @@ define_builtins! {
 // Note: member/assoc use eq? for comparison (like Scheme's memq/assq).
 // This works for symbols and identical objects. For value comparison,
 // define a custom function or use fold with a predicate.
-grift_macros::include_stdlib!("src/stdlib.scm");
+grift_macros::include_stdlib!("src/prelude.scm");
 
 /// A Lisp value
 /// 
@@ -356,6 +411,25 @@ pub enum Value {
     /// #(1 2 3)                        ; Vector literal syntax
     /// ```
     Array { len: usize, data: ArenaIndex },
+    
+    /// Bytevector (R7RS §6.9) with inline length and data pointer
+    /// 
+    /// Bytevectors store exact integers in the range 0–255 as `Number` values
+    /// contiguously in the arena, reusing the same layout as `Array`.
+    /// 
+    /// # Memory Layout
+    /// 
+    /// - `len`: Number of bytes (inline)
+    /// - `data`: Points directly to first `Number` value in arena
+    /// - Empty bytevectors have len=0 and data == NIL
+    /// 
+    /// # Example
+    /// 
+    /// ```scheme
+    /// #u8(0 10 5)           ; Bytevector literal
+    /// (bytevector-length #u8(1 2 3))  ; => 3
+    /// ```
+    Bytevector { len: usize, data: ArenaIndex },
     
     /// String with inline length and data pointer
     /// 
@@ -476,6 +550,30 @@ pub enum Value {
         env: ArenaIndex,        // environment at this continuation point
     },
     
+    /// R7RS error object (§6.11)
+    ///
+    /// Created by the `error` procedure. Stores the error message and
+    /// associated irritant values for structured exception handling.
+    ///
+    /// # Memory Layout
+    ///
+    /// - `message`: ArenaIndex to a Value::String or Value::Symbol containing the error message
+    /// - `irritants_and_type`: ArenaIndex to a cons cell `(irritants . error_type)`
+    ///   - car: list of irritant values passed to `error`
+    ///   - cdr: error type (Nil for standard `(error msg ...)` calls)
+    ///
+    /// # Example
+    ///
+    /// ```scheme
+    /// (error "out of range" 42)       ; message="out of range", irritants=(42), type=()
+    /// (guard (e ((error-object? e) (error-object-message e)))
+    ///   (error "bad value" 1 2 3))    ; => "bad value"
+    /// ```
+    ErrorObject {
+        message: ArenaIndex,
+        irritants_and_type: ArenaIndex,
+    },
+
     /// Captured continuation from call/cc - a first-class callable value
     ///
     /// When `call-with-current-continuation` (call/cc) is invoked, the current
@@ -514,6 +612,18 @@ pub enum Value {
         cont_chain: ArenaIndex,  // Points to ContFrame linked list head (or Nil for empty)
         metadata: ArenaIndex,    // cons cell: (capture_env . dynamic_wind_chain)
     },
+
+    /// I/O Port (R7RS §6.13)
+    ///
+    /// A first-class port value identified by a [`PortId`].
+    /// Standard ports (stdin=0, stdout=1, stderr=2) are predefined;
+    /// additional ports can be opened for string or file I/O.
+    Port(PortId),
+
+    /// End-of-file object (R7RS §6.13)
+    ///
+    /// A unique value returned by read operations when the end of input is reached.
+    Eof,
 }
 
 impl Value {
@@ -637,6 +747,12 @@ impl Value {
         matches!(self, Value::Array { .. })
     }
     
+    /// Check if this value is a bytevector
+    #[inline]
+    pub const fn is_bytevector(&self) -> bool {
+        matches!(self, Value::Bytevector { .. })
+    }
+    
     /// Check if this value is a string
     #[inline]
     pub const fn is_string(&self) -> bool {
@@ -697,12 +813,16 @@ impl Value {
             Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
+            Value::Bytevector { .. } => "bytevector",
             Value::String { .. } => "string",
             Value::Ref(_) => "ref",
             Value::Usize(_) => "usize",
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
             Value::Continuation { .. } => "continuation",
+            Value::ErrorObject { .. } => "error-object",
+            Value::Port(_) => "port",
+            Value::Eof => "eof-object",
         }
     }
     
@@ -734,7 +854,7 @@ impl<const N: usize> Trace<Value, N> for Value {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
-            Value::StdLib(_) | Value::Usize(_) => {
+            Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }
             Value::Ref(idx) => {
@@ -771,6 +891,11 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*cont_data);
                 tracer(*env);
             }
+            Value::ErrorObject { message, irritants_and_type } => {
+                // message and irritants_and_type are inline ArenaIndex - trace both
+                tracer(*message);
+                tracer(*irritants_and_type);
+            }
             Value::Continuation { cont_chain, metadata } => {
                 // cont_chain and metadata are inline ArenaIndex - trace both
                 // cont_chain points to ContFrame linked list
@@ -785,6 +910,16 @@ impl<const N: usize> Trace<Value, N> for Value {
                     let base_idx = data.raw();
                     for i in 0..*len {
                         // Elements are at data, data+1, ..., data+len-1
+                        let elem_idx = ArenaIndex::new(base_idx + i);
+                        tracer(elem_idx);
+                    }
+                }
+            }
+            Value::Bytevector { len, data } => {
+                // Same layout as Array — trace all element slots
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
                         let elem_idx = ArenaIndex::new(base_idx + i);
                         tracer(elem_idx);
                     }

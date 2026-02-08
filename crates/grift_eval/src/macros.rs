@@ -98,22 +98,6 @@ macro_rules! builtin_div_op {
     }};
 }
 
-/// Macro for binary character comparison operations.
-///
-/// Extracts two character arguments and compares them.
-///
-/// # Example
-/// 
-/// `builtin_char_cmp!(self, args, call_expr, |a, b| a == b)` compares two characters.
-#[macro_export]
-macro_rules! builtin_char_cmp {
-    ($self:expr, $args:expr, $call_expr:expr, $cmp:expr) => {{
-        let a = $self.get_char($self.lisp.car($args)?, $call_expr)?;
-        let b = $self.get_char($self.lisp.car($self.lisp.cdr($args)?)?, $call_expr)?;
-        $self.lisp.boolean($cmp(a, b)).map_err(Into::into)
-    }};
-}
-
 /// Macro for unary integer operations.
 ///
 /// Extracts one integer argument, applies a transformation, and returns a number.
@@ -126,22 +110,6 @@ macro_rules! builtin_unary_int {
     ($self:expr, $args:expr, $call_expr:expr, $op:expr) => {{
         let n = $self.get_int($self.lisp.car($args)?, $call_expr)?;
         $self.lisp.number($op(n)).map_err(Into::into)
-    }};
-}
-
-/// Macro for binary integer operations.
-///
-/// Extracts two integer arguments, applies a transformation, and returns a number.
-///
-/// # Example
-/// 
-/// `builtin_binary_int!(self, args, call_expr, |a, b| a.saturating_add(b))` adds two numbers.
-#[macro_export]
-macro_rules! builtin_binary_int {
-    ($self:expr, $args:expr, $call_expr:expr, $op:expr) => {{
-        let a = $self.get_int($self.lisp.car($args)?, $call_expr)?;
-        let b = $self.get_int($self.lisp.car($self.lisp.cdr($args)?)?, $call_expr)?;
-        $self.lisp.number($op(a, b)).map_err(Into::into)
     }};
 }
 
@@ -173,40 +141,6 @@ macro_rules! builtin_char_transform {
             c
         };
         $self.lisp.char(result).map_err(Into::into)
-    }};
-}
-
-/// Macro for char predicates that check a character property.
-///
-/// Extracts one character argument and returns boolean based on predicate.
-///
-/// # Example
-/// 
-/// `builtin_char_pred!(self, args, call_expr, |c| c.is_ascii_alphabetic())` checks alphabetic.
-#[macro_export]
-macro_rules! builtin_char_pred {
-    ($self:expr, $args:expr, $call_expr:expr, $pred:expr) => {{
-        let c = $self.get_char($self.lisp.car($args)?, $call_expr)?;
-        $self.lisp.boolean($pred(c)).map_err(Into::into)
-    }};
-}
-
-/// Macro for type-checking unary operations.
-///
-/// Extracts one argument, checks its type, applies operation if type matches.
-/// Returns type error if type doesn't match.
-///
-/// # Example
-/// 
-/// `builtin_typed_unary!(self, args, call_expr, String { len, data } => { ... })` 
-#[macro_export]
-macro_rules! builtin_typed_unary {
-    ($self:expr, $args:expr, $call_expr:expr, $pattern:pat => $body:expr, $expected:expr) => {{
-        let arg = $self.lisp.car($args)?;
-        match $self.lisp.get(arg)? {
-            $pattern => $body,
-            v => Err($self.type_error($call_expr, $expected, v.type_name())),
-        }
     }};
 }
 

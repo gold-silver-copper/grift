@@ -7,6 +7,7 @@ members = [
     "crates/grift_parser",
     "crates/grift_eval",
     "crates/grift_repl",
+    "crates/grift_std",
     "crates/grift",
     "crates/grift_arena_embedded",
     "crates/grift_util",
@@ -16,3 +17,10 @@ members = [
 version = "1.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+
+# Use basic optimizations in dev/test builds to prevent stack overflows
+# caused by deep recursion in the Scheme evaluator. Without optimizations,
+# debug builds use significantly more stack space per frame, leading to
+# stack overflow in tests that pass fine in release mode.
+[profile.dev]
+opt-level = 1

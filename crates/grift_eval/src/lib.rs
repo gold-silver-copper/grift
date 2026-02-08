@@ -61,6 +61,7 @@
 pub use grift_parser::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib, Lisp, DisplayValue, ParseError, ParseErrorKind, SourceLoc, parse,
+    IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
 };
 
 // Native function interop

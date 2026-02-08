@@ -5,6 +5,7 @@
 
 use grift_parser::{
     ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
+    PRELUDE_SOURCE,
 };
 
 use crate::error::{
@@ -16,15 +17,14 @@ use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
 
-/// Standard macro definitions (loaded at startup)
-const STANDARD_MACROS: &str = include_str!("macros.scm");
-
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
         tracer(self.global_env.0);
         tracer(self.macro_env.0);
         tracer(self.current_cont);
         tracer(self.dynamic_wind_chain);
+        tracer(self.exception_handler_chain);
+        tracer(self.library_registry);
     }
 }
 
@@ -44,6 +44,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             dynamic_wind_chain: nil, // Empty dynamic-wind chain
             output_callback: None, // No output callback by default
             call_site_env: EnvRef(nil), // No call-site env initially
+            exception_handler_chain: nil, // Empty exception handler chain
+            io: None, // No I/O provider by default
+            library_registry: nil, // Empty library registry
         };
         
         // Initialize global environment with builtins
@@ -75,20 +78,56 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(eval)
     }
     
-    /// Load standard macro definitions from macros.scm
+    /// Load standard macro definitions from the combined prelude.
     /// 
-    /// These are evaluated (not just expanded) since define-syntax
-    /// is now handled during evaluation.
+    /// Only `define-syntax` forms are evaluated (not `define` forms, which are
+    /// already handled by the StdLib enum). This allows the prelude to contain
+    /// both macros and function definitions in a single file.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
-        let forms = parse_all(self.lisp, STANDARD_MACROS)?;
+        let forms = parse_all(self.lisp, PRELUDE_SOURCE)?;
         let mut current = forms;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let form = self.lisp.car(current)?;
-            // Evaluate the form - define-syntax is handled during evaluation
-            self.eval(ExprRef(form))?;
+            // Only evaluate define-syntax forms; skip plain define forms
+            // since those are already registered as StdLib builtins.
+            let should_eval = if let Ok(Value::Cons { .. }) = self.lisp.get(form) {
+                if let Ok(car) = self.lisp.car(form) {
+                    !self.is_define_symbol(car)
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            if should_eval {
+                self.eval(ExprRef(form))?;
+            }
             current = self.lisp.cdr(current)?;
         }
         Ok(())
+    }
+    
+    /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
+    fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
+        if let Ok(Value::Symbol(chars)) = self.lisp.get(idx) {
+            let len = self.lisp.string_len(chars).unwrap_or(0);
+            if len != 6 {
+                return false;
+            }
+            // Check for exactly "define"
+            for (i, &expected) in b"define".iter().enumerate() {
+                if let Ok(c) = self.lisp.string_char_at(chars, i) {
+                    if c as u8 != expected {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
     
     /// Get the Lisp context
@@ -168,21 +207,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.output_callback = callback;
     }
     
+    /// Set the I/O provider for port operations.
+    ///
+    /// When set, port builtins (`read-char`, `write-char`, etc.) use this provider
+    /// for actual I/O. Without an I/O provider, port operations will raise errors.
+    pub fn set_io_provider(&mut self, io: &'a mut (dyn grift_parser::IoProvider + 'a)) {
+        self.io = Some(io);
+    }
+    
     /// Run GC with minimal roots (evaluator-owned roots only).
     /// 
     /// Use `gc_with_state()` during evaluation to also root the current expression/value.
     pub fn gc(&self) -> GcStats {
-        const MAX_ROOTS: usize = 8;
-        let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
-        let mut root_count = 0;
-        
-        self.trace_roots(&mut |idx| {
-            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
-            roots[root_count] = idx;
-            root_count += 1;
-        });
-        
-        self.lisp.gc(&roots[..root_count])
+        self.gc_with_roots(None)
     }
     
     /// Run GC during evaluation - marks both evaluator roots and current trampoline state as roots.
@@ -191,23 +228,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// new [`ArenaIndex`] field to either type only requires updating the
     /// corresponding `trace_roots` implementation.
     pub(super) fn gc_with_state(&self, state: &TrampolineState) -> GcStats {
+        self.gc_with_roots(Some(state))
+    }
+    
+    /// Shared GC implementation that collects roots from the evaluator
+    /// and optionally from a trampoline state.
+    fn gc_with_roots(&self, state: Option<&TrampolineState>) -> GcStats {
         const MAX_ROOTS: usize = 8;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
-        // Collect evaluator roots via GcRoots trait
         self.trace_roots(&mut |idx| {
             debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
             roots[root_count] = idx;
             root_count += 1;
         });
         
-        // Collect trampoline state roots via GcRoots trait
-        state.trace_roots(&mut |idx| {
-            debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
-            roots[root_count] = idx;
-            root_count += 1;
-        });
+        if let Some(state) = state {
+            state.trace_roots(&mut |idx| {
+                debug_assert!(root_count < MAX_ROOTS, "too many GC roots for buffer");
+                roots[root_count] = idx;
+                root_count += 1;
+            });
+        }
         
         self.lisp.gc(&roots[..root_count])
     }
@@ -483,17 +526,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
     }
     
-    /// Evaluate an already-expanded expression (internal)
-    /// 
-    /// This is now equivalent to `eval()` since macro expansion 
-    /// happens during evaluation. Kept for API compatibility.
-    pub fn eval_expanded(&mut self, expr: ExprRef) -> EvalResult {
-        // Reset continuation to empty (Done)
-        self.current_cont = self.lisp.nil()?;
-        // Start evaluation
-        self.trampoline(TrampolineState::Eval { expr, env: self.global_env })
-    }
-    
     /// Evaluate an expression in a given environment
     /// Uses full trampolining - no Rust recursion
     /// 
@@ -591,9 +623,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
-            Value::Array { .. } | Value::String { .. } | Value::Native { .. } |
+            Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
-            Value::ContFrame { .. } | Value::Continuation { .. } => {
+            Value::ContFrame { .. } | Value::Continuation { .. } | Value::ErrorObject { .. } |
+            Value::Port(_) | Value::Eof => {
                 Ok(TrampolineState::Return { val: expr.0 })
             }
             
@@ -736,7 +769,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Look up a symbol in an environment, returning None if not found
     #[inline]
-    fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
+    pub(super) fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = env;
         
         loop {
@@ -952,6 +985,49 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.step_eval_dynamic_wind(cdr, env).map(Some);
         }
         
+        // syntax-error - raise compile-time/macro-expansion error (R7RS §4.3.1)
+        if self.lisp.symbol_matches(car, "syntax-error")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return Err(self.make_error(ErrorKind::SyntaxError, car)
+                .with_message("syntax-error"));
+        }
+        
+        // with-exception-handler - install exception handler (R7RS §6.11)
+        if self.lisp.symbol_matches(car, "with-exception-handler")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_with_exception_handler(cdr, env).map(Some);
+        }
+        
+        // raise - raise an exception (R7RS §6.11)
+        if self.lisp.symbol_matches(car, "raise")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_raise(cdr, env, false).map(Some);
+        }
+        
+        // raise-continuable - raise a continuable exception (R7RS §6.11)
+        if self.lisp.symbol_matches(car, "raise-continuable")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_raise(cdr, env, true).map(Some);
+        }
+        
+        // define-record-type - record type definition (R7RS §5.5)
+        if self.lisp.symbol_matches(car, "define-record-type")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_define_record_type(cdr, env).map(Some);
+        }
+        
+        // define-library - library definition (R7RS §5.6)
+        if self.lisp.symbol_matches(car, "define-library")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_define_library(cdr, env).map(Some);
+        }
+        
+        // import - import library bindings (R7RS §5.6)
+        if self.lisp.symbol_matches(car, "import")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_import(cdr, env).map(Some);
+        }
+        
         Ok(None)
     }
     
@@ -995,13 +1071,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // storing continuation data. Each pack function returns an ArenaIndex
     // to the packed data, and each unpack function extracts values from
     // a packed ArenaIndex.
-    
-    /// Pack 1 value (just returns it as-is)
-    #[inline]
-    #[allow(dead_code)]
-    pub(super) fn pack1(&self, a: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        Ok(a)
-    }
     
     /// Unpack 1 value (just returns it as-is)
     #[inline]
