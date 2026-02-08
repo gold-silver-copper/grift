@@ -10,5 +10,5 @@ keywords = ["types", "lisp", "scheme", "no_std", "embedded"]
 categories = ["no-std", "data-structures", "embedded"]
 
 [dependencies]
-grift_arena = { version = "1.3.0", path = "../grift_arena" }
-grift_macros = { version = "1.3.0", path = "../grift_macros" }
+grift_arena = { version = "1.3.1", path = "../grift_arena" }
+grift_macros = { version = "1.3.1", path = "../grift_macros" }
