@@ -374,8 +374,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (expr_to_eval, eval_env) = self.unpack2(data)?;
                 match self.lisp.get(val)? {
                     Value::Environment { env: target_env, .. } => {
-                        // Push EvalExpr continuation with target env, then evaluate expression
-                        self.cont(ContType::EvalExpr, EnvRef(eval_env)).data1(target_env)?;
+                        // Push EvalExpr continuation with target env in data
+                        // (EvalExpr reads env from data, not from frame env)
+                        self.cont(ContType::EvalExpr, EnvRef(target_env)).data1(target_env)?;
                         Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env: EnvRef(eval_env) }))
                     }
                     _ => Err(self.type_error(val, "environment", self.lisp.get(val)?.type_name())),
