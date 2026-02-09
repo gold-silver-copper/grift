@@ -300,6 +300,24 @@ define_builtins! {
     NumberToString => "number->string",
     /// string->number - Convert string to number (or #f if invalid)
     StringToNumber => "string->number",
+
+    // File system and process operations (R7RS §6.13, §6.14)
+    /// load - Load and evaluate a Scheme source file
+    Load => "load",
+    /// file-exists? - Check if a file exists
+    FileExistsP => "file-exists?",
+    /// delete-file - Delete a file
+    DeleteFile => "delete-file",
+    /// command-line - Return command-line arguments as a list of strings
+    CommandLine => "command-line",
+    /// exit - Terminate the program normally
+    Exit => "exit",
+    /// emergency-exit - Terminate the program immediately without cleanup
+    EmergencyExit => "emergency-exit",
+    /// get-environment-variable - Get a single environment variable
+    GetEnvironmentVariable => "get-environment-variable",
+    /// get-environment-variables - Get all environment variables as an alist
+    GetEnvironmentVariables => "get-environment-variables",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
