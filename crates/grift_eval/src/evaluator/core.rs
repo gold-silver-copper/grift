@@ -1204,98 +1204,70 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.car_cdr(data).map_err(Into::into)
     }
     
-    /// Pack 3 values into nested cons: (a . (b . c))
+    /// Pack N values into nested cons: builds right-nested (a . (b . (c . ...)))
     #[inline]
     pub(super) fn pack3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let bc = self.lisp.cons(b, c)?;
-        self.lisp.cons(a, bc).map_err(Into::into)
+        let rest = self.pack2(b, c)?;
+        self.pack2(a, rest)
     }
     
-    /// Unpack 3 values from nested cons: (a . (b . c)) -> (a, b, c)
+    #[inline]
+    pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack3(b, c, d)?;
+        self.pack2(a, rest)
+    }
+    
+    #[inline]
+    pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack4(b, c, d, e)?;
+        self.pack2(a, rest)
+    }
+    
+    #[inline]
+    pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack5(b, c, d, e, f)?;
+        self.pack2(a, rest)
+    }
+    
+    #[inline]
+    pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack6(b, c, d, e, f, g)?;
+        self.pack2(a, rest)
+    }
+    
+    /// Unpack N values from nested cons
     #[inline]
     pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bc) = self.lisp.car_cdr(data)?;
-        let (b, c) = self.lisp.car_cdr(bc)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c) = self.unpack2(rest)?;
         Ok((a, b, c))
     }
     
-    /// Pack 4 values into nested cons: (a . (b . (c . d)))
-    #[inline]
-    pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let cd = self.lisp.cons(c, d)?;
-        let bcd = self.lisp.cons(b, cd)?;
-        self.lisp.cons(a, bcd).map_err(Into::into)
-    }
-    
-    /// Unpack 4 values from nested cons
     #[inline]
     pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcd) = self.lisp.car_cdr(data)?;
-        let (b, cd) = self.lisp.car_cdr(bcd)?;
-        let (c, d) = self.lisp.car_cdr(cd)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d) = self.unpack3(rest)?;
         Ok((a, b, c, d))
     }
     
-    /// Pack 5 values into nested cons
-    #[inline]
-    pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let de = self.lisp.cons(d, e)?;
-        let cde = self.lisp.cons(c, de)?;
-        let bcde = self.lisp.cons(b, cde)?;
-        self.lisp.cons(a, bcde).map_err(Into::into)
-    }
-    
-    /// Unpack 5 values from nested cons
     #[inline]
     pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcde) = self.lisp.car_cdr(data)?;
-        let (b, cde) = self.lisp.car_cdr(bcde)?;
-        let (c, de) = self.lisp.car_cdr(cde)?;
-        let (d, e) = self.lisp.car_cdr(de)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d, e) = self.unpack4(rest)?;
         Ok((a, b, c, d, e))
     }
     
-    /// Pack 6 values into nested cons
-    #[inline]
-    pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let ef = self.lisp.cons(e, f)?;
-        let def = self.lisp.cons(d, ef)?;
-        let cdef = self.lisp.cons(c, def)?;
-        let bcdef = self.lisp.cons(b, cdef)?;
-        self.lisp.cons(a, bcdef).map_err(Into::into)
-    }
-    
-    /// Unpack 6 values from nested cons
     #[inline]
     pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcdef) = self.lisp.car_cdr(data)?;
-        let (b, cdef) = self.lisp.car_cdr(bcdef)?;
-        let (c, def) = self.lisp.car_cdr(cdef)?;
-        let (d, ef) = self.lisp.car_cdr(def)?;
-        let (e, f) = self.lisp.car_cdr(ef)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d, e, f) = self.unpack5(rest)?;
         Ok((a, b, c, d, e, f))
     }
     
-    /// Pack 7 values into nested cons
-    #[inline]
-    pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let fg = self.lisp.cons(f, g)?;
-        let efg = self.lisp.cons(e, fg)?;
-        let defg = self.lisp.cons(d, efg)?;
-        let cdefg = self.lisp.cons(c, defg)?;
-        let bcdefg = self.lisp.cons(b, cdefg)?;
-        self.lisp.cons(a, bcdefg).map_err(Into::into)
-    }
-    
-    /// Unpack 7 values from nested cons
     #[inline]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcdefg) = self.lisp.car_cdr(data)?;
-        let (b, cdefg) = self.lisp.car_cdr(bcdefg)?;
-        let (c, defg) = self.lisp.car_cdr(cdefg)?;
-        let (d, efg) = self.lisp.car_cdr(defg)?;
-        let (e, fg) = self.lisp.car_cdr(efg)?;
-        let (f, g) = self.lisp.car_cdr(fg)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d, e, f, g) = self.unpack6(rest)?;
         Ok((a, b, c, d, e, f, g))
     }
     

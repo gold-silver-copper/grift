@@ -9,7 +9,7 @@ use crate::error::{ErrorKind, EvalError, EvalResult};
 use crate::continuation::{TrampolineState, ContType, is_binary_builtin, EnvRef, ExprRef};
 use crate::helpers::{int_pow, equal_recursive, float_floor, float_ceil, float_truncate, float_round, float_sqrt, float_pow};
 use crate::{
-    extract_args, builtin_unary_pred, builtin_rounding_op, builtin_div_op,
+    extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_rounding_op, builtin_div_op,
     builtin_char_to_int, builtin_char_transform,
     binary_int_cmp, binary_int_op, binary_div_op,
 };
@@ -303,25 +303,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // eq? and eqv? have identical semantics in this integer-only implementation
             Builtin::EqP | Builtin::EqvP => {
                 extract_args!(self, args, a, b);
-                
-                let val_a = self.lisp.get(a)?;
-                let val_b = self.lisp.get(b)?;
-                
-                let eq = match (val_a, val_b) {
-                    (Value::Nil, Value::Nil) => true,
-                    (Value::True, Value::True) => true,
-                    (Value::False, Value::False) => true,
-                    (Value::Number(x), Value::Number(y)) => x == y,
-                    (Value::Float(x), Value::Float(y)) => x == y,
-                    (Value::Char(x), Value::Char(y)) => x == y,
-                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
-                    (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
-                        a == b || (la == lb && da == db)
-                    }
-                    _ => a == b,
-                };
-                
-                self.lisp.boolean(eq).map_err(Into::into)
+                self.eqv_compare(a, b)
             }
             
             Builtin::EqualP => {
@@ -477,51 +459,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // exact? is true for integers (exact numbers)
-            Builtin::Exactp => {
-                let val = self.lisp.car(args)?;
-                match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(true).map_err(Into::into),
-                    Value::Float(_) => self.lisp.boolean(false).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
+            Builtin::Exactp => builtin_numeric_pred!(self, args, call_expr, |_n| true, |_f| false),
             
-            Builtin::Inexactp => {
-                // inexact? is true for floats
-                let val = self.lisp.car(args)?;
-                match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
-                    Value::Float(_) => self.lisp.boolean(true).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
+            Builtin::Inexactp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |_f| true),
             
-            Builtin::Finitep => {
-                let val = self.lisp.car(args)?;
-                match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(true).map_err(Into::into),
-                    Value::Float(f) => self.lisp.boolean(f.is_finite()).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
+            Builtin::Finitep => builtin_numeric_pred!(self, args, call_expr, |_n| true, |f| f.is_finite()),
             
-            Builtin::Infinitep => {
-                let val = self.lisp.car(args)?;
-                match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
-                    Value::Float(f) => self.lisp.boolean(f.is_infinite()).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
+            Builtin::Infinitep => builtin_numeric_pred!(self, args, call_expr, |_n| false, |f| f.is_infinite()),
             
-            Builtin::Nanp => {
-                let val = self.lisp.car(args)?;
-                match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
-                    Value::Float(f) => self.lisp.boolean(f.is_nan()).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
+            Builtin::Nanp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |f| f.is_nan()),
             
             // Rounding operations - identity for integers, actual rounding for floats
             Builtin::Floor => builtin_rounding_op!(self, args, call_expr, float_floor),
@@ -1700,27 +1646,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.boolean(is_port).map_err(Into::into)
             }
 
-            Builtin::InputPortp => {
-                let arg = self.lisp.car(args)?;
-                let result = match self.lisp.get(arg)? {
-                    Value::Port(pid) => {
-                        if let Some(ref io) = self.io { io.is_input_port(pid) } else { false }
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(result).map_err(Into::into)
-            }
+            Builtin::InputPortp => self.port_predicate(args, |io, pid| io.is_input_port(pid)),
 
-            Builtin::OutputPortp => {
-                let arg = self.lisp.car(args)?;
-                let result = match self.lisp.get(arg)? {
-                    Value::Port(pid) => {
-                        if let Some(ref io) = self.io { io.is_output_port(pid) } else { false }
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(result).map_err(Into::into)
-            }
+            Builtin::OutputPortp => self.port_predicate(args, |io, pid| io.is_output_port(pid)),
 
             Builtin::CurrentInputPort => {
                 self.lisp.port(grift_parser::PortId::STDIN).map_err(Into::into)
@@ -1814,8 +1742,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.void_val().map_err(Into::into)
             }
 
-            Builtin::Write => {
-                // (write obj) or (write obj port)
+            Builtin::Write | Builtin::WriteShared | Builtin::WriteSimple => {
+                // (write obj [port]) / (write-shared obj [port]) / (write-simple obj [port])
+                // In this implementation, all behave identically since we don't
+                // have circular structures.
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
@@ -1828,7 +1758,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 };
                 if let Some(ref mut io) = self.io {
-                    // Use DisplayValue (write mode with quotes) through a fmt::Write adapter
                     let dv = grift_parser::DisplayValue::new(val, self.lisp);
                     let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
                     use core::fmt::Write;
@@ -2006,82 +1935,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.string(s).map_err(Into::into)
             }
 
-            Builtin::WriteShared | Builtin::WriteSimple => {
-                // (write-shared obj [port]) / (write-simple obj [port])
-                // In this implementation, both behave like write since we don't
-                // have circular structures.
-                let val = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDOUT
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
-                if let Some(ref mut io) = self.io {
-                    let dv = grift_parser::DisplayValue::new(val, self.lisp);
-                    let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
-                    use core::fmt::Write;
-                    let _ = write!(writer, "{}", dv);
-                    if writer.error {
-                        return Err(self.make_error(ErrorKind::Generic, call_expr));
-                    }
-                } else if let Some(callback) = self.output_callback {
-                    callback(self.lisp, val);
-                }
-                self.lisp.void_val().map_err(Into::into)
-            }
+            Builtin::TextualPortp => self.port_predicate(args, |io, pid| io.is_textual_port(pid)),
 
-            Builtin::TextualPortp => {
-                let arg = self.lisp.car(args)?;
-                let result = match self.lisp.get(arg)? {
-                    Value::Port(pid) => {
-                        if let Some(ref io) = self.io { io.is_textual_port(pid) } else { false }
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(result).map_err(Into::into)
-            }
+            Builtin::BinaryPortp => self.port_predicate(args, |io, pid| io.is_binary_port(pid)),
 
-            Builtin::BinaryPortp => {
-                let arg = self.lisp.car(args)?;
-                let result = match self.lisp.get(arg)? {
-                    Value::Port(pid) => {
-                        if let Some(ref io) = self.io { io.is_binary_port(pid) } else { false }
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(result).map_err(Into::into)
-            }
+            Builtin::InputPortOpenp => self.port_predicate(args, |io, pid| io.is_input_port(pid) && io.is_port_open(pid)),
 
-            Builtin::InputPortOpenp => {
-                let arg = self.lisp.car(args)?;
-                let result = match self.lisp.get(arg)? {
-                    Value::Port(pid) => {
-                        if let Some(ref io) = self.io {
-                            io.is_input_port(pid) && io.is_port_open(pid)
-                        } else { false }
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-
-            Builtin::OutputPortOpenp => {
-                let arg = self.lisp.car(args)?;
-                let result = match self.lisp.get(arg)? {
-                    Value::Port(pid) => {
-                        if let Some(ref io) = self.io {
-                            io.is_output_port(pid) && io.is_port_open(pid)
-                        } else { false }
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(result).map_err(Into::into)
-            }
+            Builtin::OutputPortOpenp => self.port_predicate(args, |io, pid| io.is_output_port(pid) && io.is_port_open(pid)),
 
             // ================================================================
             // File system operations (R7RS §6.13)
@@ -2252,26 +2112,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Le => binary_int_cmp!(self, a, b, call_expr, |x, y| x <= y),
             Builtin::Ge => binary_int_cmp!(self, a, b, call_expr, |x, y| x >= y),
             Builtin::NumEq => binary_int_cmp!(self, a, b, call_expr, |x, y| x == y),
-            Builtin::EqP | Builtin::EqvP => {
-                let val_a = self.lisp.get(a)?;
-                let val_b = self.lisp.get(b)?;
-                
-                let eq = match (val_a, val_b) {
-                    (Value::Nil, Value::Nil) => true,
-                    (Value::True, Value::True) => true,
-                    (Value::False, Value::False) => true,
-                    (Value::Number(x), Value::Number(y)) => x == y,
-                    (Value::Float(x), Value::Float(y)) => x == y,
-                    (Value::Char(x), Value::Char(y)) => x == y,
-                    (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
-                    (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
-                        a == b || (la == lb && da == db)
-                    }
-                    _ => a == b,
-                };
-                
-                self.lisp.boolean(eq).map_err(Into::into)
-            }
+            Builtin::EqP | Builtin::EqvP => self.eqv_compare(a, b),
             Builtin::Cons => {
                 self.lisp.cons(a, b).map_err(Into::into)
             }
@@ -2315,6 +2156,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Char(c) => Ok(c),
             v => Err(self.type_error(call_expr, "char", v.type_name())),
         }
+    }
+    
+    /// Scheme eq?/eqv? comparison of two values
+    fn eqv_compare(&self, a: ArenaIndex, b: ArenaIndex) -> EvalResult {
+        let val_a = self.lisp.get(a)?;
+        let val_b = self.lisp.get(b)?;
+        
+        let eq = match (val_a, val_b) {
+            (Value::Nil, Value::Nil) => true,
+            (Value::True, Value::True) => true,
+            (Value::False, Value::False) => true,
+            (Value::Number(x), Value::Number(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Char(x), Value::Char(y)) => x == y,
+            (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
+            (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
+                a == b || (la == lb && da == db)
+            }
+            _ => a == b,
+        };
+        
+        self.lisp.boolean(eq).map_err(Into::into)
     }
     
     /// Numeric fold with already-evaluated args, supporting mixed int/float arithmetic.
@@ -2433,42 +2296,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Helper for string chain comparisons (string=?, string<?, etc.)
+    /// Helper for string chain comparisons (case-sensitive)
     pub(super) fn string_chain_compare<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex) -> EvalResult
     where
         F: Fn(core::cmp::Ordering) -> bool
     {
-        // Need at least 2 arguments
-        let first_idx = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        
-        if self.lisp.get(rest)?.is_nil() {
-            return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
-        }
-        
-        let mut prev_idx = first_idx;
-        let mut current = rest;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => return self.lisp.true_val().map_err(Into::into),
-                Value::Cons { .. } => {
-                    let car = self.lisp.car(current)?;
-                    let cdr = self.lisp.cdr(current)?;
-                    let ordering = self.compare_strings(prev_idx, car, call_expr)?;
-                    if !compare_fn(ordering) {
-                        return self.lisp.false_val().map_err(Into::into);
-                    }
-                    prev_idx = car;
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-            }
-        }
+        self.string_chain_compare_with(args, compare_fn, call_expr, false)
     }
     
-    /// Compare two strings lexicographically
-    pub(super) fn compare_strings(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
+    /// Compare two strings lexicographically, with optional case-insensitive comparison
+    pub(super) fn compare_strings_with(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex, case_insensitive: bool) -> Result<core::cmp::Ordering, EvalError> {
         let (len_a, data_a) = match self.lisp.get(a)? {
             Value::String { len, data } => (len, data),
             v => return Err(self.type_error(call_expr, "string", v.type_name())),
@@ -2483,12 +2320,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         for i in 0..min_len {
             let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
             let char_a = match self.lisp.get(slot_a)? {
-                Value::Char(c) => c,
+                Value::Char(c) => if case_insensitive { c.to_ascii_lowercase() } else { c },
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
             let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
             let char_b = match self.lisp.get(slot_b)? {
-                Value::Char(c) => c,
+                Value::Char(c) => if case_insensitive { c.to_ascii_lowercase() } else { c },
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
             
@@ -2507,6 +2344,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     where
         F: Fn(core::cmp::Ordering) -> bool
     {
+        self.string_chain_compare_with(args, compare_fn, call_expr, true)
+    }
+    
+    /// Unified helper for string chain comparisons with optional case-insensitivity
+    fn string_chain_compare_with<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex, case_insensitive: bool) -> EvalResult
+    where
+        F: Fn(core::cmp::Ordering) -> bool
+    {
         let first_idx = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         
@@ -2523,7 +2368,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Value::Cons { .. } => {
                     let car = self.lisp.car(current)?;
                     let cdr = self.lisp.cdr(current)?;
-                    let ordering = self.compare_strings_ci(prev_idx, car, call_expr)?;
+                    let ordering = self.compare_strings_with(prev_idx, car, call_expr, case_insensitive)?;
                     if !compare_fn(ordering) {
                         return self.lisp.false_val().map_err(Into::into);
                     }
@@ -2533,40 +2378,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Err(self.make_error(ErrorKind::TypeError, current)),
             }
         }
-    }
-    
-    /// Compare two strings lexicographically, case-insensitive
-    pub(super) fn compare_strings_ci(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
-        let (len_a, data_a) = match self.lisp.get(a)? {
-            Value::String { len, data } => (len, data),
-            v => return Err(self.type_error(call_expr, "string", v.type_name())),
-        };
-        let (len_b, data_b) = match self.lisp.get(b)? {
-            Value::String { len, data } => (len, data),
-            v => return Err(self.type_error(call_expr, "string", v.type_name())),
-        };
-        
-        let min_len = len_a.min(len_b);
-        
-        for i in 0..min_len {
-            let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
-            let char_a = match self.lisp.get(slot_a)? {
-                Value::Char(c) => c.to_ascii_lowercase(),
-                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-            };
-            let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
-            let char_b = match self.lisp.get(slot_b)? {
-                Value::Char(c) => c.to_ascii_lowercase(),
-                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-            };
-            
-            match char_a.cmp(&char_b) {
-                core::cmp::Ordering::Equal => {}
-                ord => return Ok(ord),
-            }
-        }
-        
-        Ok(len_a.cmp(&len_b))
     }
     
     /// Convert a proper list to an array (vector).
@@ -2596,6 +2407,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
         Ok(vec)
+    }
+
+    /// Helper for port predicates: extract first arg, check if it's a port,
+    /// and apply the predicate function against the IoProvider.
+    fn port_predicate<F>(&self, args: ArenaIndex, check: F) -> EvalResult
+    where
+        F: FnOnce(&dyn grift_parser::IoProvider, grift_parser::PortId) -> bool,
+    {
+        let arg = self.lisp.car(args)?;
+        let result = match self.lisp.get(arg)? {
+            Value::Port(pid) => {
+                if let Some(ref io) = self.io { check(&**io, pid) } else { false }
+            }
+            _ => false,
+        };
+        self.lisp.boolean(result).map_err(Into::into)
     }
 
     /// Extract an input port from optional arguments.

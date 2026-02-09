@@ -406,18 +406,8 @@ impl<const N: usize> Lisp<N> {
             return Ok(existing_symbol);
         }
         
-        // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol(name_str))?;
-        
-        // Add to intern table: (name_str . symbol)
-        let binding = self.cons(name_str, symbol)?;
-        let current_table = self.get_intern_table_root()?;
-        let new_table = self.cons(binding, current_table)?;
-        
-        // Update intern table root
-        self.set_intern_table_root(new_table)?;
-        
-        Ok(symbol)
+        // Not found - create new symbol and intern it
+        self.intern_new_symbol(name_str)
     }
     
     /// Create or retrieve an interned symbol from bytes (for parsing)
@@ -452,18 +442,8 @@ impl<const N: usize> Lisp<N> {
             self.alloc(Value::String { len: char_count, data })?
         };
         
-        // Create new symbol
-        let symbol = self.alloc(Value::Symbol(name_str))?;
-        
-        // Add to intern table: (name_str . symbol)
-        let binding = self.cons(name_str, symbol)?;
-        let current_table = self.get_intern_table_root()?;
-        let new_table = self.cons(binding, current_table)?;
-        
-        // Update intern table root
-        self.set_intern_table_root(new_table)?;
-        
-        Ok(symbol)
+        // Not found - create new symbol and intern it
+        self.intern_new_symbol(name_str)
     }
     
     /// Create or retrieve an interned symbol from an existing string index
@@ -495,21 +475,21 @@ impl<const N: usize> Lisp<N> {
                     self.alloc(Value::String { len, data: new_data })?
                 };
                 
-                // Create new symbol
-                let symbol = self.alloc(Value::Symbol(new_str))?;
-                
-                // Add to intern table: (new_str . symbol)
-                let binding = self.cons(new_str, symbol)?;
-                let current_table = self.get_intern_table_root()?;
-                let new_table = self.cons(binding, current_table)?;
-                
-                // Update intern table root
-                self.set_intern_table_root(new_table)?;
-                
-                Ok(symbol)
+                // Create new symbol and intern it
+                self.intern_new_symbol(new_str)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
+    }
+    
+    /// Create a new symbol with the given name string and add it to the intern table.
+    fn intern_new_symbol(&self, name_str: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let symbol = self.alloc(Value::Symbol(name_str))?;
+        let binding = self.cons(name_str, symbol)?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
+        self.set_intern_table_root(new_table)?;
+        Ok(symbol)
     }
     
     /// Create a new unique symbol without checking the intern table.
