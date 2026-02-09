@@ -694,7 +694,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match val {
             // Self-evaluating values
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | 
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
@@ -1143,6 +1143,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// This is used by StdLib functions to create their parameter list
     /// from the static &[&str] param names.
     pub(super) fn make_stdlib_param_list(&self, params: &[&str]) -> Result<ArenaIndex, EvalError> {
+        // Handle rest parameters: if params contains ".", create an improper list
+        // (define (f . args) body) → params [".", "args"] → symbol "args"
+        // (define (f x . rest) body) → params ["x", ".", "rest"] → (x . rest)
+        if let Some(dot_pos) = params.iter().position(|&p| p == ".") {
+            if dot_pos + 1 < params.len() {
+                let rest_sym = self.lisp.symbol(params[dot_pos + 1])?;
+                if dot_pos == 0 {
+                    // Pure rest args: (name . args) → just the symbol
+                    return Ok(rest_sym);
+                }
+                // Mixed: (name x y . rest) → improper list (x y . rest)
+                let mut result = rest_sym;
+                for name in params[..dot_pos].iter().rev() {
+                    let sym = self.lisp.symbol(name)?;
+                    result = self.lisp.cons(sym, result)?;
+                }
+                return Ok(result);
+            }
+        }
+        // Normal case: proper list of params
         let mut result = self.lisp.nil()?;
         for name in params.iter().rev() {
             let sym = self.lisp.symbol(name)?;

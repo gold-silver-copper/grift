@@ -50,38 +50,54 @@ macro_rules! builtin_unary_pred {
 
 /// Macro for numeric predicate builtins.
 ///
-/// Extracts one integer argument and returns a boolean based on the predicate.
+/// Extracts one numeric argument (integer or float) and returns a boolean based on the predicate.
+/// For integer arguments, passes isize to int_check. For float arguments, passes fsize to float_check.
 ///
 /// # Example
 /// 
-/// `builtin_numeric_pred!(self, args, call_expr, |n| n == 0)` extracts one integer
-/// and returns whether it equals zero.
+/// `builtin_numeric_pred!(self, args, call_expr, |n| n == 0, |f| f == 0.0)` 
 #[macro_export]
 macro_rules! builtin_numeric_pred {
-    ($self:expr, $args:expr, $call_expr:expr, $check:expr) => {{
-        let n = $self.get_int($self.lisp.car($args)?, $call_expr)?;
-        $self.lisp.boolean($check(n)).map_err(Into::into)
+    ($self:expr, $args:expr, $call_expr:expr, |$n:ident| $int_check:expr, |$f:ident| $float_check:expr) => {{
+        let arg = $self.lisp.car($args)?;
+        match $self.lisp.get(arg)? {
+            Value::Number($n) => $self.lisp.boolean($int_check).map_err(Into::into),
+            Value::Float($f) => $self.lisp.boolean($float_check).map_err(Into::into),
+            v => Err($self.type_error($call_expr, "number", v.type_name())),
+        }
+    }};
+    ($self:expr, $args:expr, $call_expr:expr, |$n:ident| $check:expr) => {{
+        let $n = $self.get_int($self.lisp.car($args)?, $call_expr)?;
+        $self.lisp.boolean($check).map_err(Into::into)
     }};
 }
 
-/// Macro for integer identity operations (rounding on integers).
+/// Macro for rounding operations.
 ///
-/// For integers, floor/ceiling/truncate/round are all identity operations.
+/// For integers, these are identity operations. For floats, applies the float operation.
 ///
 /// # Example
 /// 
-/// `builtin_int_identity!(self, args, call_expr)` extracts one integer and returns it.
+/// `builtin_rounding_op!(self, args, call_expr, |f| float_floor(f))` 
 #[macro_export]
-macro_rules! builtin_int_identity {
-    ($self:expr, $args:expr, $call_expr:expr) => {{
-        let n = $self.get_int($self.lisp.car($args)?, $call_expr)?;
-        $self.lisp.number(n).map_err(Into::into)
+macro_rules! builtin_rounding_op {
+    ($self:expr, $args:expr, $call_expr:expr, $float_op:expr) => {{
+        let arg = $self.lisp.car($args)?;
+        match $self.lisp.get(arg)? {
+            Value::Number(n) => $self.lisp.number(n).map_err(Into::into),
+            Value::Float(f) => {
+                let result = $float_op(f);
+                $self.lisp.float(result).map_err(Into::into)
+            }
+            v => Err($self.type_error($call_expr, "number", v.type_name())),
+        }
     }};
 }
 
 /// Macro for binary integer operations with division-by-zero check.
 ///
 /// Extracts two integer arguments, checks for division by zero, and applies the operation.
+/// Only works on exact integers (no float promotion).
 ///
 /// # Example
 /// 
@@ -98,9 +114,30 @@ macro_rules! builtin_div_op {
     }};
 }
 
+/// Macro for unary numeric operations (supports both int and float).
+///
+/// Extracts one argument. If integer, applies int_op and returns Number.
+/// If float, applies float_op and returns Float.
+///
+/// # Example
+/// 
+/// `builtin_unary_num!(self, args, call_expr, |n: isize| n.abs(), |f: fsize| f.abs())` 
+#[macro_export]
+macro_rules! builtin_unary_num {
+    ($self:expr, $args:expr, $call_expr:expr, |$n:ident : isize| $int_op:expr, |$f:ident : fsize| $float_op:expr) => {{
+        let arg = $self.lisp.car($args)?;
+        match $self.lisp.get(arg)? {
+            Value::Number($n) => $self.lisp.number($int_op).map_err(Into::into),
+            Value::Float($f) => $self.lisp.float($float_op).map_err(Into::into),
+            v => Err($self.type_error($call_expr, "number", v.type_name())),
+        }
+    }};
+}
+
 /// Macro for unary integer operations.
 ///
 /// Extracts one integer argument, applies a transformation, and returns a number.
+/// Also accepts floats, truncating to integer first.
 ///
 /// # Example
 /// 
@@ -144,45 +181,95 @@ macro_rules! builtin_char_transform {
     }};
 }
 
-/// Macro for binary integer comparison (returns boolean).
+/// Macro for binary numeric comparison (returns boolean).
 ///
+/// Supports mixed int/float comparisons with automatic promotion.
 /// Used in apply_binary_builtin for comparison operations.
 #[macro_export]
 macro_rules! binary_int_cmp {
     ($self:expr, $a:expr, $b:expr, $call_expr:expr, $cmp:expr) => {{
-        let x = $self.get_int($a, $call_expr)?;
-        let y = $self.get_int($b, $call_expr)?;
-        $self.lisp.boolean($cmp(x, y)).map_err(Into::into)
+        let val_a = $self.lisp.get($a)?;
+        let val_b = $self.lisp.get($b)?;
+        let result = match (val_a, val_b) {
+            (Value::Number(x), Value::Number(y)) => $cmp(x as $crate::fsize, y as $crate::fsize),
+            (Value::Number(x), Value::Float(y)) => $cmp(x as $crate::fsize, y),
+            (Value::Float(x), Value::Number(y)) => $cmp(x, y as $crate::fsize),
+            (Value::Float(x), Value::Float(y)) => $cmp(x, y),
+            (v, _) if !v.is_number() => return Err($self.type_error($call_expr, "number", v.type_name())),
+            (_, v) => return Err($self.type_error($call_expr, "number", v.type_name())),
+        };
+        $self.lisp.boolean(result).map_err(Into::into)
     }};
 }
 
-/// Macro for binary integer arithmetic (returns number).
+/// Macro for binary numeric arithmetic (returns number).
 ///
+/// Supports mixed int/float arithmetic with automatic promotion to float.
 /// Used in apply_binary_builtin for arithmetic operations.
 #[macro_export]
 macro_rules! binary_int_op {
-    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $op:expr) => {{
-        let x = $self.get_int($a, $call_expr)?;
-        let y = $self.get_int($b, $call_expr)?;
-        match $op(x, y) {
-            Some(n) => $self.lisp.number(n).map_err(Into::into),
-            None => Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr)),
+    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $int_op:expr, $float_op:expr) => {{
+        let val_a = $self.lisp.get($a)?;
+        let val_b = $self.lisp.get($b)?;
+        match (val_a, val_b) {
+            (Value::Number(x), Value::Number(y)) => {
+                match $int_op(x, y) {
+                    Some(n) => $self.lisp.number(n).map_err(Into::into),
+                    None => Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr)),
+                }
+            }
+            (Value::Number(x), Value::Float(y)) => {
+                $self.lisp.float($float_op(x as $crate::fsize, y)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::Number(y)) => {
+                $self.lisp.float($float_op(x, y as $crate::fsize)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::Float(y)) => {
+                $self.lisp.float($float_op(x, y)).map_err(Into::into)
+            }
+            (v, _) if !v.is_number() => Err($self.type_error($call_expr, "number", v.type_name())),
+            (_, v) => Err($self.type_error($call_expr, "number", v.type_name())),
         }
     }};
 }
 
 /// Macro for binary division operations with zero check.
 ///
+/// Supports mixed int/float division with automatic promotion.
 /// Used in apply_binary_builtin for div/mod/rem operations.
 #[macro_export]
 macro_rules! binary_div_op {
-    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $op:expr) => {{
-        let x = $self.get_int($a, $call_expr)?;
-        let y = $self.get_int($b, $call_expr)?;
-        if y == 0 {
-            return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+    ($self:expr, $a:expr, $b:expr, $call_expr:expr, $int_op:expr, $float_op:expr) => {{
+        let val_a = $self.lisp.get($a)?;
+        let val_b = $self.lisp.get($b)?;
+        match (val_a, val_b) {
+            (Value::Number(x), Value::Number(y)) => {
+                if y == 0 {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                $self.lisp.number($int_op(x, y)).map_err(Into::into)
+            }
+            (Value::Number(x), Value::Float(y)) => {
+                if y == 0.0 {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                $self.lisp.float($float_op(x as $crate::fsize, y)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::Number(y)) => {
+                if y == 0 {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                $self.lisp.float($float_op(x, y as $crate::fsize)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::Float(y)) => {
+                if y == 0.0 {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                $self.lisp.float($float_op(x, y)).map_err(Into::into)
+            }
+            (v, _) if !v.is_number() => Err($self.type_error($call_expr, "number", v.type_name())),
+            (_, v) => Err($self.type_error($call_expr, "number", v.type_name())),
         }
-        $self.lisp.number($op(x, y)).map_err(Into::into)
     }};
 }
 

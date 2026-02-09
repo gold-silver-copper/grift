@@ -5,6 +5,7 @@
 //! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
 
 use grift_arena::{ArenaIndex, Trace};
+use crate::fsize;
 use crate::io::PortId;
 
 // Define all built-in functions using the macro.
@@ -39,10 +40,6 @@ define_builtins! {
     EqvP => "eqv?",
     /// equal? - Scheme-compliant recursive structural equality
     EqualP => "equal?",
-    /// symbol=? - Test if all arguments are equal symbols
-    SymbolEqP => "symbol=?",
-    /// boolean=? - Test if all arguments are equal booleans
-    BooleanEqP => "boolean=?",
     
     // Arithmetic
     /// + - Addition
@@ -59,40 +56,32 @@ define_builtins! {
     Remainder => "remainder",
     /// quotient - Integer quotient (truncated towards zero)
     Quotient => "quotient",
-    /// abs - Absolute value
-    Abs => "abs",
-    /// max - Maximum of numbers
-    Max => "max",
-    /// min - Minimum of numbers
-    Min => "min",
-    /// gcd - Greatest common divisor
-    Gcd => "gcd",
-    /// lcm - Least common multiple
-    Lcm => "lcm",
     /// expt - Exponentiation
     Expt => "expt",
-    /// square - Square of a number
-    Square => "square",
     
     // Numeric predicates
-    /// zero? - Check if number is zero
-    Zerop => "zero?",
-    /// positive? - Check if number is positive
-    Positivep => "positive?",
-    /// negative? - Check if number is negative
-    Negativep => "negative?",
-    /// odd? - Check if number is odd
-    Oddp => "odd?",
-    /// even? - Check if number is even
-    Evenp => "even?",
     /// integer? - Check if value is an integer
     Integerp => "integer?",
     /// exact? - Check if number is exact (always true for integers)
     Exactp => "exact?",
     /// inexact? - Check if number is inexact (always false for integers)
     Inexactp => "inexact?",
-    /// exact-integer? - Check if value is an exact integer
-    ExactIntegerp => "exact-integer?",
+    /// exact->inexact - Convert exact number to inexact
+    ExactToInexact => "exact->inexact",
+    /// inexact->exact - Convert inexact number to exact
+    InexactToExact => "inexact->exact",
+    /// exact - R7RS exact conversion
+    Exact => "exact",
+    /// inexact - R7RS inexact conversion
+    Inexact => "inexact",
+    /// finite? - Check if number is finite
+    Finitep => "finite?",
+    /// infinite? - Check if number is infinite
+    Infinitep => "infinite?",
+    /// nan? - Check if number is NaN
+    Nanp => "nan?",
+    /// sqrt - Square root
+    Sqrt => "sqrt",
     
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
@@ -115,10 +104,6 @@ define_builtins! {
     Ge => ">=",
     /// = - Numeric equality
     NumEq => "=",
-    
-    // Boolean operations
-    /// not - Boolean negation
-    Not => "not",
     
     // I/O
     /// newline - Print a newline
@@ -398,6 +383,12 @@ pub enum Value {
     
     /// Integer number
     Number(isize),
+    
+    /// Inexact floating-point number (R7RS numeric tower)
+    ///
+    /// Uses `fsize` which is `f64` on 64-bit platforms and `f32` on 32-bit,
+    /// matching the width of `isize`/`usize`.
+    Float(fsize),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -737,16 +728,22 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number
+    /// Check if this value is a number (integer or float)
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_))
+        matches!(self, Value::Number(_) | Value::Float(_))
     }
     
     /// Check if this value is an integer
     #[inline]
     pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
+    }
+    
+    /// Check if this value is a float
+    #[inline]
+    pub const fn is_float(&self) -> bool {
+        matches!(self, Value::Float(_))
     }
     
     /// Extract ArenaIndex from a Ref value.
@@ -844,6 +841,25 @@ impl Value {
         }
     }
     
+    /// Get the float value if this is a Float
+    #[inline]
+    pub fn as_float(&self) -> Option<fsize> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
+    /// Get the numeric value as an fsize (works for both Number and Float)
+    #[inline]
+    pub fn as_fsize(&self) -> Option<fsize> {
+        match self {
+            Value::Number(n) => Some(*n as fsize),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
     /// Get the char value if this is a char
     #[inline]
     pub const fn as_char(&self) -> Option<char> {
@@ -875,6 +891,7 @@ impl Value {
             Value::Void => "void",
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
+            Value::Float(_) => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -924,7 +941,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }
