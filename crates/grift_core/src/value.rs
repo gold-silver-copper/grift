@@ -163,6 +163,22 @@ define_builtins! {
     OpenOutputString => "open-output-string",
     /// get-output-string - Get accumulated string from an output string port
     GetOutputString => "get-output-string",
+    /// read-line - Read a line of text from a port
+    ReadLine => "read-line",
+    /// read-string - Read up to k characters from a port
+    ReadString => "read-string",
+    /// write-shared - Write with shared structure notation
+    WriteShared => "write-shared",
+    /// write-simple - Write without shared structure handling
+    WriteSimple => "write-simple",
+    /// textual-port? - Check if port handles text
+    TextualPortp => "textual-port?",
+    /// binary-port? - Check if port handles binary data
+    BinaryPortp => "binary-port?",
+    /// input-port-open? - Check if input port is still open
+    InputPortOpenp => "input-port-open?",
+    /// output-port-open? - Check if output port is still open
+    OutputPortOpenp => "output-port-open?",
     
     // Error handling
     /// error - Raise an error

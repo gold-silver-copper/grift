@@ -101,6 +101,24 @@ pub trait IoProvider {
     /// Return `true` if the port is an output port.
     fn is_output_port(&self, port: PortId) -> bool;
 
+    /// Return `true` if the port is still open.
+    /// Default: returns `true` (assumes ports are open unless overridden).
+    fn is_port_open(&self, _port: PortId) -> bool {
+        true
+    }
+
+    /// Return `true` if the port is a textual port.
+    /// Default: returns `true` for any valid input or output port.
+    fn is_textual_port(&self, port: PortId) -> bool {
+        self.is_input_port(port) || self.is_output_port(port)
+    }
+
+    /// Return `true` if the port is a binary port.
+    /// Default: returns `false` (all ports are textual by default).
+    fn is_binary_port(&self, _port: PortId) -> bool {
+        false
+    }
+
     /// Open an input port that reads from the given string.
     ///
     /// Returns a fresh [`PortId`] for the new port.
