@@ -56,7 +56,6 @@ grift_std = { workspace = true, optional = true }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples=disabled"]
 
 [[example]]
 name = "minimal"

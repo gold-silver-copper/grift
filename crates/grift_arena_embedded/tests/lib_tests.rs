@@ -136,3 +136,70 @@ fn test_bit_insert() {
     let result = eval.eval_str("(bit-insert 0 15 4 4)").unwrap();
     assert_eq!(lisp.get(result).unwrap().as_number(), Some(240));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EmbeddedIoProvider Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+use grift_eval::{IoProvider, PortId, IoErrorKind};
+
+#[test]
+fn test_embedded_io_read_write() {
+    let mut io = EmbeddedIoProvider::<128>::new();
+
+    io.load_input("abc");
+    assert_eq!(io.read_char(PortId::STDIN).unwrap(), 'a');
+    assert_eq!(io.read_char(PortId::STDIN).unwrap(), 'b');
+    assert_eq!(io.read_char(PortId::STDIN).unwrap(), 'c');
+    assert_eq!(io.read_char(PortId::STDIN), Err(IoErrorKind::Eof));
+
+    io.write_str(PortId::STDOUT, "hi").unwrap();
+    assert_eq!(io.output_str(), "hi");
+}
+
+#[test]
+fn test_embedded_io_peek() {
+    let mut io = EmbeddedIoProvider::<128>::new();
+    io.load_input("X");
+
+    assert_eq!(io.peek_char(PortId::STDIN).unwrap(), 'X');
+    // peek should not consume the character
+    assert_eq!(io.read_char(PortId::STDIN).unwrap(), 'X');
+}
+
+#[test]
+fn test_embedded_io_char_ready() {
+    let mut io = EmbeddedIoProvider::<64>::new();
+    assert_eq!(io.char_ready(PortId::STDIN).unwrap(), false);
+
+    io.load_input("z");
+    assert_eq!(io.char_ready(PortId::STDIN).unwrap(), true);
+}
+
+#[test]
+fn test_embedded_io_port_state() {
+    let mut io = EmbeddedIoProvider::<64>::new();
+
+    assert!(io.is_input_port(PortId::STDIN));
+    assert!(!io.is_output_port(PortId::STDIN));
+    assert!(io.is_output_port(PortId::STDOUT));
+    assert!(io.is_port_open(PortId::STDIN));
+
+    io.close_port(PortId::STDIN).unwrap();
+    assert!(!io.is_port_open(PortId::STDIN));
+    assert_eq!(io.read_char(PortId::STDIN), Err(IoErrorKind::PortClosed));
+}
+
+#[test]
+fn test_embedded_io_clear() {
+    let mut io = EmbeddedIoProvider::<128>::new();
+
+    io.load_input("data");
+    io.write_str(PortId::STDOUT, "out").unwrap();
+
+    io.clear_input();
+    assert_eq!(io.char_ready(PortId::STDIN).unwrap(), false);
+
+    io.clear_output();
+    assert_eq!(io.output_str(), "");
+}

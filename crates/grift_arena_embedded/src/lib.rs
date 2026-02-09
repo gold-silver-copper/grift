@@ -43,7 +43,7 @@
 #![forbid(unsafe_code)]
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use grift_eval::{Evaluator, EvalError, register_native};
+use grift_eval::{Evaluator, EvalError, register_native, IoProvider, PortId, IoResult, IoErrorKind};
 
 // ============================================================================
 // Mock Memory/Register Storage using Atomics
@@ -344,5 +344,228 @@ pub fn reset_mock_hardware() {
     }
     for gpio in MOCK_GPIO.iter() {
         gpio.store(0, Ordering::SeqCst);
+    }
+}
+
+// ============================================================================
+// Embedded I/O Provider
+// ============================================================================
+
+/// Default size of the input and output buffers in [`EmbeddedIoProvider`].
+const EMBEDDED_IO_BUF_SIZE: usize = 1024;
+
+/// A `no_std`, fixed-buffer I/O provider for embedded targets.
+///
+/// `EmbeddedIoProvider` implements [`IoProvider`] using stack-allocated byte
+/// buffers of size `BUF` (default 1024 bytes).  It supports:
+///
+/// * **STDIN** — pre-loaded input via [`load_input`](Self::load_input).
+/// * **STDOUT** — buffered output retrieved with [`output_str`](Self::output_str).
+///
+/// Because everything lives on the stack (or in a `static`), no heap
+/// allocation is required, making this suitable for bare-metal or RTOS
+/// environments.
+///
+/// # Example
+///
+/// ```rust
+/// use grift_arena_embedded::EmbeddedIoProvider;
+/// use grift_eval::{Lisp, Evaluator, IoProvider, PortId};
+///
+/// let lisp: Lisp<20000> = Lisp::new();
+/// let mut eval = Evaluator::new(&lisp).unwrap();
+///
+/// // Create an I/O provider with a 256-byte buffer
+/// let mut io = EmbeddedIoProvider::<256>::new();
+///
+/// // Pre-load input that (read-char) will consume
+/// io.load_input("hello");
+///
+/// // Read characters back
+/// assert_eq!(io.read_char(PortId::STDIN).unwrap(), 'h');
+/// assert_eq!(io.read_char(PortId::STDIN).unwrap(), 'e');
+///
+/// // Write output
+/// io.write_str(PortId::STDOUT, "ok").unwrap();
+/// assert_eq!(io.output_str(), "ok");
+/// ```
+pub struct EmbeddedIoProvider<const BUF: usize = EMBEDDED_IO_BUF_SIZE> {
+    /// Input buffer (UTF-8 bytes).
+    input_buf: [u8; BUF],
+    /// Number of valid bytes in `input_buf`.
+    input_len: usize,
+    /// Current read position in `input_buf`.
+    input_pos: usize,
+    /// Output buffer (UTF-8 bytes).
+    output_buf: [u8; BUF],
+    /// Number of valid bytes in `output_buf`.
+    output_len: usize,
+    /// Whether STDIN is still open.
+    stdin_open: bool,
+    /// Whether STDOUT is still open.
+    stdout_open: bool,
+}
+
+impl<const BUF: usize> EmbeddedIoProvider<BUF> {
+    /// Create a new `EmbeddedIoProvider` with empty buffers.
+    pub const fn new() -> Self {
+        Self {
+            input_buf: [0u8; BUF],
+            input_len: 0,
+            input_pos: 0,
+            output_buf: [0u8; BUF],
+            output_len: 0,
+            stdin_open: true,
+            stdout_open: true,
+        }
+    }
+
+    /// Pre-load input data that will be consumed by [`read_char`](IoProvider::read_char).
+    ///
+    /// Any unread data is discarded; the read position resets to zero.
+    /// If the string exceeds the buffer size it is silently truncated.
+    pub fn load_input(&mut self, s: &str) {
+        let bytes = s.as_bytes();
+        let copy_len = if bytes.len() > BUF { BUF } else { bytes.len() };
+        self.input_buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        self.input_len = copy_len;
+        self.input_pos = 0;
+    }
+
+    /// Return the output buffer contents as a `&str`.
+    ///
+    /// The buffer is guaranteed to be valid UTF-8 because only
+    /// [`write_char`](IoProvider::write_char) and
+    /// [`write_str`](IoProvider::write_str) can append to it.
+    pub fn output_str(&self) -> &str {
+        // SAFETY: we only ever write valid UTF-8 into output_buf.
+        core::str::from_utf8(&self.output_buf[..self.output_len]).unwrap_or("")
+    }
+
+    /// Clear the output buffer.
+    pub fn clear_output(&mut self) {
+        self.output_len = 0;
+    }
+
+    /// Clear the input buffer and reset the read position.
+    pub fn clear_input(&mut self) {
+        self.input_len = 0;
+        self.input_pos = 0;
+    }
+}
+
+impl<const BUF: usize> IoProvider for EmbeddedIoProvider<BUF> {
+    fn read_char(&mut self, port: PortId) -> IoResult<char> {
+        if port != PortId::STDIN {
+            return Err(IoErrorKind::InvalidPort);
+        }
+        if !self.stdin_open {
+            return Err(IoErrorKind::PortClosed);
+        }
+        if self.input_pos >= self.input_len {
+            return Err(IoErrorKind::Eof);
+        }
+        // Decode one UTF-8 character from the input buffer.
+        let remaining = &self.input_buf[self.input_pos..self.input_len];
+        match core::str::from_utf8(remaining) {
+            Ok(s) => {
+                let ch = s.chars().next().unwrap();
+                self.input_pos += ch.len_utf8();
+                Ok(ch)
+            }
+            Err(_) => Err(IoErrorKind::ReadFailed),
+        }
+    }
+
+    fn peek_char(&mut self, port: PortId) -> IoResult<char> {
+        if port != PortId::STDIN {
+            return Err(IoErrorKind::InvalidPort);
+        }
+        if !self.stdin_open {
+            return Err(IoErrorKind::PortClosed);
+        }
+        if self.input_pos >= self.input_len {
+            return Err(IoErrorKind::Eof);
+        }
+        let remaining = &self.input_buf[self.input_pos..self.input_len];
+        match core::str::from_utf8(remaining) {
+            Ok(s) => Ok(s.chars().next().unwrap()),
+            Err(_) => Err(IoErrorKind::ReadFailed),
+        }
+    }
+
+    fn char_ready(&mut self, port: PortId) -> IoResult<bool> {
+        if port != PortId::STDIN {
+            return Err(IoErrorKind::InvalidPort);
+        }
+        Ok(self.input_pos < self.input_len)
+    }
+
+    fn write_char(&mut self, port: PortId, c: char) -> IoResult<()> {
+        if port != PortId::STDOUT && port != PortId::STDERR {
+            return Err(IoErrorKind::InvalidPort);
+        }
+        if !self.stdout_open {
+            return Err(IoErrorKind::PortClosed);
+        }
+        let mut buf = [0u8; 4];
+        let encoded = c.encode_utf8(&mut buf);
+        let bytes = encoded.as_bytes();
+        if self.output_len + bytes.len() > BUF {
+            return Err(IoErrorKind::WriteFailed);
+        }
+        self.output_buf[self.output_len..self.output_len + bytes.len()]
+            .copy_from_slice(bytes);
+        self.output_len += bytes.len();
+        Ok(())
+    }
+
+    fn write_str(&mut self, port: PortId, s: &str) -> IoResult<()> {
+        if port != PortId::STDOUT && port != PortId::STDERR {
+            return Err(IoErrorKind::InvalidPort);
+        }
+        if !self.stdout_open {
+            return Err(IoErrorKind::PortClosed);
+        }
+        let bytes = s.as_bytes();
+        if self.output_len + bytes.len() > BUF {
+            return Err(IoErrorKind::WriteFailed);
+        }
+        self.output_buf[self.output_len..self.output_len + bytes.len()]
+            .copy_from_slice(bytes);
+        self.output_len += bytes.len();
+        Ok(())
+    }
+
+    fn flush(&mut self, _port: PortId) -> IoResult<()> {
+        // No-op for fixed buffers.
+        Ok(())
+    }
+
+    fn close_port(&mut self, port: PortId) -> IoResult<()> {
+        if port == PortId::STDIN {
+            self.stdin_open = false;
+        } else if port == PortId::STDOUT || port == PortId::STDERR {
+            self.stdout_open = false;
+        }
+        Ok(())
+    }
+
+    fn is_input_port(&self, port: PortId) -> bool {
+        port == PortId::STDIN
+    }
+
+    fn is_output_port(&self, port: PortId) -> bool {
+        port == PortId::STDOUT || port == PortId::STDERR
+    }
+
+    fn is_port_open(&self, port: PortId) -> bool {
+        if port == PortId::STDIN {
+            self.stdin_open
+        } else if port == PortId::STDOUT || port == PortId::STDERR {
+            self.stdout_open
+        } else {
+            false
+        }
     }
 }

@@ -29,7 +29,6 @@ grift_std = { workspace = true }
 rustyline = { version = "17.0.2", features = ["derive"] }
 
 [package.metadata.docs.rs]
-cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples=disabled"]
 
 [[example]]
 name = "load_file"

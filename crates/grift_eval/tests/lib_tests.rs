@@ -1588,6 +1588,55 @@ fn test_mutation_with_gc() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CIRCULAR STRUCTURE DETECTION
+// Tests that equal? does not hang on circular structures
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_equal_circular_cdr() {
+    // Create a circular list via set-cdr! and ensure equal? terminates.
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(define x (list 1 2))").unwrap();
+    eval.eval_str("(set-cdr! (cdr x) x)").unwrap(); // cycle: x -> (1 2 . ->x)
+
+    // Comparing the circular structure with itself should terminate.
+    // a == b short-circuit returns true immediately.
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? x x)"));
+}
+
+#[test]
+fn test_equal_circular_car() {
+    // Circular structure through car.
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(define y (cons 0 '()))").unwrap();
+    eval.eval_str("(set-car! y y)").unwrap(); // y = (y . ())
+
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? y y)"));
+}
+
+#[test]
+fn test_equal_two_different_circular_lists() {
+    // Two distinct circular lists — depth limit will kick in and return #f.
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(define a (list 1))").unwrap();
+    eval.eval_str("(set-cdr! a a)").unwrap();
+
+    eval.eval_str("(define b (list 1))").unwrap();
+    eval.eval_str("(set-cdr! b b)").unwrap();
+
+    // Both are structurally (1 1 1 ...) but the depth limit will be hit;
+    // the result should be #f (depth exceeded) and the call must terminate.
+    let result = eval.eval_str("(equal? a b)");
+    assert!(result.is_ok()); // must not stack-overflow
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // STDLIB FUNCTION TESTS  
 // Tests for the new static standard library functions
 // ═══════════════════════════════════════════════════════════════════════════

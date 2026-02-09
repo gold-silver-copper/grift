@@ -50,8 +50,30 @@ pub fn int_pow(base: isize, power: usize) -> isize {
     result
 }
 
+/// Maximum recursion depth for structural equality checks.
+///
+/// This prevents stack overflow when comparing circular structures
+/// created via `set-car!` / `set-cdr!`.  If the depth limit is
+/// exceeded the comparison returns `false` rather than diverging.
+const EQUAL_MAX_DEPTH: usize = 10_000;
+
 /// Recursive structural equality for equal? predicate
 pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+    equal_recursive_depth(lisp, a, b, 0)
+}
+
+/// Inner recursion with depth tracking for circular structure detection.
+fn equal_recursive_depth<const N: usize>(
+    lisp: &Lisp<N>,
+    a: ArenaIndex,
+    b: ArenaIndex,
+    depth: usize,
+) -> Result<bool, EvalError> {
+    // Guard against circular structures
+    if depth > EQUAL_MAX_DEPTH {
+        return Ok(false);
+    }
+
     // Check if they're the same index first
     if a == b {
         return Ok(true);
@@ -77,10 +99,10 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
             // Recursively check car and cdr
             let (car_a, cdr_a) = lisp.car_cdr(a)?;
             let (car_b, cdr_b) = lisp.car_cdr(b)?;
-            if !equal_recursive(lisp, car_a, car_b)? {
+            if !equal_recursive_depth(lisp, car_a, car_b, depth + 1)? {
                 return Ok(false);
             }
-            equal_recursive(lisp, cdr_a, cdr_b)
+            equal_recursive_depth(lisp, cdr_a, cdr_b, depth + 1)
         }
         _ => Ok(false),
     }
