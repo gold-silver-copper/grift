@@ -224,7 +224,7 @@ This treats syntax objects as ordinary values, which simplifies the mental model
 
 Grift's evaluator uses a trampolined continuation-passing style to achieve proper tail-call optimization. Macro expansion participates in this mechanism: the `MacroResult` continuation captures the call-site environment and, upon receiving the expanded syntax from the transformer, re-enters the evaluator's main loop. This avoids unbounded stack growth during deeply nested macro expansions—a concern in traditional recursive expanders.
 
-The continuation chain is itself stored in the arena as a linked list of `ContFrame` values, each containing a continuation type tag, data payload, environment reference, and parent link. There are 48 continuation types in total, of which `MacroResult`, `SyntaxCaseMatch`, `SyntaxCaseFender`, and `LetSyntaxBody` are directly related to macro expansion.
+The continuation chain is itself stored in the arena as a linked list of `ContFrame` values, each containing a continuation type tag, data payload, environment reference, and parent link. There are 48 continuation types in total, of which `MacroResult`, `SyntaxCaseMatch`, `SyntaxCaseFender`, and `LetSyntaxBody` (used by `let-syntax`) are directly related to macro expansion.
 
 ## 5. Comparison with Other Macro Systems
 
