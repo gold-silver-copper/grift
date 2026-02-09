@@ -1,0 +1,392 @@
+mod common;
+
+use grift_eval::*;
+use common::{eval_to_num, eval_is_true, eval_is_false};
+
+// ============================================================================
+// define-library & import basics
+// ============================================================================
+
+#[test]
+fn test_define_library_and_import() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test lib)
+          (export greet)
+          (begin
+            (define (greet) 42)))
+    ").unwrap();
+
+    eval.eval_str("(import (test lib))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(greet)"), 42);
+}
+
+#[test]
+fn test_library_isolation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Define a library with an internal helper not exported
+    eval.eval_str("
+        (define-library (test isolation)
+          (export public-fn)
+          (begin
+            (define (helper x) (* x 2))
+            (define (public-fn x) (helper x))))
+    ").unwrap();
+
+    eval.eval_str("(import (test isolation))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(public-fn 5)"), 10);
+}
+
+#[test]
+fn test_library_no_exports_exports_all() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Library with no export declaration exports everything
+    eval.eval_str("
+        (define-library (test all)
+          (begin
+            (define (foo) 1)
+            (define (bar) 2)))
+    ").unwrap();
+
+    eval.eval_str("(import (test all))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(foo)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(bar)"), 2);
+}
+
+// ============================================================================
+// Auto-loading from embedded library sources
+// ============================================================================
+
+#[test]
+fn test_import_scheme_base() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // (scheme base) should auto-load from embedded sources
+    eval.eval_str("(import (scheme base))").unwrap();
+    // car, +, etc. should be available (they already are from globals,
+    // but the import should succeed without error)
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2)"), 3);
+}
+
+#[test]
+fn test_import_scheme_cxr() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme cxr))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr '(1 2 3))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(caddr '(1 2 3))"), 3);
+}
+
+#[test]
+fn test_import_scheme_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme char))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(char-alphabetic? #\\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(char-alphabetic? #\\1)"));
+}
+
+#[test]
+fn test_import_scheme_write() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Should succeed without error
+    eval.eval_str("(import (scheme write))").unwrap();
+}
+
+#[test]
+fn test_import_scheme_lazy() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme lazy))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(force (delay 42))"), 42);
+}
+
+#[test]
+fn test_import_scheme_inexact() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme inexact))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(finite? 1)"));
+}
+
+#[test]
+fn test_import_scheme_file() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // import should succeed; actual file ops require an I/O provider
+    eval.eval_str("(import (scheme file))").unwrap();
+}
+
+#[test]
+fn test_import_scheme_eval() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme eval))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(eval '(+ 1 2))"), 3);
+}
+
+#[test]
+fn test_import_scheme_process_context() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Should succeed without error
+    eval.eval_str("(import (scheme process-context))").unwrap();
+}
+
+#[test]
+fn test_import_scheme_read() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme read))").unwrap();
+}
+
+#[test]
+fn test_import_scheme_repl() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme repl))").unwrap();
+}
+
+#[test]
+fn test_import_scheme_time() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme time))").unwrap();
+}
+
+#[test]
+fn test_import_scheme_case_lambda() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme case-lambda))").unwrap();
+    // case-lambda should be available as a macro
+    assert_eq!(eval_to_num(&lisp, &mut eval, "
+        (let ((f (case-lambda
+                   (() 0)
+                   ((x) x)
+                   ((x y) (+ x y)))))
+          (f 3 4))
+    "), 7);
+}
+
+// ============================================================================
+// Import modifiers
+// ============================================================================
+
+#[test]
+fn test_import_only() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test mod)
+          (export a b c)
+          (begin
+            (define a 1)
+            (define b 2)
+            (define c 3)))
+    ").unwrap();
+
+    eval.eval_str("(import (only (test mod) a c))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "a"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "c"), 3);
+}
+
+#[test]
+fn test_import_except() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test except-mod)
+          (export aa bb cc)
+          (begin
+            (define aa 10)
+            (define bb 20)
+            (define cc 30)))
+    ").unwrap();
+
+    eval.eval_str("(import (except (test except-mod) bb))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "aa"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "cc"), 30);
+}
+
+#[test]
+fn test_import_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test prefix-mod)
+          (export val)
+          (begin
+            (define val 99)))
+    ").unwrap();
+
+    eval.eval_str("(import (prefix (test prefix-mod) my-))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "my-val"), 99);
+}
+
+#[test]
+fn test_import_rename() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test rename-mod)
+          (export original)
+          (begin
+            (define original 77)))
+    ").unwrap();
+
+    eval.eval_str("(import (rename (test rename-mod) (original renamed)))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "renamed"), 77);
+}
+
+// ============================================================================
+// Macro export/import through the library system
+// ============================================================================
+
+#[test]
+fn test_library_exports_macros() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test macros)
+          (export my-if)
+          (begin
+            (define-syntax my-if
+              (syntax-rules ()
+                ((my-if test then else)
+                 (cond (test then) (#t else)))))))
+    ").unwrap();
+
+    eval.eval_str("(import (test macros))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-if #t 1 2)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-if #f 1 2)"), 2);
+}
+
+#[test]
+fn test_library_exports_both_macros_and_procedures() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test mixed)
+          (export my-when double)
+          (begin
+            (define (double x) (* x 2))
+            (define-syntax my-when
+              (syntax-rules ()
+                ((my-when test body ...)
+                 (if test (begin body ...) (if #f #f)))))))
+    ").unwrap();
+
+    eval.eval_str("(import (test mixed))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(double 5)"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-when #t 42)"), 42);
+}
+
+// ============================================================================
+// Lazy loading / multiple imports
+// ============================================================================
+
+#[test]
+fn test_multiple_imports() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme cxr) (scheme char))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr '(1 2 3))"), 2);
+    assert!(eval_is_true(&lisp, &mut eval, "(char-alphabetic? #\\z)"));
+}
+
+#[test]
+fn test_library_with_dependency() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // First library
+    eval.eval_str("
+        (define-library (test dep-base)
+          (export base-val)
+          (begin (define base-val 100)))
+    ").unwrap();
+
+    // Second library depends on first
+    eval.eval_str("
+        (define-library (test dep-user)
+          (export derived-val)
+          (import (test dep-base))
+          (begin (define derived-val (+ base-val 1))))
+    ").unwrap();
+
+    eval.eval_str("(import (test dep-user))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "derived-val"), 101);
+}
+
+// ============================================================================
+// environment form with libraries
+// ============================================================================
+
+#[test]
+fn test_environment_with_scheme_base() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    let result = eval.eval_str("(environment (scheme base))").unwrap();
+    assert!(
+        matches!(lisp.get(result).unwrap(), Value::Environment { mutable: false, .. }),
+        "environment should return an immutable environment"
+    );
+}
+
+#[test]
+fn test_eval_in_library_environment() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Pre-create the environment, then use it in eval
+    eval.eval_str("(import (scheme base))").unwrap();
+    eval.eval_str("(define base-env (environment (scheme base)))").unwrap();
+    assert_eq!(
+        eval_to_num(&lisp, &mut eval, "(eval '(+ 2 3) base-env)"),
+        5
+    );
+}
+
+// ============================================================================
+// Error cases
+// ============================================================================
+
+#[test]
+fn test_import_unknown_library_fails() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    let result = eval.eval_str("(import (nonexistent lib))");
+    assert!(result.is_err(), "Importing a non-existent library should fail");
+}
+
+

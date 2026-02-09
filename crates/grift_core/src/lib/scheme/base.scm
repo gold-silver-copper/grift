@@ -1,4 +1,7 @@
 ;;; (scheme base) — R7RS §6.1–6.10 core library
+;;;
+;;; Note: exports are split across two (export ...) declarations
+;;; to stay within the parser's per-list element limit.
 (define-library (scheme base)
   (export
     ;; Syntax (macros)
@@ -29,7 +32,7 @@
     string-map string-for-each
     ;; Promise
     make-promise promise? make-parameter
-    ;; Builtins re-exported
+    ;; Builtins (part 1)
     car cdr cons list pair? null?
     number? boolean? procedure? symbol?
     eq? eqv? equal?
@@ -38,7 +41,9 @@
     exact inexact exact->inexact inexact->exact
     floor ceiling truncate round
     < > <= >= =
-    display newline
+    display newline)
+  (export
+    ;; Builtins (part 2)
     error error-object? error-object-message
     error-object-irritants error-object-type
     set-car! set-cdr!
@@ -62,5 +67,5 @@
     read-line read-string
     eof-object eof-object?
     textual-port? binary-port?
-    input-port-open? output-port-open?
-  ))
+    input-port-open? output-port-open?))
+
