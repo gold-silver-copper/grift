@@ -5,7 +5,7 @@
 //!
 //! Note: let, let*, letrec, letrec*, and, or, cond, case, do are now handled by macros.
 
-use grift_parser::{ArenaIndex, Value, Builtin, parse};
+use grift_parser::{ArenaIndex, Value, parse};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
 use crate::continuation::{TrampolineState, ContType, EnvRef, ExprRef};
@@ -323,13 +323,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(remaining_args)?.is_nil() {
                     // All args evaluated - apply builtin
                     let args = self.reverse_list(new_collected)?;
-                    // Special handling for error - raises through exception system
-                    if matches!(builtin, Builtin::Error) {
-                        let state = self.apply_error_builtin(args, call_expr)?;
-                        return Ok(Some(state));
-                    }
-                    let result = self.apply_builtin(builtin, args, call_expr)?;
-                    Ok(Some(TrampolineState::Return { val: result }))
+                    let state = self.apply_builtin_trampolined(builtin, args, call_expr)?;
+                    Ok(Some(state))
                 } else {
                     // More args to evaluate
                     let next_arg = self.lisp.car(remaining_args)?;

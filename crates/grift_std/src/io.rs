@@ -7,6 +7,7 @@
 //! [`open_output_string`](IoProvider::open_output_string).
 
 use std::io::{self, BufRead, Read, Write};
+use std::env;
 
 use grift_core::{IoErrorKind, IoProvider, IoResult, PortId};
 
@@ -41,12 +42,27 @@ pub struct StdIoProvider {
     peeked: Option<char>,
     /// Dynamically opened ports.
     ports: Vec<Option<DynPort>>,
+    /// Cached command-line arguments.
+    command_line_args: Vec<String>,
+    /// Cached environment variables (name, value).
+    env_vars: Vec<(String, String)>,
+    /// Temporary buffer for a single env var lookup.
+    env_var_buf: Option<String>,
+    /// Temporary buffer for file content (used by read_file).
+    file_buf: String,
 }
 
 impl StdIoProvider {
     /// Create a new [`StdIoProvider`].
     pub fn new() -> Self {
-        StdIoProvider { peeked: None, ports: Vec::new() }
+        StdIoProvider {
+            peeked: None,
+            ports: Vec::new(),
+            command_line_args: env::args().collect(),
+            env_vars: Vec::new(),
+            env_var_buf: None,
+            file_buf: String::new(),
+        }
     }
 
     /// Allocate a fresh [`PortId`] and store the given dynamic port.
@@ -271,5 +287,65 @@ impl IoProvider for StdIoProvider {
             Some(DynPort::OutputString { buf, .. }) => Ok(buf.as_str()),
             _ => Err(IoErrorKind::InvalidPort),
         }
+    }
+
+    fn file_exists(&self, path: &str) -> IoResult<bool> {
+        Ok(std::path::Path::new(path).exists())
+    }
+
+    fn delete_file(&mut self, path: &str) -> IoResult<()> {
+        std::fs::remove_file(path).map_err(|_| IoErrorKind::WriteFailed)
+    }
+
+    fn read_file(&mut self, path: &str) -> IoResult<&str> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                self.file_buf = content;
+                Ok(self.file_buf.as_str())
+            }
+            Err(_) => Err(IoErrorKind::ReadFailed),
+        }
+    }
+
+    fn command_line_count(&self) -> IoResult<usize> {
+        Ok(self.command_line_args.len())
+    }
+
+    fn command_line_arg(&self, index: usize) -> IoResult<&str> {
+        self.command_line_args.get(index)
+            .map(|s| s.as_str())
+            .ok_or(IoErrorKind::ReadFailed)
+    }
+
+    fn get_environment_variable(&mut self, name: &str) -> IoResult<Option<&str>> {
+        match env::var(name) {
+            Ok(val) => {
+                self.env_var_buf = Some(val);
+                Ok(self.env_var_buf.as_deref())
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn environment_variables_count(&mut self) -> IoResult<usize> {
+        self.env_vars = env::vars().collect();
+        Ok(self.env_vars.len())
+    }
+
+    fn environment_variable_at(&self, index: usize) -> IoResult<(&str, &str)> {
+        self.env_vars.get(index)
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .ok_or(IoErrorKind::ReadFailed)
+    }
+
+    fn exit_process(&mut self, code: i32) -> IoResult<()> {
+        std::process::exit(code);
+    }
+
+    fn emergency_exit_process(&mut self, code: i32) -> IoResult<()> {
+        // Use abort() to bypass cleanup (destructors, atexit handlers)
+        // per R7RS semantics for emergency-exit
+        let _ = code; // abort doesn't support exit codes
+        std::process::abort();
     }
 }

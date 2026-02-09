@@ -77,6 +77,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.apply_error_builtin(args, call_expr);
         }
         
+        // Special handling for load - reads file and evaluates all expressions
+        if matches!(builtin, Builtin::Load) {
+            return self.apply_load_builtin(args, call_expr);
+        }
+        
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
         Ok(TrampolineState::Return { val: result })
@@ -104,6 +109,40 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Err(self.make_error(ErrorKind::UserError, call_expr))
             }
         }
+    }
+    
+    /// Implement (load filename) — R7RS §6.13.
+    /// Reads the file, parses all expressions, and evaluates them sequentially.
+    fn apply_load_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let arg = self.lisp.car(args)?;
+        let path = self.extract_string_arg(arg, call_expr)?;
+
+        // Read file content and parse all expressions while holding the io borrow.
+        // We must parse before releasing the borrow, since the content &str is tied to it.
+        let forms = match &mut self.io {
+            Some(io) => {
+                let content = match io.read_file(&path) {
+                    Ok(s) => s,
+                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                grift_parser::parse_all(self.lisp, content)?
+            }
+            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+        };
+
+        // Evaluate each expression sequentially at the top level.
+        // Use eval_for_macro to preserve the current continuation.
+        let mut current = forms;
+        let mut last_val = self.lisp.void_val()?;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let form = self.lisp.car(current)?;
+            last_val = self.eval_for_macro(ExprRef(form), self.global_env)?;
+            current = self.lisp.cdr(current)?;
+        }
+
+        Ok(TrampolineState::Return { val: last_val })
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -1376,6 +1415,134 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => Err(self.type_error(call_expr, "port", v.type_name())),
                 }
             }
+
+            // ================================================================
+            // File system operations (R7RS §6.13)
+            // ================================================================
+
+            Builtin::FileExistsP => {
+                // (file-exists? filename)
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &self.io {
+                    Some(io) => {
+                        let exists = io.file_exists(&path)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.boolean(exists).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::DeleteFile => {
+                // (delete-file filename)
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        io.delete_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::Load => {
+                // (load filename) — handled via trampolining in apply_builtin_trampolined
+                // This fallback should not be reached; see apply_load_builtin.
+                Err(self.make_error(ErrorKind::Generic, call_expr))
+            }
+
+            // ================================================================
+            // Process / environment operations (R7RS §6.14)
+            // ================================================================
+
+            Builtin::CommandLine => {
+                // (command-line) -> list of strings
+                match &self.io {
+                    Some(io) => {
+                        let count = io.command_line_count()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        // Build list in reverse then reverse it
+                        let mut list = self.lisp.nil()?;
+                        for i in (0..count).rev() {
+                            let s = io.command_line_arg(i)
+                                .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            let str_val = self.lisp.string(s)?;
+                            list = self.lisp.cons(str_val, list)?;
+                        }
+                        Ok(list)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::Exit => {
+                // (exit) or (exit obj)
+                let code = self.extract_exit_code(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let _ = io.exit_process(code);
+                        // If the io provider doesn't actually exit (e.g. in tests),
+                        // return void
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::EmergencyExit => {
+                // (emergency-exit) or (emergency-exit obj)
+                let code = self.extract_exit_code(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let _ = io.emergency_exit_process(code);
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::GetEnvironmentVariable => {
+                // (get-environment-variable name) -> string or #f
+                let arg = self.lisp.car(args)?;
+                let name = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        match io.get_environment_variable(&name) {
+                            Ok(Some(val)) => self.lisp.string(val).map_err(Into::into),
+                            Ok(None) => self.lisp.false_val().map_err(Into::into),
+                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::GetEnvironmentVariables => {
+                // (get-environment-variables) -> alist of (name . value)
+                // First, get count (requires &mut io)
+                let count = match &mut self.io {
+                    Some(io) => io.environment_variables_count()
+                        .unwrap_or(0),
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                // Now build the alist by iterating (environment_variable_at uses &self)
+                let mut list = self.lisp.nil()?;
+                for i in (0..count).rev() {
+                    let (name, value) = match &self.io {
+                        Some(io) => io.environment_variable_at(i)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?,
+                        None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    };
+                    let name_str = self.lisp.string(name)?;
+                    let value_str = self.lisp.string(value)?;
+                    let pair = self.lisp.cons(name_str, value_str)?;
+                    list = self.lisp.cons(pair, list)?;
+                }
+                Ok(list)
+            }
         }
     }
     
@@ -1737,6 +1904,62 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(expr) => Ok(expr),
             Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
         }
+    }
+
+    /// Extract a Scheme string value into a stack-allocated UTF-8 buffer.
+    /// Returns a fixed-size array wrapper that can be used as `&str`.
+    fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::String { len, data } => {
+                let mut buf = [0u8; STACK_STRING_BUF_SIZE];
+                let mut byte_len = 0;
+                for i in 0..len {
+                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                        let enc_len = c.len_utf8();
+                        if byte_len + enc_len > buf.len() { break; }
+                        c.encode_utf8(&mut buf[byte_len..]);
+                        byte_len += enc_len;
+                    }
+                }
+                Ok(StackString { buf, len: byte_len })
+            }
+            v => Err(self.type_error(call_expr, "string", v.type_name())),
+        }
+    }
+
+    /// Extract an exit code from optional arguments.
+    /// - No args or #t: 0
+    /// - #f: 1
+    /// - integer: use directly
+    fn extract_exit_code(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<i32, EvalError> {
+        if self.lisp.get(args)?.is_nil() {
+            return Ok(0);
+        }
+        let arg = self.lisp.car(args)?;
+        match self.lisp.get(arg)? {
+            Value::True => Ok(0),
+            Value::False => Ok(1),
+            Value::Number(n) => Ok(n as i32),
+            v => Err(self.type_error(call_expr, "integer or boolean", v.type_name())),
+        }
+    }
+}
+
+/// Maximum size of a stack-allocated string buffer for IoProvider arguments.
+const STACK_STRING_BUF_SIZE: usize = 1024;
+
+/// Stack-allocated UTF-8 string buffer for passing to IoProvider methods.
+struct StackString {
+    buf: [u8; STACK_STRING_BUF_SIZE],
+    len: usize,
+}
+
+impl core::ops::Deref for StackString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        // The buffer was constructed from valid UTF-8 chars
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }
 
