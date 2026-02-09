@@ -1513,3 +1513,242 @@
           value
           (set! value (car args))))))
 
+;;; ============================================================
+;;; Rational Numbers (R7RS Section 6.2)
+;;; ============================================================
+
+;;; Internal constructor — reduces to lowest terms, normalizes sign to numerator.
+(define (make-rat n d)
+  (if (zero? d)
+      (error "Division by zero in rational")
+      (let* ((g (gcd (abs n) (abs d)))
+             (sign (if (negative? d) -1 1)))
+        (list 'rational (* sign (/ n g)) (* sign (/ d g))))))
+
+;;; Accessors
+(define (rat-numer r) (cadr r))
+(define (rat-denom r) (caddr r))
+;;; Note: rational? is provided as a builtin that handles both tagged rational
+;;; values and plain numbers (per R7RS, all finite reals are rational).
+(define (rational-tagged? x) (and (pair? x) (eq? (car x) 'rational)))
+
+;;; Syntax for literal construction:
+;;;   (rat n / d)  => (make-rat n d)
+;;;   (rat n)      => (make-rat n 1)
+(define-syntax rat
+  (syntax-rules (/)
+    ((rat n / d) (make-rat n d))
+    ((rat n)     (make-rat n 1))))
+
+;;; Arithmetic
+(define (rat+ a b)
+  (make-rat (+ (* (rat-numer a) (rat-denom b))
+               (* (rat-numer b) (rat-denom a)))
+            (* (rat-denom a) (rat-denom b))))
+
+(define (rat- a b)
+  (make-rat (- (* (rat-numer a) (rat-denom b))
+               (* (rat-numer b) (rat-denom a)))
+            (* (rat-denom a) (rat-denom b))))
+
+(define (rat* a b)
+  (make-rat (* (rat-numer a) (rat-numer b))
+            (* (rat-denom a) (rat-denom b))))
+
+(define (rat/ a b)
+  (if (zero? (rat-numer b))
+      (error "Division by zero rational")
+      (make-rat (* (rat-numer a) (rat-denom b))
+                (* (rat-denom a) (rat-numer b)))))
+
+;;; Comparison
+(define (rat= a b)
+  (and (= (rat-numer a) (rat-numer b))
+       (= (rat-denom a) (rat-denom b))))
+
+(define (rat< a b)
+  (< (* (rat-numer a) (rat-denom b))
+     (* (rat-numer b) (rat-denom a))))
+
+;;; Conversion
+(define (rat->float r)
+  (/ (exact->inexact (rat-numer r))
+     (exact->inexact (rat-denom r))))
+
+(define (rat->string r)
+  (if (= (rat-denom r) 1)
+      (number->string (rat-numer r))
+      (string-append (number->string (rat-numer r))
+                     "/"
+                     (number->string (rat-denom r)))))
+
+;;; ============================================================
+;;; Complex Numbers (R7RS Section 6.2)
+;;; ============================================================
+
+;;; Rectangular form constructor
+(define (make-complex-rect re im)
+  (list 'complex 'rect re im))
+
+;;; Polar form constructor
+(define (make-complex-polar mag ang)
+  (list 'complex 'polar mag ang))
+
+;;; Predicates and accessors
+;;; Note: complex? is provided as a builtin that handles both tagged complex
+;;; values and plain numbers (per R7RS, all real numbers are complex).
+(define (complex-tagged? x) (and (pair? x) (eq? (car x) 'complex)))
+(define (complex-form z) (cadr z))
+
+;;; Access real part (rectangular only; polar requires trig)
+(define (complex-real z)
+  (case (complex-form z)
+    ((rect) (caddr z))
+    ((polar) (error "complex-real: polar form requires cos (not available)"))))
+
+;;; Access imaginary part (rectangular only; polar requires trig)
+(define (complex-imag z)
+  (case (complex-form z)
+    ((rect) (cadddr z))
+    ((polar) (error "complex-imag: polar form requires sin (not available)"))))
+
+;;; Access magnitude
+(define (complex-mag z)
+  (case (complex-form z)
+    ((polar) (caddr z))
+    ((rect) (sqrt (+ (* (complex-real z) (complex-real z))
+                      (* (complex-imag z) (complex-imag z)))))))
+
+;;; Access angle
+(define (complex-ang z)
+  (case (complex-form z)
+    ((polar) (cadddr z))
+    ((rect) (error "complex-ang: rectangular form requires atan (not available)"))))
+
+;;; Syntax for literal construction:
+;;;   (cpx re + im i)     => (make-complex-rect re im)
+;;;   (cpx re - im i)     => (make-complex-rect re (- im))
+;;;   (cpx re)             => (make-complex-rect re 0)
+;;;   (cpx polar mag ang)  => (make-complex-polar mag ang)
+(define-syntax cpx
+  (syntax-rules (+ - i polar)
+    ((cpx re + im i)    (make-complex-rect re im))
+    ((cpx re - im i)    (make-complex-rect re (- im)))
+    ((cpx re)            (make-complex-rect re 0))
+    ((cpx polar mag ang) (make-complex-polar mag ang))))
+
+;;; Arithmetic (rectangular form)
+(define (complex+ a b)
+  (make-complex-rect (+ (complex-real a) (complex-real b))
+                     (+ (complex-imag a) (complex-imag b))))
+
+(define (complex- a b)
+  (make-complex-rect (- (complex-real a) (complex-real b))
+                     (- (complex-imag a) (complex-imag b))))
+
+(define (complex* a b)
+  (let ((ar (complex-real a)) (ai (complex-imag a))
+        (br (complex-real b)) (bi (complex-imag b)))
+    (make-complex-rect (- (* ar br) (* ai bi))
+                       (+ (* ar bi) (* ai br)))))
+
+(define (complex/ a b)
+  (let* ((ar (complex-real a)) (ai (complex-imag a))
+         (br (complex-real b)) (bi (complex-imag b))
+         (denom (+ (* br br) (* bi bi))))
+    (if (zero? denom)
+        (error "Division by zero complex")
+        (make-complex-rect (/ (+ (* ar br) (* ai bi)) denom)
+                           (/ (- (* ai br) (* ar bi)) denom)))))
+
+;;; Comparison
+(define (complex= a b)
+  (and (= (complex-real a) (complex-real b))
+       (= (complex-imag a) (complex-imag b))))
+
+;;; Conjugate
+(define (complex-conjugate z)
+  (make-complex-rect (complex-real z) (- (complex-imag z))))
+
+;;; Conversion
+(define (complex->string z)
+  (let ((re (complex-real z))
+        (im (complex-imag z)))
+    (cond
+      ((zero? im) (number->string re))
+      ((zero? re) (string-append (number->string im) "i"))
+      ((negative? im)
+       (string-append (number->string re)
+                      (number->string im) "i"))
+      (else
+       (string-append (number->string re)
+                      "+" (number->string im) "i")))))
+
+;;; ============================================================
+;;; Rational-based Complex Numbers
+;;; ============================================================
+
+;;; A complex number whose real and imaginary parts are rationals.
+(define (make-rat-complex re-rat im-rat)
+  (list 'rat-complex re-rat im-rat))
+
+(define (rat-complex? x) (and (pair? x) (eq? (car x) 'rat-complex)))
+(define (rat-complex-real z) (cadr z))
+(define (rat-complex-imag z) (caddr z))
+
+;;; Syntax for literal construction:
+;;;   (rat-cpx (rn / rd) + (in / id) i) => rect with rational parts
+;;;   (rat-cpx (rn / rd) - (in / id) i) => rect with negated imaginary rational
+;;;   (rat-cpx (rn / rd))               => real-only rational complex
+(define-syntax rat-cpx
+  (syntax-rules (+ - i /)
+    ((rat-cpx (rn / rd) + (in / id) i)
+     (make-rat-complex (make-rat rn rd) (make-rat in id)))
+    ((rat-cpx (rn / rd) - (in / id) i)
+     (make-rat-complex (make-rat rn rd) (rat- (make-rat 0 1) (make-rat in id))))
+    ((rat-cpx (rn / rd))
+     (make-rat-complex (make-rat rn rd) (make-rat 0 1)))))
+
+;;; Arithmetic
+(define (rat-complex+ a b)
+  (make-rat-complex (rat+ (rat-complex-real a) (rat-complex-real b))
+                    (rat+ (rat-complex-imag a) (rat-complex-imag b))))
+
+(define (rat-complex- a b)
+  (make-rat-complex (rat- (rat-complex-real a) (rat-complex-real b))
+                    (rat- (rat-complex-imag a) (rat-complex-imag b))))
+
+(define (rat-complex* a b)
+  (let ((ar (rat-complex-real a)) (ai (rat-complex-imag a))
+        (br (rat-complex-real b)) (bi (rat-complex-imag b)))
+    (make-rat-complex (rat- (rat* ar br) (rat* ai bi))
+                      (rat+ (rat* ar bi) (rat* ai br)))))
+
+(define (rat-complex/ a b)
+  (let* ((ar (rat-complex-real a)) (ai (rat-complex-imag a))
+         (br (rat-complex-real b)) (bi (rat-complex-imag b))
+         (denom (rat+ (rat* br br) (rat* bi bi))))
+    (if (zero? (rat-numer denom))
+        (error "Division by zero rat-complex")
+        (make-rat-complex (rat/ (rat+ (rat* ar br) (rat* ai bi)) denom)
+                          (rat/ (rat- (rat* ai br) (rat* ar bi)) denom)))))
+
+;;; Comparison
+(define (rat-complex= a b)
+  (and (rat= (rat-complex-real a) (rat-complex-real b))
+       (rat= (rat-complex-imag a) (rat-complex-imag b))))
+
+;;; Conversion
+(define (rat-complex->string z)
+  (let ((re-str (rat->string (rat-complex-real z)))
+        (im-rat (rat-complex-imag z)))
+    (cond
+      ((and (zero? (rat-numer im-rat)))
+       re-str)
+      ((negative? (rat-numer im-rat))
+       (string-append re-str
+                      (rat->string im-rat) "i"))
+      (else
+       (string-append re-str
+                      "+" (rat->string im-rat) "i")))))
+

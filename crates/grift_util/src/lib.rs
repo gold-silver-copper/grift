@@ -16,6 +16,9 @@
 /// | `=`             | `Eq`            |
 /// | `>`             | `Gt`            |
 /// | `<`             | `Lt`            |
+/// | `+`             | `Plus`          |
+/// | `*`             | `Star`          |
+/// | `/`             | `Slash`         |
 ///
 /// # Examples
 ///
@@ -26,6 +29,9 @@
 /// assert_eq!(to_pascal_case("set-car!"), "SetCar");
 /// assert_eq!(to_pascal_case("null?"), "NullP");
 /// assert_eq!(to_pascal_case("char->integer"), "CharGtInteger");
+/// assert_eq!(to_pascal_case("rat+"), "RatPlus");
+/// assert_eq!(to_pascal_case("rat*"), "RatStar");
+/// assert_eq!(to_pascal_case("rat/"), "RatSlash");
 /// ```
 pub fn to_pascal_case(name: &str) -> String {
     let mut result = String::new();
@@ -57,6 +63,21 @@ pub fn to_pascal_case(name: &str) -> String {
             '<' => {
                 // Replace with 'Lt' for less-than
                 result.push_str("Lt");
+                capitalize_next = true;
+            }
+            '+' => {
+                // Replace with 'Plus' for addition
+                result.push_str("Plus");
+                capitalize_next = true;
+            }
+            '*' => {
+                // Replace with 'Star' for multiplication
+                result.push_str("Star");
+                capitalize_next = true;
+            }
+            '/' => {
+                // Replace with 'Slash' for division
+                result.push_str("Slash");
                 capitalize_next = true;
             }
             _ => {
@@ -106,10 +127,11 @@ mod tests {
 
     #[test]
     fn test_operators() {
-        // Single-character operators don't have letters, so to_pascal_case
-        // strips or transforms them according to the rules:
-        // '+' and '-' are letter-less, they become empty after rule application
-        assert_eq!(to_pascal_case("+"), "+");
+        // Single-character operators:
+        // '+' becomes 'Plus', '*' becomes 'Star', '/' becomes 'Slash'
+        assert_eq!(to_pascal_case("+"), "Plus");
+        assert_eq!(to_pascal_case("*"), "Star");
+        assert_eq!(to_pascal_case("/"), "Slash");
         assert_eq!(to_pascal_case("="), "Eq");
         assert_eq!(to_pascal_case(">"), "Gt");
         assert_eq!(to_pascal_case("<"), "Lt");
