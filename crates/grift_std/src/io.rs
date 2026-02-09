@@ -273,6 +273,16 @@ impl IoProvider for StdIoProvider {
         matches!(self.get_dyn(port), Some(DynPort::OutputString { .. }))
     }
 
+    fn is_port_open(&self, port: PortId) -> bool {
+        // Standard ports are always open
+        if port.0 < DYNAMIC_PORT_BASE { return true; }
+        match self.get_dyn(port) {
+            Some(DynPort::InputString { closed, .. }) => !closed,
+            Some(DynPort::OutputString { closed, .. }) => !closed,
+            None => false,
+        }
+    }
+
     fn open_input_string(&mut self, s: &str) -> IoResult<PortId> {
         let data: Vec<char> = s.chars().collect();
         self.alloc_port(DynPort::InputString { data, cursor: 0, closed: false })

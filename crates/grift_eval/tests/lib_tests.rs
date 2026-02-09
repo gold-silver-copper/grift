@@ -1,7 +1,7 @@
 mod common;
 
 use grift_eval::*;
-use common::{eval_to_num, eval_is_true, eval_is_false};
+use common::{eval_to_num, eval_is_true, eval_is_false, eval_to_string};
 
 #[test]
 fn test_eval_number() {
@@ -7215,6 +7215,123 @@ fn test_close_port() {
     // After closing, port? and input-port? still return true (R7RS)
     assert!(eval_is_true(&lisp, &mut eval, "(port? p)"));
     assert!(eval_is_true(&lisp, &mut eval, "(input-port? p)"));
+}
+
+#[test]
+fn test_read_line() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    // Basic read-line
+    eval.eval_str("(define p (open-input-string \"hello\\nworld\"))").unwrap();
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(read-line p)"), "\"hello\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(read-line p)"), "\"world\"");
+    // EOF after exhaustion
+    assert!(eval_is_true(&lisp, &mut eval, "(eof-object? (read-line p))"));
+}
+
+#[test]
+fn test_read_line_no_newline() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    // String without trailing newline
+    eval.eval_str("(define p (open-input-string \"single\"))").unwrap();
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(read-line p)"), "\"single\"");
+    assert!(eval_is_true(&lisp, &mut eval, "(eof-object? (read-line p))"));
+}
+
+#[test]
+fn test_read_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    eval.eval_str("(define p (open-input-string \"hello world\"))").unwrap();
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(read-string 5 p)"), "\"hello\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(read-string 1 p)"), "\" \"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(read-string 10 p)"), "\"world\"");
+    // EOF when nothing left
+    assert!(eval_is_true(&lisp, &mut eval, "(eof-object? (read-string 1 p))"));
+}
+
+#[test]
+fn test_write_shared_and_simple() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    // write-shared behaves like write
+    eval.eval_str("(define p (open-output-string))").unwrap();
+    eval.eval_str("(write-shared '(1 2 3) p)").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? (get-output-string p) \"(1 2 3)\")"));
+
+    // write-simple behaves like write
+    eval.eval_str("(define q (open-output-string))").unwrap();
+    eval.eval_str("(write-simple '(a b) q)").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? (get-output-string q) \"(a b)\")"));
+}
+
+#[test]
+fn test_textual_port_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    // All ports in this implementation are textual
+    assert!(eval_is_true(&lisp, &mut eval, "(textual-port? (current-input-port))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(textual-port? (current-output-port))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(textual-port? 42)"));
+}
+
+#[test]
+fn test_binary_port_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    // No binary ports in this implementation
+    assert!(eval_is_false(&lisp, &mut eval, "(binary-port? (current-input-port))"));
+    assert!(eval_is_false(&lisp, &mut eval, "(binary-port? 42)"));
+}
+
+#[test]
+fn test_input_port_open_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    eval.eval_str("(define p (open-input-string \"test\"))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(input-port-open? p)"));
+    eval.eval_str("(close-port p)").unwrap();
+    assert!(eval_is_false(&lisp, &mut eval, "(input-port-open? p)"));
+    // Standard ports are always open
+    assert!(eval_is_true(&lisp, &mut eval, "(input-port-open? (current-input-port))"));
+}
+
+#[test]
+fn test_output_port_open_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    eval.eval_str("(define p (open-output-string))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(output-port-open? p)"));
+    eval.eval_str("(close-port p)").unwrap();
+    assert!(eval_is_false(&lisp, &mut eval, "(output-port-open? p)"));
+    // Standard ports are always open
+    assert!(eval_is_true(&lisp, &mut eval, "(output-port-open? (current-output-port))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(output-port-open? (current-error-port))"));
 }
 
 // ============================================================================
