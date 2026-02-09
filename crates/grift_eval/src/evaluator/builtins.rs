@@ -160,47 +160,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn apply_vector_map(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
         -> Result<TrampolineState, EvalError>
     {
-        let proc = self.lisp.car(args)?;
-        let vecs_args = self.lisp.cdr(args)?;
-        
-        // Collect vectors into a list and validate they're all vectors of same length
-        let first_vec = self.lisp.car(vecs_args)?;
-        let len = match self.lisp.get(first_vec)? {
-            Value::Array { .. } => self.lisp.array_len(first_vec)?,
-            v => return Err(self.type_error(call_expr, "vector", v.type_name())),
-        };
-        
-        // Validate remaining vectors have same length
-        let mut current = self.lisp.cdr(vecs_args)?;
-        while !self.lisp.get(current)?.is_nil() {
-            let vec = self.lisp.car(current)?;
-            match self.lisp.get(vec)? {
-                Value::Array { .. } => {
-                    let vlen = self.lisp.array_len(vec)?;
-                    if vlen != len {
-                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                    }
-                }
-                v => return Err(self.type_error(call_expr, "vector", v.type_name())),
-            }
-            current = self.lisp.cdr(current)?;
-        }
+        let (proc, vecs_args, len) = self.validate_vector_args(args, call_expr)?;
         
         if len == 0 {
-            // Empty vectors - return empty vector
             let placeholder = self.lisp.number(0)?;
             let result = self.lisp.make_array(0, placeholder)?;
             return Ok(TrampolineState::Return { val: result });
         }
         
-        // Start iteration: apply proc to elements at index 0
         let first_args = self.vector_map_build_args(vecs_args, 0, call_expr)?;
         let nil = self.lisp.nil()?;
         let index_enc = self.lisp.number(0)?;
         let len_enc = self.lisp.number(len as isize)?;
         let env = self.global_env.0;
         
-        // Push VectorMapStep continuation
         let d4 = self.lisp.cons(nil, call_expr)?;
         let d3 = self.lisp.cons(len_enc, d4)?;
         let d2 = self.lisp.cons(index_enc, d3)?;
@@ -208,7 +181,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let packed = self.lisp.cons(proc, d1)?;
         self.cont(ContType::VectorMapStep, EnvRef(env)).data1(packed)?;
         
-        // Apply proc via ApplyForced
         self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
@@ -218,51 +190,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn apply_vector_for_each(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
         -> Result<TrampolineState, EvalError>
     {
-        let proc = self.lisp.car(args)?;
-        let vecs_args = self.lisp.cdr(args)?;
-        
-        // Collect vectors and validate
-        let first_vec = self.lisp.car(vecs_args)?;
-        let len = match self.lisp.get(first_vec)? {
-            Value::Array { .. } => self.lisp.array_len(first_vec)?,
-            v => return Err(self.type_error(call_expr, "vector", v.type_name())),
-        };
-        
-        // Validate remaining vectors
-        let mut current = self.lisp.cdr(vecs_args)?;
-        while !self.lisp.get(current)?.is_nil() {
-            let vec = self.lisp.car(current)?;
-            match self.lisp.get(vec)? {
-                Value::Array { .. } => {
-                    let vlen = self.lisp.array_len(vec)?;
-                    if vlen != len {
-                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                    }
-                }
-                v => return Err(self.type_error(call_expr, "vector", v.type_name())),
-            }
-            current = self.lisp.cdr(current)?;
-        }
+        let (proc, vecs_args, len) = self.validate_vector_args(args, call_expr)?;
         
         if len == 0 {
             let void = self.lisp.void_val()?;
             return Ok(TrampolineState::Return { val: void });
         }
         
-        // Start iteration: apply proc to elements at index 0
         let first_args = self.vector_map_build_args(vecs_args, 0, call_expr)?;
         let index_enc = self.lisp.number(0)?;
         let len_enc = self.lisp.number(len as isize)?;
         let env = self.global_env.0;
         
-        // Push VectorForEachStep continuation
         let d3 = self.lisp.cons(len_enc, call_expr)?;
         let d2 = self.lisp.cons(index_enc, d3)?;
         let d1 = self.lisp.cons(vecs_args, d2)?;
         let packed = self.lisp.cons(proc, d1)?;
         self.cont(ContType::VectorForEachStep, EnvRef(env)).data1(packed)?;
         
-        // Apply proc via ApplyForced
         self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
@@ -272,21 +217,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         -> EvalResult 
     {
         match builtin {
-            Builtin::Car => {
+            Builtin::Car | Builtin::Cdr => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Cons { .. } => self.lisp.car(arg).map_err(Into::into),
-                    // Scheme R7RS: car of empty list is an error
-                    Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
-                    _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
-                }
-            }
-            
-            Builtin::Cdr => {
-                let arg = self.lisp.car(args)?;
-                match self.lisp.get(arg)? {
-                    Value::Cons { .. } => self.lisp.cdr(arg).map_err(Into::into),
-                    // Scheme R7RS: cdr of empty list is an error
+                    Value::Cons { .. } => {
+                        if matches!(builtin, Builtin::Car) {
+                            self.lisp.car(arg).map_err(Into::into)
+                        } else {
+                            self.lisp.cdr(arg).map_err(Into::into)
+                        }
+                    }
                     Value::Nil => Err(self.type_error(call_expr, "pair", "null")),
                     _ => Err(self.type_error(call_expr, "pair", self.lisp.get(arg)?.type_name())),
                 }
@@ -549,49 +489,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::ErrorObjectIrritants => {
-                // (error-object-irritants error-object) — R7RS §6.11
+            Builtin::ErrorObjectIrritants | Builtin::ErrorObjectType => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::ErrorObject { irritants_and_type, .. } => {
-                        self.lisp.car(irritants_and_type).map_err(Into::into)
+                        if matches!(builtin, Builtin::ErrorObjectIrritants) {
+                            self.lisp.car(irritants_and_type).map_err(Into::into)
+                        } else {
+                            self.lisp.cdr(irritants_and_type).map_err(Into::into)
+                        }
                     }
                     _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
                 }
             }
             
-            Builtin::ErrorObjectType => {
-                // (error-object-type error-object) — R7RS §6.11
-                let arg = self.lisp.car(args)?;
-                match self.lisp.get(arg)? {
-                    Value::ErrorObject { irritants_and_type, .. } => {
-                        self.lisp.cdr(irritants_and_type).map_err(Into::into)
-                    }
-                    _ => Err(self.type_error(arg, "error-object", self.lisp.get(arg)?.type_name())),
-                }
-            }
-            
-            Builtin::SetCar => {
-                // (set-car! pair value) - mutate the car of a cons cell
+            Builtin::SetCar | Builtin::SetCdr => {
                 extract_args!(self, args, pair, value);
-                
-                // Verify it's a pair
                 match self.lisp.get(pair)? {
                     Value::Cons { .. } => {
-                        self.lisp.set_car(pair, value).map_err(Into::into)
-                    }
-                    _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
-                }
-            }
-            
-            Builtin::SetCdr => {
-                // (set-cdr! pair value) - mutate the cdr of a cons cell
-                extract_args!(self, args, pair, value);
-                
-                // Verify it's a pair
-                match self.lisp.get(pair)? {
-                    Value::Cons { .. } => {
-                        self.lisp.set_cdr(pair, value).map_err(Into::into)
+                        if matches!(builtin, Builtin::SetCar) {
+                            self.lisp.set_car(pair, value).map_err(Into::into)
+                        } else {
+                            self.lisp.set_cdr(pair, value).map_err(Into::into)
+                        }
                     }
                     _ => Err(self.make_error(ErrorKind::NotAPair, call_expr)),
                 }
@@ -729,28 +649,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
                         let rest = self.lisp.cdr(args)?;
-                        
-                        let (start, end) = if self.lisp.get(rest)?.is_nil() {
-                            (0usize, len)
-                        } else {
-                            let start_idx = self.lisp.car(rest)?;
-                            let s = self.get_int(start_idx, call_expr)?;
-                            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                            let rest2 = self.lisp.cdr(rest)?;
-                            let e = if self.lisp.get(rest2)?.is_nil() {
-                                len
-                            } else {
-                                let end_idx = self.lisp.car(rest2)?;
-                                let e = self.get_int(end_idx, call_expr)?;
-                                if e < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                                e as usize
-                            };
-                            (s as usize, e)
-                        };
-                        
-                        if start > len || end > len || start > end {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
                         
                         let new_len = end - start;
                         let placeholder = self.lisp.number(0)?;
@@ -788,27 +687,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 };
                 
-                let (start, end) = if self.lisp.get(rest3)?.is_nil() {
-                    (0usize, from_len)
-                } else {
-                    let start_val = self.lisp.car(rest3)?;
-                    let s = self.get_int(start_val, call_expr)?;
-                    if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                    let rest4 = self.lisp.cdr(rest3)?;
-                    let e = if self.lisp.get(rest4)?.is_nil() {
-                        from_len
-                    } else {
-                        let end_val = self.lisp.car(rest4)?;
-                        let ev = self.get_int(end_val, call_expr)?;
-                        if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                        ev as usize
-                    };
-                    (s as usize, e)
-                };
-                
-                if start > from_len || end > from_len || start > end {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
+                let (start, end) = self.parse_range_args(rest3, from_len, call_expr)?;
                 let count = end - start;
                 if at + count > to_len {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
@@ -892,16 +771,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(list)
             }
             
-            Builtin::GcEnable => {
-                // (gc-enable) - Enable automatic garbage collection
-                self.lisp.arena().set_gc_enabled(true);
-                self.lisp.true_val().map_err(Into::into)
-            }
-            
-            Builtin::GcDisable => {
-                // (gc-disable) - Disable automatic garbage collection
-                self.lisp.arena().set_gc_enabled(false);
-                self.lisp.false_val().map_err(Into::into)
+            Builtin::GcEnable | Builtin::GcDisable => {
+                let enable = matches!(builtin, Builtin::GcEnable);
+                self.lisp.arena().set_gc_enabled(enable);
+                self.lisp.boolean(enable).map_err(Into::into)
             }
             
             Builtin::GcEnabledP => {
@@ -1279,27 +1152,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(str_idx)? {
                     Value::String { len, data } => {
                         let rest = self.lisp.cdr(args)?;
-                        let (start, end) = if self.lisp.get(rest)?.is_nil() {
-                            (0usize, len)
-                        } else {
-                            let start_val = self.lisp.car(rest)?;
-                            let s = self.get_int(start_val, call_expr)?;
-                            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                            let rest2 = self.lisp.cdr(rest)?;
-                            let e = if self.lisp.get(rest2)?.is_nil() {
-                                len
-                            } else {
-                                let end_val = self.lisp.car(rest2)?;
-                                let ev = self.get_int(end_val, call_expr)?;
-                                if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                                ev as usize
-                            };
-                            (s as usize, e)
-                        };
-                        
-                        if start > len || end > len || start > end {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
                         
                         let sub_len = end - start;
                         const MAX_STRING_LEN: usize = 1024;
@@ -1341,27 +1194,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 };
                 
-                let (start, end) = if self.lisp.get(rest3)?.is_nil() {
-                    (0usize, from_len)
-                } else {
-                    let start_val = self.lisp.car(rest3)?;
-                    let s = self.get_int(start_val, call_expr)?;
-                    if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                    let rest4 = self.lisp.cdr(rest3)?;
-                    let e = if self.lisp.get(rest4)?.is_nil() {
-                        from_len
-                    } else {
-                        let end_val = self.lisp.car(rest4)?;
-                        let ev = self.get_int(end_val, call_expr)?;
-                        if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                        ev as usize
-                    };
-                    (s as usize, e)
-                };
-                
-                if start > from_len || end > from_len || start > end {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
+                let (start, end) = self.parse_range_args(rest3, from_len, call_expr)?;
                 let count = end - start;
                 if at + count > to_len {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
@@ -1413,27 +1246,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 match self.lisp.get(str_idx)? {
                     Value::String { len, data } => {
-                        let (start, end) = if self.lisp.get(rest2)?.is_nil() {
-                            (0usize, len)
-                        } else {
-                            let start_val = self.lisp.car(rest2)?;
-                            let s = self.get_int(start_val, call_expr)?;
-                            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                            let rest3 = self.lisp.cdr(rest2)?;
-                            let e = if self.lisp.get(rest3)?.is_nil() {
-                                len
-                            } else {
-                                let end_val = self.lisp.car(rest3)?;
-                                let ev = self.get_int(end_val, call_expr)?;
-                                if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
-                                ev as usize
-                            };
-                            (s as usize, e)
-                        };
-                        
-                        if start > len || end > len || start > end {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
+                        let (start, end) = self.parse_range_args(rest2, len, call_expr)?;
                         
                         // Copy-on-write: ensure string is mutable
                         if self.lisp.string_data_is_interned(data)? {
@@ -1666,16 +1479,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::OutputPortp => self.port_predicate(args, |io, pid| io.is_output_port(pid)),
 
-            Builtin::CurrentInputPort => {
-                self.lisp.port(grift_parser::PortId::STDIN).map_err(Into::into)
-            }
-
-            Builtin::CurrentOutputPort => {
-                self.lisp.port(grift_parser::PortId::STDOUT).map_err(Into::into)
-            }
-
-            Builtin::CurrentErrorPort => {
-                self.lisp.port(grift_parser::PortId::STDERR).map_err(Into::into)
+            Builtin::CurrentInputPort | Builtin::CurrentOutputPort | Builtin::CurrentErrorPort => {
+                let pid = match builtin {
+                    Builtin::CurrentInputPort => grift_parser::PortId::STDIN,
+                    Builtin::CurrentOutputPort => grift_parser::PortId::STDOUT,
+                    _ => grift_parser::PortId::STDERR,
+                };
+                self.lisp.port(pid).map_err(Into::into)
             }
 
             Builtin::ClosePort | Builtin::CloseInputPort | Builtin::CloseOutputPort => {
@@ -1691,27 +1501,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Builtin::ReadChar => {
-                // (read-char) or (read-char port)
+            Builtin::ReadChar | Builtin::PeekChar => {
                 let pid = self.extract_input_port(args, call_expr)?;
                 match &mut self.io {
                     Some(io) => {
-                        match io.read_char(pid) {
-                            Ok(c) => self.lisp.alloc(Value::Char(c)).map_err(Into::into),
-                            Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
-                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                        }
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
-            }
-
-            Builtin::PeekChar => {
-                // (peek-char) or (peek-char port)
-                let pid = self.extract_input_port(args, call_expr)?;
-                match &mut self.io {
-                    Some(io) => {
-                        match io.peek_char(pid) {
+                        let result = if matches!(builtin, Builtin::ReadChar) {
+                            io.read_char(pid)
+                        } else {
+                            io.peek_char(pid)
+                        };
+                        match result {
                             Ok(c) => self.lisp.alloc(Value::Char(c)).map_err(Into::into),
                             Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
                             Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -2021,26 +1820,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
-            Builtin::Exit => {
-                // (exit) or (exit obj)
+            Builtin::Exit | Builtin::EmergencyExit => {
                 let code = self.extract_exit_code(args, call_expr)?;
                 match &mut self.io {
                     Some(io) => {
-                        let _ = io.exit_process(code);
-                        // If the io provider doesn't actually exit (e.g. in tests),
-                        // return void
-                        self.lisp.void_val().map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
-            }
-
-            Builtin::EmergencyExit => {
-                // (emergency-exit) or (emergency-exit obj)
-                let code = self.extract_exit_code(args, call_expr)?;
-                match &mut self.io {
-                    Some(io) => {
-                        let _ = io.emergency_exit_process(code);
+                        let _ = if matches!(builtin, Builtin::Exit) {
+                            io.exit_process(code)
+                        } else {
+                            io.emergency_exit_process(code)
+                        };
                         self.lisp.void_val().map_err(Into::into)
                     }
                     None => Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -2423,6 +2211,65 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
         Ok(vec)
+    }
+
+    /// Validate vector arguments for vector-map/vector-for-each.
+    /// Returns (proc, vecs_args, len) after validating all vectors have the same length.
+    fn validate_vector_args(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, usize), EvalError> {
+        let proc = self.lisp.car(args)?;
+        let vecs_args = self.lisp.cdr(args)?;
+        
+        let first_vec = self.lisp.car(vecs_args)?;
+        let len = match self.lisp.get(first_vec)? {
+            Value::Array { .. } => self.lisp.array_len(first_vec)?,
+            v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+        };
+        
+        let mut current = self.lisp.cdr(vecs_args)?;
+        while !self.lisp.get(current)?.is_nil() {
+            let vec = self.lisp.car(current)?;
+            match self.lisp.get(vec)? {
+                Value::Array { .. } => {
+                    let vlen = self.lisp.array_len(vec)?;
+                    if vlen != len {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
+                }
+                v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        Ok((proc, vecs_args, len))
+    }
+
+    /// Parse optional start/end range arguments from a list.
+    /// If no arguments: returns (0, default_len).
+    /// If start only: returns (start, default_len).
+    /// If start and end: returns (start, end).
+    /// Validates start >= 0, end >= 0, start <= end, both <= max_len.
+    fn parse_range_args(&self, rest: ArenaIndex, max_len: usize, call_expr: ArenaIndex) -> Result<(usize, usize), EvalError> {
+        let (start, end) = if self.lisp.get(rest)?.is_nil() {
+            (0usize, max_len)
+        } else {
+            let start_val = self.lisp.car(rest)?;
+            let s = self.get_int(start_val, call_expr)?;
+            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+            let rest2 = self.lisp.cdr(rest)?;
+            let e = if self.lisp.get(rest2)?.is_nil() {
+                max_len
+            } else {
+                let end_val = self.lisp.car(rest2)?;
+                let ev = self.get_int(end_val, call_expr)?;
+                if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                ev as usize
+            };
+            (s as usize, e)
+        };
+        if start > max_len || end > max_len || start > end {
+            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+        }
+        Ok((start, end))
     }
 
     /// Helper for port predicates: extract first arg, check if it's a port,

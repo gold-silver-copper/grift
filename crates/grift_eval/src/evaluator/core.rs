@@ -1226,6 +1226,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack6(b, c, d, e, f, g)?;
         self.pack2(a, rest)
@@ -1261,6 +1262,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     #[inline]
+    #[allow(clippy::type_complexity)]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d, e, f, g) = self.unpack6(rest)?;
@@ -1622,6 +1624,7 @@ impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
     
     /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)

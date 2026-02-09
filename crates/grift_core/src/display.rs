@@ -66,6 +66,29 @@ impl<const N: usize> fmt::Display for DisplayValue<'_, N> {
 // Formatting implementation
 // ============================================================================
 
+fn format_sequence<const N: usize, F>(
+    lisp: &Lisp<N>,
+    prefix: &str,
+    len: usize,
+    get_elem: F,
+    f: &mut fmt::Formatter<'_>,
+    depth: usize,
+) -> fmt::Result
+where
+    F: Fn(usize) -> Result<ArenaIndex, grift_arena::ArenaError>,
+{
+    f.write_str(prefix)?;
+    for i in 0..len {
+        if i > 0 {
+            f.write_str(" ")?;
+        }
+        if let Ok(elem_idx) = get_elem(i) {
+            format_value(lisp, elem_idx, f, depth + 1)?;
+        }
+    }
+    f.write_str(")")
+}
+
 fn format_value<const N: usize>(
     lisp: &Lisp<N>,
     idx: ArenaIndex,
@@ -115,41 +138,15 @@ fn format_value<const N: usize>(
             f.write_str(")")
         }
         Ok(Value::Lambda { .. }) => f.write_str("#<lambda>"),
-        Ok(Value::Builtin(b)) => {
-            f.write_str("#<builtin:")?;
-            f.write_str(b.name())?;
-            f.write_str(">")
-        }
-        Ok(Value::StdLib(s)) => {
-            f.write_str("#<stdlib:")?;
-            f.write_str(s.name())?;
-            f.write_str(">")
-        }
+        Ok(Value::Builtin(b)) => write!(f, "#<builtin:{}>", b.name()),
+        Ok(Value::StdLib(s)) => write!(f, "#<stdlib:{}>", s.name()),
         Ok(Value::Array { .. }) => {
-            f.write_str("#(")?;
             let len = lisp.array_len(idx).unwrap_or(0);
-            for i in 0..len {
-                if i > 0 {
-                    f.write_str(" ")?;
-                }
-                if let Ok(elem_idx) = lisp.array_get(idx, i) {
-                    format_value(lisp, elem_idx, f, depth + 1)?;
-                }
-            }
-            f.write_str(")")
+            format_sequence(lisp, "#(", len, |i| lisp.array_get(idx, i), f, depth)
         }
         Ok(Value::Bytevector { .. }) => {
-            f.write_str("#u8(")?;
             let len = lisp.bytevector_len(idx).unwrap_or(0);
-            for i in 0..len {
-                if i > 0 {
-                    f.write_str(" ")?;
-                }
-                if let Ok(elem_idx) = lisp.bytevector_get(idx, i) {
-                    format_value(lisp, elem_idx, f, depth + 1)?;
-                }
-            }
-            f.write_str(")")
+            format_sequence(lisp, "#u8(", len, |i| lisp.bytevector_get(idx, i), f, depth)
         }
         Ok(Value::String { .. }) => {
             f.write_str("\"")?;
