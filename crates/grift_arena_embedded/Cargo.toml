@@ -17,6 +17,10 @@ grift_eval = { workspace = true }
 [dev-dependencies]
 serial_test = "3.3"
 
+[[example]]
+name = "embedded_io"
+doc-scrape-examples = false
+
 [features]
 default = []
 # Enable std for testing/simulation on host machines
