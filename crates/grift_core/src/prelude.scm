@@ -1555,12 +1555,13 @@
 ;;; ============================================================
 
 ;;; Internal constructor — reduces to lowest terms, normalizes sign to numerator.
+;;; The denominator is always kept positive; sign goes to the numerator.
 (define (make-rat n d)
   (if (zero? d)
       (error "Division by zero in rational")
       (let* ((g (gcd (abs n) (abs d)))
              (sign (if (negative? d) -1 1)))
-        (list 'rational (* sign (/ n g)) (* sign (/ d g))))))
+        (list 'rational (* sign (/ n g)) (abs (/ d g))))))
 
 ;;; Accessors
 (define (rat-numer r) (cadr r))
@@ -1747,7 +1748,7 @@
   (let ((re-str (rat->string (rat-complex-real z)))
         (im-rat (rat-complex-imag z)))
     (cond
-      ((and (zero? (rat-numer im-rat)))
+      ((zero? (rat-numer im-rat))
        re-str)
       ((negative? (rat-numer im-rat))
        (string-append re-str
