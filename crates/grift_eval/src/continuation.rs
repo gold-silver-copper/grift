@@ -321,14 +321,21 @@ pub enum ContType {
 }
 
 impl ContType {
+    /// Number of variants. Keep in sync when adding/removing variants.
+    const VARIANT_COUNT: usize = ContType::VectorForEachStep as usize + 1;
+
     /// Convert from a `usize` discriminant (as stored in the arena).
     ///
     /// Returns `None` if the value does not correspond to a valid variant.
     #[allow(unsafe_code)]
     pub fn from_usize(n: usize) -> Option<ContType> {
-        if n <= ContType::VectorForEachStep as usize {
-            // SAFETY: ContType is #[repr(usize)] with contiguous discriminants 0..=47.
-            // The bounds check guarantees `n` corresponds to a valid variant.
+        // Compile-time check: ensure the last variant's discriminant matches expected count.
+        const { assert!(ContType::VectorForEachStep as usize == 47); }
+
+        if n < Self::VARIANT_COUNT {
+            // SAFETY: ContType is #[repr(usize)] with contiguous discriminants 0..=47
+            // (no variant specifies a custom discriminant). The bounds check above
+            // guarantees `n` corresponds to a valid variant.
             Some(unsafe { core::mem::transmute::<usize, ContType>(n) })
         } else {
             None
