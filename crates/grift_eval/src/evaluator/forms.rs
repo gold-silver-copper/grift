@@ -132,7 +132,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Use the global env for stdlib functions (they're defined at top level)
                         let closure_env = self.global_env;
                         
-                        if self.lisp.get(args_expr)?.is_nil() {
+                        // Check for rest-argument form: (lambda args body) where params is a symbol
+                        if self.lisp.get(params)?.is_symbol() {
+                            // Rest-only: all args collected into a single list
+                            if self.lisp.get(args_expr)?.is_nil() {
+                                // No args - bind to empty list
+                                let nil = self.lisp.nil()?;
+                                let extended_env = self.env_extend(closure_env, params, nil)?;
+                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
+                            } else {
+                                // Evaluate first arg and start collecting
+                                let first_expr = self.lisp.car(args_expr)?;
+                                let rest_exprs = self.lisp.cdr(args_expr)?;
+                                let nil = self.lisp.nil()?;
+                                
+                                self.cont(ContType::LambdaRestCollect, EnvRef(env)).data7(rest_exprs, env, params, body, closure_env.0, nil, call_expr)?;
+                                
+                                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
+                            }
+                        } else if self.lisp.get(args_expr)?.is_nil() {
                             // No args - check params are also empty
                             if !self.lisp.get(params)?.is_nil() {
                                 let expected = self.count_list(params)?;

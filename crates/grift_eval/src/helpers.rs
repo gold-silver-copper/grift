@@ -8,6 +8,7 @@ use crate::error::EvalError;
 // ============================================================================
 
 /// Helper for computing GCD using Euclidean algorithm
+#[allow(dead_code)]
 pub fn gcd_helper(mut a: isize, mut b: isize) -> isize {
     while b != 0 {
         let t = b;

@@ -40,10 +40,6 @@ define_builtins! {
     EqvP => "eqv?",
     /// equal? - Scheme-compliant recursive structural equality
     EqualP => "equal?",
-    /// symbol=? - Test if all arguments are equal symbols
-    SymbolEqP => "symbol=?",
-    /// boolean=? - Test if all arguments are equal booleans
-    BooleanEqP => "boolean=?",
     
     // Arithmetic
     /// + - Addition
@@ -60,40 +56,16 @@ define_builtins! {
     Remainder => "remainder",
     /// quotient - Integer quotient (truncated towards zero)
     Quotient => "quotient",
-    /// abs - Absolute value
-    Abs => "abs",
-    /// max - Maximum of numbers
-    Max => "max",
-    /// min - Minimum of numbers
-    Min => "min",
-    /// gcd - Greatest common divisor
-    Gcd => "gcd",
-    /// lcm - Least common multiple
-    Lcm => "lcm",
     /// expt - Exponentiation
     Expt => "expt",
-    /// square - Square of a number
-    Square => "square",
     
     // Numeric predicates
-    /// zero? - Check if number is zero
-    Zerop => "zero?",
-    /// positive? - Check if number is positive
-    Positivep => "positive?",
-    /// negative? - Check if number is negative
-    Negativep => "negative?",
-    /// odd? - Check if number is odd
-    Oddp => "odd?",
-    /// even? - Check if number is even
-    Evenp => "even?",
     /// integer? - Check if value is an integer
     Integerp => "integer?",
     /// exact? - Check if number is exact (always true for integers)
     Exactp => "exact?",
     /// inexact? - Check if number is inexact (always false for integers)
     Inexactp => "inexact?",
-    /// exact-integer? - Check if value is an exact integer
-    ExactIntegerp => "exact-integer?",
     /// exact->inexact - Convert exact number to inexact
     ExactToInexact => "exact->inexact",
     /// inexact->exact - Convert inexact number to exact
@@ -110,12 +82,6 @@ define_builtins! {
     Nanp => "nan?",
     /// sqrt - Square root
     Sqrt => "sqrt",
-    /// real? - Check if value is a real number (R7RS)
-    Realp => "real?",
-    /// rational? - Check if value is a rational number (R7RS)
-    Rationalp => "rational?",
-    /// complex? - Check if value is a complex number (R7RS)
-    Complexp => "complex?",
     
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
@@ -138,10 +104,6 @@ define_builtins! {
     Ge => ">=",
     /// = - Numeric equality
     NumEq => "=",
-    
-    // Boolean operations
-    /// not - Boolean negation
-    Not => "not",
     
     // I/O
     /// newline - Print a newline

@@ -872,6 +872,117 @@
 ;;;   ;;; Documentation comment
 ;;;   (define (function-name param1 param2 ...) body)
 
+;;; ============================================================
+;;; Migrated builtins: predicates and simple functions
+;;; These replace native Rust builtins with pure Scheme implementations.
+;;; ============================================================
+
+;;; (not x) - Boolean negation (R7RS §6.3)
+(define (not x) (if x #f #t))
+
+;;; (square x) - Square of a number (R7RS §6.2.6)
+(define (square x) (* x x))
+
+;;; (zero? x) - Check if number is zero (R7RS §6.2.6)
+(define (zero? x) (= x 0))
+
+;;; (positive? x) - Check if number is positive (R7RS §6.2.6)
+(define (positive? x) (> x 0))
+
+;;; (negative? x) - Check if number is negative (R7RS §6.2.6)
+(define (negative? x) (< x 0))
+
+;;; (even? x) - Check if integer is even (R7RS §6.2.6)
+(define (even? x) (= (remainder x 2) 0))
+
+;;; (odd? x) - Check if integer is odd (R7RS §6.2.6)
+(define (odd? x) (not (= (remainder x 2) 0)))
+
+;;; (abs x) - Absolute value (R7RS §6.2.6)
+(define (abs x) (if (negative? x) (- x) x))
+
+;;; (boolean=? b1 b2 ...) - Test if all arguments are equal booleans (R7RS §6.3)
+(define (boolean=? . args)
+  (if (null? args) #t
+      (let ((first (car args)))
+        (define (check rest)
+          (if (null? rest) #t
+              (if (eq? first (car rest))
+                  (check (cdr rest))
+                  #f)))
+        (check (cdr args)))))
+
+;;; (symbol=? s1 s2 ...) - Test if all arguments are equal symbols (R7RS §6.5)
+(define (symbol=? . args)
+  (if (null? args) #t
+      (let ((first (car args)))
+        (define (check rest)
+          (if (null? rest) #t
+              (if (eq? first (car rest))
+                  (check (cdr rest))
+                  #f)))
+        (check (cdr args)))))
+
+;;; (exact-integer? x) - Check if value is an exact integer (R7RS §6.2.6)
+(define (exact-integer? x) (and (integer? x) (exact? x)))
+
+;;; (real? x) - Check if value is a real number (R7RS §6.2.6)
+(define (real? x) (number? x))
+
+;;; (rational? x) - Check if value is rational (R7RS §6.2.6)
+;;; True for tagged rationals, exact integers, and finite floats
+(define (rational? x)
+  (or (and (pair? x) (eq? (car x) 'rational))
+      (and (number? x)
+           (if (inexact? x) (finite? x) #t))))
+
+;;; (complex? x) - Check if value is complex (R7RS §6.2.6)
+;;; True for tagged complex values and all numbers
+(define (complex? x)
+  (or (and (pair? x) (eq? (car x) 'complex))
+      (number? x)))
+
+;;; (gcd . args) - Greatest common divisor (R7RS §6.2.6)
+(define (gcd . args)
+  (define (gcd2 a b)
+    (if (= b 0) a (gcd2 b (remainder a b))))
+  (if (null? args) 0
+      (fold (lambda (acc x) (gcd2 (abs acc) (abs x)))
+            (car args)
+            (cdr args))))
+
+;;; (lcm . args) - Least common multiple (R7RS §6.2.6)
+(define (lcm . args)
+  (define (lcm2 a b)
+    (if (or (= a 0) (= b 0)) 0
+        (abs (/ (* a b) (gcd a b)))))
+  (if (null? args) 1
+      (fold lcm2 (car args) (cdr args))))
+
+;;; (max x . rest) - Maximum of one or more numbers (R7RS §6.2.6)
+;;; If any argument is inexact, the result is inexact.
+(define (max x . rest)
+  (define (max-iter best has-inexact remaining)
+    (if (null? remaining)
+        (if has-inexact (inexact best) best)
+        (let ((y (car remaining)))
+          (max-iter (if (> y best) y best)
+                    (or has-inexact (inexact? y))
+                    (cdr remaining)))))
+  (max-iter x (inexact? x) rest))
+
+;;; (min x . rest) - Minimum of one or more numbers (R7RS §6.2.6)
+;;; If any argument is inexact, the result is inexact.
+(define (min x . rest)
+  (define (min-iter best has-inexact remaining)
+    (if (null? remaining)
+        (if has-inexact (inexact best) best)
+        (let ((y (car remaining)))
+          (min-iter (if (< y best) y best)
+                    (or has-inexact (inexact? y))
+                    (cdr remaining)))))
+  (min-iter x (inexact? x) rest))
+
 ;;; (map f lst) - Apply f to each element of lst (tail-recursive)
 (define (map f lst)
   (define (map-iter lst acc)  ;; Helper function for tail-recursive iteration
@@ -1566,9 +1677,6 @@
 ;;; Accessors
 (define (rat-numer r) (cadr r))
 (define (rat-denom r) (caddr r))
-;;; Note: rational? is provided as a builtin that handles both tagged rational
-;;; values and plain numbers (per R7RS, all finite reals are rational).
-(define (rational-tagged? x) (and (pair? x) (eq? (car x) 'rational)))
 
 ;;; Arithmetic
 (define (rat+ a b)
@@ -1624,10 +1732,7 @@
 (define (make-complex-polar mag ang)
   (list 'complex 'polar mag ang))
 
-;;; Predicates and accessors
-;;; Note: complex? is provided as a builtin that handles both tagged complex
-;;; values and plain numbers (per R7RS, all real numbers are complex).
-(define (complex-tagged? x) (and (pair? x) (eq? (car x) 'complex)))
+;;; Accessors
 (define (complex-form z) (cadr z))
 
 ;;; Access real part (rectangular only; polar requires trig)

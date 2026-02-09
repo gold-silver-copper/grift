@@ -7,10 +7,10 @@ use grift_parser::{ArenaIndex, Value, Builtin, fsize};
 
 use crate::error::{ErrorKind, EvalError, EvalResult};
 use crate::continuation::{TrampolineState, ContType, is_binary_builtin, EnvRef, ExprRef};
-use crate::helpers::{gcd_helper, int_pow, equal_recursive, float_floor, float_ceil, float_truncate, float_round, float_sqrt, float_pow};
+use crate::helpers::{int_pow, equal_recursive, float_floor, float_ceil, float_truncate, float_round, float_sqrt, float_pow};
 use crate::{
-    extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_rounding_op, builtin_div_op,
-    builtin_unary_num, builtin_char_to_int, builtin_char_transform,
+    extract_args, builtin_unary_pred, builtin_rounding_op, builtin_div_op,
+    builtin_char_to_int, builtin_char_transform,
     binary_int_cmp, binary_int_op, binary_div_op,
 };
 
@@ -342,8 +342,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Symbolp => builtin_unary_pred!(self, args, |v: Value| v.is_symbol()),
             
-            Builtin::Not => builtin_unary_pred!(self, args, |v: Value| v.is_false()),
-            
             Builtin::Add => self.numeric_fold(args, 0, 
                 |a, b| a.checked_add(b), 
                 |a, b| a + b,
@@ -407,101 +405,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Integer quotient (truncated towards zero)
             Builtin::Quotient => builtin_div_op!(self, args, call_expr, |a, b| a / b),
             
-            Builtin::Abs => builtin_unary_num!(self, args, call_expr, |n: isize| n.abs(), |f: fsize| {
-                if f < 0.0 { -f } else { f }
-            }),
-            
-            Builtin::Max => {
-                // Maximum of one or more numbers
-                let first_idx = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                match self.lisp.get(first_idx)? {
-                    Value::Number(first) => {
-                        self.numeric_fold(rest, first, 
-                            |a, b| Some(if a > b { a } else { b }),
-                            |a, b| if a > b { a } else { b },
-                            call_expr)
-                    }
-                    Value::Float(first) => {
-                        self.numeric_fold_float(rest, first, |a, b| if a > b { a } else { b }, call_expr)
-                    }
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
-            
-            Builtin::Min => {
-                // Minimum of one or more numbers
-                let first_idx = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                match self.lisp.get(first_idx)? {
-                    Value::Number(first) => {
-                        self.numeric_fold(rest, first,
-                            |a, b| Some(if a < b { a } else { b }),
-                            |a, b| if a < b { a } else { b },
-                            call_expr)
-                    }
-                    Value::Float(first) => {
-                        self.numeric_fold_float(rest, first, |a, b| if a < b { a } else { b }, call_expr)
-                    }
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
-            
-            Builtin::Gcd => {
-                // Greatest common divisor (integers only)
-                // gcd() with no args returns 0, gcd(n) returns |n|
-                if self.lisp.get(args)?.is_nil() {
-                    return self.lisp.number(0).map_err(Into::into);
-                }
-                let first = self.get_int(self.lisp.car(args)?, call_expr)?.abs();
-                let rest = self.lisp.cdr(args)?;
-                let mut acc = first;
-                let mut current = rest;
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => return self.lisp.number(acc).map_err(Into::into),
-                        Value::Cons { .. } => {
-                            let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
-                            let n = self.get_int(car, call_expr)?.abs();
-                            acc = gcd_helper(acc, n);
-                            current = cdr;
-                        }
-                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-                    }
-                }
-            }
-            
-            Builtin::Lcm => {
-                // Least common multiple (integers only)
-                // lcm() with no args returns 1, lcm(n) returns |n|
-                if self.lisp.get(args)?.is_nil() {
-                    return self.lisp.number(1).map_err(Into::into);
-                }
-                let first = self.get_int(self.lisp.car(args)?, call_expr)?.abs();
-                let rest = self.lisp.cdr(args)?;
-                let mut acc = first;
-                let mut current = rest;
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => return self.lisp.number(acc).map_err(Into::into),
-                        Value::Cons { .. } => {
-                            let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
-                            let b_abs = self.get_int(car, call_expr)?.abs();
-                            if acc == 0 || b_abs == 0 {
-                                acc = 0;
-                            } else {
-                                let g = gcd_helper(acc, b_abs);
-                                acc = (acc / g).saturating_mul(b_abs);
-                            }
-                            current = cdr;
-                        }
-                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-                    }
-                }
-            }
-            
             Builtin::Expt => {
                 // Exponentiation: (expt base power)
                 let base_idx = self.lisp.car(args)?;
@@ -540,10 +443,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::Square => builtin_unary_num!(self, args, call_expr, 
-                |n: isize| n.saturating_mul(n), 
-                |f: fsize| f * f),
-            
             Builtin::Sqrt => {
                 // Square root - always returns float for non-perfect squares
                 let arg = self.lisp.car(args)?;
@@ -568,13 +467,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            // Numeric predicates - support both int and float
-            Builtin::Zerop => builtin_numeric_pred!(self, args, call_expr, |n| n == 0, |f| f == 0.0),
-            Builtin::Positivep => builtin_numeric_pred!(self, args, call_expr, |n| n > 0, |f| f > 0.0),
-            Builtin::Negativep => builtin_numeric_pred!(self, args, call_expr, |n| n < 0, |f| f < 0.0),
-            Builtin::Oddp => builtin_numeric_pred!(self, args, call_expr, |n| n % 2 != 0),
-            Builtin::Evenp => builtin_numeric_pred!(self, args, call_expr, |n| n % 2 == 0),
-            
             // integer? is true for exact integers and floats that are whole numbers
             Builtin::Integerp => {
                 builtin_unary_pred!(self, args, |v: Value| match v {
@@ -594,11 +486,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            // exact-integer? is true only for exact integers 
-            Builtin::ExactIntegerp => {
-                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Number(_)))
-            }
-            
             Builtin::Inexactp => {
                 // inexact? is true for floats
                 let val = self.lisp.car(args)?;
@@ -606,24 +493,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Number(_) => self.lisp.boolean(false).map_err(Into::into),
                     Value::Float(_) => self.lisp.boolean(true).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
-            
-            // R7RS numeric tower type predicates
-            Builtin::Realp | Builtin::Rationalp | Builtin::Complexp => {
-                // In our implementation, all numbers are real (no complex numbers)
-                // rational? is true for exact integers and finite floats
-                let val = self.lisp.car(args)?;
-                match self.lisp.get(val)? {
-                    Value::Number(_) => self.lisp.boolean(true).map_err(Into::into),
-                    Value::Float(f) => {
-                        if matches!(builtin, Builtin::Rationalp) {
-                            self.lisp.boolean(f.is_finite()).map_err(Into::into)
-                        } else {
-                            self.lisp.boolean(true).map_err(Into::into)
-                        }
-                    }
-                    _ => self.lisp.boolean(false).map_err(Into::into),
                 }
             }
             
@@ -1644,69 +1513,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::StringCiGe => {
                 // (string-ci>=? string1 string2 ...) - Case-insensitive greater than or equal
                 self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
-            }
-            
-            Builtin::SymbolEqP => {
-                // (symbol=? sym1 sym2 ...) - Test if all arguments are equal symbols
-                let first = self.lisp.car(args)?;
-                let first_sym = match self.lisp.get(first)? {
-                    Value::Symbol(s) => s,
-                    _ => return self.lisp.false_val().map_err(Into::into),
-                };
-                
-                let mut current = self.lisp.cdr(args)?;
-                if self.lisp.get(current)?.is_nil() {
-                    return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
-                }
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => return self.lisp.true_val().map_err(Into::into),
-                        Value::Cons { .. } => {
-                            let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
-                            match self.lisp.get(car)? {
-                                Value::Symbol(s) if s == first_sym => {}
-                                _ => return self.lisp.false_val().map_err(Into::into),
-                            }
-                            current = cdr;
-                        }
-                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-                    }
-                }
-            }
-            
-            Builtin::BooleanEqP => {
-                // (boolean=? b1 b2 ...) - Test if all arguments are equal booleans
-                let first = self.lisp.car(args)?;
-                let first_bool = match self.lisp.get(first)? {
-                    Value::True => true,
-                    Value::False => false,
-                    _ => return self.lisp.false_val().map_err(Into::into),
-                };
-                
-                let mut current = self.lisp.cdr(args)?;
-                if self.lisp.get(current)?.is_nil() {
-                    return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
-                }
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => return self.lisp.true_val().map_err(Into::into),
-                        Value::Cons { .. } => {
-                            let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
-                            let this_bool = match self.lisp.get(car)? {
-                                Value::True => true,
-                                Value::False => false,
-                                _ => return self.lisp.false_val().map_err(Into::into),
-                            };
-                            if this_bool != first_bool {
-                                return self.lisp.false_val().map_err(Into::into);
-                            }
-                            current = cdr;
-                        }
-                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-                    }
-                }
             }
             
             // ============================================================

@@ -3968,7 +3968,7 @@ fn test_quasiquote_mixed_quote_and_unquote() {
 
 #[test]
 fn test_quasiquote_equivalence_to_long_form() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define n 7)").unwrap();
@@ -8231,7 +8231,7 @@ fn test_rational_construction() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Basic construction and auto-reduction
-    assert!(eval_is_true(&lisp, &mut eval, "(rational-tagged? (make-rat 3 4))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(rational? (make-rat 3 4))"));
     assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (make-rat 3 4))"), 3);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (make-rat 3 4))"), 4);
     
@@ -8333,7 +8333,7 @@ fn test_complex_construction() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Rectangular form
-    assert!(eval_is_true(&lisp, &mut eval, "(complex-tagged? (make-complex-rect 3 4))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(complex? (make-complex-rect 3 4))"));
     assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-real (make-complex-rect 3 4))"), 3);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-imag (make-complex-rect 3 4))"), 4);
 }
