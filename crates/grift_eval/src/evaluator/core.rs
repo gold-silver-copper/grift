@@ -6,6 +6,7 @@
 use grift_parser::{
     ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
     PRELUDE_SOURCE,
+    libraries::LIBRARY_SOURCES,
 };
 
 use crate::error::{
@@ -25,6 +26,7 @@ impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
         tracer(self.dynamic_wind_chain);
         tracer(self.exception_handler_chain);
         tracer(self.library_registry);
+        tracer(self.loading_libraries);
     }
 }
 
@@ -47,6 +49,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             exception_handler_chain: nil, // Empty exception handler chain
             io: None, // No I/O provider by default
             library_registry: nil, // Empty library registry
+            loading_libraries: nil, // No libraries currently loading
         };
         
         // Initialize global environment with builtins
@@ -234,7 +237,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Shared GC implementation that collects roots from the evaluator
     /// and optionally from a trampoline state.
     fn gc_with_roots(&self, state: Option<&TrampolineState>) -> GcStats {
-        const MAX_ROOTS: usize = 8;
+        // 7 evaluator roots (global_env, macro_env, current_cont,
+        // dynamic_wind_chain, exception_handler_chain, library_registry,
+        // loading_libraries) plus up to 5 trampoline-state roots.
+        const MAX_ROOTS: usize = 16;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
         
@@ -1401,6 +1407,180 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Err(e) => Err(e),
         }
+    }
+    
+    // ====================================================================
+    // Library auto-loading
+    // ====================================================================
+
+    /// Check whether a library name matches a static `&[&str]` name.
+    pub(super) fn library_name_matches_static(
+        &self,
+        arena_name: ArenaIndex,
+        static_name: &[&str],
+    ) -> Result<bool, EvalError> {
+        let mut cur = arena_name;
+        for &part in static_name {
+            if let Value::Cons { .. } = self.lisp.get(cur)? {
+                let head = self.lisp.car(cur)?;
+                if !self.lisp.symbol_matches(head, part)? {
+                    return Ok(false);
+                }
+                cur = self.lisp.cdr(cur)?;
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(self.lisp.get(cur)?.is_nil())
+    }
+
+    /// Check whether `name` is in the `loading_libraries` list (cycle check).
+    fn is_library_loading(&self, name: ArenaIndex) -> Result<bool, EvalError> {
+        let mut cur = self.loading_libraries;
+        while let Value::Cons { .. } = self.lisp.get(cur)? {
+            let entry = self.lisp.car(cur)?;
+            if self.library_names_equal(entry, name)? {
+                return Ok(true);
+            }
+            cur = self.lisp.cdr(cur)?;
+        }
+        Ok(false)
+    }
+
+    /// Remove `name` from the `loading_libraries` list.
+    fn finish_library_loading(&mut self, name: ArenaIndex) -> Result<(), EvalError> {
+        let nil = self.lisp.nil()?;
+        let mut result = nil;
+        let mut cur = self.loading_libraries;
+        let mut found = false;
+        while let Value::Cons { .. } = self.lisp.get(cur)? {
+            let entry = self.lisp.car(cur)?;
+            cur = self.lisp.cdr(cur)?;
+            if !found && self.library_names_equal(entry, name)? {
+                found = true;
+                continue; // skip this one
+            }
+            result = self.lisp.cons(entry, result)?;
+        }
+        self.loading_libraries = result;
+        Ok(())
+    }
+
+    /// Try to auto-load a library from embedded sources.
+    ///
+    /// Called by `lookup_or_load_library` when the library is not yet in the
+    /// registry.  Searches `LIBRARY_SOURCES`, parses the source, and
+    /// evaluates the `define-library` form, which registers the library.
+    pub(super) fn auto_load_library(&mut self, name: ArenaIndex) -> Result<(), EvalError> {
+        // Cycle detection
+        if self.is_library_loading(name)? {
+            return Err(self.make_error(ErrorKind::Generic, name));
+        }
+
+        // Search embedded sources
+        for source in LIBRARY_SOURCES {
+            if self.library_name_matches_static(name, source.name)? {
+                // Mark as loading
+                self.loading_libraries = self.lisp.cons(name, self.loading_libraries)?;
+
+                // Parse and evaluate the define-library form
+                let forms = parse_all(self.lisp, source.source)?;
+                let mut current = forms;
+                while let Value::Cons { .. } = self.lisp.get(current)? {
+                    let form = self.lisp.car(current)?;
+                    self.eval(ExprRef(form))?;
+                    current = self.lisp.cdr(current)?;
+                }
+
+                // Done loading
+                self.finish_library_loading(name)?;
+                return Ok(());
+            }
+        }
+
+        Err(self.make_error(ErrorKind::Generic, name))
+    }
+
+    /// Look up a library in the registry, auto-loading it if necessary.
+    ///
+    /// Returns `(regular_env, macro_env)`.
+    pub(super) fn lookup_or_load_library(
+        &mut self,
+        name: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        // First check the registry
+        if let Some(result) = self.try_lookup_library(name)? {
+            return Ok(result);
+        }
+        // Not found — try auto-loading
+        self.auto_load_library(name)?;
+        // Now it should be registered
+        self.try_lookup_library(name)?
+            .ok_or_else(|| self.make_error(ErrorKind::Generic, name))
+    }
+
+    /// Try to look up a library by name, returning None if not found.
+    ///
+    /// Library entries are stored as `(name env . macro-env)`:
+    /// - `car(entry)` = name
+    /// - `car(cdr(entry))` = regular bindings env
+    /// - `cdr(cdr(entry))` = macro bindings env
+    fn try_lookup_library(&self, name: ArenaIndex) -> Result<Option<(ArenaIndex, ArenaIndex)>, EvalError> {
+        let mut reg = self.library_registry;
+        while let Value::Cons { .. } = self.lisp.get(reg)? {
+            let entry = self.lisp.car(reg)?;
+            reg = self.lisp.cdr(reg)?;
+            if let Value::Cons { .. } = self.lisp.get(entry)? {
+                let lib_name = self.lisp.car(entry)?;
+                if self.library_names_equal(name, lib_name)? {
+                    let env_pair = self.lisp.cdr(entry)?;
+                    let env = self.lisp.car(env_pair)?;
+                    let macro_env = self.lisp.cdr(env_pair)?;
+                    return Ok(Some((env, macro_env)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Create a prefixed symbol by concatenating prefix + original name.
+    ///
+    /// Uses a fixed 256-byte stack buffer. Returns an error if the
+    /// combined prefix + name exceeds this limit.
+    pub(super) fn prefix_symbol(&self, prefix: ArenaIndex, sym: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // 256 bytes is sufficient for any practical symbol name;
+        // a longer result would indicate a misuse of (prefix ...).
+        let mut buf = [0u8; 256];
+        let mut pos = 0;
+
+        // Copy prefix chars
+        if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
+            let plen = self.lisp.string_len(pchars).map_err(|e| EvalError::from(e))?;
+            for i in 0..plen {
+                let c = self.lisp.string_char_at(pchars, i).map_err(|e| EvalError::from(e))?;
+                let dest = &mut buf[pos..];
+                // Each UTF-8 char can be up to 4 bytes
+                if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
+                let encoded = c.encode_utf8(dest);
+                pos += encoded.len();
+            }
+        }
+
+        // Copy original symbol chars
+        if let Value::Symbol(schars) = self.lisp.get(sym)? {
+            let slen = self.lisp.string_len(schars).map_err(|e| EvalError::from(e))?;
+            for i in 0..slen {
+                let c = self.lisp.string_char_at(schars, i).map_err(|e| EvalError::from(e))?;
+                let dest = &mut buf[pos..];
+                if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
+                let encoded = c.encode_utf8(dest);
+                pos += encoded.len();
+            }
+        }
+
+        let name = core::str::from_utf8(&buf[..pos])
+            .map_err(|_| self.make_error(ErrorKind::Generic, sym))?;
+        Ok(self.lisp.symbol(name)?)
     }
 }
 

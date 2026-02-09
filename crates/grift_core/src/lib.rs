@@ -99,6 +99,7 @@ mod value;
 mod lisp;
 mod display;
 pub mod io;
+pub mod libraries;
 
 pub use value::{Value, Builtin, StdLib};
 // Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]

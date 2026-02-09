@@ -74,6 +74,7 @@ pub use grift_core::{
     IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
     PRELUDE_SOURCE,
     fsize,
+    libraries,
 };
 
 pub mod lexer;

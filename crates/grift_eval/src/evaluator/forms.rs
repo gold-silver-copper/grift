@@ -2445,6 +2445,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Creates a fresh environment, processes `export`, `import`, and `begin`
     /// declarations, then registers the library by name.
+    ///
+    /// The library entry in the registry is stored as `(name (env . macro-env))`:
+    /// - `car(entry)` = name (list of symbols)
+    /// - `car(cdr(entry))` = exported regular bindings env
+    /// - `cdr(cdr(entry))` = exported macro bindings env
     pub(super) fn step_eval_define_library(&mut self, args: ArenaIndex, _env: EnvRef)
         -> Result<TrampolineState, EvalError>
     {
@@ -2454,6 +2459,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Start with a copy of the global env (builtins + stdlib)
         let mut lib_env = self.global_env;
+        let mut lib_macro_env = self.macro_env;
 
         let nil = self.lisp.nil()?;
         let mut exports = nil; // list of export symbols
@@ -2487,6 +2493,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Second pass: evaluate begin bodies in the library environment
+        // Save and restore both global_env and macro_env so that
+        // define-syntax forms inside the library are captured.
         let mut current = decls;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let decl = self.lisp.car(current)?;
@@ -2503,33 +2511,46 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     body = self.lisp.cdr(body)?;
 
                     let saved_global = self.global_env;
+                    let saved_macros = self.macro_env;
                     self.global_env = lib_env;
+                    self.macro_env = lib_macro_env;
                     let _result = self.eval(crate::continuation::ExprRef(expr))?;
-                    lib_env = self.global_env; // capture defines
+                    lib_env = self.global_env;       // capture defines
+                    lib_macro_env = self.macro_env;  // capture define-syntax
                     self.global_env = saved_global;
+                    self.macro_env = saved_macros;
                 }
             }
         }
 
-        // Build the exported environment
+        // Build the exported environments (regular + macros)
         let mut lib_exported_env = EnvRef(nil);
-        let mut exp_list = exports;
-        while let Value::Cons { .. } = self.lisp.get(exp_list)? {
-            let name = self.lisp.car(exp_list)?;
-            exp_list = self.lisp.cdr(exp_list)?;
+        let mut lib_exported_macro_env = EnvRef(nil);
 
-            if let Some(val) = self.lookup_in_env_optional(lib_env.0, name)? {
-                lib_exported_env = self.env_extend(lib_exported_env, name, val)?;
+        if self.lisp.get(exports)?.is_nil() {
+            // No exports specified → export everything
+            lib_exported_env = lib_env;
+            lib_exported_macro_env = lib_macro_env;
+        } else {
+            let mut exp_list = exports;
+            while let Value::Cons { .. } = self.lisp.get(exp_list)? {
+                let name = self.lisp.car(exp_list)?;
+                exp_list = self.lisp.cdr(exp_list)?;
+
+                // Check regular bindings
+                if let Some(val) = self.lookup_in_env_optional(lib_env.0, name)? {
+                    lib_exported_env = self.env_extend(lib_exported_env, name, val)?;
+                }
+                // Check macro bindings
+                if let Some(val) = self.lookup_in_env_optional(lib_macro_env.0, name)? {
+                    lib_exported_macro_env = self.env_extend(lib_exported_macro_env, name, val)?;
+                }
             }
         }
 
-        // If no exports were specified, export everything
-        if self.lisp.get(exports)?.is_nil() {
-            lib_exported_env = lib_env;
-        }
-
-        // Register: library_registry = ((name . env) . library_registry)
-        let entry = self.lisp.cons(lib_name, lib_exported_env.0)?;
+        // Register: library_registry = ((name (env . macro-env)) . registry)
+        let env_pair = self.lisp.cons(lib_exported_env.0, lib_exported_macro_env.0)?;
+        let entry = self.lisp.cons(lib_name, env_pair)?;
         self.library_registry = self.lisp.cons(entry, self.library_registry)?;
 
         let void = self.lisp.void_val()?;
@@ -2576,9 +2597,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Evaluate `(import <import-set>...)`
     ///
-    /// Each import-set is a library name (list of identifiers).
-    /// Looks up the library in the registry and binds exported names in the
-    /// current global environment.
+    /// Each import-set is a library name or an import modifier.
+    /// Imports both regular bindings and macro bindings.
     pub(super) fn step_eval_import(&mut self, args: ArenaIndex, _env: EnvRef)
         -> Result<TrampolineState, EvalError>
     {
@@ -2595,13 +2615,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Import a library's exported bindings into the given environment.
+    ///
+    /// Handles import modifiers: `only`, `except`, `prefix`, `rename`.
+    /// Also imports macro bindings into `self.macro_env`.
     fn import_library_into_env(&mut self, import_set: ArenaIndex, target: EnvRef)
         -> Result<EnvRef, EvalError>
     {
-        // Find the library in the registry
-        let lib_env = self.lookup_library(import_set)?;
+        let (lib_env, lib_macro_env) = self.resolve_import_set(import_set)?;
 
-        // Copy all bindings from lib_env into target
+        // Copy regular bindings into target
         let mut result = target;
         let mut env = lib_env;
         while let Value::Cons { .. } = self.lisp.get(env)? {
@@ -2613,31 +2635,224 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 result = self.env_extend(result, name, val)?;
             }
         }
+
+        // Copy macro bindings into macro_env
+        let mut menv = lib_macro_env;
+        while let Value::Cons { .. } = self.lisp.get(menv)? {
+            let binding = self.lisp.car(menv)?;
+            menv = self.lisp.cdr(menv)?;
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let name = self.lisp.car(binding)?;
+                let val = self.lisp.cdr(binding)?;
+                self.macro_env = self.env_extend(self.macro_env, name, val)?;
+            }
+        }
+
         Ok(result)
     }
 
-    /// Look up a library by name in the registry.
+    /// Resolve an import set to `(regular_env, macro_env)`.
     ///
-    /// Library names are compared structurally (lists of symbols matched pairwise).
-    fn lookup_library(&self, name: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let mut reg = self.library_registry;
-        while let Value::Cons { .. } = self.lisp.get(reg)? {
-            let entry = self.lisp.car(reg)?;
-            reg = self.lisp.cdr(reg)?;
-            if let Value::Cons { .. } = self.lisp.get(entry)? {
-                let lib_name = self.lisp.car(entry)?;
-                if self.library_names_equal(name, lib_name)? {
-                    return Ok(self.lisp.cdr(entry)?);
-                }
+    /// Handles bare library names and import modifiers:
+    /// - `(only <import-set> <id> ...)`
+    /// - `(except <import-set> <id> ...)`
+    /// - `(prefix <import-set> <identifier>)`
+    /// - `(rename <import-set> (<old> <new>) ...)`
+    fn resolve_import_set(&mut self, import_set: ArenaIndex)
+        -> Result<(ArenaIndex, ArenaIndex), EvalError>
+    {
+        if let Value::Cons { .. } = self.lisp.get(import_set)? {
+            let head = self.lisp.car(import_set)?;
+            let rest = self.lisp.cdr(import_set)?;
+
+            // --- import modifiers ---
+            if self.lisp.symbol_matches(head, "only")? {
+                let inner = self.lisp.car(rest)?;
+                let ids = self.lisp.cdr(rest)?;
+                let (env, menv) = self.resolve_import_set(inner)?;
+                return self.filter_env_only(env, menv, ids);
+            }
+
+            if self.lisp.symbol_matches(head, "except")? {
+                let inner = self.lisp.car(rest)?;
+                let ids = self.lisp.cdr(rest)?;
+                let (env, menv) = self.resolve_import_set(inner)?;
+                return self.filter_env_except(env, menv, ids);
+            }
+
+            if self.lisp.symbol_matches(head, "prefix")? {
+                let inner = self.lisp.car(rest)?;
+                let pfx = self.lisp.car(self.lisp.cdr(rest)?)?;
+                let (env, menv) = self.resolve_import_set(inner)?;
+                return self.apply_env_prefix(env, menv, pfx);
+            }
+
+            if self.lisp.symbol_matches(head, "rename")? {
+                let inner = self.lisp.car(rest)?;
+                let renames = self.lisp.cdr(rest)?;
+                let (env, menv) = self.resolve_import_set(inner)?;
+                return self.apply_env_rename(env, menv, renames);
+            }
+
+            // Not a modifier — treat as a library name, use auto-loading
+            return self.lookup_or_load_library(import_set);
+        }
+
+        Err(self.make_error(ErrorKind::Generic, import_set))
+    }
+
+    /// `(only ...)` — keep only named identifiers.
+    fn filter_env_only(
+        &self,
+        env: ArenaIndex,
+        macro_env: ArenaIndex,
+        ids: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let nil = self.lisp.nil()?;
+        let mut new_env = nil;
+        let mut new_menv = nil;
+
+        // For each id in the list, look it up in env / macro_env
+        let mut id_list = ids;
+        while let Value::Cons { .. } = self.lisp.get(id_list)? {
+            let id = self.lisp.car(id_list)?;
+            id_list = self.lisp.cdr(id_list)?;
+
+            if let Some(val) = self.lookup_in_env_optional(env, id)? {
+                let binding = self.lisp.cons(id, val)?;
+                new_env = self.lisp.cons(binding, new_env)?;
+            }
+            if let Some(val) = self.lookup_in_env_optional(macro_env, id)? {
+                let binding = self.lisp.cons(id, val)?;
+                new_menv = self.lisp.cons(binding, new_menv)?;
             }
         }
-        Err(self.make_error(ErrorKind::Generic, name))
+        Ok((new_env, new_menv))
+    }
+
+    /// `(except ...)` — keep all identifiers except the named ones.
+    fn filter_env_except(
+        &self,
+        env: ArenaIndex,
+        macro_env: ArenaIndex,
+        ids: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let nil = self.lisp.nil()?;
+
+        let filter_one = |src: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+            let mut result = nil;
+            let mut cur = src;
+            while let Value::Cons { .. } = self.lisp.get(cur)? {
+                let binding = self.lisp.car(cur)?;
+                cur = self.lisp.cdr(cur)?;
+                if let Value::Cons { .. } = self.lisp.get(binding)? {
+                    let name = self.lisp.car(binding)?;
+                    // Check if name is in the exclude list
+                    let mut excluded = false;
+                    let mut id_list = ids;
+                    while let Value::Cons { .. } = self.lisp.get(id_list)? {
+                        let id = self.lisp.car(id_list)?;
+                        id_list = self.lisp.cdr(id_list)?;
+                        if self.lisp.symbol_eq(name, id)? {
+                            excluded = true;
+                            break;
+                        }
+                    }
+                    if !excluded {
+                        result = self.lisp.cons(binding, result)?;
+                    }
+                }
+            }
+            Ok(result)
+        };
+
+        let new_env = filter_one(env)?;
+        let new_menv = filter_one(macro_env)?;
+        Ok((new_env, new_menv))
+    }
+
+    /// `(prefix ...)` — prefix all names with the given identifier.
+    fn apply_env_prefix(
+        &self,
+        env: ArenaIndex,
+        macro_env: ArenaIndex,
+        prefix: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let nil = self.lisp.nil()?;
+
+        let prefix_one = |src: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+            let mut result = nil;
+            let mut cur = src;
+            while let Value::Cons { .. } = self.lisp.get(cur)? {
+                let binding = self.lisp.car(cur)?;
+                cur = self.lisp.cdr(cur)?;
+                if let Value::Cons { .. } = self.lisp.get(binding)? {
+                    let name = self.lisp.car(binding)?;
+                    let val = self.lisp.cdr(binding)?;
+                    let new_name = self.prefix_symbol(prefix, name)?;
+                    let new_binding = self.lisp.cons(new_name, val)?;
+                    result = self.lisp.cons(new_binding, result)?;
+                }
+            }
+            Ok(result)
+        };
+
+        let new_env = prefix_one(env)?;
+        let new_menv = prefix_one(macro_env)?;
+        Ok((new_env, new_menv))
+    }
+
+    /// `(rename ...)` — rename specific identifiers.
+    fn apply_env_rename(
+        &self,
+        env: ArenaIndex,
+        macro_env: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let nil = self.lisp.nil()?;
+
+        let rename_one = |src: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+            let mut result = nil;
+            let mut cur = src;
+            while let Value::Cons { .. } = self.lisp.get(cur)? {
+                let binding = self.lisp.car(cur)?;
+                cur = self.lisp.cdr(cur)?;
+                if let Value::Cons { .. } = self.lisp.get(binding)? {
+                    let name = self.lisp.car(binding)?;
+                    let val = self.lisp.cdr(binding)?;
+
+                    // Check if this name has a rename
+                    let mut new_name = name;
+                    let mut ren_list = renames;
+                    while let Value::Cons { .. } = self.lisp.get(ren_list)? {
+                        let pair = self.lisp.car(ren_list)?;
+                        ren_list = self.lisp.cdr(ren_list)?;
+                        if let Value::Cons { .. } = self.lisp.get(pair)? {
+                            let old = self.lisp.car(pair)?;
+                            if self.lisp.symbol_eq(name, old)? {
+                                // (old new) — take cdr which is (new)
+                                let new_name_cell = self.lisp.cdr(pair)?;
+                                new_name = self.lisp.car(new_name_cell)?;
+                                break;
+                            }
+                        }
+                    }
+                    let new_binding = self.lisp.cons(new_name, val)?;
+                    result = self.lisp.cons(new_binding, result)?;
+                }
+            }
+            Ok(result)
+        };
+
+        let new_env = rename_one(env)?;
+        let new_menv = rename_one(macro_env)?;
+        Ok((new_env, new_menv))
     }
 
     /// Compare two library names for equality.
     ///
     /// Library names are lists of symbols; we compare element-wise.
-    fn library_names_equal(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
+    pub(super) fn library_names_equal(&self, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
         let mut a_cur = a;
         let mut b_cur = b;
         loop {
