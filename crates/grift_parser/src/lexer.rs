@@ -597,7 +597,9 @@ impl<'a> Lexer<'a> {
         
         if negative { value = -value; }
         
-        // Note: #e and #i are no-ops for integers (our only number type)
+        // Note: #e (exact) and #i (inexact) prefixes are accepted for R7RS compliance
+        // but have no semantic effect in this integer-only implementation.
+        // All integers are inherently exact.
         Ok(Token::Number(value))
     }
     

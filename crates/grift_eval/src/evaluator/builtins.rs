@@ -836,8 +836,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::VectorAppend => {
                 // (vector-append vec ...) - concatenate vectors
-                const MAX_TOTAL: usize = 4096;
-                let mut elems: [ArenaIndex; MAX_TOTAL] = [ArenaIndex::default(); MAX_TOTAL];
+                // Maximum total elements across all appended vectors
+                const MAX_TOTAL_ELEMS: usize = 4096;
+                let mut elems: [ArenaIndex; MAX_TOTAL_ELEMS] = [ArenaIndex::default(); MAX_TOTAL_ELEMS];
                 let mut total_len = 0;
                 
                 let mut current = args;
@@ -850,7 +851,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             match self.lisp.get(car)? {
                                 Value::Array { .. } => {
                                     let len = self.lisp.array_len(car)?;
-                                    if total_len + len > MAX_TOTAL {
+                                    if total_len + len > MAX_TOTAL_ELEMS {
                                         return Err(self.make_error(ErrorKind::TypeError, call_expr));
                                     }
                                     for i in 0..len {
@@ -1362,11 +1363,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // Read source characters into temp buffer for overlapping safety
-                const MAX_COPY: usize = 4096;
-                if count > MAX_COPY {
+                const MAX_STRING_COPY: usize = 4096;
+                if count > MAX_STRING_COPY {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
                 }
-                let mut temp = ['\0'; MAX_COPY];
+                let mut temp = ['\0'; MAX_STRING_COPY];
                 for i in 0..count {
                     let char_slot = self.lisp.arena_index_at_offset(from_data, start + i)?;
                     match self.lisp.get(char_slot)? {
