@@ -509,7 +509,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Given the cdr that contains the ellipsis, returns the remaining elements after it.
     fn rest_after_ellipsis(&self, ellipsis_cdr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         match self.lisp.get(ellipsis_cdr)? {
-            Value::Symbol(_) => self.lisp.nil().map_err(Into::into),
             Value::Cons { .. } => self.lisp.cdr(ellipsis_cdr).map_err(Into::into),
             _ => self.lisp.nil().map_err(Into::into),
         }
