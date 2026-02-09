@@ -324,57 +324,14 @@ impl ContType {
     /// Convert from a `usize` discriminant (as stored in the arena).
     ///
     /// Returns `None` if the value does not correspond to a valid variant.
+    #[allow(unsafe_code)]
     pub fn from_usize(n: usize) -> Option<ContType> {
-        match n {
-            0 => Some(ContType::Done),
-            1 => Some(ContType::ApplyForced),
-            2 => Some(ContType::IfBranch),
-            3 => Some(ContType::BuiltinForceArg),
-            4 => Some(ContType::BinaryBuiltinFirst),
-            5 => Some(ContType::BinaryBuiltinSecond),
-            6 => Some(ContType::LambdaFirstBind),
-            7 => Some(ContType::LambdaBindArg),
-            8 => Some(ContType::LambdaRestCollect),
-            9 => Some(ContType::EvalExpr),
-            10 => Some(ContType::BeginSeq),
-            11 => Some(ContType::ApplyFirst),
-            12 => Some(ContType::ApplySecond),
-            13 => Some(ContType::ValuesCollect),
-            14 => Some(ContType::DefineValue),
-            15 => Some(ContType::SetValue),
-            16 => Some(ContType::NativeArgsCollect),
-            17 => Some(ContType::QuasiquoteCar),
-            18 => Some(ContType::QuasiquoteCdr),
-            19 => Some(ContType::QuasiquoteUnquoteWrap),
-            20 => Some(ContType::QuasiquoteNestedWrap),
-            21 => Some(ContType::QuasiquoteSplice),
-            22 => Some(ContType::QuasiquoteSpliceAppend),
-            23 => Some(ContType::LetSyntaxBody),
-            24 => Some(ContType::CallWithValuesProducer),
-            25 => Some(ContType::CallWithValuesConsumer),
-            26 => Some(ContType::CallWithValuesApply),
-            27 => Some(ContType::SyntaxCaseMatch),
-            28 => Some(ContType::SyntaxCaseFender),
-            29 => Some(ContType::CallCcApply),
-            30 => Some(ContType::ContinuationApply),
-            31 => Some(ContType::DynamicWindBefore),
-            32 => Some(ContType::DynamicWindBody),
-            33 => Some(ContType::DynamicWindAfter),
-            34 => Some(ContType::DynamicWindAfterCall),
-            35 => Some(ContType::WindIn),
-            36 => Some(ContType::WindOut),
-            37 => Some(ContType::DynamicWindEvalAfter),
-            38 => Some(ContType::DynamicWindCallBody),
-            39 => Some(ContType::FinishContinuationRestore),
-            40 => Some(ContType::MacroResult),
-            41 => Some(ContType::WithExceptionHandlerEvalThunk),
-            42 => Some(ContType::WithExceptionHandlerCallThunk),
-            43 => Some(ContType::ExceptionHandlerFrame),
-            44 => Some(ContType::RaiseEval),
-            45 => Some(ContType::EvalEnvArg),
-            46 => Some(ContType::VectorMapStep),
-            47 => Some(ContType::VectorForEachStep),
-            _ => None,
+        if n <= ContType::VectorForEachStep as usize {
+            // SAFETY: ContType is #[repr(usize)] with contiguous discriminants 0..=47.
+            // The bounds check guarantees `n` corresponds to a valid variant.
+            Some(unsafe { core::mem::transmute::<usize, ContType>(n) })
+        } else {
+            None
         }
     }
 
