@@ -659,6 +659,8 @@
       ((%feature-check (not req))
        (syntax (if (%feature-check req) #f #t)))
       ;; Library checks - known R7RS libraries
+      ;; Each library must be an explicit pattern because syntax-case
+      ;; requires literal keyword matching at expansion time.
       ((%feature-check (library (scheme base))) (syntax #t))
       ((%feature-check (library (scheme case-lambda))) (syntax #t))
       ((%feature-check (library (scheme char))) (syntax #t))
@@ -698,6 +700,7 @@
 
 ;; features - return list of feature identifiers (R7RS §6.14)
 ;; Returns a list of the feature identifiers which cond-expand treats as true.
+;; This list must be kept in sync with the features recognized by %feature-check above.
 (define (features)
   '(r7rs grift exact-closed))
 ;; ============================================================
