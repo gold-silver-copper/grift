@@ -101,6 +101,24 @@ pub trait IoProvider {
     /// Return `true` if the port is an output port.
     fn is_output_port(&self, port: PortId) -> bool;
 
+    /// Return `true` if the port is still open.
+    /// Default: returns `true` (assumes ports are open unless overridden).
+    fn is_port_open(&self, _port: PortId) -> bool {
+        true
+    }
+
+    /// Return `true` if the port is a textual port.
+    /// Default: returns `true` for any valid input or output port.
+    fn is_textual_port(&self, port: PortId) -> bool {
+        self.is_input_port(port) || self.is_output_port(port)
+    }
+
+    /// Return `true` if the port is a binary port.
+    /// Default: returns `false` (all ports are textual by default).
+    fn is_binary_port(&self, _port: PortId) -> bool {
+        false
+    }
+
     /// Open an input port that reads from the given string.
     ///
     /// Returns a fresh [`PortId`] for the new port.
@@ -122,6 +140,79 @@ pub trait IoProvider {
     /// The port must have been created by [`open_output_string`](Self::open_output_string).
     /// Default: returns [`IoErrorKind::Unsupported`].
     fn get_output_string(&self, _port: PortId) -> IoResult<&str> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    // ----------------------------------------------------------------
+    // File system operations (R7RS §6.13)
+    // ----------------------------------------------------------------
+
+    /// Check whether a file exists at the given path.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn file_exists(&self, _path: &str) -> IoResult<bool> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Delete the file at the given path.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn delete_file(&mut self, _path: &str) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Read the entire contents of a file as a string.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn read_file(&mut self, _path: &str) -> IoResult<&str> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    // ----------------------------------------------------------------
+    // Process / environment operations (R7RS §6.14)
+    // ----------------------------------------------------------------
+
+    /// Return the number of command-line arguments.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn command_line_count(&self) -> IoResult<usize> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the command-line argument at the given index.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn command_line_arg(&self, _index: usize) -> IoResult<&str> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Retrieve the value of an environment variable by name.
+    /// Returns `Ok(Some(value))` if found, `Ok(None)` if not set.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn get_environment_variable(&mut self, _name: &str) -> IoResult<Option<&str>> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the number of environment variables.
+    /// Must be called before [`environment_variable_at`](Self::environment_variable_at)
+    /// to snapshot the current environment.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn environment_variables_count(&mut self) -> IoResult<usize> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the environment variable name and value at the given index.
+    /// [`environment_variables_count`](Self::environment_variables_count) must be
+    /// called first to snapshot the environment.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn environment_variable_at(&self, _index: usize) -> IoResult<(&str, &str)> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Exit the process with the given status code.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn exit_process(&mut self, _code: i32) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Emergency exit the process (no cleanup) with the given status code.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn emergency_exit_process(&mut self, _code: i32) -> IoResult<()> {
         Err(IoErrorKind::Unsupported)
     }
 }

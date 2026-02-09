@@ -75,7 +75,10 @@ pub(crate) static WHITESPACE_TABLE: [bool; 256] = {
 /// Tokens are lightweight, `Copy`, and do not allocate. Symbol and string
 /// content is accessed through the lexer's buffers or the original input
 /// after a token is returned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Note: `Eq` is intentionally not derived because `Token::Float` contains
+/// an `fsize` (floating-point) value, and NaN != NaN breaks `Eq` semantics.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Token {
     /// `(`
     LParen,
@@ -105,6 +108,8 @@ pub enum Token {
     DatumComment,
     /// Integer number literal (value already parsed)
     Number(isize),
+    /// Floating-point number literal (value already parsed)
+    Float(grift_core::fsize),
     /// Symbol — raw bytes are in `input[start..start+len]` (not yet lowercased).
     /// Use [`Lexer::symbol_bytes`] to get the lowercased bytes.
     Symbol {
@@ -131,7 +136,7 @@ pub struct SourceLoc {
 }
 
 /// A token with its source location
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpannedToken {
     pub token: Token,
     pub loc: SourceLoc,
@@ -156,6 +161,8 @@ pub enum LexErrorKind {
     UnterminatedString,
     /// String literal exceeds maximum length
     StringTooLong,
+    /// Invalid digit for the given radix (e.g., #b2, #o8)
+    InvalidRadixDigit,
 }
 
 /// Lexer error with location
@@ -465,8 +472,64 @@ impl<'a> Lexer<'a> {
             }
         }
         
+        // Check for decimal point or exponent → floating-point literal
+        let has_dot = self.peek() == Some(b'.') 
+            && self.peek_next().is_some_and(|c| c.is_ascii_digit() || c == b'e' || c == b'E');
+        let has_exp = self.peek() == Some(b'e') || self.peek() == Some(b'E');
+        
+        if has_dot || has_exp {
+            return self.lex_float_tail(value, negative);
+        }
+        
         if negative { value = -value; }
         Ok(Token::Number(value))
+    }
+    
+    /// Continue lexing a floating-point literal after the integer part.
+    /// `int_part` is the integer part parsed so far (always non-negative).
+    fn lex_float_tail(&mut self, int_part: isize, negative: bool) -> Result<Token, LexError> {
+        // Build the float from the integer part
+        let mut result: grift_core::fsize = int_part as grift_core::fsize;
+        
+        // Parse fractional part
+        if self.peek() == Some(b'.') {
+            self.advance(); // consume '.'
+            let mut frac_scale: grift_core::fsize = 0.1;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.advance();
+                    result += (c - b'0') as grift_core::fsize * frac_scale;
+                    frac_scale *= 0.1;
+                } else {
+                    break;
+                }
+            }
+        }
+        
+        // Parse exponent part
+        if self.peek() == Some(b'e') || self.peek() == Some(b'E') {
+            self.advance(); // consume 'e'/'E'
+            let exp_negative = match self.peek() {
+                Some(b'+') => { self.advance(); false }
+                Some(b'-') => { self.advance(); true }
+                _ => false,
+            };
+            let mut exp: i32 = 0;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.advance();
+                    exp = exp.saturating_mul(10).saturating_add((c - b'0') as i32);
+                } else {
+                    break;
+                }
+            }
+            if exp_negative { exp = -exp; }
+            // Compute 10^exp using repeated multiplication (no_std)
+            result = mul_pow10(result, exp);
+        }
+        
+        if negative { result = -result; }
+        Ok(Token::Float(result))
     }
     
     fn lex_symbol(&mut self) -> Result<Token, LexError> {
@@ -482,6 +545,14 @@ impl<'a> Lexer<'a> {
             }
         }
         
+        // Check for R7RS special float constants: +inf.0, -inf.0, +nan.0, -nan.0
+        match &self.symbol_buf[..len] {
+            b"+inf.0" => return Ok(Token::Float(grift_core::fsize::INFINITY)),
+            b"-inf.0" => return Ok(Token::Float(grift_core::fsize::NEG_INFINITY)),
+            b"+nan.0" | b"-nan.0" => return Ok(Token::Float(grift_core::fsize::NAN)),
+            _ => {}
+        }
+        
         Ok(Token::Symbol { len })
     }
     
@@ -495,6 +566,10 @@ impl<'a> Lexer<'a> {
             Some(b'(') => { Ok(Token::VectorOpen) } // Don't consume '(' - parser handles it
             Some(b'\'') => { self.advance(); Ok(Token::SyntaxQuote) }
             Some(b';') => { self.advance(); Ok(Token::DatumComment) }
+            Some(b'b') | Some(b'B') | Some(b'o') | Some(b'O') | Some(b'd') | Some(b'D') | Some(b'x') | Some(b'X')
+            | Some(b'e') | Some(b'E') | Some(b'i') | Some(b'I') => {
+                self.lex_prefixed_number()
+            }
             Some(b'u') => {
                 // #u8( bytevector literal
                 let save_pos = self.pos;
@@ -521,6 +596,153 @@ impl<'a> Lexer<'a> {
             Some(_) => Err(self.error(LexErrorKind::InvalidHashLiteral)),
             None => Err(self.error(LexErrorKind::UnexpectedEof)),
         }
+    }
+    
+    /// Parse a number with radix and/or exactness prefix.
+    /// Called after '#' has been consumed and peek() is one of b/o/d/x/e/i.
+    fn lex_prefixed_number(&mut self) -> Result<Token, LexError> {
+        let mut radix: u8 = 0; // 0 = not specified
+        let mut exactness: u8 = 0; // 0 = unspecified, 1 = exact (#e), 2 = inexact (#i)
+        
+        // Parse first prefix character (already peeked)
+        match self.peek() {
+            Some(b'b') | Some(b'B') => { self.advance(); radix = 2; }
+            Some(b'o') | Some(b'O') => { self.advance(); radix = 8; }
+            Some(b'd') | Some(b'D') => { self.advance(); radix = 10; }
+            Some(b'x') | Some(b'X') => { self.advance(); radix = 16; }
+            Some(b'e') | Some(b'E') => { self.advance(); exactness = 1; }
+            Some(b'i') | Some(b'I') => { self.advance(); exactness = 2; }
+            _ => return Err(self.error(LexErrorKind::InvalidHashLiteral)),
+        }
+        
+        // Check for second prefix (#e#x, #x#e, etc.)
+        if self.peek() == Some(b'#') {
+            self.advance(); // consume '#'
+            match self.peek() {
+                Some(b'b') | Some(b'B') if radix == 0 => { self.advance(); radix = 2; }
+                Some(b'o') | Some(b'O') if radix == 0 => { self.advance(); radix = 8; }
+                Some(b'd') | Some(b'D') if radix == 0 => { self.advance(); radix = 10; }
+                Some(b'x') | Some(b'X') if radix == 0 => { self.advance(); radix = 16; }
+                Some(b'e') | Some(b'E') if exactness == 0 && radix != 0 => { self.advance(); exactness = 1; }
+                Some(b'i') | Some(b'I') if exactness == 0 && radix != 0 => { self.advance(); exactness = 2; }
+                _ => return Err(self.error(LexErrorKind::InvalidHashLiteral)),
+            }
+        }
+        
+        // Default radix is 10
+        if radix == 0 { radix = 10; }
+        
+        // Parse optional sign
+        let negative = if self.peek() == Some(b'-') {
+            self.advance();
+            true
+        } else if self.peek() == Some(b'+') {
+            self.advance();
+            false
+        } else {
+            false
+        };
+        
+        // Check for special R7RS float literals: +inf.0, -inf.0, +nan.0
+        if radix == 10 {
+            if let Some(special) = self.try_lex_special_float(negative) {
+                return Ok(special);
+            }
+        }
+        
+        // Parse digits in the given radix
+        let mut value: isize = 0;
+        let mut has_digits = false;
+        while let Some(c) = self.peek() {
+            let digit = match c {
+                b'0'..=b'9' => (c - b'0') as isize,
+                b'a'..=b'f' if radix == 16 => (c - b'a' + 10) as isize,
+                b'A'..=b'F' if radix == 16 => (c - b'A' + 10) as isize,
+                _ => break,
+            };
+            if digit >= radix as isize {
+                return Err(self.error(LexErrorKind::InvalidRadixDigit));
+            }
+            self.advance();
+            has_digits = true;
+            value = value.checked_mul(radix as isize)
+                .and_then(|v| v.checked_add(digit))
+                .ok_or_else(|| self.error(LexErrorKind::NumberOverflow))?;
+        }
+        
+        // For decimal radix, check for floating-point continuation
+        if radix == 10 {
+            let has_dot = self.peek() == Some(b'.') 
+                && self.peek_next().is_some_and(|c| c.is_ascii_digit() || c == b'e' || c == b'E');
+            let has_exp = self.peek() == Some(b'e') || self.peek() == Some(b'E');
+            
+            if has_dot || has_exp {
+                if !has_digits {
+                    return Err(self.error(LexErrorKind::InvalidHashLiteral));
+                }
+                // Force float path; exactness=1 (#e) will convert back to int
+                let tok = self.lex_float_tail(value, negative)?;
+                if exactness == 1 {
+                    // #e forces exact: convert float to integer
+                    if let Token::Float(f) = tok {
+                        return Ok(Token::Number(f as isize));
+                    }
+                }
+                return Ok(tok);
+            }
+        }
+        
+        if !has_digits {
+            return Err(self.error(LexErrorKind::InvalidHashLiteral));
+        }
+        
+        if negative { value = -value; }
+        
+        // #i forces inexact (float) representation
+        if exactness == 2 {
+            Ok(Token::Float(value as grift_core::fsize))
+        } else {
+            Ok(Token::Number(value))
+        }
+    }
+    
+    /// Try to lex special float constants: inf.0, nan.0
+    /// Called when sign has already been parsed. Returns None if not a match (position unchanged).
+    fn try_lex_special_float(&mut self, negative: bool) -> Option<Token> {
+        let save_pos = self.pos;
+        let save_line = self.line;
+        let save_col = self.column;
+        
+        // Peek ahead for "inf.0" or "nan.0"
+        let start = self.pos;
+        // Read up to 5 chars
+        for _ in 0..5 {
+            if let Some(c) = self.peek() {
+                if c.is_ascii_alphanumeric() || c == b'.' {
+                    self.advance();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        let name = &self.input[start..self.pos];
+        
+        if name == b"inf.0" {
+            let val = if negative { grift_core::fsize::NEG_INFINITY } else { grift_core::fsize::INFINITY };
+            return Some(Token::Float(val));
+        }
+        if name == b"nan.0" {
+            return Some(Token::Float(grift_core::fsize::NAN));
+        }
+        
+        // Not a match - restore position
+        self.pos = save_pos;
+        self.line = save_line;
+        self.column = save_col;
+        None
     }
     
     fn lex_char_literal(&mut self) -> Result<Token, LexError> {
@@ -705,4 +927,20 @@ pub(crate) fn parse_hex(bytes: &[u8]) -> Option<u32> {
         result = result.checked_mul(16)?.checked_add(digit)?;
     }
     Some(result)
+}
+
+/// Multiply a float by 10^exp without using std math functions.
+/// Works in no_std by repeated multiplication/division.
+fn mul_pow10(value: grift_core::fsize, exp: i32) -> grift_core::fsize {
+    let mut result = value;
+    if exp >= 0 {
+        for _ in 0..exp {
+            result *= 10.0;
+        }
+    } else {
+        for _ in 0..(-exp) {
+            result /= 10.0;
+        }
+    }
+    result
 }

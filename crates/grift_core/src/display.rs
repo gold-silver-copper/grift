@@ -82,6 +82,23 @@ fn format_value<const N: usize>(
         Ok(Value::True) => f.write_str("#t"),
         Ok(Value::False) => f.write_str("#f"),
         Ok(Value::Number(n)) => write!(f, "{}", n),
+        Ok(Value::Float(fl)) => {
+            // R7RS: inexact numbers display with decimal point
+            if fl.is_nan() {
+                f.write_str("+nan.0")
+            } else if fl.is_infinite() {
+                if fl > 0.0 {
+                    f.write_str("+inf.0")
+                } else {
+                    f.write_str("-inf.0")
+                }
+            } else if fl.is_finite() && fl == (fl as isize as crate::fsize) {
+                // Whole number float: display with ".0"
+                write!(f, "{:.1}", fl)
+            } else {
+                write!(f, "{}", fl)
+            }
+        }
         Ok(Value::Char(c)) => {
             f.write_str("#\\")?;
             match c {
@@ -166,6 +183,7 @@ fn format_value<const N: usize>(
         Ok(Value::ErrorObject { .. }) => f.write_str("#<error-object>"),
         Ok(Value::Port(port_id)) => write!(f, "#<port:{}>", port_id.0),
         Ok(Value::Eof) => f.write_str("#<eof>"),
+        Ok(Value::Environment { .. }) => f.write_str("#<environment>"),
         Err(_) => f.write_str("#<error>"),
     }
 }

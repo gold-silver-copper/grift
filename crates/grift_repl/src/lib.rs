@@ -62,6 +62,18 @@ fn format_value_impl<const N: usize>(
             use std::fmt::Write;
             write!(buf, "{}", n).unwrap();
         }
+        Ok(Value::Float(f)) => {
+            use std::fmt::Write;
+            if f.is_nan() {
+                buf.push_str("+nan.0");
+            } else if f.is_infinite() {
+                if f > 0.0 { buf.push_str("+inf.0"); } else { buf.push_str("-inf.0"); }
+            } else if f.is_finite() && f == (f as isize as grift_eval::fsize) {
+                write!(buf, "{:.1}", f).unwrap();
+            } else {
+                write!(buf, "{}", f).unwrap();
+            }
+        }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
             match c {
@@ -170,6 +182,9 @@ fn format_value_impl<const N: usize>(
         }
         Ok(Value::Eof) => {
             buf.push_str("#<eof>");
+        }
+        Ok(Value::Environment { .. }) => {
+            buf.push_str("#<environment>");
         }
         Err(_) => buf.push_str("#<error>"),
     }

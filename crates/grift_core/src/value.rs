@@ -5,6 +5,7 @@
 //! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
 
 use grift_arena::{ArenaIndex, Trace};
+use crate::fsize;
 use crate::io::PortId;
 
 // Define all built-in functions using the macro.
@@ -55,40 +56,32 @@ define_builtins! {
     Remainder => "remainder",
     /// quotient - Integer quotient (truncated towards zero)
     Quotient => "quotient",
-    /// abs - Absolute value
-    Abs => "abs",
-    /// max - Maximum of numbers
-    Max => "max",
-    /// min - Minimum of numbers
-    Min => "min",
-    /// gcd - Greatest common divisor
-    Gcd => "gcd",
-    /// lcm - Least common multiple
-    Lcm => "lcm",
     /// expt - Exponentiation
     Expt => "expt",
-    /// square - Square of a number
-    Square => "square",
     
     // Numeric predicates
-    /// zero? - Check if number is zero
-    Zerop => "zero?",
-    /// positive? - Check if number is positive
-    Positivep => "positive?",
-    /// negative? - Check if number is negative
-    Negativep => "negative?",
-    /// odd? - Check if number is odd
-    Oddp => "odd?",
-    /// even? - Check if number is even
-    Evenp => "even?",
     /// integer? - Check if value is an integer
     Integerp => "integer?",
     /// exact? - Check if number is exact (always true for integers)
     Exactp => "exact?",
     /// inexact? - Check if number is inexact (always false for integers)
     Inexactp => "inexact?",
-    /// exact-integer? - Check if value is an exact integer
-    ExactIntegerp => "exact-integer?",
+    /// exact->inexact - Convert exact number to inexact
+    ExactToInexact => "exact->inexact",
+    /// inexact->exact - Convert inexact number to exact
+    InexactToExact => "inexact->exact",
+    /// exact - R7RS exact conversion
+    Exact => "exact",
+    /// inexact - R7RS inexact conversion
+    Inexact => "inexact",
+    /// finite? - Check if number is finite
+    Finitep => "finite?",
+    /// infinite? - Check if number is infinite
+    Infinitep => "infinite?",
+    /// nan? - Check if number is NaN
+    Nanp => "nan?",
+    /// sqrt - Square root
+    Sqrt => "sqrt",
     
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
@@ -111,10 +104,6 @@ define_builtins! {
     Ge => ">=",
     /// = - Numeric equality
     NumEq => "=",
-    
-    // Boolean operations
-    /// not - Boolean negation
-    Not => "not",
     
     // I/O
     /// newline - Print a newline
@@ -163,6 +152,22 @@ define_builtins! {
     OpenOutputString => "open-output-string",
     /// get-output-string - Get accumulated string from an output string port
     GetOutputString => "get-output-string",
+    /// read-line - Read a line of text from a port
+    ReadLine => "read-line",
+    /// read-string - Read up to k characters from a port
+    ReadString => "read-string",
+    /// write-shared - Write with shared structure notation
+    WriteShared => "write-shared",
+    /// write-simple - Write without shared structure handling
+    WriteSimple => "write-simple",
+    /// textual-port? - Check if port handles text
+    TextualPortp => "textual-port?",
+    /// binary-port? - Check if port handles binary data
+    BinaryPortp => "binary-port?",
+    /// input-port-open? - Check if input port is still open
+    InputPortOpenp => "input-port-open?",
+    /// output-port-open? - Check if output port is still open
+    OutputPortOpenp => "output-port-open?",
     
     // Error handling
     /// error - Raise an error
@@ -203,6 +208,14 @@ define_builtins! {
     VectorFill => "vector-fill!",
     /// vector-copy - Copy a vector
     VectorCopy => "vector-copy",
+    /// vector-copy! - Copy elements from one vector to another
+    VectorCopyTo => "vector-copy!",
+    /// vector-append - Concatenate vectors
+    VectorAppend => "vector-append",
+    /// vector-map - Apply procedure to elements of vectors
+    VectorMap => "vector-map",
+    /// vector-for-each - Apply procedure to elements for side effects
+    VectorForEach => "vector-for-each",
     
     // Character operations (R7RS Section 6.6)
     /// char? - Check if value is a character
@@ -259,6 +272,18 @@ define_builtins! {
     Substring => "substring",
     /// string-copy - Copy a string
     StringCopy => "string-copy",
+    /// string-copy! - Copy characters from one string to another
+    StringCopyTo => "string-copy!",
+    /// string-fill! - Fill string with character
+    StringFill => "string-fill!",
+    /// string-ci<? - Case-insensitive string less than
+    StringCiLt => "string-ci<?",
+    /// string-ci>? - Case-insensitive string greater than
+    StringCiGt => "string-ci>?",
+    /// string-ci<=? - Case-insensitive string less than or equal
+    StringCiLe => "string-ci<=?",
+    /// string-ci>=? - Case-insensitive string greater than or equal
+    StringCiGe => "string-ci>=?",
     
     // Garbage collection and arena control
     /// gc - Manually trigger garbage collection
@@ -300,6 +325,28 @@ define_builtins! {
     NumberToString => "number->string",
     /// string->number - Convert string to number (or #f if invalid)
     StringToNumber => "string->number",
+
+    // File system and process operations (R7RS §6.13, §6.14)
+    /// load - Load and evaluate a Scheme source file
+    Load => "load",
+    /// file-exists? - Check if a file exists
+    FileExistsP => "file-exists?",
+    /// delete-file - Delete a file
+    DeleteFile => "delete-file",
+    /// command-line - Return command-line arguments as a list of strings
+    CommandLine => "command-line",
+    /// exit - Terminate the program normally
+    Exit => "exit",
+    /// emergency-exit - Terminate the program immediately without cleanup
+    EmergencyExit => "emergency-exit",
+    /// get-environment-variable - Get a single environment variable
+    GetEnvironmentVariable => "get-environment-variable",
+    /// get-environment-variables - Get all environment variables as an alist
+    GetEnvironmentVariables => "get-environment-variables",
+
+    // Environment procedures (R7RS §6.12)
+    /// interaction-environment - Return the mutable REPL environment
+    InteractionEnvironment => "interaction-environment",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
@@ -336,6 +383,12 @@ pub enum Value {
     
     /// Integer number
     Number(isize),
+    
+    /// Inexact floating-point number (R7RS numeric tower)
+    ///
+    /// Uses `fsize` which is `f64` on 64-bit platforms and `f32` on 32-bit,
+    /// matching the width of `isize`/`usize`.
+    Float(fsize),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -624,6 +677,14 @@ pub enum Value {
     ///
     /// A unique value returned by read operations when the end of input is reached.
     Eof,
+
+    /// First-class environment object (R7RS §6.12)
+    ///
+    /// Created by `environment` or `interaction-environment`.
+    /// - `env`: ArenaIndex to the environment bindings chain
+    /// - `mutable`: whether new bindings can be added (`true` for
+    ///   interaction-environment, `false` for `environment`)
+    Environment { env: ArenaIndex, mutable: bool },
 }
 
 impl Value {
@@ -667,16 +728,22 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number
+    /// Check if this value is a number (integer or float)
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_))
+        matches!(self, Value::Number(_) | Value::Float(_))
     }
     
     /// Check if this value is an integer
     #[inline]
     pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
+    }
+    
+    /// Check if this value is a float
+    #[inline]
+    pub const fn is_float(&self) -> bool {
+        matches!(self, Value::Float(_))
     }
     
     /// Extract ArenaIndex from a Ref value.
@@ -774,6 +841,25 @@ impl Value {
         }
     }
     
+    /// Get the float value if this is a Float
+    #[inline]
+    pub fn as_float(&self) -> Option<fsize> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
+    /// Get the numeric value as an fsize (works for both Number and Float)
+    #[inline]
+    pub fn as_fsize(&self) -> Option<fsize> {
+        match self {
+            Value::Number(n) => Some(*n as fsize),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
     /// Get the char value if this is a char
     #[inline]
     pub const fn as_char(&self) -> Option<char> {
@@ -805,6 +891,7 @@ impl Value {
             Value::Void => "void",
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
+            Value::Float(_) => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -823,6 +910,7 @@ impl Value {
             Value::ErrorObject { .. } => "error-object",
             Value::Port(_) => "port",
             Value::Eof => "eof-object",
+            Value::Environment { .. } => "environment",
         }
     }
     
@@ -853,7 +941,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }
@@ -936,6 +1024,9 @@ impl<const N: usize> Trace<Value, N> for Value {
                         tracer(char_idx);
                     }
                 }
+            }
+            Value::Environment { env, .. } => {
+                tracer(*env);
             }
         }
     }

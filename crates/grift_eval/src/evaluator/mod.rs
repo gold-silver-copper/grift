@@ -87,4 +87,7 @@ pub struct Evaluator<'a, const N: usize> {
     /// Library registry — arena-based association list of (name . env) pairs.
     /// Used by `define-library` and `import` (R7RS §5.6).
     library_registry: ArenaIndex,
+    /// Libraries currently being loaded — arena-based list of library names.
+    /// Used for detecting circular dependencies during auto-loading.
+    loading_libraries: ArenaIndex,
 }

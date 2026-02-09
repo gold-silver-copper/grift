@@ -75,6 +75,7 @@ impl From<LexError> for ParseError {
                 LexErrorKind::InvalidEscapeSequence => ParseErrorKind::InvalidEscapeSequence,
                 LexErrorKind::UnterminatedString => ParseErrorKind::UnterminatedString,
                 LexErrorKind::StringTooLong => ParseErrorKind::OutOfMemory,
+                LexErrorKind::InvalidRadixDigit => ParseErrorKind::InvalidHashLiteral,
             },
             loc: e.loc,
         }
@@ -140,6 +141,7 @@ impl<'a> Parser<'a> {
             Token::True => lisp.true_val().map_err(Into::into),
             Token::False => lisp.false_val().map_err(Into::into),
             Token::Number(n) => lisp.number(n).map_err(Into::into),
+            Token::Float(f) => lisp.float(f).map_err(Into::into),
             Token::Char(c) => lisp.char(c).map_err(Into::into),
             Token::Symbol { len } => {
                 let name = self.lexer.symbol_bytes(len);
