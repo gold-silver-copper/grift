@@ -17,7 +17,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
         // The cont_env field is stored for potential future use (e.g., debugging, stack traces)
         // but is not currently used during normal continuation processing.
-        let (cont_type, data, _) = self.pop_cont()?;
+        let (cont_type, data, cont_env) = self.pop_cont()?;
         
         match cont_type {
             ContType::Done => {
@@ -380,6 +380,93 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env: EnvRef(eval_env) }))
                     }
                     _ => Err(self.type_error(val, "environment", self.lisp.get(val)?.type_name())),
+                }
+            }
+
+            ContType::VectorMapStep => {
+                // val is the result of applying proc to current element(s)
+                // Data: (proc . (vecs . (index_encoded . (len_encoded . (collected . call_expr)))))
+                let (proc, rest) = self.unpack2(data)?;
+                let (vecs, rest2) = self.unpack2(rest)?;
+                let (index_enc, rest3) = self.unpack2(rest2)?;
+                let (len_enc, rest4) = self.unpack2(rest3)?;
+                let (collected, call_expr) = self.unpack2(rest4)?;
+                
+                let index = match self.lisp.get(index_enc)? {
+                    Value::Number(n) => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                let len = match self.lisp.get(len_enc)? {
+                    Value::Number(n) => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                // Collect result
+                let new_collected = self.lisp.cons(val, collected)?;
+                let next_index = index + 1;
+                
+                if next_index >= len {
+                    // Done - reverse collected and convert to vector
+                    let result_list = self.reverse_list(new_collected)?;
+                    let result_vec = self.list_to_array(result_list, call_expr)?;
+                    Ok(Some(TrampolineState::Return { val: result_vec }))
+                } else {
+                    // More elements - build args and apply proc again
+                    let args = self.vector_map_build_args(vecs, next_index, call_expr)?;
+                    let next_idx = self.lisp.number(next_index as isize)?;
+                    
+                    // Push VectorMapStep continuation for next iteration
+                    let d4 = self.lisp.cons(new_collected, call_expr)?;
+                    let d3 = self.lisp.cons(len_enc, d4)?;
+                    let d2 = self.lisp.cons(next_idx, d3)?;
+                    let d1 = self.lisp.cons(vecs, d2)?;
+                    let packed = self.lisp.cons(proc, d1)?;
+                    self.cont(ContType::VectorMapStep, EnvRef(cont_env)).data1(packed)?;
+                    
+                    // Apply proc via ApplyForced
+                    self.cont(ContType::ApplyForced, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
+                    Ok(Some(TrampolineState::Return { val: proc }))
+                }
+            }
+
+            ContType::VectorForEachStep => {
+                // val is the result of applying proc (ignored)
+                // Data: (proc . (vecs . (index_encoded . (len_encoded . call_expr))))
+                let (proc, rest) = self.unpack2(data)?;
+                let (vecs, rest2) = self.unpack2(rest)?;
+                let (index_enc, rest3) = self.unpack2(rest2)?;
+                let (len_enc, call_expr) = self.unpack2(rest3)?;
+                
+                let index = match self.lisp.get(index_enc)? {
+                    Value::Number(n) => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                let len = match self.lisp.get(len_enc)? {
+                    Value::Number(n) => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                let next_index = index + 1;
+                
+                if next_index >= len {
+                    // Done - return void
+                    let void = self.lisp.void_val()?;
+                    Ok(Some(TrampolineState::Return { val: void }))
+                } else {
+                    // More elements - build args and apply proc again
+                    let args = self.vector_map_build_args(vecs, next_index, call_expr)?;
+                    let next_idx = self.lisp.number(next_index as isize)?;
+                    
+                    // Push VectorForEachStep continuation for next iteration
+                    let d3 = self.lisp.cons(len_enc, call_expr)?;
+                    let d2 = self.lisp.cons(next_idx, d3)?;
+                    let d1 = self.lisp.cons(vecs, d2)?;
+                    let packed = self.lisp.cons(proc, d1)?;
+                    self.cont(ContType::VectorForEachStep, EnvRef(cont_env)).data1(packed)?;
+                    
+                    // Apply proc via ApplyForced
+                    self.cont(ContType::ApplyForced, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
+                    Ok(Some(TrampolineState::Return { val: proc }))
                 }
             }
 
@@ -2561,5 +2648,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Ok(false),
             }
         }
+    }
+    
+    /// Build an argument list for vector-map/vector-for-each at a given index.
+    /// vecs is a list of vectors. Returns a proper list of elements at index i.
+    pub(super) fn vector_map_build_args(&self, vecs: ArenaIndex, index: usize, call_expr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // Build args in reverse, then reverse
+        let mut args = self.lisp.nil()?;
+        let mut current = vecs;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => break,
+                Value::Cons { .. } => {
+                    let vec = self.lisp.car(current)?;
+                    let elem = self.lisp.array_get(vec, index).map_err(|_| self.make_error(ErrorKind::TypeError, call_expr))?;
+                    args = self.lisp.cons(elem, args)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            }
+        }
+        self.reverse_list(args).map_err(Into::into)
     }
 }

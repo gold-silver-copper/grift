@@ -82,6 +82,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.apply_load_builtin(args, call_expr);
         }
         
+        // Special handling for vector-map - needs to apply proc via trampolining
+        if matches!(builtin, Builtin::VectorMap) {
+            return self.apply_vector_map(args, call_expr);
+        }
+        
+        // Special handling for vector-for-each - needs to apply proc via trampolining
+        if matches!(builtin, Builtin::VectorForEach) {
+            return self.apply_vector_for_each(args, call_expr);
+        }
+        
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
         Ok(TrampolineState::Return { val: result })
@@ -143,6 +153,118 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         Ok(TrampolineState::Return { val: last_val })
+    }
+    
+    /// Apply vector-map: (vector-map proc vec1 vec2 ...)
+    /// Uses VectorMapStep continuation for trampolined iteration.
+    fn apply_vector_map(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let proc = self.lisp.car(args)?;
+        let vecs_args = self.lisp.cdr(args)?;
+        
+        // Collect vectors into a list and validate they're all vectors of same length
+        let first_vec = self.lisp.car(vecs_args)?;
+        let len = match self.lisp.get(first_vec)? {
+            Value::Array { .. } => self.lisp.array_len(first_vec)?,
+            v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+        };
+        
+        // Validate remaining vectors have same length
+        let mut current = self.lisp.cdr(vecs_args)?;
+        while !self.lisp.get(current)?.is_nil() {
+            let vec = self.lisp.car(current)?;
+            match self.lisp.get(vec)? {
+                Value::Array { .. } => {
+                    let vlen = self.lisp.array_len(vec)?;
+                    if vlen != len {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
+                }
+                v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        if len == 0 {
+            // Empty vectors - return empty vector
+            let placeholder = self.lisp.number(0)?;
+            let result = self.lisp.make_array(0, placeholder)?;
+            return Ok(TrampolineState::Return { val: result });
+        }
+        
+        // Start iteration: apply proc to elements at index 0
+        let first_args = self.vector_map_build_args(vecs_args, 0, call_expr)?;
+        let nil = self.lisp.nil()?;
+        let index_enc = self.lisp.number(0)?;
+        let len_enc = self.lisp.number(len as isize)?;
+        let env = self.global_env.0;
+        
+        // Push VectorMapStep continuation
+        let d4 = self.lisp.cons(nil, call_expr)?;
+        let d3 = self.lisp.cons(len_enc, d4)?;
+        let d2 = self.lisp.cons(index_enc, d3)?;
+        let d1 = self.lisp.cons(vecs_args, d2)?;
+        let packed = self.lisp.cons(proc, d1)?;
+        self.cont(ContType::VectorMapStep, EnvRef(env)).data1(packed)?;
+        
+        // Apply proc via ApplyForced
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+    
+    /// Apply vector-for-each: (vector-for-each proc vec1 vec2 ...)
+    /// Uses VectorForEachStep continuation for trampolined iteration.
+    fn apply_vector_for_each(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let proc = self.lisp.car(args)?;
+        let vecs_args = self.lisp.cdr(args)?;
+        
+        // Collect vectors and validate
+        let first_vec = self.lisp.car(vecs_args)?;
+        let len = match self.lisp.get(first_vec)? {
+            Value::Array { .. } => self.lisp.array_len(first_vec)?,
+            v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+        };
+        
+        // Validate remaining vectors
+        let mut current = self.lisp.cdr(vecs_args)?;
+        while !self.lisp.get(current)?.is_nil() {
+            let vec = self.lisp.car(current)?;
+            match self.lisp.get(vec)? {
+                Value::Array { .. } => {
+                    let vlen = self.lisp.array_len(vec)?;
+                    if vlen != len {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
+                }
+                v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        
+        if len == 0 {
+            let void = self.lisp.void_val()?;
+            return Ok(TrampolineState::Return { val: void });
+        }
+        
+        // Start iteration: apply proc to elements at index 0
+        let first_args = self.vector_map_build_args(vecs_args, 0, call_expr)?;
+        let index_enc = self.lisp.number(0)?;
+        let len_enc = self.lisp.number(len as isize)?;
+        let env = self.global_env.0;
+        
+        // Push VectorForEachStep continuation
+        let d3 = self.lisp.cons(len_enc, call_expr)?;
+        let d2 = self.lisp.cons(index_enc, d3)?;
+        let d1 = self.lisp.cons(vecs_args, d2)?;
+        let packed = self.lisp.cons(proc, d1)?;
+        self.cont(ContType::VectorForEachStep, EnvRef(env)).data1(packed)?;
+        
+        // Apply proc via ApplyForced
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -695,17 +817,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
                 }
                 
-                // Copy to temp buffer to handle overlapping ranges
-                const MAX_COPY: usize = 4096;
-                if count > MAX_COPY {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
-                let mut temp: [ArenaIndex; MAX_COPY] = [ArenaIndex::default(); MAX_COPY];
+                // Use a temporary arena vector to handle overlapping ranges correctly.
+                // array_get returns slot ArenaIndices; if source/dest overlap, slots may be
+                // overwritten before being read. A temp vector stores independent copies.
+                let placeholder = self.lisp.number(0)?;
+                let temp_vec = self.lisp.make_array(count, placeholder)?;
                 for i in 0..count {
-                    temp[i] = self.lisp.array_get(from_vec, start + i)?;
+                    let elem = self.lisp.array_get(from_vec, start + i)?;
+                    self.lisp.array_set(temp_vec, i, elem)?;
                 }
                 for i in 0..count {
-                    self.lisp.array_set(to_vec, at + i, temp[i])?;
+                    let elem = self.lisp.array_get(temp_vec, i)?;
+                    self.lisp.array_set(to_vec, at + i, elem)?;
                 }
                 
                 self.lisp.void_val().map_err(Into::into)
@@ -749,6 +872,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.array_set(result, i, elems[i])?;
                 }
                 Ok(result)
+            }
+            
+            Builtin::VectorMap | Builtin::VectorForEach => {
+                // These are handled in apply_builtin_trampolined
+                unreachable!("vector-map and vector-for-each are trampolined")
             }
             
             Builtin::Gc => {
@@ -2356,7 +2484,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Convert a proper list to an array (vector).
     /// Used by both `(vector obj ...)` and `(list->vector lst)`.
-    fn list_to_array(&self, list: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+    pub(super) fn list_to_array(&self, list: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
         // Count elements
         let mut count = 0usize;
         let mut current = list;

@@ -7436,3 +7436,353 @@ fn test_define_library_no_exports() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "val1"), 42);
     assert_eq!(eval_to_num(&lisp, &mut eval, "val2"), 99);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RADIX AND EXACTNESS PREFIX TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_binary_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#b1010"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#b1111"), 15);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#b0"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#b-101"), -5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#B1010"), 10);
+}
+
+#[test]
+fn test_octal_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#o777"), 511);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#o10"), 8);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#o-12"), -10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#O10"), 8);
+}
+
+#[test]
+fn test_hex_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#xFF"), 255);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#x10"), 16);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#x-1A"), -26);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#xa"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#XFF"), 255);
+}
+
+#[test]
+fn test_decimal_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#d123"), 123);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#d-456"), -456);
+}
+
+#[test]
+fn test_exactness_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // #e and #i on integers are essentially no-ops in this integer-only system
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#e10"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#i10"), 10);
+}
+
+#[test]
+fn test_combined_prefixes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#e#xff"), 255);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#x#eff"), 255);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#i#b1010"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#b#i1010"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#e#d123"), 123);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#d#e123"), 123);
+}
+
+#[test]
+fn test_invalid_radix_digits() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // #b2 is invalid (2 not valid for binary)
+    assert!(eval.eval_str("#b2").is_err());
+    // #o8 is invalid (8 not valid for octal)
+    assert!(eval.eval_str("#o8").is_err());
+}
+
+#[test]
+fn test_radix_in_expressions() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ #b1010 #o10)"), 18);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(* #xff 2)"), 510);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VECTOR-COPY! TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_vector_copy_to_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define v1 (vector 1 2 3 4 5))").unwrap();
+    eval.eval_str("(define v2 (vector 10 20 30 40 50))").unwrap();
+    eval.eval_str("(vector-copy! v2 1 v1 0 2)").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 0)"), 10);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 1)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 2)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 3)"), 40);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 4)"), 50);
+}
+
+#[test]
+fn test_vector_copy_to_overlapping() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define v (vector 1 2 3 4 5))").unwrap();
+    eval.eval_str("(vector-copy! v 2 v 0 3)").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v 0)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v 1)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v 2)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v 3)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v 4)"), 3);
+}
+
+#[test]
+fn test_vector_copy_to_defaults() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str("(define v1 (vector 1 2 3))").unwrap();
+    eval.eval_str("(define v2 (vector 10 20 30 40 50))").unwrap();
+    eval.eval_str("(vector-copy! v2 0 v1)").unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 0)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 1)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 2)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref v2 3)"), 40);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VECTOR-APPEND TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_vector_append() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-append #(1 2) #(3 4 5))"), "#(1 2 3 4 5)");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-append #(a b) #())"), "#(a b)");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-append)"), "#()");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-append #(1) #(2) #(3))"), "#(1 2 3)");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VECTOR-MAP TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_vector_map_single() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-map (lambda (x) (* x x)) #(1 2 3 4))"), "#(1 4 9 16)");
+}
+
+#[test]
+fn test_vector_map_multiple() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-map + #(1 2 3) #(4 5 6))"), "#(5 7 9)");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VECTOR-FOR-EACH TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_vector_for_each() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Vector-for-each should process elements; verify by accumulating results
+    eval.eval_str("(define result 0)").unwrap();
+    eval.eval_str("(vector-for-each (lambda (x) (set! result (+ result x))) #(1 2 3 4 5))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "result"), 15);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING-COPY! TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_string_copy_to_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"(define s2 (string-copy "world!"))"#).unwrap();
+    eval.eval_str(r#"(string-copy! s2 1 "hello" 1 5)"#).unwrap();
+    assert!(eval_string_matches(&lisp, &mut eval, "s2", "wello!"));
+}
+
+#[test]
+fn test_string_copy_to_overlapping() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"(define s (string-copy "abcde"))"#).unwrap();
+    eval.eval_str("(string-copy! s 2 s 0 3)").unwrap();
+    assert!(eval_string_matches(&lisp, &mut eval, "s", "ababc"));
+}
+
+#[test]
+fn test_string_copy_to_defaults() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"(define s (string-copy "hello"))"#).unwrap();
+    eval.eval_str(r#"(string-copy! s 0 "xyz")"#).unwrap();
+    assert!(eval_string_matches(&lisp, &mut eval, "s", "xyzlo"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING-FILL! TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_string_fill_entire() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"(define s (string-copy "hello"))"#).unwrap();
+    eval.eval_str(r#"(string-fill! s #\*)"#).unwrap();
+    assert!(eval_string_matches(&lisp, &mut eval, "s", "*****"));
+}
+
+#[test]
+fn test_string_fill_subrange() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    eval.eval_str(r#"(define s (string-copy "abcdefgh"))"#).unwrap();
+    eval.eval_str(r#"(string-fill! s #\- 2 5)"#).unwrap();
+    assert!(eval_string_matches(&lisp, &mut eval, "s", "ab---fgh"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING CASE-INSENSITIVE COMPARISON TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_string_ci_lt() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci<? "apple" "Banana")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci<? "apple" "Apple")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci<? "apple" "Banana" "CHERRY")"#));
+}
+
+#[test]
+fn test_string_ci_gt() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci>? "zebra" "YELL" "apple")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci>? "apple" "banana")"#));
+}
+
+#[test]
+fn test_string_ci_le() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci<=? "apple" "Apple" "banana")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci<=? "apple" "apple")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci<=? "banana" "apple")"#));
+}
+
+#[test]
+fn test_string_ci_ge() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci>=? "zebra" "zebra" "apple")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci>=? "BANANA" "banana")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci>=? "apple" "banana")"#));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SYMBOL=? AND BOOLEAN=? TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_symbol_eq() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(symbol=? 'foo 'foo)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(symbol=? 'foo 'bar)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(symbol=? 'foo 'foo 'foo)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(symbol=? 'foo 'foo 'bar)"));
+    // Type mismatch - not a symbol
+    assert!(eval_is_false(&lisp, &mut eval, r#"(symbol=? 'foo "foo")"#));
+}
+
+#[test]
+fn test_boolean_eq_r7rs() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean=? #t #t)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean=? #f #f)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean=? #t #f)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(boolean=? #t #t #t)"));
+    // Type mismatch - not a boolean
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean=? #t 1)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(boolean=? #f '())"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VECTOR-COPY WITH START/END TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_vector_copy_with_range() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-copy #(1 2 3 4 5) 1 3)"), "#(2 3)");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-copy #(1 2 3 4 5) 0 5)"), "#(1 2 3 4 5)");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(vector-copy #(1 2 3 4 5))"), "#(1 2 3 4 5)");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING-COPY WITH START/END TESTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_string_copy_with_range() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-copy "hello" 1 3)"#, "el"));
+    assert!(eval_string_matches(&lisp, &mut eval, r#"(string-copy "hello")"#, "hello"));
+}

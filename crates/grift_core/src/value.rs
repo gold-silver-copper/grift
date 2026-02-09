@@ -227,6 +227,10 @@ define_builtins! {
     VectorCopyTo => "vector-copy!",
     /// vector-append - Concatenate vectors
     VectorAppend => "vector-append",
+    /// vector-map - Apply procedure to elements of vectors
+    VectorMap => "vector-map",
+    /// vector-for-each - Apply procedure to elements for side effects
+    VectorForEach => "vector-for-each",
     
     // Character operations (R7RS Section 6.6)
     /// char? - Check if value is a character
