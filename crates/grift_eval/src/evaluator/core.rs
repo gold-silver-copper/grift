@@ -237,6 +237,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Shared GC implementation that collects roots from the evaluator
     /// and optionally from a trampoline state.
     fn gc_with_roots(&self, state: Option<&TrampolineState>) -> GcStats {
+        // 7 evaluator roots (global_env, macro_env, current_cont,
+        // dynamic_wind_chain, exception_handler_chain, library_registry,
+        // loading_libraries) plus up to 5 trampoline-state roots.
         const MAX_ROOTS: usize = 16;
         let mut roots = [ArenaIndex::NIL; MAX_ROOTS];
         let mut root_count = 0;
@@ -1542,8 +1545,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Create a prefixed symbol by concatenating prefix + original name.
     ///
-    /// Uses a fixed stack buffer (256 bytes max).
+    /// Uses a fixed 256-byte stack buffer. Returns an error if the
+    /// combined prefix + name exceeds this limit.
     pub(super) fn prefix_symbol(&self, prefix: ArenaIndex, sym: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        // 256 bytes is sufficient for any practical symbol name;
+        // a longer result would indicate a misuse of (prefix ...).
         let mut buf = [0u8; 256];
         let mut pos = 0;
 
@@ -1553,6 +1559,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             for i in 0..plen {
                 let c = self.lisp.string_char_at(pchars, i).map_err(|e| EvalError::from(e))?;
                 let dest = &mut buf[pos..];
+                // Each UTF-8 char can be up to 4 bytes
                 if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
                 let encoded = c.encode_utf8(dest);
                 pos += encoded.len();
