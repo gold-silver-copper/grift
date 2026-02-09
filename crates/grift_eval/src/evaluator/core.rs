@@ -1071,9 +1071,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // syntax-error - raise compile-time/macro-expansion error (R7RS §4.3.1)
+        // (syntax-error <message> <args> ...)
+        // Store the args list (message + irritants) in expr for display.
         if self.lisp.symbol_matches(car, "syntax-error")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
-            return Err(self.make_error(ErrorKind::SyntaxError, car)
+            return Err(self.make_error(ErrorKind::SyntaxError, cdr)
                 .with_message("syntax-error"));
         }
         

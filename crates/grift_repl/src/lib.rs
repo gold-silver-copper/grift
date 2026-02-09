@@ -329,6 +329,23 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                 }
             }
         }
+        ErrorKind::SyntaxError => {
+            // syntax-error stores (message arg ...) in expr
+            if !err.expr.is_nil() {
+                if let Ok(Value::Cons { car, cdr }) = lisp.get(err.expr) {
+                    // First element is the message string
+                    buf.push_str(": ");
+                    format_value(lisp, car, &mut buf);
+                    // Remaining elements are additional args
+                    let mut rest = cdr;
+                    while let Ok(Value::Cons { car: arg, cdr: next }) = lisp.get(rest) {
+                        buf.push(' ');
+                        format_value(lisp, arg, &mut buf);
+                        rest = next;
+                    }
+                }
+            }
+        }
         ErrorKind::UserError => {
             if !err.expr.is_nil() {
                 buf.push_str(": ");
