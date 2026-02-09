@@ -7,6 +7,7 @@
 
 use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
+use crate::fsize;
 use crate::io::PortId;
 
 // ============================================================================
@@ -188,6 +189,12 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Number(n))
+    }
+    
+    /// Allocate a floating-point number
+    #[inline]
+    pub fn float(&self, f: fsize) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Float(f))
     }
     
     /// Allocate a character

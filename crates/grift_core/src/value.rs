@@ -5,6 +5,7 @@
 //! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
 
 use grift_arena::{ArenaIndex, Trace};
+use crate::fsize;
 use crate::io::PortId;
 
 // Define all built-in functions using the macro.
@@ -93,6 +94,28 @@ define_builtins! {
     Inexactp => "inexact?",
     /// exact-integer? - Check if value is an exact integer
     ExactIntegerp => "exact-integer?",
+    /// exact->inexact - Convert exact number to inexact
+    ExactToInexact => "exact->inexact",
+    /// inexact->exact - Convert inexact number to exact
+    InexactToExact => "inexact->exact",
+    /// exact - R7RS exact conversion
+    Exact => "exact",
+    /// inexact - R7RS inexact conversion
+    Inexact => "inexact",
+    /// finite? - Check if number is finite
+    Finitep => "finite?",
+    /// infinite? - Check if number is infinite
+    Infinitep => "infinite?",
+    /// nan? - Check if number is NaN
+    Nanp => "nan?",
+    /// sqrt - Square root
+    Sqrt => "sqrt",
+    /// real? - Check if value is a real number (R7RS)
+    Realp => "real?",
+    /// rational? - Check if value is a rational number (R7RS)
+    Rationalp => "rational?",
+    /// complex? - Check if value is a complex number (R7RS)
+    Complexp => "complex?",
     
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
@@ -398,6 +421,12 @@ pub enum Value {
     
     /// Integer number
     Number(isize),
+    
+    /// Inexact floating-point number (R7RS numeric tower)
+    ///
+    /// Uses `fsize` which is `f64` on 64-bit platforms and `f32` on 32-bit,
+    /// matching the width of `isize`/`usize`.
+    Float(fsize),
     
     /// Single character (used in strings and symbol storage)
     Char(char),
@@ -737,16 +766,22 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number
+    /// Check if this value is a number (integer or float)
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_))
+        matches!(self, Value::Number(_) | Value::Float(_))
     }
     
     /// Check if this value is an integer
     #[inline]
     pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
+    }
+    
+    /// Check if this value is a float
+    #[inline]
+    pub const fn is_float(&self) -> bool {
+        matches!(self, Value::Float(_))
     }
     
     /// Extract ArenaIndex from a Ref value.
@@ -844,6 +879,25 @@ impl Value {
         }
     }
     
+    /// Get the float value if this is a Float
+    #[inline]
+    pub fn as_float(&self) -> Option<fsize> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
+    /// Get the numeric value as an fsize (works for both Number and Float)
+    #[inline]
+    pub fn as_fsize(&self) -> Option<fsize> {
+        match self {
+            Value::Number(n) => Some(*n as fsize),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+    
     /// Get the char value if this is a char
     #[inline]
     pub const fn as_char(&self) -> Option<char> {
@@ -875,6 +929,7 @@ impl Value {
             Value::Void => "void",
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
+            Value::Float(_) => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -924,7 +979,7 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }

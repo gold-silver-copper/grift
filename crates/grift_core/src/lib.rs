@@ -1,5 +1,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
+#![allow(non_camel_case_types)]
 
 //! # Grift Core Types
 //!
@@ -71,6 +72,18 @@
 //! - Errors in static source strings are only caught at runtime
 
 pub use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
+
+/// Platform-dependent floating-point type, matching the width of `isize`/`usize`.
+///
+/// On 64-bit platforms this is `f64`; on 32-bit platforms it is `f32`.
+/// This provides a consistent numeric tower where the float type has the same
+/// bit-width as the native integer types.
+#[cfg(target_pointer_width = "64")]
+pub type fsize = f64;
+
+/// Platform-dependent floating-point type (32-bit variant).
+#[cfg(target_pointer_width = "32")]
+pub type fsize = f32;
 
 /// The combined prelude source containing all macro and function definitions.
 ///

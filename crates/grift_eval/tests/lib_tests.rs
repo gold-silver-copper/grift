@@ -2277,12 +2277,11 @@ fn test_make_list_stdlib() {
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     // Make a list of 3 zeros
-    let result = eval.eval_str("(make-list 3 0)").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(length (make-list 3 0))"), 3);
     
     // First element is the fill value
-    let car = lisp.car(result).unwrap();
-    assert_eq!(lisp.get(car).unwrap().as_number().unwrap(), 0);
+    let result = eval.eval_str("(car (make-list 3 0))").unwrap();
+    assert_eq!(lisp.get(result).unwrap().as_number().unwrap(), 0);
 }
 
 #[test]
@@ -7490,9 +7489,14 @@ fn test_exactness_prefix() {
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
-    // #e and #i on integers are essentially no-ops in this integer-only system
+    // #e keeps exact (integer)
     assert_eq!(eval_to_num(&lisp, &mut eval, "#e10"), 10);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "#i10"), 10);
+    // #i forces inexact (float)
+    let result = eval.eval_str("#i10").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 10.0),
+        _ => panic!("expected float for #i10"),
+    }
 }
 
 #[test]
@@ -7502,8 +7506,17 @@ fn test_combined_prefixes() {
     
     assert_eq!(eval_to_num(&lisp, &mut eval, "#e#xff"), 255);
     assert_eq!(eval_to_num(&lisp, &mut eval, "#x#eff"), 255);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "#i#b1010"), 10);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "#b#i1010"), 10);
+    // #i with radix prefix produces floats
+    let result = eval.eval_str("#i#b1010").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 10.0),
+        _ => panic!("expected float for #i#b1010"),
+    }
+    let result = eval.eval_str("#b#i1010").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 10.0),
+        _ => panic!("expected float for #b#i1010"),
+    }
     assert_eq!(eval_to_num(&lisp, &mut eval, "#e#d123"), 123);
     assert_eq!(eval_to_num(&lisp, &mut eval, "#d#e123"), 123);
 }

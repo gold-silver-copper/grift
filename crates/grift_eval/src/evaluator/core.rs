@@ -694,7 +694,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match val {
             // Self-evaluating values
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Char(_) | 
+            Value::Number(_) | Value::Float(_) | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
