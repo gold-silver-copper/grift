@@ -1153,47 +1153,29 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.string_char_at(hello, 0).unwrap(), 'h');
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        let char_count = s.chars().count();
-        
-        if char_count == 0 {
-            // Empty string - len=0, data is NIL
-            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
-        }
-        
-        // Allocate contiguous block for chars only (no length header)
-        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
-        
-        // Set characters in slots (starting at data)
-        for (i, c) in s.chars().enumerate() {
-            let char_idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(char_idx, Value::Char(c))?;
-        }
-        
-        // Create the String value with inline length
-        self.alloc(Value::String { len: char_count, data })
+        self.string_from_iter(s.chars().count(), s.chars())
     }
     
     /// Allocate a string from a slice of chars.
     /// 
     /// Returns an ArenaIndex pointing to a Value::String.
     pub fn string_from_chars(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
-        let char_count = chars.len();
-        
+        self.string_from_iter(chars.len(), chars.iter().copied())
+    }
+    
+    /// Internal: allocate a string from a char iterator with known length.
+    fn string_from_iter(&self, char_count: usize, chars: impl Iterator<Item = char>) -> ArenaResult<ArenaIndex> {
         if char_count == 0 {
-            // Empty string - len=0, data is NIL
             return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
         }
         
-        // Allocate contiguous block for chars only (no length header)
         let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
         
-        // Set characters in slots (starting at data)
-        for (i, &c) in chars.iter().enumerate() {
+        for (i, c) in chars.enumerate() {
             let char_idx = self.arena.index_at_offset(data, i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
         
-        // Create the String value with inline length
         self.alloc(Value::String { len: char_count, data })
     }
     
