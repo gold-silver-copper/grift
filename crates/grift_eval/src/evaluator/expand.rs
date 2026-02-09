@@ -1061,14 +1061,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Check for ellipsis
         if self.has_ellipsis(cdr)? {
-            return self.transcribe_ellipsis_with_env(car, cdr, bindings, renames, def_env, lex_env);
+            return self.transcribe_ellipsis(car, cdr, bindings, renames, def_env);
         }
 
         // Check for binding forms that need special handling
         if self.is_binding_keyword(car)? {
-            return self.transcribe_binding_form_with_env(
-                template, bindings, renames, def_env, lex_env
-            );
+            return self.transcribe_binding_form(template, bindings, renames, def_env);
         }
 
         // Regular list: transcribe each element iteratively
@@ -1124,49 +1122,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
     
-    /// Transcribe ellipsis with lexical environment capture
-    ///
-    /// NOTE: The `lex_env` parameter is not currently used. Ellipsis transcription
-    /// expands pattern variables which already have their values bound. The lexical
-    /// environment is not needed for ellipsis expansion itself - it would only be
-    /// relevant for free variables in the repeated template, which are handled by
-    /// the recursive call to transcribe_template_with_env.
-    fn transcribe_ellipsis_with_env(
-        &mut self,
-        before: ArenaIndex,
-        after: ArenaIndex,
-        bindings: ArenaIndex,
-        renames: ArenaIndex,
-        def_env: ArenaIndex,
-        _lex_env: ArenaIndex,
-    ) -> EvalResult {
-        // Delegate to standard transcribe_ellipsis - the lexical environment
-        // would only matter for free variables in the template, which is a
-        // future enhancement
-        self.transcribe_ellipsis(before, after, bindings, renames, def_env)
-    }
-    
-    /// Transcribe binding form with lexical environment capture
-    ///
-    /// NOTE: The `lex_env` parameter is not currently used. Binding forms
-    /// (lambda, let, etc.) create new scopes, and the lexical environment
-    /// capture only affects free variables. The current implementation
-    /// delegates to standard transcribe_binding_form which handles hygiene
-    /// via gensym renaming. Full lexical capture in binding forms is a
-    /// future enhancement.
-    fn transcribe_binding_form_with_env(
-        &mut self,
-        template: ArenaIndex,
-        bindings: ArenaIndex,
-        renames: ArenaIndex,
-        def_env: ArenaIndex,
-        _lex_env: ArenaIndex,
-    ) -> EvalResult {
-        // Delegate to standard transcribe_binding_form - lexical capture
-        // in binding forms is a future enhancement
-        self.transcribe_binding_form(template, bindings, renames, def_env)
-    }
-
     /// Transcribe a symbol in template
     fn transcribe_symbol(
         &mut self,

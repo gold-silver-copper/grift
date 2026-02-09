@@ -48,6 +48,7 @@ macro_rules! impl_get_contiguous {
 macro_rules! impl_set_contiguous {
     ($fn_name:ident, [$($idx:expr => $var:ident),+ $(,)?]) => {
         #[inline]
+        #[allow(clippy::too_many_arguments)]
         pub fn $fn_name(&self, start: ArenaIndex, $($var: T),+) -> ArenaResult<()> {
             let base = start.raw();
             // Bounds check: last index must be < N

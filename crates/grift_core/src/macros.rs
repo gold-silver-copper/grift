@@ -231,6 +231,7 @@ macro_rules! impl_pack_unpack_refs {
     // General case for N >= 2
     ($n:expr, $pack_name:ident, $unpack_name:ident, $set_fn:ident, $get_fn:ident, [$($var:ident),+ $(,)?]) => {
         #[inline]
+        #[allow(clippy::too_many_arguments)]
         pub fn $pack_name(&self, $($var: ArenaIndex),+) -> ArenaResult<ArenaIndex> {
             let data = self.arena.alloc_contiguous($n, Value::Nil)?;
             self.arena.$set_fn(data, $(Value::Ref($var)),+)?;
