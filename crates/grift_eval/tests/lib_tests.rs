@@ -1632,8 +1632,7 @@ fn test_equal_two_different_circular_lists() {
 
     // Both are structurally (1 1 1 ...) but the depth limit will be hit;
     // the result should be #f (depth exceeded) and the call must terminate.
-    let result = eval.eval_str("(equal? a b)");
-    assert!(result.is_ok()); // must not stack-overflow
+    assert!(eval_is_false(&lisp, &mut eval, "(equal? a b)"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
