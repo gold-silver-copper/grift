@@ -1419,6 +1419,33 @@
   (fold (lambda (acc x) (if (pred x) (+ acc 1) acc)) 0 lst))
 
 ;;; ============================================================
+;;; Vector Higher-Order Functions (R7RS Section 6.8)
+;;; ============================================================
+
+;;; (vector-map proc vec ...) - Apply proc to elements of vectors, return new vector
+(define (vector-map proc . vecs)
+  (let ((len (vector-length (car vecs))))
+    (let ((result (make-vector len 0)))
+      (define (loop i)
+        (if (< i len)
+          (begin
+            (vector-set! result i
+              (apply proc (map (lambda (v) (vector-ref v i)) vecs)))
+            (loop (+ i 1)))))
+      (loop 0)
+      result)))
+
+;;; (vector-for-each proc vec ...) - Apply proc to elements of vectors for side effects
+(define (vector-for-each proc . vecs)
+  (let ((len (vector-length (car vecs))))
+    (define (loop i)
+      (if (< i len)
+        (begin
+          (apply proc (map (lambda (v) (vector-ref v i)) vecs))
+          (loop (+ i 1)))))
+    (loop 0)))
+
+;;; ============================================================
 ;;; Additional String Functions
 ;;; ============================================================
 

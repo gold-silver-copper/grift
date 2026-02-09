@@ -156,6 +156,8 @@ pub enum LexErrorKind {
     UnterminatedString,
     /// String literal exceeds maximum length
     StringTooLong,
+    /// Invalid digit for the given radix (e.g., #b2, #o8)
+    InvalidRadixDigit,
 }
 
 /// Lexer error with location
@@ -495,6 +497,10 @@ impl<'a> Lexer<'a> {
             Some(b'(') => { Ok(Token::VectorOpen) } // Don't consume '(' - parser handles it
             Some(b'\'') => { self.advance(); Ok(Token::SyntaxQuote) }
             Some(b';') => { self.advance(); Ok(Token::DatumComment) }
+            Some(b'b') | Some(b'B') | Some(b'o') | Some(b'O') | Some(b'd') | Some(b'D') | Some(b'x') | Some(b'X')
+            | Some(b'e') | Some(b'E') | Some(b'i') | Some(b'I') => {
+                self.lex_prefixed_number()
+            }
             Some(b'u') => {
                 // #u8( bytevector literal
                 let save_pos = self.pos;
@@ -521,6 +527,78 @@ impl<'a> Lexer<'a> {
             Some(_) => Err(self.error(LexErrorKind::InvalidHashLiteral)),
             None => Err(self.error(LexErrorKind::UnexpectedEof)),
         }
+    }
+    
+    /// Parse a number with radix and/or exactness prefix.
+    /// Called after '#' has been consumed and peek() is one of b/o/d/x/e/i.
+    fn lex_prefixed_number(&mut self) -> Result<Token, LexError> {
+        let mut radix: u8 = 0; // 0 = not specified
+        let mut has_exactness = false;
+        
+        // Parse first prefix character (already peeked)
+        match self.peek() {
+            Some(b'b') | Some(b'B') => { self.advance(); radix = 2; }
+            Some(b'o') | Some(b'O') => { self.advance(); radix = 8; }
+            Some(b'd') | Some(b'D') => { self.advance(); radix = 10; }
+            Some(b'x') | Some(b'X') => { self.advance(); radix = 16; }
+            Some(b'e') | Some(b'E') => { self.advance(); has_exactness = true; }
+            Some(b'i') | Some(b'I') => { self.advance(); has_exactness = true; }
+            _ => return Err(self.error(LexErrorKind::InvalidHashLiteral)),
+        }
+        
+        // Check for second prefix (#e#x, #x#e, etc.)
+        if self.peek() == Some(b'#') {
+            self.advance(); // consume '#'
+            match self.peek() {
+                Some(b'b') | Some(b'B') if radix == 0 => { self.advance(); radix = 2; }
+                Some(b'o') | Some(b'O') if radix == 0 => { self.advance(); radix = 8; }
+                Some(b'd') | Some(b'D') if radix == 0 => { self.advance(); radix = 10; }
+                Some(b'x') | Some(b'X') if radix == 0 => { self.advance(); radix = 16; }
+                Some(b'e') | Some(b'E') if !has_exactness && radix != 0 => { self.advance(); }
+                Some(b'i') | Some(b'I') if !has_exactness && radix != 0 => { self.advance(); }
+                _ => return Err(self.error(LexErrorKind::InvalidHashLiteral)),
+            }
+        }
+        
+        // Default radix is 10
+        if radix == 0 { radix = 10; }
+        
+        // Parse optional negative sign
+        let negative = if self.peek() == Some(b'-') {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        
+        // Parse digits in the given radix
+        let mut value: isize = 0;
+        let mut has_digits = false;
+        while let Some(c) = self.peek() {
+            let digit = match c {
+                b'0'..=b'9' => (c - b'0') as isize,
+                b'a'..=b'f' if radix == 16 => (c - b'a' + 10) as isize,
+                b'A'..=b'F' if radix == 16 => (c - b'A' + 10) as isize,
+                _ => break,
+            };
+            if digit >= radix as isize {
+                return Err(self.error(LexErrorKind::InvalidRadixDigit));
+            }
+            self.advance();
+            has_digits = true;
+            value = value.checked_mul(radix as isize)
+                .and_then(|v| v.checked_add(digit))
+                .ok_or_else(|| self.error(LexErrorKind::NumberOverflow))?;
+        }
+        
+        if !has_digits {
+            return Err(self.error(LexErrorKind::InvalidHashLiteral));
+        }
+        
+        if negative { value = -value; }
+        
+        // Note: #e and #i are no-ops for integers (our only number type)
+        Ok(Token::Number(value))
     }
     
     fn lex_char_literal(&mut self) -> Result<Token, LexError> {

@@ -603,19 +603,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::VectorCopy => {
-                // (vector-copy vec) - copy a vector
+                // (vector-copy vec [start [end]]) - copy a vector
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
                     Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
-                        // Create new vector with same length
-                        let placeholder = self.lisp.number(0)?;
-                        let new_vec = self.lisp.make_array(len, placeholder)?;
+                        let rest = self.lisp.cdr(args)?;
                         
-                        // Copy elements
-                        for i in 0..len {
-                            let elem = self.lisp.array_get(vec, i)?;
+                        let (start, end) = if self.lisp.get(rest)?.is_nil() {
+                            (0usize, len)
+                        } else {
+                            let start_idx = self.lisp.car(rest)?;
+                            let s = self.get_int(start_idx, call_expr)?;
+                            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                            let rest2 = self.lisp.cdr(rest)?;
+                            let e = if self.lisp.get(rest2)?.is_nil() {
+                                len
+                            } else {
+                                let end_idx = self.lisp.car(rest2)?;
+                                let e = self.get_int(end_idx, call_expr)?;
+                                if e < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                                e as usize
+                            };
+                            (s as usize, e)
+                        };
+                        
+                        if start > len || end > len || start > end {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        let new_len = end - start;
+                        let placeholder = self.lisp.number(0)?;
+                        let new_vec = self.lisp.make_array(new_len, placeholder)?;
+                        
+                        for i in 0..new_len {
+                            let elem = self.lisp.array_get(vec, start + i)?;
                             self.lisp.array_set(new_vec, i, elem)?;
                         }
                         
@@ -623,6 +646,109 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 }
+            }
+            
+            Builtin::VectorCopyTo => {
+                // (vector-copy! to at from [start [end]]) - copy elements between vectors
+                let to_vec = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let at_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let from_vec = self.lisp.car(rest2)?;
+                let rest3 = self.lisp.cdr(rest2)?;
+                
+                let at = match self.lisp.get(at_idx)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                let (to_len, from_len) = match (self.lisp.get(to_vec)?, self.lisp.get(from_vec)?) {
+                    (Value::Array { .. }, Value::Array { .. }) => {
+                        (self.lisp.array_len(to_vec)?, self.lisp.array_len(from_vec)?)
+                    }
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                let (start, end) = if self.lisp.get(rest3)?.is_nil() {
+                    (0usize, from_len)
+                } else {
+                    let start_val = self.lisp.car(rest3)?;
+                    let s = self.get_int(start_val, call_expr)?;
+                    if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                    let rest4 = self.lisp.cdr(rest3)?;
+                    let e = if self.lisp.get(rest4)?.is_nil() {
+                        from_len
+                    } else {
+                        let end_val = self.lisp.car(rest4)?;
+                        let ev = self.get_int(end_val, call_expr)?;
+                        if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                        ev as usize
+                    };
+                    (s as usize, e)
+                };
+                
+                if start > from_len || end > from_len || start > end {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                let count = end - start;
+                if at + count > to_len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                
+                // Copy to temp buffer to handle overlapping ranges
+                const MAX_COPY: usize = 4096;
+                if count > MAX_COPY {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                let mut temp: [ArenaIndex; MAX_COPY] = [ArenaIndex::default(); MAX_COPY];
+                for i in 0..count {
+                    temp[i] = self.lisp.array_get(from_vec, start + i)?;
+                }
+                for i in 0..count {
+                    self.lisp.array_set(to_vec, at + i, temp[i])?;
+                }
+                
+                self.lisp.void_val().map_err(Into::into)
+            }
+            
+            Builtin::VectorAppend => {
+                // (vector-append vec ...) - concatenate vectors
+                const MAX_TOTAL: usize = 4096;
+                let mut elems: [ArenaIndex; MAX_TOTAL] = [ArenaIndex::default(); MAX_TOTAL];
+                let mut total_len = 0;
+                
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            match self.lisp.get(car)? {
+                                Value::Array { .. } => {
+                                    let len = self.lisp.array_len(car)?;
+                                    if total_len + len > MAX_TOTAL {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    for i in 0..len {
+                                        elems[total_len] = self.lisp.array_get(car, i)?;
+                                        total_len += 1;
+                                    }
+                                }
+                                v => return Err(self.type_error(call_expr, "vector", v.type_name())),
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+                
+                let placeholder = self.lisp.number(0)?;
+                let result = self.lisp.make_array(total_len, placeholder)?;
+                for i in 0..total_len {
+                    self.lisp.array_set(result, i, elems[i])?;
+                }
+                Ok(result)
             }
             
             Builtin::Gc => {
@@ -1006,28 +1132,269 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::StringCopy => {
-                // (string-copy string) - Copy a string
+                // (string-copy string [start [end]]) - Copy a string
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
                     Value::String { len, data } => {
-                        const MAX_STRING_LEN: usize = 1024;
-                        let mut chars = ['\0'; MAX_STRING_LEN];
-                        if len > MAX_STRING_LEN {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = if self.lisp.get(rest)?.is_nil() {
+                            (0usize, len)
+                        } else {
+                            let start_val = self.lisp.car(rest)?;
+                            let s = self.get_int(start_val, call_expr)?;
+                            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                            let rest2 = self.lisp.cdr(rest)?;
+                            let e = if self.lisp.get(rest2)?.is_nil() {
+                                len
+                            } else {
+                                let end_val = self.lisp.car(rest2)?;
+                                let ev = self.get_int(end_val, call_expr)?;
+                                if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                                ev as usize
+                            };
+                            (s as usize, e)
+                        };
+                        
+                        if start > len || end > len || start > end {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         
-                        for i in 0..len {
-                            // Characters start at data (no header with inline length)
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                        let sub_len = end - start;
+                        const MAX_STRING_LEN: usize = 1024;
+                        let mut chars = ['\0'; MAX_STRING_LEN];
+                        if sub_len > MAX_STRING_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        for i in 0..sub_len {
+                            let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => chars[i] = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                             }
                         }
                         
-                        self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                        self.lisp.string_from_chars(&chars[..sub_len]).map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringCopyTo => {
+                // (string-copy! to at from [start [end]]) - copy characters between strings
+                let to_str = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let at_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let from_str = self.lisp.car(rest2)?;
+                let rest3 = self.lisp.cdr(rest2)?;
+                
+                let at = match self.lisp.get(at_idx)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                let (to_len, _to_data, from_len, from_data) = match (self.lisp.get(to_str)?, self.lisp.get(from_str)?) {
+                    (Value::String { len: tl, data: td }, Value::String { len: fl, data: fd }) => (tl, td, fl, fd),
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                let (start, end) = if self.lisp.get(rest3)?.is_nil() {
+                    (0usize, from_len)
+                } else {
+                    let start_val = self.lisp.car(rest3)?;
+                    let s = self.get_int(start_val, call_expr)?;
+                    if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                    let rest4 = self.lisp.cdr(rest3)?;
+                    let e = if self.lisp.get(rest4)?.is_nil() {
+                        from_len
+                    } else {
+                        let end_val = self.lisp.car(rest4)?;
+                        let ev = self.get_int(end_val, call_expr)?;
+                        if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                        ev as usize
+                    };
+                    (s as usize, e)
+                };
+                
+                if start > from_len || end > from_len || start > end {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                let count = end - start;
+                if at + count > to_len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                
+                // Copy-on-write: ensure destination is mutable
+                if self.lisp.string_data_is_interned(match self.lisp.get(to_str)? {
+                    Value::String { data, .. } => data,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                })? {
+                    self.lisp.string_copy_data(to_str)?;
+                }
+                
+                // Read source characters into temp buffer for overlapping safety
+                const MAX_COPY: usize = 4096;
+                if count > MAX_COPY {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                let mut temp = ['\0'; MAX_COPY];
+                for i in 0..count {
+                    let char_slot = self.lisp.arena_index_at_offset(from_data, start + i)?;
+                    match self.lisp.get(char_slot)? {
+                        Value::Char(c) => temp[i] = c,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                }
+                
+                // Write to destination
+                let to_data = match self.lisp.get(to_str)? {
+                    Value::String { data, .. } => data,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                for i in 0..count {
+                    let char_slot = self.lisp.arena_index_at_offset(to_data, at + i)?;
+                    self.lisp.set(char_slot, Value::Char(temp[i]))?;
+                }
+                
+                self.lisp.void_val().map_err(Into::into)
+            }
+            
+            Builtin::StringFill => {
+                // (string-fill! string fill [start [end]]) - fill string with character
+                let str_idx = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let fill_arg = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                
+                let fill_char = self.get_char(fill_arg, call_expr)?;
+                
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let (start, end) = if self.lisp.get(rest2)?.is_nil() {
+                            (0usize, len)
+                        } else {
+                            let start_val = self.lisp.car(rest2)?;
+                            let s = self.get_int(start_val, call_expr)?;
+                            if s < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                            let rest3 = self.lisp.cdr(rest2)?;
+                            let e = if self.lisp.get(rest3)?.is_nil() {
+                                len
+                            } else {
+                                let end_val = self.lisp.car(rest3)?;
+                                let ev = self.get_int(end_val, call_expr)?;
+                                if ev < 0 { return Err(self.make_error(ErrorKind::TypeError, call_expr)); }
+                                ev as usize
+                            };
+                            (s as usize, e)
+                        };
+                        
+                        if start > len || end > len || start > end {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        
+                        // Copy-on-write: ensure string is mutable
+                        if self.lisp.string_data_is_interned(data)? {
+                            self.lisp.string_copy_data(str_idx)?;
+                        }
+                        
+                        // Re-read data after potential COW
+                        let current_data = match self.lisp.get(str_idx)? {
+                            Value::String { data: d, .. } => d,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        };
+                        
+                        for i in start..end {
+                            let char_slot = self.lisp.arena_index_at_offset(current_data, i)?;
+                            self.lisp.set(char_slot, Value::Char(fill_char))?;
+                        }
+                        
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringCiLt => {
+                // (string-ci<? string1 string2 ...) - Case-insensitive less than
+                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
+            }
+            
+            Builtin::StringCiGt => {
+                // (string-ci>? string1 string2 ...) - Case-insensitive greater than
+                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
+            }
+            
+            Builtin::StringCiLe => {
+                // (string-ci<=? string1 string2 ...) - Case-insensitive less than or equal
+                self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
+            }
+            
+            Builtin::StringCiGe => {
+                // (string-ci>=? string1 string2 ...) - Case-insensitive greater than or equal
+                self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
+            }
+            
+            Builtin::SymbolEqP => {
+                // (symbol=? sym1 sym2 ...) - Test if all arguments are equal symbols
+                let first = self.lisp.car(args)?;
+                let first_sym = match self.lisp.get(first)? {
+                    Value::Symbol(s) => s,
+                    _ => return self.lisp.false_val().map_err(Into::into),
+                };
+                
+                let mut current = self.lisp.cdr(args)?;
+                if self.lisp.get(current)?.is_nil() {
+                    return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+                }
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            match self.lisp.get(car)? {
+                                Value::Symbol(s) if s == first_sym => {}
+                                _ => return self.lisp.false_val().map_err(Into::into),
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+            }
+            
+            Builtin::BooleanEqP => {
+                // (boolean=? b1 b2 ...) - Test if all arguments are equal booleans
+                let first = self.lisp.car(args)?;
+                let first_bool = match self.lisp.get(first)? {
+                    Value::True => true,
+                    Value::False => false,
+                    _ => return self.lisp.false_val().map_err(Into::into),
+                };
+                
+                let mut current = self.lisp.cdr(args)?;
+                if self.lisp.get(current)?.is_nil() {
+                    return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+                }
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            let this_bool = match self.lisp.get(car)? {
+                                Value::True => true,
+                                Value::False => false,
+                                _ => return self.lisp.false_val().map_err(Into::into),
+                            };
+                            if this_bool != first_bool {
+                                return self.lisp.false_val().map_err(Into::into);
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
                 }
             }
             
@@ -1917,6 +2284,73 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // All compared characters are equal, compare lengths
+        Ok(len_a.cmp(&len_b))
+    }
+    
+    /// Helper for case-insensitive string chain comparisons
+    pub(super) fn string_ci_chain_compare<F>(&self, args: ArenaIndex, compare_fn: F, call_expr: ArenaIndex) -> EvalResult
+    where
+        F: Fn(core::cmp::Ordering) -> bool
+    {
+        let first_idx = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        
+        if self.lisp.get(rest)?.is_nil() {
+            return Err(self.type_error(call_expr, "at least 2 arguments", "1 argument"));
+        }
+        
+        let mut prev_idx = first_idx;
+        let mut current = rest;
+        
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    let ordering = self.compare_strings_ci(prev_idx, car, call_expr)?;
+                    if !compare_fn(ordering) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev_idx = car;
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+    
+    /// Compare two strings lexicographically, case-insensitive
+    pub(super) fn compare_strings_ci(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) -> Result<core::cmp::Ordering, EvalError> {
+        let (len_a, data_a) = match self.lisp.get(a)? {
+            Value::String { len, data } => (len, data),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        let (len_b, data_b) = match self.lisp.get(b)? {
+            Value::String { len, data } => (len, data),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        
+        let min_len = len_a.min(len_b);
+        
+        for i in 0..min_len {
+            let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
+            let char_a = match self.lisp.get(slot_a)? {
+                Value::Char(c) => c.to_ascii_lowercase(),
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            };
+            let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
+            let char_b = match self.lisp.get(slot_b)? {
+                Value::Char(c) => c.to_ascii_lowercase(),
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            };
+            
+            match char_a.cmp(&char_b) {
+                core::cmp::Ordering::Equal => {}
+                ord => return Ok(ord),
+            }
+        }
+        
         Ok(len_a.cmp(&len_b))
     }
     
