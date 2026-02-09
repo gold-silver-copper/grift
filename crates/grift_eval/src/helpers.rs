@@ -89,6 +89,12 @@ pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIn
 // Float math helper functions (no_std compatible)
 // ============================================================================
 
+/// Natural logarithm of 2, used in float math helpers.
+const LN_2: fsize = 0.6931471805599453;
+
+/// Euler's number (e), used in float math helpers.
+const E: fsize = 2.718281828459045;
+
 /// Floor function for no_std: largest integer value not greater than x.
 pub fn float_floor(x: fsize) -> fsize {
     if x.is_nan() || x.is_infinite() {
@@ -214,7 +220,7 @@ fn float_ln(x: fsize) -> fsize {
     }
     sum *= 2.0;
     
-    sum + exp_count as fsize * 0.6931471805599453 // ln(2)
+    sum + exp_count as fsize * LN_2
 }
 
 /// Exponential function for no_std using Taylor series: e^x.
@@ -239,9 +245,8 @@ fn float_exp(x: fsize) -> fsize {
     }
     
     // Compute e^n by repeated squaring of e
-    let e: fsize = 2.718281828459045;
     let mut e_n: fsize = 1.0;
-    let mut base = if n < 0 { 1.0 / e } else { e };
+    let mut base = if n < 0 { 1.0 / E } else { E };
     let mut exp = if n < 0 { -n as usize } else { n as usize };
     while exp > 0 {
         if exp % 2 == 1 {

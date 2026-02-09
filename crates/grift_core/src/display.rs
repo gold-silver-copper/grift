@@ -92,7 +92,7 @@ fn format_value<const N: usize>(
                 } else {
                     f.write_str("-inf.0")
                 }
-            } else if fl.is_finite() && fl == (fl as isize as crate::fsize) && (fl as isize as crate::fsize) == fl {
+            } else if fl.is_finite() && fl == (fl as isize as crate::fsize) {
                 // Whole number float: display with ".0"
                 write!(f, "{:.1}", fl)
             } else {

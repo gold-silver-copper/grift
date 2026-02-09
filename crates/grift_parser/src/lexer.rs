@@ -75,6 +75,9 @@ pub(crate) static WHITESPACE_TABLE: [bool; 256] = {
 /// Tokens are lightweight, `Copy`, and do not allocate. Symbol and string
 /// content is accessed through the lexer's buffers or the original input
 /// after a token is returned.
+///
+/// Note: `Eq` is intentionally not derived because `Token::Float` contains
+/// an `fsize` (floating-point) value, and NaN != NaN breaks `Eq` semantics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Token {
     /// `(`
