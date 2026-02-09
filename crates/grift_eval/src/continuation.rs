@@ -305,6 +305,11 @@ pub enum ContType {
     /// After evaluating raise argument, invoke exception handler
     /// Data: Nil (no data — continuable flag encoded as env marker)
     RaiseEval = 44,
+
+    /// After evaluating env argument in 2-arg eval, extract env and evaluate expression
+    /// Data: (expr_to_eval . eval_env) — expr still unevaluated, eval_env is the
+    /// environment in which expr_to_eval should be evaluated
+    EvalEnvArg = 45,
 }
 
 impl ContType {
@@ -358,6 +363,7 @@ impl ContType {
             42 => Some(ContType::WithExceptionHandlerCallThunk),
             43 => Some(ContType::ExceptionHandlerFrame),
             44 => Some(ContType::RaiseEval),
+            45 => Some(ContType::EvalEnvArg),
             _ => None,
         }
     }

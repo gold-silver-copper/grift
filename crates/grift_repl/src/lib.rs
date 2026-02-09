@@ -171,6 +171,9 @@ fn format_value_impl<const N: usize>(
         Ok(Value::Eof) => {
             buf.push_str("#<eof>");
         }
+        Ok(Value::Environment { .. }) => {
+            buf.push_str("#<environment>");
+        }
         Err(_) => buf.push_str("#<error>"),
     }
 }

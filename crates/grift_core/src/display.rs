@@ -166,6 +166,7 @@ fn format_value<const N: usize>(
         Ok(Value::ErrorObject { .. }) => f.write_str("#<error-object>"),
         Ok(Value::Port(port_id)) => write!(f, "#<port:{}>", port_id.0),
         Ok(Value::Eof) => f.write_str("#<eof>"),
+        Ok(Value::Environment { .. }) => f.write_str("#<environment>"),
         Err(_) => f.write_str("#<error>"),
     }
 }

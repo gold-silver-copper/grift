@@ -1706,6 +1706,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 Ok(list)
             }
+
+            Builtin::InteractionEnvironment => {
+                // (interaction-environment) -> mutable environment object
+                let env = self.global_env.0;
+                self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
+            }
         }
     }
     
