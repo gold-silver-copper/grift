@@ -1449,6 +1449,12 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Returns an error if the string index is invalid.
     pub fn string_matches(&self, str_idx: ArenaIndex, s: &str) -> ArenaResult<bool> {
+        // Fast path: ASCII strings can use direct byte comparison
+        // This avoids the expensive chars().count() call
+        if s.is_ascii() {
+            return self.string_matches_bytes(str_idx, s.as_bytes());
+        }
+
         let len = self.string_len(str_idx)?;
         let s_len = s.chars().count();
         

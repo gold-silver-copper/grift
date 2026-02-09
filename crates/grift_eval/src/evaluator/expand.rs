@@ -494,12 +494,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Pattern like: (a ... rest) parsed as (a . (... . rest))
             Value::Cons { .. } => {
                 let first = self.lisp.car(pat_cdr)?;
-                self.lisp.symbol_matches(first, "...").map_err(Into::into)
+                Ok(first == self.keywords.kw_ellipsis)
             }
             // Case 2: pat_cdr IS the ellipsis symbol itself
             // Pattern like: (a ...) parsed as improper list (a . ...)
             Value::Symbol(_) => {
-                self.lisp.symbol_matches(pat_cdr, "...").map_err(Into::into)
+                Ok(pat_cdr == self.keywords.kw_ellipsis)
             }
             _ => Ok(false),
         }
@@ -572,8 +572,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             match self.lisp.get(current)? {
                 Value::Symbol(_) => {
                     // Skip _, ..., and literals
-                    if !self.lisp.symbol_matches(current, "_")?
-                        && !self.lisp.symbol_matches(current, "...")?
+                    if current != self.keywords.kw_underscore
+                        && current != self.keywords.kw_ellipsis
                         && !self.is_literal(current, literals)?
                     {
                         *vars = self.lisp.cons(current, *vars)?;
@@ -587,13 +587,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // 1. cdr is the symbol ... (improper list like (a . ...))
                     // 2. cdr is a list starting with ... (like (a ... rest))
                     let should_process_cdr = match self.lisp.get(cdr)? {
-                        Value::Symbol(_) if self.lisp.symbol_matches(cdr, "...")? => {
+                        Value::Symbol(_) if cdr == self.keywords.kw_ellipsis => {
                             // Case 1: cdr IS the ellipsis symbol - no more vars to collect
                             false
                         }
                         Value::Cons { .. } => {
                             let first = self.lisp.car(cdr)?;
-                            if self.lisp.symbol_matches(first, "...")? {
+                            if first == self.keywords.kw_ellipsis {
                                 // Case 2: cdr starts with ... - skip it and process rest
                                 let rest = self.lisp.cdr(cdr)?;
                                 if queue_len < queue.len() {
@@ -653,12 +653,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         match self.lisp.get(pattern)? {
             // Wildcard: matches anything, binds nothing
-            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "_")? => {
+            Value::Symbol(_) if pattern == self.keywords.kw_underscore => {
                 Ok(Some(bindings))
             }
 
             // Ellipsis symbol itself: error (shouldn't appear here)
-            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "...")? => {
+            Value::Symbol(_) if pattern == self.keywords.kw_ellipsis => {
                 Err(self.make_error(ErrorKind::SyntaxError, pattern)
                     .with_message("misplaced ellipsis in pattern"))
             }
@@ -742,7 +742,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Check for escaping ellipsis: (... <pattern>) matches <pattern> literally
         // (... ...) in a pattern matches the literal symbol ...
-        if self.lisp.symbol_matches(pat_car, "...")? {
+        if pat_car == self.keywords.kw_ellipsis {
             if let Value::Cons { .. } = self.lisp.get(pat_cdr)? {
                 let inner_pat = self.lisp.car(pat_cdr)?;
                 // Match the inner pattern literally (without ellipsis processing)
@@ -1050,7 +1050,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Check for escaping ellipsis: (... <template>) means treat <template> literally
         // (... ...) produces the literal symbol ...
-        if self.lisp.symbol_matches(car, "...")? {
+        if car == self.keywords.kw_ellipsis {
             // The cdr should be a single element - return it without ellipsis processing
             if let Value::Cons { .. } = self.lisp.get(cdr)? {
                 let inner = self.lisp.car(cdr)?;
@@ -1212,7 +1212,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let (car, cdr) = self.lisp.car_cdr(template)?;
 
         // Check for escaping ellipsis: (... <template>) means treat <template> literally
-        if self.lisp.symbol_matches(car, "...")? {
+        if car == self.keywords.kw_ellipsis {
             if let Value::Cons { .. } = self.lisp.get(cdr)? {
                 let inner = self.lisp.car(cdr)?;
                 return Ok(inner);
@@ -1471,12 +1471,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if !matches!(self.lisp.get(sym)?, Value::Symbol(_)) {
             return Ok(false);
         }
-        Ok(self.lisp.symbol_matches(sym, "lambda")?
-           || self.lisp.symbol_matches(sym, "let")?
-           || self.lisp.symbol_matches(sym, "let*")?
-           || self.lisp.symbol_matches(sym, "letrec")?
-           || self.lisp.symbol_matches(sym, "letrec*")?
-           || self.lisp.symbol_matches(sym, "define")?)
+        Ok(sym == self.keywords.kw_lambda
+           || sym == self.keywords.kw_let
+           || sym == self.keywords.kw_let_star
+           || sym == self.keywords.kw_letrec
+           || sym == self.keywords.kw_letrec_star
+           || sym == self.keywords.kw_define)
     }
 
     /// Handle binding forms (lambda, let, etc.) with hygienic renaming
@@ -1490,14 +1490,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let keyword = self.lisp.car(form)?;
         let args = self.lisp.cdr(form)?;
 
-        if self.lisp.symbol_matches(keyword, "lambda")? {
+        if keyword == self.keywords.kw_lambda {
             self.transcribe_lambda(args, bindings, renames, def_env)
-        } else if self.lisp.symbol_matches(keyword, "let")?
-               || self.lisp.symbol_matches(keyword, "let*")?
-               || self.lisp.symbol_matches(keyword, "letrec")?
-               || self.lisp.symbol_matches(keyword, "letrec*")? {
+        } else if keyword == self.keywords.kw_let
+               || keyword == self.keywords.kw_let_star
+               || keyword == self.keywords.kw_letrec
+               || keyword == self.keywords.kw_letrec_star {
             self.transcribe_let_form(keyword, args, bindings, renames, def_env)
-        } else if self.lisp.symbol_matches(keyword, "define")? {
+        } else if keyword == self.keywords.kw_define {
             self.transcribe_define_form(args, bindings, renames, def_env)
         } else {
             let new_keyword = self.transcribe_template(
@@ -2060,7 +2060,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                     // Check for special forms that affect expansion
                     if let Value::Symbol(_) = self.lisp.get(head)? {
-                        if self.lisp.symbol_matches(head, "quote")? {
+                        if head == self.keywords.kw_quote {
                             // Don't expand inside quote
                             return Ok(expr);
                         }
@@ -2068,11 +2068,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // define-syntax is NOT processed during expansion - see step_eval_define_syntax
                         // in forms.rs for the evaluation-time implementation that captures lexical scope.
 
-                        if self.lisp.symbol_matches(head, "let-syntax")? {
+                        if head == self.keywords.kw_let_syntax {
                             return self.expand_let_syntax(args, renames);
                         }
 
-                        if self.lisp.symbol_matches(head, "letrec-syntax")? {
+                        if head == self.keywords.kw_letrec_syntax {
                             return self.expand_letrec_syntax(args, renames);
                         }
 
@@ -2304,7 +2304,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn expand_transformer_if_needed(&mut self, transformer_expr: ArenaIndex) -> EvalResult {
         if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
             let head = self.lisp.car(transformer_expr)?;
-            if self.lisp.symbol_matches(head, "lambda")? {
+            if head == self.keywords.kw_lambda {
                 // Already a lambda - use as-is (don't expand body)
                 Ok(transformer_expr)
             } else {
@@ -2338,7 +2338,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let head = self.lisp.car(expr)?;
 
         // Check for lambda (procedural transformer)
-        if self.lisp.symbol_matches(head, "lambda")? {
+        if head == self.keywords.kw_lambda {
             // Evaluate the lambda to create a closure with the given environment
             let lambda_result = self.eval_lambda_for_transformer_with_env(expr, env)?;
             return Ok(lambda_result);

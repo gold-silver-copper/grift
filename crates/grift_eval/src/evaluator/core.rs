@@ -16,7 +16,7 @@ use crate::error::{
 use crate::continuation::{TrampolineState, GcRoots, ContType, EnvRef, ExprRef};
 use crate::native::{NativeRegistry, NativeFn};
 
-use super::Evaluator;
+use super::{Evaluator, Keywords};
 
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
@@ -34,6 +34,49 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
         let nil = lisp.nil()?;
+        
+        // Pre-intern all keyword symbols for O(1) dispatch.
+        // Since symbols are interned (same name → same ArenaIndex), comparing
+        // `car == keywords.quote` is a single usize comparison, replacing
+        // the O(n) character-by-character string comparison in symbol_matches.
+        let keywords = Keywords {
+            kw_if: lisp.symbol("if")?,
+            kw_quote: lisp.symbol("quote")?,
+            kw_define_syntax: lisp.symbol("define-syntax")?,
+            kw_let_syntax: lisp.symbol("let-syntax")?,
+            kw_letrec_syntax: lisp.symbol("letrec-syntax")?,
+            kw_syntax_case: lisp.symbol("syntax-case")?,
+            kw_syntax: lisp.symbol("syntax")?,
+            kw_lambda: lisp.symbol("lambda")?,
+            kw_define: lisp.symbol("define")?,
+            kw_set_bang: lisp.symbol("set!")?,
+            kw_begin: lisp.symbol("begin")?,
+            kw_quasiquote: lisp.symbol("quasiquote")?,
+            kw_eval: lisp.symbol("eval")?,
+            kw_apply: lisp.symbol("apply")?,
+            kw_values: lisp.symbol("values")?,
+            kw_call_with_values: lisp.symbol("call-with-values")?,
+            kw_call_with_current_continuation: lisp.symbol("call-with-current-continuation")?,
+            kw_call_cc: lisp.symbol("call/cc")?,
+            kw_dynamic_wind: lisp.symbol("dynamic-wind")?,
+            kw_syntax_error: lisp.symbol("syntax-error")?,
+            kw_with_exception_handler: lisp.symbol("with-exception-handler")?,
+            kw_raise: lisp.symbol("raise")?,
+            kw_raise_continuable: lisp.symbol("raise-continuable")?,
+            kw_define_record_type: lisp.symbol("define-record-type")?,
+            kw_define_library: lisp.symbol("define-library")?,
+            kw_import: lisp.symbol("import")?,
+            kw_environment: lisp.symbol("environment")?,
+            kw_ellipsis: lisp.symbol("...")?,
+            kw_underscore: lisp.symbol("_")?,
+            kw_let: lisp.symbol("let")?,
+            kw_let_star: lisp.symbol("let*")?,
+            kw_letrec: lisp.symbol("letrec")?,
+            kw_letrec_star: lisp.symbol("letrec*")?,
+            kw_unquote: lisp.symbol("unquote")?,
+            kw_unquote_splicing: lisp.symbol("unquote-splicing")?,
+        };
+        
         let mut eval = Evaluator {
             lisp,
             global_env: EnvRef(nil),
@@ -50,6 +93,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             io: None, // No I/O provider by default
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
+            keywords,
         };
         
         // Initialize global environment with builtins
@@ -931,7 +975,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
-        if self.lisp.symbol_matches(name, "if")? {
+        if name == self.keywords.kw_if {
             let cond_expr = self.lisp.car(cdr)?;
             let rest = self.lisp.cdr(cdr)?;
             let then_expr = self.lisp.car(rest)?;
@@ -957,75 +1001,75 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         -> Result<Option<TrampolineState>, EvalError> 
     {
         // quote
-        if self.lisp.symbol_matches(car, "quote")? {
+        if car == self.keywords.kw_quote {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             let val = self.lisp.car(cdr)?;
             return Ok(Some(TrampolineState::Return { val }));
         }
         
         // define-syntax - add macro to environment
-        if self.lisp.symbol_matches(car, "define-syntax")? {
+        if car == self.keywords.kw_define_syntax {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_define_syntax(cdr, env).map(Some);
         }
         
         // let-syntax - local macro bindings
-        if self.lisp.symbol_matches(car, "let-syntax")? {
+        if car == self.keywords.kw_let_syntax {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_let_syntax(cdr, env).map(Some);
         }
         
         // letrec-syntax - local macro bindings with mutual visibility
-        if self.lisp.symbol_matches(car, "letrec-syntax")? {
+        if car == self.keywords.kw_letrec_syntax {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_letrec_syntax(cdr, env).map(Some);
         }
         
         // syntax-case - procedural macro pattern matching
-        if self.lisp.symbol_matches(car, "syntax-case")? {
+        if car == self.keywords.kw_syntax_case {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_syntax_case(cdr, env).map(Some);
         }
         
         // syntax - create syntax template
-        if self.lisp.symbol_matches(car, "syntax")? {
+        if car == self.keywords.kw_syntax {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_syntax(cdr, env).map(Some);
         }
         
         // lambda
-        if self.lisp.symbol_matches(car, "lambda")? {
+        if car == self.keywords.kw_lambda {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             let val = self.eval_lambda(cdr, env)?;
             return Ok(Some(TrampolineState::Return { val }));
         }
         
         // define
-        if self.lisp.symbol_matches(car, "define")? {
+        if car == self.keywords.kw_define {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.eval_define(cdr, env).map(Some);
         }
         
         // set! - mutate variable binding
-        if self.lisp.symbol_matches(car, "set!")? {
+        if car == self.keywords.kw_set_bang {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.eval_set(cdr, env).map(Some);
         }
         
         // begin - continuation-based evaluation
-        if self.lisp.symbol_matches(car, "begin")? {
+        if car == self.keywords.kw_begin {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_begin(cdr, env).map(Some);
         }
         
         // quasiquote - template with unquote (trampolined)
-        if self.lisp.symbol_matches(car, "quasiquote")? {
+        if car == self.keywords.kw_quasiquote {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some);
         }
         
         // eval - continuation-based evaluation at runtime
-        if self.lisp.symbol_matches(car, "eval")? {
+        if car == self.keywords.kw_eval {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             let expr_to_eval = self.lisp.car(cdr)?;
             let rest = self.lisp.cdr(cdr)?;
@@ -1043,81 +1087,81 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // apply - apply function to list of arguments
-        if self.lisp.symbol_matches(car, "apply")? {
+        if car == self.keywords.kw_apply {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_apply(cdr, env).map(Some);
         }
         
         // values - return multiple values (as a special list)
-        if self.lisp.symbol_matches(car, "values")? {
+        if car == self.keywords.kw_values {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.eval_values(cdr, env).map(Some);
         }
         
         // call-with-values - call producer, apply consumer to results
-        if self.lisp.symbol_matches(car, "call-with-values")? {
+        if car == self.keywords.kw_call_with_values {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_call_with_values(cdr, env).map(Some);
         }
         
         // call-with-current-continuation / call/cc - capture the current continuation
-        if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
-            || self.lisp.symbol_matches(car, "call/cc")? {
+        if car == self.keywords.kw_call_with_current_continuation
+            || car == self.keywords.kw_call_cc {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_call_cc(cdr, env).map(Some);
         }
         
         // dynamic-wind - establish dynamic extent with before/after thunks
-        if self.lisp.symbol_matches(car, "dynamic-wind")? {
+        if car == self.keywords.kw_dynamic_wind {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_dynamic_wind(cdr, env).map(Some);
         }
         
         // syntax-error - raise compile-time/macro-expansion error (R7RS §4.3.1)
-        if self.lisp.symbol_matches(car, "syntax-error")? {
+        if car == self.keywords.kw_syntax_error {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return Err(self.make_error(ErrorKind::SyntaxError, car)
                 .with_message("syntax-error"));
         }
         
         // with-exception-handler - install exception handler (R7RS §6.11)
-        if self.lisp.symbol_matches(car, "with-exception-handler")? {
+        if car == self.keywords.kw_with_exception_handler {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_with_exception_handler(cdr, env).map(Some);
         }
         
         // raise - raise an exception (R7RS §6.11)
-        if self.lisp.symbol_matches(car, "raise")? {
+        if car == self.keywords.kw_raise {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_raise(cdr, env, false).map(Some);
         }
         
         // raise-continuable - raise a continuable exception (R7RS §6.11)
-        if self.lisp.symbol_matches(car, "raise-continuable")? {
+        if car == self.keywords.kw_raise_continuable {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_raise(cdr, env, true).map(Some);
         }
         
         // define-record-type - record type definition (R7RS §5.5)
-        if self.lisp.symbol_matches(car, "define-record-type")? {
+        if car == self.keywords.kw_define_record_type {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_define_record_type(cdr, env).map(Some);
         }
         
         // define-library - library definition (R7RS §5.6)
-        if self.lisp.symbol_matches(car, "define-library")? {
+        if car == self.keywords.kw_define_library {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_define_library(cdr, env).map(Some);
         }
         
         // import - import library bindings (R7RS §5.6)
-        if self.lisp.symbol_matches(car, "import")? {
+        if car == self.keywords.kw_import {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_import(cdr, env).map(Some);
         }
         
         // environment - create immutable environment from import specs (R7RS §6.12)
-        if self.lisp.symbol_matches(car, "environment")? {
+        if car == self.keywords.kw_environment {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_environment(cdr, env).map(Some);
         }

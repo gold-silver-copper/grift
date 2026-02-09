@@ -1071,7 +1071,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let car = self.lisp.car(template)?;
                 let cdr = self.lisp.cdr(template)?;
                 // Check for unquote
-                if self.lisp.symbol_matches(car, "unquote").unwrap_or(false) {
+                if car == self.keywords.kw_unquote {
                     let inner_expr = self.lisp.car(cdr)?;
                     if depth == 1 {
                         // Evaluate the unquoted expression directly
@@ -1085,7 +1085,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // Check for unquote-splicing at top level
-                if self.lisp.symbol_matches(car, "unquote-splicing").unwrap_or(false)
+                if car == self.keywords.kw_unquote_splicing
                     && depth == 1
                 {
                     // Return the evaluated list (caller handles splicing)
@@ -1094,7 +1094,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 
                 // Check for nested quasiquote
-                if self.lisp.symbol_matches(car, "quasiquote").unwrap_or(false) {
+                if car == self.keywords.kw_quasiquote {
                     let nil = self.lisp.nil()?;
                     self.push_cont(ContType::QuasiquoteNestedWrap, nil, env.0)?;
                     let inner_expr = self.lisp.car(cdr)?;
@@ -1105,7 +1105,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if let Value::Cons { .. } = self.lisp.get(car)? {
                     let inner_car = self.lisp.car(car)?;
                     let inner_cdr = self.lisp.cdr(car)?;
-                    if self.lisp.symbol_matches(inner_car, "unquote-splicing").unwrap_or(false) && depth == 1 {
+                    if inner_car == self.keywords.kw_unquote_splicing && depth == 1 {
                         // Splice the result into the list
                         let splice_expr = self.lisp.car(inner_cdr)?;
                         // Data: (cdr . (depth_encoded . env))
@@ -1338,7 +1338,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if let Value::Cons { .. } = self.lisp.get(expr)? {
                 let head = self.lisp.car(expr)?;
                 if let Value::Symbol(_) = self.lisp.get(head)? {
-                    if self.lisp.symbol_matches(head, "define")? {
+                    if head == self.keywords.kw_define {
                         // Extract name and value from define
                         let define_args = self.lisp.cdr(expr)?;
                         let first = self.lisp.car(define_args)?;
