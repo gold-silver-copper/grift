@@ -1911,7 +1911,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
         match self.lisp.get(idx)? {
             Value::String { len, data } => {
-                let mut buf = [0u8; 1024];
+                let mut buf = [0u8; STACK_STRING_BUF_SIZE];
                 let mut byte_len = 0;
                 for i in 0..len {
                     let char_slot = self.lisp.arena_index_at_offset(data, i)?;
@@ -1946,9 +1946,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 }
 
+/// Maximum size of a stack-allocated string buffer for IoProvider arguments.
+const STACK_STRING_BUF_SIZE: usize = 1024;
+
 /// Stack-allocated UTF-8 string buffer for passing to IoProvider methods.
 struct StackString {
-    buf: [u8; 1024],
+    buf: [u8; STACK_STRING_BUF_SIZE],
     len: usize,
 }
 

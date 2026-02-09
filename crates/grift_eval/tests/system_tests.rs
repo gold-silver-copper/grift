@@ -3,6 +3,11 @@ mod common;
 use grift_eval::*;
 use common::{eval_to_num, eval_is_true, eval_is_false};
 
+fn temp_path(name: &str) -> String {
+    let dir = std::env::temp_dir();
+    dir.join(name).to_string_lossy().into_owned()
+}
+
 // ============================================================================
 // File System Operations (R7RS §6.13)
 // ============================================================================
@@ -34,12 +39,12 @@ fn test_delete_file() {
     use std::io::Write;
 
     // Create a temp file to delete
-    let path = "/tmp/grift_test_delete_file.txt";
+    let path = temp_path("grift_test_delete_file.txt");
     {
-        let mut f = fs::File::create(path).unwrap();
+        let mut f = fs::File::create(&path).unwrap();
         f.write_all(b"test").unwrap();
     }
-    assert!(std::path::Path::new(path).exists());
+    assert!(std::path::Path::new(&path).exists());
 
     let lisp: Lisp<20000> = Lisp::new();
     let mut io = grift_std::StdIoProvider::new();
@@ -49,7 +54,7 @@ fn test_delete_file() {
     let expr = format!("(delete-file \"{}\")", path);
     eval.eval_str(&expr).unwrap();
 
-    assert!(!std::path::Path::new(path).exists());
+    assert!(!std::path::Path::new(&path).exists());
 }
 
 #[test]
@@ -69,9 +74,9 @@ fn test_load_file() {
     use std::io::Write;
 
     // Create a temp Scheme file to load
-    let path = "/tmp/grift_test_load.scm";
+    let path = temp_path("grift_test_load.scm");
     {
-        let mut f = fs::File::create(path).unwrap();
+        let mut f = fs::File::create(&path).unwrap();
         f.write_all(b"(define grift-load-test-var 42)").unwrap();
     }
 
@@ -87,7 +92,7 @@ fn test_load_file() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "grift-load-test-var"), 42);
 
     // Clean up
-    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(&path);
 }
 
 #[test]
@@ -95,9 +100,9 @@ fn test_load_file_multiple_expressions() {
     use std::fs;
     use std::io::Write;
 
-    let path = "/tmp/grift_test_load_multi.scm";
+    let path = temp_path("grift_test_load_multi.scm");
     {
-        let mut f = fs::File::create(path).unwrap();
+        let mut f = fs::File::create(&path).unwrap();
         f.write_all(b"(define x-load-test 10)\n(define y-load-test 20)\n(define z-load-test (+ x-load-test y-load-test))").unwrap();
     }
 
@@ -111,7 +116,7 @@ fn test_load_file_multiple_expressions() {
 
     assert_eq!(eval_to_num(&lisp, &mut eval, "z-load-test"), 30);
 
-    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(&path);
 }
 
 #[test]

@@ -343,6 +343,9 @@ impl IoProvider for StdIoProvider {
     }
 
     fn emergency_exit_process(&mut self, code: i32) -> IoResult<()> {
-        std::process::exit(code);
+        // Use abort() to bypass cleanup (destructors, atexit handlers)
+        // per R7RS semantics for emergency-exit
+        let _ = code; // abort doesn't support exit codes
+        std::process::abort();
     }
 }
