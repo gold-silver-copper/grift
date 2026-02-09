@@ -9,7 +9,7 @@ This document discusses in detail potential improvements to Grift across several
 3. [String, Array, Symbol Interning and Mutation](#3-string-array-symbol-interning-and-mutation)
 4. [Environment Lookup, Extension, and Capture Improvements](#4-environment-lookup-extension-and-capture-improvements)
 5. [GC Batch Size and Optimizations](#5-gc-batch-size-and-optimizations)
-6. [Syntax-Error and Improved Errors and Traces Inside Macros](#6-syntax-error-and-improved-errors-and-traces-inside-macros)
+6. [`syntax-error` and Improved Errors and Traces Inside Macros](#6-syntax-error-and-improved-errors-and-traces-inside-macros)
 7. [Compile-Time Configuration of Constants, Statics, and Magic Numbers](#7-compile-time-configuration-of-constants-statics-and-magic-numbers)
 8. [Stack Usage Optimizations](#8-stack-usage-optimizations)
 9. [Variadic Functions](#9-variadic-functions)
@@ -619,7 +619,7 @@ This helps users tune arena sizes and GC frequency for their workloads.
 
 ---
 
-## 6. Syntax-Error and Improved Errors and Traces Inside Macros
+## 6. `syntax-error` and Improved Errors and Traces Inside Macros
 
 ### Current State
 
@@ -893,7 +893,7 @@ The GC mark bitmap and mark stack are the largest stack consumers. Moving them i
 ```rust
 impl<T: Copy, const N: usize> Arena<T, N> {
     // Reserve first N/8 + N slots for GC metadata
-    const GC_BITMAP_SLOTS: usize = (N + 7) / 8 / core::mem::size_of::<T>();
+    const GC_BITMAP_SLOTS: usize = (N + 7) / 8 / core::mem::size_of::<Slot<T>>();
     const GC_STACK_SLOTS: usize = N;  // Worst case: all objects reachable
     const GC_OVERHEAD: usize = Self::GC_BITMAP_SLOTS + Self::GC_STACK_SLOTS;
     // User-visible capacity is N - GC_OVERHEAD
