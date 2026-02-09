@@ -1071,25 +1071,7 @@
 ;;; (sign n) - Return -1, 0, or 1 based on sign of n
 (define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
 
-;;; (sqrt x) - Integer square root using Newton's method
-;;; Returns the largest integer whose square is <= x.
-;;; Raises an error if x is negative.
-(define (sqrt x)
-  (if (not (and (integer? x) (exact? x)))
-      (error "sqrt: expected exact integer" x)
-      (if (negative? x)
-          (error "sqrt: negative argument" x)
-          (if (= x 0)
-              0
-              (sqrt-iter x x)))))
-(define (sqrt-iter x guess)
-  (let ((next (/ (+ guess (/ x guess)) 2)))
-    (if (>= next guess)
-        guess
-        (sqrt-iter x next))))
-
-;;; (square x) - Return x squared
-(define (square x) (* x x))
+;;; sqrt and square are handled by builtins in the R7RS numeric tower.
 
 ;;; (cube x) - Return x cubed
 (define (cube x) (* x x x))

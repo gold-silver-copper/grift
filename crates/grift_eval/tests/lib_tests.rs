@@ -2240,7 +2240,6 @@ fn test_unless_multiple_expressions() {
 
 #[test]
 fn test_rounding_operations() {
-    // floor, ceiling, truncate, round are identity for integers
     let lisp: Lisp<20000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
@@ -7798,4 +7797,426 @@ fn test_string_copy_with_range() {
     
     assert!(eval_string_matches(&lisp, &mut eval, r#"(string-copy "hello" 1 3)"#, "el"));
     assert!(eval_string_matches(&lisp, &mut eval, r#"(string-copy "hello")"#, "hello"));
+}
+
+// ============================================================================
+// R7RS Numeric Tower Tests
+// ============================================================================
+
+#[test]
+fn test_float_literal_parsing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic float literals
+    let result = eval.eval_str("3.14").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 3.14).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Negative float
+    let result = eval.eval_str("-2.5").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - (-2.5)).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Exponent notation
+    let result = eval.eval_str("1e3").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 1000.0).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Float with exponent
+    let result = eval.eval_str("1.5e2").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 150.0).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+}
+
+#[test]
+fn test_special_float_constants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // +inf.0
+    let result = eval.eval_str("+inf.0").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!(f.is_infinite() && f > 0.0),
+        v => panic!("expected +inf.0, got {:?}", v),
+    }
+    
+    // -inf.0
+    let result = eval.eval_str("-inf.0").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!(f.is_infinite() && f < 0.0),
+        v => panic!("expected -inf.0, got {:?}", v),
+    }
+    
+    // +nan.0
+    let result = eval.eval_str("+nan.0").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!(f.is_nan()),
+        v => panic!("expected +nan.0, got {:?}", v),
+    }
+}
+
+#[test]
+fn test_mixed_arithmetic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Int + Float promotes to Float
+    let result = eval.eval_str("(+ 1 2.0)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 3.0).abs() < 0.001),
+        v => panic!("expected Float for (+ 1 2.0), got {:?}", v),
+    }
+    
+    // Float + Int promotes to Float
+    let result = eval.eval_str("(+ 1.5 2)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 3.5).abs() < 0.001),
+        v => panic!("expected Float for (+ 1.5 2), got {:?}", v),
+    }
+    
+    // Int + Int stays Int
+    let result = eval.eval_str("(+ 1 2)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Number(n) => assert_eq!(n, 3),
+        v => panic!("expected Number for (+ 1 2), got {:?}", v),
+    }
+    
+    // Subtraction with floats
+    let result = eval.eval_str("(- 10.5 3)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 7.5).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Multiplication with floats
+    let result = eval.eval_str("(* 3 2.5)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 7.5).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Division with floats
+    let result = eval.eval_str("(/ 7.0 2)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 3.5).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+}
+
+#[test]
+fn test_float_comparisons() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, "(< 1 2.5)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(< 1.5 2)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(< 3.0 2)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(= 3.0 3)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(= 3 3.0)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(>= 3.5 3)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(<= 2.5 3)"));
+}
+
+#[test]
+fn test_numeric_predicates_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // number? is true for both int and float
+    assert!(eval_is_true(&lisp, &mut eval, "(number? 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(number? 3.14)"));
+    
+    // integer? is true for integers and whole-number floats
+    assert!(eval_is_true(&lisp, &mut eval, "(integer? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(integer? 3.14)"));
+    
+    // exact? and inexact?
+    assert!(eval_is_true(&lisp, &mut eval, "(exact? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(exact? 3.14)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(inexact? 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(inexact? 3.14)"));
+    
+    // exact-integer?
+    assert!(eval_is_true(&lisp, &mut eval, "(exact-integer? 42)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(exact-integer? 3.14)"));
+    
+    // zero?, positive?, negative?
+    assert!(eval_is_true(&lisp, &mut eval, "(zero? 0.0)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(positive? 1.5)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(negative? -1.5)"));
+    
+    // real?, rational?, complex?
+    assert!(eval_is_true(&lisp, &mut eval, "(real? 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(real? 3.14)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(complex? 42)"));
+    
+    // finite?, infinite?, nan?
+    assert!(eval_is_true(&lisp, &mut eval, "(finite? 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(finite? 3.14)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(finite? +inf.0)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(infinite? +inf.0)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(infinite? -inf.0)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(infinite? 42)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(nan? +nan.0)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(nan? 42)"));
+}
+
+#[test]
+fn test_exactness_conversion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // exact->inexact converts integer to float
+    let result = eval.eval_str("(exact->inexact 42)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 42.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // inexact->exact converts float to integer
+    let result = eval.eval_str("(inexact->exact 42.0)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Number(n) => assert_eq!(n, 42),
+        v => panic!("expected Number, got {:?}", v),
+    }
+    
+    // R7RS aliases: exact and inexact
+    let result = eval.eval_str("(inexact 42)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 42.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    let result = eval.eval_str("(exact 42.0)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Number(n) => assert_eq!(n, 42),
+        v => panic!("expected Number, got {:?}", v),
+    }
+}
+
+#[test]
+fn test_rounding_operations_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Floor
+    let result = eval.eval_str("(floor 3.7)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 3.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    let result = eval.eval_str("(floor -3.3)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, -4.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Ceiling
+    let result = eval.eval_str("(ceiling 3.3)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 4.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Truncate
+    let result = eval.eval_str("(truncate 3.7)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 3.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    let result = eval.eval_str("(truncate -3.7)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, -3.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Round (banker's rounding - ties to even)
+    let result = eval.eval_str("(round 3.5)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 4.0),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Integer rounding is identity
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(floor 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(ceiling 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(truncate 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(round 5)"), 5);
+}
+
+#[test]
+fn test_sqrt_builtin() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Perfect square returns exact integer
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sqrt 4)"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sqrt 9)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sqrt 0)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(sqrt 1)"), 1);
+    
+    // Non-perfect square returns float
+    let result = eval.eval_str("(sqrt 2)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 1.4142135).abs() < 0.001),
+        v => panic!("expected Float for (sqrt 2), got {:?}", v),
+    }
+    
+    // Float input returns float
+    let result = eval.eval_str("(sqrt 2.0)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 1.4142135).abs() < 0.001),
+        v => panic!("expected Float for (sqrt 2.0), got {:?}", v),
+    }
+}
+
+#[test]
+fn test_expt_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Integer expt stays integer
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(expt 2 10)"), 1024);
+    
+    // Float base produces float
+    let result = eval.eval_str("(expt 2.0 3)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 8.0).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // Negative exponent produces float
+    let result = eval.eval_str("(expt 2 -1)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 0.5).abs() < 0.001),
+        v => panic!("expected Float for (expt 2 -1), got {:?}", v),
+    }
+}
+
+#[test]
+fn test_float_display() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Whole number floats display with .0
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(exact->inexact 42)"), "42.0");
+    
+    // Special values
+    assert_eq!(eval_to_string(&lisp, &mut eval, "+inf.0"), "+inf.0");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "-inf.0"), "-inf.0");
+    assert_eq!(eval_to_string(&lisp, &mut eval, "+nan.0"), "+nan.0");
+}
+
+#[test]
+fn test_number_string_conversions_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // number->string with float
+    let result = eval.eval_str(r#"(number->string 3.14)"#).unwrap();
+    let s = format!("{}", lisp.display(result));
+    assert!(s.contains("3.14"), "expected '3.14' in {}", s);
+    
+    // string->number with float
+    let result = eval.eval_str(r#"(string->number "3.14")"#).unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 3.14).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    // string->number with special constants
+    let result = eval.eval_str(r#"(string->number "+inf.0")"#).unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!(f.is_infinite() && f > 0.0),
+        v => panic!("expected +inf, got {:?}", v),
+    }
+}
+
+#[test]
+fn test_float_eq_eqv_equal() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // eqv? compares same-type numbers
+    assert!(eval_is_true(&lisp, &mut eval, "(eqv? 3.0 3.0)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eqv? 3 3.0)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(eqv? 3.0 3)"));
+    
+    // equal? with numeric comparison
+    assert!(eval_is_true(&lisp, &mut eval, "(equal? 3.0 3.0)"));
+}
+
+#[test]
+fn test_inexact_prefix() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // #i prefix forces inexact
+    let result = eval.eval_str("#i42").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 42.0),
+        v => panic!("expected Float for #i42, got {:?}", v),
+    }
+    
+    // #e prefix keeps exact
+    assert_eq!(eval_to_num(&lisp, &mut eval, "#e42"), 42);
+}
+
+#[test]
+fn test_abs_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    let result = eval.eval_str("(abs -3.5)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 3.5),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(abs -5)"), 5);
+}
+
+#[test]
+fn test_max_min_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // max with mixed types
+    let result = eval.eval_str("(max 1 2.5 3)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, 3.0),
+        v => panic!("expected Float for max, got {:?}", v),
+    }
+    
+    // min with mixed types
+    let result = eval.eval_str("(min 1 2.5 -3.0)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert_eq!(f, -3.0),
+        v => panic!("expected Float for min, got {:?}", v),
+    }
+}
+
+#[test]
+fn test_square_with_floats() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    let result = eval.eval_str("(square 2.5)").unwrap();
+    match lisp.get(result).unwrap() {
+        Value::Float(f) => assert!((f - 6.25).abs() < 0.001),
+        v => panic!("expected Float, got {:?}", v),
+    }
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(square 5)"), 25);
 }
