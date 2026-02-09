@@ -132,7 +132,7 @@ fn run_bench<const N: usize>(
         };
     }
 
-    let passed = expected.map_or(true, |exp| last_result == exp);
+    let passed = expected.is_none_or(|exp| last_result == exp);
 
     BenchResult {
         name: name.to_string(),

@@ -644,11 +644,10 @@ impl<'a> Lexer<'a> {
         };
         
         // Check for special R7RS float literals: +inf.0, -inf.0, +nan.0
-        if radix == 10 {
-            if let Some(special) = self.try_lex_special_float(negative) {
+        if radix == 10
+            && let Some(special) = self.try_lex_special_float(negative) {
                 return Ok(special);
             }
-        }
         
         // Parse digits in the given radix
         let mut value: isize = 0;
@@ -794,11 +793,10 @@ impl<'a> Lexer<'a> {
                 // Hex character #\xNN...
                 if name.len() >= 2 && (name[0] == b'x' || name[0] == b'X') {
                     let hex_str = &name[1..];
-                    if let Some(code) = parse_hex(hex_str) {
-                        if let Some(c) = char::from_u32(code) {
+                    if let Some(code) = parse_hex(hex_str)
+                        && let Some(c) = char::from_u32(code) {
                             return Ok(Token::Char(c));
                         }
-                    }
                 }
                 Err(self.error(LexErrorKind::InvalidCharLiteral))
             }

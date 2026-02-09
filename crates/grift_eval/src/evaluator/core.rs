@@ -650,7 +650,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             // Aggressive periodic GC check
             step_count = step_count.wrapping_add(1);
-            if step_count % GC_CHECK_INTERVAL == 0 {
+            if step_count.is_multiple_of(GC_CHECK_INTERVAL) {
                 let stats = self.lisp.stats();
                 // Compare allocated >= capacity * threshold / 100 to avoid overflow
                 if stats.allocated >= stats.capacity * GC_THRESHOLD_PERCENT / 100 {
@@ -786,11 +786,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // 2. Check captured lexical environment (creation-site bindings)
         // This is the key for lexically-scoped syntax objects
-        if !self.lisp.get(lex_env)?.is_nil() {
-            if let Some(val) = self.lookup_in_env_optional(lex_env, name)? {
+        if !self.lisp.get(lex_env)?.is_nil()
+            && let Some(val) = self.lookup_in_env_optional(lex_env, name)? {
                 return Ok(TrampolineState::Return { val });
             }
-        }
         
         // 3. Fall back to current environment
         if let Some(val) = self.lookup_in_env_optional(current_env, name)? {
@@ -887,12 +886,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
             // Only apply the macro if the symbol is NOT bound as a variable.
             let macro_found = self.lookup_macro(car)?;
-            if let Some(transformer) = macro_found {
-                if !self.is_variable_bound(env, car)? {
+            if let Some(transformer) = macro_found
+                && !self.is_variable_bound(env, car)? {
                     return self.apply_macro_trampolined(transformer, expr.0, env);
                 }
                 // Variable shadows macro - fall through (core special forms still recognized)
-            }
             
             // Core special forms: always recognized regardless of variable bindings.
             // Only reached when no macro overrides this name (or macro was variable-shadowed).
@@ -903,11 +901,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Non-core special forms: only checked when no macro with this name exists.
             // Uses cheap keyword matching — only calls is_variable_bound (expensive)
             // when a keyword actually matches, which is rare for regular function calls.
-            if macro_found.is_none() {
-                if let Some(result) = self.try_dispatch_non_core_form(car, cdr, env)? {
+            if macro_found.is_none()
+                && let Some(result) = self.try_dispatch_non_core_form(car, cdr, env)? {
                     return Ok(result);
                 }
-            }
         }
         
         // Function application - HYBRID EVALUATION
@@ -1152,8 +1149,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Handle rest parameters: if params contains ".", create an improper list
         // (define (f . args) body) → params [".", "args"] → symbol "args"
         // (define (f x . rest) body) → params ["x", ".", "rest"] → (x . rest)
-        if let Some(dot_pos) = params.iter().position(|&p| p == ".") {
-            if dot_pos + 1 < params.len() {
+        if let Some(dot_pos) = params.iter().position(|&p| p == ".")
+            && dot_pos + 1 < params.len() {
                 let rest_sym = self.lisp.symbol(params[dot_pos + 1])?;
                 if dot_pos == 0 {
                     // Pure rest args: (name . args) → just the symbol
@@ -1167,7 +1164,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 return Ok(result);
             }
-        }
         // Normal case: proper list of params
         let mut result = self.lisp.nil()?;
         for name in params.iter().rev() {
@@ -1527,9 +1523,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Copy prefix chars
         if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
-            let plen = self.lisp.string_len(pchars).map_err(|e| EvalError::from(e))?;
+            let plen = self.lisp.string_len(pchars).map_err(EvalError::from)?;
             for i in 0..plen {
-                let c = self.lisp.string_char_at(pchars, i).map_err(|e| EvalError::from(e))?;
+                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
                 let dest = &mut buf[pos..];
                 // Each UTF-8 char can be up to 4 bytes
                 if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
@@ -1540,9 +1536,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Copy original symbol chars
         if let Value::Symbol(schars) = self.lisp.get(sym)? {
-            let slen = self.lisp.string_len(schars).map_err(|e| EvalError::from(e))?;
+            let slen = self.lisp.string_len(schars).map_err(EvalError::from)?;
             for i in 0..slen {
-                let c = self.lisp.string_char_at(schars, i).map_err(|e| EvalError::from(e))?;
+                let c = self.lisp.string_char_at(schars, i).map_err(EvalError::from)?;
                 let dest = &mut buf[pos..];
                 if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
                 let encoded = c.encode_utf8(dest);
