@@ -132,12 +132,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
         };
 
-        // Evaluate each expression sequentially
+        // Evaluate each expression sequentially at the top level.
+        // Use eval_for_macro to preserve the current continuation.
         let mut current = forms;
         let mut last_val = self.lisp.void_val()?;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let form = self.lisp.car(current)?;
-            last_val = self.eval(ExprRef(form))?;
+            last_val = self.eval_for_macro(ExprRef(form), self.global_env)?;
             current = self.lisp.cdr(current)?;
         }
 
