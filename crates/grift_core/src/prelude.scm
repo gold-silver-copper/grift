@@ -902,26 +902,22 @@
 (define (abs x) (if (negative? x) (- x) x))
 
 ;;; (boolean=? b1 b2 ...) - Test if all arguments are equal booleans (R7RS §6.3)
-(define (boolean=? . args)
-  (if (null? args) #t
-      (let ((first (car args)))
-        (define (check rest)
-          (if (null? rest) #t
-              (if (eq? first (car rest))
-                  (check (cdr rest))
-                  #f)))
-        (check (cdr args)))))
+(define (boolean=? b1 b2 . rest)
+  (define (check val remaining)
+    (if (null? remaining) #t
+        (if (eq? val (car remaining))
+            (check val (cdr remaining))
+            #f)))
+  (if (eq? b1 b2) (check b1 rest) #f))
 
 ;;; (symbol=? s1 s2 ...) - Test if all arguments are equal symbols (R7RS §6.5)
-(define (symbol=? . args)
-  (if (null? args) #t
-      (let ((first (car args)))
-        (define (check rest)
-          (if (null? rest) #t
-              (if (eq? first (car rest))
-                  (check (cdr rest))
-                  #f)))
-        (check (cdr args)))))
+(define (symbol=? s1 s2 . rest)
+  (define (check val remaining)
+    (if (null? remaining) #t
+        (if (eq? val (car remaining))
+            (check val (cdr remaining))
+            #f)))
+  (if (eq? s1 s2) (check s1 rest) #f))
 
 ;;; (exact-integer? x) - Check if value is an exact integer (R7RS §6.2.6)
 (define (exact-integer? x) (and (integer? x) (exact? x)))
