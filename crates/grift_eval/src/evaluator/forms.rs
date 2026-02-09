@@ -1070,7 +1070,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Cons { .. } => {
                 let car = self.lisp.car(template)?;
                 let cdr = self.lisp.cdr(template)?;
-                // Check for unquote
+                // Check for unquote — uses pre-interned ArenaIndex comparison.
+                // Safe because interned symbols have unique indices; non-symbol
+                // values simply won't match (equivalent to the old unwrap_or(false)).
                 if car == self.keywords.kw_unquote {
                     let inner_expr = self.lisp.car(cdr)?;
                     if depth == 1 {

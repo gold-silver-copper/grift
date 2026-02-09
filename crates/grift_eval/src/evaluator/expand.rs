@@ -487,7 +487,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(false)
     }
 
-    /// Check if pattern cdr starts with ellipsis
+    /// Check if pattern cdr starts with ellipsis.
+    ///
+    /// Uses direct ArenaIndex comparison with the pre-interned ellipsis symbol.
+    /// This is safe because interned symbols have unique indices — a non-matching
+    /// value (of any type) will simply have a different index.
     fn has_ellipsis(&self, pat_cdr: ArenaIndex) -> Result<bool, EvalError> {
         match self.lisp.get(pat_cdr)? {
             // Case 1: pat_cdr is a list starting with ...
