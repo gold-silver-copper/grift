@@ -75,6 +75,7 @@ impl From<LexError> for ParseError {
                 LexErrorKind::InvalidEscapeSequence => ParseErrorKind::InvalidEscapeSequence,
                 LexErrorKind::UnterminatedString => ParseErrorKind::UnterminatedString,
                 LexErrorKind::StringTooLong => ParseErrorKind::OutOfMemory,
+                LexErrorKind::InvalidRadixDigit => ParseErrorKind::InvalidHashLiteral,
             },
             loc: e.loc,
         }

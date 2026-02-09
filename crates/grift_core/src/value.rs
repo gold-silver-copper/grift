@@ -39,6 +39,10 @@ define_builtins! {
     EqvP => "eqv?",
     /// equal? - Scheme-compliant recursive structural equality
     EqualP => "equal?",
+    /// symbol=? - Test if all arguments are equal symbols
+    SymbolEqP => "symbol=?",
+    /// boolean=? - Test if all arguments are equal booleans
+    BooleanEqP => "boolean=?",
     
     // Arithmetic
     /// + - Addition
@@ -219,6 +223,14 @@ define_builtins! {
     VectorFill => "vector-fill!",
     /// vector-copy - Copy a vector
     VectorCopy => "vector-copy",
+    /// vector-copy! - Copy elements from one vector to another
+    VectorCopyTo => "vector-copy!",
+    /// vector-append - Concatenate vectors
+    VectorAppend => "vector-append",
+    /// vector-map - Apply procedure to elements of vectors
+    VectorMap => "vector-map",
+    /// vector-for-each - Apply procedure to elements for side effects
+    VectorForEach => "vector-for-each",
     
     // Character operations (R7RS Section 6.6)
     /// char? - Check if value is a character
@@ -275,6 +287,18 @@ define_builtins! {
     Substring => "substring",
     /// string-copy - Copy a string
     StringCopy => "string-copy",
+    /// string-copy! - Copy characters from one string to another
+    StringCopyTo => "string-copy!",
+    /// string-fill! - Fill string with character
+    StringFill => "string-fill!",
+    /// string-ci<? - Case-insensitive string less than
+    StringCiLt => "string-ci<?",
+    /// string-ci>? - Case-insensitive string greater than
+    StringCiGt => "string-ci>?",
+    /// string-ci<=? - Case-insensitive string less than or equal
+    StringCiLe => "string-ci<=?",
+    /// string-ci>=? - Case-insensitive string greater than or equal
+    StringCiGe => "string-ci>=?",
     
     // Garbage collection and arena control
     /// gc - Manually trigger garbage collection
