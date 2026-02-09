@@ -18,62 +18,6 @@ use crate::error::{StackFrame, MAX_STACK_DEPTH};
 use crate::native::NativeRegistry;
 
 // ============================================================================
-// Pre-interned Keywords
-// ============================================================================
-
-/// Pre-interned keyword symbols for O(1) dispatch.
-///
-/// Instead of comparing symbol names character-by-character via `symbol_matches`,
-/// we intern all known keywords at evaluator construction time and store their
-/// `ArenaIndex` values. Since all symbols are interned (same name → same index),
-/// checking `car == self.keywords.quote` is a single `usize` comparison with
-/// zero arena accesses, replacing the O(n) string comparison.
-///
-/// These indices remain valid after GC because all interned symbols are
-/// reachable through the intern table root which is always a GC root.
-#[derive(Clone, Copy)]
-pub(crate) struct Keywords {
-    // Core special forms (core.rs)
-    pub(crate) kw_if: ArenaIndex,
-    pub(crate) kw_quote: ArenaIndex,
-    pub(crate) kw_define_syntax: ArenaIndex,
-    pub(crate) kw_let_syntax: ArenaIndex,
-    pub(crate) kw_letrec_syntax: ArenaIndex,
-    pub(crate) kw_syntax_case: ArenaIndex,
-    pub(crate) kw_syntax: ArenaIndex,
-    pub(crate) kw_lambda: ArenaIndex,
-    pub(crate) kw_define: ArenaIndex,
-    pub(crate) kw_set_bang: ArenaIndex,
-    pub(crate) kw_begin: ArenaIndex,
-    pub(crate) kw_quasiquote: ArenaIndex,
-    pub(crate) kw_eval: ArenaIndex,
-    pub(crate) kw_apply: ArenaIndex,
-    pub(crate) kw_values: ArenaIndex,
-    pub(crate) kw_call_with_values: ArenaIndex,
-    pub(crate) kw_call_with_current_continuation: ArenaIndex,
-    pub(crate) kw_call_cc: ArenaIndex,
-    pub(crate) kw_dynamic_wind: ArenaIndex,
-    pub(crate) kw_syntax_error: ArenaIndex,
-    pub(crate) kw_with_exception_handler: ArenaIndex,
-    pub(crate) kw_raise: ArenaIndex,
-    pub(crate) kw_raise_continuable: ArenaIndex,
-    pub(crate) kw_define_record_type: ArenaIndex,
-    pub(crate) kw_define_library: ArenaIndex,
-    pub(crate) kw_import: ArenaIndex,
-    pub(crate) kw_environment: ArenaIndex,
-    // Macro expansion keywords (expand.rs)
-    pub(crate) kw_ellipsis: ArenaIndex,
-    pub(crate) kw_underscore: ArenaIndex,
-    pub(crate) kw_let: ArenaIndex,
-    pub(crate) kw_let_star: ArenaIndex,
-    pub(crate) kw_letrec: ArenaIndex,
-    pub(crate) kw_letrec_star: ArenaIndex,
-    // Quasiquote keywords (forms.rs)
-    pub(crate) kw_unquote: ArenaIndex,
-    pub(crate) kw_unquote_splicing: ArenaIndex,
-}
-
-// ============================================================================
 // Evaluator
 // ============================================================================
 
@@ -146,6 +90,4 @@ pub struct Evaluator<'a, const N: usize> {
     /// Libraries currently being loaded — arena-based list of library names.
     /// Used for detecting circular dependencies during auto-loading.
     loading_libraries: ArenaIndex,
-    /// Pre-interned keyword symbols for O(1) special form dispatch.
-    pub(crate) keywords: Keywords,
 }
