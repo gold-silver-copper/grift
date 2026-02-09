@@ -4966,6 +4966,49 @@ fn test_cond_expand_multiple_expressions() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 11);
 }
 
+#[test]
+fn test_cond_expand_library_scheme_base() {
+    // cond-expand should recognize (library (scheme base))
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond-expand ((library (scheme base)) 1) (else 0))"), 1);
+}
+
+#[test]
+fn test_cond_expand_library_unknown() {
+    // cond-expand should not recognize unknown libraries
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond-expand ((library (scheme unknown-lib)) 1) (else 0))"), 0);
+}
+
+#[test]
+fn test_cond_expand_library_scheme_write() {
+    // cond-expand should recognize (library (scheme write))
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond-expand ((library (scheme write)) 1) (else 0))"), 1);
+}
+
+#[test]
+fn test_features_procedure() {
+    // (features) should return a list of feature identifiers
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // features returns a list
+    assert!(eval_is_true(&lisp, &mut eval, "(list? (features))"));
+    // The list should contain 'r7rs and 'grift (memq returns a pair or #f)
+    assert!(eval_is_true(&lisp, &mut eval, "(pair? (memq 'r7rs (features)))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(pair? (memq 'grift (features)))"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // DELAY-FORCE AND PROMISE TESTS (R7RS Section 4.2.5)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6692,6 +6735,61 @@ fn test_syntax_error_raises() {
     // syntax-error should raise a SyntaxError
     let result = eval.eval_str("(syntax-error \"bad syntax\")");
     assert!(result.is_err());
+}
+
+#[test]
+fn test_syntax_error_preserves_message() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error should store the message and args in the error's expr
+    let result = eval.eval_str("(syntax-error \"expected an identifier\" (x . y))");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SyntaxError);
+    // The expr should contain the args list (message + irritants), not be nil
+    assert!(!err.expr.is_nil());
+}
+
+#[test]
+fn test_syntax_error_with_multiple_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error with multiple arguments
+    let result = eval.eval_str("(syntax-error \"bad form\" 1 2 3)");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SyntaxError);
+}
+
+#[test]
+fn test_syntax_error_in_macro() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error used inside a syntax-rules template to report invalid use
+    eval.eval_str(r#"
+        (define-syntax my-let
+          (syntax-rules ()
+            ((my-let ((name val) ...) body ...)
+             ((lambda (name ...) body ...) val ...))
+            ((my-let . other)
+             (syntax-error "invalid let syntax"))))
+    "#).unwrap();
+    // Valid use should work
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-let ((x 1) (y 2)) (+ x y))"), 3);
+    // Invalid use should trigger syntax-error
+    let result = eval.eval_str("(my-let bad)");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_syntax_error_no_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error with just a message
+    let result = eval.eval_str("(syntax-error \"oops\")");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SyntaxError);
 }
 
 // ========================================================================

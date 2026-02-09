@@ -632,7 +632,9 @@
 ;; Note: Uses syntax-case directly because it has many clauses (more than syntax-rules supports)
 (define-syntax %feature-check
   (lambda (x)
-    (syntax-case x (and or not library r7rs grift exact-closed exact-complex ratios ieee-float)
+    (syntax-case x (and or not library r7rs grift exact-closed exact-complex ratios ieee-float
+                    scheme base case-lambda char cxr eval file inexact lazy load
+                    process-context read repl time write)
       ;; Core features we support
       ((%feature-check r7rs) (syntax #t))
       ((%feature-check grift) (syntax #t))
@@ -656,7 +658,24 @@
                    (%feature-check (or req2 ...)))))
       ((%feature-check (not req))
        (syntax (if (%feature-check req) #f #t)))
-      ;; Library checks - we don't support any libraries yet
+      ;; Library checks - known R7RS libraries
+      ;; Each library must be an explicit pattern because syntax-case
+      ;; requires literal keyword matching at expansion time.
+      ((%feature-check (library (scheme base))) (syntax #t))
+      ((%feature-check (library (scheme case-lambda))) (syntax #t))
+      ((%feature-check (library (scheme char))) (syntax #t))
+      ((%feature-check (library (scheme cxr))) (syntax #t))
+      ((%feature-check (library (scheme eval))) (syntax #t))
+      ((%feature-check (library (scheme file))) (syntax #t))
+      ((%feature-check (library (scheme inexact))) (syntax #t))
+      ((%feature-check (library (scheme lazy))) (syntax #t))
+      ((%feature-check (library (scheme load))) (syntax #t))
+      ((%feature-check (library (scheme process-context))) (syntax #t))
+      ((%feature-check (library (scheme read))) (syntax #t))
+      ((%feature-check (library (scheme repl))) (syntax #t))
+      ((%feature-check (library (scheme time))) (syntax #t))
+      ((%feature-check (library (scheme write))) (syntax #t))
+      ;; Unknown library
       ((%feature-check (library name)) (syntax #f))
       ;; Unknown feature
       ((%feature-check other) (syntax #f)))))
@@ -679,6 +698,11 @@
                    (begin body ...)
                    (cond-expand rest ...)))))))
 
+;; features - return list of feature identifiers (R7RS §6.14)
+;; Returns a list of the feature identifiers which cond-expand treats as true.
+;; This list must be kept in sync with the features recognized by %feature-check above.
+(define (features)
+  '(r7rs grift exact-closed))
 ;; ============================================================
 ;; Lazy Evaluation Extensions (R7RS Section 4.2.5)
 ;; ============================================================
