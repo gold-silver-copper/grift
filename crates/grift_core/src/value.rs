@@ -334,6 +334,10 @@ define_builtins! {
     GetEnvironmentVariable => "get-environment-variable",
     /// get-environment-variables - Get all environment variables as an alist
     GetEnvironmentVariables => "get-environment-variables",
+
+    // Environment procedures (R7RS §6.12)
+    /// interaction-environment - Return the mutable REPL environment
+    InteractionEnvironment => "interaction-environment",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
@@ -658,6 +662,14 @@ pub enum Value {
     ///
     /// A unique value returned by read operations when the end of input is reached.
     Eof,
+
+    /// First-class environment object (R7RS §6.12)
+    ///
+    /// Created by `environment` or `interaction-environment`.
+    /// - `env`: ArenaIndex to the environment bindings chain
+    /// - `mutable`: whether new bindings can be added (`true` for
+    ///   interaction-environment, `false` for `environment`)
+    Environment { env: ArenaIndex, mutable: bool },
 }
 
 impl Value {
@@ -857,6 +869,7 @@ impl Value {
             Value::ErrorObject { .. } => "error-object",
             Value::Port(_) => "port",
             Value::Eof => "eof-object",
+            Value::Environment { .. } => "environment",
         }
     }
     
@@ -970,6 +983,9 @@ impl<const N: usize> Trace<Value, N> for Value {
                         tracer(char_idx);
                     }
                 }
+            }
+            Value::Environment { env, .. } => {
+                tracer(*env);
             }
         }
     }

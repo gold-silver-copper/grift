@@ -699,7 +699,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
             Value::ContFrame { .. } | Value::Continuation { .. } | Value::ErrorObject { .. } |
-            Value::Port(_) | Value::Eof => {
+            Value::Port(_) | Value::Eof | Value::Environment { .. } => {
                 Ok(TrampolineState::Return { val: expr.0 })
             }
             
@@ -1022,9 +1022,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.symbol_matches(car, "eval")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             let expr_to_eval = self.lisp.car(cdr)?;
-            let global = self.global_env.0;
-            self.cont(ContType::EvalExpr, env).data1(global)?;
-            return Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }));
+            let rest = self.lisp.cdr(cdr)?;
+            if self.lisp.get(rest)?.is_nil() {
+                // 1-arg form: (eval expr) — use global env
+                let global = self.global_env.0;
+                self.cont(ContType::EvalExpr, env).data1(global)?;
+                return Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }));
+            } else {
+                // 2-arg form: (eval expr env-expr) — evaluate env-expr first
+                let env_expr = self.lisp.car(rest)?;
+                self.cont(ContType::EvalEnvArg, env).data2(expr_to_eval, env.0)?;
+                return Ok(Some(TrampolineState::Eval { expr: ExprRef(env_expr), env }));
+            }
         }
         
         // apply - apply function to list of arguments
@@ -1099,6 +1108,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.symbol_matches(car, "import")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_import(cdr, env).map(Some);
+        }
+        
+        // environment - create immutable environment from import specs (R7RS §6.12)
+        if self.lisp.symbol_matches(car, "environment")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_environment(cdr, env).map(Some);
         }
         
         Ok(None)

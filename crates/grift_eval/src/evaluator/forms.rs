@@ -368,6 +368,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Eval { expr: ExprRef(val), env: EnvRef(env) }))
             }
 
+            ContType::EvalEnvArg => {
+                // Data: (expr_to_eval . eval_env)
+                // val is the evaluated env argument — must be an Environment value
+                let (expr_to_eval, eval_env) = self.unpack2(data)?;
+                match self.lisp.get(val)? {
+                    Value::Environment { env: target_env, .. } => {
+                        // Push EvalExpr continuation with target env in data
+                        // (EvalExpr reads env from data, not from frame env)
+                        self.cont(ContType::EvalExpr, EnvRef(target_env)).data1(target_env)?;
+                        Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env: EnvRef(eval_env) }))
+                    }
+                    _ => Err(self.type_error(val, "environment", self.lisp.get(val)?.type_name())),
+                }
+            }
+
             ContType::BeginSeq => {
                 // Data: (remaining . env)
                 let (remaining, env) = self.unpack2(data)?;
@@ -2414,6 +2429,44 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         let void = self.lisp.void_val()?;
         Ok(TrampolineState::Return { val: void })
+    }
+
+    /// Evaluate `(environment <import-set>...)`
+    ///
+    /// Creates a new immutable environment containing bindings from the
+    /// specified libraries. Each import-set is processed just like `import`
+    /// but the bindings are collected into a fresh environment object
+    /// instead of the global environment.
+    ///
+    /// Supports quoted and unquoted import specs:
+    ///   (environment (scheme base))
+    ///   (environment '(scheme base))
+    pub(super) fn step_eval_environment(&mut self, args: ArenaIndex, _env: EnvRef)
+        -> Result<TrampolineState, EvalError>
+    {
+        let nil = self.lisp.nil()?;
+        let mut result_env = EnvRef(nil);
+
+        let mut sets = args;
+        while let Value::Cons { .. } = self.lisp.get(sets)? {
+            let mut import_set = self.lisp.car(sets)?;
+            sets = self.lisp.cdr(sets)?;
+
+            // Unwrap a single level of (quote ...) so that
+            // (environment '(scheme base)) works the same as
+            // (environment (scheme base))
+            if let Value::Cons { .. } = self.lisp.get(import_set)? {
+                let head = self.lisp.car(import_set)?;
+                if self.lisp.symbol_matches(head, "quote")? {
+                    import_set = self.lisp.car(self.lisp.cdr(import_set)?)?;
+                }
+            }
+
+            result_env = self.import_library_into_env(import_set, result_env)?;
+        }
+
+        let env_val = self.lisp.alloc(Value::Environment { env: result_env.0, mutable: false })?;
+        Ok(TrampolineState::Return { val: env_val })
     }
 
     /// Evaluate `(import <import-set>...)`
