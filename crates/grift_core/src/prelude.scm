@@ -820,6 +820,43 @@
          (parameterize ((p1 v1))
            (parameterize (rest ...) body ...)))))))
 
+;; ============================================================
+;; Rational/Complex number construction macros (R7RS Section 6.2)
+;; ============================================================
+
+;; rat - Rational number literal construction
+;;   (rat n / d)  => (make-rat n d)
+;;   (rat n)      => (make-rat n 1)
+(define-syntax rat
+  (syntax-rules (/)
+    ((rat n / d) (make-rat n d))
+    ((rat n)     (make-rat n 1))))
+
+;; cpx - Complex number literal construction
+;;   (cpx re + im i)     => (make-complex-rect re im)
+;;   (cpx re - im i)     => (make-complex-rect re (- im))
+;;   (cpx re)             => (make-complex-rect re 0)
+;;   (cpx polar mag ang)  => (make-complex-polar mag ang)
+(define-syntax cpx
+  (syntax-rules (+ - i polar)
+    ((cpx re + im i)    (make-complex-rect re im))
+    ((cpx re - im i)    (make-complex-rect re (- im)))
+    ((cpx re)            (make-complex-rect re 0))
+    ((cpx polar mag ang) (make-complex-polar mag ang))))
+
+;; rat-cpx - Rational-complex number literal construction
+;;   (rat-cpx (rn / rd) + (in / id) i) => rect with rational parts
+;;   (rat-cpx (rn / rd) - (in / id) i) => rect with negated imaginary rational
+;;   (rat-cpx (rn / rd))               => real-only rational complex
+(define-syntax rat-cpx
+  (syntax-rules (+ - i /)
+    ((rat-cpx (rn / rd) + (in / id) i)
+     (make-rat-complex (make-rat rn rd) (make-rat in id)))
+    ((rat-cpx (rn / rd) - (in / id) i)
+     (make-rat-complex (make-rat rn rd) (rat- (make-rat 0 1) (make-rat in id))))
+    ((rat-cpx (rn / rd))
+     (make-rat-complex (make-rat rn rd) (make-rat 0 1)))))
+
 
 
 ;;; ============================================================
@@ -1532,14 +1569,6 @@
 ;;; values and plain numbers (per R7RS, all finite reals are rational).
 (define (rational-tagged? x) (and (pair? x) (eq? (car x) 'rational)))
 
-;;; Syntax for literal construction:
-;;;   (rat n / d)  => (make-rat n d)
-;;;   (rat n)      => (make-rat n 1)
-(define-syntax rat
-  (syntax-rules (/)
-    ((rat n / d) (make-rat n d))
-    ((rat n)     (make-rat n 1))))
-
 ;;; Arithmetic
 (define (rat+ a b)
   (make-rat (+ (* (rat-numer a) (rat-denom b))
@@ -1625,18 +1654,6 @@
     ((polar) (cadddr z))
     ((rect) (error "complex-ang: rectangular form requires atan (not available)"))))
 
-;;; Syntax for literal construction:
-;;;   (cpx re + im i)     => (make-complex-rect re im)
-;;;   (cpx re - im i)     => (make-complex-rect re (- im))
-;;;   (cpx re)             => (make-complex-rect re 0)
-;;;   (cpx polar mag ang)  => (make-complex-polar mag ang)
-(define-syntax cpx
-  (syntax-rules (+ - i polar)
-    ((cpx re + im i)    (make-complex-rect re im))
-    ((cpx re - im i)    (make-complex-rect re (- im)))
-    ((cpx re)            (make-complex-rect re 0))
-    ((cpx polar mag ang) (make-complex-polar mag ang))))
-
 ;;; Arithmetic (rectangular form)
 (define (complex+ a b)
   (make-complex-rect (+ (complex-real a) (complex-real b))
@@ -1695,19 +1712,6 @@
 (define (rat-complex? x) (and (pair? x) (eq? (car x) 'rat-complex)))
 (define (rat-complex-real z) (cadr z))
 (define (rat-complex-imag z) (caddr z))
-
-;;; Syntax for literal construction:
-;;;   (rat-cpx (rn / rd) + (in / id) i) => rect with rational parts
-;;;   (rat-cpx (rn / rd) - (in / id) i) => rect with negated imaginary rational
-;;;   (rat-cpx (rn / rd))               => real-only rational complex
-(define-syntax rat-cpx
-  (syntax-rules (+ - i /)
-    ((rat-cpx (rn / rd) + (in / id) i)
-     (make-rat-complex (make-rat rn rd) (make-rat in id)))
-    ((rat-cpx (rn / rd) - (in / id) i)
-     (make-rat-complex (make-rat rn rd) (rat- (make-rat 0 1) (make-rat in id))))
-    ((rat-cpx (rn / rd))
-     (make-rat-complex (make-rat rn rd) (make-rat 0 1)))))
 
 ;;; Arithmetic
 (define (rat-complex+ a b)
