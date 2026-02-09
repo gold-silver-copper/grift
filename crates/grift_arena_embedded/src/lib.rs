@@ -58,12 +58,14 @@ const MOCK_GPIO_COUNT: usize = 16;
 // Simulated memory for testing (256 x word-size units = 1KB on 32-bit)
 // Using AtomicUsize for thread-safe access without unsafe code
 static MOCK_MEMORY: [AtomicUsize; MOCK_MEMORY_WORDS] = {
+    #[allow(clippy::declare_interior_mutable_const)]
     const INIT: AtomicUsize = AtomicUsize::new(0);
     [INIT; MOCK_MEMORY_WORDS]
 };
 
 // Simulated GPIO registers (16 registers, word-size each)
 static MOCK_GPIO: [AtomicUsize; MOCK_GPIO_COUNT] = {
+    #[allow(clippy::declare_interior_mutable_const)]
     const INIT: AtomicUsize = AtomicUsize::new(0);
     [INIT; MOCK_GPIO_COUNT]
 };
@@ -186,7 +188,7 @@ register_native!(
     native_gpio_set,
     (reg: isize, bit: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && (0..32).contains(&bit) {
             let mask = 1usize << bit;
             let old = MOCK_GPIO[reg as usize].fetch_or(mask, Ordering::Relaxed);
             (old | mask) as isize
@@ -203,7 +205,7 @@ register_native!(
     native_gpio_clear,
     (reg: isize, bit: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && (0..32).contains(&bit) {
             let mask = !(1usize << bit);
             let old = MOCK_GPIO[reg as usize].fetch_and(mask, Ordering::Relaxed);
             (old & mask) as isize
@@ -220,7 +222,7 @@ register_native!(
     native_gpio_toggle,
     (reg: isize, bit: isize) -> isize,
     {
-        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && bit >= 0 && bit < 32 {
+        if reg >= 0 && reg < MOCK_GPIO_COUNT as isize && (0..32).contains(&bit) {
             let mask = 1usize << bit;
             let old = MOCK_GPIO[reg as usize].fetch_xor(mask, Ordering::Relaxed);
             (old ^ mask) as isize
@@ -237,7 +239,7 @@ register_native!(
 // Bit Set: Check if a bit is set in a value.
 // Lisp signature: `(bit-set? value bit) -> #t/#f`
 register_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
-    if bit >= 0 && bit < 64 {
+    if (0..64).contains(&bit) {
         (value & (1isize << bit)) != 0
     } else {
         false
@@ -248,7 +250,7 @@ register_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
 // Lisp signature: `(bit-extract value start width) -> extracted-bits`
 register_native!(native_bit_extract, (value: isize, start: isize, width: isize) -> isize, {
     // Validate that start and width are in valid ranges and don't cause overflow
-    if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
+    if (0..64).contains(&start) && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
         (value >> start) & mask
     } else {
@@ -260,7 +262,7 @@ register_native!(native_bit_extract, (value: isize, start: isize, width: isize) 
 // Lisp signature: `(bit-insert value insert start width) -> new-value`
 register_native!(native_bit_insert, (value: isize, insert: isize, start: isize, width: isize) -> isize, {
     // Validate that start and width are in valid ranges and don't cause overflow
-    if start >= 0 && start < 64 && width > 0 && width <= 64 && (start + width) <= 64 {
+    if (0..64).contains(&start) && width > 0 && width <= 64 && (start + width) <= 64 {
         let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
         let cleared = value & !(mask << start);
         cleared | ((insert & mask) << start)
@@ -404,6 +406,12 @@ pub struct EmbeddedIoProvider<const BUF: usize = EMBEDDED_IO_BUF_SIZE> {
     stdin_open: bool,
     /// Whether STDOUT is still open.
     stdout_open: bool,
+}
+
+impl<const BUF: usize> Default for EmbeddedIoProvider<BUF> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const BUF: usize> EmbeddedIoProvider<BUF> {

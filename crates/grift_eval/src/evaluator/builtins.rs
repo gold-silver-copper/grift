@@ -10,7 +10,7 @@ use crate::continuation::{TrampolineState, ContType, is_binary_builtin, EnvRef, 
 use crate::helpers::{int_pow, equal_recursive, float_floor, float_ceil, float_truncate, float_round, float_sqrt, float_pow};
 use crate::{
     extract_args, builtin_unary_pred, builtin_numeric_pred, builtin_rounding_op, builtin_div_op,
-    builtin_char_to_int, builtin_char_transform,
+    builtin_char_to_int,
     binary_int_cmp, binary_int_op, binary_div_op,
 };
 
@@ -866,8 +866,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 
                 let placeholder = self.lisp.number(0)?;
                 let result = self.lisp.make_array(total_len, placeholder)?;
-                for i in 0..total_len {
-                    self.lisp.array_set(result, i, elems[i])?;
+                for (i, &elem) in elems.iter().enumerate().take(total_len) {
+                    self.lisp.array_set(result, i, elem)?;
                 }
                 Ok(result)
             }
@@ -974,8 +974,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::CharUpcase => builtin_char_transform!(self, args, call_expr, 'a', 'z', b'a', b'A'),
-            Builtin::CharDowncase => builtin_char_transform!(self, args, call_expr, 'A', 'Z', b'A', b'a'),
+            Builtin::CharUpcase => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let result = if c.is_ascii_lowercase() {
+                    ((c as u8) - b'a' + b'A') as char
+                } else {
+                    c
+                };
+                self.lisp.char(result).map_err(Into::into)
+            }
+            Builtin::CharDowncase => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let result = if c.is_ascii_uppercase() {
+                    ((c as u8) - b'A' + b'a') as char
+                } else {
+                    c
+                };
+                self.lisp.char(result).map_err(Into::into)
+            }
             
             // ============================================================
             // String operations (R7RS Section 6.7)
@@ -1242,11 +1258,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         
-                        for i in 0..sub_len {
+                        for (i, ch) in chars.iter_mut().enumerate().take(sub_len) {
                             // Characters start at data (no header with inline length)
                             let char_slot = self.lisp.arena_index_at_offset(data, (start as usize) + i)?;
                             match self.lisp.get(char_slot)? {
-                                Value::Char(c) => chars[i] = c,
+                                Value::Char(c) => *ch = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                             }
                         }
@@ -1292,10 +1308,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         
-                        for i in 0..sub_len {
+                        for (i, ch) in chars.iter_mut().enumerate().take(sub_len) {
                             let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
                             match self.lisp.get(char_slot)? {
-                                Value::Char(c) => chars[i] = c,
+                                Value::Char(c) => *ch = c,
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                             }
                         }
@@ -1365,10 +1381,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
                 }
                 let mut temp = ['\0'; MAX_STRING_COPY];
-                for i in 0..count {
+                for (i, ch) in temp.iter_mut().enumerate().take(count) {
                     let char_slot = self.lisp.arena_index_at_offset(from_data, start + i)?;
                     match self.lisp.get(char_slot)? {
-                        Value::Char(c) => temp[i] = c,
+                        Value::Char(c) => *ch = c,
                         _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                     }
                 }
@@ -1378,9 +1394,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::String { data, .. } => data,
                     _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 };
-                for i in 0..count {
+                for (i, &ch) in temp.iter().enumerate().take(count) {
                     let char_slot = self.lisp.arena_index_at_offset(to_data, at + i)?;
-                    self.lisp.set(char_slot, Value::Char(temp[i]))?;
+                    self.lisp.set(char_slot, Value::Char(ch))?;
                 }
                 
                 self.lisp.void_val().map_err(Into::into)
@@ -1548,7 +1564,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let negative = n < 0;
                         let mut val = if negative { 
                             // Handle isize::MIN by working with unsigned
-                            (n as isize).unsigned_abs()
+                            n.unsigned_abs()
                         } else { 
                             n as usize 
                         };
@@ -1599,14 +1615,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         if len > buf.len() {
                             return self.lisp.false_val().map_err(Into::into);
                         }
-                        for i in 0..len {
+                        for (i, slot) in buf.iter_mut().enumerate().take(len) {
                             let char_slot = self.lisp.arena_index_at_offset(data, i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => {
                                     if !c.is_ascii() {
                                         return self.lisp.false_val().map_err(Into::into);
                                     }
-                                    buf[i] = c as u8;
+                                    *slot = c as u8;
                                 }
                                 _ => return self.lisp.false_val().map_err(Into::into),
                             }
@@ -2505,15 +2521,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 in_string = false;
                                 if paren_depth == 0 { break; }
                             }
-                        } else {
-                            if c == '(' || c == '[' {
-                                paren_depth += 1;
-                            } else if c == ')' || c == ']' {
-                                paren_depth -= 1;
-                                if paren_depth == 0 { break; }
-                            } else if c == '"' {
-                                in_string = true;
-                            }
+                        } else if c == '(' || c == '[' {
+                            paren_depth += 1;
+                        } else if c == ')' || c == ']' {
+                            paren_depth -= 1;
+                            if paren_depth == 0 { break; }
+                        } else if c == '"' {
+                            in_string = true;
                         }
                     }
                     Err(grift_parser::IoErrorKind::Eof) => break,

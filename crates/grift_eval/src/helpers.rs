@@ -7,17 +7,6 @@ use crate::error::EvalError;
 // Pure math helper functions
 // ============================================================================
 
-/// Helper for computing GCD using Euclidean algorithm
-#[allow(dead_code)]
-pub fn gcd_helper(mut a: isize, mut b: isize) -> isize {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a.abs()
-}
-
 /// Helper for integer exponentiation (base^power) with overflow checking
 pub fn int_pow(base: isize, power: usize) -> isize {
     if power == 0 {
@@ -30,7 +19,7 @@ pub fn int_pow(base: isize, power: usize) -> isize {
         return 1;
     }
     if base == -1 {
-        return if power % 2 == 0 { 1 } else { -1 };
+        return if power.is_multiple_of(2) { 1 } else { -1 };
     }
     
     // Use exponentiation by squaring with saturating operations
@@ -113,10 +102,16 @@ fn equal_recursive_depth<const N: usize>(
 // ============================================================================
 
 /// Natural logarithm of 2, used in float math helpers.
-const LN_2: fsize = 0.6931471805599453;
+#[cfg(target_pointer_width = "64")]
+const LN_2: fsize = core::f64::consts::LN_2;
+#[cfg(target_pointer_width = "32")]
+const LN_2: fsize = core::f32::consts::LN_2;
 
 /// Euler's number (e), used in float math helpers.
-const E: fsize = 2.718281828459045;
+#[cfg(target_pointer_width = "64")]
+const E: fsize = core::f64::consts::E;
+#[cfg(target_pointer_width = "32")]
+const E: fsize = core::f32::consts::E;
 
 /// Floor function for no_std: largest integer value not greater than x.
 pub fn float_floor(x: fsize) -> fsize {

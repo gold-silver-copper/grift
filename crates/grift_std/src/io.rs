@@ -126,11 +126,11 @@ fn read_one_char() -> IoResult<char> {
     // Determine expected UTF-8 byte length from the leading byte.
     let char_len = if first < 0x80 {
         1
-    } else if first >= 0xC2 && first < 0xE0 {
+    } else if (0xC2..0xE0).contains(&first) {
         2
-    } else if first >= 0xE0 && first < 0xF0 {
+    } else if (0xE0..0xF0).contains(&first) {
         3
-    } else if first >= 0xF0 && first < 0xF5 {
+    } else if (0xF0..0xF5).contains(&first) {
         4
     } else {
         // Invalid leading byte (0x80-0xBF are continuation bytes,

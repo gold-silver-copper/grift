@@ -1337,8 +1337,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Check if this is a define form
             if let Value::Cons { .. } = self.lisp.get(expr)? {
                 let head = self.lisp.car(expr)?;
-                if let Value::Symbol(_) = self.lisp.get(head)? {
-                    if self.lisp.symbol_matches(head, "define")? {
+                if let Value::Symbol(_) = self.lisp.get(head)?
+                    && self.lisp.symbol_matches(head, "define")? {
                         // Extract name and value from define
                         let define_args = self.lisp.cdr(expr)?;
                         let first = self.lisp.car(define_args)?;
@@ -1379,7 +1379,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         remaining = self.lisp.cdr(remaining)?;
                         continue;
                     }
-                }
             }
             
             // Not a define form, stop collecting
@@ -1563,8 +1562,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Phase 2: Install all bindings at once
-        for i in 0..binding_count {
-            let (name, transformer) = parsed_bindings[i];
+        for &(name, transformer) in parsed_bindings.iter().take(binding_count) {
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
         }
@@ -2901,6 +2899,5 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             }
         }
-        self.reverse_list(args).map_err(Into::into)
-    }
+        self.reverse_list(args)}
 }

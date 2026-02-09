@@ -1223,8 +1223,8 @@ impl<const N: usize> Lisp<N> {
                     let entry = self.car(current)?;
                     let rest = self.cdr(current)?;
                     // Each entry is a String header
-                    if let Value::String { len, data } = self.get(entry)? {
-                        if len == chars.len() && !data.is_nil() {
+                    if let Value::String { len, data } = self.get(entry)?
+                        && len == chars.len() && !data.is_nil() {
                             // Compare char by char
                             let mut matches = true;
                             let base = data.raw();
@@ -1238,7 +1238,6 @@ impl<const N: usize> Lisp<N> {
                                 return Ok(Some(data));
                             }
                         }
-                    }
                     current = rest;
                 }
                 _ => return Ok(None),
@@ -1316,11 +1315,10 @@ impl<const N: usize> Lisp<N> {
                 Value::Cons { .. } => {
                     let entry = self.car(current)?;
                     let rest = self.cdr(current)?;
-                    if let Value::String { data: entry_data, .. } = self.get(entry)? {
-                        if entry_data == data {
+                    if let Value::String { data: entry_data, .. } = self.get(entry)?
+                        && entry_data == data {
                             return Ok(true);
                         }
-                    }
                     current = rest;
                 }
                 _ => return Ok(false),

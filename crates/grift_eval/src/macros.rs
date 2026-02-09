@@ -161,26 +161,6 @@ macro_rules! builtin_char_to_int {
     }};
 }
 
-/// Macro for unary character transformation.
-///
-/// Extracts one character argument, applies ASCII transformation, and returns a char.
-///
-/// # Example
-/// 
-/// `builtin_char_transform!(self, args, call_expr, 'a', 'z', b'a', b'A')` does uppercase.
-#[macro_export]
-macro_rules! builtin_char_transform {
-    ($self:expr, $args:expr, $call_expr:expr, $from_low:expr, $from_high:expr, $from_base:expr, $to_base:expr) => {{
-        let c = $self.get_char($self.lisp.car($args)?, $call_expr)?;
-        let result = if c >= $from_low && c <= $from_high {
-            ((c as u8) - $from_base + $to_base) as char
-        } else {
-            c
-        };
-        $self.lisp.char(result).map_err(Into::into)
-    }};
-}
-
 /// Macro for binary numeric comparison (returns boolean).
 ///
 /// Supports mixed int/float comparisons with automatic promotion.
