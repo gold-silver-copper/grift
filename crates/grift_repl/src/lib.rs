@@ -655,97 +655,98 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
 }
 
 fn print_help() {
-    println!("Grift Lisp Help");
-    println!("=================");
-    println!();
-    println!("Truthiness:");
-    println!("  Only #f is false. Everything else is truthy, including:");
-    println!("  - nil / '() (empty list)");
-    println!("  - 0 (zero)");
-    println!();
-    println!("Literals:");
-    println!("  #t, #f      - Boolean true and false");
-    println!("  42, -10     - Numbers");
-    println!("  'symbol     - Quoted symbol");
-    println!("  '(1 2 3)    - Quoted list");
-    println!();
-    println!("Special Forms:");
-    println!("  (quote x) or 'x       - Return x unevaluated");
-    println!("  (if cond then else)   - Conditional (TCO in branches)");
-    println!("  (cond (c1 e1)...)     - Multi-way conditional");
-    println!("  (case key ((d1) e1)...)-Pattern matching");
-    println!("  (lambda (args) body)  - Create closure");
-    println!("  (define name val)     - Define variable");
-    println!("  (define (f x) body)   - Define function");
-    println!("  (let ((x v)...) body) - Parallel local bindings");
-    println!("  (let* ((x v)...) body)- Sequential local bindings");
-    println!("  (begin e1 e2...)      - Sequence");
-    println!("  (and e1 e2...)        - Short-circuit and");
-    println!("  (or e1 e2...)         - Short-circuit or");
-    println!("  (do ((v i s)...) (t r) b) - Iteration loop");
-    println!("  (quasiquote ...)      - Template with unquote");
-    println!("  (eval expr)           - Evaluate at runtime");
-    println!("  (apply f args)        - Apply function to list");
-    println!("  (values v1 v2...)     - Multiple return values");
-    println!();
-    println!("Built-in Functions:");
-    println!("  List:   car, cdr, cons, list");
-    println!("  Pred:   eq?, eqv?, equal?, null?, pair?, number?, boolean?");
-    println!("          symbol?, procedure?");
-    println!("  Bool:   not");
-    println!("  Math:   +, -, *, /, modulo, remainder");
-    println!("  Cmp:    <, >, <=, >=, =");
-    println!("  I/O:    print, display, newline");
-    println!("  Err:    error");
-    println!("  Mut:    set-car!, set-cdr!");
-    println!("  GC:     gc, gc-enable, gc-disable, gc-enabled?, arena-stats");
-    println!();
-    println!("Standard Library Functions:");
-    println!("  atom, map, filter, fold, length, append, reverse");
-    println!("  nth, take, drop, zip, member, assoc, range");
-    println!("  compose, identity, constantly, flip, curry");
-    println!("  cadr, caddr, cddr");
-    println!();
-    println!("Mutation:");
-    println!("  (set! name value)    - Mutate variable binding");
-    println!("  (set-car! pair val)  - Mutate car of a pair");
-    println!("  (set-cdr! pair val)  - Mutate cdr of a pair");
-    println!();
-    println!("Memory Management:");
-    println!("  (gc)             - Trigger GC, returns (marked collected before)");
-    println!("  (gc-enable)      - Enable automatic GC");
-    println!("  (gc-disable)     - Disable automatic GC");
-    println!("  (gc-enabled?)    - Check if GC is enabled");
-    println!("  (arena-stats)    - Returns (capacity allocated free usage%)");
-    println!();
-    println!("NOTE: This is Scheme-like with STRICT EVALUATION and MUTATION!");
-    println!("      - All arguments are evaluated before function application");
-    println!("      - Full tail-call optimization (TCO) for deep recursion");
-    println!("      - Mutation: set!, set-car!, set-cdr! available");
-    println!();
-    println!("REPL Commands:");
-    println!("  :help, :h, :?     - Show this help");
-    println!("  :gc               - Run garbage collection");
-    println!("  :stats            - Show arena statistics");
-    println!("  :env              - Show environment size");
-    println!("  :load <file>      - Load and evaluate a .scm file");
-    println!("  :quit, :q         - Exit");
-    println!();
-    println!("Examples:");
-    println!("  (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))");
-    println!("  (fact 5)");
-    println!();
-    println!("  ; Tail-recursive sum");
-    println!("  (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))");
-    println!("  (sum 1000 0)  ; => 500500 (no stack overflow)");
-    println!();
-    println!("  ; Pattern matching with case");
-    println!("  (case 'b ((a) 1) ((b c) 2) (else 3))  ; => 2");
-    println!();
-    println!("  ; Iteration with do");
-    println!("  (do ((i 1 (+ i 1)) (sum 0 (+ sum i)))");
-    println!("      ((> i 5) sum))  ; => 15");
-    println!();
+    print!("\
+Grift Lisp Help
+=================
+
+Truthiness:
+  Only #f is false. Everything else is truthy, including:
+  - nil / '() (empty list)
+  - 0 (zero)
+
+Literals:
+  #t, #f      - Boolean true and false
+  42, -10     - Numbers
+  'symbol     - Quoted symbol
+  '(1 2 3)    - Quoted list
+
+Special Forms:
+  (quote x) or 'x       - Return x unevaluated
+  (if cond then else)   - Conditional (TCO in branches)
+  (cond (c1 e1)...)     - Multi-way conditional
+  (case key ((d1) e1)...)-Pattern matching
+  (lambda (args) body)  - Create closure
+  (define name val)     - Define variable
+  (define (f x) body)   - Define function
+  (let ((x v)...) body) - Parallel local bindings
+  (let* ((x v)...) body)- Sequential local bindings
+  (begin e1 e2...)      - Sequence
+  (and e1 e2...)        - Short-circuit and
+  (or e1 e2...)         - Short-circuit or
+  (do ((v i s)...) (t r) b) - Iteration loop
+  (quasiquote ...)      - Template with unquote
+  (eval expr)           - Evaluate at runtime
+  (apply f args)        - Apply function to list
+  (values v1 v2...)     - Multiple return values
+
+Built-in Functions:
+  List:   car, cdr, cons, list
+  Pred:   eq?, eqv?, equal?, null?, pair?, number?, boolean?
+          symbol?, procedure?
+  Bool:   not
+  Math:   +, -, *, /, modulo, remainder
+  Cmp:    <, >, <=, >=, =
+  I/O:    print, display, newline
+  Err:    error
+  Mut:    set-car!, set-cdr!
+  GC:     gc, gc-enable, gc-disable, gc-enabled?, arena-stats
+
+Standard Library Functions:
+  atom, map, filter, fold, length, append, reverse
+  nth, take, drop, zip, member, assoc, range
+  compose, identity, constantly, flip, curry
+  cadr, caddr, cddr
+
+Mutation:
+  (set! name value)    - Mutate variable binding
+  (set-car! pair val)  - Mutate car of a pair
+  (set-cdr! pair val)  - Mutate cdr of a pair
+
+Memory Management:
+  (gc)             - Trigger GC, returns (marked collected before)
+  (gc-enable)      - Enable automatic GC
+  (gc-disable)     - Disable automatic GC
+  (gc-enabled?)    - Check if GC is enabled
+  (arena-stats)    - Returns (capacity allocated free usage%)
+
+NOTE: This is Scheme-like with STRICT EVALUATION and MUTATION!
+      - All arguments are evaluated before function application
+      - Full tail-call optimization (TCO) for deep recursion
+      - Mutation: set!, set-car!, set-cdr! available
+
+REPL Commands:
+  :help, :h, :?     - Show this help
+  :gc               - Run garbage collection
+  :stats            - Show arena statistics
+  :env              - Show environment size
+  :load <file>      - Load and evaluate a .scm file
+  :quit, :q         - Exit
+
+Examples:
+  (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+  (fact 5)
+
+  ; Tail-recursive sum
+  (define (sum n acc) (if (= n 0) acc (sum (- n 1) (+ acc n))))
+  (sum 1000 0)  ; => 500500 (no stack overflow)
+
+  ; Pattern matching with case
+  (case 'b ((a) 1) ((b c) 2) (else 3))  ; => 2
+
+  ; Iteration with do
+  (do ((i 1 (+ i 1)) (sum 0 (+ sum i)))
+      ((> i 5) sum))  ; => 15
+");
 }
 
 /// Evaluate a string and return the result as a string

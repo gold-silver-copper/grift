@@ -650,7 +650,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             // Aggressive periodic GC check
             step_count = step_count.wrapping_add(1);
-            if step_count % GC_CHECK_INTERVAL == 0 {
+            if step_count.is_multiple_of(GC_CHECK_INTERVAL) {
                 let stats = self.lisp.stats();
                 // Compare allocated >= capacity * threshold / 100 to avoid overflow
                 if stats.allocated >= stats.capacity * GC_THRESHOLD_PERCENT / 100 {
@@ -786,11 +786,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // 2. Check captured lexical environment (creation-site bindings)
         // This is the key for lexically-scoped syntax objects
-        if !self.lisp.get(lex_env)?.is_nil() {
-            if let Some(val) = self.lookup_in_env_optional(lex_env, name)? {
+        if !self.lisp.get(lex_env)?.is_nil()
+            && let Some(val) = self.lookup_in_env_optional(lex_env, name)? {
                 return Ok(TrampolineState::Return { val });
             }
-        }
         
         // 3. Fall back to current environment
         if let Some(val) = self.lookup_in_env_optional(current_env, name)? {
@@ -887,12 +886,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Per R7RS §4.3: "local variable bindings can shadow syntactic bindings"
             // Only apply the macro if the symbol is NOT bound as a variable.
             let macro_found = self.lookup_macro(car)?;
-            if let Some(transformer) = macro_found {
-                if !self.is_variable_bound(env, car)? {
+            if let Some(transformer) = macro_found
+                && !self.is_variable_bound(env, car)? {
                     return self.apply_macro_trampolined(transformer, expr.0, env);
                 }
                 // Variable shadows macro - fall through (core special forms still recognized)
-            }
             
             // Core special forms: always recognized regardless of variable bindings.
             // Only reached when no macro overrides this name (or macro was variable-shadowed).
@@ -903,11 +901,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Non-core special forms: only checked when no macro with this name exists.
             // Uses cheap keyword matching — only calls is_variable_bound (expensive)
             // when a keyword actually matches, which is rare for regular function calls.
-            if macro_found.is_none() {
-                if let Some(result) = self.try_dispatch_non_core_form(car, cdr, env)? {
+            if macro_found.is_none()
+                && let Some(result) = self.try_dispatch_non_core_form(car, cdr, env)? {
                     return Ok(result);
                 }
-            }
         }
         
         // Function application - HYBRID EVALUATION
@@ -1152,8 +1149,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Handle rest parameters: if params contains ".", create an improper list
         // (define (f . args) body) → params [".", "args"] → symbol "args"
         // (define (f x . rest) body) → params ["x", ".", "rest"] → (x . rest)
-        if let Some(dot_pos) = params.iter().position(|&p| p == ".") {
-            if dot_pos + 1 < params.len() {
+        if let Some(dot_pos) = params.iter().position(|&p| p == ".")
+            && dot_pos + 1 < params.len() {
                 let rest_sym = self.lisp.symbol(params[dot_pos + 1])?;
                 if dot_pos == 0 {
                     // Pure rest args: (name . args) → just the symbol
@@ -1167,7 +1164,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 return Ok(result);
             }
-        }
         // Normal case: proper list of params
         let mut result = self.lisp.nil()?;
         for name in params.iter().rev() {
@@ -1204,98 +1200,72 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.car_cdr(data).map_err(Into::into)
     }
     
-    /// Pack 3 values into nested cons: (a . (b . c))
+    /// Pack N values into nested cons: builds right-nested (a . (b . (c . ...)))
     #[inline]
     pub(super) fn pack3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let bc = self.lisp.cons(b, c)?;
-        self.lisp.cons(a, bc).map_err(Into::into)
+        let rest = self.pack2(b, c)?;
+        self.pack2(a, rest)
     }
     
-    /// Unpack 3 values from nested cons: (a . (b . c)) -> (a, b, c)
+    #[inline]
+    pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack3(b, c, d)?;
+        self.pack2(a, rest)
+    }
+    
+    #[inline]
+    pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack4(b, c, d, e)?;
+        self.pack2(a, rest)
+    }
+    
+    #[inline]
+    pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack5(b, c, d, e, f)?;
+        self.pack2(a, rest)
+    }
+    
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        let rest = self.pack6(b, c, d, e, f, g)?;
+        self.pack2(a, rest)
+    }
+    
+    /// Unpack N values from nested cons
     #[inline]
     pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bc) = self.lisp.car_cdr(data)?;
-        let (b, c) = self.lisp.car_cdr(bc)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c) = self.unpack2(rest)?;
         Ok((a, b, c))
     }
     
-    /// Pack 4 values into nested cons: (a . (b . (c . d)))
-    #[inline]
-    pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let cd = self.lisp.cons(c, d)?;
-        let bcd = self.lisp.cons(b, cd)?;
-        self.lisp.cons(a, bcd).map_err(Into::into)
-    }
-    
-    /// Unpack 4 values from nested cons
     #[inline]
     pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcd) = self.lisp.car_cdr(data)?;
-        let (b, cd) = self.lisp.car_cdr(bcd)?;
-        let (c, d) = self.lisp.car_cdr(cd)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d) = self.unpack3(rest)?;
         Ok((a, b, c, d))
     }
     
-    /// Pack 5 values into nested cons
-    #[inline]
-    pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let de = self.lisp.cons(d, e)?;
-        let cde = self.lisp.cons(c, de)?;
-        let bcde = self.lisp.cons(b, cde)?;
-        self.lisp.cons(a, bcde).map_err(Into::into)
-    }
-    
-    /// Unpack 5 values from nested cons
     #[inline]
     pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcde) = self.lisp.car_cdr(data)?;
-        let (b, cde) = self.lisp.car_cdr(bcde)?;
-        let (c, de) = self.lisp.car_cdr(cde)?;
-        let (d, e) = self.lisp.car_cdr(de)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d, e) = self.unpack4(rest)?;
         Ok((a, b, c, d, e))
     }
     
-    /// Pack 6 values into nested cons
-    #[inline]
-    pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let ef = self.lisp.cons(e, f)?;
-        let def = self.lisp.cons(d, ef)?;
-        let cdef = self.lisp.cons(c, def)?;
-        let bcdef = self.lisp.cons(b, cdef)?;
-        self.lisp.cons(a, bcdef).map_err(Into::into)
-    }
-    
-    /// Unpack 6 values from nested cons
     #[inline]
     pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcdef) = self.lisp.car_cdr(data)?;
-        let (b, cdef) = self.lisp.car_cdr(bcdef)?;
-        let (c, def) = self.lisp.car_cdr(cdef)?;
-        let (d, ef) = self.lisp.car_cdr(def)?;
-        let (e, f) = self.lisp.car_cdr(ef)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d, e, f) = self.unpack5(rest)?;
         Ok((a, b, c, d, e, f))
     }
     
-    /// Pack 7 values into nested cons
     #[inline]
-    pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        let fg = self.lisp.cons(f, g)?;
-        let efg = self.lisp.cons(e, fg)?;
-        let defg = self.lisp.cons(d, efg)?;
-        let cdefg = self.lisp.cons(c, defg)?;
-        let bcdefg = self.lisp.cons(b, cdefg)?;
-        self.lisp.cons(a, bcdefg).map_err(Into::into)
-    }
-    
-    /// Unpack 7 values from nested cons
-    #[inline]
+    #[allow(clippy::type_complexity)]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
-        let (a, bcdefg) = self.lisp.car_cdr(data)?;
-        let (b, cdefg) = self.lisp.car_cdr(bcdefg)?;
-        let (c, defg) = self.lisp.car_cdr(cdefg)?;
-        let (d, efg) = self.lisp.car_cdr(defg)?;
-        let (e, fg) = self.lisp.car_cdr(efg)?;
-        let (f, g) = self.lisp.car_cdr(fg)?;
+        let (a, rest) = self.unpack2(data)?;
+        let (b, c, d, e, f, g) = self.unpack6(rest)?;
         Ok((a, b, c, d, e, f, g))
     }
     
@@ -1555,9 +1525,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Copy prefix chars
         if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
-            let plen = self.lisp.string_len(pchars).map_err(|e| EvalError::from(e))?;
+            let plen = self.lisp.string_len(pchars).map_err(EvalError::from)?;
             for i in 0..plen {
-                let c = self.lisp.string_char_at(pchars, i).map_err(|e| EvalError::from(e))?;
+                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
                 let dest = &mut buf[pos..];
                 // Each UTF-8 char can be up to 4 bytes
                 if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
@@ -1568,9 +1538,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Copy original symbol chars
         if let Value::Symbol(schars) = self.lisp.get(sym)? {
-            let slen = self.lisp.string_len(schars).map_err(|e| EvalError::from(e))?;
+            let slen = self.lisp.string_len(schars).map_err(EvalError::from)?;
             for i in 0..slen {
-                let c = self.lisp.string_char_at(schars, i).map_err(|e| EvalError::from(e))?;
+                let c = self.lisp.string_char_at(schars, i).map_err(EvalError::from)?;
                 let dest = &mut buf[pos..];
                 if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
                 let encoded = c.encode_utf8(dest);
@@ -1654,6 +1624,7 @@ impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
     
     /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)

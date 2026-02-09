@@ -76,10 +76,11 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
         if let Some(doc) = &entry.doc {
             // #[doc = "..."]
             body_tokens.push(TokenTree::Punct(Punct::new('#', Spacing::Alone)));
-            let mut attr_tokens = Vec::new();
-            attr_tokens.push(TokenTree::Ident(Ident::new("doc", Span::call_site())));
-            attr_tokens.push(TokenTree::Punct(Punct::new('=', Spacing::Alone)));
-            attr_tokens.push(TokenTree::Literal(Literal::string(doc)));
+            let attr_tokens = vec![
+                TokenTree::Ident(Ident::new("doc", Span::call_site())),
+                TokenTree::Punct(Punct::new('=', Spacing::Alone)),
+                TokenTree::Literal(Literal::string(doc)),
+            ];
             body_tokens.push(TokenTree::Group(Group::new(
                 Delimiter::Bracket,
                 attr_tokens.into_iter().collect(),
@@ -197,9 +198,9 @@ fn strip_inline_comment(line: &str) -> String {
     let mut result = String::new();
     let mut in_string = false;
     let mut escape_next = false;
-    let mut chars = line.chars().peekable();
+    let chars = line.chars().peekable();
     
-    while let Some(c) = chars.next() {
+    for c in chars {
         if escape_next {
             // If we're escaping, add the character and continue
             result.push(c);

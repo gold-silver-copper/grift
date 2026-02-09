@@ -31,7 +31,7 @@
 //! This module is `no_std` compatible and uses no heap allocation.
 //! All conversions work directly with arena-allocated values.
 
-use crate::{ArenaIndex, ArenaResult, ArenaError, Lisp, Value};
+use crate::{ArenaIndex, ArenaResult, ArenaError, Lisp, Value, fsize};
 
 // ============================================================================
 // Conversion Traits
@@ -83,32 +83,31 @@ pub trait ToLisp<const N: usize> {
 // Implementations for Common Types
 // ============================================================================
 
-impl<const N: usize> FromLisp<N> for isize {
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
-        match lisp.get(idx)? {
-            Value::Number(n) => Ok(n),
-            // Note: Using InvalidIndex for type errors is semantically imprecise,
-            // but ArenaError doesn't have a TypeError variant and adding one
-            // would require changes to the core no_std crate.
-            _ => Err(ArenaError::InvalidIndex),
+// Note: Using InvalidIndex for type errors is semantically imprecise,
+// but ArenaError doesn't have a TypeError variant and adding one
+// would require changes to the core no_std crate.
+macro_rules! impl_from_lisp {
+    ($ty:ty, $($pattern:pat => $expr:expr),+ $(,)?) => {
+        impl<const N: usize> FromLisp<N> for $ty {
+            fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
+                match lisp.get(idx)? {
+                    $($pattern => Ok($expr),)+
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
         }
-    }
+    };
 }
+
+impl_from_lisp!(isize, Value::Number(n) => n);
+impl_from_lisp!(bool, Value::True => true, Value::False => false);
+impl_from_lisp!((), Value::Nil => ());
+impl_from_lisp!(char, Value::Char(c) => c);
+impl_from_lisp!(fsize, Value::Number(n) => n as fsize, Value::Float(f) => f);
 
 impl<const N: usize> ToLisp<N> for isize {
     fn to_lisp(&self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
         lisp.number(*self)
-    }
-}
-
-impl<const N: usize> FromLisp<N> for bool {
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
-        match lisp.get(idx)? {
-            Value::True => Ok(true),
-            Value::False => Ok(false),
-            // In Lisp, only #f is false; everything else is truthy
-            _ => Ok(true),
-        }
     }
 }
 
@@ -118,30 +117,9 @@ impl<const N: usize> ToLisp<N> for bool {
     }
 }
 
-impl<const N: usize> FromLisp<N> for () {
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
-        // Only accept nil as unit - other types are an error
-        match lisp.get(idx)? {
-            Value::Nil => Ok(()),
-            // Note: Using InvalidIndex for type errors (see isize impl for rationale)
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-}
-
 impl<const N: usize> ToLisp<N> for () {
     fn to_lisp(&self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
         lisp.nil()
-    }
-}
-
-impl<const N: usize> FromLisp<N> for char {
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
-        match lisp.get(idx)? {
-            Value::Char(c) => Ok(c),
-            // Note: Using InvalidIndex for type errors (see isize impl for rationale)
-            _ => Err(ArenaError::InvalidIndex),
-        }
     }
 }
 

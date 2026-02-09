@@ -505,6 +505,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
+    /// Extract the rest pattern/template after an ellipsis.
+    /// Given the cdr that contains the ellipsis, returns the remaining elements after it.
+    fn rest_after_ellipsis(&self, ellipsis_cdr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        match self.lisp.get(ellipsis_cdr)? {
+            Value::Cons { .. } => self.lisp.cdr(ellipsis_cdr).map_err(Into::into),
+            _ => self.lisp.nil().map_err(Into::into),
+        }
+    }
+
     /// Get minimum length a pattern requires
     /// Calculate minimum number of elements matched by a pattern
     /// 
@@ -521,11 +530,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if self.has_ellipsis(cdr)? {
                         // Pattern with ellipsis: element before ... is repeated
                         // Get rest pattern (nil if cdr is just the symbol ...)
-                        let rest = match self.lisp.get(cdr)? {
-                            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr
-                            Value::Cons { .. } => self.lisp.cdr(cdr)?,  // (... . rest)
-                            _ => self.lisp.nil()?,
-                        };
+                        let rest = self.rest_after_ellipsis(cdr)?;
                         // Continue with rest pattern (tail recursion)
                         pattern = rest;
                         continue;
@@ -742,13 +747,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Check for escaping ellipsis: (... <pattern>) matches <pattern> literally
         // (... ...) in a pattern matches the literal symbol ...
-        if self.lisp.symbol_matches(pat_car, "...")? {
-            if let Value::Cons { .. } = self.lisp.get(pat_cdr)? {
+        if self.lisp.symbol_matches(pat_car, "...")?
+            && let Value::Cons { .. } = self.lisp.get(pat_cdr)? {
                 let inner_pat = self.lisp.car(pat_cdr)?;
                 // Match the inner pattern literally (without ellipsis processing)
                 return self.match_pattern_syntax(inner_pat, stx, literals, bindings);
             }
-        }
 
         // Check for ellipsis FIRST - ellipsis can match empty lists
         if self.has_ellipsis(pat_cdr)? {
@@ -797,11 +801,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let expr = self.lisp.syntax_to_datum(stx)?;
         
         // Get the rest pattern after ...
-        let rest_pattern = match self.lisp.get(pat_cdr)? {
-            Value::Symbol(_) => self.lisp.nil()?,
-            Value::Cons { .. } => self.lisp.cdr(pat_cdr)?,
-            _ => self.lisp.nil()?,
-        };
+        let rest_pattern = self.rest_after_ellipsis(pat_cdr)?;
 
         // Count how many elements the rest pattern needs
         let rest_len = self.pattern_min_length(rest_pattern, literals)?;
@@ -1003,12 +1003,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Both local and pattern bindings exist. Check if the local binding
                 // shadows the pattern binding by comparing the actual values.
                 // If they're different, the local binding takes precedence.
-                if let Some(env_binding) = self.lookup_in_env(sym, lex_env)? {
-                    if !self.lisp.eqv(env_binding, pattern_val)? {
+                if let Some(env_binding) = self.lookup_in_env(sym, lex_env)?
+                    && !self.lisp.eqv(env_binding, pattern_val)? {
                         let nil = self.lisp.nil()?;
                         return self.lisp.syntax_with_env(sym, nil, nil, lex_env).map_err(Into::into);
                     }
-                }
             } else {
                 // Locally bound but NOT a pattern variable - wrap with lexical env
                 let nil = self.lisp.nil()?;
@@ -1062,14 +1061,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Check for ellipsis
         if self.has_ellipsis(cdr)? {
-            return self.transcribe_ellipsis_with_env(car, cdr, bindings, renames, def_env, lex_env);
+            return self.transcribe_ellipsis(car, cdr, bindings, renames, def_env);
         }
 
         // Check for binding forms that need special handling
         if self.is_binding_keyword(car)? {
-            return self.transcribe_binding_form_with_env(
-                template, bindings, renames, def_env, lex_env
-            );
+            return self.transcribe_binding_form(template, bindings, renames, def_env);
         }
 
         // Regular list: transcribe each element iteratively
@@ -1087,8 +1084,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
             
             // Check if we've hit a special form
-            if count > 0 {
-                if let Value::Cons { .. } = self.lisp.get(current)? {
+            if count > 0
+                && let Value::Cons { .. } = self.lisp.get(current)? {
                     let next_car = self.lisp.car(current)?;
                     let next_cdr = self.lisp.cdr(current)?;
                     
@@ -1104,12 +1101,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         return Ok(result);
                     }
                 }
-            }
         }
         
         // Transcribe all collected elements
-        for i in 0..count {
-            elements[i] = self.transcribe_template_with_env(elements[i], bindings, renames, def_env, lex_env)?;
+        for elem in elements.iter_mut().take(count) {
+            *elem = self.transcribe_template_with_env(*elem, bindings, renames, def_env, lex_env)?;
         }
         
         // Rebuild the list from the end
@@ -1126,49 +1122,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
     
-    /// Transcribe ellipsis with lexical environment capture
-    ///
-    /// NOTE: The `lex_env` parameter is not currently used. Ellipsis transcription
-    /// expands pattern variables which already have their values bound. The lexical
-    /// environment is not needed for ellipsis expansion itself - it would only be
-    /// relevant for free variables in the repeated template, which are handled by
-    /// the recursive call to transcribe_template_with_env.
-    fn transcribe_ellipsis_with_env(
-        &mut self,
-        before: ArenaIndex,
-        after: ArenaIndex,
-        bindings: ArenaIndex,
-        renames: ArenaIndex,
-        def_env: ArenaIndex,
-        _lex_env: ArenaIndex,
-    ) -> EvalResult {
-        // Delegate to standard transcribe_ellipsis - the lexical environment
-        // would only matter for free variables in the template, which is a
-        // future enhancement
-        self.transcribe_ellipsis(before, after, bindings, renames, def_env)
-    }
-    
-    /// Transcribe binding form with lexical environment capture
-    ///
-    /// NOTE: The `lex_env` parameter is not currently used. Binding forms
-    /// (lambda, let, etc.) create new scopes, and the lexical environment
-    /// capture only affects free variables. The current implementation
-    /// delegates to standard transcribe_binding_form which handles hygiene
-    /// via gensym renaming. Full lexical capture in binding forms is a
-    /// future enhancement.
-    fn transcribe_binding_form_with_env(
-        &mut self,
-        template: ArenaIndex,
-        bindings: ArenaIndex,
-        renames: ArenaIndex,
-        def_env: ArenaIndex,
-        _lex_env: ArenaIndex,
-    ) -> EvalResult {
-        // Delegate to standard transcribe_binding_form - lexical capture
-        // in binding forms is a future enhancement
-        self.transcribe_binding_form(template, bindings, renames, def_env)
-    }
-
     /// Transcribe a symbol in template
     fn transcribe_symbol(
         &mut self,
@@ -1248,8 +1201,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
             
             // Check if we've hit a special form in the middle of the list
-            if count > 0 {
-                if let Value::Cons { .. } = self.lisp.get(current)? {
+            if count > 0
+                && let Value::Cons { .. } = self.lisp.get(current)? {
                     let next_car = self.lisp.car(current)?;
                     let next_cdr = self.lisp.cdr(current)?;
                     
@@ -1269,12 +1222,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         return Ok(result);
                     }
                 }
-            }
         }
         
         // Transcribe all collected elements
-        for i in 0..count {
-            elements[i] = self.transcribe_template(elements[i], bindings, renames, def_env)?;
+        for elem in elements.iter_mut().take(count) {
+            *elem = self.transcribe_template(*elem, bindings, renames, def_env)?;
         }
         
         // Rebuild the list from the end
@@ -1421,11 +1373,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let ellipsis_vars = self.find_ellipsis_vars(sub_template, bindings)?;
 
         // Get rest template after ellipsis (nil if template_cdr is just ...)
-        let rest = match self.lisp.get(template_cdr)? {
-            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr - no rest
-            Value::Cons { .. } => self.lisp.cdr(template_cdr)?,  // (... . rest) - get rest
-            _ => self.lisp.nil()?,
-        };
+        let rest = self.rest_after_ellipsis(template_cdr)?;
 
         if self.lisp.get(ellipsis_vars)?.is_nil() {
             // No ellipsis vars - transcribe once
@@ -1607,12 +1555,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let transcribed = self.transcribe_template(bindings_template, bindings, renames, def_env)?;
                 return Ok((transcribed, renames));
             }
-            if let Value::Symbol(_) = self.lisp.get(cdr)? {
-                if self.bindings_lookup(bindings, cdr)?.is_some() {
+            if let Value::Symbol(_) = self.lisp.get(cdr)?
+                && self.bindings_lookup(bindings, cdr)?.is_some() {
                     let transcribed = self.transcribe_template(bindings_template, bindings, renames, def_env)?;
                     return Ok((transcribed, renames));
                 }
-            }
         }
 
         // Phase 1: Collect the transcribed names of user-provided binding variables
@@ -1626,8 +1573,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let pair_template = self.lisp.car(current)?;
             if let Value::Cons { .. } = self.lisp.get(pair_template)? {
                 let var_template = self.lisp.car(pair_template)?;
-                if let Value::Symbol(_) = self.lisp.get(var_template)? {
-                    if self.bindings_lookup(bindings, var_template)?.is_some() {
+                if let Value::Symbol(_) = self.lisp.get(var_template)?
+                    && self.bindings_lookup(bindings, var_template)?.is_some() {
                         // This is a pattern variable - transcribe to get the user's actual name
                         let transcribed = self.transcribe_template(var_template, bindings, renames, def_env)?;
                         if user_var_count < user_var_names.len() {
@@ -1635,7 +1582,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             user_var_count += 1;
                         }
                     }
-                }
             }
             current = self.lisp.cdr(current)?;
         }
@@ -1668,8 +1614,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 } else if let Value::Symbol(_) = self.lisp.get(transcribed_var)? {
                     // Macro-introduced - check if it clashes with any user-provided var
                     let mut clashes = false;
-                    for i in 0..user_var_count {
-                        if self.symbols_eq(transcribed_var, user_var_names[i])? {
+                    for &name in user_var_names.iter().take(user_var_count) {
+                        if self.symbols_eq(transcribed_var, name)? {
                             clashes = true;
                             break;
                         }
@@ -1901,11 +1847,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current = self.lisp.cdr(current)?;
         }
         // current is now the tail (nil for proper lists, symbol for improper)
-        if let Value::Symbol(_) = self.lisp.get(current)? {
-            if self.bindings_lookup(bindings, current)?.is_some() {
+        if let Value::Symbol(_) = self.lisp.get(current)?
+            && self.bindings_lookup(bindings, current)?.is_some() {
                 return Ok(true);
             }
-        }
         // Fall back to checking binding values
         self.symbol_appears_in_binding_values(param, bindings)
     }
@@ -2122,8 +2067,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Expand each element (this may recurse through expand_expr, but not through expand_application)
-        for i in 0..count {
-            elements[i] = self.expand_expr(elements[i], renames)?;
+        for elem in elements.iter_mut().take(count) {
+            *elem = self.expand_expr(*elem, renames)?;
         }
         
         // Rebuild the list from the end (iteratively)
@@ -2348,14 +2293,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             .with_message("expected (lambda ...)"))
     }
 
-    /// Evaluate a lambda expression to create a transformer closure
-    /// 
-    /// This creates a Lambda value that can be invoked as a procedural macro.
-    #[allow(dead_code)]
-    fn eval_lambda_for_transformer(&self, lambda_expr: ArenaIndex) -> EvalResult {
-        self.eval_lambda_for_transformer_with_env(lambda_expr, self.global_env.0)
-    }
-    
     /// Evaluate a lambda expression to create a transformer closure with a specific environment.
     fn eval_lambda_for_transformer_with_env(&self, lambda_expr: ArenaIndex, env: ArenaIndex) -> EvalResult {
         let rest = self.lisp.cdr(lambda_expr)?;
@@ -2416,8 +2353,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Phase 2: Install all bindings at once
-        for i in 0..binding_count {
-            let (name, transformer) = parsed_bindings[i];
+        for &(name, transformer) in parsed_bindings.iter().take(binding_count) {
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
         }
@@ -2507,8 +2443,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Expand each element
-        for i in 0..count {
-            elements[i] = self.expand_expr(elements[i], renames)?;
+        for elem in elements.iter_mut().take(count) {
+            *elem = self.expand_expr(*elem, renames)?;
         }
         
         // Rebuild the list from the end (iteratively)
@@ -2584,8 +2520,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Process all collected elements
-        for i in 0..count {
-            elements[i] = self.syntax_to_datum_recursive(elements[i])?;
+        for elem in elements.iter_mut().take(count) {
+            *elem = self.syntax_to_datum_recursive(*elem)?;
         }
         
         // Handle tail
@@ -2698,8 +2634,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Process all collected elements
-        for i in 0..count {
-            elements[i] = self.datum_to_syntax_with_context(elements[i], marks, subst, lex_env)?;
+        for elem in elements.iter_mut().take(count) {
+            *elem = self.datum_to_syntax_with_context(*elem, marks, subst, lex_env)?;
         }
         
         // Handle tail

@@ -97,10 +97,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// ============================================================================
-// Core Re-exports from grift_arena
-// ============================================================================
-
 /// Arena allocator and garbage collection primitives.
 pub mod arena {
     pub use grift_arena::{
@@ -111,35 +107,22 @@ pub mod arena {
 
 pub use arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats, Trace};
 
-// ============================================================================
-// Core Types Re-exports from grift_core
-// ============================================================================
-
 /// Core value types and Lisp context.
 pub mod core_types {
     pub use grift_core::{
         Value, Builtin, StdLib, Lisp, RESERVED_SLOTS,
         DisplayValue,
         define_builtins, define_stdlib,
-        // I/O trait boundary
         IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
     };
 }
 
-// ============================================================================
-// Parser Re-exports from grift_parser
-// ============================================================================
-
 /// Parser, lexer, value types, and built-in definitions.
 pub mod parser {
     pub use grift_parser::{
-        // Core types (re-exported from grift_core)
         Value, Builtin, StdLib, Lisp, DisplayValue,
-        // Lexer
         Lexer, Token, SpannedToken, LexError, LexErrorKind,
-        // Parsing
         parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
-        // Macros
         define_builtins, define_stdlib,
     };
 }
@@ -151,16 +134,10 @@ pub use parser::{
     define_builtins, define_stdlib,
 };
 
-// ============================================================================
-// Evaluator Re-exports from grift_eval
-// ============================================================================
-
 /// Evaluator, error handling, and native function interop.
 pub mod eval {
     pub use grift_eval::{
-        // Evaluator
         Evaluator, EvalError, EvalResult, ErrorKind, StackFrame,
-        // Native FFI
         FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
         extract_arg, args_empty, count_args, MAX_NATIVE_FUNCTIONS,
     };
@@ -171,10 +148,6 @@ pub use eval::{
     FromLisp, ToLisp, NativeRegistry, NativeEntry, NativeFn,
     extract_arg, args_empty, count_args, MAX_NATIVE_FUNCTIONS,
 };
-
-// ============================================================================
-// REPL Re-exports (std feature only)
-// ============================================================================
 
 /// REPL and formatting utilities (requires `std` feature).
 #[cfg(feature = "std")]
@@ -187,31 +160,21 @@ pub mod repl {
 }
 
 #[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use repl::{
     run_repl, Repl,
     format_value, format_error, value_to_string, eval_to_string,
 };
 
-// ============================================================================
-// I/O Trait Re-exports from grift_core (always available, no_std compatible)
-// ============================================================================
-
 pub use grift_core::{
     IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
 };
-
-// ============================================================================
-// Standard I/O Re-exports from grift_std (std feature only)
-// ============================================================================
 
 /// Standard library I/O provider (requires `std` feature).
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod std_io {
-    pub use grift_std::{StdIoProvider};
+    pub use grift_std::StdIoProvider;
 }
 
 #[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use std_io::StdIoProvider;

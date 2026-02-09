@@ -14,6 +14,19 @@ use crate::extract_args;
 use super::Evaluator;
 
 impl<'a, const N: usize> Evaluator<'a, N> {
+    /// Extract index and length from encoded arena values.
+    fn decode_index_len(&self, index_enc: ArenaIndex, len_enc: ArenaIndex, call_expr: ArenaIndex) -> Result<(usize, usize), EvalError> {
+        let index = match self.lisp.get(index_enc)? {
+            Value::Number(n) => n as usize,
+            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+        };
+        let len = match self.lisp.get(len_enc)? {
+            Value::Number(n) => n as usize,
+            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+        };
+        Ok((index, len))
+    }
+
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
         // The cont_env field is stored for potential future use (e.g., debugging, stack traces)
         // but is not currently used during normal continuation processing.
@@ -410,14 +423,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (len_enc, rest4) = self.unpack2(rest3)?;
                 let (collected, call_expr) = self.unpack2(rest4)?;
                 
-                let index = match self.lisp.get(index_enc)? {
-                    Value::Number(n) => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
-                let len = match self.lisp.get(len_enc)? {
-                    Value::Number(n) => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
+                let (index, len) = self.decode_index_len(index_enc, len_enc, call_expr)?;
                 
                 // Collect result
                 let new_collected = self.lisp.cons(val, collected)?;
@@ -455,14 +461,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (index_enc, rest3) = self.unpack2(rest2)?;
                 let (len_enc, call_expr) = self.unpack2(rest3)?;
                 
-                let index = match self.lisp.get(index_enc)? {
-                    Value::Number(n) => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
-                let len = match self.lisp.get(len_enc)? {
-                    Value::Number(n) => n as usize,
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
+                let (index, len) = self.decode_index_len(index_enc, len_enc, call_expr)?;
                 
                 let next_index = index + 1;
                 
@@ -1337,8 +1336,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Check if this is a define form
             if let Value::Cons { .. } = self.lisp.get(expr)? {
                 let head = self.lisp.car(expr)?;
-                if let Value::Symbol(_) = self.lisp.get(head)? {
-                    if self.lisp.symbol_matches(head, "define")? {
+                if let Value::Symbol(_) = self.lisp.get(head)?
+                    && self.lisp.symbol_matches(head, "define")? {
                         // Extract name and value from define
                         let define_args = self.lisp.cdr(expr)?;
                         let first = self.lisp.car(define_args)?;
@@ -1379,7 +1378,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         remaining = self.lisp.cdr(remaining)?;
                         continue;
                     }
-                }
             }
             
             // Not a define form, stop collecting
@@ -1563,8 +1561,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // Phase 2: Install all bindings at once
-        for i in 0..binding_count {
-            let (name, transformer) = parsed_bindings[i];
+        for &(name, transformer) in parsed_bindings.iter().take(binding_count) {
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
         }
@@ -2771,6 +2768,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok((new_env, new_menv))
     }
 
+    /// Transform all binding names in an environment using a closure.
+    fn map_env_names(
+        &self,
+        src: ArenaIndex,
+        transform: &mut dyn FnMut(ArenaIndex) -> Result<ArenaIndex, EvalError>,
+    ) -> Result<ArenaIndex, EvalError> {
+        let nil = self.lisp.nil()?;
+        let mut result = nil;
+        let mut cur = src;
+        while let Value::Cons { .. } = self.lisp.get(cur)? {
+            let binding = self.lisp.car(cur)?;
+            cur = self.lisp.cdr(cur)?;
+            if let Value::Cons { .. } = self.lisp.get(binding)? {
+                let name = self.lisp.car(binding)?;
+                let val = self.lisp.cdr(binding)?;
+                let new_name = transform(name)?;
+                let new_binding = self.lisp.cons(new_name, val)?;
+                result = self.lisp.cons(new_binding, result)?;
+            }
+        }
+        Ok(result)
+    }
+
     /// `(prefix ...)` — prefix all names with the given identifier.
     fn apply_env_prefix(
         &self,
@@ -2778,27 +2798,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         macro_env: ArenaIndex,
         prefix: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let nil = self.lisp.nil()?;
-
-        let prefix_one = |src: ArenaIndex| -> Result<ArenaIndex, EvalError> {
-            let mut result = nil;
-            let mut cur = src;
-            while let Value::Cons { .. } = self.lisp.get(cur)? {
-                let binding = self.lisp.car(cur)?;
-                cur = self.lisp.cdr(cur)?;
-                if let Value::Cons { .. } = self.lisp.get(binding)? {
-                    let name = self.lisp.car(binding)?;
-                    let val = self.lisp.cdr(binding)?;
-                    let new_name = self.prefix_symbol(prefix, name)?;
-                    let new_binding = self.lisp.cons(new_name, val)?;
-                    result = self.lisp.cons(new_binding, result)?;
-                }
-            }
-            Ok(result)
+        let mut transform = |name: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+            self.prefix_symbol(prefix, name)
         };
-
-        let new_env = prefix_one(env)?;
-        let new_menv = prefix_one(macro_env)?;
+        let new_env = self.map_env_names(env, &mut transform)?;
+        let new_menv = self.map_env_names(macro_env, &mut transform)?;
         Ok((new_env, new_menv))
     }
 
@@ -2809,43 +2813,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         macro_env: ArenaIndex,
         renames: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let nil = self.lisp.nil()?;
-
-        let rename_one = |src: ArenaIndex| -> Result<ArenaIndex, EvalError> {
-            let mut result = nil;
-            let mut cur = src;
-            while let Value::Cons { .. } = self.lisp.get(cur)? {
-                let binding = self.lisp.car(cur)?;
-                cur = self.lisp.cdr(cur)?;
-                if let Value::Cons { .. } = self.lisp.get(binding)? {
-                    let name = self.lisp.car(binding)?;
-                    let val = self.lisp.cdr(binding)?;
-
-                    // Check if this name has a rename
-                    let mut new_name = name;
-                    let mut ren_list = renames;
-                    while let Value::Cons { .. } = self.lisp.get(ren_list)? {
-                        let pair = self.lisp.car(ren_list)?;
-                        ren_list = self.lisp.cdr(ren_list)?;
-                        if let Value::Cons { .. } = self.lisp.get(pair)? {
-                            let old = self.lisp.car(pair)?;
-                            if self.lisp.symbol_eq(name, old)? {
-                                // (old new) — take cdr which is (new)
-                                let new_name_cell = self.lisp.cdr(pair)?;
-                                new_name = self.lisp.car(new_name_cell)?;
-                                break;
-                            }
-                        }
+        let mut transform = |name: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+            let mut ren_list = renames;
+            while let Value::Cons { .. } = self.lisp.get(ren_list)? {
+                let pair = self.lisp.car(ren_list)?;
+                ren_list = self.lisp.cdr(ren_list)?;
+                if let Value::Cons { .. } = self.lisp.get(pair)? {
+                    let old = self.lisp.car(pair)?;
+                    if self.lisp.symbol_eq(name, old)? {
+                        let new_name_cell = self.lisp.cdr(pair)?;
+                        return self.lisp.car(new_name_cell).map_err(Into::into);
                     }
-                    let new_binding = self.lisp.cons(new_name, val)?;
-                    result = self.lisp.cons(new_binding, result)?;
                 }
             }
-            Ok(result)
+            Ok(name)
         };
-
-        let new_env = rename_one(env)?;
-        let new_menv = rename_one(macro_env)?;
+        let new_env = self.map_env_names(env, &mut transform)?;
+        let new_menv = self.map_env_names(macro_env, &mut transform)?;
         Ok((new_env, new_menv))
     }
 
@@ -2901,6 +2885,5 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             }
         }
-        self.reverse_list(args).map_err(Into::into)
-    }
+        self.reverse_list(args)}
 }

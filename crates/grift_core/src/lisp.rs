@@ -406,18 +406,8 @@ impl<const N: usize> Lisp<N> {
             return Ok(existing_symbol);
         }
         
-        // Not found - create new symbol
-        let symbol = self.alloc(Value::Symbol(name_str))?;
-        
-        // Add to intern table: (name_str . symbol)
-        let binding = self.cons(name_str, symbol)?;
-        let current_table = self.get_intern_table_root()?;
-        let new_table = self.cons(binding, current_table)?;
-        
-        // Update intern table root
-        self.set_intern_table_root(new_table)?;
-        
-        Ok(symbol)
+        // Not found - create new symbol and intern it
+        self.intern_new_symbol(name_str)
     }
     
     /// Create or retrieve an interned symbol from bytes (for parsing)
@@ -452,18 +442,8 @@ impl<const N: usize> Lisp<N> {
             self.alloc(Value::String { len: char_count, data })?
         };
         
-        // Create new symbol
-        let symbol = self.alloc(Value::Symbol(name_str))?;
-        
-        // Add to intern table: (name_str . symbol)
-        let binding = self.cons(name_str, symbol)?;
-        let current_table = self.get_intern_table_root()?;
-        let new_table = self.cons(binding, current_table)?;
-        
-        // Update intern table root
-        self.set_intern_table_root(new_table)?;
-        
-        Ok(symbol)
+        // Not found - create new symbol and intern it
+        self.intern_new_symbol(name_str)
     }
     
     /// Create or retrieve an interned symbol from an existing string index
@@ -495,21 +475,21 @@ impl<const N: usize> Lisp<N> {
                     self.alloc(Value::String { len, data: new_data })?
                 };
                 
-                // Create new symbol
-                let symbol = self.alloc(Value::Symbol(new_str))?;
-                
-                // Add to intern table: (new_str . symbol)
-                let binding = self.cons(new_str, symbol)?;
-                let current_table = self.get_intern_table_root()?;
-                let new_table = self.cons(binding, current_table)?;
-                
-                // Update intern table root
-                self.set_intern_table_root(new_table)?;
-                
-                Ok(symbol)
+                // Create new symbol and intern it
+                self.intern_new_symbol(new_str)
             }
             _ => Err(ArenaError::InvalidIndex),
         }
+    }
+    
+    /// Create a new symbol with the given name string and add it to the intern table.
+    fn intern_new_symbol(&self, name_str: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let symbol = self.alloc(Value::Symbol(name_str))?;
+        let binding = self.cons(name_str, symbol)?;
+        let current_table = self.get_intern_table_root()?;
+        let new_table = self.cons(binding, current_table)?;
+        self.set_intern_table_root(new_table)?;
+        Ok(symbol)
     }
     
     /// Create a new unique symbol without checking the intern table.
@@ -1173,47 +1153,29 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.string_char_at(hello, 0).unwrap(), 'h');
     /// ```
     pub fn string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        let char_count = s.chars().count();
-        
-        if char_count == 0 {
-            // Empty string - len=0, data is NIL
-            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
-        }
-        
-        // Allocate contiguous block for chars only (no length header)
-        let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
-        
-        // Set characters in slots (starting at data)
-        for (i, c) in s.chars().enumerate() {
-            let char_idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(char_idx, Value::Char(c))?;
-        }
-        
-        // Create the String value with inline length
-        self.alloc(Value::String { len: char_count, data })
+        self.string_from_iter(s.chars().count(), s.chars())
     }
     
     /// Allocate a string from a slice of chars.
     /// 
     /// Returns an ArenaIndex pointing to a Value::String.
     pub fn string_from_chars(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
-        let char_count = chars.len();
-        
+        self.string_from_iter(chars.len(), chars.iter().copied())
+    }
+    
+    /// Internal: allocate a string from a char iterator with known length.
+    fn string_from_iter(&self, char_count: usize, chars: impl Iterator<Item = char>) -> ArenaResult<ArenaIndex> {
         if char_count == 0 {
-            // Empty string - len=0, data is NIL
             return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
         }
         
-        // Allocate contiguous block for chars only (no length header)
         let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
         
-        // Set characters in slots (starting at data)
-        for (i, &c) in chars.iter().enumerate() {
+        for (i, c) in chars.enumerate() {
             let char_idx = self.arena.index_at_offset(data, i)?;
             self.arena.set(char_idx, Value::Char(c))?;
         }
         
-        // Create the String value with inline length
         self.alloc(Value::String { len: char_count, data })
     }
     
@@ -1243,8 +1205,8 @@ impl<const N: usize> Lisp<N> {
                     let entry = self.car(current)?;
                     let rest = self.cdr(current)?;
                     // Each entry is a String header
-                    if let Value::String { len, data } = self.get(entry)? {
-                        if len == chars.len() && !data.is_nil() {
+                    if let Value::String { len, data } = self.get(entry)?
+                        && len == chars.len() && !data.is_nil() {
                             // Compare char by char
                             let mut matches = true;
                             let base = data.raw();
@@ -1258,7 +1220,6 @@ impl<const N: usize> Lisp<N> {
                                 return Ok(Some(data));
                             }
                         }
-                    }
                     current = rest;
                 }
                 _ => return Ok(None),
@@ -1336,11 +1297,10 @@ impl<const N: usize> Lisp<N> {
                 Value::Cons { .. } => {
                     let entry = self.car(current)?;
                     let rest = self.cdr(current)?;
-                    if let Value::String { data: entry_data, .. } = self.get(entry)? {
-                        if entry_data == data {
+                    if let Value::String { data: entry_data, .. } = self.get(entry)?
+                        && entry_data == data {
                             return Ok(true);
                         }
-                    }
                     current = rest;
                 }
                 _ => return Ok(false),

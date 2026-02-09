@@ -320,8 +320,8 @@ impl<'a> Parser<'a> {
         
         // Create the bytevector
         let bv = lisp.make_bytevector(count, 0)?;
-        for i in 0..count {
-            lisp.bytevector_set(bv, i, bytes[i])?;
+        for (i, &byte) in bytes.iter().enumerate().take(count) {
+            lisp.bytevector_set(bv, i, byte)?;
         }
         
         Ok(bv)
