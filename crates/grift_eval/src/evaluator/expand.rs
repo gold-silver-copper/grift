@@ -505,6 +505,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
+    /// Extract the rest pattern/template after an ellipsis.
+    /// Given the cdr that contains the ellipsis, returns the remaining elements after it.
+    fn rest_after_ellipsis(&self, ellipsis_cdr: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+        match self.lisp.get(ellipsis_cdr)? {
+            Value::Symbol(_) => self.lisp.nil().map_err(Into::into),
+            Value::Cons { .. } => self.lisp.cdr(ellipsis_cdr).map_err(Into::into),
+            _ => self.lisp.nil().map_err(Into::into),
+        }
+    }
+
     /// Get minimum length a pattern requires
     /// Calculate minimum number of elements matched by a pattern
     /// 
@@ -521,11 +531,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if self.has_ellipsis(cdr)? {
                         // Pattern with ellipsis: element before ... is repeated
                         // Get rest pattern (nil if cdr is just the symbol ...)
-                        let rest = match self.lisp.get(cdr)? {
-                            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr
-                            Value::Cons { .. } => self.lisp.cdr(cdr)?,  // (... . rest)
-                            _ => self.lisp.nil()?,
-                        };
+                        let rest = self.rest_after_ellipsis(cdr)?;
                         // Continue with rest pattern (tail recursion)
                         pattern = rest;
                         continue;
@@ -797,11 +803,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let expr = self.lisp.syntax_to_datum(stx)?;
         
         // Get the rest pattern after ...
-        let rest_pattern = match self.lisp.get(pat_cdr)? {
-            Value::Symbol(_) => self.lisp.nil()?,
-            Value::Cons { .. } => self.lisp.cdr(pat_cdr)?,
-            _ => self.lisp.nil()?,
-        };
+        let rest_pattern = self.rest_after_ellipsis(pat_cdr)?;
 
         // Count how many elements the rest pattern needs
         let rest_len = self.pattern_min_length(rest_pattern, literals)?;
@@ -1421,11 +1423,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let ellipsis_vars = self.find_ellipsis_vars(sub_template, bindings)?;
 
         // Get rest template after ellipsis (nil if template_cdr is just ...)
-        let rest = match self.lisp.get(template_cdr)? {
-            Value::Symbol(_) => self.lisp.nil()?,  // ... as improper list cdr - no rest
-            Value::Cons { .. } => self.lisp.cdr(template_cdr)?,  // (... . rest) - get rest
-            _ => self.lisp.nil()?,
-        };
+        let rest = self.rest_after_ellipsis(template_cdr)?;
 
         if self.lisp.get(ellipsis_vars)?.is_nil() {
             // No ellipsis vars - transcribe once
