@@ -80,6 +80,10 @@ pub enum Token {
     Number(isize),
     /// Floating-point number literal (value already parsed)
     Float(grift_core::fsize),
+    /// Rational number literal (numerator/denominator, already parsed)
+    Rational(isize, isize),
+    /// Complex number literal (real + imaginary parts, already parsed)
+    Complex(grift_core::fsize, grift_core::fsize),
     /// Symbol — raw bytes are in `input[start..start+len]` (not yet lowercased).
     /// Use [`Lexer::symbol_bytes`] to get the lowercased bytes.
     Symbol {
@@ -282,6 +286,14 @@ impl<'a> Lexer<'a> {
                     self.lex_symbol()
                 }
             }
+            b'+' => {
+                if self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
+                    self.advance(); // consume '+'
+                    self.lex_number()
+                } else {
+                    self.lex_symbol()
+                }
+            }
             b'.' => {
                 // Could be dot (for dotted pairs) or symbol starting with dot
                 let next_pos = self.pos + 1;
@@ -448,11 +460,39 @@ impl<'a> Lexer<'a> {
         let has_exp = self.peek() == Some(b'e') || self.peek() == Some(b'E');
         
         if has_dot || has_exp {
-            return self.lex_float_tail(value, negative);
+            let float_tok = self.lex_float_tail(value, negative)?;
+            // After parsing float, check for complex suffix
+            if let Token::Float(real) = float_tok {
+                return self.try_lex_complex_suffix(real);
+            }
+            return Ok(float_tok);
+        }
+
+        // Check for rational literal: numerator/denominator
+        if self.peek() == Some(b'/') && self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
+            self.advance(); // consume '/'
+            let mut denom: isize = 0;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.advance();
+                    denom = denom.checked_mul(10)
+                        .and_then(|v| v.checked_add((c - b'0') as isize))
+                        .ok_or_else(|| self.error(LexErrorKind::NumberOverflow))?;
+                } else {
+                    break;
+                }
+            }
+            if denom == 0 {
+                return Err(self.error(LexErrorKind::NumberOverflow));
+            }
+            let num = if negative { -value } else { value };
+            return Ok(Token::Rational(num, denom));
         }
         
         if negative { value = -value; }
-        Ok(Token::Number(value))
+
+        // Check for complex suffix: +/-imag i or @angle
+        self.try_lex_complex_suffix_int(value)
     }
     
     /// Continue lexing a floating-point literal after the integer part.
@@ -500,6 +540,163 @@ impl<'a> Lexer<'a> {
         
         if negative { result = -result; }
         Ok(Token::Float(result))
+    }
+
+    /// After parsing a float `real`, check for complex suffix: +imag i, -imag i, or @angle
+    fn try_lex_complex_suffix(&mut self, real: grift_core::fsize) -> Result<Token, LexError> {
+        match self.peek() {
+            Some(b'+') | Some(b'-') => {
+                let neg = self.peek() == Some(b'-');
+                self.advance();
+                // Check for bare 'i' (meaning +1i or -1i)
+                if self.peek() == Some(b'i') && !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                    self.advance();
+                    let imag = if neg { -1.0 } else { 1.0 };
+                    return Ok(Token::Complex(real, imag));
+                }
+                // Parse imaginary part number
+                let mut imag_val: grift_core::fsize = 0.0;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.advance();
+                        imag_val = imag_val * 10.0 + (c - b'0') as grift_core::fsize;
+                    } else {
+                        break;
+                    }
+                }
+                // Check for decimal part
+                if self.peek() == Some(b'.') {
+                    self.advance();
+                    let mut frac_scale: grift_core::fsize = 0.1;
+                    while let Some(c) = self.peek() {
+                        if c.is_ascii_digit() {
+                            self.advance();
+                            imag_val += (c - b'0') as grift_core::fsize * frac_scale;
+                            frac_scale *= 0.1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if neg { imag_val = -imag_val; }
+                // Must end with 'i'
+                if self.peek() == Some(b'i') {
+                    self.advance();
+                    Ok(Token::Complex(real, imag_val))
+                } else {
+                    // Not a complex literal, return just the real part
+                    // (the +/- was consumed; this is an error in practice)
+                    Err(self.error(LexErrorKind::NumberOverflow))
+                }
+            }
+            Some(b'@') => {
+                // Polar form: magnitude@angle
+                self.advance();
+                let angle_neg = if self.peek() == Some(b'-') {
+                    self.advance();
+                    true
+                } else {
+                    if self.peek() == Some(b'+') { self.advance(); }
+                    false
+                };
+                let mut angle: grift_core::fsize = 0.0;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.advance();
+                        angle = angle * 10.0 + (c - b'0') as grift_core::fsize;
+                    } else {
+                        break;
+                    }
+                }
+                if self.peek() == Some(b'.') {
+                    self.advance();
+                    let mut frac_scale: grift_core::fsize = 0.1;
+                    while let Some(c) = self.peek() {
+                        if c.is_ascii_digit() {
+                            self.advance();
+                            angle += (c - b'0') as grift_core::fsize * frac_scale;
+                            frac_scale *= 0.1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if angle_neg { angle = -angle; }
+                // Convert polar to rectangular
+                let r = real;
+                let real_part = r * libm_cos(angle);
+                let imag_part = r * libm_sin(angle);
+                Ok(Token::Complex(real_part, imag_part))
+            }
+            Some(b'i') if !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) => {
+                // Bare number followed by 'i' means pure imaginary
+                self.advance();
+                Ok(Token::Complex(0.0, real))
+            }
+            _ => Ok(Token::Float(real)),
+        }
+    }
+
+    /// After parsing an integer `value`, check for complex suffix
+    fn try_lex_complex_suffix_int(&mut self, value: isize) -> Result<Token, LexError> {
+        match self.peek() {
+            Some(b'+') | Some(b'-') => {
+                // Could be complex: integer+imag i
+                let saved_pos = self.pos;
+                let neg = self.peek() == Some(b'-');
+                self.advance();
+                // Check for bare 'i'
+                if self.peek() == Some(b'i') && !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                    self.advance();
+                    let imag = if neg { -1.0 } else { 1.0 };
+                    return Ok(Token::Complex(value as grift_core::fsize, imag));
+                }
+                // Check if followed by digits (for imaginary part)
+                if self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    let mut imag_val: grift_core::fsize = 0.0;
+                    while let Some(c) = self.peek() {
+                        if c.is_ascii_digit() {
+                            self.advance();
+                            imag_val = imag_val * 10.0 + (c - b'0') as grift_core::fsize;
+                        } else {
+                            break;
+                        }
+                    }
+                    // Check for decimal part
+                    if self.peek() == Some(b'.') {
+                        self.advance();
+                        let mut frac_scale: grift_core::fsize = 0.1;
+                        while let Some(c) = self.peek() {
+                            if c.is_ascii_digit() {
+                                self.advance();
+                                imag_val += (c - b'0') as grift_core::fsize * frac_scale;
+                                frac_scale *= 0.1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    if neg { imag_val = -imag_val; }
+                    if self.peek() == Some(b'i') {
+                        self.advance();
+                        return Ok(Token::Complex(value as grift_core::fsize, imag_val));
+                    }
+                }
+                // Not a complex literal - restore position
+                self.pos = saved_pos;
+                Ok(Token::Number(value))
+            }
+            Some(b'@') => {
+                // Polar form
+                self.try_lex_complex_suffix(value as grift_core::fsize)
+            }
+            Some(b'i') if !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) => {
+                // Pure imaginary: 5i
+                self.advance();
+                Ok(Token::Complex(0.0, value as grift_core::fsize))
+            }
+            _ => Ok(Token::Number(value)),
+        }
     }
     
     fn lex_symbol(&mut self) -> Result<Token, LexError> {
@@ -911,4 +1108,20 @@ fn mul_pow10(value: grift_core::fsize, exp: i32) -> grift_core::fsize {
         }
     }
     result
+}
+
+/// Compute cos using libm (no_std compatible).
+fn libm_cos(x: grift_core::fsize) -> grift_core::fsize {
+    #[cfg(target_pointer_width = "64")]
+    { libm::cos(x) }
+    #[cfg(not(target_pointer_width = "64"))]
+    { libm::cosf(x) }
+}
+
+/// Compute sin using libm (no_std compatible).
+fn libm_sin(x: grift_core::fsize) -> grift_core::fsize {
+    #[cfg(target_pointer_width = "64")]
+    { libm::sin(x) }
+    #[cfg(not(target_pointer_width = "64"))]
+    { libm::sinf(x) }
 }

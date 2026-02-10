@@ -97,6 +97,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.apply_call_with_file(builtin, args, call_expr);
         }
 
+        // call-with-port — apply proc to port, close port when done
+        if matches!(builtin, Builtin::CallWithPort) {
+            return self.apply_call_with_port(args, call_expr);
+        }
+
         // with-input-from-file / with-output-to-file — redirect current port, call thunk, restore
         if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
             return self.apply_with_file(builtin, args, call_expr);
@@ -244,6 +249,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
 
         let port_val = self.lisp.port(pid)?;
+        let port_id_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push continuation to close the port after proc returns
+        self.cont(ContType::CallWithPortClose, EnvRef(env)).data1(port_id_enc)?;
+
+        // Build args list: (port)
+        let nil = self.lisp.nil()?;
+        let args_list = self.lisp.cons(port_val, nil)?;
+
+        // Apply proc to the port
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (call-with-port port proc).
+    /// Calls proc with port as argument, closes port when proc returns.
+    fn apply_call_with_port(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let port_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let proc = self.lisp.car(rest)?;
+
+        // Validate that the first arg is a port
+        let pid = match self.lisp.get(port_val)? {
+            Value::Port(pid) => pid,
+            v => return Err(self.type_error(call_expr, "port", v.type_name())),
+        };
+
         let port_id_enc = self.lisp.number(pid.0 as isize)?;
         let env = self.global_env.0;
 
@@ -521,6 +556,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(val)? {
                     Value::Number(n) => self.lisp.float(n as fsize).map_err(Into::into),
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Rational { num, denom } => self.lisp.float(num as fsize / denom as fsize).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.complex(real, imag).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -536,6 +573,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Err(self.type_error(call_expr, "finite number", "infinite or nan"))
                         }
                     }
+                    Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -1539,6 +1577,52 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let len = format_float_to_chars(f, &mut chars);
                         self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
                     }
+                    Value::Rational { num, denom } => {
+                        if radix != 10 {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        // Format as "num/denom"
+                        let mut chars = ['\0'; 42];
+                        let mut pos = 0;
+                        // Format numerator
+                        let negative = num < 0;
+                        let mut val = num.unsigned_abs();
+                        let mut digits = [0u8; 20];
+                        let mut dlen = 0;
+                        if val == 0 {
+                            digits[0] = b'0';
+                            dlen = 1;
+                        } else {
+                            while val > 0 {
+                                digits[dlen] = b'0' + (val % 10) as u8;
+                                dlen += 1;
+                                val /= 10;
+                            }
+                        }
+                        if negative {
+                            chars[pos] = '-';
+                            pos += 1;
+                        }
+                        for i in (0..dlen).rev() {
+                            chars[pos] = digits[i] as char;
+                            pos += 1;
+                        }
+                        chars[pos] = '/';
+                        pos += 1;
+                        // Format denominator
+                        let mut val = denom.unsigned_abs();
+                        dlen = 0;
+                        while val > 0 {
+                            digits[dlen] = b'0' + (val % 10) as u8;
+                            dlen += 1;
+                            val /= 10;
+                        }
+                        for i in (0..dlen).rev() {
+                            chars[pos] = digits[i] as char;
+                            pos += 1;
+                        }
+                        self.lisp.string_from_chars(&chars[..pos]).map_err(Into::into)
+                    }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -2004,9 +2088,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // call-with-input-file/output-file and with-input-from-file/output-to-file
-            // are handled in apply_builtin_trampolined
+            // and call-with-port are handled in apply_builtin_trampolined
             Builtin::CallWithInputFile | Builtin::CallWithOutputFile
-            | Builtin::WithInputFromFile | Builtin::WithOutputToFile => {
+            | Builtin::WithInputFromFile | Builtin::WithOutputToFile
+            | Builtin::CallWithPort => {
                 Err(self.make_error(ErrorKind::Generic, call_expr))
             }
 
@@ -2482,6 +2567,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
             }
 
+            Builtin::SchemeReportEnvironment => {
+                // (scheme-report-environment version)
+                // Returns an environment corresponding to R^version RS (e.g., R5RS)
+                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if version != 5 && version != 7 {
+                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
+                }
+                // Return the global environment as immutable (read-only snapshot)
+                let env = self.global_env.0;
+                self.lisp.alloc(Value::Environment { env, mutable: false }).map_err(Into::into)
+            }
+
+            Builtin::NullEnvironment => {
+                // (null-environment version)
+                // Returns a minimal environment with only syntax (no procedure bindings)
+                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if version != 5 && version != 7 {
+                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
+                }
+                // Return an empty environment (immutable)
+                let nil = self.lisp.nil()?;
+                self.lisp.alloc(Value::Environment { env: nil, mutable: false }).map_err(Into::into)
+            }
+
             // ================================================================
             // Bytevector operations (R7RS §6.9)
             // ================================================================
@@ -2632,6 +2741,88 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.bytevector_set(result, i, b)?;
                 }
                 Ok(result)
+            }
+
+            Builtin::Bytevector_ => {
+                // (bytevector byte ...) - Create bytevector from given byte values
+                // Stack-allocated buffer limit, matching bytevector-append's MAX_TOTAL_BYTES
+                const MAX_BYTES: usize = 4096;
+                let mut bytes: [u8; MAX_BYTES] = [0u8; MAX_BYTES];
+                let mut len = 0;
+
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            let byte_val = self.get_int(car, call_expr)?;
+                            if !(0..=255).contains(&byte_val) {
+                                return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                            }
+                            if len >= MAX_BYTES {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            bytes[len] = byte_val as u8;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+
+                let result = self.lisp.make_bytevector(len, 0)?;
+                for (i, &b) in bytes.iter().enumerate().take(len) {
+                    self.lisp.bytevector_set(result, i, b)?;
+                }
+                Ok(result)
+            }
+
+            Builtin::BytevectorCopyBang => {
+                // (bytevector-copy! to at from [start [end]])
+                let to = self.lisp.car(args)?;
+                let rest1 = self.lisp.cdr(args)?;
+                let at_val = self.lisp.car(rest1)?;
+                let rest2 = self.lisp.cdr(rest1)?;
+                let from = self.lisp.car(rest2)?;
+                let rest3 = self.lisp.cdr(rest2)?;
+
+                // Validate types
+                match self.lisp.get(to)? {
+                    Value::Bytevector { .. } => {}
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+                match self.lisp.get(from)? {
+                    Value::Bytevector { .. } => {}
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+
+                let at = self.get_int(at_val, call_expr)?;
+                if at < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let at = at as usize;
+
+                let from_len = self.lisp.bytevector_len(from)?;
+                let to_len = self.lisp.bytevector_len(to)?;
+                let (start, end) = self.parse_range_args(rest3, from_len, call_expr)?;
+
+                let copy_len = end - start;
+                if at + copy_len > to_len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+
+                // Copy bytes from `from[start..end]` to `to[at..at+copy_len]`
+                for i in 0..copy_len {
+                    let elem = self.lisp.bytevector_get(from, start + i)?;
+                    let byte = match self.lisp.get(elem)? {
+                        Value::Number(n) => n as u8,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    self.lisp.bytevector_set(to, at + i, byte)?;
+                }
+                self.lisp.void_val().map_err(Into::into)
             }
 
             Builtin::Utf8ToString => {
@@ -2986,6 +3177,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let (num, _den) = float_to_rational(f as f64);
                         self.lisp.float(num as fsize).map_err(Into::into)
                     }
+                    Value::Rational { num, .. } => self.lisp.number(num).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -3001,6 +3193,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let (_num, den) = float_to_rational(f as f64);
                         self.lisp.float(den as fsize).map_err(Into::into)
                     }
+                    Value::Rational { denom, .. } => self.lisp.number(denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -3048,19 +3241,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
                 let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0.0 {
-                    // Pure real number
                     return self.lisp.float(a).map_err(Into::into);
                 }
-                // (complex rect a b)
-                let tag = self.lisp.symbol("complex")?;
-                let form = self.lisp.symbol("rect")?;
-                let av = self.lisp.float(a)?;
-                let bv = self.lisp.float(b)?;
-                let nil = self.lisp.nil()?;
-                let l4 = self.lisp.cons(bv, nil)?;
-                let l3 = self.lisp.cons(av, l4)?;
-                let l2 = self.lisp.cons(form, l3)?;
-                self.lisp.cons(tag, l2).map_err(Into::into)
+                self.lisp.complex(a, b).map_err(Into::into)
             }
 
             Builtin::MakePolar => {
@@ -3071,15 +3254,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if libm::fabs(b) < f64::EPSILON {
                     return self.lisp.float(a as fsize).map_err(Into::into);
                 }
-                let tag = self.lisp.symbol("complex")?;
-                let form = self.lisp.symbol("rect")?;
-                let av = self.lisp.float(a as fsize)?;
-                let bv = self.lisp.float(b as fsize)?;
-                let nil = self.lisp.nil()?;
-                let l4 = self.lisp.cons(bv, nil)?;
-                let l3 = self.lisp.cons(av, l4)?;
-                let l2 = self.lisp.cons(form, l3)?;
-                self.lisp.cons(tag, l2).map_err(Into::into)
+                self.lisp.complex(a as fsize, b as fsize).map_err(Into::into)
             }
 
             Builtin::RealPart => {
@@ -3087,6 +3262,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(arg)? {
                     Value::Number(n) => self.lisp.number(n).map_err(Into::into),
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
+                    Value::Complex { real, .. } => self.lisp.float(real).map_err(Into::into),
                     Value::Cons { .. } => {
                         // Check if tagged complex: (complex rect re im)
                         if self.is_complex_tagged(arg)? {
@@ -3104,7 +3281,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::ImagPart => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Number(_) | Value::Float(_) => self.lisp.number(0).map_err(Into::into),
+                    Value::Number(_) | Value::Float(_) | Value::Rational { .. } => self.lisp.number(0).map_err(Into::into),
+                    Value::Complex { imag, .. } => self.lisp.float(imag).map_err(Into::into),
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
                             let cdr1 = self.lisp.cdr(arg)?; // (rect re im)
@@ -3127,6 +3305,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.lisp.number(abs_n).map_err(Into::into)
                     }
                     Value::Float(f) => self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into),
+                    Value::Rational { num, denom } => {
+                        let f = num as fsize / denom as fsize;
+                        self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into)
+                    }
+                    Value::Complex { real, imag } => {
+                        let mag = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
+                        self.lisp.float(mag as fsize).map_err(Into::into)
+                    }
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
                             let re = self.complex_real_f(arg, call_expr)?;
@@ -3151,6 +3337,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Float(f) => {
                         if f >= 0.0 { self.lisp.float(0.0).map_err(Into::into) }
                         else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Rational { num, .. } => {
+                        if num >= 0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Complex { real, imag } => {
+                        let angle = libm::atan2(imag as f64, real as f64);
+                        self.lisp.float(angle as fsize).map_err(Into::into)
                     }
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
@@ -3233,6 +3427,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(idx)? {
             Value::Number(n) => Ok(n as fsize),
             Value::Float(f) => Ok(f),
+            Value::Rational { num, denom } => Ok(num as fsize / denom as fsize),
+            Value::Complex { .. } => Err(self.type_error(call_expr, "real number", "complex")),
             v => Err(self.type_error(call_expr, "number", v.type_name())),
         }
     }
@@ -3354,6 +3550,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 is_float = true;
                             }
                             acc_float = float_f(acc_float, f);
+                        }
+                        Value::Rational { num, denom } => {
+                            // Promote to float for mixed arithmetic
+                            if !is_float {
+                                acc_float = acc_int as fsize;
+                                is_float = true;
+                            }
+                            acc_float = float_f(acc_float, num as fsize / denom as fsize);
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }

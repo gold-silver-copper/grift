@@ -164,6 +164,8 @@ impl<'a> Parser<'a> {
             Token::False => lisp.false_val().map_err(Into::into),
             Token::Number(n) => lisp.number(n).map_err(Into::into),
             Token::Float(f) => lisp.float(f).map_err(Into::into),
+            Token::Rational(num, denom) => lisp.rational(num, denom).map_err(Into::into),
+            Token::Complex(real, imag) => lisp.complex(real, imag).map_err(Into::into),
             Token::Char(c) => lisp.char(c).map_err(Into::into),
             Token::Symbol { len } => {
                 let name = self.lexer.symbol_bytes(len);

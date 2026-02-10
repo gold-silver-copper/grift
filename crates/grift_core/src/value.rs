@@ -236,6 +236,8 @@ define_builtins! {
     OpenBinaryInputFile => "open-binary-input-file",
     /// open-binary-output-file - Open a binary output port on a file
     OpenBinaryOutputFile => "open-binary-output-file",
+    /// call-with-port - Call proc with port, close port when proc returns
+    CallWithPort => "call-with-port",
     /// call-with-input-file - Call proc with input port, then close it
     CallWithInputFile => "call-with-input-file",
     /// call-with-output-file - Call proc with output port, then close it
@@ -453,10 +455,16 @@ define_builtins! {
     // Environment procedures (R7RS §6.12)
     /// interaction-environment - Return the mutable REPL environment
     InteractionEnvironment => "interaction-environment",
+    /// scheme-report-environment - Return environment for given R^n RS version
+    SchemeReportEnvironment => "scheme-report-environment",
+    /// null-environment - Return minimal environment with only syntax
+    NullEnvironment => "null-environment",
 
     // Bytevector operations (R7RS §6.9)
     /// bytevector? - Check if value is a bytevector
     Bytevectorp => "bytevector?",
+    /// bytevector - Variadic constructor: (bytevector byte ...)
+    Bytevector_ => "bytevector",
     /// make-bytevector - Create a bytevector with optional fill byte
     MakeBytevector => "make-bytevector",
     /// bytevector-length - Get length of bytevector
@@ -467,6 +475,8 @@ define_builtins! {
     BytevectorU8Set => "bytevector-u8-set!",
     /// bytevector-copy - Copy a bytevector
     BytevectorCopy => "bytevector-copy",
+    /// bytevector-copy! - Destructive copy between bytevectors
+    BytevectorCopyBang => "bytevector-copy!",
     /// bytevector-append - Concatenate bytevectors
     BytevectorAppend => "bytevector-append",
     /// utf8->string - Decode bytevector as UTF-8 string
@@ -536,6 +546,17 @@ pub enum Value {
     /// matching the width of `isize`/`usize`.
     Float(fsize),
     
+    /// Exact rational number (R7RS §6.2)
+    ///
+    /// Stored as numerator/denominator pair, always reduced to lowest terms.
+    /// Denominator is always positive.
+    Rational { num: isize, denom: isize },
+
+    /// Complex number (R7RS §6.2)
+    ///
+    /// Stored as real and imaginary parts (both inexact).
+    Complex { real: fsize, imag: fsize },
+
     /// Single character (used in strings and symbol storage)
     Char(char),
     
@@ -874,10 +895,10 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number (integer or float)
+    /// Check if this value is a number (integer, float, rational, or complex)
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Float(_))
+        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. })
     }
     
     /// Check if this value is an integer
@@ -1038,6 +1059,8 @@ impl Value {
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
             Value::Float(_) => "number",
+            Value::Rational { .. } => "number",
+            Value::Complex { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -1087,7 +1110,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
+            Value::Complex { .. } | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }

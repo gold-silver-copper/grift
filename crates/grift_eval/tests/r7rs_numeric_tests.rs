@@ -333,8 +333,8 @@ fn test_make_rectangular() {
     // Pure real
     assert!(eval_is_true(&lisp, &mut eval, "(= (make-rectangular 3 0) 3.0)"));
 
-    // Complex with non-zero imaginary
-    assert!(eval_is_true(&lisp, &mut eval, "(pair? (make-rectangular 3 4))"));
+    // Complex with non-zero imaginary (returns a native complex value, not a pair)
+    assert!(eval_is_true(&lisp, &mut eval, "(number? (make-rectangular 3 4))"));
 }
 
 #[test]
