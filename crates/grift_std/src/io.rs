@@ -624,8 +624,11 @@ impl IoProvider for StdIoProvider {
         use std::time::SystemTime;
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
             .map_err(|_| IoErrorKind::ReadFailed)
+            .and_then(|d| {
+                let nanos = d.as_nanos();
+                i64::try_from(nanos).map_err(|_| IoErrorKind::ReadFailed)
+            })
     }
 
     fn jiffies_per_second(&self) -> IoResult<i64> {

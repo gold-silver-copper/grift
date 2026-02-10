@@ -318,7 +318,7 @@ fn test_include_basic() {
     eval.set_io_provider(&mut io);
 
     let expr = format!(r#"(begin (include "{}") include-test-var)"#,
-        path.to_string_lossy().replace('\\', "/"));
+        path.display());
     assert_eq!(eval_to_num(&lisp, &mut eval, &expr), 42);
 
     let _ = fs::remove_file(&path);
@@ -341,7 +341,7 @@ fn test_include_multiple_expressions() {
     eval.set_io_provider(&mut io);
 
     let expr = format!(r#"(begin (include "{}") (+ inc-a inc-b))"#,
-        path.to_string_lossy().replace('\\', "/"));
+        path.display());
     assert_eq!(eval_to_num(&lisp, &mut eval, &expr), 30);
 
     let _ = fs::remove_file(&path);

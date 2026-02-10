@@ -2635,7 +2635,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => {
                         let jiffies = io.current_jiffy()
                             .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        self.lisp.number(jiffies as isize).map_err(Into::into)
+                        match isize::try_from(jiffies) {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.float(jiffies as fsize).map_err(Into::into),
+                        }
                     }
                     None => Err(self.make_error(ErrorKind::Generic, call_expr)),
                 }
@@ -2647,7 +2650,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => {
                         let jps = io.jiffies_per_second()
                             .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        self.lisp.number(jps as isize).map_err(Into::into)
+                        match isize::try_from(jps) {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.float(jps as fsize).map_err(Into::into),
+                        }
                     }
                     None => Err(self.make_error(ErrorKind::Generic, call_expr)),
                 }
