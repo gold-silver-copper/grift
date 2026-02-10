@@ -398,6 +398,21 @@ impl IoProvider for StdIoProvider {
         }
     }
 
+    fn output_string_to_input_port(&mut self, output_port: PortId) -> IoResult<PortId> {
+        // Extract chars from the output string port
+        let chars: Vec<char> = match self.get_dyn(output_port) {
+            Some(DynPort::OutputString { buf, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                buf.chars().collect()
+            }
+            _ => return Err(IoErrorKind::InvalidPort),
+        };
+        // Close the output port
+        self.close_port(output_port)?;
+        // Create a new input string port from the collected chars
+        self.alloc_port(DynPort::InputString { data: chars, cursor: 0, closed: false })
+    }
+
     fn open_input_file(&mut self, path: &str) -> IoResult<PortId> {
         let file = std::fs::File::open(path).map_err(|_| IoErrorKind::ReadFailed)?;
         self.alloc_port(DynPort::InputFile { file, peeked: None, closed: false })

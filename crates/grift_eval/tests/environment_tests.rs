@@ -141,3 +141,27 @@ fn test_eval_non_environment_error() {
     let result = eval.eval_str("(eval '(+ 1 2) 42)");
     assert!(result.is_err(), "eval with non-environment second arg should error");
 }
+
+// ============================================================================
+// Large environment tests (validates merge_environments fix)
+// ============================================================================
+
+#[test]
+fn test_let_with_many_bindings() {
+    // Validates fix: merge_environments previously used a 64-element stack array.
+    // A let with >64 bindings should work correctly with arena cons list.
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Generate a let with 100 bindings, sum them all
+    let mut bindings = String::new();
+    let mut sum_expr = String::from("(+");
+    for i in 0..100 {
+        bindings.push_str(&format!(" (v{} {})", i, i));
+        sum_expr.push_str(&format!(" v{}", i));
+    }
+    sum_expr.push(')');
+    let expr = format!("(let ({}) {})", bindings, sum_expr);
+    // Sum of 0..99 = 4950
+    assert_eq!(eval_to_num(&lisp, &mut eval, &expr), 4950);
+}

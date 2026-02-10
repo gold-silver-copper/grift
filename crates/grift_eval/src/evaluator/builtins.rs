@@ -992,22 +992,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.get_char(self.lisp.car(rest)?, call_expr)?
                 };
                 
-                // Create string of k characters
-                const MAX_MAKE_STRING_LEN: usize = 1024;
-                let len = k as usize;
-                if len > MAX_MAKE_STRING_LEN {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
-                let mut chars = ['\0'; MAX_MAKE_STRING_LEN];
-                chars[..len].fill(fill);
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                // Allocate directly in the arena (no fixed-size stack buffer)
+                self.lisp.make_string(k as usize, fill).map_err(Into::into)
             }
             
             Builtin::String => {
                 // (string char ...) - Create string from characters
-                const MAX_STRING_LEN: usize = 1024;
-                let mut chars = ['\0'; MAX_STRING_LEN];
-                let mut len = 0;
+                // Collect chars into arena cons list (reversed), then build string
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut len: usize = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -1015,17 +1009,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
-                            if len >= MAX_STRING_LEN {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                            }
-                            chars[len] = self.get_char(car, call_expr)?;
+                            let c = self.get_char(car, call_expr)?;
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
                             len += 1;
                             current = cdr;
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                let result = self.lisp.make_string(len, '\0')?;
+                let mut cursor = collected;
+                let mut i = len;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    match self.lisp.get(ch)? {
+                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
             }
             
             Builtin::StringLength => {
@@ -1121,10 +1126,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::StringAppend => {
                 // (string-append string ...) - Concatenate strings
-                const MAX_TOTAL_LEN: usize = 4096;
-                let mut chars = ['\0'; MAX_TOTAL_LEN];
-                let mut total_len = 0;
-                
+                // First pass: compute total length
+                let mut total_len: usize = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -1133,21 +1136,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
-                                Value::String { len, data } => {
-                                    if total_len + len > MAX_TOTAL_LEN {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                    }
-                                    for i in 0..len {
-                                        // Characters start at data (no header with inline length)
-                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                                        match self.lisp.get(char_slot)? {
-                                            Value::Char(c) => {
-                                                chars[total_len] = c;
-                                                total_len += 1;
-                                            }
-                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                                        }
-                                    }
+                                Value::String { len, .. } => {
+                                    total_len += len;
                                 }
                                 v => return Err(self.type_error(call_expr, "string", v.type_name())),
                             }
@@ -1157,7 +1147,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 
-                self.lisp.string_from_chars(&chars[..total_len]).map_err(Into::into)
+                // Allocate result string
+                let result = self.lisp.make_string(total_len, '\0')?;
+                
+                // Second pass: copy characters
+                let mut pos = 0;
+                current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            if let Value::String { len, data } = self.lisp.get(car)? {
+                                for i in 0..len {
+                                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                        self.lisp.string_set(result, pos, c)?;
+                                        pos += 1;
+                                    }
+                                }
+                            }
+                            current = cdr;
+                        }
+                        _ => break,
+                    }
+                }
+                
+                Ok(result)
             }
             
             Builtin::StringToList => {
@@ -1754,24 +1771,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::String { len, data } => {
-                        // Extract string content into stack buffer
-                        let mut buf = [0u8; 1024];
-                        let mut byte_len = 0;
-                        for i in 0..len {
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                            if let Value::Char(c) = self.lisp.get(char_slot)? {
-                                let enc_len = c.len_utf8();
-                                if byte_len + enc_len > buf.len() { break; }
-                                c.encode_utf8(&mut buf[byte_len..]);
-                                byte_len += enc_len;
-                            }
-                        }
-                        let s = core::str::from_utf8(&buf[..byte_len])
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
                         match &mut self.io {
                             Some(io) => {
-                                let pid = io.open_input_string(s)
-                                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                                // Write chars to a temp output string port, then convert
+                                // to an input port. This avoids any fixed-size buffer.
+                                let tmp = match io.open_output_string() {
+                                    Ok(p) => p,
+                                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                                };
+                                for i in 0..len {
+                                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                        if io.write_char(tmp, c).is_err() {
+                                            let _ = io.close_port(tmp);
+                                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                                        }
+                                    }
+                                }
+                                let pid = match io.output_string_to_input_port(tmp) {
+                                    Ok(p) => p,
+                                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                                };
                                 self.lisp.port(pid).map_err(Into::into)
                             }
                             None => Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -1818,8 +1838,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
-                let mut buf = [0u8; 2048];
-                let mut byte_len = 0;
+                // Collect chars into an arena cons list (reversed order)
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut count: usize = 0;
                 let mut got_char = false;
                 loop {
                     match io.read_char(pid) {
@@ -1833,10 +1855,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         Ok(c) => {
                             got_char = true;
-                            let enc_len = c.len_utf8();
-                            if byte_len + enc_len > buf.len() { break; }
-                            c.encode_utf8(&mut buf[byte_len..]);
-                            byte_len += enc_len;
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
+                            count += 1;
                         }
                         Err(grift_parser::IoErrorKind::Eof) => {
                             if !got_char {
@@ -1847,9 +1868,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                     }
                 }
-                let s = core::str::from_utf8(&buf[..byte_len])
-                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                self.lisp.string(s).map_err(Into::into)
+                // Build string from reversed cons list of chars
+                let result = self.lisp.make_string(count, '\0')?;
+                let mut cursor = collected;
+                let mut i = count;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    match self.lisp.get(ch)? {
+                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
             }
 
             Builtin::ReadString => {
@@ -1873,16 +1905,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
-                let mut buf = [0u8; 2048];
-                let mut byte_len = 0;
-                let mut chars_read = 0;
+                // Collect chars into an arena cons list (reversed order)
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut chars_read: usize = 0;
                 while chars_read < k {
                     match io.read_char(pid) {
                         Ok(c) => {
-                            let enc_len = c.len_utf8();
-                            if byte_len + enc_len > buf.len() { break; }
-                            c.encode_utf8(&mut buf[byte_len..]);
-                            byte_len += enc_len;
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
                             chars_read += 1;
                         }
                         Err(grift_parser::IoErrorKind::Eof) => break,
@@ -1892,9 +1923,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if chars_read == 0 {
                     return self.lisp.eof().map_err(Into::into);
                 }
-                let s = core::str::from_utf8(&buf[..byte_len])
-                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                self.lisp.string(s).map_err(Into::into)
+                // Build string from reversed cons list of chars
+                let result = self.lisp.make_string(chars_read, '\0')?;
+                let mut cursor = collected;
+                let mut i = chars_read;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    match self.lisp.get(ch)? {
+                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
             }
 
             Builtin::TextualPortp => self.port_predicate(args, |io, pid| io.is_textual_port(pid)),
@@ -3591,31 +3633,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Implement (read) by reading characters from a port and parsing.
     fn apply_read_builtin(&mut self, pid: grift_parser::PortId, call_expr: ArenaIndex) -> EvalResult {
-        // Read characters into a stack buffer until we have a complete S-expression
-        let mut buf = [0u8; 2048];
-        let mut byte_len = 0;
-        let mut paren_depth: i32 = 0;
-        let mut in_string = false;
-        let mut escape = false;
-        let mut got_token = false;
-
         let io = match &mut self.io {
             Some(io) => io,
             None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
         };
+
+        // Open a temp output string port to accumulate chars without a fixed-size limit
+        let tmp = match io.open_output_string() {
+            Ok(p) => p,
+            Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+        };
+
+        let mut paren_depth: i32 = 0;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut got_token = false;
 
         // Skip leading whitespace
         loop {
             match io.read_char(pid) {
                 Ok(c) => {
                     if !c.is_whitespace() {
-                        // Put this char into the buffer
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() {
+                        if io.write_char(tmp, c).is_err() {
+                            let _ = io.close_port(tmp);
                             return Err(self.make_error(ErrorKind::Generic, call_expr));
                         }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
 
                         if c == '(' || c == '[' {
                             paren_depth += 1;
@@ -3628,9 +3670,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 Err(grift_parser::IoErrorKind::Eof) => {
+                    let _ = io.close_port(tmp);
                     return self.lisp.eof().map_err(Into::into);
                 }
-                Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                Err(_) => {
+                    let _ = io.close_port(tmp);
+                    return Err(self.make_error(ErrorKind::Generic, call_expr));
+                }
             }
         }
 
@@ -3639,12 +3685,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             loop {
                 match io.read_char(pid) {
                     Ok(c) => {
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() {
+                        if io.write_char(tmp, c).is_err() {
+                            let _ = io.close_port(tmp);
                             return Err(self.make_error(ErrorKind::Generic, call_expr));
                         }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
 
                         if in_string {
                             if escape {
@@ -3665,7 +3709,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                     Err(grift_parser::IoErrorKind::Eof) => break,
-                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    Err(_) => {
+                        let _ = io.close_port(tmp);
+                        return Err(self.make_error(ErrorKind::Generic, call_expr));
+                    }
                 }
             }
         } else if got_token {
@@ -3675,25 +3722,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => break,
                     Ok(c) => {
                         let _ = io.read_char(pid);
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() { break; }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
+                        if io.write_char(tmp, c).is_err() { break; }
                     }
                     Err(_) => break,
                 }
             }
         }
 
-        let s = core::str::from_utf8(&buf[..byte_len])
-            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+        // Parse the accumulated expression from the temp port
+        let result = {
+            let s = match io.get_output_string(tmp) {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = io.close_port(tmp);
+                    return Err(self.make_error(ErrorKind::Generic, call_expr));
+                }
+            };
+            if s.is_empty() {
+                let _ = io.close_port(tmp);
+                return self.lisp.eof().map_err(Into::into);
+            }
+            grift_parser::parse(self.lisp, s)
+        };
 
-        if s.is_empty() {
-            return self.lisp.eof().map_err(Into::into);
-        }
-
-        // Parse the expression
-        match grift_parser::parse(self.lisp, s) {
+        let _ = io.close_port(tmp);
+        match result {
             Ok(expr) => Ok(expr),
             Err(e) => Err(EvalError::from(e)),
         }

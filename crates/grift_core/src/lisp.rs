@@ -1178,6 +1178,33 @@ impl<const N: usize> Lisp<N> {
         
         self.alloc(Value::String { len: char_count, data })
     }
+
+    /// Allocate a mutable string of `len` characters, all set to `fill`.
+    ///
+    /// Equivalent to R7RS `(make-string k fill)`.
+    pub fn make_string(&self, len: usize, fill: char) -> ArenaResult<ArenaIndex> {
+        if len == 0 {
+            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
+        }
+        let data = self.arena.alloc_contiguous(len, Value::Char(fill))?;
+        self.alloc(Value::String { len, data })
+    }
+
+    /// Set a character at the given index within a string.
+    ///
+    /// Equivalent to R7RS `(string-set! string k char)`.
+    pub fn string_set(&self, str_idx: ArenaIndex, index: usize, c: char) -> ArenaResult<()> {
+        match self.arena.get(str_idx)? {
+            Value::String { len, data } => {
+                if index >= len {
+                    return Err(ArenaError::InvalidIndex);
+                }
+                let char_idx = self.arena.index_at_offset(data, index)?;
+                self.arena.set(char_idx, Value::Char(c))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
     
     // ============================================================================
     // String interning support
