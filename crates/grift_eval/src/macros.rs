@@ -63,6 +63,13 @@ macro_rules! builtin_numeric_pred {
         match $self.lisp.get(arg)? {
             Value::Number($n) => $self.lisp.boolean($int_check).map_err(Into::into),
             Value::Float($f) => $self.lisp.boolean($float_check).map_err(Into::into),
+            Value::Rational { .. } => {
+                // Rationals are exact
+                let $n = 0isize;
+                let _ = $n;
+                $self.lisp.boolean($int_check).map_err(Into::into)
+            }
+            Value::Complex { real: $f, .. } => $self.lisp.boolean($float_check).map_err(Into::into),
             v => Err($self.type_error($call_expr, "number", v.type_name())),
         }
     }};
@@ -86,6 +93,11 @@ macro_rules! builtin_rounding_op {
         match $self.lisp.get(arg)? {
             Value::Number(n) => $self.lisp.number(n).map_err(Into::into),
             Value::Float(f) => {
+                let result = $float_op(f);
+                $self.lisp.float(result).map_err(Into::into)
+            }
+            Value::Rational { num, denom } => {
+                let f = num as crate::fsize / denom as crate::fsize;
                 let result = $float_op(f);
                 $self.lisp.float(result).map_err(Into::into)
             }
@@ -206,6 +218,22 @@ macro_rules! binary_int_op {
             }
             (Value::Float(x), Value::Float(y)) => {
                 $self.lisp.float($float_op(x, y)).map_err(Into::into)
+            }
+            // Rational promotion to float
+            (Value::Rational { num, denom }, Value::Number(y)) => {
+                $self.lisp.float($float_op(num as $crate::fsize / denom as $crate::fsize, y as $crate::fsize)).map_err(Into::into)
+            }
+            (Value::Number(x), Value::Rational { num, denom }) => {
+                $self.lisp.float($float_op(x as $crate::fsize, num as $crate::fsize / denom as $crate::fsize)).map_err(Into::into)
+            }
+            (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                $self.lisp.float($float_op(n1 as $crate::fsize / d1 as $crate::fsize, n2 as $crate::fsize / d2 as $crate::fsize)).map_err(Into::into)
+            }
+            (Value::Rational { num, denom }, Value::Float(y)) => {
+                $self.lisp.float($float_op(num as $crate::fsize / denom as $crate::fsize, y)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::Rational { num, denom }) => {
+                $self.lisp.float($float_op(x, num as $crate::fsize / denom as $crate::fsize)).map_err(Into::into)
             }
             (v, _) if !v.is_number() => Err($self.type_error($call_expr, "number", v.type_name())),
             (_, v) => Err($self.type_error($call_expr, "number", v.type_name())),

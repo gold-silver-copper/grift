@@ -10,6 +10,16 @@ use crate::value::{Value, Builtin, StdLib};
 use crate::fsize;
 use crate::io::PortId;
 
+/// Compute the greatest common divisor (Euclidean algorithm).
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
 // ============================================================================
 // Lisp Context - Arena wrapper with helper methods
 // ============================================================================
@@ -195,6 +205,29 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn float(&self, f: fsize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Float(f))
+    }
+
+    /// Allocate a rational number, reduced to lowest terms.
+    #[inline]
+    pub fn rational(&self, num: isize, denom: isize) -> ArenaResult<ArenaIndex> {
+        if denom == 0 {
+            return Err(grift_arena::ArenaError::InvalidIndex);
+        }
+        let g = gcd(num.unsigned_abs(), denom.unsigned_abs()) as isize;
+        let (mut n, mut d) = (num / g, denom / g);
+        // Ensure denominator is always positive
+        if d < 0 { n = -n; d = -d; }
+        // If denominator is 1, it's just an integer
+        if d == 1 {
+            return self.alloc(Value::Number(n));
+        }
+        self.alloc(Value::Rational { num: n, denom: d })
+    }
+
+    /// Allocate a complex number.
+    #[inline]
+    pub fn complex(&self, real: fsize, imag: fsize) -> ArenaResult<ArenaIndex> {
+        self.alloc(Value::Complex { real, imag })
     }
     
     /// Allocate a character

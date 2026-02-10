@@ -74,6 +74,18 @@ fn format_value_impl<const N: usize>(
                 write!(buf, "{}", f).unwrap();
             }
         }
+        Ok(Value::Rational { num, denom }) => {
+            use std::fmt::Write;
+            write!(buf, "{}/{}", num, denom).unwrap();
+        }
+        Ok(Value::Complex { real, imag }) => {
+            use std::fmt::Write;
+            if imag >= 0.0 {
+                write!(buf, "{}+{}i", real, imag).unwrap();
+            } else {
+                write!(buf, "{}{}i", real, imag).unwrap();
+            }
+        }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
             match c {

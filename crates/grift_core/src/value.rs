@@ -546,6 +546,17 @@ pub enum Value {
     /// matching the width of `isize`/`usize`.
     Float(fsize),
     
+    /// Exact rational number (R7RS §6.2)
+    ///
+    /// Stored as numerator/denominator pair, always reduced to lowest terms.
+    /// Denominator is always positive.
+    Rational { num: isize, denom: isize },
+
+    /// Complex number (R7RS §6.2)
+    ///
+    /// Stored as real and imaginary parts (both inexact).
+    Complex { real: fsize, imag: fsize },
+
     /// Single character (used in strings and symbol storage)
     Char(char),
     
@@ -884,10 +895,10 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number (integer or float)
+    /// Check if this value is a number (integer, float, rational, or complex)
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Float(_))
+        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. })
     }
     
     /// Check if this value is an integer
@@ -1048,6 +1059,8 @@ impl Value {
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
             Value::Float(_) => "number",
+            Value::Rational { .. } => "number",
+            Value::Complex { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -1097,7 +1110,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
+            Value::Complex { .. } | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }

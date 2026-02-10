@@ -556,6 +556,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(val)? {
                     Value::Number(n) => self.lisp.float(n as fsize).map_err(Into::into),
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Rational { num, denom } => self.lisp.float(num as fsize / denom as fsize).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.complex(real, imag).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -571,6 +573,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Err(self.type_error(call_expr, "finite number", "infinite or nan"))
                         }
                     }
+                    Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -1573,6 +1576,52 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let mut chars = ['\0'; 32];
                         let len = format_float_to_chars(f, &mut chars);
                         self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                    }
+                    Value::Rational { num, denom } => {
+                        if radix != 10 {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        // Format as "num/denom"
+                        let mut chars = ['\0'; 42];
+                        let mut pos = 0;
+                        // Format numerator
+                        let negative = num < 0;
+                        let mut val = num.unsigned_abs();
+                        let mut digits = [0u8; 20];
+                        let mut dlen = 0;
+                        if val == 0 {
+                            digits[0] = b'0';
+                            dlen = 1;
+                        } else {
+                            while val > 0 {
+                                digits[dlen] = b'0' + (val % 10) as u8;
+                                dlen += 1;
+                                val /= 10;
+                            }
+                        }
+                        if negative {
+                            chars[pos] = '-';
+                            pos += 1;
+                        }
+                        for i in (0..dlen).rev() {
+                            chars[pos] = digits[i] as char;
+                            pos += 1;
+                        }
+                        chars[pos] = '/';
+                        pos += 1;
+                        // Format denominator
+                        let mut val = denom.unsigned_abs();
+                        dlen = 0;
+                        while val > 0 {
+                            digits[dlen] = b'0' + (val % 10) as u8;
+                            dlen += 1;
+                            val /= 10;
+                        }
+                        for i in (0..dlen).rev() {
+                            chars[pos] = digits[i] as char;
+                            pos += 1;
+                        }
+                        self.lisp.string_from_chars(&chars[..pos]).map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
@@ -3127,6 +3176,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let (num, _den) = float_to_rational(f as f64);
                         self.lisp.float(num as fsize).map_err(Into::into)
                     }
+                    Value::Rational { num, .. } => self.lisp.number(num).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -3142,6 +3192,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let (_num, den) = float_to_rational(f as f64);
                         self.lisp.float(den as fsize).map_err(Into::into)
                     }
+                    Value::Rational { denom, .. } => self.lisp.number(denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -3189,19 +3240,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
                 let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 if b == 0.0 {
-                    // Pure real number
                     return self.lisp.float(a).map_err(Into::into);
                 }
-                // (complex rect a b)
-                let tag = self.lisp.symbol("complex")?;
-                let form = self.lisp.symbol("rect")?;
-                let av = self.lisp.float(a)?;
-                let bv = self.lisp.float(b)?;
-                let nil = self.lisp.nil()?;
-                let l4 = self.lisp.cons(bv, nil)?;
-                let l3 = self.lisp.cons(av, l4)?;
-                let l2 = self.lisp.cons(form, l3)?;
-                self.lisp.cons(tag, l2).map_err(Into::into)
+                self.lisp.complex(a, b).map_err(Into::into)
             }
 
             Builtin::MakePolar => {
@@ -3212,15 +3253,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if libm::fabs(b) < f64::EPSILON {
                     return self.lisp.float(a as fsize).map_err(Into::into);
                 }
-                let tag = self.lisp.symbol("complex")?;
-                let form = self.lisp.symbol("rect")?;
-                let av = self.lisp.float(a as fsize)?;
-                let bv = self.lisp.float(b as fsize)?;
-                let nil = self.lisp.nil()?;
-                let l4 = self.lisp.cons(bv, nil)?;
-                let l3 = self.lisp.cons(av, l4)?;
-                let l2 = self.lisp.cons(form, l3)?;
-                self.lisp.cons(tag, l2).map_err(Into::into)
+                self.lisp.complex(a as fsize, b as fsize).map_err(Into::into)
             }
 
             Builtin::RealPart => {
@@ -3228,6 +3261,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(arg)? {
                     Value::Number(n) => self.lisp.number(n).map_err(Into::into),
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
+                    Value::Complex { real, .. } => self.lisp.float(real).map_err(Into::into),
                     Value::Cons { .. } => {
                         // Check if tagged complex: (complex rect re im)
                         if self.is_complex_tagged(arg)? {
@@ -3245,7 +3280,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::ImagPart => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Number(_) | Value::Float(_) => self.lisp.number(0).map_err(Into::into),
+                    Value::Number(_) | Value::Float(_) | Value::Rational { .. } => self.lisp.number(0).map_err(Into::into),
+                    Value::Complex { imag, .. } => self.lisp.float(imag).map_err(Into::into),
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
                             let cdr1 = self.lisp.cdr(arg)?; // (rect re im)
@@ -3268,6 +3304,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.lisp.number(abs_n).map_err(Into::into)
                     }
                     Value::Float(f) => self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into),
+                    Value::Rational { num, denom } => {
+                        let f = num as fsize / denom as fsize;
+                        self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into)
+                    }
+                    Value::Complex { real, imag } => {
+                        let mag = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
+                        self.lisp.float(mag as fsize).map_err(Into::into)
+                    }
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
                             let re = self.complex_real_f(arg, call_expr)?;
@@ -3292,6 +3336,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Float(f) => {
                         if f >= 0.0 { self.lisp.float(0.0).map_err(Into::into) }
                         else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Rational { num, .. } => {
+                        if num >= 0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Complex { real, imag } => {
+                        let angle = libm::atan2(imag as f64, real as f64);
+                        self.lisp.float(angle as fsize).map_err(Into::into)
                     }
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
@@ -3374,6 +3426,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(idx)? {
             Value::Number(n) => Ok(n as fsize),
             Value::Float(f) => Ok(f),
+            Value::Rational { num, denom } => Ok(num as fsize / denom as fsize),
+            Value::Complex { .. } => Err(self.type_error(call_expr, "real number", "complex")),
             v => Err(self.type_error(call_expr, "number", v.type_name())),
         }
     }
@@ -3495,6 +3549,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 is_float = true;
                             }
                             acc_float = float_f(acc_float, f);
+                        }
+                        Value::Rational { num, denom } => {
+                            // Promote to float for mixed arithmetic
+                            if !is_float {
+                                acc_float = acc_int as fsize;
+                                is_float = true;
+                            }
+                            acc_float = float_f(acc_float, num as fsize / denom as fsize);
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
