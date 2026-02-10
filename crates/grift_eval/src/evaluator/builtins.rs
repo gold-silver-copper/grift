@@ -812,41 +812,45 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::VectorAppend => {
                 // (vector-append vec ...) - concatenate vectors
-                // Maximum total elements across all appended vectors
-                const MAX_TOTAL_ELEMS: usize = 4096;
-                let mut elems: [ArenaIndex; MAX_TOTAL_ELEMS] = [ArenaIndex::default(); MAX_TOTAL_ELEMS];
+                // Pass 1: count total elements and validate all args are vectors
                 let mut total_len = 0;
-                
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
                         Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
                                 Value::Array { .. } => {
-                                    let len = self.lisp.array_len(car)?;
-                                    if total_len + len > MAX_TOTAL_ELEMS {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                    }
-                                    for i in 0..len {
-                                        elems[total_len] = self.lisp.array_get(car, i)?;
-                                        total_len += 1;
-                                    }
+                                    total_len += self.lisp.array_len(car)?;
                                 }
                                 v => return Err(self.type_error(call_expr, "vector", v.type_name())),
                             }
-                            current = cdr;
+                            current = self.lisp.cdr(current)?;
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
                 
+                // Pass 2: create result array and copy elements
                 let placeholder = self.lisp.number(0)?;
                 let result = self.lisp.make_array(total_len, placeholder)?;
-                for (i, &elem) in elems.iter().enumerate().take(total_len) {
-                    self.lisp.array_set(result, i, elem)?;
+                let mut offset = 0;
+                current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let len = self.lisp.array_len(car)?;
+                            for i in 0..len {
+                                self.lisp.array_set(result, offset + i, self.lisp.array_get(car, i)?)?;
+                            }
+                            offset += len;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => break,
+                    }
                 }
                 Ok(result)
             }
