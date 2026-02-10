@@ -1222,6 +1222,36 @@
 ;;; (cddddr lst) - (cdr (cdr (cdr (cdr lst))))
 (define (cddddr lst) (cdr (cdr (cdr (cdr lst)))))
 
+;;; (caaaar lst) - (car (car (car (car lst))))
+(define (caaaar lst) (car (car (car (car lst)))))
+
+;;; (caaadr lst) - (car (car (car (cdr lst))))
+(define (caaadr lst) (car (car (car (cdr lst)))))
+
+;;; (caadar lst) - (car (car (cdr (car lst))))
+(define (caadar lst) (car (car (cdr (car lst)))))
+
+;;; (caaddr lst) - (car (car (cdr (cdr lst))))
+(define (caaddr lst) (car (car (cdr (cdr lst)))))
+
+;;; (cadaar lst) - (car (cdr (car (car lst))))
+(define (cadaar lst) (car (cdr (car (car lst)))))
+
+;;; (cadadr lst) - (car (cdr (car (cdr lst))))
+(define (cadadr lst) (car (cdr (car (cdr lst)))))
+
+;;; (caddar lst) - (car (cdr (cdr (car lst))))
+(define (caddar lst) (car (cdr (cdr (car lst)))))
+
+;;; (cdaaar lst) - (cdr (car (car (car lst))))
+(define (cdaaar lst) (cdr (car (car (car lst)))))
+
+;;; (cdaadr lst) - (cdr (car (car (cdr lst))))
+(define (cdaadr lst) (cdr (car (car (cdr lst)))))
+
+;;; (cdadar lst) - (cdr (car (cdr (car lst))))
+(define (cdadar lst) (cdr (car (cdr (car lst)))))
+
 ;;; ============================================================
 ;;; Number utilities (R7RS Section 6.2.6)
 ;;; ============================================================
