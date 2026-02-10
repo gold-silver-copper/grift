@@ -84,6 +84,12 @@ pub struct Evaluator<'a, const N: usize> {
     /// When set, port builtins (read-char, write-char, etc.) use this provider.
     /// The provider is borrowed from the caller and must outlive the evaluator.
     io: Option<&'a mut (dyn IoProvider + 'a)>,
+    /// Current input port for `current-input-port` (R7RS §6.13.2).
+    /// Defaults to STDIN. Changed by `with-input-from-file`.
+    current_input_port: grift_parser::PortId,
+    /// Current output port for `current-output-port` (R7RS §6.13.2).
+    /// Defaults to STDOUT. Changed by `with-output-to-file`.
+    current_output_port: grift_parser::PortId,
     /// Library registry — arena-based association list of (name . env) pairs.
     /// Used by `define-library` and `import` (R7RS §5.6).
     library_registry: ArenaIndex,
