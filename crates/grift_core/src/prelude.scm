@@ -1003,13 +1003,32 @@
                     (cdr remaining)))))
   (min-iter x (inexact? x) rest))
 
-;;; (map f lst) - Apply f to each element of lst (tail-recursive)
-(define (map f lst)
-  (define (map-iter lst acc)  ;; Helper function for tail-recursive iteration
-    (if (null? lst)
-        (reverse acc)  ;; Base case: reverse accumulated list
-        (map-iter (cdr lst) (cons (f (car lst)) acc))))  ;; Recursive case: apply f and continue
-  (map-iter lst '()))  ;; Start with empty accumulator
+;;; Helpers for multi-list map/for-each
+(define (any-null? lists)
+  (if (null? lists) #f
+      (if (null? (car lists)) #t
+          (any-null? (cdr lists)))))
+(define (map-car lists)
+  (if (null? lists) '()
+      (cons (car (car lists)) (map-car (cdr lists)))))
+(define (map-cdr lists)
+  (if (null? lists) '()
+      (cons (cdr (car lists)) (map-cdr (cdr lists)))))
+
+;;; (map f lst ...) - Apply f to corresponding elements of lists (R7RS §6.4)
+(define (map f lst . rest)
+  (if (null? rest)
+      ;; Fast path: single-list map (tail-recursive)
+      (let map-one ((lst lst) (acc '()))
+        (if (null? lst)
+            (reverse acc)
+            (map-one (cdr lst) (cons (f (car lst)) acc))))
+      ;; Multi-list map: iterate over list-of-lists
+      (let map-multi ((lists (cons lst rest)) (acc '()))
+        (if (any-null? lists)
+            (reverse acc)
+            (map-multi (map-cdr lists)
+                       (cons (apply f (map-car lists)) acc))))))
 
 ;;; (filter pred lst) - Return elements where pred is true (tail-recursive)
 (define (filter pred lst)
@@ -1145,10 +1164,20 @@
 ;;; Phase 1: Core R7RS Procedures (Section 6.3-6.4)
 ;;; ============================================================
 
-;;; (for-each f lst) - Apply f to each element for side effects
+;;; (for-each f lst ...) - Apply f to each element for side effects (R7RS §6.4)
 ;;; R7RS: The value returned is unspecified
 ;;; We use (if #f #f) to produce an unspecified value (standard Scheme idiom)
-(define (for-each f lst) (if (null? lst) (if #f #f) (begin (f (car lst)) (for-each f (cdr lst)))))
+(define (for-each f lst . rest)
+  (if (null? rest)
+      ;; Fast path: single-list for-each
+      (if (null? lst) (if #f #f) (begin (f (car lst)) (for-each f (cdr lst))))
+      ;; Multi-list for-each: iterate over list-of-lists
+      (let for-each-multi ((lists (cons lst rest)))
+        (if (any-null? lists)
+            (if #f #f)
+            (begin
+              (apply f (map-car lists))
+              (for-each-multi (map-cdr lists)))))))
 
 ;;; (list-tail lst k) - Return sublist starting at k-th element
 ;;; Validates that k is a valid non-negative index.
