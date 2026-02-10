@@ -168,7 +168,55 @@ define_builtins! {
     InputPortOpenp => "input-port-open?",
     /// output-port-open? - Check if output port is still open
     OutputPortOpenp => "output-port-open?",
-    
+
+    // File port operations (R7RS §6.13.2)
+    /// open-input-file - Open a textual input port on a file
+    OpenInputFile => "open-input-file",
+    /// open-output-file - Open a textual output port on a file
+    OpenOutputFile => "open-output-file",
+    /// open-binary-input-file - Open a binary input port on a file
+    OpenBinaryInputFile => "open-binary-input-file",
+    /// open-binary-output-file - Open a binary output port on a file
+    OpenBinaryOutputFile => "open-binary-output-file",
+    /// call-with-input-file - Call proc with input port, then close it
+    CallWithInputFile => "call-with-input-file",
+    /// call-with-output-file - Call proc with output port, then close it
+    CallWithOutputFile => "call-with-output-file",
+    /// with-input-from-file - Redirect current-input-port to file
+    WithInputFromFile => "with-input-from-file",
+    /// with-output-to-file - Redirect current-output-port to file
+    WithOutputToFile => "with-output-to-file",
+
+    // Binary I/O operations (R7RS §6.13.2)
+    /// read-u8 - Read a single byte from a binary input port
+    ReadU8 => "read-u8",
+    /// peek-u8 - Peek at next byte without consuming it
+    PeekU8 => "peek-u8",
+    /// u8-ready? - Check if a byte is ready to read
+    U8Readyp => "u8-ready?",
+    /// read-bytevector - Read up to k bytes into a new bytevector
+    ReadBytevector => "read-bytevector",
+    /// read-bytevector! - Read bytes into an existing bytevector
+    ReadBytevectorBang => "read-bytevector!",
+    /// write-u8 - Write a single byte to a binary output port
+    WriteU8 => "write-u8",
+    /// write-bytevector - Write bytevector bytes to a binary output port
+    WriteBytevector => "write-bytevector",
+
+    // Bytevector port operations (R7RS §6.13.2)
+    /// open-input-bytevector - Create binary input port from bytevector
+    OpenInputBytevector => "open-input-bytevector",
+    /// open-output-bytevector - Create binary output port to bytevector
+    OpenOutputBytevector => "open-output-bytevector",
+    /// get-output-bytevector - Get bytevector from output bytevector port
+    GetOutputBytevector => "get-output-bytevector",
+
+    // Additional I/O operations (R7RS §6.13.2)
+    /// write-string - Write string to textual output port
+    WriteStringPort => "write-string",
+    /// flush-output-port - Flush buffered output
+    FlushOutputPort => "flush-output-port",
+
     // Error handling
     /// error - Raise an error
     Error => "error",

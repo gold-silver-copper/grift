@@ -23,6 +23,18 @@ enum DynPort {
     InputString { data: Vec<char>, cursor: usize, closed: bool },
     /// Output port that accumulates characters.
     OutputString { buf: String, closed: bool },
+    /// Textual input port backed by a file.
+    InputFile { file: std::fs::File, peeked: Option<char>, closed: bool },
+    /// Textual output port backed by a file.
+    OutputFile { file: std::io::BufWriter<std::fs::File>, closed: bool },
+    /// Binary input port backed by a file.
+    BinaryInputFile { file: std::fs::File, peeked: Option<u8>, closed: bool },
+    /// Binary output port backed by a file.
+    BinaryOutputFile { file: std::io::BufWriter<std::fs::File>, closed: bool },
+    /// Binary input port backed by a bytevector.
+    InputBytevector { data: Vec<u8>, cursor: usize, closed: bool },
+    /// Binary output port that accumulates bytes.
+    OutputBytevector { buf: Vec<u8>, closed: bool },
 }
 
 /// An [`IoProvider`] implementation backed by Rust's standard I/O.
@@ -112,11 +124,15 @@ impl Default for StdIoProvider {
 fn read_one_char() -> IoResult<char> {
     let stdin = io::stdin();
     let mut handle = stdin.lock();
+    read_one_char_from(&mut handle)
+}
 
+/// Read one UTF-8 character from a `Read` source.
+fn read_one_char_from<R: Read>(reader: &mut R) -> IoResult<char> {
     // Read bytes until we have a valid UTF-8 character.
     let mut buf = [0u8; 4];
     let first = {
-        let n = handle.read(&mut buf[..1]).map_err(|_| IoErrorKind::ReadFailed)?;
+        let n = reader.read(&mut buf[..1]).map_err(|_| IoErrorKind::ReadFailed)?;
         if n == 0 {
             return Err(IoErrorKind::Eof);
         }
@@ -133,17 +149,13 @@ fn read_one_char() -> IoResult<char> {
     } else if (0xF0..0xF5).contains(&first) {
         4
     } else {
-        // Invalid leading byte (0x80-0xBF are continuation bytes,
-        // 0xC0-0xC1 are overlong, 0xF5-0xFF are invalid).
         return Err(IoErrorKind::ReadFailed);
     };
 
     // Read remaining continuation bytes if needed.
     if char_len > 1 {
         let remaining = &mut buf[1..char_len];
-        handle
-            .read_exact(remaining)
-            .map_err(|_| IoErrorKind::ReadFailed)?;
+        reader.read_exact(remaining).map_err(|_| IoErrorKind::ReadFailed)?;
     }
 
     core::str::from_utf8(&buf[..char_len])
@@ -173,6 +185,13 @@ impl IoProvider for StdIoProvider {
                 *cursor += 1;
                 Ok(c)
             }
+            Some(DynPort::InputFile { file, peeked, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if let Some(c) = peeked.take() {
+                    return Ok(c);
+                }
+                read_one_char_from(file)
+            }
             _ => Err(IoErrorKind::InvalidPort),
         }
     }
@@ -187,11 +206,20 @@ impl IoProvider for StdIoProvider {
             return Ok(c);
         }
         // Dynamic port
-        match self.get_dyn(port) {
+        match self.get_dyn_mut(port) {
             Some(DynPort::InputString { data, cursor, closed }) => {
                 if *closed { return Err(IoErrorKind::PortClosed); }
                 if *cursor >= data.len() { return Err(IoErrorKind::Eof); }
                 Ok(data[*cursor])
+            }
+            Some(DynPort::InputFile { file, peeked, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if let Some(c) = *peeked {
+                    return Ok(c);
+                }
+                let c = read_one_char_from(file)?;
+                *peeked = Some(c);
+                Ok(c)
             }
             _ => Err(IoErrorKind::InvalidPort),
         }
@@ -210,6 +238,9 @@ impl IoProvider for StdIoProvider {
         match self.get_dyn(port) {
             Some(DynPort::InputString { data, cursor, closed }) => {
                 Ok(!closed && *cursor < data.len())
+            }
+            Some(DynPort::InputFile { peeked, closed, .. }) => {
+                Ok(!closed && peeked.is_some()) // Conservative: true only if peeked
             }
             _ => Err(IoErrorKind::InvalidPort),
         }
@@ -237,6 +268,10 @@ impl IoProvider for StdIoProvider {
                         buf.push_str(s);
                         Ok(())
                     }
+                    Some(DynPort::OutputFile { file, closed }) => {
+                        if *closed { return Err(IoErrorKind::PortClosed); }
+                        file.write_all(s.as_bytes()).map_err(|_| IoErrorKind::WriteFailed)
+                    }
                     _ => Err(IoErrorKind::InvalidPort),
                 }
             }
@@ -247,7 +282,19 @@ impl IoProvider for StdIoProvider {
         match port {
             PortId::STDOUT => io::stdout().flush().map_err(|_| IoErrorKind::WriteFailed),
             PortId::STDERR => io::stderr().flush().map_err(|_| IoErrorKind::WriteFailed),
-            _ => Ok(()), // String ports don't need flushing
+            _ => {
+                match self.get_dyn_mut(port) {
+                    Some(DynPort::OutputFile { file, closed }) => {
+                        if *closed { return Err(IoErrorKind::PortClosed); }
+                        file.flush().map_err(|_| IoErrorKind::WriteFailed)
+                    }
+                    Some(DynPort::BinaryOutputFile { file, closed }) => {
+                        if *closed { return Err(IoErrorKind::PortClosed); }
+                        file.flush().map_err(|_| IoErrorKind::WriteFailed)
+                    }
+                    _ => Ok(()), // String/bytevector ports don't need flushing
+                }
+            }
         }
     }
 
@@ -257,30 +304,72 @@ impl IoProvider for StdIoProvider {
         }
         let idx = port.0 - DYNAMIC_PORT_BASE;
         match self.ports.get_mut(idx) {
-            Some(Some(DynPort::InputString { closed, .. })) => { *closed = true; Ok(()) }
-            Some(Some(DynPort::OutputString { closed, .. })) => { *closed = true; Ok(()) }
+            Some(Some(DynPort::InputString { closed, .. }))
+            | Some(Some(DynPort::OutputString { closed, .. }))
+            | Some(Some(DynPort::InputFile { closed, .. }))
+            | Some(Some(DynPort::OutputFile { closed, .. }))
+            | Some(Some(DynPort::BinaryInputFile { closed, .. }))
+            | Some(Some(DynPort::BinaryOutputFile { closed, .. }))
+            | Some(Some(DynPort::InputBytevector { closed, .. }))
+            | Some(Some(DynPort::OutputBytevector { closed, .. })) => { *closed = true; Ok(()) }
             _ => Err(IoErrorKind::InvalidPort),
         }
     }
 
     fn is_input_port(&self, port: PortId) -> bool {
         if port == PortId::STDIN { return true; }
-        matches!(self.get_dyn(port), Some(DynPort::InputString { .. }))
+        matches!(self.get_dyn(port),
+            Some(DynPort::InputString { .. })
+            | Some(DynPort::InputFile { .. })
+            | Some(DynPort::BinaryInputFile { .. })
+            | Some(DynPort::InputBytevector { .. })
+        )
     }
 
     fn is_output_port(&self, port: PortId) -> bool {
         if port == PortId::STDOUT || port == PortId::STDERR { return true; }
-        matches!(self.get_dyn(port), Some(DynPort::OutputString { .. }))
+        matches!(self.get_dyn(port),
+            Some(DynPort::OutputString { .. })
+            | Some(DynPort::OutputFile { .. })
+            | Some(DynPort::BinaryOutputFile { .. })
+            | Some(DynPort::OutputBytevector { .. })
+        )
     }
 
     fn is_port_open(&self, port: PortId) -> bool {
         // Standard ports are always open
         if port.0 < DYNAMIC_PORT_BASE { return true; }
         match self.get_dyn(port) {
-            Some(DynPort::InputString { closed, .. }) => !closed,
-            Some(DynPort::OutputString { closed, .. }) => !closed,
+            Some(DynPort::InputString { closed, .. })
+            | Some(DynPort::OutputString { closed, .. })
+            | Some(DynPort::InputFile { closed, .. })
+            | Some(DynPort::OutputFile { closed, .. })
+            | Some(DynPort::BinaryInputFile { closed, .. })
+            | Some(DynPort::BinaryOutputFile { closed, .. })
+            | Some(DynPort::InputBytevector { closed, .. })
+            | Some(DynPort::OutputBytevector { closed, .. }) => !closed,
             None => false,
         }
+    }
+
+    fn is_textual_port(&self, port: PortId) -> bool {
+        // Standard ports are textual
+        if port.0 < DYNAMIC_PORT_BASE { return true; }
+        matches!(self.get_dyn(port),
+            Some(DynPort::InputString { .. })
+            | Some(DynPort::OutputString { .. })
+            | Some(DynPort::InputFile { .. })
+            | Some(DynPort::OutputFile { .. })
+        )
+    }
+
+    fn is_binary_port(&self, port: PortId) -> bool {
+        matches!(self.get_dyn(port),
+            Some(DynPort::BinaryInputFile { .. })
+            | Some(DynPort::BinaryOutputFile { .. })
+            | Some(DynPort::InputBytevector { .. })
+            | Some(DynPort::OutputBytevector { .. })
+        )
     }
 
     fn open_input_string(&mut self, s: &str) -> IoResult<PortId> {
@@ -295,6 +384,159 @@ impl IoProvider for StdIoProvider {
     fn get_output_string(&self, port: PortId) -> IoResult<&str> {
         match self.get_dyn(port) {
             Some(DynPort::OutputString { buf, .. }) => Ok(buf.as_str()),
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn open_input_file(&mut self, path: &str) -> IoResult<PortId> {
+        let file = std::fs::File::open(path).map_err(|_| IoErrorKind::ReadFailed)?;
+        self.alloc_port(DynPort::InputFile { file, peeked: None, closed: false })
+    }
+
+    fn open_output_file(&mut self, path: &str) -> IoResult<PortId> {
+        let file = std::fs::File::create(path).map_err(|_| IoErrorKind::WriteFailed)?;
+        self.alloc_port(DynPort::OutputFile { file: std::io::BufWriter::new(file), closed: false })
+    }
+
+    fn open_binary_input_file(&mut self, path: &str) -> IoResult<PortId> {
+        let file = std::fs::File::open(path).map_err(|_| IoErrorKind::ReadFailed)?;
+        self.alloc_port(DynPort::BinaryInputFile { file, peeked: None, closed: false })
+    }
+
+    fn open_binary_output_file(&mut self, path: &str) -> IoResult<PortId> {
+        let file = std::fs::File::create(path).map_err(|_| IoErrorKind::WriteFailed)?;
+        self.alloc_port(DynPort::BinaryOutputFile { file: std::io::BufWriter::new(file), closed: false })
+    }
+
+    fn read_u8(&mut self, port: PortId) -> IoResult<u8> {
+        match self.get_dyn_mut(port) {
+            Some(DynPort::BinaryInputFile { file, peeked, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if let Some(b) = peeked.take() {
+                    return Ok(b);
+                }
+                let mut buf = [0u8; 1];
+                let n = file.read(&mut buf).map_err(|_| IoErrorKind::ReadFailed)?;
+                if n == 0 { return Err(IoErrorKind::Eof); }
+                Ok(buf[0])
+            }
+            Some(DynPort::InputBytevector { data, cursor, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if *cursor >= data.len() { return Err(IoErrorKind::Eof); }
+                let b = data[*cursor];
+                *cursor += 1;
+                Ok(b)
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn peek_u8(&mut self, port: PortId) -> IoResult<u8> {
+        match self.get_dyn_mut(port) {
+            Some(DynPort::BinaryInputFile { file, peeked, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if let Some(b) = *peeked {
+                    return Ok(b);
+                }
+                let mut buf = [0u8; 1];
+                let n = file.read(&mut buf).map_err(|_| IoErrorKind::ReadFailed)?;
+                if n == 0 { return Err(IoErrorKind::Eof); }
+                *peeked = Some(buf[0]);
+                Ok(buf[0])
+            }
+            Some(DynPort::InputBytevector { data, cursor, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if *cursor >= data.len() { return Err(IoErrorKind::Eof); }
+                Ok(data[*cursor])
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn u8_ready(&mut self, port: PortId) -> IoResult<bool> {
+        match self.get_dyn(port) {
+            Some(DynPort::BinaryInputFile { peeked, closed, .. }) => {
+                Ok(!closed && peeked.is_some())
+            }
+            Some(DynPort::InputBytevector { data, cursor, closed }) => {
+                Ok(!closed && *cursor < data.len())
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn write_u8(&mut self, port: PortId, byte: u8) -> IoResult<()> {
+        match self.get_dyn_mut(port) {
+            Some(DynPort::BinaryOutputFile { file, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                file.write_all(&[byte]).map_err(|_| IoErrorKind::WriteFailed)
+            }
+            Some(DynPort::OutputBytevector { buf, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                buf.push(byte);
+                Ok(())
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn read_bytevector(&mut self, port: PortId, buf: &mut [u8]) -> IoResult<usize> {
+        match self.get_dyn_mut(port) {
+            Some(DynPort::BinaryInputFile { file, peeked, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                let mut offset = 0;
+                if let Some(b) = peeked.take() {
+                    if !buf.is_empty() {
+                        buf[0] = b;
+                        offset = 1;
+                    }
+                }
+                if offset < buf.len() {
+                    let n = file.read(&mut buf[offset..]).map_err(|_| IoErrorKind::ReadFailed)?;
+                    offset += n;
+                }
+                if offset == 0 { return Err(IoErrorKind::Eof); }
+                Ok(offset)
+            }
+            Some(DynPort::InputBytevector { data, cursor, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                if *cursor >= data.len() { return Err(IoErrorKind::Eof); }
+                let avail = data.len() - *cursor;
+                let to_read = buf.len().min(avail);
+                buf[..to_read].copy_from_slice(&data[*cursor..*cursor + to_read]);
+                *cursor += to_read;
+                Ok(to_read)
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn write_bytevector(&mut self, port: PortId, bytes: &[u8]) -> IoResult<()> {
+        match self.get_dyn_mut(port) {
+            Some(DynPort::BinaryOutputFile { file, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                file.write_all(bytes).map_err(|_| IoErrorKind::WriteFailed)
+            }
+            Some(DynPort::OutputBytevector { buf, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                buf.extend_from_slice(bytes);
+                Ok(())
+            }
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn open_input_bytevector(&mut self, bytes: &[u8]) -> IoResult<PortId> {
+        self.alloc_port(DynPort::InputBytevector { data: bytes.to_vec(), cursor: 0, closed: false })
+    }
+
+    fn open_output_bytevector(&mut self) -> IoResult<PortId> {
+        self.alloc_port(DynPort::OutputBytevector { buf: Vec::new(), closed: false })
+    }
+
+    fn get_output_bytevector(&self, port: PortId) -> IoResult<&[u8]> {
+        match self.get_dyn(port) {
+            Some(DynPort::OutputBytevector { buf, .. }) => Ok(buf.as_slice()),
             _ => Err(IoErrorKind::InvalidPort),
         }
     }

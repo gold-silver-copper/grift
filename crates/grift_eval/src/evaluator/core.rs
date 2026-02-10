@@ -48,6 +48,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             call_site_env: EnvRef(nil), // No call-site env initially
             exception_handler_chain: nil, // Empty exception handler chain
             io: None, // No I/O provider by default
+            current_input_port: grift_parser::PortId::STDIN,
+            current_output_port: grift_parser::PortId::STDOUT,
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
         };

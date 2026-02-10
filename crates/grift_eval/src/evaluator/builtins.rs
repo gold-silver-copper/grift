@@ -91,6 +91,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if matches!(builtin, Builtin::VectorForEach) {
             return self.apply_vector_for_each(args, call_expr);
         }
+
+        // call-with-input-file / call-with-output-file — open port, apply proc, close port
+        if matches!(builtin, Builtin::CallWithInputFile | Builtin::CallWithOutputFile) {
+            return self.apply_call_with_file(builtin, args, call_expr);
+        }
+
+        // with-input-from-file / with-output-to-file — redirect current port, call thunk, restore
+        if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
+            return self.apply_with_file(builtin, args, call_expr);
+        }
         
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
@@ -210,6 +220,96 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (call-with-input-file string proc) and (call-with-output-file string proc).
+    /// Opens the file, pushes a CallWithPortClose continuation, and applies proc to the port.
+    fn apply_call_with_file(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let filename_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let proc = self.lisp.car(rest)?;
+        let path = self.extract_string_arg(filename_val, call_expr)?;
+
+        let pid = match &mut self.io {
+            Some(io) => {
+                if matches!(builtin, Builtin::CallWithInputFile) {
+                    io.open_input_file(&path)
+                } else {
+                    io.open_output_file(&path)
+                }.map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?
+            }
+            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+        };
+
+        let port_val = self.lisp.port(pid)?;
+        let port_id_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push continuation to close the port after proc returns
+        self.cont(ContType::CallWithPortClose, EnvRef(env)).data1(port_id_enc)?;
+
+        // Build args list: (port)
+        let nil = self.lisp.nil()?;
+        let args_list = self.lisp.cons(port_val, nil)?;
+
+        // Apply proc to the port
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (with-input-from-file string thunk) and (with-output-to-file string thunk).
+    /// Opens the file, redirects the current port, calls the thunk, restores and closes.
+    fn apply_with_file(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let filename_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let thunk = self.lisp.car(rest)?;
+        let path = self.extract_string_arg(filename_val, call_expr)?;
+
+        let is_input = matches!(builtin, Builtin::WithInputFromFile);
+        let pid = match &mut self.io {
+            Some(io) => {
+                if is_input {
+                    io.open_input_file(&path)
+                } else {
+                    io.open_output_file(&path)
+                }.map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?
+            }
+            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+        };
+
+        let saved_port = if is_input {
+            self.current_input_port
+        } else {
+            self.current_output_port
+        };
+
+        // Redirect current port
+        if is_input {
+            self.current_input_port = pid;
+        } else {
+            self.current_output_port = pid;
+        }
+
+        let saved_enc = self.lisp.number(saved_port.0 as isize)?;
+        let file_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push restore continuation
+        let cont_type = if is_input {
+            ContType::WithInputFromFileRestore
+        } else {
+            ContType::WithOutputToFileRestore
+        };
+        self.cont(cont_type, EnvRef(env)).data2(saved_enc, file_enc)?;
+
+        // Call thunk with no args
+        let nil = self.lisp.nil()?;
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(nil, env, call_expr)?;
+        Ok(TrampolineState::Return { val: thunk })
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -1481,8 +1581,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::CurrentInputPort | Builtin::CurrentOutputPort | Builtin::CurrentErrorPort => {
                 let pid = match builtin {
-                    Builtin::CurrentInputPort => grift_parser::PortId::STDIN,
-                    Builtin::CurrentOutputPort => grift_parser::PortId::STDOUT,
+                    Builtin::CurrentInputPort => self.current_input_port,
+                    Builtin::CurrentOutputPort => self.current_output_port,
                     _ => grift_parser::PortId::STDERR,
                 };
                 self.lisp.port(pid).map_err(Into::into)
@@ -1541,7 +1641,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDOUT
+                    self.current_output_port
                 } else {
                     let port_arg = self.lisp.car(rest)?;
                     match self.lisp.get(port_arg)? {
@@ -1564,7 +1664,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDOUT
+                    self.current_output_port
                 } else {
                     let port_arg = self.lisp.car(rest)?;
                     match self.lisp.get(port_arg)? {
@@ -1714,7 +1814,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDIN
+                    self.current_input_port
                 } else {
                     let port_arg = self.lisp.car(rest)?;
                     match self.lisp.get(port_arg)? {
@@ -1757,6 +1857,418 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::InputPortOpenp => self.port_predicate(args, |io, pid| io.is_input_port(pid) && io.is_port_open(pid)),
 
             Builtin::OutputPortOpenp => self.port_predicate(args, |io, pid| io.is_output_port(pid) && io.is_port_open(pid)),
+
+            // ================================================================
+            // File port operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::OpenInputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_input_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::OpenOutputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_output_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::OpenBinaryInputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_binary_input_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::OpenBinaryOutputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_binary_output_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            // call-with-input-file/output-file and with-input-from-file/output-to-file
+            // are handled in apply_builtin_trampolined
+            Builtin::CallWithInputFile | Builtin::CallWithOutputFile
+            | Builtin::WithInputFromFile | Builtin::WithOutputToFile => {
+                Err(self.make_error(ErrorKind::Generic, call_expr))
+            }
+
+            // ================================================================
+            // Binary I/O operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::ReadU8 | Builtin::PeekU8 => {
+                // (read-u8) or (read-u8 port)
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let result = if matches!(builtin, Builtin::ReadU8) {
+                            io.read_u8(pid)
+                        } else {
+                            io.peek_u8(pid)
+                        };
+                        match result {
+                            Ok(b) => self.lisp.number(b as isize).map_err(Into::into),
+                            Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::U8Readyp => {
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let ready = io.u8_ready(pid).unwrap_or(false);
+                        self.lisp.boolean(ready).map_err(Into::into)
+                    }
+                    None => self.lisp.boolean(false).map_err(Into::into),
+                }
+            }
+
+            Builtin::WriteU8 => {
+                // (write-u8 byte) or (write-u8 byte port)
+                let byte_arg = self.lisp.car(args)?;
+                let byte_val = match self.lisp.get(byte_arg)? {
+                    Value::Number(n) if n >= 0 && n <= 255 => n as u8,
+                    v => return Err(self.type_error(call_expr, "exact integer 0..255", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let pid = if self.lisp.get(rest)?.is_nil() {
+                    self.current_output_port
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                match &mut self.io {
+                    Some(io) => {
+                        io.write_u8(pid, byte_val)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::ReadBytevector => {
+                // (read-bytevector k) or (read-bytevector k port)
+                let k_arg = self.lisp.car(args)?;
+                let k = match self.lisp.get(k_arg)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    v => return Err(self.type_error(call_expr, "non-negative integer", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let pid = if self.lisp.get(rest)?.is_nil() {
+                    self.current_input_port
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                let mut buf = [0u8; 2048];
+                let read_len = k.min(buf.len());
+                match io.read_bytevector(pid, &mut buf[..read_len]) {
+                    Ok(n) => {
+                        // Create a bytevector from the read bytes
+                        let bv = self.lisp.make_bytevector(n, 0)?;
+                        for i in 0..n {
+                            self.lisp.bytevector_set(bv, i, buf[i])?;
+                        }
+                        Ok(bv)
+                    }
+                    Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                    Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::ReadBytevectorBang => {
+                // (read-bytevector! bv) or (read-bytevector! bv port) or (read-bytevector! bv port start) or (read-bytevector! bv port start end)
+                let bv_arg = self.lisp.car(args)?;
+                let bv_len = match self.lisp.get(bv_arg)? {
+                    Value::Bytevector { len, .. } => len,
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
+                    (self.current_input_port, 0, bv_len)
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    let pid = match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    };
+                    let rest2 = self.lisp.cdr(rest)?;
+                    if self.lisp.get(rest2)?.is_nil() {
+                        (pid, 0, bv_len)
+                    } else {
+                        let start_arg = self.lisp.car(rest2)?;
+                        let start = self.get_int(start_arg, call_expr)? as usize;
+                        let rest3 = self.lisp.cdr(rest2)?;
+                        let end = if self.lisp.get(rest3)?.is_nil() {
+                            bv_len
+                        } else {
+                            let end_arg = self.lisp.car(rest3)?;
+                            self.get_int(end_arg, call_expr)? as usize
+                        };
+                        (pid, start, end)
+                    }
+                };
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                let read_len = end.saturating_sub(start);
+                let mut buf = [0u8; 2048];
+                let actual_len = read_len.min(buf.len());
+                match io.read_bytevector(pid, &mut buf[..actual_len]) {
+                    Ok(n) => {
+                        for i in 0..n {
+                            self.lisp.bytevector_set(bv_arg, start + i, buf[i])?;
+                        }
+                        self.lisp.number(n as isize).map_err(Into::into)
+                    }
+                    Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                    Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::WriteBytevector => {
+                // (write-bytevector bv) or (write-bytevector bv port) or (write-bytevector bv port start) or (write-bytevector bv port start end)
+                let bv_arg = self.lisp.car(args)?;
+                let bv_len = match self.lisp.get(bv_arg)? {
+                    Value::Bytevector { len, .. } => len,
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
+                    (self.current_output_port, 0, bv_len)
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    let pid = match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    };
+                    let rest2 = self.lisp.cdr(rest)?;
+                    if self.lisp.get(rest2)?.is_nil() {
+                        (pid, 0, bv_len)
+                    } else {
+                        let start_arg = self.lisp.car(rest2)?;
+                        let start = self.get_int(start_arg, call_expr)? as usize;
+                        let rest3 = self.lisp.cdr(rest2)?;
+                        let end = if self.lisp.get(rest3)?.is_nil() {
+                            bv_len
+                        } else {
+                            let end_arg = self.lisp.car(rest3)?;
+                            self.get_int(end_arg, call_expr)? as usize
+                        };
+                        (pid, start, end)
+                    }
+                };
+                // Extract bytes from bytevector into stack buffer
+                let write_len = end.saturating_sub(start);
+                let mut buf = [0u8; 2048];
+                let actual_len = write_len.min(buf.len());
+                for i in 0..actual_len {
+                    let byte_slot = self.lisp.bytevector_get(bv_arg, start + i)?;
+                    match self.lisp.get(byte_slot)? {
+                        Value::Number(n) => buf[i] = n as u8,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                }
+                match &mut self.io {
+                    Some(io) => {
+                        io.write_bytevector(pid, &buf[..actual_len])
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            // ================================================================
+            // Bytevector port operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::OpenInputBytevector => {
+                // (open-input-bytevector bv)
+                let arg = self.lisp.car(args)?;
+                let bv_len = match self.lisp.get(arg)? {
+                    Value::Bytevector { len, .. } => len,
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                };
+                let mut buf = [0u8; 2048];
+                let actual_len = bv_len.min(buf.len());
+                for i in 0..actual_len {
+                    let byte_slot = self.lisp.bytevector_get(arg, i)?;
+                    match self.lisp.get(byte_slot)? {
+                        Value::Number(n) => buf[i] = n as u8,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                }
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_input_bytevector(&buf[..actual_len])
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::OpenOutputBytevector => {
+                // (open-output-bytevector)
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_output_bytevector()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::GetOutputBytevector => {
+                // (get-output-bytevector port)
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Port(pid) => {
+                        match &self.io {
+                            Some(io) => {
+                                let bytes = io.get_output_bytevector(pid)
+                                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                                let len = bytes.len();
+                                let bv = self.lisp.make_bytevector(len, 0)?;
+                                for i in 0..len {
+                                    self.lisp.bytevector_set(bv, i, bytes[i])?;
+                                }
+                                Ok(bv)
+                            }
+                            None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "port", v.type_name())),
+                }
+            }
+
+            // ================================================================
+            // Additional I/O operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::WriteStringPort => {
+                // (write-string string) or (write-string string port) or (write-string string port start) or (write-string string port start end)
+                let str_arg = self.lisp.car(args)?;
+                let (str_len, str_data) = match self.lisp.get(str_arg)? {
+                    Value::String { len, data } => (len, data),
+                    v => return Err(self.type_error(call_expr, "string", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
+                    (self.current_output_port, 0, str_len)
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    let pid = match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    };
+                    let rest2 = self.lisp.cdr(rest)?;
+                    if self.lisp.get(rest2)?.is_nil() {
+                        (pid, 0, str_len)
+                    } else {
+                        let start_arg = self.lisp.car(rest2)?;
+                        let start = self.get_int(start_arg, call_expr)? as usize;
+                        let rest3 = self.lisp.cdr(rest2)?;
+                        let end = if self.lisp.get(rest3)?.is_nil() {
+                            str_len
+                        } else {
+                            let end_arg = self.lisp.car(rest3)?;
+                            self.get_int(end_arg, call_expr)? as usize
+                        };
+                        (pid, start, end)
+                    }
+                };
+                // Extract chars from string to stack buffer
+                let mut buf = [0u8; 2048];
+                let mut byte_len = 0;
+                for i in start..end {
+                    let char_slot = self.lisp.arena_index_at_offset(str_data, i)?;
+                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                        let enc_len = c.len_utf8();
+                        if byte_len + enc_len > buf.len() { break; }
+                        c.encode_utf8(&mut buf[byte_len..]);
+                        byte_len += enc_len;
+                    }
+                }
+                let s = core::str::from_utf8(&buf[..byte_len])
+                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                match &mut self.io {
+                    Some(io) => {
+                        io.write_str(pid, s)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::FlushOutputPort => {
+                // (flush-output-port) or (flush-output-port port)
+                let pid = if self.lisp.get(args)?.is_nil() {
+                    self.current_output_port
+                } else {
+                    let port_arg = self.lisp.car(args)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                match &mut self.io {
+                    Some(io) => {
+                        io.flush(pid)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
 
             // ================================================================
             // File system operations (R7RS §6.13)
@@ -2512,7 +3024,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Returns STDIN if no argument is provided.
     fn extract_input_port(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
         if self.lisp.get(args)?.is_nil() {
-            Ok(grift_parser::PortId::STDIN)
+            Ok(self.current_input_port)
         } else {
             let port_arg = self.lisp.car(args)?;
             match self.lisp.get(port_arg)? {

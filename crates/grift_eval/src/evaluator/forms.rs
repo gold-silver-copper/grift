@@ -487,6 +487,57 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
+            ContType::CallWithPortClose => {
+                // val is the result of the proc
+                // Data: port_id_encoded (single value - Number encoding port id)
+                let port_id = match self.lisp.get(data)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                if let Some(ref mut io) = self.io {
+                    let _ = io.close_port(port_id);
+                }
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
+            ContType::WithInputFromFileRestore => {
+                // val is the result of the thunk
+                // Data: (saved_port_encoded . file_port_encoded)
+                let (saved_enc, file_enc) = self.unpack2(data)?;
+                let saved_id = match self.lisp.get(saved_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                let file_id = match self.lisp.get(file_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                self.current_input_port = saved_id;
+                if let Some(ref mut io) = self.io {
+                    let _ = io.close_port(file_id);
+                }
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
+            ContType::WithOutputToFileRestore => {
+                // val is the result of the thunk
+                // Data: (saved_port_encoded . file_port_encoded)
+                let (saved_enc, file_enc) = self.unpack2(data)?;
+                let saved_id = match self.lisp.get(saved_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                let file_id = match self.lisp.get(file_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                self.current_output_port = saved_id;
+                if let Some(ref mut io) = self.io {
+                    let _ = io.close_port(file_id);
+                }
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
             ContType::BeginSeq => {
                 // Data: (remaining . env)
                 let (remaining, env) = self.unpack2(data)?;
