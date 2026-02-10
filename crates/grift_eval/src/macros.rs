@@ -64,9 +64,10 @@ macro_rules! builtin_numeric_pred {
             Value::Number($n) => $self.lisp.boolean($int_check).map_err(Into::into),
             Value::Float($f) => $self.lisp.boolean($float_check).map_err(Into::into),
             Value::Rational { .. } => {
-                // Rationals are exact
+                // Rationals are exact; bind dummy value for the $n pattern variable
+                // (used by callers like `|_n| true` which check integer predicates)
+                #[allow(unused_variables)]
                 let $n = 0isize;
-                let _ = $n;
                 $self.lisp.boolean($int_check).map_err(Into::into)
             }
             Value::Complex { real: $f, .. } => $self.lisp.boolean($float_check).map_err(Into::into),

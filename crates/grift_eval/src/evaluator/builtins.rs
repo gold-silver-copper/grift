@@ -2569,7 +2569,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::SchemeReportEnvironment => {
                 // (scheme-report-environment version)
-                // Returns an environment corresponding to R^version RS
+                // Returns an environment corresponding to R^version RS (e.g., R5RS)
                 let version = self.get_int(self.lisp.car(args)?, call_expr)?;
                 if version != 5 && version != 7 {
                     return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
@@ -2745,6 +2745,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::Bytevector_ => {
                 // (bytevector byte ...) - Create bytevector from given byte values
+                // Stack-allocated buffer limit, matching bytevector-append's MAX_TOTAL_BYTES
                 const MAX_BYTES: usize = 4096;
                 let mut bytes: [u8; MAX_BYTES] = [0u8; MAX_BYTES];
                 let mut len = 0;
