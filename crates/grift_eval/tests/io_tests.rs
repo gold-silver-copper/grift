@@ -628,3 +628,65 @@ fn test_u8_ready() {
     assert!(eval_is_true(&lisp, &mut eval,
         "(u8-ready? (open-input-bytevector #u8(1 2 3)))"));
 }
+
+// ============================================================================
+// Large data tests (validates removal of fixed-size stack buffer limits)
+// ============================================================================
+
+#[test]
+fn test_open_input_string_large() {
+    // Validates fix: open-input-string previously truncated at 1024 bytes.
+    // A 2000-char string should now be handled correctly.
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    // Build a large string and round-trip through open-input-string + read-line
+    let expr = r#"
+        (let* ((s (make-string 2000 #\x))
+               (p (open-input-string s))
+               (line (read-line p)))
+          (close-port p)
+          (string-length line))
+    "#;
+    assert_eq!(eval_to_num(&lisp, &mut eval, expr), 2000);
+}
+
+#[test]
+fn test_read_line_large() {
+    // Validates fix: read-line previously truncated at 2048 bytes.
+    // A 3000-char line should now be read fully.
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    let expr = r#"
+        (let* ((s (string-append (make-string 3000 #\a) "\n" "extra"))
+               (p (open-input-string s))
+               (line (read-line p)))
+          (close-port p)
+          (string-length line))
+    "#;
+    assert_eq!(eval_to_num(&lisp, &mut eval, expr), 3000);
+}
+
+#[test]
+fn test_read_string_large() {
+    // Validates fix: read-string previously truncated at 2048 bytes.
+    // Reading 3000 chars should now work correctly.
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut io = grift_std::StdIoProvider::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    eval.set_io_provider(&mut io);
+
+    let expr = r#"
+        (let* ((s (make-string 3000 #\b))
+               (p (open-input-string s))
+               (result (read-string 3000 p)))
+          (close-port p)
+          (string-length result))
+    "#;
+    assert_eq!(eval_to_num(&lisp, &mut eval, expr), 3000);
+}

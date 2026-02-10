@@ -992,22 +992,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.get_char(self.lisp.car(rest)?, call_expr)?
                 };
                 
-                // Create string of k characters
-                const MAX_MAKE_STRING_LEN: usize = 1024;
-                let len = k as usize;
-                if len > MAX_MAKE_STRING_LEN {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
-                let mut chars = ['\0'; MAX_MAKE_STRING_LEN];
-                chars[..len].fill(fill);
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                // Allocate directly in the arena (no fixed-size stack buffer)
+                self.lisp.make_string(k as usize, fill).map_err(Into::into)
             }
             
             Builtin::String => {
                 // (string char ...) - Create string from characters
-                const MAX_STRING_LEN: usize = 1024;
-                let mut chars = ['\0'; MAX_STRING_LEN];
-                let mut len = 0;
+                // Collect chars into arena cons list (reversed), then build string
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut len: usize = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -1015,17 +1009,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
-                            if len >= MAX_STRING_LEN {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                            }
-                            chars[len] = self.get_char(car, call_expr)?;
+                            let c = self.get_char(car, call_expr)?;
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
                             len += 1;
                             current = cdr;
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                let result = self.lisp.make_string(len, '\0')?;
+                let mut cursor = collected;
+                let mut i = len;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    if let Value::Char(c) = self.lisp.get(ch)? {
+                        self.lisp.string_set(result, i, c)?;
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
             }
             
             Builtin::StringLength => {
@@ -1121,10 +1125,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::StringAppend => {
                 // (string-append string ...) - Concatenate strings
-                const MAX_TOTAL_LEN: usize = 4096;
-                let mut chars = ['\0'; MAX_TOTAL_LEN];
-                let mut total_len = 0;
-                
+                // First pass: compute total length
+                let mut total_len: usize = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -1133,21 +1135,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
-                                Value::String { len, data } => {
-                                    if total_len + len > MAX_TOTAL_LEN {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                    }
-                                    for i in 0..len {
-                                        // Characters start at data (no header with inline length)
-                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                                        match self.lisp.get(char_slot)? {
-                                            Value::Char(c) => {
-                                                chars[total_len] = c;
-                                                total_len += 1;
-                                            }
-                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                                        }
-                                    }
+                                Value::String { len, .. } => {
+                                    total_len += len;
                                 }
                                 v => return Err(self.type_error(call_expr, "string", v.type_name())),
                             }
@@ -1157,7 +1146,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 
-                self.lisp.string_from_chars(&chars[..total_len]).map_err(Into::into)
+                // Allocate result string
+                let result = self.lisp.make_string(total_len, '\0')?;
+                
+                // Second pass: copy characters
+                let mut pos = 0;
+                current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            if let Value::String { len, data } = self.lisp.get(car)? {
+                                for i in 0..len {
+                                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                        self.lisp.string_set(result, pos, c)?;
+                                        pos += 1;
+                                    }
+                                }
+                            }
+                            current = cdr;
+                        }
+                        _ => break,
+                    }
+                }
+                
+                Ok(result)
             }
             
             Builtin::StringToList => {
