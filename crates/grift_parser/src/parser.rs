@@ -4,7 +4,7 @@
 //! from a token stream produced by the [`Lexer`](crate::lexer::Lexer).
 
 use grift_arena::{ArenaIndex, ArenaError};
-use crate::Lisp;
+use crate::{Lisp, Value};
 use crate::lexer::{Lexer, Token, LexError, LexErrorKind};
 
 // Re-export SourceLoc from lexer for backward compatibility
@@ -41,8 +41,6 @@ pub enum ParseErrorKind {
     InvalidEscapeSequence,
     /// Unterminated string literal
     UnterminatedString,
-    /// Vector literal exceeds maximum size (256 elements in no_std)
-    VectorLiteralTooLarge,
 }
 
 impl ParseError {
@@ -172,17 +170,17 @@ impl<'a> Parser<'a> {
     
     /// Parse a list (after consuming the opening paren via the lexer)
     fn parse_list<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        const MAX_LIST_DEPTH: usize = 128;
-        let mut elements: [ArenaIndex; MAX_LIST_DEPTH] = [ArenaIndex::NIL; MAX_LIST_DEPTH];
-        let mut count = 0;
-        
+        let nil = lisp.nil()?;
+        let mut reversed = nil;
+        let mut count = 0usize;
+
         loop {
             let loc = self.lexer.loc();
             let spanned = self.lexer.next_token()
                 .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc })??;
             let token = spanned.token;
             let loc = spanned.loc;
-            
+
             match token {
                 Token::RParen => break,
                 Token::Dot => {
@@ -190,9 +188,9 @@ impl<'a> Parser<'a> {
                     if count == 0 {
                         return Err(ParseError { kind: ParseErrorKind::UnexpectedChar('.'), loc });
                     }
-                    
+
                     let cdr = self.parse(lisp)?;
-                    
+
                     // Expect closing paren
                     let close_loc = self.lexer.loc();
                     let closing = self.lexer.next_token()
@@ -200,40 +198,42 @@ impl<'a> Parser<'a> {
                     if !matches!(closing.token, Token::RParen) {
                         return Err(ParseError { kind: ParseErrorKind::UnmatchedParen, loc: closing.loc });
                     }
-                    
-                    // Build the dotted list
-                    let mut result = cdr;
-                    for i in (0..count).rev() {
-                        result = lisp.cons(elements[i], result)?;
+
+                    // Reverse the accumulated list in-place with cdr as the tail
+                    let mut prev = cdr;
+                    let mut current = reversed;
+                    while current != nil {
+                        let next = lisp.cdr(current)?;
+                        lisp.set_cdr(current, prev)?;
+                        prev = current;
+                        current = next;
                     }
-                    return Ok(result);
+                    return Ok(prev);
                 }
                 other => {
-                    if count >= MAX_LIST_DEPTH {
-                        return Err(ParseError { kind: ParseErrorKind::OutOfMemory, loc });
-                    }
-                    elements[count] = self.parse_token(other, loc, lisp)?;
+                    let elem = self.parse_token(other, loc, lisp)?;
+                    reversed = lisp.cons(elem, reversed)?;
                     count += 1;
                 }
             }
         }
-        
-        // Build proper list
+
+        // Build proper list by reversing in-place
         if count == 0 {
-            return lisp.nil().map_err(Into::into);
+            return Ok(nil);
         }
-        let mut result = lisp.nil()?;
-        for i in (0..count).rev() {
-            result = lisp.cons(elements[i], result)?;
+        let mut prev = nil;
+        let mut current = reversed;
+        while current != nil {
+            let next = lisp.cdr(current)?;
+            lisp.set_cdr(current, prev)?;
+            prev = current;
+            current = next;
         }
-        Ok(result)
+        Ok(prev)
     }
     
     /// Parse vector literal #(obj ...)
-    /// 
-    /// Note: In no_std environments, vector literals are limited to 256 elements
-    /// due to stack allocation constraints. Use `make-vector` or `vector` for
-    /// larger vectors.
     fn parse_vector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         // The VectorOpen token has consumed only the '#' character;
         // the '(' must be consumed separately
@@ -243,38 +243,42 @@ impl<'a> Parser<'a> {
         if !matches!(opening.token, Token::LParen) {
             return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
         }
-        
-        let mut elements: [ArenaIndex; 256] = [ArenaIndex::NIL; 256];
+
+        let nil = lisp.nil()?;
+        let mut reversed = nil;
         let mut count = 0usize;
-        
+
         loop {
             let elem_loc = self.lexer.loc();
             let spanned = self.lexer.next_token()
                 .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: elem_loc })??;
             let token = spanned.token;
             let loc = spanned.loc;
-            
+
             match token {
                 Token::RParen => break,
                 other => {
-                    if count >= 256 {
-                        return Err(ParseError { kind: ParseErrorKind::VectorLiteralTooLarge, loc });
-                    }
-                    elements[count] = self.parse_token(other, loc, lisp)?;
+                    let elem = self.parse_token(other, loc, lisp)?;
+                    reversed = lisp.cons(elem, reversed)?;
                     count += 1;
                 }
             }
         }
-        
+
         // Create the vector
         let placeholder = lisp.number(0)?;
         let vec = lisp.make_array(count, placeholder)?;
-        
-        // Fill in elements
-        for (i, &elem) in elements.iter().enumerate().take(count) {
-            lisp.array_set(vec, i, elem)?;
+
+        // Fill from the end since the list is reversed
+        let mut current = reversed;
+        let mut i = count;
+        while current != nil {
+            i -= 1;
+            let (car, next) = lisp.car_cdr(current)?;
+            lisp.array_set(vec, i, car)?;
+            current = next;
         }
-        
+
         Ok(vec)
     }
     
@@ -289,27 +293,26 @@ impl<'a> Parser<'a> {
         if !matches!(opening.token, Token::LParen) {
             return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
         }
-        
-        let mut bytes: [u8; 256] = [0; 256];
+
+        let nil = lisp.nil()?;
+        let mut reversed = nil;
         let mut count = 0usize;
-        
+
         loop {
             let elem_loc = self.lexer.loc();
             let spanned = self.lexer.next_token()
                 .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: elem_loc })??;
             let token = spanned.token;
             let loc = spanned.loc;
-            
+
             match token {
                 Token::RParen => break,
                 Token::Number(n) => {
-                    if count >= 256 {
-                        return Err(ParseError { kind: ParseErrorKind::VectorLiteralTooLarge, loc });
-                    }
                     if !(0..=255).contains(&n) {
                         return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc });
                     }
-                    bytes[count] = n as u8;
+                    let num = lisp.number(n)?;
+                    reversed = lisp.cons(num, reversed)?;
                     count += 1;
                 }
                 _ => {
@@ -317,13 +320,20 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        
-        // Create the bytevector
+
+        // Create the bytevector and fill from the end
         let bv = lisp.make_bytevector(count, 0)?;
-        for (i, &byte) in bytes.iter().enumerate().take(count) {
-            lisp.bytevector_set(bv, i, byte)?;
+        let mut current = reversed;
+        let mut i = count;
+        while current != nil {
+            i -= 1;
+            let (car, next) = lisp.car_cdr(current)?;
+            if let Value::Number(n) = lisp.get(car)? {
+                lisp.bytevector_set(bv, i, n as u8)?;
+            }
+            current = next;
         }
-        
+
         Ok(bv)
     }
     
@@ -349,12 +359,12 @@ pub fn parse_all<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaInd
     let mut parser = Parser::new(input);
     let mut results = [ArenaIndex::NIL; 64];
     let mut count = 0;
-    
+
     while parser.has_more() && count < 64 {
         results[count] = parser.parse(lisp)?;
         count += 1;
     }
-    
+
     // Build list of results
     let mut result = lisp.nil()?;
     for i in (0..count).rev() {
