@@ -1057,16 +1057,11 @@ impl Value {
             Value::Nil => "nil",
             Value::Void => "void",
             Value::True | Value::False => "boolean",
-            Value::Number(_) => "number",
-            Value::Float(_) => "number",
-            Value::Rational { .. } => "number",
-            Value::Complex { .. } => "number",
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
-            Value::Lambda { .. } => "procedure",
-            Value::Builtin(_) => "procedure",
-            Value::StdLib(_) => "procedure",
+            Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
             Value::Bytevector { .. } => "bytevector",
@@ -1161,37 +1156,14 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*cont_chain);
                 tracer(*metadata);
             }
-            Value::Array { len, data } => {
-                // For non-empty arrays, trace all elements
-                // Empty arrays have len=0 and data == NIL
+            Value::Array { len, data }
+            | Value::Bytevector { len, data }
+            | Value::String { len, data } => {
+                // For non-empty contiguous data, trace all element slots
                 if *len > 0 {
                     let base_idx = data.raw();
                     for i in 0..*len {
-                        // Elements are at data, data+1, ..., data+len-1
-                        let elem_idx = ArenaIndex::new(base_idx + i);
-                        tracer(elem_idx);
-                    }
-                }
-            }
-            Value::Bytevector { len, data } => {
-                // Same layout as Array — trace all element slots
-                if *len > 0 {
-                    let base_idx = data.raw();
-                    for i in 0..*len {
-                        let elem_idx = ArenaIndex::new(base_idx + i);
-                        tracer(elem_idx);
-                    }
-                }
-            }
-            Value::String { len, data } => {
-                // For non-empty strings, trace all Char slots
-                // Empty strings have len=0 and data == NIL
-                if *len > 0 {
-                    let base_idx = data.raw();
-                    for i in 0..*len {
-                        // Characters are at data, data+1, ..., data+len-1
-                        let char_idx = ArenaIndex::new(base_idx + i);
-                        tracer(char_idx);
+                        tracer(ArenaIndex::new(base_idx + i));
                     }
                 }
             }
