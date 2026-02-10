@@ -297,6 +297,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             .with_args(expected, got)
     }
 
+    /// Create and raise a file-error typed error object through the exception handler chain.
+    /// Returns a TrampolineState that either invokes the handler or propagates as EvalError.
+    pub(crate) fn raise_file_error(&mut self, msg: &str, expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        self.raise_typed_error(msg, expr, "file-error")
+    }
+
+    /// Create and raise a read-error typed error object through the exception handler chain.
+    pub(crate) fn raise_read_error(&mut self, msg: &str, expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        self.raise_typed_error(msg, expr, "read-error")
+    }
+
+    /// Create and raise a typed error object (R7RS §6.11).
+    /// The `error_type` is stored as a symbol in the cdr of irritants_and_type.
+    fn raise_typed_error(&mut self, msg: &str, expr: ArenaIndex, error_type: &str)
+        -> Result<TrampolineState, EvalError>
+    {
+        let message = self.lisp.string(msg)?;
+        let nil = self.lisp.nil()?;
+        let irritants = if !expr.is_nil() {
+            self.lisp.cons(expr, nil)?
+        } else {
+            nil
+        };
+        let type_sym = self.lisp.symbol(error_type)?;
+        let irritants_and_type = self.lisp.cons(irritants, type_sym)?;
+        let error_obj = self.lisp.alloc(Value::ErrorObject { message, irritants_and_type })?;
+
+        match self.invoke_exception_handler(error_obj, false)? {
+            Some(state) => Ok(state),
+            None => Err(self.make_error(ErrorKind::Generic, error_obj)),
+        }
+    }
+
     /// Check whether an error kind is catchable by Scheme exception handlers.
     ///
     /// OutOfMemory and StackOverflow are not catchable because they represent
@@ -1121,6 +1158,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.symbol_matches(car, "environment")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_environment(cdr, env).map(Some);
+        }
+        
+        // include - read and evaluate file contents (R7RS §4.1.7)
+        if self.lisp.symbol_matches(car, "include")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_include(cdr, env, false).map(Some);
+        }
+        
+        // include-ci - read and evaluate file contents case-insensitively (R7RS §4.1.7)
+        if self.lisp.symbol_matches(car, "include-ci")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_include(cdr, env, true).map(Some);
         }
         
         Ok(None)
