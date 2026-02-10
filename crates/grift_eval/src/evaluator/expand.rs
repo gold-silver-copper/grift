@@ -402,17 +402,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Returns the renamed symbol if found, otherwise the original.
     fn rename_lookup(&self, sym: ArenaIndex, renames: ArenaIndex) -> EvalResult {
-        let mut current = renames;
-        loop {
-            if self.lisp.get(current)?.is_nil() {
-                return Ok(sym); // Not renamed
-            }
-            let pair = self.lisp.car(current)?;
-            let key = self.lisp.car(pair)?;
-            if self.lisp.symbol_eq(key, sym)? {
-                return self.lisp.cdr(pair).map_err(Into::into);
-            }
-            current = self.lisp.cdr(current)?;
+        match self.bindings_lookup(renames, sym)? {
+            Some(renamed) => Ok(renamed),
+            None => Ok(sym),
         }
     }
 
@@ -423,8 +415,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         original: ArenaIndex,
         renamed: ArenaIndex,
     ) -> EvalResult {
-        let pair = self.lisp.cons(original, renamed)?;
-        self.lisp.cons(pair, renames).map_err(Into::into)
+        self.bindings_extend(renames, original, renamed)
     }
 
     /// Check if two symbols are equal
@@ -2266,52 +2257,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         args: ArenaIndex,
         renames: ArenaIndex,
     ) -> EvalResult {
-        let bindings = self.lisp.car(args)?;
-        let body = self.lisp.cdr(args)?;
-
-        // Save current macro environment
-        let saved_macro_env = self.macro_env;
-
-        // Phase 1: Parse ALL transformers in the outer (saved) macro environment.
-        // Arena-allocated list of (name . transformer) pairs for parallel installation.
-        let mut parsed_bindings = self.lisp.nil()?;
-        let mut current = bindings;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let binding = self.lisp.car(current)?;
-            let name = self.lisp.car(binding)?;
-            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-
-            let transformer = self.parse_transformer(transformer_expr)?;
-            let pair = self.lisp.cons(name, transformer)?;
-            parsed_bindings = self.lisp.cons(pair, parsed_bindings)?;
-
-            current = self.lisp.cdr(current)?;
-        }
-
-        // Phase 2: Install all bindings at once
-        let mut cursor = parsed_bindings;
-        while let Value::Cons { .. } = self.lisp.get(cursor)? {
-            let pair = self.lisp.car(cursor)?;
-            let name = self.lisp.car(pair)?;
-            let transformer = self.lisp.cdr(pair)?;
-            let macro_binding = self.lisp.cons(name, transformer)?;
-            self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
-            cursor = self.lisp.cdr(cursor)?;
-        }
-
-        // Expand body
-        let expanded_body = self.expand_body(body, renames)?;
-
-        // Restore macro environment
-        self.macro_env = saved_macro_env;
-
-        // Wrap in begin if multiple expressions
-        if self.list_length(expanded_body)? == 1 {
-            self.lisp.car(expanded_body).map_err(Into::into)
-        } else {
-            let begin_sym = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin_sym, expanded_body).map_err(Into::into)
-        }
+        self.expand_with_syntax_bindings(args, renames, true)
     }
 
     /// Handle (letrec-syntax ((name transformer) ...) body ...)
@@ -2321,33 +2267,62 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         args: ArenaIndex,
         renames: ArenaIndex,
     ) -> EvalResult {
+        self.expand_with_syntax_bindings(args, renames, false)
+    }
+
+    /// Shared implementation for let-syntax and letrec-syntax.
+    /// When `parallel` is true, all transformers are parsed before installation (let-syntax).
+    /// When false, each transformer is parsed and installed sequentially (letrec-syntax).
+    fn expand_with_syntax_bindings(
+        &mut self,
+        args: ArenaIndex,
+        renames: ArenaIndex,
+        parallel: bool,
+    ) -> EvalResult {
         let bindings = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
-
-        // Save current macro environment
         let saved_macro_env = self.macro_env;
 
-        // Install bindings sequentially - each transformer can see previous bindings
-        let mut current = bindings;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let binding = self.lisp.car(current)?;
-            let name = self.lisp.car(binding)?;
-            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-
-            let transformer = self.parse_transformer(transformer_expr)?;
-            let macro_binding = self.lisp.cons(name, transformer)?;
-            self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
-
-            current = self.lisp.cdr(current)?;
+        if parallel {
+            // Phase 1: Parse ALL transformers in the outer macro environment.
+            let mut parsed_bindings = self.lisp.nil()?;
+            let mut current = bindings;
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let binding = self.lisp.car(current)?;
+                let name = self.lisp.car(binding)?;
+                let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                let transformer = self.parse_transformer(transformer_expr)?;
+                let pair = self.lisp.cons(name, transformer)?;
+                parsed_bindings = self.lisp.cons(pair, parsed_bindings)?;
+                current = self.lisp.cdr(current)?;
+            }
+            // Phase 2: Install all bindings at once
+            let mut cursor = parsed_bindings;
+            while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                let pair = self.lisp.car(cursor)?;
+                let name = self.lisp.car(pair)?;
+                let transformer = self.lisp.cdr(pair)?;
+                let macro_binding = self.lisp.cons(name, transformer)?;
+                self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
+                cursor = self.lisp.cdr(cursor)?;
+            }
+        } else {
+            // Install bindings sequentially - each transformer can see previous bindings
+            let mut current = bindings;
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let binding = self.lisp.car(current)?;
+                let name = self.lisp.car(binding)?;
+                let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                let transformer = self.parse_transformer(transformer_expr)?;
+                let macro_binding = self.lisp.cons(name, transformer)?;
+                self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
+                current = self.lisp.cdr(current)?;
+            }
         }
 
-        // Expand body
         let expanded_body = self.expand_body(body, renames)?;
-
-        // Restore macro environment
         self.macro_env = saved_macro_env;
 
-        // Wrap in begin if multiple expressions
         if self.list_length(expanded_body)? == 1 {
             self.lisp.car(expanded_body).map_err(Into::into)
         } else {
@@ -2356,7 +2331,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Expand a body (list of expressions)
     /// Expand a body (list of expressions)
     /// 
     /// Iterative implementation to avoid stack overflow on deeply nested lists.

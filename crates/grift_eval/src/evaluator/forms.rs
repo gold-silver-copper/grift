@@ -27,6 +27,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok((index, len))
     }
 
+    /// Decode a Number-encoded port ID from an arena value.
+    fn decode_port_id(&self, enc: ArenaIndex, err_ctx: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
+        match self.lisp.get(enc)? {
+            Value::Number(n) => Ok(grift_parser::PortId(n as usize)),
+            _ => Err(self.make_error(ErrorKind::Generic, err_ctx)),
+        }
+    }
+
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
         // The cont_env field is stored for potential future use (e.g., debugging, stack traces)
         // but is not currently used during normal continuation processing.
@@ -490,10 +498,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             ContType::CallWithPortClose => {
                 // val is the result of the proc
                 // Data: port_id_encoded (single value - Number encoding port id)
-                let port_id = match self.lisp.get(data)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
+                let port_id = self.decode_port_id(data, val)?;
                 if let Some(ref mut io) = self.io {
                     let _ = io.close_port(port_id);
                 }
@@ -504,15 +509,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is the result of the thunk
                 // Data: (saved_port_encoded . file_port_encoded)
                 let (saved_enc, file_enc) = self.unpack2(data)?;
-                let saved_id = match self.lisp.get(saved_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                let file_id = match self.lisp.get(file_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                self.current_input_port = saved_id;
+                self.current_input_port = self.decode_port_id(saved_enc, val)?;
+                let file_id = self.decode_port_id(file_enc, val)?;
                 if let Some(ref mut io) = self.io {
                     let _ = io.close_port(file_id);
                 }
@@ -523,15 +521,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is the result of the thunk
                 // Data: (saved_port_encoded . file_port_encoded)
                 let (saved_enc, file_enc) = self.unpack2(data)?;
-                let saved_id = match self.lisp.get(saved_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                let file_id = match self.lisp.get(file_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                self.current_output_port = saved_id;
+                self.current_output_port = self.decode_port_id(saved_enc, val)?;
+                let file_id = self.decode_port_id(file_enc, val)?;
                 if let Some(ref mut io) = self.io {
                     let _ = io.close_port(file_id);
                 }
