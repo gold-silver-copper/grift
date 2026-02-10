@@ -3022,7 +3022,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let theta = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 let a = (r as f64) * libm::cos(theta as f64);
                 let b = (r as f64) * libm::sin(theta as f64);
-                if b as fsize == 0.0 {
+                if libm::fabs(b) < f64::EPSILON {
                     return self.lisp.float(a as fsize).map_err(Into::into);
                 }
                 let tag = self.lisp.symbol("complex")?;
@@ -3232,14 +3232,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Return an exact integer if both args are exact, otherwise a float
-    fn return_exact_if_both_exact(&self, args: ArenaIndex, val: fsize, call_expr: ArenaIndex) -> EvalResult {
+    fn return_exact_if_both_exact(&self, args: ArenaIndex, val: fsize, _call_expr: ArenaIndex) -> EvalResult {
         let a = self.lisp.car(args)?;
         let b_list = self.lisp.cdr(args)?;
         let b = self.lisp.car(b_list)?;
         let both_exact = matches!(self.lisp.get(a)?, Value::Number(_))
             && matches!(self.lisp.get(b)?, Value::Number(_));
         if both_exact {
-            let _ = call_expr;
             self.lisp.number(val as isize).map_err(Into::into)
         } else {
             self.lisp.float(val).map_err(Into::into)
