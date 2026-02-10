@@ -1077,41 +1077,20 @@ impl<const N: usize> Lisp<N> {
     /// This limit is chosen to balance stack usage in no_std environments
     /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
-        // Create a new roots array with reserved slots and intern table included
         // Using const-sized array to avoid alloc in no_std
-        // 512 roots should be sufficient for most programs while keeping
-        // stack usage reasonable (~8KB on 64-bit systems)
         const MAX_ROOTS: usize = 512;
         
-        // Panic if too many roots - this indicates a programming error
         // Account for 6 reserved roots (nil, void, true, false, intern_table, string_intern_table)
         assert!(roots.len() < MAX_ROOTS - 6, 
             "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 6 - 1);
         
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
-        let mut root_count = 0;
-        
-        // Add reserved slots as roots to prevent them from being collected
-        all_roots[root_count] = self.nil_slot;
-        root_count += 1;
-        all_roots[root_count] = self.void_slot;
-        root_count += 1;
-        all_roots[root_count] = self.true_slot;
-        root_count += 1;
-        all_roots[root_count] = self.false_slot;
-        root_count += 1;
-        
-        // Add intern table reference cell as root
-        // This is a cons cell whose car is the intern table alist
-        // Tracing from this cell will reach all interned symbols
-        all_roots[root_count] = self.intern_table_slot;
-        root_count += 1;
-        
-        // Add string intern table reference cell as root
-        // This is a cons cell whose car is the list of interned string headers
-        // Tracing from this cell preserves interned string data
-        all_roots[root_count] = self.string_intern_table_slot;
-        root_count += 1;
+        let reserved = [
+            self.nil_slot, self.void_slot, self.true_slot, self.false_slot,
+            self.intern_table_slot, self.string_intern_table_slot,
+        ];
+        all_roots[..reserved.len()].copy_from_slice(&reserved);
+        let mut root_count = reserved.len();
         
         // Copy provided roots
         for &root in roots {
