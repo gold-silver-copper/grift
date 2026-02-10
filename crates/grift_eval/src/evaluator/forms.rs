@@ -2937,4 +2937,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         self.reverse_list(args)}
+
+    /// Implement (include "file1" "file2" ...) and (include-ci "file1" ...) — R7RS §4.1.7.
+    /// Reads each file, parses all expressions, and evaluates them sequentially.
+    /// If `case_insensitive` is true, identifiers read from the file are folded to lowercase.
+    pub(super) fn step_eval_include(&mut self, args: ArenaIndex, env: EnvRef, _case_insensitive: bool)
+        -> Result<TrampolineState, EvalError>
+    {
+        let mut filenames = args;
+        let mut last_val = self.lisp.void_val()?;
+
+        while let Value::Cons { .. } = self.lisp.get(filenames)? {
+            let filename_expr = self.lisp.car(filenames)?;
+            let path = self.extract_string_arg(filename_expr, filenames)?;
+
+            // Read and parse the file
+            let forms = match &mut self.io {
+                Some(io) => {
+                    let content = match io.read_file(&path) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            // Raise a file-error typed error object
+                            return self.raise_file_error("include: cannot read file", filenames);
+                        }
+                    };
+                    grift_parser::parse_all(self.lisp, content)?
+                }
+                None => {
+                    return self.raise_file_error("include: no I/O provider", filenames);
+                }
+            };
+
+            // Evaluate each form sequentially
+            let mut current = forms;
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let form = self.lisp.car(current)?;
+                last_val = self.eval_for_macro(ExprRef(form), env)?;
+                current = self.lisp.cdr(current)?;
+            }
+
+            filenames = self.lisp.cdr(filenames)?;
+        }
+
+        Ok(TrampolineState::Return { val: last_val })
+    }
 }

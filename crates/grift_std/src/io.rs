@@ -611,4 +611,27 @@ impl IoProvider for StdIoProvider {
         let _ = code; // abort doesn't support exit codes
         std::process::abort();
     }
+
+    fn current_second(&self) -> IoResult<f64> {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .map_err(|_| IoErrorKind::ReadFailed)
+    }
+
+    fn current_jiffy(&self) -> IoResult<i64> {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| IoErrorKind::ReadFailed)
+            .and_then(|d| {
+                let nanos = d.as_nanos();
+                i64::try_from(nanos).map_err(|_| IoErrorKind::ReadFailed)
+            })
+    }
+
+    fn jiffies_per_second(&self) -> IoResult<i64> {
+        Ok(1_000_000_000) // nanoseconds per second
+    }
 }

@@ -415,6 +415,26 @@ define_builtins! {
     Utf8ToString => "utf8->string",
     /// string->utf8 - Encode string as UTF-8 bytevector
     StringToUtf8 => "string->utf8",
+
+    // Time procedures (R7RS §6.13.3)
+    /// current-second - Current time as inexact seconds since epoch
+    CurrentSecond => "current-second",
+    /// current-jiffy - Current jiffy count (monotonic)
+    CurrentJiffy => "current-jiffy",
+    /// jiffies-per-second - Number of jiffies per SI second
+    JiffiesPerSecond => "jiffies-per-second",
+
+    // Error predicates (R7RS §6.11)
+    /// read-error? - Check if error was raised by read
+    ReadErrorP => "read-error?",
+    /// file-error? - Check if error was raised by file operations
+    FileErrorP => "file-error?",
+
+    // Vector-String conversion (R7RS §6.8)
+    /// vector->string - Create string from vector of characters
+    VectorToString => "vector->string",
+    /// string->vector - Create vector of characters from string
+    StringToVector => "string->vector",
 }
 
 // Define all standard library functions using the include_stdlib! macro.

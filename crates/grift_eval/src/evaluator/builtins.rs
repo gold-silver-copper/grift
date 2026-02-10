@@ -145,11 +145,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Some(io) => {
                 let content = match io.read_file(&path) {
                     Ok(s) => s,
-                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    Err(_) => return Err(self.make_error(ErrorKind::FileError, call_expr)),
                 };
                 grift_parser::parse_all(self.lisp, content)?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         // Evaluate each expression sequentially at the top level.
@@ -238,9 +238,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     io.open_input_file(&path)
                 } else {
                     io.open_output_file(&path)
-                }.map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?
+                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         let port_val = self.lisp.port(pid)?;
@@ -276,9 +276,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     io.open_input_file(&path)
                 } else {
                     io.open_output_file(&path)
-                }.map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?
+                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         let saved_port = if is_input {
@@ -1868,10 +1868,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_input_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1881,10 +1881,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_output_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1894,10 +1894,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_binary_input_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1907,10 +1907,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_binary_output_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -2295,10 +2295,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         io.delete_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.void_val().map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -2606,6 +2606,142 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let result = self.lisp.make_bytevector(byte_len, 0)?;
                         for (i, &b) in buf.iter().enumerate().take(byte_len) {
                             self.lisp.bytevector_set(result, i, b)?;
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+
+            // ============================================================
+            // Time procedures (R7RS §6.13.3)
+            // ============================================================
+
+            Builtin::CurrentSecond => {
+                // (current-second) - Returns inexact seconds since epoch
+                match &self.io {
+                    Some(io) => {
+                        let secs = io.current_second()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.float(secs as fsize).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::CurrentJiffy => {
+                // (current-jiffy) - Returns exact integer jiffies
+                match &self.io {
+                    Some(io) => {
+                        let jiffies = io.current_jiffy()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        match isize::try_from(jiffies) {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.float(jiffies as fsize).map_err(Into::into),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::JiffiesPerSecond => {
+                // (jiffies-per-second) - Returns exact integer
+                match &self.io {
+                    Some(io) => {
+                        let jps = io.jiffies_per_second()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        match isize::try_from(jps) {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.float(jps as fsize).map_err(Into::into),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            // ============================================================
+            // Error predicates (R7RS §6.11)
+            // ============================================================
+
+            Builtin::ReadErrorP => {
+                // (read-error? obj) - Returns #t if obj is a read error
+                let arg = self.lisp.car(args)?;
+                let is_read_error = match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        let err_type = self.lisp.cdr(irritants_and_type)?;
+                        self.lisp.symbol_matches(err_type, "read-error").unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(is_read_error).map_err(Into::into)
+            }
+
+            Builtin::FileErrorP => {
+                // (file-error? obj) - Returns #t if obj is a file error
+                let arg = self.lisp.car(args)?;
+                let is_file_error = match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        let err_type = self.lisp.cdr(irritants_and_type)?;
+                        self.lisp.symbol_matches(err_type, "file-error").unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(is_file_error).map_err(Into::into)
+            }
+
+            // ============================================================
+            // Vector-String conversion (R7RS §6.8)
+            // ============================================================
+
+            Builtin::VectorToString => {
+                // (vector->string vector [start [end]])
+                let vec_idx = self.lisp.car(args)?;
+                match self.lisp.get(vec_idx)? {
+                    Value::Array { len, data } => {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        const MAX_LEN: usize = 1024;
+                        let count = end - start;
+                        if count > MAX_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let mut chars = ['\0'; MAX_LEN];
+                        for i in 0..count {
+                            let slot = self.lisp.arena_index_at_offset(data, start + i)?;
+                            match self.lisp.get(slot)? {
+                                Value::Char(c) => chars[i] = c,
+                                _ => return Err(self.type_error(call_expr, "character", self.lisp.get(slot)?.type_name())),
+                            }
+                        }
+                        self.lisp.string_from_chars(&chars[..count]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "vector", v.type_name())),
+                }
+            }
+
+            Builtin::StringToVector => {
+                // (string->vector string [start [end]])
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        let count = end - start;
+                        // Create a vector and fill with characters
+                        let default = self.lisp.char('\0')?;
+                        let result = self.lisp.make_array(count, default)?;
+                        for i in 0..count {
+                            let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
+                            let ch = self.lisp.get(char_slot)?;
+                            match ch {
+                                Value::Char(c) => {
+                                    let char_val = self.lisp.char(c)?;
+                                    self.lisp.array_set(result, i, char_val)?;
+                                }
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
                         }
                         Ok(result)
                     }
@@ -3140,13 +3276,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Parse the expression
         match grift_parser::parse(self.lisp, s) {
             Ok(expr) => Ok(expr),
-            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+            Err(e) => Err(EvalError::from(e)),
         }
     }
 
     /// Extract a Scheme string value into a stack-allocated UTF-8 buffer.
     /// Returns a fixed-size array wrapper that can be used as `&str`.
-    fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
+    pub(super) fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
         match self.lisp.get(idx)? {
             Value::String { len, data } => {
                 let mut buf = [0u8; STACK_STRING_BUF_SIZE];
@@ -3188,7 +3324,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 const STACK_STRING_BUF_SIZE: usize = 1024;
 
 /// Stack-allocated UTF-8 string buffer for passing to IoProvider methods.
-struct StackString {
+pub(super) struct StackString {
     buf: [u8; STACK_STRING_BUF_SIZE],
     len: usize,
 }

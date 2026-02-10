@@ -307,6 +307,28 @@ pub trait IoProvider {
     fn emergency_exit_process(&mut self, _code: i32) -> IoResult<()> {
         Err(IoErrorKind::Unsupported)
     }
+
+    // ----------------------------------------------------------------
+    // Time operations (R7RS §6.13.3)
+    // ----------------------------------------------------------------
+
+    /// Return the current time as seconds since the Unix epoch (inexact).
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn current_second(&self) -> IoResult<f64> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the current jiffy count (monotonic, implementation-defined units).
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn current_jiffy(&self) -> IoResult<i64> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the number of jiffies per SI second.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn jiffies_per_second(&self) -> IoResult<i64> {
+        Err(IoErrorKind::Unsupported)
+    }
 }
 
 /// A no-op I/O provider that silently discards all output and returns
