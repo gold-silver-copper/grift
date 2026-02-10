@@ -305,13 +305,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.raise_typed_error(msg, expr, "file-error")
     }
 
-    /// Create and raise a read-error typed error object through the exception handler chain.
-    pub(crate) fn raise_read_error(&mut self, msg: &str, expr: ArenaIndex)
-        -> Result<TrampolineState, EvalError>
-    {
-        self.raise_typed_error(msg, expr, "read-error")
-    }
-
     /// Create and raise a typed error object (R7RS §6.11).
     /// The `error_type` is stored as a symbol in the cdr of irritants_and_type.
     fn raise_typed_error(&mut self, msg: &str, expr: ArenaIndex, error_type: &str)
@@ -385,7 +378,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
 
         // Build the R7RS error object: (irritants . type)
-        let irritants_and_type = match self.lisp.cons(irritants, nil) {
+        // Tag parse errors as read-errors and file errors as file-errors per R7RS §6.11
+        let error_type = if err.kind == ErrorKind::Parse {
+            match self.lisp.symbol("read-error") {
+                Ok(s) => s,
+                Err(_) => return Err(err),
+            }
+        } else if err.kind == ErrorKind::FileError {
+            match self.lisp.symbol("file-error") {
+                Ok(s) => s,
+                Err(_) => return Err(err),
+            }
+        } else {
+            nil
+        };
+        let irritants_and_type = match self.lisp.cons(irritants, error_type) {
             Ok(it) => it,
             Err(_) => return Err(err),
         };

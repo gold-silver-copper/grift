@@ -145,11 +145,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Some(io) => {
                 let content = match io.read_file(&path) {
                     Ok(s) => s,
-                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    Err(_) => return Err(self.make_error(ErrorKind::FileError, call_expr)),
                 };
                 grift_parser::parse_all(self.lisp, content)?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         // Evaluate each expression sequentially at the top level.
@@ -238,9 +238,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     io.open_input_file(&path)
                 } else {
                     io.open_output_file(&path)
-                }.map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?
+                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         let port_val = self.lisp.port(pid)?;
@@ -276,9 +276,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     io.open_input_file(&path)
                 } else {
                     io.open_output_file(&path)
-                }.map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?
+                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         let saved_port = if is_input {
@@ -1868,10 +1868,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_input_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1881,10 +1881,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_output_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1894,10 +1894,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_binary_input_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1907,10 +1907,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         let pid = io.open_binary_output_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.port(pid).map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -2295,10 +2295,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         io.delete_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.void_val().map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -3270,7 +3270,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Parse the expression
         match grift_parser::parse(self.lisp, s) {
             Ok(expr) => Ok(expr),
-            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+            Err(e) => Err(EvalError::from(e)),
         }
     }
 
