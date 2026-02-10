@@ -443,7 +443,7 @@ fn test_scheme_r5rs_exact_inexact_names() {
     eval.eval_str("(import (scheme r5rs))").unwrap();
     // R5RS names: exact->inexact and inexact->exact
     assert!(eval_is_true(&lisp, &mut eval, "(inexact? (exact->inexact 5))"));
-    assert!(eval_is_true(&lisp, &mut eval, "(exact? (inexact->exact 5))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(exact? (inexact->exact 5.0))"));
 }
 
 #[test]
