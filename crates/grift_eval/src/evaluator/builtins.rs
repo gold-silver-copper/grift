@@ -3091,8 +3091,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         while let Value::Cons { .. } = self.lisp.get(cursor)? {
             i -= 1;
             let ch = self.lisp.car(cursor)?;
-            if let Value::Char(c) = self.lisp.get(ch)? {
-                self.lisp.string_set(result, i, c)?;
+            match self.lisp.get(ch)? {
+                Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                _ => {} // caller guarantees only Char values
             }
             cursor = self.lisp.cdr(cursor)?;
         }
