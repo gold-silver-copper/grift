@@ -89,6 +89,10 @@ impl From<LexError> for ParseError {
 ///
 /// Given a reversed list like `(c b a)` and a tail, produces `(a b c . tail)`
 /// by relinking the same cons cells. Zero extra allocation.
+///
+/// `cur` must be either nil or a proper/improper cons list. The function
+/// walks cdr links until it reaches nil, relinking each cell to point to
+/// the previous one.
 fn reverse_list_in_place<const N: usize>(
     lisp: &Lisp<N>,
     mut cur: ArenaIndex,
@@ -341,8 +345,9 @@ impl<'a> Parser<'a> {
             let mut cur = list;
             for i in 0..count {
                 let (car, cdr) = lisp.car_cdr(cur)?;
-                if let Value::Number(n) = lisp.get(car)? {
-                    lisp.bytevector_set(bv, i, n as u8)?;
+                match lisp.get(car)? {
+                    Value::Number(n) => lisp.bytevector_set(bv, i, n as u8)?,
+                    _ => return Err(ArenaError::InvalidIndex.into()),
                 }
                 cur = cdr;
             }
