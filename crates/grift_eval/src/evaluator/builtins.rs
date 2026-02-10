@@ -1788,15 +1788,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "char", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let pid = if self.lisp.get(rest)?.is_nil() {
-                    self.current_output_port
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
+                let pid = self.extract_output_port(rest, call_expr)?;
                 if let Some(ref mut io) = self.io {
                     io.write_char(pid, c).map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
                 } else if let Some(callback) = self.output_callback {
@@ -1811,15 +1803,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // have circular structures.
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
-                let pid = if self.lisp.get(rest)?.is_nil() {
-                    self.current_output_port
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
+                let pid = self.extract_output_port(rest, call_expr)?;
                 if let Some(ref mut io) = self.io {
                     let dv = grift_parser::DisplayValue::new(val, self.lisp);
                     let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
@@ -1976,15 +1960,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "non-negative integer", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let pid = if self.lisp.get(rest)?.is_nil() {
-                    self.current_input_port
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
+                let pid = self.extract_input_port(rest, call_expr)?;
                 let io = match &mut self.io {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -2138,15 +2114,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "exact integer 0..255", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let pid = if self.lisp.get(rest)?.is_nil() {
-                    self.current_output_port
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
+                let pid = self.extract_output_port(rest, call_expr)?;
                 match &mut self.io {
                     Some(io) => {
                         io.write_u8(pid, byte_val)
@@ -2165,15 +2133,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "non-negative integer", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let pid = if self.lisp.get(rest)?.is_nil() {
-                    self.current_input_port
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
+                let pid = self.extract_input_port(rest, call_expr)?;
                 let io = match &mut self.io {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -2202,30 +2162,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
-                    (self.current_input_port, 0, bv_len)
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    let pid = match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    };
-                    let rest2 = self.lisp.cdr(rest)?;
-                    if self.lisp.get(rest2)?.is_nil() {
-                        (pid, 0, bv_len)
-                    } else {
-                        let start_arg = self.lisp.car(rest2)?;
-                        let start = self.get_int(start_arg, call_expr)? as usize;
-                        let rest3 = self.lisp.cdr(rest2)?;
-                        let end = if self.lisp.get(rest3)?.is_nil() {
-                            bv_len
-                        } else {
-                            let end_arg = self.lisp.car(rest3)?;
-                            self.get_int(end_arg, call_expr)? as usize
-                        };
-                        (pid, start, end)
-                    }
-                };
+                let (pid, start, end) = self.extract_port_and_range(rest, self.current_input_port, bv_len, call_expr)?;
                 let io = match &mut self.io {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -2253,30 +2190,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
-                    (self.current_output_port, 0, bv_len)
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    let pid = match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    };
-                    let rest2 = self.lisp.cdr(rest)?;
-                    if self.lisp.get(rest2)?.is_nil() {
-                        (pid, 0, bv_len)
-                    } else {
-                        let start_arg = self.lisp.car(rest2)?;
-                        let start = self.get_int(start_arg, call_expr)? as usize;
-                        let rest3 = self.lisp.cdr(rest2)?;
-                        let end = if self.lisp.get(rest3)?.is_nil() {
-                            bv_len
-                        } else {
-                            let end_arg = self.lisp.car(rest3)?;
-                            self.get_int(end_arg, call_expr)? as usize
-                        };
-                        (pid, start, end)
-                    }
-                };
+                let (pid, start, end) = self.extract_port_and_range(rest, self.current_output_port, bv_len, call_expr)?;
                 // Extract bytes from bytevector into stack buffer
                 let write_len = end.saturating_sub(start);
                 let mut buf = [0u8; 2048];
@@ -2375,30 +2289,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => return Err(self.type_error(call_expr, "string", v.type_name())),
                 };
                 let rest = self.lisp.cdr(args)?;
-                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
-                    (self.current_output_port, 0, str_len)
-                } else {
-                    let port_arg = self.lisp.car(rest)?;
-                    let pid = match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    };
-                    let rest2 = self.lisp.cdr(rest)?;
-                    if self.lisp.get(rest2)?.is_nil() {
-                        (pid, 0, str_len)
-                    } else {
-                        let start_arg = self.lisp.car(rest2)?;
-                        let start = self.get_int(start_arg, call_expr)? as usize;
-                        let rest3 = self.lisp.cdr(rest2)?;
-                        let end = if self.lisp.get(rest3)?.is_nil() {
-                            str_len
-                        } else {
-                            let end_arg = self.lisp.car(rest3)?;
-                            self.get_int(end_arg, call_expr)? as usize
-                        };
-                        (pid, start, end)
-                    }
-                };
+                let (pid, start, end) = self.extract_port_and_range(rest, self.current_output_port, str_len, call_expr)?;
                 // Extract chars from string to stack buffer
                 let mut buf = [0u8; 2048];
                 let mut byte_len = 0;
@@ -2425,15 +2316,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::FlushOutputPort => {
                 // (flush-output-port) or (flush-output-port port)
-                let pid = if self.lisp.get(args)?.is_nil() {
-                    self.current_output_port
-                } else {
-                    let port_arg = self.lisp.car(args)?;
-                    match self.lisp.get(port_arg)? {
-                        Value::Port(pid) => pid,
-                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
-                    }
-                };
+                let pid = self.extract_output_port(args, call_expr)?;
                 match &mut self.io {
                     Some(io) => {
                         io.flush(pid)
@@ -2911,32 +2794,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::CurrentJiffy => {
                 // (current-jiffy) - Returns exact integer jiffies
-                match &self.io {
-                    Some(io) => {
-                        let jiffies = io.current_jiffy()
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        match isize::try_from(jiffies) {
-                            Ok(n) => self.lisp.number(n).map_err(Into::into),
-                            Err(_) => self.lisp.float(jiffies as fsize).map_err(Into::into),
-                        }
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
+                self.time_u64_to_value(|io| io.current_jiffy(), call_expr)
             }
 
             Builtin::JiffiesPerSecond => {
                 // (jiffies-per-second) - Returns exact integer
-                match &self.io {
-                    Some(io) => {
-                        let jps = io.jiffies_per_second()
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        match isize::try_from(jps) {
-                            Ok(n) => self.lisp.number(n).map_err(Into::into),
-                            Err(_) => self.lisp.float(jps as fsize).map_err(Into::into),
-                        }
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
+                self.time_u64_to_value(|io| io.jiffies_per_second(), call_expr)
             }
 
             // ============================================================
@@ -3091,72 +2954,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // ================================================================
 
             Builtin::FloorQuotient => {
-                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if d == 0.0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
-                }
-                let q = libm::floor((n as f64) / (d as f64));
-                self.return_exact_if_both_exact(args, q as fsize, call_expr)
+                let (q, _) = self.division_op(args, call_expr, libm::floor)?;
+                self.return_exact_if_both_exact(args, q, call_expr)
             }
 
             Builtin::FloorRemainder => {
-                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if d == 0.0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
-                }
-                let q = libm::floor((n as f64) / (d as f64));
-                let r = n as f64 - d as f64 * q;
-                self.return_exact_if_both_exact(args, r as fsize, call_expr)
+                let (_, r) = self.division_op(args, call_expr, libm::floor)?;
+                self.return_exact_if_both_exact(args, r, call_expr)
             }
 
             Builtin::FloorDiv => {
-                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if d == 0.0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
-                }
-                let q = libm::floor((n as f64) / (d as f64));
-                let r = n as f64 - d as f64 * q;
-                let qv = self.return_exact_if_both_exact(args, q as fsize, call_expr)?;
-                let rv = self.return_exact_if_both_exact(args, r as fsize, call_expr)?;
+                let (q, r) = self.division_op(args, call_expr, libm::floor)?;
+                let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
+                let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
                 let nil = self.lisp.nil()?;
                 let tail = self.lisp.cons(rv, nil)?;
                 self.lisp.cons(qv, tail).map_err(Into::into)
             }
 
             Builtin::TruncateQuotient => {
-                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if d == 0.0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
-                }
-                let q = libm::trunc((n as f64) / (d as f64));
-                self.return_exact_if_both_exact(args, q as fsize, call_expr)
+                let (q, _) = self.division_op(args, call_expr, libm::trunc)?;
+                self.return_exact_if_both_exact(args, q, call_expr)
             }
 
             Builtin::TruncateRemainder => {
-                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if d == 0.0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
-                }
-                let q = libm::trunc((n as f64) / (d as f64));
-                let r = n as f64 - d as f64 * q;
-                self.return_exact_if_both_exact(args, r as fsize, call_expr)
+                let (_, r) = self.division_op(args, call_expr, libm::trunc)?;
+                self.return_exact_if_both_exact(args, r, call_expr)
             }
 
             Builtin::TruncateDiv => {
-                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if d == 0.0 {
-                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
-                }
-                let q = libm::trunc((n as f64) / (d as f64));
-                let r = n as f64 - d as f64 * q;
-                let qv = self.return_exact_if_both_exact(args, q as fsize, call_expr)?;
-                let rv = self.return_exact_if_both_exact(args, r as fsize, call_expr)?;
+                let (q, r) = self.division_op(args, call_expr, libm::trunc)?;
+                let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
+                let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
                 let nil = self.lisp.nil()?;
                 let tail = self.lisp.cons(rv, nil)?;
                 self.lisp.cons(qv, tail).map_err(Into::into)
@@ -3833,6 +3662,89 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 v => Err(self.type_error(call_expr, "port", v.type_name())),
             }
         }
+    }
+
+    /// Extract an output port from optional arguments (rest of args list).
+    /// Returns current output port if no argument is provided.
+    fn extract_output_port(&self, rest: ArenaIndex, call_expr: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
+        if self.lisp.get(rest)?.is_nil() {
+            Ok(self.current_output_port)
+        } else {
+            let port_arg = self.lisp.car(rest)?;
+            match self.lisp.get(port_arg)? {
+                Value::Port(pid) => Ok(pid),
+                v => Err(self.type_error(call_expr, "port", v.type_name())),
+            }
+        }
+    }
+
+    /// Convert a time value (from IoProvider) to a Lisp value.
+    /// Tries exact integer first, falls back to float.
+    fn time_u64_to_value(
+        &self,
+        getter: impl FnOnce(&dyn grift_parser::IoProvider) -> Result<i64, grift_parser::IoErrorKind>,
+        call_expr: ArenaIndex,
+    ) -> EvalResult {
+        match &self.io {
+            Some(io) => {
+                let val = getter(&**io)
+                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                match isize::try_from(val) {
+                    Ok(n) => self.lisp.number(n).map_err(Into::into),
+                    Err(_) => self.lisp.float(val as fsize).map_err(Into::into),
+                }
+            }
+            None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+        }
+    }
+
+    /// Compute a floor or truncate division operation.
+    /// `round_fn` is either `libm::floor` or `libm::trunc`.
+    fn division_op(
+        &self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+        round_fn: fn(f64) -> f64,
+    ) -> Result<(fsize, fsize), EvalError> {
+        let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+        let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        if d == 0.0 {
+            return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+        }
+        let q = round_fn((n as f64) / (d as f64));
+        let r = n as f64 - d as f64 * q;
+        Ok((q as fsize, r as fsize))
+    }
+
+    /// Extract an optional port and start/end range from argument list.
+    /// `default_port` is used when no port argument is provided.
+    fn extract_port_and_range(
+        &self,
+        rest: ArenaIndex,
+        default_port: grift_parser::PortId,
+        max_len: usize,
+        call_expr: ArenaIndex,
+    ) -> Result<(grift_parser::PortId, usize, usize), EvalError> {
+        if self.lisp.get(rest)?.is_nil() {
+            return Ok((default_port, 0, max_len));
+        }
+        let port_arg = self.lisp.car(rest)?;
+        let pid = match self.lisp.get(port_arg)? {
+            Value::Port(pid) => pid,
+            v => return Err(self.type_error(call_expr, "port", v.type_name())),
+        };
+        let rest2 = self.lisp.cdr(rest)?;
+        if self.lisp.get(rest2)?.is_nil() {
+            return Ok((pid, 0, max_len));
+        }
+        let start = self.get_int(self.lisp.car(rest2)?, call_expr)? as usize;
+        let rest3 = self.lisp.cdr(rest2)?;
+        let end = if self.lisp.get(rest3)?.is_nil() {
+            max_len
+        } else {
+            self.get_int(self.lisp.car(rest3)?, call_expr)? as usize
+        };
+        Ok((pid, start, end))
     }
 
     /// Implement (read) by reading characters from a port and parsing.
