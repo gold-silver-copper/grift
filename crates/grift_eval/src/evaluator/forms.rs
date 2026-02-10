@@ -89,55 +89,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Extract lambda parts: (params, body, env)
                         let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
                         
-                        // Check for rest-argument lambda: (lambda args body) where args is a symbol
-                        if self.lisp.get(params)?.is_symbol() {
-                            // Rest-only lambda: all args collected into a single list
-                            if self.lisp.get(args_expr)?.is_nil() {
-                                // No args - bind to empty list
-                                let nil = self.lisp.nil()?;
-                                let extended_env = self.env_extend(EnvRef(closure_env), params, nil)?;
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
-                            } else {
-                                // Evaluate first arg and start collecting
-                                let first_expr = self.lisp.car(args_expr)?;
-                                let rest_exprs = self.lisp.cdr(args_expr)?;
-                                let nil = self.lisp.nil()?;
-                                
-                                // Data: (remaining_exprs . (eval_env . (rest_param . (body . (new_env . (collected . call_expr))))))
-                                self.cont(ContType::LambdaRestCollect, EnvRef(env)).data7(rest_exprs, env, params, body, closure_env, nil, call_expr)?;
-                                
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                            }
-                        } else if self.lisp.get(args_expr)?.is_nil() {
-                            // No args - check params are also empty
-                            if !self.lisp.get(params)?.is_nil() {
-                                let expected = self.count_list(params)?;
-                                return Err(self.arg_error(call_expr, expected, 0));
-                            }
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env) }))
-                        } else {
-                            // Start evaluating first arg and binding
-                            let first_expr = self.lisp.car(args_expr)?;
-                            let rest_exprs = self.lisp.cdr(args_expr)?;
-                            
-                            // Check we have params to bind
-                            if self.lisp.get(params)?.is_nil() {
-                                let got = self.count_list(args_expr)?;
-                                return Err(self.arg_error(call_expr, 0, got));
-                            }
-                            
-                            let first_param = self.lisp.car(params)?;
-                            let rest_params = self.lisp.cdr(params)?;
-                            
-                            // Start with closure_env, we'll extend as we bind
-                            // Data for LambdaBindArg: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . call_expr)))))
-                            self.cont(ContType::LambdaBindArg, EnvRef(env)).data6(rest_exprs, env, rest_params, body, closure_env, call_expr)?;
-                            // Push binding continuation for first param
-                            // Data for LambdaFirstBind: param
-                            self.cont(ContType::LambdaFirstBind, EnvRef(env)).data1(first_param)?;
-                            
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                        }
+                        self.apply_lambda_args(params, body, closure_env, args_expr, EnvRef(env), call_expr)
                     }
                     Value::StdLib(s) => {
                         // StdLib: Parse body and params on each call
@@ -151,54 +103,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let params = self.make_stdlib_param_list(s.params())?;
                         
                         // Use the global env for stdlib functions (they're defined at top level)
-                        let closure_env = self.global_env;
-                        
-                        // Check for rest-argument form: (lambda args body) where params is a symbol
-                        if self.lisp.get(params)?.is_symbol() {
-                            // Rest-only: all args collected into a single list
-                            if self.lisp.get(args_expr)?.is_nil() {
-                                // No args - bind to empty list
-                                let nil = self.lisp.nil()?;
-                                let extended_env = self.env_extend(closure_env, params, nil)?;
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
-                            } else {
-                                // Evaluate first arg and start collecting
-                                let first_expr = self.lisp.car(args_expr)?;
-                                let rest_exprs = self.lisp.cdr(args_expr)?;
-                                let nil = self.lisp.nil()?;
-                                
-                                self.cont(ContType::LambdaRestCollect, EnvRef(env)).data7(rest_exprs, env, params, body, closure_env.0, nil, call_expr)?;
-                                
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                            }
-                        } else if self.lisp.get(args_expr)?.is_nil() {
-                            // No args - check params are also empty
-                            if !self.lisp.get(params)?.is_nil() {
-                                let expected = self.count_list(params)?;
-                                return Err(self.arg_error(call_expr, expected, 0));
-                            }
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: closure_env }))
-                        } else {
-                            // Start evaluating first arg and binding
-                            let first_expr = self.lisp.car(args_expr)?;
-                            let rest_exprs = self.lisp.cdr(args_expr)?;
-                            
-                            // Check we have params to bind
-                            if self.lisp.get(params)?.is_nil() {
-                                let got = self.count_list(args_expr)?;
-                                return Err(self.arg_error(call_expr, 0, got));
-                            }
-                            
-                            let first_param = self.lisp.car(params)?;
-                            let rest_params = self.lisp.cdr(params)?;
-                            
-                            // Start with closure_env, we'll extend as we bind
-                            self.cont(ContType::LambdaBindArg, EnvRef(env)).data6(rest_exprs, env, rest_params, body, closure_env.0, call_expr)?;
-                            // Push binding continuation for first param
-                            self.cont(ContType::LambdaFirstBind, EnvRef(env)).data1(first_param)?;
-                            
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                        }
+                        self.apply_lambda_args(params, body, self.global_env.0, args_expr, EnvRef(env), call_expr)
                     }
                     Value::Native { .. } => {
                         // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
@@ -505,23 +410,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            ContType::WithInputFromFileRestore => {
+            ContType::WithInputFromFileRestore | ContType::WithOutputToFileRestore => {
                 // val is the result of the thunk
                 // Data: (saved_port_encoded . file_port_encoded)
                 let (saved_enc, file_enc) = self.unpack2(data)?;
-                self.current_input_port = self.decode_port_id(saved_enc, val)?;
-                let file_id = self.decode_port_id(file_enc, val)?;
-                if let Some(ref mut io) = self.io {
-                    let _ = io.close_port(file_id);
+                let saved_port = self.decode_port_id(saved_enc, val)?;
+                if matches!(cont_type, ContType::WithInputFromFileRestore) {
+                    self.current_input_port = saved_port;
+                } else {
+                    self.current_output_port = saved_port;
                 }
-                Ok(Some(TrampolineState::Return { val }))
-            }
-
-            ContType::WithOutputToFileRestore => {
-                // val is the result of the thunk
-                // Data: (saved_port_encoded . file_port_encoded)
-                let (saved_enc, file_enc) = self.unpack2(data)?;
-                self.current_output_port = self.decode_port_id(saved_enc, val)?;
                 let file_id = self.decode_port_id(file_enc, val)?;
                 if let Some(ref mut io) = self.io {
                     let _ = io.close_port(file_id);
@@ -2941,5 +2839,51 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         Ok(TrampolineState::Return { val: last_val })
+    }
+
+    /// Common argument-binding logic for both Lambda and StdLib application.
+    /// Sets up continuations to evaluate args and bind to params, then evaluate body.
+    fn apply_lambda_args(
+        &mut self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        closure_env: ArenaIndex,
+        args_expr: ArenaIndex,
+        eval_env: EnvRef,
+        call_expr: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        // Check for rest-argument lambda: (lambda args body) where args is a symbol
+        if self.lisp.get(params)?.is_symbol() {
+            // Rest-only lambda: all args collected into a single list
+            if self.lisp.get(args_expr)?.is_nil() {
+                let nil = self.lisp.nil()?;
+                let extended_env = self.env_extend(EnvRef(closure_env), params, nil)?;
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
+            } else {
+                let first_expr = self.lisp.car(args_expr)?;
+                let rest_exprs = self.lisp.cdr(args_expr)?;
+                let nil = self.lisp.nil()?;
+                self.cont(ContType::LambdaRestCollect, eval_env).data7(rest_exprs, eval_env.0, params, body, closure_env, nil, call_expr)?;
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: eval_env }))
+            }
+        } else if self.lisp.get(args_expr)?.is_nil() {
+            if !self.lisp.get(params)?.is_nil() {
+                let expected = self.count_list(params)?;
+                return Err(self.arg_error(call_expr, expected, 0));
+            }
+            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env) }))
+        } else {
+            let first_expr = self.lisp.car(args_expr)?;
+            let rest_exprs = self.lisp.cdr(args_expr)?;
+            if self.lisp.get(params)?.is_nil() {
+                let got = self.count_list(args_expr)?;
+                return Err(self.arg_error(call_expr, 0, got));
+            }
+            let first_param = self.lisp.car(params)?;
+            let rest_params = self.lisp.cdr(params)?;
+            self.cont(ContType::LambdaBindArg, eval_env).data6(rest_exprs, eval_env.0, rest_params, body, closure_env, call_expr)?;
+            self.cont(ContType::LambdaFirstBind, eval_env).data1(first_param)?;
+            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: eval_env }))
+        }
     }
 }

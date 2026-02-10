@@ -279,16 +279,9 @@ impl<'a> Lexer<'a> {
             b'"' => self.lex_string(),
             b'#' => self.lex_hash(),
             b'0'..=b'9' => self.lex_number(),
-            b'-' => {
+            b'-' | b'+' => {
                 if self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
-                    self.lex_number()
-                } else {
-                    self.lex_symbol()
-                }
-            }
-            b'+' => {
-                if self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
-                    self.advance(); // consume '+'
+                    if c == b'+' { self.advance(); } // consume '+' prefix
                     self.lex_number()
                 } else {
                     self.lex_symbol()
