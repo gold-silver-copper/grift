@@ -82,7 +82,65 @@ define_builtins! {
     Nanp => "nan?",
     /// sqrt - Square root
     Sqrt => "sqrt",
-    
+
+    // Transcendental functions (R7RS §6.2.6) — powered by libm
+    /// exp - Exponential function (e^x)
+    Exp => "exp",
+    /// log - Natural logarithm; optional base parameter
+    Log => "log",
+    /// sin - Sine (radians)
+    Sin => "sin",
+    /// cos - Cosine (radians)
+    Cos => "cos",
+    /// tan - Tangent (radians)
+    Tan => "tan",
+    /// asin - Arcsine (returns radians)
+    Asin => "asin",
+    /// acos - Arccosine (returns radians)
+    Acos => "acos",
+    /// atan - Arctangent; one or two argument form
+    Atan => "atan",
+
+    // Division procedures (R7RS §6.2.6)
+    /// floor-quotient - ⌊n/d⌋
+    FloorQuotient => "floor-quotient",
+    /// floor-remainder - n - d·⌊n/d⌋
+    FloorRemainder => "floor-remainder",
+    /// floor/ - Returns quotient and remainder via values
+    FloorDiv => "floor/",
+    /// truncate-quotient - truncate(n/d)
+    TruncateQuotient => "truncate-quotient",
+    /// truncate-remainder - n - d·truncate(n/d)
+    TruncateRemainder => "truncate-remainder",
+    /// truncate/ - Returns quotient and remainder via values
+    TruncateDiv => "truncate/",
+
+    // Rational number operations (R7RS §6.2.6)
+    /// numerator - Returns numerator of a number
+    Numerator => "numerator",
+    /// denominator - Returns denominator of a number
+    Denominator => "denominator",
+    /// rationalize - Simplest rational within tolerance
+    Rationalize => "rationalize",
+
+    // Exact integer square root (R7RS §6.2.6)
+    /// exact-integer-sqrt - Returns s and r where n = s² + r
+    ExactIntegerSqrt => "exact-integer-sqrt",
+
+    // Complex number operations (R7RS §6.2.6)
+    /// make-rectangular - Create complex from real and imaginary parts
+    MakeRectangular => "make-rectangular",
+    /// make-polar - Create complex from magnitude and angle
+    MakePolar => "make-polar",
+    /// real-part - Extract real part
+    RealPart => "real-part",
+    /// imag-part - Extract imaginary part
+    ImagPart => "imag-part",
+    /// magnitude - |z|
+    Magnitude => "magnitude",
+    /// angle - arg(z)
+    Angle => "angle",
+
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
     Floor => "floor",

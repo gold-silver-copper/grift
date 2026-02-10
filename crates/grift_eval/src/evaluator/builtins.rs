@@ -1467,20 +1467,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::NumberToString => {
-                // (number->string num) - Convert number to string
+                // (number->string num) or (number->string num radix)
                 let arg = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let radix: u32 = if self.lisp.get(rest)?.is_nil() {
+                    10
+                } else {
+                    let r = self.get_int(self.lisp.car(rest)?, call_expr)?;
+                    match r {
+                        2 | 8 | 10 | 16 => r as u32,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                };
                 match self.lisp.get(arg)? {
                     Value::Number(n) => {
-                        // Convert integer to string using stack buffer (no_std compatible)
-                        let mut buf = [0u8; 21]; // enough for i64 including sign
+                        let mut buf = [0u8; 66]; // enough for binary i64 including sign
                         let mut pos = buf.len();
                         let negative = n < 0;
-                        let mut val = if negative { 
-                            // Handle isize::MIN by working with unsigned
-                            n.unsigned_abs()
-                        } else { 
-                            n as usize 
-                        };
+                        let mut val = n.unsigned_abs();
                         
                         if val == 0 {
                             pos -= 1;
@@ -1488,8 +1492,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         } else {
                             while val > 0 {
                                 pos -= 1;
-                                buf[pos] = b'0' + (val % 10) as u8;
-                                val /= 10;
+                                let digit = (val % radix as usize) as u8;
+                                buf[pos] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                                val /= radix as usize;
                             }
                         }
                         
@@ -1499,14 +1504,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         
                         let len = buf.len() - pos;
-                        let mut chars = ['\0'; 21];
+                        let mut chars = ['\0'; 66];
                         for i in 0..len {
                             chars[i] = buf[pos + i] as char;
                         }
                         self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
                     }
                     Value::Float(f) => {
-                        // Convert float to string using stack buffer
+                        if radix != 10 {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
                         let mut chars = ['\0'; 32];
                         let len = format_float_to_chars(f, &mut chars);
                         self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
@@ -1516,15 +1523,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::StringToNumber => {
-                // (string->number str) - Convert string to number, or #f if invalid
+                // (string->number str) or (string->number str radix)
                 let arg = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let explicit_radix: Option<u32> = if self.lisp.get(rest)?.is_nil() {
+                    None
+                } else {
+                    let r = self.get_int(self.lisp.car(rest)?, call_expr)?;
+                    match r {
+                        2 | 8 | 10 | 16 => Some(r as u32),
+                        _ => return self.lisp.false_val().map_err(Into::into),
+                    }
+                };
                 match self.lisp.get(arg)? {
                     Value::String { len, data } => {
                         if len == 0 {
                             return self.lisp.false_val().map_err(Into::into);
                         }
-                        // Read chars into stack buffer
-                        let mut buf = [0u8; 32];
+                        let mut buf = [0u8; 66];
                         if len > buf.len() {
                             return self.lisp.false_val().map_err(Into::into);
                         }
@@ -1540,7 +1556,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 _ => return self.lisp.false_val().map_err(Into::into),
                             }
                         }
-                        // Parse the number - try integer first, then float
                         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
                         
                         // Check for special float constants
@@ -1551,15 +1566,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             _ => {}
                         }
                         
-                        // Try integer parse first
-                        if let Ok(n) = s.parse::<isize>() {
-                            return self.lisp.number(n).map_err(Into::into);
+                        // Detect prefix notation: #b, #o, #d, #x
+                        let (num_str, radix) = if s.len() >= 2 && s.as_bytes()[0] == b'#' {
+                            let prefix_radix = match s.as_bytes()[1] {
+                                b'b' | b'B' => Some(2u32),
+                                b'o' | b'O' => Some(8u32),
+                                b'd' | b'D' => Some(10u32),
+                                b'x' | b'X' => Some(16u32),
+                                _ => None,
+                            };
+                            match prefix_radix {
+                                Some(r) => (&s[2..], r),
+                                None => return self.lisp.false_val().map_err(Into::into),
+                            }
+                        } else {
+                            (s, explicit_radix.unwrap_or(10))
+                        };
+                        
+                        if num_str.is_empty() {
+                            return self.lisp.false_val().map_err(Into::into);
                         }
-                        // Try float parse
-                        if let Some(f) = parse_float_no_std(s) {
-                            return self.lisp.float(f).map_err(Into::into);
+                        
+                        if radix == 10 {
+                            // Try integer parse first, then float
+                            if let Ok(n) = num_str.parse::<isize>() {
+                                return self.lisp.number(n).map_err(Into::into);
+                            }
+                            if let Some(f) = parse_float_no_std(num_str) {
+                                return self.lisp.float(f).map_err(Into::into);
+                            }
+                            self.lisp.false_val().map_err(Into::into)
+                        } else {
+                            // Non-decimal radix: parse integer only
+                            match parse_int_radix(num_str, radix) {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.false_val().map_err(Into::into),
+                            }
                         }
-                        self.lisp.false_val().map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
@@ -2748,10 +2791,336 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
             }
+
+            // ================================================================
+            // Transcendental functions (R7RS §6.2.6) — powered by libm
+            // ================================================================
+
+            Builtin::Exp => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::exp(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Log => {
+                let z = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    self.lisp.float(libm::log(z as f64) as fsize).map_err(Into::into)
+                } else {
+                    let base = self.get_num_as_fsize(self.lisp.car(rest)?, call_expr)?;
+                    let result = libm::log(z as f64) / libm::log(base as f64);
+                    self.lisp.float(result as fsize).map_err(Into::into)
+                }
+            }
+
+            Builtin::Sin => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::sin(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Cos => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::cos(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Tan => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::tan(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Asin => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::asin(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Acos => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::acos(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Atan => {
+                let y = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    self.lisp.float(libm::atan(y as f64) as fsize).map_err(Into::into)
+                } else {
+                    let x = self.get_num_as_fsize(self.lisp.car(rest)?, call_expr)?;
+                    self.lisp.float(libm::atan2(y as f64, x as f64) as fsize).map_err(Into::into)
+                }
+            }
+
+            // ================================================================
+            // Division procedures (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::FloorQuotient => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::floor((n as f64) / (d as f64));
+                self.return_exact_if_both_exact(args, q as fsize, call_expr)
+            }
+
+            Builtin::FloorRemainder => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::floor((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                self.return_exact_if_both_exact(args, r as fsize, call_expr)
+            }
+
+            Builtin::FloorDiv => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::floor((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                let qv = self.return_exact_if_both_exact(args, q as fsize, call_expr)?;
+                let rv = self.return_exact_if_both_exact(args, r as fsize, call_expr)?;
+                let nil = self.lisp.nil()?;
+                let tail = self.lisp.cons(rv, nil)?;
+                self.lisp.cons(qv, tail).map_err(Into::into)
+            }
+
+            Builtin::TruncateQuotient => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::trunc((n as f64) / (d as f64));
+                self.return_exact_if_both_exact(args, q as fsize, call_expr)
+            }
+
+            Builtin::TruncateRemainder => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::trunc((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                self.return_exact_if_both_exact(args, r as fsize, call_expr)
+            }
+
+            Builtin::TruncateDiv => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::trunc((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                let qv = self.return_exact_if_both_exact(args, q as fsize, call_expr)?;
+                let rv = self.return_exact_if_both_exact(args, r as fsize, call_expr)?;
+                let nil = self.lisp.nil()?;
+                let tail = self.lisp.cons(rv, nil)?;
+                self.lisp.cons(qv, tail).map_err(Into::into)
+            }
+
+            // ================================================================
+            // Rational number operations (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::Numerator => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => self.lisp.number(n).map_err(Into::into),
+                    Value::Float(f) => {
+                        if !f.is_finite() {
+                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
+                        }
+                        let (num, _den) = float_to_rational(f as f64);
+                        self.lisp.float(num as fsize).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Denominator => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) => self.lisp.number(1).map_err(Into::into),
+                    Value::Float(f) => {
+                        if !f.is_finite() {
+                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
+                        }
+                        let (_num, den) = float_to_rational(f as f64);
+                        self.lisp.float(den as fsize).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Rationalize => {
+                let x = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let tol = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let (num, den) = rationalize_impl(x as f64, libm::fabs(tol as f64));
+                if den == 1.0 {
+                    let both_exact = matches!(self.lisp.get(self.lisp.car(args)?)?, Value::Number(_));
+                    if both_exact {
+                        self.lisp.number(num as isize).map_err(Into::into)
+                    } else {
+                        self.lisp.float(num as fsize).map_err(Into::into)
+                    }
+                } else {
+                    self.lisp.float((num / den) as fsize).map_err(Into::into)
+                }
+            }
+
+            // ================================================================
+            // Exact integer square root (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::ExactIntegerSqrt => {
+                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if n < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let n_u = n as usize;
+                let s = isqrt(n_u);
+                let r = n_u - s * s;
+                let sv = self.lisp.number(s as isize)?;
+                let rv = self.lisp.number(r as isize)?;
+                let nil = self.lisp.nil()?;
+                let tail = self.lisp.cons(rv, nil)?;
+                self.lisp.cons(sv, tail).map_err(Into::into)
+            }
+
+            // ================================================================
+            // Complex number operations (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::MakeRectangular => {
+                let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if b == 0.0 {
+                    // Pure real number
+                    return self.lisp.float(a).map_err(Into::into);
+                }
+                // (complex rect a b)
+                let tag = self.lisp.symbol("complex")?;
+                let form = self.lisp.symbol("rect")?;
+                let av = self.lisp.float(a)?;
+                let bv = self.lisp.float(b)?;
+                let nil = self.lisp.nil()?;
+                let l4 = self.lisp.cons(bv, nil)?;
+                let l3 = self.lisp.cons(av, l4)?;
+                let l2 = self.lisp.cons(form, l3)?;
+                self.lisp.cons(tag, l2).map_err(Into::into)
+            }
+
+            Builtin::MakePolar => {
+                let r = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let theta = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = (r as f64) * libm::cos(theta as f64);
+                let b = (r as f64) * libm::sin(theta as f64);
+                if b as fsize == 0.0 {
+                    return self.lisp.float(a as fsize).map_err(Into::into);
+                }
+                let tag = self.lisp.symbol("complex")?;
+                let form = self.lisp.symbol("rect")?;
+                let av = self.lisp.float(a as fsize)?;
+                let bv = self.lisp.float(b as fsize)?;
+                let nil = self.lisp.nil()?;
+                let l4 = self.lisp.cons(bv, nil)?;
+                let l3 = self.lisp.cons(av, l4)?;
+                let l2 = self.lisp.cons(form, l3)?;
+                self.lisp.cons(tag, l2).map_err(Into::into)
+            }
+
+            Builtin::RealPart => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => self.lisp.number(n).map_err(Into::into),
+                    Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Cons { .. } => {
+                        // Check if tagged complex: (complex rect re im)
+                        if self.is_complex_tagged(arg)? {
+                            let cdr1 = self.lisp.cdr(arg)?; // (rect re im)
+                            let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+                            self.lisp.car(cdr2).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::ImagPart => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Float(_) => self.lisp.number(0).map_err(Into::into),
+                    Value::Cons { .. } => {
+                        if self.is_complex_tagged(arg)? {
+                            let cdr1 = self.lisp.cdr(arg)?; // (rect re im)
+                            let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+                            let cdr3 = self.lisp.cdr(cdr2)?; // (im)
+                            self.lisp.car(cdr3).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Magnitude => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => {
+                        let abs_n = if n < 0 { -n } else { n };
+                        self.lisp.number(abs_n).map_err(Into::into)
+                    }
+                    Value::Float(f) => self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into),
+                    Value::Cons { .. } => {
+                        if self.is_complex_tagged(arg)? {
+                            let re = self.complex_real_f(arg, call_expr)?;
+                            let im = self.complex_imag_f(arg, call_expr)?;
+                            let mag = libm::sqrt(re * re + im * im);
+                            self.lisp.float(mag as fsize).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Angle => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => {
+                        if n >= 0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Float(f) => {
+                        if f >= 0.0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Cons { .. } => {
+                        if self.is_complex_tagged(arg)? {
+                            let re = self.complex_real_f(arg, call_expr)?;
+                            let im = self.complex_imag_f(arg, call_expr)?;
+                            let angle = libm::atan2(im, re);
+                            self.lisp.float(angle as fsize).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
         }
     }
-    
-    /// OPTIMIZED: Apply binary builtin directly without list allocation
     pub(super) fn apply_binary_builtin(&mut self, builtin: Builtin, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) 
         -> EvalResult 
     {
@@ -2830,6 +3199,53 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Check if a value is a tagged complex number: (complex rect re im)
+    fn is_complex_tagged(&self, idx: ArenaIndex) -> Result<bool, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Cons { .. } => {
+                let car = self.lisp.car(idx)?;
+                if let Value::Symbol(_) = self.lisp.get(car)? {
+                    self.lisp.symbol_matches(car, "complex").map_err(Into::into)
+                } else {
+                    Ok(false)
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extract real part of a tagged complex number as f64
+    fn complex_real_f(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<f64, EvalError> {
+        let cdr1 = self.lisp.cdr(idx)?; // (rect re im)
+        let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+        let re_idx = self.lisp.car(cdr2)?;
+        Ok(self.get_num_as_fsize(re_idx, call_expr)? as f64)
+    }
+
+    /// Extract imaginary part of a tagged complex number as f64
+    fn complex_imag_f(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<f64, EvalError> {
+        let cdr1 = self.lisp.cdr(idx)?; // (rect re im)
+        let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+        let cdr3 = self.lisp.cdr(cdr2)?; // (im)
+        let im_idx = self.lisp.car(cdr3)?;
+        Ok(self.get_num_as_fsize(im_idx, call_expr)? as f64)
+    }
+
+    /// Return an exact integer if both args are exact, otherwise a float
+    fn return_exact_if_both_exact(&self, args: ArenaIndex, val: fsize, call_expr: ArenaIndex) -> EvalResult {
+        let a = self.lisp.car(args)?;
+        let b_list = self.lisp.cdr(args)?;
+        let b = self.lisp.car(b_list)?;
+        let both_exact = matches!(self.lisp.get(a)?, Value::Number(_))
+            && matches!(self.lisp.get(b)?, Value::Number(_));
+        if both_exact {
+            let _ = call_expr;
+            self.lisp.number(val as isize).map_err(Into::into)
+        } else {
+            self.lisp.float(val).map_err(Into::into)
+        }
+    }
+
     /// Scheme eq?/eqv? comparison of two values
     fn eqv_compare(&self, a: ArenaIndex, b: ArenaIndex) -> EvalResult {
         let val_a = self.lisp.get(a)?;
@@ -3477,4 +3893,136 @@ fn parse_float_no_std(s: &str) -> Option<fsize> {
     
     if negative { result = -result; }
     Some(result)
+}
+
+/// Parse an integer from a string with the given radix (2, 8, 10, 16).
+fn parse_int_radix(s: &str, radix: u32) -> Option<isize> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() { return None; }
+    
+    let mut pos = 0;
+    let negative = if bytes[pos] == b'-' { pos += 1; true }
+                   else if bytes[pos] == b'+' { pos += 1; false }
+                   else { false };
+    
+    if pos >= bytes.len() { return None; }
+    
+    let mut result: isize = 0;
+    let mut has_digits = false;
+    while pos < bytes.len() {
+        let digit = match bytes[pos] {
+            b'0'..=b'9' => (bytes[pos] - b'0') as u32,
+            b'a'..=b'f' => (bytes[pos] - b'a') as u32 + 10,
+            b'A'..=b'F' => (bytes[pos] - b'A') as u32 + 10,
+            _ => return None,
+        };
+        if digit >= radix { return None; }
+        result = result.checked_mul(radix as isize)?.checked_add(digit as isize)?;
+        pos += 1;
+        has_digits = true;
+    }
+    
+    if !has_digits { return None; }
+    if negative { result = -result; }
+    Some(result)
+}
+
+/// Convert a float to a rational number (numerator, denominator) using continued fractions.
+fn float_to_rational(x: f64) -> (f64, f64) {
+    if x == 0.0 { return (0.0, 1.0); }
+    
+    let negative = x < 0.0;
+    let x = libm::fabs(x);
+    
+    // Check if it's already a whole number
+    let rounded = libm::floor(x);
+    if x == rounded {
+        let n = if negative { -rounded } else { rounded };
+        return (n, 1.0);
+    }
+    
+    // Continued fraction approximation with limited iterations
+    let mut p0: f64 = 0.0;
+    let mut q0: f64 = 1.0;
+    let mut p1: f64 = 1.0;
+    let mut q1: f64 = 0.0;
+    let mut val = x;
+    
+    for _ in 0..64 {
+        let a = libm::floor(val);
+        let p2 = a * p1 + p0;
+        let q2 = a * q1 + q0;
+        
+        // Check if we've found an exact representation
+        if q2 > 1e15 { break; }
+        
+        p0 = p1; q0 = q1;
+        p1 = p2; q1 = q2;
+        
+        let remainder = val - a;
+        if libm::fabs(remainder) < 1e-15 { break; }
+        if libm::fabs(p1 / q1 - x) < 1e-15 { break; }
+        
+        val = 1.0 / remainder;
+    }
+    
+    if negative { (-p1, q1) } else { (p1, q1) }
+}
+
+/// Find the simplest rational number within a tolerance of x.
+/// Uses the Stern-Brocot tree / mediant approach.
+fn rationalize_impl(x: f64, tol: f64) -> (f64, f64) {
+    if tol >= libm::fabs(x) {
+        return (0.0, 1.0);
+    }
+    
+    let negative = x < 0.0;
+    let x = libm::fabs(x);
+    let lo = x - tol;
+    let hi = x + tol;
+    
+    // Use Stern-Brocot tree to find simplest fraction in [lo, hi]
+    let mut lo_p: f64 = 0.0;
+    let mut lo_q: f64 = 1.0;
+    let mut hi_p: f64 = 1.0;
+    let mut hi_q: f64 = 0.0;
+    
+    for _ in 0..100 {
+        let med_p = lo_p + hi_p;
+        let med_q = lo_q + hi_q;
+        
+        if med_q > 1e15 { break; }
+        
+        let med = med_p / med_q;
+        
+        if med < lo {
+            lo_p = med_p;
+            lo_q = med_q;
+        } else if med > hi {
+            hi_p = med_p;
+            hi_q = med_q;
+        } else {
+            // Found a fraction in range
+            let result_p = if negative { -med_p } else { med_p };
+            return (result_p, med_q);
+        }
+    }
+    
+    // Fallback
+    let result_p = if negative { -lo_p } else { lo_p };
+    (result_p, lo_q)
+}
+
+/// Integer square root using Newton's method.
+fn isqrt(n: usize) -> usize {
+    if n == 0 { return 0; }
+    if n == 1 { return 1; }
+    
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
