@@ -182,14 +182,17 @@ macro_rules! binary_int_cmp {
     ($self:expr, $a:expr, $b:expr, $call_expr:expr, $cmp:expr) => {{
         let val_a = $self.lisp.get($a)?;
         let val_b = $self.lisp.get($b)?;
-        let result = match (val_a, val_b) {
-            (Value::Number(x), Value::Number(y)) => $cmp(x as $crate::fsize, y as $crate::fsize),
-            (Value::Number(x), Value::Float(y)) => $cmp(x as $crate::fsize, y),
-            (Value::Float(x), Value::Number(y)) => $cmp(x, y as $crate::fsize),
-            (Value::Float(x), Value::Float(y)) => $cmp(x, y),
-            (v, _) if !v.is_number() => return Err($self.type_error($call_expr, "number", v.type_name())),
-            (_, v) => return Err($self.type_error($call_expr, "number", v.type_name())),
+        let to_f = |v: Value| -> Result<$crate::fsize, _> {
+            match v {
+                Value::Number(x) => Ok(x as $crate::fsize),
+                Value::Float(x) => Ok(x),
+                Value::Rational { num, denom } => Ok(num as $crate::fsize / denom as $crate::fsize),
+                _ => Err($self.type_error($call_expr, "number", v.type_name())),
+            }
         };
+        let fa = to_f(val_a)?;
+        let fb = to_f(val_b)?;
+        let result = $cmp(fa, fb);
         $self.lisp.boolean(result).map_err(Into::into)
     }};
 }
