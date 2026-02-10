@@ -995,185 +995,73 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn try_dispatch_non_core_form(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
-        // quote
-        if self.lisp.symbol_matches(car, "quote")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
+        /// Dispatch a non-core form: check keyword match + variable override,
+        /// then call the handler and return `Some(result)`.
+        macro_rules! dispatch {
+            ($self:expr, $car:expr, $env:expr, $keyword:expr, $body:expr) => {
+                if $self.lisp.symbol_matches($car, $keyword)? {
+                    if $self.is_variable_bound($env, $car)? { return Ok(None); }
+                    return $body;
+                }
+            };
+        }
+
+        dispatch!(self, car, env, "quote", {
             let val = self.lisp.car(cdr)?;
-            return Ok(Some(TrampolineState::Return { val }));
-        }
-        
-        // define-syntax - add macro to environment
-        if self.lisp.symbol_matches(car, "define-syntax")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_define_syntax(cdr, env).map(Some);
-        }
-        
-        // let-syntax - local macro bindings
-        if self.lisp.symbol_matches(car, "let-syntax")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_let_syntax(cdr, env).map(Some);
-        }
-        
-        // letrec-syntax - local macro bindings with mutual visibility
-        if self.lisp.symbol_matches(car, "letrec-syntax")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_letrec_syntax(cdr, env).map(Some);
-        }
-        
-        // syntax-case - procedural macro pattern matching
-        if self.lisp.symbol_matches(car, "syntax-case")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_syntax_case(cdr, env).map(Some);
-        }
-        
-        // syntax - create syntax template
-        if self.lisp.symbol_matches(car, "syntax")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_syntax(cdr, env).map(Some);
-        }
-        
-        // lambda
-        if self.lisp.symbol_matches(car, "lambda")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
+            Ok(Some(TrampolineState::Return { val }))
+        });
+        dispatch!(self, car, env, "define-syntax", self.step_eval_define_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "let-syntax", self.step_eval_let_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "letrec-syntax", self.step_eval_letrec_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "syntax-case", self.step_eval_syntax_case(cdr, env).map(Some));
+        dispatch!(self, car, env, "syntax", self.step_eval_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "lambda", {
             let val = self.eval_lambda(cdr, env)?;
-            return Ok(Some(TrampolineState::Return { val }));
-        }
-        
-        // define
-        if self.lisp.symbol_matches(car, "define")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.eval_define(cdr, env).map(Some);
-        }
-        
-        // set! - mutate variable binding
-        if self.lisp.symbol_matches(car, "set!")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.eval_set(cdr, env).map(Some);
-        }
-        
-        // begin - continuation-based evaluation
-        if self.lisp.symbol_matches(car, "begin")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_begin(cdr, env).map(Some);
-        }
-        
-        // quasiquote - template with unquote (trampolined)
-        if self.lisp.symbol_matches(car, "quasiquote")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some);
-        }
-        
+            Ok(Some(TrampolineState::Return { val }))
+        });
+        dispatch!(self, car, env, "define", self.eval_define(cdr, env).map(Some));
+        dispatch!(self, car, env, "set!", self.eval_set(cdr, env).map(Some));
+        dispatch!(self, car, env, "begin", self.step_eval_begin(cdr, env).map(Some));
+        dispatch!(self, car, env, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
+
         // eval - continuation-based evaluation at runtime
-        if self.lisp.symbol_matches(car, "eval")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
+        dispatch!(self, car, env, "eval", {
             let expr_to_eval = self.lisp.car(cdr)?;
             let rest = self.lisp.cdr(cdr)?;
             if self.lisp.get(rest)?.is_nil() {
-                // 1-arg form: (eval expr) — use global env
                 let global = self.global_env.0;
                 self.cont(ContType::EvalExpr, env).data1(global)?;
-                return Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }));
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }))
             } else {
-                // 2-arg form: (eval expr env-expr) — evaluate env-expr first
                 let env_expr = self.lisp.car(rest)?;
                 self.cont(ContType::EvalEnvArg, env).data2(expr_to_eval, env.0)?;
-                return Ok(Some(TrampolineState::Eval { expr: ExprRef(env_expr), env }));
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(env_expr), env }))
             }
-        }
-        
-        // apply - apply function to list of arguments
-        if self.lisp.symbol_matches(car, "apply")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_apply(cdr, env).map(Some);
-        }
-        
-        // values - return multiple values (as a special list)
-        if self.lisp.symbol_matches(car, "values")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.eval_values(cdr, env).map(Some);
-        }
-        
-        // call-with-values - call producer, apply consumer to results
-        if self.lisp.symbol_matches(car, "call-with-values")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_call_with_values(cdr, env).map(Some);
-        }
-        
-        // call-with-current-continuation / call/cc - capture the current continuation
+        });
+
+        dispatch!(self, car, env, "apply", self.step_eval_apply(cdr, env).map(Some));
+        dispatch!(self, car, env, "values", self.eval_values(cdr, env).map(Some));
+        dispatch!(self, car, env, "call-with-values", self.step_eval_call_with_values(cdr, env).map(Some));
+
+        // call-with-current-continuation / call/cc
         if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
             || self.lisp.symbol_matches(car, "call/cc")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_call_cc(cdr, env).map(Some);
         }
-        
-        // dynamic-wind - establish dynamic extent with before/after thunks
-        if self.lisp.symbol_matches(car, "dynamic-wind")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_dynamic_wind(cdr, env).map(Some);
-        }
-        
-        // syntax-error - raise compile-time/macro-expansion error (R7RS §4.3.1)
-        // (syntax-error <message> <args> ...)
-        // Store the args list (message + irritants) in expr for display.
-        if self.lisp.symbol_matches(car, "syntax-error")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return Err(self.make_error(ErrorKind::SyntaxError, cdr)
-                .with_message("syntax-error"));
-        }
-        
-        // with-exception-handler - install exception handler (R7RS §6.11)
-        if self.lisp.symbol_matches(car, "with-exception-handler")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_with_exception_handler(cdr, env).map(Some);
-        }
-        
-        // raise - raise an exception (R7RS §6.11)
-        if self.lisp.symbol_matches(car, "raise")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_raise(cdr, env, false).map(Some);
-        }
-        
-        // raise-continuable - raise a continuable exception (R7RS §6.11)
-        if self.lisp.symbol_matches(car, "raise-continuable")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_raise(cdr, env, true).map(Some);
-        }
-        
-        // define-record-type - record type definition (R7RS §5.5)
-        if self.lisp.symbol_matches(car, "define-record-type")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_define_record_type(cdr, env).map(Some);
-        }
-        
-        // define-library - library definition (R7RS §5.6)
-        if self.lisp.symbol_matches(car, "define-library")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_define_library(cdr, env).map(Some);
-        }
-        
-        // import - import library bindings (R7RS §5.6)
-        if self.lisp.symbol_matches(car, "import")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_import(cdr, env).map(Some);
-        }
-        
-        // environment - create immutable environment from import specs (R7RS §6.12)
-        if self.lisp.symbol_matches(car, "environment")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_environment(cdr, env).map(Some);
-        }
-        
-        // include - read and evaluate file contents (R7RS §4.1.7)
-        if self.lisp.symbol_matches(car, "include")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_include(cdr, env, false).map(Some);
-        }
-        
-        // include-ci - read and evaluate file contents case-insensitively (R7RS §4.1.7)
-        if self.lisp.symbol_matches(car, "include-ci")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_include(cdr, env, true).map(Some);
-        }
+
+        dispatch!(self, car, env, "dynamic-wind", self.step_eval_dynamic_wind(cdr, env).map(Some));
+        dispatch!(self, car, env, "syntax-error", 
+            Err(self.make_error(ErrorKind::SyntaxError, cdr).with_message("syntax-error")));
+        dispatch!(self, car, env, "with-exception-handler", self.step_eval_with_exception_handler(cdr, env).map(Some));
+        dispatch!(self, car, env, "raise", self.step_eval_raise(cdr, env, false).map(Some));
+        dispatch!(self, car, env, "raise-continuable", self.step_eval_raise(cdr, env, true).map(Some));
+        dispatch!(self, car, env, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
+        dispatch!(self, car, env, "define-library", self.step_eval_define_library(cdr, env).map(Some));
+        dispatch!(self, car, env, "import", self.step_eval_import(cdr, env).map(Some));
+        dispatch!(self, car, env, "environment", self.step_eval_environment(cdr, env).map(Some));
+        dispatch!(self, car, env, "include", self.step_eval_include(cdr, env, false).map(Some));
+        dispatch!(self, car, env, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
         
         Ok(None)
     }
