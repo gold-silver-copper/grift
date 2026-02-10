@@ -304,12 +304,20 @@ impl IoProvider for StdIoProvider {
         }
         let idx = port.0 - DYNAMIC_PORT_BASE;
         match self.ports.get_mut(idx) {
+            Some(Some(DynPort::OutputFile { file, closed })) => {
+                let _ = file.flush(); // Flush before closing
+                *closed = true;
+                Ok(())
+            }
+            Some(Some(DynPort::BinaryOutputFile { file, closed })) => {
+                let _ = file.flush(); // Flush before closing
+                *closed = true;
+                Ok(())
+            }
             Some(Some(DynPort::InputString { closed, .. }))
             | Some(Some(DynPort::OutputString { closed, .. }))
             | Some(Some(DynPort::InputFile { closed, .. }))
-            | Some(Some(DynPort::OutputFile { closed, .. }))
             | Some(Some(DynPort::BinaryInputFile { closed, .. }))
-            | Some(Some(DynPort::BinaryOutputFile { closed, .. }))
             | Some(Some(DynPort::InputBytevector { closed, .. }))
             | Some(Some(DynPort::OutputBytevector { closed, .. })) => { *closed = true; Ok(()) }
             _ => Err(IoErrorKind::InvalidPort),
