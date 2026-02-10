@@ -1880,6 +1880,226 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let env = self.global_env.0;
                 self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
             }
+
+            // ================================================================
+            // Bytevector operations (R7RS §6.9)
+            // ================================================================
+
+            Builtin::Bytevectorp => {
+                // (bytevector? obj) - Check if value is a bytevector
+                builtin_unary_pred!(self, args, |v: Value| v.is_bytevector())
+            }
+
+            Builtin::MakeBytevector => {
+                // (make-bytevector k) or (make-bytevector k byte)
+                let k = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let rest = self.lisp.cdr(args)?;
+                let fill: u8 = if self.lisp.get(rest)?.is_nil() {
+                    0
+                } else {
+                    let byte_val = self.get_int(self.lisp.car(rest)?, call_expr)?;
+                    if !(0..=255).contains(&byte_val) {
+                        return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                    }
+                    byte_val as u8
+                };
+                self.lisp.make_bytevector(k as usize, fill).map_err(Into::into)
+            }
+
+            Builtin::BytevectorLength => {
+                // (bytevector-length bytevector) - Get length
+                let bv = self.lisp.car(args)?;
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let len = self.lisp.bytevector_len(bv)?;
+                        self.lisp.number(len as isize).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorU8Ref => {
+                // (bytevector-u8-ref bytevector k) - Get byte at index
+                extract_args!(self, args, bv, k_idx);
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 {
+                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                        }
+                        let elem = self.lisp.bytevector_get(bv, k as usize)?;
+                        Ok(elem)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorU8Set => {
+                // (bytevector-u8-set! bytevector k byte) - Set byte at index
+                let bv = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let k_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let byte_idx = self.lisp.car(rest2)?;
+
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 {
+                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                        }
+                        let byte_val = self.get_int(byte_idx, call_expr)?;
+                        if !(0..=255).contains(&byte_val) {
+                            return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                        }
+                        self.lisp.bytevector_set(bv, k as usize, byte_val as u8)?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorCopy => {
+                // (bytevector-copy bytevector [start [end]]) - Copy a bytevector
+                let bv = self.lisp.car(args)?;
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let len = self.lisp.bytevector_len(bv)?;
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        let new_len = end - start;
+                        let result = self.lisp.make_bytevector(new_len, 0)?;
+
+                        for i in 0..new_len {
+                            let elem = self.lisp.bytevector_get(bv, start + i)?;
+                            let byte = match self.lisp.get(elem)? {
+                                Value::Number(n) => n as u8,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            };
+                            self.lisp.bytevector_set(result, i, byte)?;
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorAppend => {
+                // (bytevector-append bytevector ...) - Concatenate bytevectors
+                const MAX_TOTAL_BYTES: usize = 4096;
+                let mut bytes: [u8; MAX_TOTAL_BYTES] = [0u8; MAX_TOTAL_BYTES];
+                let mut total_len = 0;
+
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            match self.lisp.get(car)? {
+                                Value::Bytevector { .. } => {
+                                    let len = self.lisp.bytevector_len(car)?;
+                                    if total_len + len > MAX_TOTAL_BYTES {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    for i in 0..len {
+                                        let elem = self.lisp.bytevector_get(car, i)?;
+                                        match self.lisp.get(elem)? {
+                                            Value::Number(n) => {
+                                                bytes[total_len] = n as u8;
+                                                total_len += 1;
+                                            }
+                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                                        }
+                                    }
+                                }
+                                v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+
+                let result = self.lisp.make_bytevector(total_len, 0)?;
+                for (i, &b) in bytes.iter().enumerate().take(total_len) {
+                    self.lisp.bytevector_set(result, i, b)?;
+                }
+                Ok(result)
+            }
+
+            Builtin::Utf8ToString => {
+                // (utf8->string bytevector [start [end]]) - Decode UTF-8 bytevector to string
+                let bv = self.lisp.car(args)?;
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let len = self.lisp.bytevector_len(bv)?;
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        let sub_len = end - start;
+                        const MAX_BUF: usize = 4096;
+                        if sub_len > MAX_BUF {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let mut buf = [0u8; MAX_BUF];
+                        for i in 0..sub_len {
+                            let elem = self.lisp.bytevector_get(bv, start + i)?;
+                            match self.lisp.get(elem)? {
+                                Value::Number(n) => buf[i] = n as u8,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        let s = core::str::from_utf8(&buf[..sub_len])
+                            .map_err(|_| self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"))?;
+                        self.lisp.string(s).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::StringToUtf8 => {
+                // (string->utf8 string [start [end]]) - Encode string as UTF-8 bytevector
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        // Collect UTF-8 bytes from the character range
+                        const MAX_BUF: usize = 4096;
+                        let mut buf = [0u8; MAX_BUF];
+                        let mut byte_len = 0;
+                        for i in start..end {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => {
+                                    let mut tmp = [0u8; 4];
+                                    let encoded = c.encode_utf8(&mut tmp);
+                                    if byte_len + encoded.len() > MAX_BUF {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    buf[byte_len..byte_len + encoded.len()].copy_from_slice(encoded.as_bytes());
+                                    byte_len += encoded.len();
+                                }
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+
+                        let result = self.lisp.make_bytevector(byte_len, 0)?;
+                        for (i, &b) in buf.iter().enumerate().take(byte_len) {
+                            self.lisp.bytevector_set(result, i, b)?;
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
         }
     }
     

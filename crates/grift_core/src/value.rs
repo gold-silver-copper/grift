@@ -347,6 +347,26 @@ define_builtins! {
     // Environment procedures (R7RS §6.12)
     /// interaction-environment - Return the mutable REPL environment
     InteractionEnvironment => "interaction-environment",
+
+    // Bytevector operations (R7RS §6.9)
+    /// bytevector? - Check if value is a bytevector
+    Bytevectorp => "bytevector?",
+    /// make-bytevector - Create a bytevector with optional fill byte
+    MakeBytevector => "make-bytevector",
+    /// bytevector-length - Get length of bytevector
+    BytevectorLength => "bytevector-length",
+    /// bytevector-u8-ref - Get byte at index
+    BytevectorU8Ref => "bytevector-u8-ref",
+    /// bytevector-u8-set! - Set byte at index
+    BytevectorU8Set => "bytevector-u8-set!",
+    /// bytevector-copy - Copy a bytevector
+    BytevectorCopy => "bytevector-copy",
+    /// bytevector-append - Concatenate bytevectors
+    BytevectorAppend => "bytevector-append",
+    /// utf8->string - Decode bytevector as UTF-8 string
+    Utf8ToString => "utf8->string",
+    /// string->utf8 - Encode string as UTF-8 bytevector
+    StringToUtf8 => "string->utf8",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
