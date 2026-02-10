@@ -97,6 +97,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.apply_call_with_file(builtin, args, call_expr);
         }
 
+        // call-with-port — apply proc to port, close port when done
+        if matches!(builtin, Builtin::CallWithPort) {
+            return self.apply_call_with_port(args, call_expr);
+        }
+
         // with-input-from-file / with-output-to-file — redirect current port, call thunk, restore
         if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
             return self.apply_with_file(builtin, args, call_expr);
@@ -244,6 +249,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
 
         let port_val = self.lisp.port(pid)?;
+        let port_id_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push continuation to close the port after proc returns
+        self.cont(ContType::CallWithPortClose, EnvRef(env)).data1(port_id_enc)?;
+
+        // Build args list: (port)
+        let nil = self.lisp.nil()?;
+        let args_list = self.lisp.cons(port_val, nil)?;
+
+        // Apply proc to the port
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (call-with-port port proc).
+    /// Calls proc with port as argument, closes port when proc returns.
+    fn apply_call_with_port(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let port_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let proc = self.lisp.car(rest)?;
+
+        // Validate that the first arg is a port
+        let pid = match self.lisp.get(port_val)? {
+            Value::Port(pid) => pid,
+            v => return Err(self.type_error(call_expr, "port", v.type_name())),
+        };
+
         let port_id_enc = self.lisp.number(pid.0 as isize)?;
         let env = self.global_env.0;
 
@@ -2004,9 +2039,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             // call-with-input-file/output-file and with-input-from-file/output-to-file
-            // are handled in apply_builtin_trampolined
+            // and call-with-port are handled in apply_builtin_trampolined
             Builtin::CallWithInputFile | Builtin::CallWithOutputFile
-            | Builtin::WithInputFromFile | Builtin::WithOutputToFile => {
+            | Builtin::WithInputFromFile | Builtin::WithOutputToFile
+            | Builtin::CallWithPort => {
                 Err(self.make_error(ErrorKind::Generic, call_expr))
             }
 
@@ -2482,6 +2518,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
             }
 
+            Builtin::SchemeReportEnvironment => {
+                // (scheme-report-environment version)
+                // Returns an environment corresponding to R^version RS
+                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if version != 5 && version != 7 {
+                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
+                }
+                // Return the global environment as immutable (read-only snapshot)
+                let env = self.global_env.0;
+                self.lisp.alloc(Value::Environment { env, mutable: false }).map_err(Into::into)
+            }
+
+            Builtin::NullEnvironment => {
+                // (null-environment version)
+                // Returns a minimal environment with only syntax (no procedure bindings)
+                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if version != 5 && version != 7 {
+                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
+                }
+                // Return an empty environment (immutable)
+                let nil = self.lisp.nil()?;
+                self.lisp.alloc(Value::Environment { env: nil, mutable: false }).map_err(Into::into)
+            }
+
             // ================================================================
             // Bytevector operations (R7RS §6.9)
             // ================================================================
@@ -2632,6 +2692,87 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.bytevector_set(result, i, b)?;
                 }
                 Ok(result)
+            }
+
+            Builtin::Bytevector_ => {
+                // (bytevector byte ...) - Create bytevector from given byte values
+                const MAX_BYTES: usize = 4096;
+                let mut bytes: [u8; MAX_BYTES] = [0u8; MAX_BYTES];
+                let mut len = 0;
+
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            let byte_val = self.get_int(car, call_expr)?;
+                            if !(0..=255).contains(&byte_val) {
+                                return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                            }
+                            if len >= MAX_BYTES {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            bytes[len] = byte_val as u8;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+
+                let result = self.lisp.make_bytevector(len, 0)?;
+                for (i, &b) in bytes.iter().enumerate().take(len) {
+                    self.lisp.bytevector_set(result, i, b)?;
+                }
+                Ok(result)
+            }
+
+            Builtin::BytevectorCopyBang => {
+                // (bytevector-copy! to at from [start [end]])
+                let to = self.lisp.car(args)?;
+                let rest1 = self.lisp.cdr(args)?;
+                let at_val = self.lisp.car(rest1)?;
+                let rest2 = self.lisp.cdr(rest1)?;
+                let from = self.lisp.car(rest2)?;
+                let rest3 = self.lisp.cdr(rest2)?;
+
+                // Validate types
+                match self.lisp.get(to)? {
+                    Value::Bytevector { .. } => {}
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+                match self.lisp.get(from)? {
+                    Value::Bytevector { .. } => {}
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+
+                let at = self.get_int(at_val, call_expr)?;
+                if at < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let at = at as usize;
+
+                let from_len = self.lisp.bytevector_len(from)?;
+                let to_len = self.lisp.bytevector_len(to)?;
+                let (start, end) = self.parse_range_args(rest3, from_len, call_expr)?;
+
+                let copy_len = end - start;
+                if at + copy_len > to_len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+
+                // Copy bytes from `from[start..end]` to `to[at..at+copy_len]`
+                for i in 0..copy_len {
+                    let elem = self.lisp.bytevector_get(from, start + i)?;
+                    let byte = match self.lisp.get(elem)? {
+                        Value::Number(n) => n as u8,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    self.lisp.bytevector_set(to, at + i, byte)?;
+                }
+                self.lisp.void_val().map_err(Into::into)
             }
 
             Builtin::Utf8ToString => {

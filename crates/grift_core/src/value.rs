@@ -236,6 +236,8 @@ define_builtins! {
     OpenBinaryInputFile => "open-binary-input-file",
     /// open-binary-output-file - Open a binary output port on a file
     OpenBinaryOutputFile => "open-binary-output-file",
+    /// call-with-port - Call proc with port, close port when proc returns
+    CallWithPort => "call-with-port",
     /// call-with-input-file - Call proc with input port, then close it
     CallWithInputFile => "call-with-input-file",
     /// call-with-output-file - Call proc with output port, then close it
@@ -453,10 +455,16 @@ define_builtins! {
     // Environment procedures (R7RS §6.12)
     /// interaction-environment - Return the mutable REPL environment
     InteractionEnvironment => "interaction-environment",
+    /// scheme-report-environment - Return environment for given R^n RS version
+    SchemeReportEnvironment => "scheme-report-environment",
+    /// null-environment - Return minimal environment with only syntax
+    NullEnvironment => "null-environment",
 
     // Bytevector operations (R7RS §6.9)
     /// bytevector? - Check if value is a bytevector
     Bytevectorp => "bytevector?",
+    /// bytevector - Variadic constructor: (bytevector byte ...)
+    Bytevector_ => "bytevector",
     /// make-bytevector - Create a bytevector with optional fill byte
     MakeBytevector => "make-bytevector",
     /// bytevector-length - Get length of bytevector
@@ -467,6 +475,8 @@ define_builtins! {
     BytevectorU8Set => "bytevector-u8-set!",
     /// bytevector-copy - Copy a bytevector
     BytevectorCopy => "bytevector-copy",
+    /// bytevector-copy! - Destructive copy between bytevectors
+    BytevectorCopyBang => "bytevector-copy!",
     /// bytevector-append - Concatenate bytevectors
     BytevectorAppend => "bytevector-append",
     /// utf8->string - Decode bytevector as UTF-8 string
