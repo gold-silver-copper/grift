@@ -1,6 +1,6 @@
 ;;; (scheme base) — R7RS §6.1–6.10 core library
 ;;;
-;;; Note: exports are split across two (export ...) declarations
+;;; Note: exports are split across multiple (export ...) declarations
 ;;; to stay within the parser's per-list element limit.
 (define-library (scheme base)
   (export
@@ -74,5 +74,36 @@
     numerator denominator rationalize
     exact-integer-sqrt
     exp log sin cos tan asin acos atan
-    make-rectangular make-polar real-part imag-part magnitude angle))
-
+    make-rectangular make-polar real-part imag-part magnitude angle)
+  (export
+    ;; Continuation/control flow (special forms)
+    apply call-with-current-continuation call/cc
+    values call-with-values dynamic-wind
+    ;; Exception handling (special forms)
+    with-exception-handler raise raise-continuable
+    ;; Syntax (special forms)
+    define-record-type include include-ci
+    ;; I/O - text
+    write-string flush-output-port
+    open-input-file open-output-file
+    read write write-shared write-simple
+    ;; I/O - binary
+    read-u8 peek-u8 u8-ready? write-u8 write-bytevector
+    ;; Bytevector operations
+    bytevector? make-bytevector bytevector-length
+    bytevector-u8-ref bytevector-u8-set!
+    bytevector-copy bytevector-copy! bytevector-append
+    bytevector
+    ;; Bytevector I/O
+    open-input-bytevector open-output-bytevector
+    get-output-bytevector
+    ;; Port management
+    call-with-port
+    ;; Encoding conversion
+    utf8->string string->utf8
+    ;; Error predicates
+    read-error? file-error?
+    ;; Vector-String conversion
+    vector->string string->vector
+    ;; Introspection
+    features))

@@ -492,6 +492,141 @@ fn test_scheme_r5rs_no_transcript() {
 }
 
 // ============================================================================
+// (scheme complex) library
+// ============================================================================
+
+#[test]
+fn test_import_scheme_complex() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme complex))").unwrap();
+    // real-part and imag-part should work on real numbers
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(real-part 5)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(imag-part 5)"), 0);
+}
+
+// ============================================================================
+// (scheme base) new exports
+// ============================================================================
+
+#[test]
+fn test_scheme_base_bytevector_exports() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme base))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(bytevector? (make-bytevector 3))"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(bytevector-length (make-bytevector 5))"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(bytevector-u8-ref (bytevector 10 20 30) 1)"), 20);
+}
+
+#[test]
+fn test_scheme_base_io_exports() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme base))").unwrap();
+    // write-string and flush-output-port should be available
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? write-string)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? flush-output-port)"));
+    // call-with-port should be available
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? call-with-port)"));
+}
+
+#[test]
+fn test_scheme_base_features_export() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme base))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(list? (features))"));
+}
+
+#[test]
+fn test_scheme_base_special_forms_work() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme base))").unwrap();
+    // apply should work
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(apply + '(1 2 3))"), 6);
+    // values and call-with-values should work
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(call-with-values (lambda () (values 1 2)) +)"), 3);
+}
+
+#[test]
+fn test_scheme_base_error_predicates() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme base))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? read-error?)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? file-error?)"));
+}
+
+#[test]
+fn test_scheme_base_encoding_exports() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme base))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? utf8->string)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? string->utf8)"));
+}
+
+// ============================================================================
+// (scheme cxr) new 4-level exports
+// ============================================================================
+
+#[test]
+fn test_scheme_cxr_4level() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme cxr))").unwrap();
+    // caaaar: (car (car (car (car x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(caaaar '((((1 2) 3) 4) 5))"), 1);
+    // caddar: (car (cdr (cdr (car x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(caddar '((a b 3) d))"), 3);
+}
+
+// ============================================================================
+// (scheme file) new exports
+// ============================================================================
+
+#[test]
+fn test_scheme_file_exports() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme file))").unwrap();
+    // These should all be available as procedures
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? open-input-file)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? open-output-file)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? call-with-input-file)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? call-with-output-file)"));
+}
+
+// ============================================================================
+// (scheme time) new exports
+// ============================================================================
+
+#[test]
+fn test_scheme_time_exports() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme time))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? current-second)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? current-jiffy)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? jiffies-per-second)"));
+}
+
+// ============================================================================
 // Error cases
 // ============================================================================
 

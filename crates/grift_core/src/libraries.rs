@@ -26,6 +26,7 @@
 //! | `scheme-base`          | `(scheme base)`             |
 //! | `scheme-case-lambda`   | `(scheme case-lambda)`      |
 //! | `scheme-char`          | `(scheme char)`             |
+//! | `scheme-complex`       | `(scheme complex)`          |
 //! | `scheme-cxr`           | `(scheme cxr)`              |
 //! | `scheme-eval`          | `(scheme eval)`             |
 //! | `scheme-file`          | `(scheme file)`             |
@@ -64,6 +65,8 @@ pub const LIBRARY_SOURCES: &[LibrarySource] = &[
     LibrarySource { name: &["scheme", "case-lambda"],     source: include_str!("lib/scheme/case-lambda.scm") },
     #[cfg(feature = "scheme-char")]
     LibrarySource { name: &["scheme", "char"],            source: include_str!("lib/scheme/char.scm") },
+    #[cfg(feature = "scheme-complex")]
+    LibrarySource { name: &["scheme", "complex"],         source: include_str!("lib/scheme/complex.scm") },
     #[cfg(feature = "scheme-cxr")]
     LibrarySource { name: &["scheme", "cxr"],             source: include_str!("lib/scheme/cxr.scm") },
     #[cfg(feature = "scheme-eval")]
