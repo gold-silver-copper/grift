@@ -989,21 +989,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::CharUpcase => {
+            Builtin::CharUpcase | Builtin::CharDowncase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let result = if c.is_ascii_lowercase() {
-                    ((c as u8) - b'a' + b'A') as char
+                let result = if matches!(builtin, Builtin::CharUpcase) {
+                    if c.is_ascii_lowercase() { ((c as u8) - b'a' + b'A') as char } else { c }
                 } else {
-                    c
-                };
-                self.lisp.char(result).map_err(Into::into)
-            }
-            Builtin::CharDowncase => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let result = if c.is_ascii_uppercase() {
-                    ((c as u8) - b'A' + b'a') as char
-                } else {
-                    c
+                    if c.is_ascii_uppercase() { ((c as u8) - b'A' + b'a') as char } else { c }
                 };
                 self.lisp.char(result).map_err(Into::into)
             }
@@ -1056,19 +1047,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
-                let result = self.lisp.make_string(len, '\0')?;
-                let mut cursor = collected;
-                let mut i = len;
-                while let Value::Cons { .. } = self.lisp.get(cursor)? {
-                    i -= 1;
-                    let ch = self.lisp.car(cursor)?;
-                    match self.lisp.get(ch)? {
-                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
-                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                    }
-                    cursor = self.lisp.cdr(cursor)?;
-                }
-                Ok(result)
+                self.reversed_char_cons_to_string(collected, len)
             }
             
             Builtin::StringLength => {
@@ -1283,23 +1262,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Err(self.make_error(ErrorKind::TypeError, call_expr));
                         }
                         
-                        let sub_len = (end - start) as usize;
-                        const MAX_SUBSTRING_LEN: usize = 1024;
-                        let mut chars = ['\0'; MAX_SUBSTRING_LEN];
-                        if sub_len > MAX_SUBSTRING_LEN {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
-                        
-                        for (i, ch) in chars.iter_mut().enumerate().take(sub_len) {
-                            // Characters start at data (no header with inline length)
-                            let char_slot = self.lisp.arena_index_at_offset(data, (start as usize) + i)?;
-                            match self.lisp.get(char_slot)? {
-                                Value::Char(c) => *ch = c,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
-                        }
-                        
-                        self.lisp.string_from_chars(&chars[..sub_len]).map_err(Into::into)
+                        self.copy_string_range(data, start as usize, (end - start) as usize, call_expr)
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
@@ -1312,23 +1275,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::String { len, data } => {
                         let rest = self.lisp.cdr(args)?;
                         let (start, end) = self.parse_range_args(rest, len, call_expr)?;
-                        
-                        let sub_len = end - start;
-                        const MAX_STRING_LEN: usize = 1024;
-                        let mut chars = ['\0'; MAX_STRING_LEN];
-                        if sub_len > MAX_STRING_LEN {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
-                        
-                        for (i, ch) in chars.iter_mut().enumerate().take(sub_len) {
-                            let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
-                            match self.lisp.get(char_slot)? {
-                                Value::Char(c) => *ch = c,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
-                        }
-                        
-                        self.lisp.string_from_chars(&chars[..sub_len]).map_err(Into::into)
+                        self.copy_string_range(data, start, end - start, call_expr)
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
@@ -1937,19 +1884,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 // Build string from reversed cons list of chars
-                let result = self.lisp.make_string(count, '\0')?;
-                let mut cursor = collected;
-                let mut i = count;
-                while let Value::Cons { .. } = self.lisp.get(cursor)? {
-                    i -= 1;
-                    let ch = self.lisp.car(cursor)?;
-                    match self.lisp.get(ch)? {
-                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
-                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
-                    }
-                    cursor = self.lisp.cdr(cursor)?;
-                }
-                Ok(result)
+                self.reversed_char_cons_to_string(collected, count)
             }
 
             Builtin::ReadString => {
@@ -1984,19 +1919,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return self.lisp.eof().map_err(Into::into);
                 }
                 // Build string from reversed cons list of chars
-                let result = self.lisp.make_string(chars_read, '\0')?;
-                let mut cursor = collected;
-                let mut i = chars_read;
-                while let Value::Cons { .. } = self.lisp.get(cursor)? {
-                    i -= 1;
-                    let ch = self.lisp.car(cursor)?;
-                    match self.lisp.get(ch)? {
-                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
-                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
-                    }
-                    cursor = self.lisp.cdr(cursor)?;
-                }
-                Ok(result)
+                self.reversed_char_cons_to_string(collected, chars_read)
             }
 
             Builtin::TextualPortp => self.port_predicate(args, |io, pid| io.is_textual_port(pid)),
@@ -2759,30 +2682,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Error predicates (R7RS §6.11)
             // ============================================================
 
-            Builtin::ReadErrorP => {
-                // (read-error? obj) - Returns #t if obj is a read error
+            Builtin::ReadErrorP | Builtin::FileErrorP => {
+                let tag = if matches!(builtin, Builtin::ReadErrorP) { "read-error" } else { "file-error" };
                 let arg = self.lisp.car(args)?;
-                let is_read_error = match self.lisp.get(arg)? {
+                let matches = match self.lisp.get(arg)? {
                     Value::ErrorObject { irritants_and_type, .. } => {
                         let err_type = self.lisp.cdr(irritants_and_type)?;
-                        self.lisp.symbol_matches(err_type, "read-error").unwrap_or(false)
+                        self.lisp.symbol_matches(err_type, tag).unwrap_or(false)
                     }
                     _ => false,
                 };
-                self.lisp.boolean(is_read_error).map_err(Into::into)
-            }
-
-            Builtin::FileErrorP => {
-                // (file-error? obj) - Returns #t if obj is a file error
-                let arg = self.lisp.car(args)?;
-                let is_file_error = match self.lisp.get(arg)? {
-                    Value::ErrorObject { irritants_and_type, .. } => {
-                        let err_type = self.lisp.cdr(irritants_and_type)?;
-                        self.lisp.symbol_matches(err_type, "file-error").unwrap_or(false)
-                    }
-                    _ => false,
-                };
-                self.lisp.boolean(is_file_error).map_err(Into::into)
+                self.lisp.boolean(matches).map_err(Into::into)
             }
 
             // ============================================================
@@ -2849,10 +2759,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Transcendental functions (R7RS §6.2.6) — powered by libm
             // ================================================================
 
-            Builtin::Exp => {
-                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                self.lisp.float(libm::exp(f as f64) as fsize).map_err(Into::into)
-            }
+            Builtin::Exp => self.apply_unary_transcendental(args, call_expr, libm::exp),
+            Builtin::Sin => self.apply_unary_transcendental(args, call_expr, libm::sin),
+            Builtin::Cos => self.apply_unary_transcendental(args, call_expr, libm::cos),
+            Builtin::Tan => self.apply_unary_transcendental(args, call_expr, libm::tan),
+            Builtin::Asin => self.apply_unary_transcendental(args, call_expr, libm::asin),
+            Builtin::Acos => self.apply_unary_transcendental(args, call_expr, libm::acos),
 
             Builtin::Log => {
                 let z = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
@@ -2861,34 +2773,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.float(libm::log(z as f64) as fsize).map_err(Into::into)
                 } else {
                     let base = self.get_num_as_fsize(self.lisp.car(rest)?, call_expr)?;
-                    let result = libm::log(z as f64) / libm::log(base as f64);
-                    self.lisp.float(result as fsize).map_err(Into::into)
+                    self.lisp.float((libm::log(z as f64) / libm::log(base as f64)) as fsize).map_err(Into::into)
                 }
-            }
-
-            Builtin::Sin => {
-                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                self.lisp.float(libm::sin(f as f64) as fsize).map_err(Into::into)
-            }
-
-            Builtin::Cos => {
-                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                self.lisp.float(libm::cos(f as f64) as fsize).map_err(Into::into)
-            }
-
-            Builtin::Tan => {
-                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                self.lisp.float(libm::tan(f as f64) as fsize).map_err(Into::into)
-            }
-
-            Builtin::Asin => {
-                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                self.lisp.float(libm::asin(f as f64) as fsize).map_err(Into::into)
-            }
-
-            Builtin::Acos => {
-                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-                self.lisp.float(libm::acos(f as f64) as fsize).map_err(Into::into)
             }
 
             Builtin::Atan => {
@@ -2916,14 +2802,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.return_exact_if_both_exact(args, r, call_expr)
             }
 
-            Builtin::FloorDiv => {
-                let (q, r) = self.division_op(args, call_expr, libm::floor)?;
-                let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
-                let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
-                let nil = self.lisp.nil()?;
-                let tail = self.lisp.cons(rv, nil)?;
-                self.lisp.cons(qv, tail).map_err(Into::into)
-            }
+            Builtin::FloorDiv => self.division_values(args, call_expr, libm::floor),
 
             Builtin::TruncateQuotient => {
                 let (q, _) = self.division_op(args, call_expr, libm::trunc)?;
@@ -2935,14 +2814,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.return_exact_if_both_exact(args, r, call_expr)
             }
 
-            Builtin::TruncateDiv => {
-                let (q, r) = self.division_op(args, call_expr, libm::trunc)?;
-                let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
-                let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
-                let nil = self.lisp.nil()?;
-                let tail = self.lisp.cons(rv, nil)?;
-                self.lisp.cons(qv, tail).map_err(Into::into)
-            }
+            Builtin::TruncateDiv => self.division_values(args, call_expr, libm::trunc),
 
             // ================================================================
             // Rational number operations (R7RS §6.2.6)
@@ -3204,6 +3076,46 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Apply a unary transcendental function (e.g. sin, cos, exp) to a single argument.
+    fn apply_unary_transcendental(&self, args: ArenaIndex, call_expr: ArenaIndex, f: fn(f64) -> f64) -> EvalResult {
+        let x = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+        self.lisp.float(f(x as f64) as fsize).map_err(Into::into)
+    }
+
+    /// Build a string from a reversed cons list of Char values.
+    /// `collected` is a reversed cons list and `count` is the number of elements.
+    fn reversed_char_cons_to_string(&self, collected: ArenaIndex, count: usize) -> EvalResult {
+        let result = self.lisp.make_string(count, '\0')?;
+        let mut cursor = collected;
+        let mut i = count;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            i -= 1;
+            let ch = self.lisp.car(cursor)?;
+            if let Value::Char(c) = self.lisp.get(ch)? {
+                self.lisp.string_set(result, i, c)?;
+            }
+            cursor = self.lisp.cdr(cursor)?;
+        }
+        Ok(result)
+    }
+
+    /// Copy a range of characters from string data into a new string.
+    fn copy_string_range(&self, data: ArenaIndex, start: usize, count: usize, call_expr: ArenaIndex) -> EvalResult {
+        const MAX_STRING_LEN: usize = 1024;
+        let mut chars = ['\0'; MAX_STRING_LEN];
+        if count > MAX_STRING_LEN {
+            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+        }
+        for (i, ch) in chars.iter_mut().enumerate().take(count) {
+            let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
+            match self.lisp.get(char_slot)? {
+                Value::Char(c) => *ch = c,
+                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+            }
+        }
+        self.lisp.string_from_chars(&chars[..count]).map_err(Into::into)
+    }
+
     /// Get number as fsize from already-evaluated value
     pub(super) fn get_num_as_fsize(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<fsize, EvalError> {
         match self.lisp.get(idx)? {
@@ -3667,6 +3579,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let q = round_fn((n as f64) / (d as f64));
         let r = n as f64 - d as f64 * q;
         Ok((q as fsize, r as fsize))
+    }
+
+    /// Compute floor/truncate division and return both quotient and remainder as a two-element list.
+    fn division_values(
+        &self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+        round_fn: fn(f64) -> f64,
+    ) -> Result<ArenaIndex, EvalError> {
+        let (q, r) = self.division_op(args, call_expr, round_fn)?;
+        let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
+        let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
+        let nil = self.lisp.nil()?;
+        let tail = self.lisp.cons(rv, nil)?;
+        self.lisp.cons(qv, tail).map_err(Into::into)
     }
 
     /// Extract an optional port and start/end range from argument list.
