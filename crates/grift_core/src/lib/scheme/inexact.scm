@@ -2,5 +2,5 @@
 (define-library (scheme inexact)
   (export
     finite? infinite? nan?
-    sqrt
+    sqrt exp log sin cos tan asin acos atan
     exact->inexact inexact->exact))

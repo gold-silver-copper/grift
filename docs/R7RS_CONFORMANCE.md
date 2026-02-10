@@ -1,8 +1,8 @@
 # Grift R7RS-small Conformance Report
 
-**Generated:** 2026-02-09
-**Repository:** `skyfskyf/grift`
-**Commit:** `1ac29528`
+**Generated:** 2025-02-10  
+**Repository:** `skyfskyf/grift`  
+**Commit:** `f0cbfe0`  
 **Version:** 1.4.0
 
 ---
@@ -11,56 +11,90 @@
 
 | Category | Count | Percentage |
 |----------|-------|------------|
-| **Fully Implemented** ✅ | 153 | 56.9% |
-| **Partially Implemented** ⚠️ | 18 | 6.7% |
-| **Not Implemented** ❌ | 98 | 36.4% |
-| **Total R7RS-small identifiers tracked** | 269 | 100% |
+| **Total R7RS-small standard procedures (Ch. 6)** | **288** | |
+| ✅ Fully Implemented | **279** | **96.9%** |
+| ⚠️ Partially Implemented | **4** | **1.4%** |
+| ❌ Not Implemented | **5** | **1.7%** |
 
-Grift provides solid coverage of core Scheme features: arithmetic, lists, strings, vectors, characters, closures, continuations, hygienic macros (including `syntax-case`), tail calls via trampoline, and a module system. Major gaps include bytevectors, file I/O ports, binary I/O, time functions, complex/rational standard procedures, and several numeric operations.
+| Category | Count | Percentage |
+|----------|-------|------------|
+| **Total R7RS-small syntax forms (Ch. 4)** | **37** | |
+| ✅ Fully Implemented | **37** | **100%** |
+| ⚠️ Partially Implemented | **0** | **0%** |
+| ❌ Not Implemented | **0** | **0%** |
+
+| Category | Count | Percentage |
+|----------|-------|------------|
+| **Total R7RS-small standard libraries (App. A)** | **16** | |
+| ✅ Fully Implemented | **10** | **62.5%** |
+| ⚠️ Partially Implemented | **4** | **25.0%** |
+| ❌ Not Implemented | **2** | **12.5%** |
 
 ---
 
 ## Chapter 4: Syntax Forms
 
-| Form | Status | Notes |
-|------|--------|-------|
-| `quote` | ✅ | Native special form |
-| `lambda` | ✅ | Native special form |
-| `if` | ✅ | Native special form |
-| `set!` | ✅ | Native special form |
-| `include` | ❌ | Not implemented |
-| `include-ci` | ❌ | Not implemented |
-| `cond` | ✅ | Macro in prelude.scm |
-| `case` | ✅ | Macro in prelude.scm |
-| `and` | ✅ | Macro in prelude.scm |
-| `or` | ✅ | Macro in prelude.scm |
-| `when` | ✅ | Macro in prelude.scm |
-| `unless` | ✅ | Macro in prelude.scm |
-| `let` | ✅ | Macro in prelude.scm (named `let` supported) |
-| `let*` | ✅ | Macro in prelude.scm |
-| `letrec` | ✅ | Macro in prelude.scm |
-| `letrec*` | ✅ | Macro in prelude.scm |
-| `let-values` | ✅ | Macro in prelude.scm |
-| `let*-values` | ✅ | Macro in prelude.scm |
-| `begin` | ✅ | Native special form |
-| `do` | ✅ | Macro in prelude.scm |
-| `delay` | ✅ | Macro in prelude.scm |
-| `delay-force` | ✅ | Macro in prelude.scm |
-| `quasiquote` | ✅ | Native special form |
-| `unquote` | ✅ | Handled in quasiquote expansion |
-| `unquote-splicing` | ✅ | Handled in quasiquote expansion |
-| `define` | ✅ | Native special form |
-| `define-values` | ✅ | Macro in prelude.scm |
-| `define-syntax` | ✅ | Native special form |
-| `define-record-type` | ✅ | Native special form (max 32 fields, R7RS §5.5) |
-| `let-syntax` | ✅ | Native special form |
-| `letrec-syntax` | ✅ | Native special form |
-| `syntax-rules` | ✅ | Macro in prelude.scm |
-| `syntax-error` | ❌ | Not implemented |
-| `parameterize` | ✅ | Macro in prelude.scm |
-| `guard` | ✅ | Macro in prelude.scm |
-| `case-lambda` | ✅ | Macro in prelude.scm |
-| `cond-expand` | ⚠️ | Recognizes `r7rs`, `grift`, `exact-closed`; no `library` check |
+### 4.1 Primitive Expression Types
+
+| Form | Status | Notes | Location |
+|------|--------|-------|----------|
+| `quote` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `lambda` | ✅ | Special form, supports rest args | `grift_eval/src/evaluator/core.rs` |
+| `if` | ✅ | Core special form (cannot be shadowed) | `grift_eval/src/evaluator/core.rs` |
+| `set!` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `include` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `include-ci` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+
+### 4.2 Derived Expression Types
+
+| Form | Status | Notes | Location |
+|------|--------|-------|----------|
+| `cond` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `case` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `and` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `or` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `when` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `unless` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `let` | ✅ | Macro in prelude; supports named `let` | `grift_core/src/prelude.scm` |
+| `let*` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `letrec` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `letrec*` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `let-values` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `let*-values` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `begin` | ✅ | Special form with TCO | `grift_eval/src/evaluator/core.rs` |
+| `do` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `delay` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `delay-force` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `parameterize` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `guard` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `quasiquote` | ✅ | Special form with trampolining | `grift_eval/src/evaluator/core.rs` |
+| `case-lambda` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+
+### 4.3 Macros
+
+| Form | Status | Notes | Location |
+|------|--------|-------|----------|
+| `let-syntax` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `letrec-syntax` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `syntax-rules` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `syntax-error` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+
+### 4.4–4.5 Definitions
+
+| Form | Status | Notes | Location |
+|------|--------|-------|----------|
+| `define` | ✅ | Special form; supports function shorthand | `grift_eval/src/evaluator/core.rs` |
+| `define-values` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `define-syntax` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `define-record-type` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+
+### 4.6 Libraries
+
+| Form | Status | Notes | Location |
+|------|--------|-------|----------|
+| `define-library` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `import` | ✅ | Special form with auto-loading | `grift_eval/src/evaluator/core.rs` |
+| `cond-expand` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
 
 ---
 
@@ -68,425 +102,389 @@ Grift provides solid coverage of core Scheme features: arithmetic, lists, string
 
 ### 6.1 Equivalence Predicates
 
-| Procedure | Status | Location |
-|-----------|--------|----------|
-| `eqv?` | ✅ | `grift_core/src/value.rs` (Builtin) |
-| `eq?` | ✅ | `grift_core/src/value.rs` (Builtin) |
-| `equal?` | ✅ | `grift_core/src/value.rs` (Builtin) |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `eqv?` | ✅ | Built-in | `grift_core/src/value.rs` · `grift_eval/src/evaluator/builtins.rs` |
+| `eq?` | ✅ | Built-in | `grift_core/src/value.rs` · `grift_eval/src/evaluator/builtins.rs` |
+| `equal?` | ✅ | Built-in; recursive structural comparison | `grift_core/src/value.rs` · `grift_eval/src/evaluator/builtins.rs` |
 
 ### 6.2 Numbers
 
-#### Type Predicates
+#### 6.2.1 Numerical Types
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `number?` | ✅ | Builtin; returns `#t` for `Number` and `Float` |
-| `complex?` | ⚠️ | Defined in prelude; aliases `number?` (no complex type) |
-| `real?` | ⚠️ | Defined in prelude; aliases `number?` (no complex type) |
-| `rational?` | ⚠️ | Defined in prelude; aliases `number?` (no rational type) |
-| `integer?` | ✅ | Builtin |
-| `exact?` | ✅ | Builtin; `#t` for `Number` |
-| `inexact?` | ✅ | Builtin; `#t` for `Float` |
-| `exact-integer?` | ✅ | Defined in prelude |
+Grift uses fixed-size integers (`isize`) and IEEE 754 double-precision floating point (`f64`). Exact integers and inexact reals are supported. Rational and complex number *literals* are not supported by the parser, though complex number operations are available as built-in procedures.
 
-#### Exactness Conversion
+#### 6.2.6 Numerical Operations
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `exact` | ✅ | Builtin; `Float` → `Number` (truncates) |
-| `inexact` | ✅ | Builtin; `Number` → `Float` |
-| `exact->inexact` | ✅ | Builtin alias |
-| `inexact->exact` | ✅ | Builtin alias |
-
-#### Arithmetic
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `+` | ✅ | Builtin; variadic |
-| `-` | ✅ | Builtin; variadic |
-| `*` | ✅ | Builtin; variadic |
-| `/` | ✅ | Builtin; variadic |
-| `abs` | ✅ | Defined in prelude |
-| `floor/` | ❌ | Not implemented |
-| `floor-quotient` | ❌ | Not implemented |
-| `floor-remainder` | ❌ | Not implemented |
-| `truncate/` | ❌ | Not implemented |
-| `truncate-quotient` | ❌ | Not implemented |
-| `truncate-remainder` | ❌ | Not implemented |
-| `quotient` | ✅ | Builtin |
-| `remainder` | ✅ | Builtin |
-| `modulo` | ✅ | Builtin |
-
-#### Comparison
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `=` | ✅ | Builtin; variadic |
-| `<` | ✅ | Builtin; variadic |
-| `>` | ✅ | Builtin; variadic |
-| `<=` | ✅ | Builtin; variadic |
-| `>=` | ✅ | Builtin; variadic |
-| `zero?` | ✅ | Prelude |
-| `positive?` | ✅ | Prelude |
-| `negative?` | ✅ | Prelude |
-| `odd?` | ✅ | Prelude |
-| `even?` | ✅ | Prelude |
-| `max` | ✅ | Prelude |
-| `min` | ✅ | Prelude |
-
-#### Division and GCD
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `gcd` | ✅ | Prelude |
-| `lcm` | ✅ | Prelude |
-| `numerator` | ❌ | Not implemented (no rational type) |
-| `denominator` | ❌ | Not implemented (no rational type) |
-
-#### Rounding
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `floor` | ✅ | Builtin |
-| `ceiling` | ✅ | Builtin |
-| `truncate` | ✅ | Builtin |
-| `round` | ✅ | Builtin |
-| `rationalize` | ❌ | Not implemented |
-
-#### Exponentiation
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `expt` | ✅ | Builtin |
-| `sqrt` | ✅ | Builtin |
-| `exact-integer-sqrt` | ❌ | Not implemented |
-| `square` | ✅ | Prelude |
-
-#### Transcendental Functions
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `exp` | ❌ | Not implemented |
-| `log` | ❌ | Not implemented |
-| `sin` | ❌ | Not implemented |
-| `cos` | ❌ | Not implemented |
-| `tan` | ❌ | Not implemented |
-| `asin` | ❌ | Not implemented |
-| `acos` | ❌ | Not implemented |
-| `atan` | ❌ | Not implemented |
-
-#### Complex Number Procedures
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `make-rectangular` | ❌ | No native complex type |
-| `make-polar` | ❌ | No native complex type |
-| `real-part` | ❌ | No native complex type |
-| `imag-part` | ❌ | No native complex type |
-| `magnitude` | ❌ | No native complex type |
-| `angle` | ❌ | No native complex type |
-
-> **Note:** Grift provides user-level `cpx` and `rat-cpx` macros for complex/rational arithmetic as library-level constructs, but these are not R7RS-compliant standard procedures.
-
-#### Conversion
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `number->string` | ⚠️ | Builtin; integers and floats only, no radix parameter |
-| `string->number` | ⚠️ | Builtin; no optional radix parameter |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `number?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `complex?` | ✅ | Prelude; alias for `number?` | `grift_core/src/prelude.scm` |
+| `real?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `rational?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `integer?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `exact?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `inexact?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `exact-integer?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `exact` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `inexact` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `=` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `<` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `>` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `<=` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `>=` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `zero?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `positive?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `negative?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `odd?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `even?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `max` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `min` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `+` | ✅ | Built-in; variadic | `grift_core/src/value.rs` |
+| `-` | ✅ | Built-in; variadic, supports negation | `grift_core/src/value.rs` |
+| `*` | ✅ | Built-in; variadic | `grift_core/src/value.rs` |
+| `/` | ✅ | Built-in; variadic | `grift_core/src/value.rs` |
+| `abs` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `floor/` | ✅ | Built-in; returns two values | `grift_core/src/value.rs` |
+| `floor-quotient` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `floor-remainder` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `truncate/` | ✅ | Built-in; returns two values | `grift_core/src/value.rs` |
+| `truncate-quotient` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `truncate-remainder` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `quotient` | ✅ | Built-in (R5RS name) | `grift_core/src/value.rs` |
+| `remainder` | ✅ | Built-in (R5RS name) | `grift_core/src/value.rs` |
+| `modulo` | ✅ | Built-in (R5RS name) | `grift_core/src/value.rs` |
+| `gcd` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `lcm` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `numerator` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `denominator` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `floor` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `ceiling` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `truncate` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `round` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `rationalize` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `square` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `exact-integer-sqrt` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `expt` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `sqrt` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `exp` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `log` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `sin` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `cos` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `tan` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `asin` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `acos` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `atan` | ✅ | Built-in; supports 1 and 2 arg forms | `grift_core/src/value.rs` |
+| `make-rectangular` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `make-polar` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `real-part` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `imag-part` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `magnitude` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `angle` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `number->string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string->number` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `finite?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `infinite?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `nan?` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.3 Booleans
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `not` | ✅ | Prelude |
-| `boolean?` | ✅ | Builtin |
-| `boolean=?` | ✅ | Prelude |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `not` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `boolean?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `boolean=?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
 
 ### 6.4 Pairs and Lists
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `pair?` | ✅ | Builtin |
-| `cons` | ✅ | Builtin |
-| `car` | ✅ | Builtin |
-| `cdr` | ✅ | Builtin |
-| `set-car!` | ✅ | Builtin |
-| `set-cdr!` | ✅ | Builtin |
-| `caar` | ✅ | Prelude |
-| `cadr` | ✅ | Prelude |
-| `cdar` | ✅ | Prelude |
-| `cddr` | ✅ | Prelude |
-| `null?` | ✅ | Builtin |
-| `list?` | ✅ | Prelude |
-| `make-list` | ✅ | Prelude |
-| `list` | ✅ | Builtin |
-| `length` | ✅ | Prelude |
-| `append` | ✅ | Macro in prelude (variadic) |
-| `reverse` | ✅ | Prelude |
-| `list-tail` | ✅ | Prelude |
-| `list-ref` | ✅ | Prelude |
-| `list-set!` | ✅ | Prelude |
-| `list-copy` | ✅ | Prelude |
-| `map` | ✅ | Prelude |
-| `for-each` | ✅ | Prelude |
-| `memq` | ✅ | Prelude |
-| `memv` | ✅ | Prelude |
-| `member` | ✅ | Prelude |
-| `assq` | ✅ | Prelude |
-| `assv` | ✅ | Prelude |
-| `assoc` | ✅ | Prelude |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `pair?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `cons` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `car` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `cdr` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `set-car!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `set-cdr!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `caar` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cadr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cdar` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cddr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `caaar` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `caadr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cadar` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `caddr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cdaar` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cdadr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cddar` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cdddr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cadddr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `cddddr` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `null?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `list?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `make-list` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `list` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `length` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `append` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `reverse` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `list-tail` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `list-ref` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `list-set!` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `list-copy` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `map` | ⚠️ | Single-list only; R7RS requires multi-list | `grift_core/src/prelude.scm` |
+| `for-each` | ⚠️ | Single-list only; R7RS requires multi-list | `grift_core/src/prelude.scm` |
+| `memq` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `memv` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `member` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `assq` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `assv` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `assoc` | ✅ | Prelude | `grift_core/src/prelude.scm` |
 
 ### 6.5 Symbols
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `symbol?` | ✅ | Builtin |
-| `symbol=?` | ✅ | Prelude |
-| `symbol->string` | ✅ | Builtin |
-| `string->symbol` | ✅ | Builtin |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `symbol?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `symbol=?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `symbol->string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string->symbol` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.6 Characters
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `char?` | ✅ | Builtin |
-| `char=?` | ✅ | Builtin |
-| `char<?` | ✅ | Builtin |
-| `char>?` | ✅ | Builtin |
-| `char<=?` | ✅ | Builtin |
-| `char>=?` | ✅ | Builtin |
-| `char-ci=?` | ✅ | Prelude (via `char-foldcase`) |
-| `char-ci<?` | ✅ | Prelude |
-| `char-ci>?` | ✅ | Prelude |
-| `char-ci<=?` | ✅ | Prelude |
-| `char-ci>=?` | ✅ | Prelude |
-| `char-alphabetic?` | ✅ | Prelude |
-| `char-numeric?` | ✅ | Prelude |
-| `char-whitespace?` | ✅ | Prelude |
-| `char-upper-case?` | ✅ | Prelude |
-| `char-lower-case?` | ✅ | Prelude |
-| `digit-value` | ✅ | Prelude |
-| `char->integer` | ✅ | Builtin |
-| `integer->char` | ✅ | Builtin |
-| `char-upcase` | ✅ | Builtin |
-| `char-downcase` | ✅ | Builtin |
-| `char-foldcase` | ✅ | Prelude |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `char?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char<?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char>?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char<=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char>=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char-ci=?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-ci<?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-ci>?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-ci<=?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-ci>=?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-alphabetic?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-numeric?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-whitespace?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-upper-case?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `char-lower-case?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `digit-value` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `char->integer` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `integer->char` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char-upcase` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char-downcase` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char-foldcase` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
 
 ### 6.7 Strings
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `string?` | ✅ | Builtin |
-| `make-string` | ✅ | Builtin |
-| `string` | ✅ | Builtin |
-| `string-length` | ✅ | Builtin |
-| `string-ref` | ✅ | Builtin |
-| `string-set!` | ✅ | Builtin |
-| `string=?` | ✅ | Builtin |
-| `string<?` | ✅ | Builtin |
-| `string>?` | ✅ | Builtin |
-| `string<=?` | ✅ | Builtin |
-| `string>=?` | ✅ | Builtin |
-| `string-ci=?` | ✅ | Prelude |
-| `string-ci<?` | ✅ | Builtin |
-| `string-ci>?` | ✅ | Builtin |
-| `string-ci<=?` | ✅ | Builtin |
-| `string-ci>=?` | ✅ | Builtin |
-| `string-upcase` | ✅ | Prelude |
-| `string-downcase` | ✅ | Prelude |
-| `string-foldcase` | ✅ | Prelude |
-| `substring` | ✅ | Builtin |
-| `string-append` | ✅ | Builtin |
-| `string->list` | ✅ | Builtin |
-| `list->string` | ✅ | Builtin |
-| `string-copy` | ✅ | Builtin |
-| `string-copy!` | ✅ | Builtin |
-| `string-fill!` | ✅ | Builtin |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `string?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `make-string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-length` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-ref` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-set!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string<?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string>?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string<=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string>=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-ci=?` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `string-ci<?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-ci>?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-ci<=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-ci>=?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-upcase` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `string-downcase` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `string-foldcase` | ✅ | (scheme char) library | `grift_core/src/lib/scheme/char.scm` |
+| `substring` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-append` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string->list` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `list->string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-copy` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-copy!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string-fill!` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.8 Vectors
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `vector?` | ✅ | Builtin |
-| `make-vector` | ✅ | Builtin |
-| `vector` | ✅ | Builtin |
-| `vector-length` | ✅ | Builtin |
-| `vector-ref` | ✅ | Builtin |
-| `vector-set!` | ✅ | Builtin |
-| `vector->list` | ✅ | Builtin |
-| `list->vector` | ✅ | Builtin |
-| `vector->string` | ❌ | Not implemented |
-| `string->vector` | ❌ | Not implemented |
-| `vector-copy` | ✅ | Builtin |
-| `vector-copy!` | ✅ | Builtin |
-| `vector-append` | ✅ | Builtin |
-| `vector-fill!` | ✅ | Builtin |
-| `vector-map` | ✅ | Builtin |
-| `vector-for-each` | ✅ | Builtin |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `vector?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `make-vector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-length` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-ref` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-set!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector->list` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `list->vector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector->string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string->vector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-copy` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-copy!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-append` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-fill!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-map` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `vector-for-each` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.9 Bytevectors
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `bytevector?` | ❌ | Value type exists but no builtin predicate exposed |
-| `make-bytevector` | ❌ | Not implemented |
-| `bytevector` | ❌ | Not implemented |
-| `bytevector-length` | ❌ | Not implemented |
-| `bytevector-u8-ref` | ❌ | Not implemented |
-| `bytevector-u8-set!` | ❌ | Not implemented |
-| `bytevector-copy` | ❌ | Not implemented |
-| `bytevector-copy!` | ❌ | Not implemented |
-| `bytevector-append` | ❌ | Not implemented |
-| `utf8->string` | ❌ | Not implemented |
-| `string->utf8` | ❌ | Not implemented |
-
-> **Note:** The `Value::Bytevector` variant exists in the core types but no standard operations are exposed to Scheme.
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `bytevector?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `make-bytevector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `bytevector` | ❌ | Variadic constructor not implemented | — |
+| `bytevector-length` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `bytevector-u8-ref` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `bytevector-u8-set!` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `bytevector-copy` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `bytevector-copy!` | ❌ | Destructive copy not implemented | — |
+| `bytevector-append` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `utf8->string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `string->utf8` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.10 Control Features
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `procedure?` | ✅ | Builtin |
-| `apply` | ✅ | Native special form |
-| `map` | ✅ | Prelude |
-| `string-map` | ✅ | Prelude |
-| `vector-map` | ✅ | Builtin |
-| `for-each` | ✅ | Prelude |
-| `string-for-each` | ✅ | Prelude |
-| `vector-for-each` | ✅ | Builtin |
-| `call-with-current-continuation` | ✅ | Native special form |
-| `call/cc` | ✅ | Native special form (alias) |
-| `values` | ✅ | Native special form |
-| `call-with-values` | ✅ | Native special form |
-| `dynamic-wind` | ✅ | Native special form |
-| `make-parameter` | ✅ | Prelude |
-| `promise?` | ✅ | Prelude |
-| `make-promise` | ✅ | Prelude |
-| `force` | ✅ | Macro in prelude |
-| `delay` | ✅ | Macro in prelude |
-| `delay-force` | ✅ | Macro in prelude |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `procedure?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `apply` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `map` | ⚠️ | Single-list only | `grift_core/src/prelude.scm` |
+| `string-map` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `vector-map` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `for-each` | ⚠️ | Single-list only | `grift_core/src/prelude.scm` |
+| `string-for-each` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `vector-for-each` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `call-with-current-continuation` | ✅ | Special form; escape continuations | `grift_eval/src/evaluator/core.rs` |
+| `call/cc` | ✅ | Alias for above | `grift_eval/src/evaluator/core.rs` |
+| `values` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `call-with-values` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `dynamic-wind` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `make-promise` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `promise?` | ✅ | Prelude | `grift_core/src/prelude.scm` |
+| `force` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
+| `make-parameter` | ✅ | Prelude | `grift_core/src/prelude.scm` |
 
 ### 6.11 Exceptions
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `with-exception-handler` | ✅ | Native special form |
-| `raise` | ✅ | Native special form |
-| `raise-continuable` | ✅ | Native special form |
-| `error` | ✅ | Builtin |
-| `error-object?` | ✅ | Builtin |
-| `error-object-message` | ✅ | Builtin |
-| `error-object-irritants` | ✅ | Builtin |
-| `error-object-type` | ✅ | Builtin (non-standard extension) |
-| `read-error?` | ❌ | Not implemented |
-| `file-error?` | ❌ | Not implemented |
-| `guard` | ✅ | Macro in prelude |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `with-exception-handler` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `raise` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `raise-continuable` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `error` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `error-object?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `error-object-message` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `error-object-irritants` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `error-object-type` | ✅ | Built-in (Grift extension) | `grift_core/src/value.rs` |
+| `read-error?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `file-error?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `guard` | ✅ | Macro in prelude | `grift_core/src/prelude.scm` |
 
 ### 6.12 Environments and Evaluation
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `environment` | ✅ | Native special form |
-| `eval` | ✅ | Native special form |
-| `scheme-report-environment` | ❌ | Not implemented |
-| `null-environment` | ❌ | Not implemented |
-| `interaction-environment` | ✅ | Builtin |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `environment` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `eval` | ✅ | Special form | `grift_eval/src/evaluator/core.rs` |
+| `scheme-report-environment` | ❌ | Not implemented | — |
+| `null-environment` | ❌ | Not implemented | — |
+| `interaction-environment` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.13 Input and Output
 
 #### Ports
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `input-port?` | ✅ | Builtin |
-| `output-port?` | ✅ | Builtin |
-| `textual-port?` | ✅ | Builtin |
-| `binary-port?` | ✅ | Builtin |
-| `port?` | ✅ | Builtin |
-| `input-port-open?` | ✅ | Builtin |
-| `output-port-open?` | ✅ | Builtin |
-| `current-input-port` | ✅ | Builtin |
-| `current-output-port` | ✅ | Builtin |
-| `current-error-port` | ✅ | Builtin |
-| `close-port` | ✅ | Builtin |
-| `close-input-port` | ✅ | Builtin |
-| `close-output-port` | ✅ | Builtin |
-| `call-with-port` | ❌ | Not implemented |
-| `call-with-input-file` | ❌ | Not implemented |
-| `call-with-output-file` | ❌ | Not implemented |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `call-with-port` | ❌ | Not implemented | — |
+| `call-with-input-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `call-with-output-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `input-port?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `output-port?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `textual-port?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `binary-port?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `port?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `input-port-open?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `output-port-open?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `current-input-port` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `current-output-port` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `current-error-port` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `close-port` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `close-input-port` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `close-output-port` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 #### File Ports
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `open-input-file` | ❌ | Not implemented |
-| `open-binary-input-file` | ❌ | Not implemented |
-| `open-output-file` | ❌ | Not implemented |
-| `open-binary-output-file` | ❌ | Not implemented |
-| `with-input-from-file` | ❌ | Not implemented |
-| `with-output-to-file` | ❌ | Not implemented |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `open-input-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `open-binary-input-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `open-output-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `open-binary-output-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `with-input-from-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `with-output-to-file` | ✅ | Built-in | `grift_core/src/value.rs` |
 
-#### String/Bytevector Ports
+#### String Ports
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `open-input-string` | ✅ | Builtin |
-| `open-output-string` | ✅ | Builtin |
-| `get-output-string` | ✅ | Builtin |
-| `open-input-bytevector` | ❌ | Not implemented |
-| `open-output-bytevector` | ❌ | Not implemented |
-| `get-output-bytevector` | ❌ | Not implemented |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `open-input-string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `open-output-string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `get-output-string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `open-input-bytevector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `open-output-bytevector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `get-output-bytevector` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 #### Reading
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `read` | ✅ | Builtin |
-| `read-char` | ✅ | Builtin |
-| `peek-char` | ✅ | Builtin |
-| `read-line` | ✅ | Builtin |
-| `eof-object?` | ✅ | Builtin |
-| `eof-object` | ✅ | Builtin |
-| `char-ready?` | ✅ | Builtin |
-| `read-string` | ✅ | Builtin |
-| `read-u8` | ❌ | Not implemented |
-| `peek-u8` | ❌ | Not implemented |
-| `u8-ready?` | ❌ | Not implemented |
-| `read-bytevector` | ❌ | Not implemented |
-| `read-bytevector!` | ❌ | Not implemented |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `read` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `read-char` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `peek-char` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `read-line` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `eof-object?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `eof-object` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `char-ready?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `read-string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `read-u8` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `peek-u8` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `u8-ready?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `read-bytevector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `read-bytevector!` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 #### Writing
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `write` | ✅ | Builtin |
-| `write-shared` | ✅ | Builtin |
-| `write-simple` | ✅ | Builtin |
-| `display` | ✅ | Builtin |
-| `newline` | ✅ | Builtin |
-| `write-char` | ✅ | Builtin |
-| `write-string` | ❌ | Not implemented |
-| `write-u8` | ❌ | Not implemented |
-| `write-bytevector` | ❌ | Not implemented |
-| `flush-output-port` | ❌ | Not implemented |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `write` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `write-shared` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `write-simple` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `display` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `newline` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `write-char` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `write-string` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `write-u8` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `write-bytevector` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `flush-output-port` | ✅ | Built-in | `grift_core/src/value.rs` |
 
 ### 6.14 System Interface
 
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| `load` | ✅ | Builtin |
-| `file-exists?` | ✅ | Builtin |
-| `delete-file` | ✅ | Builtin |
-| `command-line` | ✅ | Builtin |
-| `exit` | ✅ | Builtin |
-| `emergency-exit` | ✅ | Builtin |
-| `get-environment-variable` | ✅ | Builtin |
-| `get-environment-variables` | ✅ | Builtin |
-| `current-second` | ❌ | Not implemented |
-| `current-jiffy` | ❌ | Not implemented |
-| `jiffies-per-second` | ❌ | Not implemented |
-| `features` | ❌ | Not implemented as a procedure |
+| Procedure | Status | Notes | Location |
+|-----------|--------|-------|----------|
+| `load` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `file-exists?` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `delete-file` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `command-line` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `exit` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `emergency-exit` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `get-environment-variable` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `get-environment-variables` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `current-second` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `current-jiffy` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `jiffies-per-second` | ✅ | Built-in | `grift_core/src/value.rs` |
+| `features` | ✅ | Prelude | `grift_core/src/prelude.scm` |
 
 ---
 
@@ -494,307 +492,249 @@ Grift provides solid coverage of core Scheme features: arithmetic, lists, string
 
 ### `(scheme base)`
 
-**Completeness:** ~80% of exported identifiers implemented
+**Status:** ⚠️ Partially complete  
+**Completeness:** ~96% — Most R7RS base procedures are exported.
 
-The `(scheme base)` library is the most complete, exporting the majority of core procedures, syntax forms, and predicates listed in sections above.
-
-**Notable gaps in (scheme base):**
-- `include`, `include-ci`, `syntax-error`
-- `floor/`, `floor-quotient`, `floor-remainder`, `truncate/`, `truncate-quotient`, `truncate-remainder`
-- `exact-integer-sqrt`
-- `string->vector`, `vector->string`
-- `bytevector?`, `make-bytevector`, `bytevector`, `bytevector-length`, `bytevector-u8-ref`, `bytevector-u8-set!`, `bytevector-copy`, `bytevector-copy!`, `bytevector-append`
-- `utf8->string`, `string->utf8`
-- `read-error?`, `file-error?`
-- `call-with-port`
+**Missing from exports (available as builtins or special forms but not re-exported):**
+- `apply`, `call-with-current-continuation`, `call/cc`
+- `values`, `call-with-values`, `dynamic-wind`
+- `with-exception-handler`, `raise`, `raise-continuable`
+- `define-record-type`, `include`, `include-ci`
 - `write-string`, `flush-output-port`
+- `bytevector?`, `make-bytevector`, `bytevector-length`, `bytevector-u8-ref`, `bytevector-u8-set!`, `bytevector-copy`, `bytevector-append`
+- `bytevector` (not implemented at all)
+- `bytevector-copy!` (not implemented at all)
+- `call-with-port` (not implemented)
+- `open-input-file`, `open-output-file`
+- `read`, `write`, `write-shared`, `write-simple`
+- `read-u8`, `peek-u8`, `u8-ready?`, `write-u8`, `write-bytevector`
+- `open-input-bytevector`, `open-output-bytevector`, `get-output-bytevector`
 - `features`
+
+> **Note:** Many of these are available globally as built-in procedures or special forms. They function correctly at the top level but are not re-exported through the `(scheme base)` library's `export` declaration.
 
 ### `(scheme case-lambda)`
 
-| Export | Status |
-|--------|--------|
-| `case-lambda` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `case-lambda`
 
 ### `(scheme char)`
 
-| Export | Status |
-|--------|--------|
-| `char-alphabetic?` | ✅ |
-| `char-numeric?` | ✅ |
-| `char-whitespace?` | ✅ |
-| `char-upper-case?` | ✅ |
-| `char-lower-case?` | ✅ |
-| `char-ci=?` | ✅ |
-| `char-ci<?` | ✅ |
-| `char-ci>?` | ✅ |
-| `char-ci<=?` | ✅ |
-| `char-ci>=?` | ✅ |
-| `char-upcase` | ✅ |
-| `char-downcase` | ✅ |
-| `char-foldcase` | ✅ |
-| `digit-value` | ✅ |
-| `string-ci=?` | ✅ |
-| `string-upcase` | ✅ |
-| `string-downcase` | ✅ |
-| `string-foldcase` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `char-alphabetic?`, `char-numeric?`, `char-whitespace?`, `char-upper-case?`, `char-lower-case?`, `char-ci=?`, `char-ci<?`, `char-ci>?`, `char-ci<=?`, `char-ci>=?`, `char-upcase`, `char-downcase`, `char-foldcase`, `digit-value`, `string-ci=?`, `string-upcase`, `string-downcase`, `string-foldcase`
 
 ### `(scheme complex)`
 
-❌ **Not defined as a library.** No native complex number type exists.
+**Status:** ❌ Not implemented  
+Library file does not exist. Complex number operations are available as builtins but not packaged as a library.
+
+**Required exports:** `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `angle`
 
 ### `(scheme cxr)`
 
-| Export | Status |
-|--------|--------|
-| `caar` | ✅ |
-| `cadr` | ✅ |
-| `cdar` | ✅ |
-| `cddr` | ✅ |
-| `caaar` | ✅ |
-| `caadr` | ✅ |
-| `cadar` | ✅ |
-| `caddr` | ✅ |
-| `cdaar` | ✅ |
-| `cdadr` | ✅ |
-| `cddar` | ✅ |
-| `cdddr` | ✅ |
-| `cadddr` | ✅ |
-| `cddddr` | ✅ |
+**Status:** ⚠️ Partially complete  
+**Exports:** 14 of 24 required cxr procedures.
 
-**Completeness:** ⚠️ Partial — 14 of 24 standard cxr combinations exported. Missing the full set of 4-level compositions (`caaaar` through `cddddr`).
+**Implemented:** `caar`, `cadr`, `cdar`, `cddr`, `caaar`, `caadr`, `cadar`, `caddr`, `cdaar`, `cdadr`, `cddar`, `cdddr`, `cadddr`, `cddddr`
+
+**Missing:** `caaaar`, `caaadr`, `caadar`, `caaddr`, `cadaar`, `cadadr`, `caddar`, `cdaaar`, `cdaadr`, `cdadar`
 
 ### `(scheme eval)`
 
-| Export | Status |
-|--------|--------|
-| `eval` | ✅ |
-| `environment` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `eval`, `environment`
 
 ### `(scheme file)`
 
-| Export | Status |
-|--------|--------|
-| `file-exists?` | ✅ |
-| `delete-file` | ✅ |
-| `open-input-file` | ❌ |
-| `open-binary-input-file` | ❌ |
-| `open-output-file` | ❌ |
-| `open-binary-output-file` | ❌ |
-| `call-with-input-file` | ❌ |
-| `call-with-output-file` | ❌ |
-| `with-input-from-file` | ❌ |
-| `with-output-to-file` | ❌ |
+**Status:** ⚠️ Partially complete  
+**Exports:** `file-exists?`, `delete-file`
 
-**Completeness:** ~20%
+**Missing:** `call-with-input-file`, `call-with-output-file`, `with-input-from-file`, `with-output-to-file`, `open-input-file`, `open-output-file`, `open-binary-input-file`, `open-binary-output-file`
+
+> **Note:** All missing procedures are available as builtins but not re-exported from this library.
 
 ### `(scheme inexact)`
 
-| Export | Status |
-|--------|--------|
-| `finite?` | ✅ |
-| `infinite?` | ✅ |
-| `nan?` | ✅ |
-| `sqrt` | ✅ |
-| `exp` | ❌ |
-| `log` | ❌ |
-| `sin` | ❌ |
-| `cos` | ❌ |
-| `tan` | ❌ |
-| `asin` | ❌ |
-| `acos` | ❌ |
-| `atan` | ❌ |
-
-**Completeness:** ~33%
+**Status:** ✅ Complete  
+**Exports:** `finite?`, `infinite?`, `nan?`, `sqrt`, `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `exact->inexact`, `inexact->exact`
 
 ### `(scheme lazy)`
 
-| Export | Status |
-|--------|--------|
-| `delay` | ✅ |
-| `force` | ✅ |
-| `delay-force` | ✅ |
-| `make-promise` | ✅ |
-| `promise?` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `delay`, `force`, `delay-force`, `make-promise`, `promise?`
 
 ### `(scheme load)`
 
-| Export | Status |
-|--------|--------|
-| `load` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `load`
 
 ### `(scheme process-context)`
 
-| Export | Status |
-|--------|--------|
-| `command-line` | ✅ |
-| `exit` | ✅ |
-| `emergency-exit` | ✅ |
-| `get-environment-variable` | ✅ |
-| `get-environment-variables` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `command-line`, `exit`, `emergency-exit`, `get-environment-variable`, `get-environment-variables`
 
 ### `(scheme read)`
 
-| Export | Status |
-|--------|--------|
-| `read` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `read`
 
 ### `(scheme repl)`
 
-| Export | Status |
-|--------|--------|
-| `interaction-environment` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `interaction-environment`
 
 ### `(scheme time)`
 
-| Export | Status |
-|--------|--------|
-| `current-second` | ❌ |
-| `current-jiffy` | ❌ |
-| `jiffies-per-second` | ❌ |
-
-**Completeness:** 0% (placeholder library)
+**Status:** ❌ Empty placeholder  
+Library file exists but exports nothing. Time procedures (`current-second`, `current-jiffy`, `jiffies-per-second`) are available as builtins.
 
 ### `(scheme write)`
 
-| Export | Status |
-|--------|--------|
-| `write` | ✅ |
-| `display` | ✅ |
-| `write-shared` | ✅ |
-| `write-simple` | ✅ |
-
-**Completeness:** 100%
+**Status:** ✅ Complete  
+**Exports:** `write`, `display`, `write-shared`, `write-simple`
 
 ### `(scheme r5rs)`
 
-❌ **Not defined as a library.**
+**Status:** ✅ Complete  
+R5RS compatibility library. Exports a comprehensive set of R5RS procedures including `exact->inexact`, `inexact->exact`, interaction-environment, file I/O, and cxr procedures.
 
 ---
 
 ## Number Syntax
 
-| Feature | Status | Examples |
-|---------|--------|----------|
-| Decimal integers | ✅ | `42`, `-7`, `0` |
-| Floating point | ✅ | `3.14`, `-0.5` |
-| Scientific notation | ✅ | `1e10`, `2.5E-3` |
-| Binary prefix `#b` | ✅ | `#b1010` → 10 |
-| Octal prefix `#o` | ✅ | `#o77` → 63 |
-| Decimal prefix `#d` | ✅ | `#d42` → 42 |
-| Hex prefix `#x` | ✅ | `#x1f` → 31 |
-| Exactness `#e` | ✅ | `#e42` → exact 42 |
-| Exactness `#i` | ✅ | `#i42` → inexact 42.0 |
-| Combined prefixes | ✅ | `#e#x1f`, `#b#i1010` |
-| Special `+inf.0` | ✅ | Positive infinity |
-| Special `-inf.0` | ✅ | Negative infinity |
-| Special `+nan.0` | ✅ | Not a number |
-| Rational literals `3/4` | ❌ | Use `(rat 3/4)` macro instead |
-| Complex literals `1+2i` | ❌ | Use `(cpx 1 + 2 i)` macro instead |
-| Polar form `3@4` | ❌ | Not supported |
+| Feature | Status | Examples | Notes |
+|---------|--------|----------|-------|
+| Integer literals | ✅ | `42`, `-7`, `0` | `isize` representation |
+| Floating-point literals | ✅ | `3.14`, `-0.5` | IEEE 754 `f64` |
+| Binary prefix `#b` | ✅ | `#b1010` → `10` | |
+| Octal prefix `#o` | ✅ | `#o17` → `15` | |
+| Decimal prefix `#d` | ✅ | `#d42` → `42` | |
+| Hexadecimal prefix `#x` | ✅ | `#xff` → `255` | |
+| Exactness `#e` | ✅ | `#e1.5` → `1` | Converts to integer |
+| Exactness `#i` | ✅ | `#i3` → `3.0` | Converts to float |
+| Combined prefixes | ✅ | `#e#x1f`, `#b#i101` | Both orderings supported |
+| Scientific notation | ✅ | `1e10`, `3.14e-5`, `2E+3` | |
+| `+inf.0` | ✅ | `+inf.0` | Positive infinity |
+| `-inf.0` | ✅ | `-inf.0` | Negative infinity |
+| `+nan.0` | ✅ | `+nan.0` | Not-a-number |
+| `-nan.0` | ✅ | `-nan.0` | Not-a-number |
+| Rational literals | ❌ | `3/4`, `-1/2` | Not supported by parser |
+| Complex literals | ❌ | `1+2i`, `3@4` | Not supported by parser |
+
+---
+
+## Tail Call Optimization
+
+Grift implements full proper tail calls via a **trampolining architecture**:
+
+- All evaluation uses continuation-passing style — no Rust stack recursion
+- Arena-based continuation frames enable O(1) capture for `call/cc`
+- Proper tail position recognized in: `if` branches, `begin` last expression, `lambda` body, `cond`/`case` branches, named `let`, `do`
+- Verified through tests with 150–200 levels of deep recursion without stack overflow
 
 ---
 
 ## Testing Coverage
 
-| Test File | Features Tested |
-|-----------|----------------|
-| `lib_tests.rs` | Core: arithmetic, lists, closures, macros, GC, rationals, tail calls (~150 tests) |
-| `library_tests.rs` | Module system: `define-library`, `import`, library resolution |
-| `native_tests.rs` | FFI: `FromLisp`/`ToLisp` conversions |
-| `r5rs_pitfalls_tests.rs` | Edge cases: `call/cc`, hygiene, hyper-static scope |
-| `r5rs_chibi_tests.rs` | R5RS compliance (Chibi-Scheme test suite subset) |
-| `peroxide_r5rs_tests.rs` | R5RS compliance (Peroxide test suite) |
-| `environment_tests.rs` | `eval`, `environment`, scoping |
-| `syntax_extended_tests.rs` | `syntax-case`, hygienic macros |
-| `system_tests.rs` | System-level features |
-| `continuation_delay_tests.rs` | `call/cc`, `delay`, `force`, continuations |
-| `issue_tests.rs` | Regression tests for bug fixes |
+### Dedicated R7RS Test Files
 
-**Key areas lacking test coverage:**
-- Bytevector operations
-- File I/O ports
-- Binary I/O
-- Time functions
-- Complex/rational standard procedures
-- `define-record-type` field mutators
-- `string->number` / `number->string` edge cases
+| Test File | Coverage Area |
+|-----------|---------------|
+| `r7rs_numeric_tests.rs` | §6.2 number predicates, division, transcendental, complex |
+| `r7rs_new_procedures_tests.rs` | Time procedures, error predicates, vector-string conversion, `include` |
+| `bytevector_tests.rs` | §6.9 bytevector operations |
+| `io_tests.rs` | §6.13 file I/O, string ports |
+| `system_tests.rs` | §6.14 file-exists?, delete-file |
+| `library_tests.rs` | define-library, import, module system |
+| `continuation_delay_tests.rs` | call/cc, delay/force |
+| `environment_tests.rs` | eval, environment, scoping |
+
+### R5RS Compliance Suites
+
+| Test File | Source |
+|-----------|--------|
+| `r5rs_chibi_tests.rs` | Adapted from chibi-scheme |
+| `r5rs_pitfalls_tests.rs` | Adapted from chicken-scheme |
+| `peroxide_r5rs_tests.rs` | Peroxide test suite |
+| `peroxide_pitfalls_tests.rs` | Peroxide pitfalls |
+
+### Syntax Test Files
+
+| Test File | Coverage |
+|-----------|----------|
+| `syntax_proper_tests.rs` | `syntax-case`, `syntax-rules`, hygiene |
+| `syntax_extended_tests.rs` | Extended syntax forms |
+| `syntax_edge_case_tests.rs` | Edge cases in macro expansion |
+| `syntactic_extension_html_tests.rs` | HTML spec examples |
+
+---
+
+## Grift Extensions (Non-R7RS)
+
+The following features are Grift-specific extensions beyond R7RS-small:
+
+| Feature | Description | Location |
+|---------|-------------|----------|
+| `gc`, `gc-enable`, `gc-disable`, `gc-enabled?` | Manual GC control | Built-in |
+| `arena-stats` | Arena memory statistics | Built-in |
+| `error-object-type` | Error type field access | Built-in |
+| `syntax-case` | R6RS-style procedural macros | Special form |
+| `syntax->datum`, `datum->syntax` | Syntax object manipulation | Built-in |
+| `identifier?`, `bound-identifier=?`, `free-identifier=?` | Identifier inspection | Built-in |
+| `generate-temporaries` | Hygienic macro temporaries | Built-in |
+| `filter`, `fold`, `fold-left`, `fold-right` | List utilities (SRFI-1 subset) | Prelude |
+| `sign` | Numeric sign function | Prelude |
+| `define-syntax-rule` | Single-clause macro shorthand | Prelude |
 
 ---
 
 ## Implementation Priorities
 
-### High Priority (Core R7RS-small compliance)
+### High Priority (Core R7RS Compliance)
 
-1. **Bytevector operations** — The `Value::Bytevector` type exists but no operations are exposed. Implementing `bytevector?`, `make-bytevector`, `bytevector-length`, `bytevector-u8-ref`, `bytevector-u8-set!`, `bytevector-copy`, `bytevector-append`, `utf8->string`, `string->utf8` would complete §6.9.
-2. **File I/O ports** — `open-input-file`, `open-output-file`, `call-with-input-file`, `call-with-output-file`, `with-input-from-file`, `with-output-to-file` are essential for practical programs.
-3. **Division procedures** — `floor-quotient`, `floor-remainder`, `truncate-quotient`, `truncate-remainder` (R7RS §6.2.6).
-4. **`write-string`** and **`flush-output-port`** — Common output operations.
-5. **`read-error?`** and **`file-error?`** — Error classification predicates.
+1. **`(scheme base)` library exports** — Many implemented procedures are not re-exported from `(scheme base)`. Adding them to the export list would significantly improve library-based conformance. Affected: `apply`, `call/cc`, `values`, `call-with-values`, `dynamic-wind`, `with-exception-handler`, `raise`, `raise-continuable`, `define-record-type`, `include`, `include-ci`, bytevector operations, file port operations, binary I/O, `write-string`, `flush-output-port`, `features`.
+2. **Multi-list `map` and `for-each`** — R7RS requires `(map f list1 list2 ...)` to operate on multiple lists simultaneously. Current implementation only accepts a single list.
+3. **`bytevector` variadic constructor** — `(bytevector 1 2 3)` is not implemented; only `make-bytevector` exists.
+4. **`bytevector-copy!`** — Destructive bytevector copy is missing.
+5. **`call-with-port`** — Generic port procedure not implemented.
 
-### Medium Priority (Extended functionality)
+### Medium Priority (Library Completeness)
 
-6. **Transcendental functions** — `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (requires `libm` or similar in `no_std`).
-7. **Time functions** — `current-second`, `current-jiffy`, `jiffies-per-second` (requires platform time access).
-8. **`number->string`** with radix parameter and **`string->number`** with radix parameter.
-9. **`exact-integer-sqrt`** — Integer square root returning two values.
-10. **`vector->string`** and **`string->vector`** — Conversion between vectors of characters and strings.
-11. **`include`** and **`include-ci`** — Source file inclusion.
-12. **`syntax-error`** — Compile-time error reporting in macros.
-13. **`features`** procedure — Runtime feature query.
-14. **`call-with-port`** — Port lifecycle management.
+6. **`(scheme time)` library** — Empty placeholder. Builtins exist (`current-second`, `current-jiffy`, `jiffies-per-second`) but need to be re-exported.
+7. **`(scheme complex)` library** — Library file missing. All procedures are available as builtins but need packaging.
+8. **`(scheme cxr)` library** — Only 14 of 24 required cxr procedures are exported. Missing the 4-deep compositions (`caaaar`, `caaadr`, etc.).
+9. **`(scheme file)` library exports** — File I/O builtins exist but are not re-exported.
+10. **`scheme-report-environment` and `null-environment`** — R5RS compatibility procedures not implemented.
 
-### Low Priority (Optional / rare usage)
+### Low Priority (Edge Cases)
 
-15. **Complex number procedures** — `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `angle` (requires native complex type or significant refactoring).
-16. **`(scheme complex)`** library.
-17. **`(scheme r5rs)`** compatibility library.
-18. **`scheme-report-environment`** / **`null-environment`** — Legacy R5RS environment constructors.
-19. **`rationalize`**, **`numerator`**, **`denominator`** — Require native rational type.
-20. **Binary I/O** — `read-u8`, `peek-u8`, `write-u8`, `read-bytevector`, `write-bytevector`, `open-input-bytevector`, `open-output-bytevector`, `get-output-bytevector`.
-21. **Full cxr library** — Complete all 24 four-level compositions (`caaaar` through `cddddr`).
+11. **Rational number literal syntax** — Parser does not support `3/4` notation.
+12. **Complex number literal syntax** — Parser does not support `1+2i` or polar `3@4` notation.
+13. **`(scheme write)` library** — Missing `write-char`, `write-string`, `newline` exports (available as builtins).
 
 ---
 
-## Non-Standard Extensions
+## Appendix: Architecture Notes
 
-Grift includes several features beyond R7RS-small:
+### Value Representation
 
-| Feature | Description |
-|---------|-------------|
-| `syntax-case` | R6RS-style `syntax-case` macro system |
-| `error-object-type` | Additional error object accessor |
-| `gc`, `gc-enable`, `gc-disable`, `gc-enabled?` | Garbage collector control |
-| `arena-stats` | Arena allocator statistics |
-| `identifier?`, `bound-identifier=?`, `free-identifier=?` | Syntax-case support procedures |
-| `datum->syntax`, `syntax->datum`, `generate-temporaries` | Syntax object manipulation |
-| `rat`, `cpx`, `rat-cpx` macros | User-level rational/complex arithmetic |
-| `filter`, `fold`, `fold-left`, `fold-right` | SRFI-1 style list operations |
-| `compose`, `identity`, `constantly`, `flip`, `curry` | Functional programming utilities |
+- **Arena-allocated**: All values reside in a custom arena allocator (`grift_arena`)
+- **Copy semantics**: All value types implement `Copy` for arena compatibility
+- **No heap allocation**: Core crates (`grift_arena`, `grift_parser`, `grift_eval`) are `#![no_std]` with no `alloc` dependency
+- **Number types**: `isize` for exact integers, `f64` for inexact reals
 
----
+### Evaluation Model
 
-## Architectural Notes
+- **Trampolining evaluator**: No recursive Rust calls for Scheme evaluation
+- **Continuation-passing style**: Proper tail calls guaranteed
+- **Arena-based environments**: O(1) continuation capture for `call/cc`
+- **Prelude loading**: Standard procedures defined in Scheme (`prelude.scm`) and loaded at startup
+- **Library auto-loading**: `(import (scheme ...))` triggers on-demand compilation of embedded `.scm` library sources
 
-- **Arena-based allocation:** All values live in a custom arena (`grift_arena`). No heap allocation in core crates (`no_std`, `no_alloc`).
-- **Trampoline-based evaluation:** Tail calls handled via `TrampolineState` with 48 continuation types, enabling proper tail recursion without stack overflow.
-- **Hygienic macros:** Full `syntax-case` support with `syntax-rules` layered on top as a macro.
-- **Module system:** R7RS `define-library` / `import` with support for `only`, `except`, `rename`, `prefix` import modifiers.
-- **Record types:** Native `define-record-type` (R7RS §5.5) with constructor, predicate, accessors, and mutators (max 32 fields).
-- **Numeric tower:** Two native types — `isize` (exact integers) and `f64` (inexact floats). Rationals and complex numbers available only through library-level macros.
+### Feature Flags
+
+Libraries are gated behind Cargo feature flags (default: `all-libraries`):
+- `scheme-base`, `scheme-char`, `scheme-cxr`, `scheme-eval`, `scheme-file`
+- `scheme-inexact`, `scheme-lazy`, `scheme-load`, `scheme-process-context`
+- `scheme-read`, `scheme-repl`, `scheme-r5rs`, `scheme-time`, `scheme-write`
+- `scheme-case-lambda`

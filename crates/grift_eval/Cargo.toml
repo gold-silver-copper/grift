@@ -12,6 +12,7 @@ categories = ["no-std", "development-tools", "embedded"]
 [dependencies]
 grift_arena = { workspace = true }
 grift_parser = { workspace = true }
+libm = "0.2"
 
 [dev-dependencies]
 grift_std = { workspace = true }

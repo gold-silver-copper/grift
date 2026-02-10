@@ -74,6 +74,18 @@ fn format_value_impl<const N: usize>(
                 write!(buf, "{}", f).unwrap();
             }
         }
+        Ok(Value::Rational { num, denom }) => {
+            use std::fmt::Write;
+            write!(buf, "{}/{}", num, denom).unwrap();
+        }
+        Ok(Value::Complex { real, imag }) => {
+            use std::fmt::Write;
+            if imag >= 0.0 {
+                write!(buf, "{}+{}i", real, imag).unwrap();
+            } else {
+                write!(buf, "{}{}i", real, imag).unwrap();
+            }
+        }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
             match c {
@@ -325,7 +337,23 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                     ParseErrorKind::InvalidCharLiteral => buf.push_str("invalid character literal"),
                     ParseErrorKind::InvalidEscapeSequence => buf.push_str("invalid escape sequence"),
                     ParseErrorKind::UnterminatedString => buf.push_str("unterminated string"),
-                    ParseErrorKind::VectorLiteralTooLarge => buf.push_str("vector literal exceeds 256 elements"),
+                }
+            }
+        }
+        ErrorKind::SyntaxError => {
+            // syntax-error stores (message arg ...) in expr
+            if !err.expr.is_nil() {
+                if let Ok(Value::Cons { car, cdr }) = lisp.get(err.expr) {
+                    // First element is the message string
+                    buf.push_str(": ");
+                    format_value(lisp, car, &mut buf);
+                    // Remaining elements are additional args
+                    let mut rest = cdr;
+                    while let Ok(Value::Cons { car: arg, cdr: next }) = lisp.get(rest) {
+                        buf.push(' ');
+                        format_value(lisp, arg, &mut buf);
+                        rest = next;
+                    }
                 }
             }
         }

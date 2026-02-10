@@ -143,6 +143,112 @@ pub trait IoProvider {
         Err(IoErrorKind::Unsupported)
     }
 
+    /// Convert an output string port into an input string port.
+    ///
+    /// The accumulated content of the output port becomes the data source
+    /// for the new input port. The original output port is closed.
+    ///
+    /// This avoids the need to copy the accumulated string through a
+    /// fixed-size stack buffer when creating an input port from collected
+    /// character data.
+    ///
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn output_string_to_input_port(&mut self, _output_port: PortId) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    // ----------------------------------------------------------------
+    // File port operations (R7RS §6.13.2)
+    // ----------------------------------------------------------------
+
+    /// Open a textual input port connected to the named file.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_input_file(&mut self, _path: &str) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Open a textual output port connected to the named file.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_output_file(&mut self, _path: &str) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Open a binary input port connected to the named file.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_binary_input_file(&mut self, _path: &str) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Open a binary output port connected to the named file.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_binary_output_file(&mut self, _path: &str) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    // ----------------------------------------------------------------
+    // Binary I/O operations (R7RS §6.13.2)
+    // ----------------------------------------------------------------
+
+    /// Read a single byte from a binary input port.
+    /// Returns [`IoErrorKind::Eof`] at end of file.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn read_u8(&mut self, _port: PortId) -> IoResult<u8> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Peek at the next byte without consuming it.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn peek_u8(&mut self, _port: PortId) -> IoResult<u8> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return `true` if a byte is ready on the binary input port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn u8_ready(&mut self, _port: PortId) -> IoResult<bool> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Write a single byte to a binary output port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn write_u8(&mut self, _port: PortId, _byte: u8) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Read up to `k` bytes from a binary input port into `buf`.
+    /// Returns the number of bytes actually read.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn read_bytevector(&mut self, _port: PortId, _buf: &mut [u8]) -> IoResult<usize> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Write bytes to a binary output port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn write_bytevector(&mut self, _port: PortId, _bytes: &[u8]) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    // ----------------------------------------------------------------
+    // Bytevector port operations (R7RS §6.13.2)
+    // ----------------------------------------------------------------
+
+    /// Open a binary input port that reads from the given byte slice.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_input_bytevector(&mut self, _bytes: &[u8]) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Open a binary output port that accumulates bytes.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_output_bytevector(&mut self) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Retrieve the accumulated bytes from an output bytevector port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn get_output_bytevector(&self, _port: PortId) -> IoResult<&[u8]> {
+        Err(IoErrorKind::Unsupported)
+    }
+
     // ----------------------------------------------------------------
     // File system operations (R7RS §6.13)
     // ----------------------------------------------------------------
@@ -213,6 +319,28 @@ pub trait IoProvider {
     /// Emergency exit the process (no cleanup) with the given status code.
     /// Default: returns [`IoErrorKind::Unsupported`].
     fn emergency_exit_process(&mut self, _code: i32) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    // ----------------------------------------------------------------
+    // Time operations (R7RS §6.13.3)
+    // ----------------------------------------------------------------
+
+    /// Return the current time as seconds since the Unix epoch (inexact).
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn current_second(&self) -> IoResult<f64> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the current jiffy count (monotonic, implementation-defined units).
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn current_jiffy(&self) -> IoResult<i64> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Return the number of jiffies per SI second.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn jiffies_per_second(&self) -> IoResult<i64> {
         Err(IoErrorKind::Unsupported)
     }
 }

@@ -318,6 +318,18 @@ pub enum ContType {
     /// vector-for-each: After applying proc to current element, continue
     /// Data: (proc . (vecs . (index_encoded . (len_encoded . call_expr))))
     VectorForEachStep = 47,
+
+    /// call-with-input-file / call-with-output-file: After proc returns, close the port
+    /// Data: port_id_encoded (single value - Number encoding port id)
+    CallWithPortClose = 48,
+
+    /// with-input-from-file: After thunk returns, restore previous input port and close file port
+    /// Data: (saved_port_encoded . file_port_encoded)
+    WithInputFromFileRestore = 49,
+
+    /// with-output-to-file: After thunk returns, restore previous output port and close file port
+    /// Data: (saved_port_encoded . file_port_encoded)
+    WithOutputToFileRestore = 50,
 }
 
 impl ContType {
@@ -374,6 +386,9 @@ impl ContType {
             45 => Some(ContType::EvalEnvArg),
             46 => Some(ContType::VectorMapStep),
             47 => Some(ContType::VectorForEachStep),
+            48 => Some(ContType::CallWithPortClose),
+            49 => Some(ContType::WithInputFromFileRestore),
+            50 => Some(ContType::WithOutputToFileRestore),
             _ => None,
         }
     }

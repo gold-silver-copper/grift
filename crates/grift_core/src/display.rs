@@ -122,6 +122,14 @@ fn format_value<const N: usize>(
                 write!(f, "{}", fl)
             }
         }
+        Ok(Value::Rational { num, denom }) => write!(f, "{}/{}", num, denom),
+        Ok(Value::Complex { real, imag }) => {
+            if imag >= 0.0 {
+                write!(f, "{}+{}i", real, imag)
+            } else {
+                write!(f, "{}{}i", real, imag)
+            }
+        }
         Ok(Value::Char(c)) => {
             f.write_str("#\\")?;
             match c {

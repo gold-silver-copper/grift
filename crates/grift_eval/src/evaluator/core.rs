@@ -4,7 +4,7 @@
 //! continuation management (arena-based), trampoline loop, and basic evaluation steps.
 
 use grift_parser::{
-    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
+    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, Parser, ParseError, ParseErrorKind,
     PRELUDE_SOURCE,
     libraries::LIBRARY_SOURCES,
 };
@@ -48,6 +48,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             call_site_env: EnvRef(nil), // No call-site env initially
             exception_handler_chain: nil, // Empty exception handler chain
             io: None, // No I/O provider by default
+            current_input_port: grift_parser::PortId::STDIN,
+            current_output_port: grift_parser::PortId::STDOUT,
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
         };
@@ -86,11 +88,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Only `define-syntax` forms are evaluated (not `define` forms, which are
     /// already handled by the StdLib enum). This allows the prelude to contain
     /// both macros and function definitions in a single file.
+    ///
+    /// Parses one form at a time to avoid holding a large unrooted list
+    /// that could be collected by auto-GC during macro evaluation.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
-        let forms = parse_all(self.lisp, PRELUDE_SOURCE)?;
-        let mut current = forms;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let form = self.lisp.car(current)?;
+        let mut parser = Parser::new(PRELUDE_SOURCE);
+        while parser.has_more() {
+            let form = parser.parse(self.lisp)?;
             // Only evaluate define-syntax forms; skip plain define forms
             // since those are already registered as StdLib builtins.
             let should_eval = if let Ok(Value::Cons { .. }) = self.lisp.get(form) {
@@ -105,7 +109,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if should_eval {
                 self.eval(ExprRef(form))?;
             }
-            current = self.lisp.cdr(current)?;
+            // Reclaim arena space from skipped/evaluated forms periodically
+            let stats = self.lisp.stats();
+            if stats.allocated >= stats.capacity * Self::GC_USAGE_THRESHOLD / 100 {
+                self.gc();
+            }
         }
         Ok(())
     }
@@ -295,6 +303,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             .with_args(expected, got)
     }
 
+    /// Create and raise a file-error typed error object through the exception handler chain.
+    /// Returns a TrampolineState that either invokes the handler or propagates as EvalError.
+    pub(crate) fn raise_file_error(&mut self, msg: &str, expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        self.raise_typed_error(msg, expr, "file-error")
+    }
+
+    /// Create and raise a typed error object (R7RS §6.11).
+    /// The `error_type` is stored as a symbol in the cdr of irritants_and_type.
+    fn raise_typed_error(&mut self, msg: &str, expr: ArenaIndex, error_type: &str)
+        -> Result<TrampolineState, EvalError>
+    {
+        let message = self.lisp.string(msg)?;
+        let nil = self.lisp.nil()?;
+        let irritants = if !expr.is_nil() {
+            self.lisp.cons(expr, nil)?
+        } else {
+            nil
+        };
+        let type_sym = self.lisp.symbol(error_type)?;
+        let irritants_and_type = self.lisp.cons(irritants, type_sym)?;
+        let error_obj = self.lisp.alloc(Value::ErrorObject { message, irritants_and_type })?;
+
+        match self.invoke_exception_handler(error_obj, false)? {
+            Some(state) => Ok(state),
+            None => Err(self.make_error(ErrorKind::Generic, error_obj)),
+        }
+    }
+
     /// Check whether an error kind is catchable by Scheme exception handlers.
     ///
     /// OutOfMemory and StackOverflow are not catchable because they represent
@@ -346,7 +384,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
 
         // Build the R7RS error object: (irritants . type)
-        let irritants_and_type = match self.lisp.cons(irritants, nil) {
+        // Tag parse errors as read-errors and file errors as file-errors per R7RS §6.11
+        let error_type = if err.kind == ErrorKind::Parse {
+            match self.lisp.symbol("read-error") {
+                Ok(s) => s,
+                Err(_) => return Err(err),
+            }
+        } else if err.kind == ErrorKind::FileError {
+            match self.lisp.symbol("file-error") {
+                Ok(s) => s,
+                Err(_) => return Err(err),
+            }
+        } else {
+            nil
+        };
+        let irritants_and_type = match self.lisp.cons(irritants, error_type) {
             Ok(it) => it,
             Err(_) => return Err(err),
         };
@@ -700,7 +752,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match val {
             // Self-evaluating values
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Float(_) | Value::Char(_) | 
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
+            Value::Complex { .. } | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
@@ -809,37 +862,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(env2);
         }
         
-        // Create a copy of env1 with its tail pointing to env2
-        // Collect env1 bindings
-        let mut bindings = [ArenaIndex::new(0); 64];
-        let mut count = 0;
+        // Collect env1 bindings into an arena cons list (reversed)
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = env1;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= bindings.len() {
-                // Buffer overflow: too many local bindings to copy.
-                // Fall back to recursive processing for the remaining bindings.
-                let (car, cdr) = self.lisp.car_cdr(current)?;
-                let rest_merged = self.merge_environments(cdr, env2)?;
-                let mut result = rest_merged;
-                result = self.lisp.cons(car, result)?;
-                
-                // Add the already-collected bindings in reverse order
-                for i in (0..count).rev() {
-                    result = self.lisp.cons(bindings[i], result)?;
-                }
-                return Ok(result);
-            }
             let (car, cdr) = self.lisp.car_cdr(current)?;
-            bindings[count] = car;
-            count += 1;
+            collected = self.lisp.cons(car, collected)?;
             current = cdr;
         }
         
-        // Build new env chain: bindings from env1 -> env2
+        // Build new env chain by walking the reversed list.
+        // Since collected is reversed, consing each element onto env2
+        // restores the original order with env1 bindings in front.
         let mut result = env2;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(bindings[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let (car, cdr) = self.lisp.car_cdr(cursor)?;
+            result = self.lisp.cons(car, result)?;
+            cursor = cdr;
         }
         
         Ok(result)
@@ -1071,9 +1113,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         // syntax-error - raise compile-time/macro-expansion error (R7RS §4.3.1)
+        // (syntax-error <message> <args> ...)
+        // Store the args list (message + irritants) in expr for display.
         if self.lisp.symbol_matches(car, "syntax-error")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
-            return Err(self.make_error(ErrorKind::SyntaxError, car)
+            return Err(self.make_error(ErrorKind::SyntaxError, cdr)
                 .with_message("syntax-error"));
         }
         
@@ -1117,6 +1161,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if self.lisp.symbol_matches(car, "environment")? {
             if self.is_variable_bound(env, car)? { return Ok(None); }
             return self.step_eval_environment(cdr, env).map(Some);
+        }
+        
+        // include - read and evaluate file contents (R7RS §4.1.7)
+        if self.lisp.symbol_matches(car, "include")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_include(cdr, env, false).map(Some);
+        }
+        
+        // include-ci - read and evaluate file contents case-insensitively (R7RS §4.1.7)
+        if self.lisp.symbol_matches(car, "include-ci")? {
+            if self.is_variable_bound(env, car)? { return Ok(None); }
+            return self.step_eval_include(cdr, env, true).map(Some);
         }
         
         Ok(None)

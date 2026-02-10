@@ -35,6 +35,7 @@
 //! | `scheme-process-context` | `(scheme process-context)` |
 //! | `scheme-read`          | `(scheme read)`             |
 //! | `scheme-repl`          | `(scheme repl)`             |
+//! | `scheme-r5rs`          | `(scheme r5rs)`             |
 //! | `scheme-time`          | `(scheme time)`             |
 //! | `scheme-write`         | `(scheme write)`            |
 //! | `all-libraries`        | All of the above            |
@@ -81,6 +82,8 @@ pub const LIBRARY_SOURCES: &[LibrarySource] = &[
     LibrarySource { name: &["scheme", "read"],            source: include_str!("lib/scheme/read.scm") },
     #[cfg(feature = "scheme-repl")]
     LibrarySource { name: &["scheme", "repl"],            source: include_str!("lib/scheme/repl.scm") },
+    #[cfg(feature = "scheme-r5rs")]
+    LibrarySource { name: &["scheme", "r5rs"],            source: include_str!("lib/scheme/r5rs.scm") },
     #[cfg(feature = "scheme-time")]
     LibrarySource { name: &["scheme", "time"],            source: include_str!("lib/scheme/time.scm") },
     #[cfg(feature = "scheme-write")]

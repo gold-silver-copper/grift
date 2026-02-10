@@ -557,22 +557,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Collect pattern variables into a list
     /// 
-    /// Iterative implementation using a work queue to avoid stack overflow.
+    /// Iterative implementation using an arena-allocated work stack to avoid
+    /// both stack overflow and fixed-size limits.
     fn collect_pattern_vars_into(
         &self,
         pattern: ArenaIndex,
         literals: ArenaIndex,
         vars: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
-        // Use a work queue for depth-first traversal
-        let mut queue = [ArenaIndex::new(0); 64];
-        let mut queue_len = 1;
-        queue[0] = pattern;
+        // Use an arena-allocated cons list as a work stack
+        let nil = self.lisp.nil()?;
+        let mut stack = self.lisp.cons(pattern, nil)?;
         
-        while queue_len > 0 {
-            // Pop from queue
-            queue_len -= 1;
-            let current = queue[queue_len];
+        while !self.lisp.get(stack)?.is_nil() {
+            // Pop from stack
+            let current = self.lisp.car(stack)?;
+            stack = self.lisp.cdr(stack)?;
             
             match self.lisp.get(current)? {
                 Value::Symbol(_) => {
@@ -601,10 +601,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             if self.lisp.symbol_matches(first, "...")? {
                                 // Case 2: cdr starts with ... - skip it and process rest
                                 let rest = self.lisp.cdr(cdr)?;
-                                if queue_len < queue.len() {
-                                    queue[queue_len] = rest;
-                                    queue_len += 1;
-                                }
+                                stack = self.lisp.cons(rest, stack)?;
                                 false
                             } else {
                                 true
@@ -613,22 +610,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         _ => true,
                     };
                     
-                    // Add car and cdr to queue
-                    if queue_len + 2 > queue.len() {
-                        // Queue full - this is unlikely for normal patterns
-                        // Just process car now and continue with cdr
-                        self.collect_pattern_vars_into(car, literals, vars)?;
-                        if should_process_cdr {
-                            self.collect_pattern_vars_into(cdr, literals, vars)?;
-                        }
-                    } else {
-                        if should_process_cdr {
-                            queue[queue_len] = cdr;
-                            queue_len += 1;
-                        }
-                        queue[queue_len] = car;
-                        queue_len += 1;
+                    // Push car and cdr to stack
+                    if should_process_cdr {
+                        stack = self.lisp.cons(cdr, stack)?;
                     }
+                    stack = self.lisp.cons(car, stack)?;
                 }
                 _ => {}
             }
@@ -1070,22 +1056,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Regular list: transcribe each element iteratively
-        let mut elements = [ArenaIndex::new(0); 128];
-        let mut count = 0;
+        // Collect elements into arena cons list (reversed by prepending)
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = template;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= elements.len() {
-                return Err(self.make_error(ErrorKind::Generic, template));
-            }
-            elements[count] = self.lisp.car(current)?;
-            count += 1;
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
             
             current = self.lisp.cdr(current)?;
             
             // Check if we've hit a special form
-            if count > 0
-                && let Value::Cons { .. } = self.lisp.get(current)? {
+            if let Value::Cons { .. } = self.lisp.get(current)? {
                     let next_car = self.lisp.car(current)?;
                     let next_cdr = self.lisp.cdr(current)?;
                     
@@ -1093,9 +1076,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let rest_transcribed = self.transcribe_template_with_env(current, bindings, renames, def_env, lex_env)?;
                         let mut result = rest_transcribed;
                         
-                        for i in (0..count).rev() {
-                            let transcribed = self.transcribe_template_with_env(elements[i], bindings, renames, def_env, lex_env)?;
+                        // Walk reversed collected list, transcribe and cons (restores original order)
+                        let mut cursor = collected;
+                        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                            let e = self.lisp.car(cursor)?;
+                            let transcribed = self.transcribe_template_with_env(e, bindings, renames, def_env, lex_env)?;
                             result = self.lisp.cons(transcribed, result)?;
+                            cursor = self.lisp.cdr(cursor)?;
                         }
                         
                         return Ok(result);
@@ -1103,20 +1090,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
         }
         
-        // Transcribe all collected elements
-        for elem in elements.iter_mut().take(count) {
-            *elem = self.transcribe_template_with_env(*elem, bindings, renames, def_env, lex_env)?;
-        }
-        
-        // Rebuild the list from the end
+        // Transcribe all collected elements and rebuild list
+        // Walk reversed collected list: transcribing and consing restores original order
         let mut result = if self.lisp.get(current)?.is_nil() {
-            self.lisp.nil()?
+            nil
         } else {
             self.transcribe_template_with_env(current, bindings, renames, def_env, lex_env)?
         };
         
-        for i in (0..count).rev() {
-            result = self.lisp.cons(elements[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let transcribed = self.transcribe_template_with_env(elem, bindings, renames, def_env, lex_env)?;
+            result = self.lisp.cons(transcribed, result)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         Ok(result)
@@ -1186,37 +1173,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         // Regular list: transcribe each element iteratively
-        // Collect all elements first
-        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
-        let mut count = 0;
+        // Collect elements into arena cons list (reversed by prepending)
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = template;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= elements.len() {
-                return Err(self.make_error(ErrorKind::Generic, template));
-            }
-            elements[count] = self.lisp.car(current)?;
-            count += 1;
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
             
             current = self.lisp.cdr(current)?;
             
             // Check if we've hit a special form in the middle of the list
-            if count > 0
-                && let Value::Cons { .. } = self.lisp.get(current)? {
+            if let Value::Cons { .. } = self.lisp.get(current)? {
                     let next_car = self.lisp.car(current)?;
                     let next_cdr = self.lisp.cdr(current)?;
                     
                     // Stop if we hit ellipsis or binding keyword in middle
                     if self.has_ellipsis(next_cdr)? || self.is_binding_keyword(next_car)? {
                         // Process collected elements, then handle rest specially
-                        // Process the remaining special part
                         let rest_transcribed = self.transcribe_template(current, bindings, renames, def_env)?;
                         let mut result = rest_transcribed;
                         
-                        // Add the collected elements in reverse
-                        for i in (0..count).rev() {
-                            let transcribed = self.transcribe_template(elements[i], bindings, renames, def_env)?;
+                        // Walk reversed collected list, transcribe and cons (restores original order)
+                        let mut cursor = collected;
+                        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                            let e = self.lisp.car(cursor)?;
+                            let transcribed = self.transcribe_template(e, bindings, renames, def_env)?;
                             result = self.lisp.cons(transcribed, result)?;
+                            cursor = self.lisp.cdr(cursor)?;
                         }
                         
                         return Ok(result);
@@ -1224,21 +1209,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
         }
         
-        // Transcribe all collected elements
-        for elem in elements.iter_mut().take(count) {
-            *elem = self.transcribe_template(*elem, bindings, renames, def_env)?;
-        }
-        
-        // Rebuild the list from the end
+        // Transcribe all collected elements and rebuild list
+        // Walk reversed collected list: transcribing and consing restores original order
         let mut result = if self.lisp.get(current)?.is_nil() {
-            self.lisp.nil()?
+            nil
         } else {
             // Improper list - transcribe the tail
             self.transcribe_template(current, bindings, renames, def_env)?
         };
         
-        for i in (0..count).rev() {
-            result = self.lisp.cons(elements[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let transcribed = self.transcribe_template(elem, bindings, renames, def_env)?;
+            result = self.lisp.cons(transcribed, result)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         Ok(result)
@@ -1253,22 +1238,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Find ellipsis vars in template (iterative)
     /// 
-    /// Uses a work queue to avoid stack overflow.
+    /// Uses an arena-allocated work stack to avoid both stack overflow and fixed-size limits.
     fn find_ellipsis_vars_into(
         &self,
         template: ArenaIndex,
         bindings: ArenaIndex,
         result: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
-        // Use a work queue
-        let mut queue = [ArenaIndex::new(0); 64];
-        let mut queue_len = 1;
-        queue[0] = template;
+        // Use an arena-allocated cons list as a work stack
+        let nil = self.lisp.nil()?;
+        let mut stack = self.lisp.cons(template, nil)?;
         
-        while queue_len > 0 {
-            // Pop from queue
-            queue_len -= 1;
-            let current = queue[queue_len];
+        while !self.lisp.get(stack)?.is_nil() {
+            // Pop from stack
+            let current = self.lisp.car(stack)?;
+            stack = self.lisp.cdr(stack)?;
             
             match self.lisp.get(current)? {
                 Value::Symbol(_) => {
@@ -1296,21 +1280,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Don't recurse into ellipsis
                     let should_process_cdr = !self.has_ellipsis(cdr)?;
                     
-                    // Add to queue
-                    if queue_len + 2 > queue.len() {
-                        // Queue full - fall back to recursive
-                        self.find_ellipsis_vars_into(car, bindings, result)?;
-                        if should_process_cdr {
-                            self.find_ellipsis_vars_into(cdr, bindings, result)?;
-                        }
-                    } else {
-                        if should_process_cdr {
-                            queue[queue_len] = cdr;
-                            queue_len += 1;
-                        }
-                        queue[queue_len] = car;
-                        queue_len += 1;
+                    // Push to stack
+                    if should_process_cdr {
+                        stack = self.lisp.cons(cdr, stack)?;
                     }
+                    stack = self.lisp.cons(car, stack)?;
                 }
                 _ => {}
             }
@@ -1564,10 +1538,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Phase 1: Collect the transcribed names of user-provided binding variables
         // (pattern variables in binding positions).
-        // Limited to 32 bindings per let form (no_std constraint - no Vec available).
-        // Bindings beyond this limit will not be checked for clashes.
-        let mut user_var_names = [ArenaIndex::new(0); 32];
-        let mut user_var_count = 0;
+        // Uses arena-allocated cons list instead of fixed-size array.
+        let mut user_var_names = self.lisp.nil()?;
         let mut current = bindings_template;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let pair_template = self.lisp.car(current)?;
@@ -1577,10 +1549,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     && self.bindings_lookup(bindings, var_template)?.is_some() {
                         // This is a pattern variable - transcribe to get the user's actual name
                         let transcribed = self.transcribe_template(var_template, bindings, renames, def_env)?;
-                        if user_var_count < user_var_names.len() {
-                            user_var_names[user_var_count] = transcribed;
-                            user_var_count += 1;
-                        }
+                        user_var_names = self.lisp.cons(transcribed, user_var_names)?;
                     }
             }
             current = self.lisp.cdr(current)?;
@@ -1614,11 +1583,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 } else if let Value::Symbol(_) = self.lisp.get(transcribed_var)? {
                     // Macro-introduced - check if it clashes with any user-provided var
                     let mut clashes = false;
-                    for &name in user_var_names.iter().take(user_var_count) {
+                    let mut name_cursor = user_var_names;
+                    while let Value::Cons { .. } = self.lisp.get(name_cursor)? {
+                        let name = self.lisp.car(name_cursor)?;
                         if self.symbols_eq(transcribed_var, name)? {
                             clashes = true;
                             break;
                         }
+                        name_cursor = self.lisp.cdr(name_cursor)?;
                     }
                     if clashes {
                         let fresh = self.gensym_simple()?;
@@ -1905,17 +1877,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Check if a symbol appears in an expression
     /// 
-    /// Iterative implementation using a work queue to avoid stack overflow.
+    /// Iterative implementation using an arena-allocated work stack to avoid
+    /// both stack overflow and fixed-size limits.
     fn symbol_appears_in(&self, sym: ArenaIndex, expr: ArenaIndex) -> Result<bool, EvalError> {
-        // Use a fixed-size work queue for depth-first traversal
-        let mut queue = [ArenaIndex::new(0); 64];
-        let mut queue_len = 1;
-        queue[0] = expr;
+        // Use an arena-allocated cons list as a work stack
+        let nil = self.lisp.nil()?;
+        let mut stack = self.lisp.cons(expr, nil)?;
         
-        while queue_len > 0 {
-            // Pop from queue
-            queue_len -= 1;
-            let current = queue[queue_len];
+        while !self.lisp.get(stack)?.is_nil() {
+            // Pop from stack
+            let current = self.lisp.car(stack)?;
+            stack = self.lisp.cdr(stack)?;
             
             match self.lisp.get(current)? {
                 Value::Symbol(_) => {
@@ -1927,41 +1899,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let car = self.lisp.car(current)?;
                     let cdr = self.lisp.cdr(current)?;
                     
-                    // Add both car and cdr to queue if there's space
-                    if queue_len + 2 > queue.len() {
-                        // Queue full - fall back to recursive check for this subtree
-                        if self.symbol_appears_in_recursive(sym, car)? || self.symbol_appears_in_recursive(sym, cdr)? {
-                            return Ok(true);
-                        }
-                    } else {
-                        queue[queue_len] = cdr;
-                        queue_len += 1;
-                        queue[queue_len] = car;
-                        queue_len += 1;
-                    }
+                    // Push both car and cdr to stack
+                    stack = self.lisp.cons(cdr, stack)?;
+                    stack = self.lisp.cons(car, stack)?;
                 }
                 _ => {}
             }
         }
         
         Ok(false)
-    }
-    
-    /// Recursive fallback for symbol_appears_in when queue is full
-    /// This should rarely be called for normal code.
-    fn symbol_appears_in_recursive(&self, sym: ArenaIndex, expr: ArenaIndex) -> Result<bool, EvalError> {
-        match self.lisp.get(expr)? {
-            Value::Symbol(_) => self.symbols_eq(sym, expr),
-            Value::Cons { .. } => {
-                let car = self.lisp.car(expr)?;
-                let cdr = self.lisp.cdr(expr)?;
-                if self.symbol_appears_in_recursive(sym, car)? {
-                    return Ok(true);
-                }
-                self.symbol_appears_in_recursive(sym, cdr)
-            }
-            _ => Ok(false),
-        }
     }
 }
 
@@ -2052,35 +1998,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(self.lisp.nil()?);
         }
 
-        // Collect all elements first (iteratively)
-        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
-        let mut count = 0;
+        // Collect all elements into arena cons list (reversed by prepending)
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = expr;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= elements.len() {
-                return Err(self.make_error(ErrorKind::Generic, expr));
-            }
-            elements[count] = self.lisp.car(current)?;
-            count += 1;
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
             current = self.lisp.cdr(current)?;
         }
         
-        // Expand each element (this may recurse through expand_expr, but not through expand_application)
-        for elem in elements.iter_mut().take(count) {
-            *elem = self.expand_expr(*elem, renames)?;
-        }
-        
-        // Rebuild the list from the end (iteratively)
+        // Walk reversed list, expand each and cons onto result (restores original order)
         let mut result = if self.lisp.get(current)?.is_nil() {
-            self.lisp.nil()?
+            nil
         } else {
             // Improper list - keep the tail as-is
             current
         };
         
-        for i in (0..count).rev() {
-            result = self.lisp.cons(elements[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let expanded = self.expand_expr(elem, renames)?;
+            result = self.lisp.cons(expanded, result)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         Ok(result)
@@ -2331,31 +2273,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let saved_macro_env = self.macro_env;
 
         // Phase 1: Parse ALL transformers in the outer (saved) macro environment.
-        // Stack-allocated buffer for parsed bindings (matches arena's fixed-size approach).
-        const MAX_LET_SYNTAX_BINDINGS: usize = 32;
-        let mut parsed_bindings = [(ArenaIndex::new(0), ArenaIndex::new(0)); MAX_LET_SYNTAX_BINDINGS];
-        let mut binding_count = 0;
+        // Arena-allocated list of (name . transformer) pairs for parallel installation.
+        let mut parsed_bindings = self.lisp.nil()?;
         let mut current = bindings;
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if binding_count >= MAX_LET_SYNTAX_BINDINGS {
-                return Err(self.make_error(ErrorKind::Generic, bindings)
-                    .with_message("let-syntax: too many bindings"));
-            }
             let binding = self.lisp.car(current)?;
             let name = self.lisp.car(binding)?;
             let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
 
             let transformer = self.parse_transformer(transformer_expr)?;
-            parsed_bindings[binding_count] = (name, transformer);
-            binding_count += 1;
+            let pair = self.lisp.cons(name, transformer)?;
+            parsed_bindings = self.lisp.cons(pair, parsed_bindings)?;
 
             current = self.lisp.cdr(current)?;
         }
 
         // Phase 2: Install all bindings at once
-        for &(name, transformer) in parsed_bindings.iter().take(binding_count) {
+        let mut cursor = parsed_bindings;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let pair = self.lisp.car(cursor)?;
+            let name = self.lisp.car(pair)?;
+            let transformer = self.lisp.cdr(pair)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
+            cursor = self.lisp.cdr(cursor)?;
         }
 
         // Expand body
@@ -2428,29 +2369,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(self.lisp.nil()?);
         }
 
-        // Collect all elements first (iteratively)
-        let mut elements = [ArenaIndex::new(0); 128]; // Stack-allocated buffer
-        let mut count = 0;
+        // Collect all elements into arena cons list (reversed by prepending)
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = body;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= elements.len() {
-                return Err(self.make_error(ErrorKind::Generic, body));
-            }
-            elements[count] = self.lisp.car(current)?;
-            count += 1;
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
             current = self.lisp.cdr(current)?;
         }
         
-        // Expand each element
-        for elem in elements.iter_mut().take(count) {
-            *elem = self.expand_expr(*elem, renames)?;
-        }
-        
-        // Rebuild the list from the end (iteratively)
-        let mut result = self.lisp.nil()?;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(elements[i], result)?;
+        // Walk reversed list, expand each and cons onto result (restores original order)
+        let mut result = nil;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let expanded = self.expand_expr(elem, renames)?;
+            result = self.lisp.cons(expanded, result)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         Ok(result)
@@ -2492,49 +2429,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             _ => return Ok(stx),
         }
         
-        // Process list iteratively
-        let mut elements = [ArenaIndex::new(0); 64];
-        let mut count = 0;
+        // Process list iteratively using arena cons list
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = stx;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= elements.len() {
-                // Buffer full - fall back to recursive for remainder
-                let car = self.lisp.car(current)?;
-                let cdr = self.lisp.cdr(current)?;
-                let new_car = self.syntax_to_datum_recursive(car)?;
-                let new_cdr = self.syntax_to_datum_recursive(cdr)?;
-                let tail = self.lisp.cons(new_car, new_cdr)?;
-                
-                // Build result from collected elements
-                let mut result = tail;
-                for i in (0..count).rev() {
-                    result = self.lisp.cons(elements[i], result)?;
-                }
-                return Ok(result);
-            }
-            
-            elements[count] = self.lisp.car(current)?;
-            count += 1;
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
             current = self.lisp.cdr(current)?;
         }
         
-        // Process all collected elements
-        for elem in elements.iter_mut().take(count) {
-            *elem = self.syntax_to_datum_recursive(*elem)?;
-        }
-        
-        // Handle tail
-        let tail = if self.lisp.get(current)?.is_nil() {
-            self.lisp.nil()?
+        // Walk reversed list, process each and cons onto tail (restores original order)
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            nil
         } else {
             self.syntax_to_datum_recursive(current)?
         };
         
-        // Rebuild list
-        let mut result = tail;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(elements[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let processed = self.syntax_to_datum_recursive(elem)?;
+            result = self.lisp.cons(processed, result)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         Ok(result)
@@ -2606,49 +2524,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             _ => return Ok(datum),
         }
         
-        // Process list iteratively
-        let mut elements = [ArenaIndex::new(0); 64];
-        let mut count = 0;
+        // Process list iteratively using arena cons list
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = datum;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= elements.len() {
-                // Buffer full - fall back to recursive for remainder
-                let car = self.lisp.car(current)?;
-                let cdr = self.lisp.cdr(current)?;
-                let wrapped_car = self.datum_to_syntax_with_context(car, marks, subst, lex_env)?;
-                let wrapped_cdr = self.datum_to_syntax_with_context(cdr, marks, subst, lex_env)?;
-                let tail = self.lisp.cons(wrapped_car, wrapped_cdr)?;
-                
-                // Build result from collected elements
-                let mut result = tail;
-                for i in (0..count).rev() {
-                    result = self.lisp.cons(elements[i], result)?;
-                }
-                return Ok(result);
-            }
-            
-            elements[count] = self.lisp.car(current)?;
-            count += 1;
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
             current = self.lisp.cdr(current)?;
         }
         
-        // Process all collected elements
-        for elem in elements.iter_mut().take(count) {
-            *elem = self.datum_to_syntax_with_context(*elem, marks, subst, lex_env)?;
-        }
-        
-        // Handle tail
-        let tail = if self.lisp.get(current)?.is_nil() {
-            self.lisp.nil()?
+        // Walk reversed list, process each and cons onto tail (restores original order)
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            nil
         } else {
             self.datum_to_syntax_with_context(current, marks, subst, lex_env)?
         };
         
-        // Rebuild list
-        let mut result = tail;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(elements[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let processed = self.datum_to_syntax_with_context(elem, marks, subst, lex_env)?;
+            result = self.lisp.cons(processed, result)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         Ok(result)

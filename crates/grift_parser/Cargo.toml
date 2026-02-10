@@ -13,3 +13,4 @@ categories = ["no-std", "parsing", "embedded"]
 grift_arena = { workspace = true }
 grift_macros = { workspace = true }
 grift_core = { workspace = true }
+libm = "0.2"

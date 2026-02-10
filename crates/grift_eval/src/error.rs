@@ -51,6 +51,8 @@ pub enum ErrorKind {
     Generic = 10,
     /// Syntax/macro expansion error
     SyntaxError = 11,
+    /// File system error (R7RS §6.11 file-error)
+    FileError = 12,
 }
 
 impl ErrorKind {
@@ -68,6 +70,7 @@ impl ErrorKind {
             ErrorKind::NotAPair => "not a pair",
             ErrorKind::Generic => "error",
             ErrorKind::SyntaxError => "syntax error",
+            ErrorKind::FileError => "file error",
         }
     }
 }

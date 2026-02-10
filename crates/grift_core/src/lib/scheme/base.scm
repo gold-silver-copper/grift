@@ -67,5 +67,12 @@
     read-line read-string
     eof-object eof-object?
     textual-port? binary-port?
-    input-port-open? output-port-open?))
+    input-port-open? output-port-open?
+    ;; R7RS §6.2.6 numeric operations
+    floor-quotient floor-remainder floor/
+    truncate-quotient truncate-remainder truncate/
+    numerator denominator rationalize
+    exact-integer-sqrt
+    exp log sin cos tan asin acos atan
+    make-rectangular make-polar real-part imag-part magnitude angle))
 

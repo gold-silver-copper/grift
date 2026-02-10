@@ -82,7 +82,65 @@ define_builtins! {
     Nanp => "nan?",
     /// sqrt - Square root
     Sqrt => "sqrt",
-    
+
+    // Transcendental functions (R7RS §6.2.6) — powered by libm
+    /// exp - Exponential function (e^x)
+    Exp => "exp",
+    /// log - Natural logarithm; optional base parameter
+    Log => "log",
+    /// sin - Sine (radians)
+    Sin => "sin",
+    /// cos - Cosine (radians)
+    Cos => "cos",
+    /// tan - Tangent (radians)
+    Tan => "tan",
+    /// asin - Arcsine (returns radians)
+    Asin => "asin",
+    /// acos - Arccosine (returns radians)
+    Acos => "acos",
+    /// atan - Arctangent; one or two argument form
+    Atan => "atan",
+
+    // Division procedures (R7RS §6.2.6)
+    /// floor-quotient - ⌊n/d⌋
+    FloorQuotient => "floor-quotient",
+    /// floor-remainder - n - d·⌊n/d⌋
+    FloorRemainder => "floor-remainder",
+    /// floor/ - Returns quotient and remainder via values
+    FloorDiv => "floor/",
+    /// truncate-quotient - truncate(n/d)
+    TruncateQuotient => "truncate-quotient",
+    /// truncate-remainder - n - d·truncate(n/d)
+    TruncateRemainder => "truncate-remainder",
+    /// truncate/ - Returns quotient and remainder via values
+    TruncateDiv => "truncate/",
+
+    // Rational number operations (R7RS §6.2.6)
+    /// numerator - Returns numerator of a number
+    Numerator => "numerator",
+    /// denominator - Returns denominator of a number
+    Denominator => "denominator",
+    /// rationalize - Simplest rational within tolerance
+    Rationalize => "rationalize",
+
+    // Exact integer square root (R7RS §6.2.6)
+    /// exact-integer-sqrt - Returns s and r where n = s² + r
+    ExactIntegerSqrt => "exact-integer-sqrt",
+
+    // Complex number operations (R7RS §6.2.6)
+    /// make-rectangular - Create complex from real and imaginary parts
+    MakeRectangular => "make-rectangular",
+    /// make-polar - Create complex from magnitude and angle
+    MakePolar => "make-polar",
+    /// real-part - Extract real part
+    RealPart => "real-part",
+    /// imag-part - Extract imaginary part
+    ImagPart => "imag-part",
+    /// magnitude - |z|
+    Magnitude => "magnitude",
+    /// angle - arg(z)
+    Angle => "angle",
+
     // Rounding operations (R7RS Section 6.2.6) - Identity for integers
     /// floor - Largest integer not greater than x (identity for integers)
     Floor => "floor",
@@ -168,7 +226,57 @@ define_builtins! {
     InputPortOpenp => "input-port-open?",
     /// output-port-open? - Check if output port is still open
     OutputPortOpenp => "output-port-open?",
-    
+
+    // File port operations (R7RS §6.13.2)
+    /// open-input-file - Open a textual input port on a file
+    OpenInputFile => "open-input-file",
+    /// open-output-file - Open a textual output port on a file
+    OpenOutputFile => "open-output-file",
+    /// open-binary-input-file - Open a binary input port on a file
+    OpenBinaryInputFile => "open-binary-input-file",
+    /// open-binary-output-file - Open a binary output port on a file
+    OpenBinaryOutputFile => "open-binary-output-file",
+    /// call-with-port - Call proc with port, close port when proc returns
+    CallWithPort => "call-with-port",
+    /// call-with-input-file - Call proc with input port, then close it
+    CallWithInputFile => "call-with-input-file",
+    /// call-with-output-file - Call proc with output port, then close it
+    CallWithOutputFile => "call-with-output-file",
+    /// with-input-from-file - Redirect current-input-port to file
+    WithInputFromFile => "with-input-from-file",
+    /// with-output-to-file - Redirect current-output-port to file
+    WithOutputToFile => "with-output-to-file",
+
+    // Binary I/O operations (R7RS §6.13.2)
+    /// read-u8 - Read a single byte from a binary input port
+    ReadU8 => "read-u8",
+    /// peek-u8 - Peek at next byte without consuming it
+    PeekU8 => "peek-u8",
+    /// u8-ready? - Check if a byte is ready to read
+    U8Readyp => "u8-ready?",
+    /// read-bytevector - Read up to k bytes into a new bytevector
+    ReadBytevector => "read-bytevector",
+    /// read-bytevector! - Read bytes into an existing bytevector
+    ReadBytevectorBang => "read-bytevector!",
+    /// write-u8 - Write a single byte to a binary output port
+    WriteU8 => "write-u8",
+    /// write-bytevector - Write bytevector bytes to a binary output port
+    WriteBytevector => "write-bytevector",
+
+    // Bytevector port operations (R7RS §6.13.2)
+    /// open-input-bytevector - Create binary input port from bytevector
+    OpenInputBytevector => "open-input-bytevector",
+    /// open-output-bytevector - Create binary output port to bytevector
+    OpenOutputBytevector => "open-output-bytevector",
+    /// get-output-bytevector - Get bytevector from output bytevector port
+    GetOutputBytevector => "get-output-bytevector",
+
+    // Additional I/O operations (R7RS §6.13.2)
+    /// write-string - Write string to textual output port
+    WriteStringPort => "write-string",
+    /// flush-output-port - Flush buffered output
+    FlushOutputPort => "flush-output-port",
+
     // Error handling
     /// error - Raise an error
     Error => "error",
@@ -347,6 +455,54 @@ define_builtins! {
     // Environment procedures (R7RS §6.12)
     /// interaction-environment - Return the mutable REPL environment
     InteractionEnvironment => "interaction-environment",
+    /// scheme-report-environment - Return environment for given R^n RS version
+    SchemeReportEnvironment => "scheme-report-environment",
+    /// null-environment - Return minimal environment with only syntax
+    NullEnvironment => "null-environment",
+
+    // Bytevector operations (R7RS §6.9)
+    /// bytevector? - Check if value is a bytevector
+    Bytevectorp => "bytevector?",
+    /// bytevector - Variadic constructor: (bytevector byte ...)
+    Bytevector_ => "bytevector",
+    /// make-bytevector - Create a bytevector with optional fill byte
+    MakeBytevector => "make-bytevector",
+    /// bytevector-length - Get length of bytevector
+    BytevectorLength => "bytevector-length",
+    /// bytevector-u8-ref - Get byte at index
+    BytevectorU8Ref => "bytevector-u8-ref",
+    /// bytevector-u8-set! - Set byte at index
+    BytevectorU8Set => "bytevector-u8-set!",
+    /// bytevector-copy - Copy a bytevector
+    BytevectorCopy => "bytevector-copy",
+    /// bytevector-copy! - Destructive copy between bytevectors
+    BytevectorCopyBang => "bytevector-copy!",
+    /// bytevector-append - Concatenate bytevectors
+    BytevectorAppend => "bytevector-append",
+    /// utf8->string - Decode bytevector as UTF-8 string
+    Utf8ToString => "utf8->string",
+    /// string->utf8 - Encode string as UTF-8 bytevector
+    StringToUtf8 => "string->utf8",
+
+    // Time procedures (R7RS §6.13.3)
+    /// current-second - Current time as inexact seconds since epoch
+    CurrentSecond => "current-second",
+    /// current-jiffy - Current jiffy count (monotonic)
+    CurrentJiffy => "current-jiffy",
+    /// jiffies-per-second - Number of jiffies per SI second
+    JiffiesPerSecond => "jiffies-per-second",
+
+    // Error predicates (R7RS §6.11)
+    /// read-error? - Check if error was raised by read
+    ReadErrorP => "read-error?",
+    /// file-error? - Check if error was raised by file operations
+    FileErrorP => "file-error?",
+
+    // Vector-String conversion (R7RS §6.8)
+    /// vector->string - Create string from vector of characters
+    VectorToString => "vector->string",
+    /// string->vector - Create vector of characters from string
+    StringToVector => "string->vector",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
@@ -390,6 +546,17 @@ pub enum Value {
     /// matching the width of `isize`/`usize`.
     Float(fsize),
     
+    /// Exact rational number (R7RS §6.2)
+    ///
+    /// Stored as numerator/denominator pair, always reduced to lowest terms.
+    /// Denominator is always positive.
+    Rational { num: isize, denom: isize },
+
+    /// Complex number (R7RS §6.2)
+    ///
+    /// Stored as real and imaginary parts (both inexact).
+    Complex { real: fsize, imag: fsize },
+
     /// Single character (used in strings and symbol storage)
     Char(char),
     
@@ -728,10 +895,10 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number (integer or float)
+    /// Check if this value is a number (integer, float, rational, or complex)
     #[inline]
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Float(_))
+        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. })
     }
     
     /// Check if this value is an integer
@@ -892,6 +1059,8 @@ impl Value {
             Value::True | Value::False => "boolean",
             Value::Number(_) => "number",
             Value::Float(_) => "number",
+            Value::Rational { .. } => "number",
+            Value::Complex { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -941,7 +1110,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match self {
             Value::Nil | Value::Void | Value::True | Value::False | 
-            Value::Number(_) | Value::Float(_) | Value::Char(_) | Value::Builtin(_) |
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
+            Value::Complex { .. } | Value::Char(_) | Value::Builtin(_) |
             Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
                 // No references
             }

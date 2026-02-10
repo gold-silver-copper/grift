@@ -487,6 +487,57 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
 
+            ContType::CallWithPortClose => {
+                // val is the result of the proc
+                // Data: port_id_encoded (single value - Number encoding port id)
+                let port_id = match self.lisp.get(data)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                if let Some(ref mut io) = self.io {
+                    let _ = io.close_port(port_id);
+                }
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
+            ContType::WithInputFromFileRestore => {
+                // val is the result of the thunk
+                // Data: (saved_port_encoded . file_port_encoded)
+                let (saved_enc, file_enc) = self.unpack2(data)?;
+                let saved_id = match self.lisp.get(saved_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                let file_id = match self.lisp.get(file_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                self.current_input_port = saved_id;
+                if let Some(ref mut io) = self.io {
+                    let _ = io.close_port(file_id);
+                }
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
+            ContType::WithOutputToFileRestore => {
+                // val is the result of the thunk
+                // Data: (saved_port_encoded . file_port_encoded)
+                let (saved_enc, file_enc) = self.unpack2(data)?;
+                let saved_id = match self.lisp.get(saved_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                let file_id = match self.lisp.get(file_enc)? {
+                    Value::Number(n) => grift_parser::PortId(n as usize),
+                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
+                };
+                self.current_output_port = saved_id;
+                if let Some(ref mut io) = self.io {
+                    let _ = io.close_port(file_id);
+                }
+                Ok(Some(TrampolineState::Return { val }))
+            }
+
             ContType::BeginSeq => {
                 // Data: (remaining . env)
                 let (remaining, env) = self.unpack2(data)?;
@@ -1537,16 +1588,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Phase 1: Parse ALL transformers in the outer (saved) macro environment.
         // This ensures no transformer can see bindings from other let-syntax clauses.
-        // Stack-allocated buffer for parsed bindings (matches arena's fixed-size approach).
-        const MAX_LET_SYNTAX_BINDINGS: usize = 32;
-        let mut parsed_bindings = [(ArenaIndex::new(0), ArenaIndex::new(0)); MAX_LET_SYNTAX_BINDINGS];
-        let mut binding_count = 0;
+        // Arena-allocated list of (name . transformer) pairs for parallel installation.
+        let mut parsed_bindings = self.lisp.nil()?;
         let mut current = bindings;
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if binding_count >= MAX_LET_SYNTAX_BINDINGS {
-                return Err(self.make_error(ErrorKind::Generic, bindings)
-                    .with_message("let-syntax: too many bindings"));
-            }
             let binding = self.lisp.car(current)?;
             let name = self.lisp.car(binding)?;
             let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
@@ -1554,16 +1599,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
             let transformer = self.parse_transformer_with_env(final_transformer_expr, env.0)?;
             
-            parsed_bindings[binding_count] = (name, transformer);
-            binding_count += 1;
+            let pair = self.lisp.cons(name, transformer)?;
+            parsed_bindings = self.lisp.cons(pair, parsed_bindings)?;
             
             current = self.lisp.cdr(current)?;
         }
         
         // Phase 2: Install all bindings at once
-        for &(name, transformer) in parsed_bindings.iter().take(binding_count) {
+        let mut cursor = parsed_bindings;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let pair = self.lisp.car(cursor)?;
+            let name = self.lisp.car(pair)?;
+            let transformer = self.lisp.cdr(pair)?;
             let macro_binding = self.lisp.cons(name, transformer)?;
             self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         // Build body expression (wrap in begin if multiple)
@@ -1777,21 +1827,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut merged_bindings = existing_bindings;
         let mut current = bindings;
         
-        // Collect new bindings in reverse to prepend them in correct order
-        let mut new_pairs = [ArenaIndex::new(0); 64];
-        let mut count = 0;
+        // Collect new bindings into arena cons list (reversed by prepending)
+        let mut reversed_pairs = self.lisp.nil()?;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count < new_pairs.len() {
-                new_pairs[count] = self.lisp.car(current)?;
-                count += 1;
-            }
+            reversed_pairs = self.lisp.cons(self.lisp.car(current)?, reversed_pairs)?;
             current = self.lisp.cdr(current)?;
         }
         
-        // Prepend new bindings to merged (in reverse order to maintain original order)
-        for i in (0..count).rev() {
-            merged_bindings = self.lisp.cons(new_pairs[i], merged_bindings)?;
+        // Walk reversed list to prepend in correct order
+        let mut cursor = reversed_pairs;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            merged_bindings = self.lisp.cons(self.lisp.car(cursor)?, merged_bindings)?;
+            cursor = self.lisp.cdr(cursor)?;
         }
         
         // bindings is an alist of (var . value) pairs
@@ -2131,20 +2179,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Collect all field specs to determine field ordering
         // field_specs is a list of (<field-name> <accessor> [<mutator>])
-        // Build field name list to compute indices
-        let mut all_fields: [ArenaIndex; 32] = [ArenaIndex::NIL; 32];
-        let mut num_fields = 0usize;
+        // Build reversed field name list for efficient reverse iteration in constructor
+        let mut reversed_fields = self.lisp.nil()?;
         {
             let mut cursor = field_specs;
             while !self.lisp.get(cursor)?.is_nil() {
                 let spec = self.lisp.car(cursor)?;
                 let fname = self.lisp.car(spec)?;
-                if num_fields >= 32 {
-                    return Err(self.make_error(ErrorKind::Generic, _name)
-                        .with_message("define-record-type: too many fields (max 32)"));
-                }
-                all_fields[num_fields] = fname;
-                num_fields += 1;
+                reversed_fields = self.lisp.cons(fname, reversed_fields)?;
                 cursor = self.lisp.cdr(cursor)?;
             }
         }
@@ -2174,20 +2216,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let vector_sym = self.lisp.symbol("vector")?;
             
             // Build vector args: tag, then each field in field-spec order
-            // For each field in all_fields, find if it's in ctor_fields
+            // For each field in reversed_fields (reverse of field-spec order),
+            // check if it's in ctor_fields, and cons onto vec_args
             let mut vec_args = nil;
-            for i in (0..num_fields).rev() {
-                let field = all_fields[i];
+            let mut cursor = reversed_fields;
+            while !self.lisp.get(cursor)?.is_nil() {
+                let field = self.lisp.car(cursor)?;
                 // Check if this field is in ctor_fields
                 let mut found = false;
-                let mut cursor = ctor_fields;
-                while !self.lisp.get(cursor)?.is_nil() {
-                    let cf = self.lisp.car(cursor)?;
+                let mut cf_cursor = ctor_fields;
+                while !self.lisp.get(cf_cursor)?.is_nil() {
+                    let cf = self.lisp.car(cf_cursor)?;
                     if self.lisp.symbol_eq(cf, field)? {
                         found = true;
                         break;
                     }
-                    cursor = self.lisp.cdr(cursor)?;
+                    cf_cursor = self.lisp.cdr(cf_cursor)?;
                 }
                 if found {
                     vec_args = self.lisp.cons(field, vec_args)?;
@@ -2196,6 +2240,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let false_val = self.lisp.false_val()?;
                     vec_args = self.lisp.cons(false_val, vec_args)?;
                 }
+                cursor = self.lisp.cdr(cursor)?;
             }
             // Prepend quoted tag
             vec_args = self.lisp.cons(quoted_tag, vec_args)?;
@@ -2886,4 +2931,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         self.reverse_list(args)}
+
+    /// Implement (include "file1" "file2" ...) and (include-ci "file1" ...) — R7RS §4.1.7.
+    /// Reads each file, parses all expressions, and evaluates them sequentially.
+    /// If `case_insensitive` is true, identifiers read from the file are folded to lowercase.
+    pub(super) fn step_eval_include(&mut self, args: ArenaIndex, env: EnvRef, _case_insensitive: bool)
+        -> Result<TrampolineState, EvalError>
+    {
+        let mut filenames = args;
+        let mut last_val = self.lisp.void_val()?;
+
+        while let Value::Cons { .. } = self.lisp.get(filenames)? {
+            let filename_expr = self.lisp.car(filenames)?;
+            let path = self.extract_string_arg(filename_expr, filenames)?;
+
+            // Read and parse the file
+            let forms = match &mut self.io {
+                Some(io) => {
+                    let content = match io.read_file(&path) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            // Raise a file-error typed error object
+                            return self.raise_file_error("include: cannot read file", filenames);
+                        }
+                    };
+                    grift_parser::parse_all(self.lisp, content)?
+                }
+                None => {
+                    return self.raise_file_error("include: no I/O provider", filenames);
+                }
+            };
+
+            // Evaluate each form sequentially
+            let mut current = forms;
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let form = self.lisp.car(current)?;
+                last_val = self.eval_for_macro(ExprRef(form), env)?;
+                current = self.lisp.cdr(current)?;
+            }
+
+            filenames = self.lisp.cdr(filenames)?;
+        }
+
+        Ok(TrampolineState::Return { val: last_val })
+    }
 }

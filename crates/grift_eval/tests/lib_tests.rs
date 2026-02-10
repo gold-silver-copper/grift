@@ -4966,6 +4966,49 @@ fn test_cond_expand_multiple_expressions() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "x"), 11);
 }
 
+#[test]
+fn test_cond_expand_library_scheme_base() {
+    // cond-expand should recognize (library (scheme base))
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond-expand ((library (scheme base)) 1) (else 0))"), 1);
+}
+
+#[test]
+fn test_cond_expand_library_unknown() {
+    // cond-expand should not recognize unknown libraries
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond-expand ((library (scheme unknown-lib)) 1) (else 0))"), 0);
+}
+
+#[test]
+fn test_cond_expand_library_scheme_write() {
+    // cond-expand should recognize (library (scheme write))
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond-expand ((library (scheme write)) 1) (else 0))"), 1);
+}
+
+#[test]
+fn test_features_procedure() {
+    // (features) should return a list of feature identifiers
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // features returns a list
+    assert!(eval_is_true(&lisp, &mut eval, "(list? (features))"));
+    // The list should contain 'r7rs and 'grift (memq returns a pair or #f)
+    assert!(eval_is_true(&lisp, &mut eval, "(pair? (memq 'r7rs (features)))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(pair? (memq 'grift (features)))"));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // DELAY-FORCE AND PROMISE TESTS (R7RS Section 4.2.5)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6694,6 +6737,61 @@ fn test_syntax_error_raises() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_syntax_error_preserves_message() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error should store the message and args in the error's expr
+    let result = eval.eval_str("(syntax-error \"expected an identifier\" (x . y))");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SyntaxError);
+    // The expr should contain the args list (message + irritants), not be nil
+    assert!(!err.expr.is_nil());
+}
+
+#[test]
+fn test_syntax_error_with_multiple_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error with multiple arguments
+    let result = eval.eval_str("(syntax-error \"bad form\" 1 2 3)");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SyntaxError);
+}
+
+#[test]
+fn test_syntax_error_in_macro() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error used inside a syntax-rules template to report invalid use
+    eval.eval_str(r#"
+        (define-syntax my-let
+          (syntax-rules ()
+            ((my-let ((name val) ...) body ...)
+             ((lambda (name ...) body ...) val ...))
+            ((my-let . other)
+             (syntax-error "invalid let syntax"))))
+    "#).unwrap();
+    // Valid use should work
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(my-let ((x 1) (y 2)) (+ x y))"), 3);
+    // Invalid use should trigger syntax-error
+    let result = eval.eval_str("(my-let bad)");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_syntax_error_no_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    // syntax-error with just a message
+    let result = eval.eval_str("(syntax-error \"oops\")");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SyntaxError);
+}
+
 // ========================================================================
 // Exception Handling Tests (R7RS §6.11)
 // ========================================================================
@@ -8269,280 +8367,5 @@ fn test_square_with_floats() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(square 5)"), 25);
 }
 
-// ============================================================================
-// Rational Number Tests
-// ============================================================================
 
-#[test]
-fn test_rational_construction() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Basic construction and auto-reduction
-    assert!(eval_is_true(&lisp, &mut eval, "(rational? (make-rat 3 4))"));
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (make-rat 3 4))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (make-rat 3 4))"), 4);
-    
-    // Auto-reduction to lowest terms
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (make-rat 6 8))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (make-rat 6 8))"), 4);
-    
-    // Sign normalization: negative sign on numerator only
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (make-rat 3 -4))"), -3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (make-rat 3 -4))"), 4);
-    
-    // Whole number
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (make-rat 5 1))"), 5);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (make-rat 5 1))"), 1);
-}
-
-#[test]
-fn test_rational_macro() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // (rat n / d) syntax
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (rat 3 / 4))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (rat 3 / 4))"), 4);
-    
-    // (rat n) syntax — integer as rational
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-numer (rat 5))"), 5);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(rat-denom (rat 5))"), 1);
-}
-
-#[test]
-fn test_rational_arithmetic() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // 3/4 + 2/3 = 17/12
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat+ (rat 3 / 4) (rat 2 / 3))) "17/12")"#));
-    
-    // 3/4 - 2/3 = 1/12
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat- (rat 3 / 4) (rat 2 / 3))) "1/12")"#));
-    
-    // 3/4 * 2/3 = 1/2
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat* (rat 3 / 4) (rat 2 / 3))) "1/2")"#));
-    
-    // 3/4 / 2/3 = 9/8
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat/ (rat 3 / 4) (rat 2 / 3))) "9/8")"#));
-}
-
-#[test]
-fn test_rational_comparison() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Equality: 1/2 = 2/4 (auto-reduced)
-    assert!(eval_is_true(&lisp, &mut eval, "(rat= (rat 1 / 2) (rat 2 / 4))"));
-    
-    // Inequality
-    assert!(eval_is_false(&lisp, &mut eval, "(rat= (rat 1 / 2) (rat 1 / 3))"));
-    
-    // Less than: 1/3 < 1/2
-    assert!(eval_is_true(&lisp, &mut eval, "(rat< (rat 1 / 3) (rat 1 / 2))"));
-    
-    // Not less than: 1/2 < 1/3 => false
-    assert!(eval_is_false(&lisp, &mut eval, "(rat< (rat 1 / 2) (rat 1 / 3))"));
-}
-
-#[test]
-fn test_rational_conversion() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // rat->string: fraction
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat 3 / 4)) "3/4")"#));
-    
-    // rat->string: whole number displays without denominator
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat 5)) "5")"#));
-    
-    // rat->float: 3/4 = 0.75
-    let result = eval.eval_str("(rat->float (rat 3 / 4))").unwrap();
-    match lisp.get(result).unwrap() {
-        Value::Float(f) => assert!((f - 0.75).abs() < 0.001),
-        v => panic!("expected Float for rat->float, got {:?}", v),
-    }
-}
-
-// ============================================================================
-// Complex Number Tests
-// ============================================================================
-
-#[test]
-fn test_complex_construction() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Rectangular form
-    assert!(eval_is_true(&lisp, &mut eval, "(complex? (make-complex-rect 3 4))"));
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-real (make-complex-rect 3 4))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-imag (make-complex-rect 3 4))"), 4);
-}
-
-#[test]
-fn test_complex_macro() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // (cpx re + im i)
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-real (cpx 3 + 4 i))"), 3);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-imag (cpx 3 + 4 i))"), 4);
-    
-    // (cpx re - im i)
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-real (cpx 1 - 2 i))"), 1);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-imag (cpx 1 - 2 i))"), -2);
-    
-    // (cpx re) — real-only
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-real (cpx 5))"), 5);
-    assert_eq!(eval_to_num(&lisp, &mut eval, "(complex-imag (cpx 5))"), 0);
-}
-
-#[test]
-fn test_complex_arithmetic() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // (3+4i) + (1-2i) = 4+2i
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (complex->string (complex+ (cpx 3 + 4 i) (cpx 1 - 2 i))) "4+2i")"#));
-    
-    // (3+4i) - (1-2i) = 2+6i
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (complex->string (complex- (cpx 3 + 4 i) (cpx 1 - 2 i))) "2+6i")"#));
-    
-    // (3+4i) * (1-2i) = 3 - 6i + 4i - 8i² = 3 - 2i + 8 = 11 - 2i
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (complex->string (complex* (cpx 3 + 4 i) (cpx 1 - 2 i))) "11-2i")"#));
-    
-    // complex= 
-    assert!(eval_is_true(&lisp, &mut eval, "(complex= (cpx 3 + 4 i) (cpx 3 + 4 i))"));
-    assert!(eval_is_false(&lisp, &mut eval, "(complex= (cpx 3 + 4 i) (cpx 1 + 2 i))"));
-}
-
-#[test]
-fn test_complex_conjugate() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Conjugate of 3+4i is 3-4i
-    assert!(eval_is_true(&lisp, &mut eval,
-        r#"(equal? (complex->string (complex-conjugate (cpx 3 + 4 i))) "3-4i")"#));
-}
-
-#[test]
-fn test_complex_magnitude() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // |3+4i| = 5
-    let result = eval.eval_str("(complex-mag (cpx 3 + 4 i))").unwrap();
-    match lisp.get(result).unwrap() {
-        Value::Float(f) => assert!((f - 5.0).abs() < 0.01),
-        Value::Number(n) => assert_eq!(n, 5),
-        v => panic!("expected number for complex-mag, got {:?}", v),
-    }
-}
-
-#[test]
-fn test_complex_to_string() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Real only
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (complex->string (cpx 5)) "5")"#));
-    
-    // Positive imaginary
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (complex->string (cpx 3 + 4 i)) "3+4i")"#));
-    
-    // Negative imaginary
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (complex->string (cpx 3 - 4 i)) "3-4i")"#));
-}
-
-// ============================================================================
-// Rational-Complex Number Tests
-// ============================================================================
-
-#[test]
-fn test_rat_complex_construction() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Construction and predicate
-    assert!(eval_is_true(&lisp, &mut eval, 
-        "(rat-complex? (make-rat-complex (make-rat 1 3) (make-rat 2 5)))"));
-    
-    // Access real part
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat-complex-real (make-rat-complex (make-rat 1 3) (make-rat 2 5)))) "1/3")"#));
-    
-    // Access imaginary part
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat-complex-imag (make-rat-complex (make-rat 1 3) (make-rat 2 5)))) "2/5")"#));
-}
-
-#[test]
-fn test_rat_complex_macro() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // (rat-cpx (1 / 3) + (2 / 5) i)
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat-complex-real (rat-cpx (1 / 3) + (2 / 5) i))) "1/3")"#));
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat-complex-imag (rat-cpx (1 / 3) + (2 / 5) i))) "2/5")"#));
-    
-    // (rat-cpx (1 / 3)) — real only
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat-complex-real (rat-cpx (1 / 3)))) "1/3")"#));
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat->string (rat-complex-imag (rat-cpx (1 / 3)))) "0")"#));
-}
-
-#[test]
-fn test_rat_complex_arithmetic() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // (1/3 + 2/5 i) + (1/6 + 1/5 i) = 1/2 + 3/5 i
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat-complex->string (rat-complex+ (rat-cpx (1 / 3) + (2 / 5) i) (rat-cpx (1 / 6) + (1 / 5) i))) "1/2+3/5i")"#));
-    
-    // Subtraction: (1/2 + 3/5 i) - (1/6 + 1/5 i) = 1/3 + 2/5 i
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat-complex->string (rat-complex- (rat-cpx (1 / 2) + (3 / 5) i) (rat-cpx (1 / 6) + (1 / 5) i))) "1/3+2/5i")"#));
-}
-
-#[test]
-fn test_rat_complex_multiplication() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // (1/2 + 0i) * (1/3 + 0i) = 1/6 + 0i
-    assert!(eval_is_true(&lisp, &mut eval, 
-        r#"(equal? (rat-complex->string (rat-complex* (rat-cpx (1 / 2)) (rat-cpx (1 / 3)))) "1/6")"#));
-}
-
-#[test]
-fn test_rat_complex_equality() {
-    let lisp: Lisp<80000> = Lisp::new();
-    let mut eval = Evaluator::new(&lisp).unwrap();
-    
-    // Equal values
-    assert!(eval_is_true(&lisp, &mut eval, 
-        "(rat-complex= (rat-cpx (1 / 3) + (2 / 5) i) (rat-cpx (1 / 3) + (2 / 5) i))"));
-    
-    // Unequal values
-    assert!(eval_is_false(&lisp, &mut eval, 
-        "(rat-complex= (rat-cpx (1 / 3) + (2 / 5) i) (rat-cpx (1 / 2) + (2 / 5) i))"));
-}
 

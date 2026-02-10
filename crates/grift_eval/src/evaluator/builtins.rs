@@ -91,6 +91,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if matches!(builtin, Builtin::VectorForEach) {
             return self.apply_vector_for_each(args, call_expr);
         }
+
+        // call-with-input-file / call-with-output-file — open port, apply proc, close port
+        if matches!(builtin, Builtin::CallWithInputFile | Builtin::CallWithOutputFile) {
+            return self.apply_call_with_file(builtin, args, call_expr);
+        }
+
+        // call-with-port — apply proc to port, close port when done
+        if matches!(builtin, Builtin::CallWithPort) {
+            return self.apply_call_with_port(args, call_expr);
+        }
+
+        // with-input-from-file / with-output-to-file — redirect current port, call thunk, restore
+        if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
+            return self.apply_with_file(builtin, args, call_expr);
+        }
         
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
@@ -135,11 +150,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Some(io) => {
                 let content = match io.read_file(&path) {
                     Ok(s) => s,
-                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    Err(_) => return Err(self.make_error(ErrorKind::FileError, call_expr)),
                 };
                 grift_parser::parse_all(self.lisp, content)?
             }
-            None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
 
         // Evaluate each expression sequentially at the top level.
@@ -210,6 +225,126 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (call-with-input-file string proc) and (call-with-output-file string proc).
+    /// Opens the file, pushes a CallWithPortClose continuation, and applies proc to the port.
+    fn apply_call_with_file(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let filename_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let proc = self.lisp.car(rest)?;
+        let path = self.extract_string_arg(filename_val, call_expr)?;
+
+        let pid = match &mut self.io {
+            Some(io) => {
+                if matches!(builtin, Builtin::CallWithInputFile) {
+                    io.open_input_file(&path)
+                } else {
+                    io.open_output_file(&path)
+                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
+            }
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
+        };
+
+        let port_val = self.lisp.port(pid)?;
+        let port_id_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push continuation to close the port after proc returns
+        self.cont(ContType::CallWithPortClose, EnvRef(env)).data1(port_id_enc)?;
+
+        // Build args list: (port)
+        let nil = self.lisp.nil()?;
+        let args_list = self.lisp.cons(port_val, nil)?;
+
+        // Apply proc to the port
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (call-with-port port proc).
+    /// Calls proc with port as argument, closes port when proc returns.
+    fn apply_call_with_port(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let port_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let proc = self.lisp.car(rest)?;
+
+        // Validate that the first arg is a port
+        let pid = match self.lisp.get(port_val)? {
+            Value::Port(pid) => pid,
+            v => return Err(self.type_error(call_expr, "port", v.type_name())),
+        };
+
+        let port_id_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push continuation to close the port after proc returns
+        self.cont(ContType::CallWithPortClose, EnvRef(env)).data1(port_id_enc)?;
+
+        // Build args list: (port)
+        let nil = self.lisp.nil()?;
+        let args_list = self.lisp.cons(port_val, nil)?;
+
+        // Apply proc to the port
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// Implement (with-input-from-file string thunk) and (with-output-to-file string thunk).
+    /// Opens the file, redirects the current port, calls the thunk, restores and closes.
+    fn apply_with_file(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let filename_val = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let thunk = self.lisp.car(rest)?;
+        let path = self.extract_string_arg(filename_val, call_expr)?;
+
+        let is_input = matches!(builtin, Builtin::WithInputFromFile);
+        let pid = match &mut self.io {
+            Some(io) => {
+                if is_input {
+                    io.open_input_file(&path)
+                } else {
+                    io.open_output_file(&path)
+                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
+            }
+            None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
+        };
+
+        let saved_port = if is_input {
+            self.current_input_port
+        } else {
+            self.current_output_port
+        };
+
+        // Redirect current port
+        if is_input {
+            self.current_input_port = pid;
+        } else {
+            self.current_output_port = pid;
+        }
+
+        let saved_enc = self.lisp.number(saved_port.0 as isize)?;
+        let file_enc = self.lisp.number(pid.0 as isize)?;
+        let env = self.global_env.0;
+
+        // Push restore continuation
+        let cont_type = if is_input {
+            ContType::WithInputFromFileRestore
+        } else {
+            ContType::WithOutputToFileRestore
+        };
+        self.cont(cont_type, EnvRef(env)).data2(saved_enc, file_enc)?;
+
+        // Call thunk with no args
+        let nil = self.lisp.nil()?;
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(nil, env, call_expr)?;
+        Ok(TrampolineState::Return { val: thunk })
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -421,6 +556,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(val)? {
                     Value::Number(n) => self.lisp.float(n as fsize).map_err(Into::into),
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Rational { num, denom } => self.lisp.float(num as fsize / denom as fsize).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.complex(real, imag).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -436,6 +573,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             Err(self.type_error(call_expr, "finite number", "infinite or nan"))
                         }
                     }
+                    Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -712,41 +850,45 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::VectorAppend => {
                 // (vector-append vec ...) - concatenate vectors
-                // Maximum total elements across all appended vectors
-                const MAX_TOTAL_ELEMS: usize = 4096;
-                let mut elems: [ArenaIndex; MAX_TOTAL_ELEMS] = [ArenaIndex::default(); MAX_TOTAL_ELEMS];
+                // Pass 1: count total elements and validate all args are vectors
                 let mut total_len = 0;
-                
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
                         Value::Nil => break,
                         Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
                                 Value::Array { .. } => {
-                                    let len = self.lisp.array_len(car)?;
-                                    if total_len + len > MAX_TOTAL_ELEMS {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                    }
-                                    for i in 0..len {
-                                        elems[total_len] = self.lisp.array_get(car, i)?;
-                                        total_len += 1;
-                                    }
+                                    total_len += self.lisp.array_len(car)?;
                                 }
                                 v => return Err(self.type_error(call_expr, "vector", v.type_name())),
                             }
-                            current = cdr;
+                            current = self.lisp.cdr(current)?;
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
                 
+                // Pass 2: create result array and copy elements
                 let placeholder = self.lisp.number(0)?;
                 let result = self.lisp.make_array(total_len, placeholder)?;
-                for (i, &elem) in elems.iter().enumerate().take(total_len) {
-                    self.lisp.array_set(result, i, elem)?;
+                let mut offset = 0;
+                current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let len = self.lisp.array_len(car)?;
+                            for i in 0..len {
+                                self.lisp.array_set(result, offset + i, self.lisp.array_get(car, i)?)?;
+                            }
+                            offset += len;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => break,
+                    }
                 }
                 Ok(result)
             }
@@ -888,22 +1030,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.get_char(self.lisp.car(rest)?, call_expr)?
                 };
                 
-                // Create string of k characters
-                const MAX_MAKE_STRING_LEN: usize = 1024;
-                let len = k as usize;
-                if len > MAX_MAKE_STRING_LEN {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
-                let mut chars = ['\0'; MAX_MAKE_STRING_LEN];
-                chars[..len].fill(fill);
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                // Allocate directly in the arena (no fixed-size stack buffer)
+                self.lisp.make_string(k as usize, fill).map_err(Into::into)
             }
             
             Builtin::String => {
                 // (string char ...) - Create string from characters
-                const MAX_STRING_LEN: usize = 1024;
-                let mut chars = ['\0'; MAX_STRING_LEN];
-                let mut len = 0;
+                // Collect chars into arena cons list (reversed), then build string
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut len: usize = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -911,17 +1047,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
-                            if len >= MAX_STRING_LEN {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                            }
-                            chars[len] = self.get_char(car, call_expr)?;
+                            let c = self.get_char(car, call_expr)?;
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
                             len += 1;
                             current = cdr;
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                let result = self.lisp.make_string(len, '\0')?;
+                let mut cursor = collected;
+                let mut i = len;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    match self.lisp.get(ch)? {
+                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
             }
             
             Builtin::StringLength => {
@@ -1017,10 +1164,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::StringAppend => {
                 // (string-append string ...) - Concatenate strings
-                const MAX_TOTAL_LEN: usize = 4096;
-                let mut chars = ['\0'; MAX_TOTAL_LEN];
-                let mut total_len = 0;
-                
+                // First pass: compute total length
+                let mut total_len: usize = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -1029,21 +1174,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
-                                Value::String { len, data } => {
-                                    if total_len + len > MAX_TOTAL_LEN {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                    }
-                                    for i in 0..len {
-                                        // Characters start at data (no header with inline length)
-                                        let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                                        match self.lisp.get(char_slot)? {
-                                            Value::Char(c) => {
-                                                chars[total_len] = c;
-                                                total_len += 1;
-                                            }
-                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                                        }
-                                    }
+                                Value::String { len, .. } => {
+                                    total_len += len;
                                 }
                                 v => return Err(self.type_error(call_expr, "string", v.type_name())),
                             }
@@ -1053,7 +1185,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 
-                self.lisp.string_from_chars(&chars[..total_len]).map_err(Into::into)
+                // Allocate result string
+                let result = self.lisp.make_string(total_len, '\0')?;
+                
+                // Second pass: copy characters
+                let mut pos = 0;
+                current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            if let Value::String { len, data } = self.lisp.get(car)? {
+                                for i in 0..len {
+                                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                        self.lisp.string_set(result, pos, c)?;
+                                        pos += 1;
+                                    }
+                                }
+                            }
+                            current = cdr;
+                        }
+                        _ => break,
+                    }
+                }
+                
+                Ok(result)
             }
             
             Builtin::StringToList => {
@@ -1367,20 +1526,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::NumberToString => {
-                // (number->string num) - Convert number to string
+                // (number->string num) or (number->string num radix)
                 let arg = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let radix: u32 = if self.lisp.get(rest)?.is_nil() {
+                    10
+                } else {
+                    let r = self.get_int(self.lisp.car(rest)?, call_expr)?;
+                    match r {
+                        2 | 8 | 10 | 16 => r as u32,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                };
                 match self.lisp.get(arg)? {
                     Value::Number(n) => {
-                        // Convert integer to string using stack buffer (no_std compatible)
-                        let mut buf = [0u8; 21]; // enough for i64 including sign
+                        let mut buf = [0u8; 66]; // enough for binary i64 including sign
                         let mut pos = buf.len();
                         let negative = n < 0;
-                        let mut val = if negative { 
-                            // Handle isize::MIN by working with unsigned
-                            n.unsigned_abs()
-                        } else { 
-                            n as usize 
-                        };
+                        let mut val = n.unsigned_abs();
                         
                         if val == 0 {
                             pos -= 1;
@@ -1388,8 +1551,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         } else {
                             while val > 0 {
                                 pos -= 1;
-                                buf[pos] = b'0' + (val % 10) as u8;
-                                val /= 10;
+                                let digit = (val % radix as usize) as u8;
+                                buf[pos] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                                val /= radix as usize;
                             }
                         }
                         
@@ -1399,32 +1563,89 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         
                         let len = buf.len() - pos;
-                        let mut chars = ['\0'; 21];
+                        let mut chars = ['\0'; 66];
                         for i in 0..len {
                             chars[i] = buf[pos + i] as char;
                         }
                         self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
                     }
                     Value::Float(f) => {
-                        // Convert float to string using stack buffer
+                        if radix != 10 {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
                         let mut chars = ['\0'; 32];
                         let len = format_float_to_chars(f, &mut chars);
                         self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                    }
+                    Value::Rational { num, denom } => {
+                        if radix != 10 {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        // Format as "num/denom"
+                        let mut chars = ['\0'; 42];
+                        let mut pos = 0;
+                        // Format numerator
+                        let negative = num < 0;
+                        let mut val = num.unsigned_abs();
+                        let mut digits = [0u8; 20];
+                        let mut dlen = 0;
+                        if val == 0 {
+                            digits[0] = b'0';
+                            dlen = 1;
+                        } else {
+                            while val > 0 {
+                                digits[dlen] = b'0' + (val % 10) as u8;
+                                dlen += 1;
+                                val /= 10;
+                            }
+                        }
+                        if negative {
+                            chars[pos] = '-';
+                            pos += 1;
+                        }
+                        for i in (0..dlen).rev() {
+                            chars[pos] = digits[i] as char;
+                            pos += 1;
+                        }
+                        chars[pos] = '/';
+                        pos += 1;
+                        // Format denominator
+                        let mut val = denom.unsigned_abs();
+                        dlen = 0;
+                        while val > 0 {
+                            digits[dlen] = b'0' + (val % 10) as u8;
+                            dlen += 1;
+                            val /= 10;
+                        }
+                        for i in (0..dlen).rev() {
+                            chars[pos] = digits[i] as char;
+                            pos += 1;
+                        }
+                        self.lisp.string_from_chars(&chars[..pos]).map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
             
             Builtin::StringToNumber => {
-                // (string->number str) - Convert string to number, or #f if invalid
+                // (string->number str) or (string->number str radix)
                 let arg = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let explicit_radix: Option<u32> = if self.lisp.get(rest)?.is_nil() {
+                    None
+                } else {
+                    let r = self.get_int(self.lisp.car(rest)?, call_expr)?;
+                    match r {
+                        2 | 8 | 10 | 16 => Some(r as u32),
+                        _ => return self.lisp.false_val().map_err(Into::into),
+                    }
+                };
                 match self.lisp.get(arg)? {
                     Value::String { len, data } => {
                         if len == 0 {
                             return self.lisp.false_val().map_err(Into::into);
                         }
-                        // Read chars into stack buffer
-                        let mut buf = [0u8; 32];
+                        let mut buf = [0u8; 66];
                         if len > buf.len() {
                             return self.lisp.false_val().map_err(Into::into);
                         }
@@ -1440,7 +1661,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 _ => return self.lisp.false_val().map_err(Into::into),
                             }
                         }
-                        // Parse the number - try integer first, then float
                         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
                         
                         // Check for special float constants
@@ -1451,15 +1671,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             _ => {}
                         }
                         
-                        // Try integer parse first
-                        if let Ok(n) = s.parse::<isize>() {
-                            return self.lisp.number(n).map_err(Into::into);
+                        // Detect prefix notation: #b, #o, #d, #x
+                        let (num_str, radix) = if s.len() >= 2 && s.as_bytes()[0] == b'#' {
+                            let prefix_radix = match s.as_bytes()[1] {
+                                b'b' | b'B' => Some(2u32),
+                                b'o' | b'O' => Some(8u32),
+                                b'd' | b'D' => Some(10u32),
+                                b'x' | b'X' => Some(16u32),
+                                _ => None,
+                            };
+                            match prefix_radix {
+                                Some(r) => (&s[2..], r),
+                                None => return self.lisp.false_val().map_err(Into::into),
+                            }
+                        } else {
+                            (s, explicit_radix.unwrap_or(10))
+                        };
+                        
+                        if num_str.is_empty() {
+                            return self.lisp.false_val().map_err(Into::into);
                         }
-                        // Try float parse
-                        if let Some(f) = parse_float_no_std(s) {
-                            return self.lisp.float(f).map_err(Into::into);
+                        
+                        if radix == 10 {
+                            // Try integer parse first, then float
+                            if let Ok(n) = num_str.parse::<isize>() {
+                                return self.lisp.number(n).map_err(Into::into);
+                            }
+                            if let Some(f) = parse_float_no_std(num_str) {
+                                return self.lisp.float(f).map_err(Into::into);
+                            }
+                            self.lisp.false_val().map_err(Into::into)
+                        } else {
+                            // Non-decimal radix: parse integer only
+                            match parse_int_radix(num_str, radix) {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.false_val().map_err(Into::into),
+                            }
                         }
-                        self.lisp.false_val().map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
@@ -1481,8 +1729,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::CurrentInputPort | Builtin::CurrentOutputPort | Builtin::CurrentErrorPort => {
                 let pid = match builtin {
-                    Builtin::CurrentInputPort => grift_parser::PortId::STDIN,
-                    Builtin::CurrentOutputPort => grift_parser::PortId::STDOUT,
+                    Builtin::CurrentInputPort => self.current_input_port,
+                    Builtin::CurrentOutputPort => self.current_output_port,
                     _ => grift_parser::PortId::STDERR,
                 };
                 self.lisp.port(pid).map_err(Into::into)
@@ -1541,7 +1789,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDOUT
+                    self.current_output_port
                 } else {
                     let port_arg = self.lisp.car(rest)?;
                     match self.lisp.get(port_arg)? {
@@ -1564,7 +1812,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDOUT
+                    self.current_output_port
                 } else {
                     let port_arg = self.lisp.car(rest)?;
                     match self.lisp.get(port_arg)? {
@@ -1607,24 +1855,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::String { len, data } => {
-                        // Extract string content into stack buffer
-                        let mut buf = [0u8; 1024];
-                        let mut byte_len = 0;
-                        for i in 0..len {
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                            if let Value::Char(c) = self.lisp.get(char_slot)? {
-                                let enc_len = c.len_utf8();
-                                if byte_len + enc_len > buf.len() { break; }
-                                c.encode_utf8(&mut buf[byte_len..]);
-                                byte_len += enc_len;
-                            }
-                        }
-                        let s = core::str::from_utf8(&buf[..byte_len])
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
                         match &mut self.io {
                             Some(io) => {
-                                let pid = io.open_input_string(s)
-                                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                                // Write chars to a temp output string port, then convert
+                                // to an input port. This avoids any fixed-size buffer.
+                                let tmp = match io.open_output_string() {
+                                    Ok(p) => p,
+                                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                                };
+                                for i in 0..len {
+                                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                        if io.write_char(tmp, c).is_err() {
+                                            let _ = io.close_port(tmp);
+                                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                                        }
+                                    }
+                                }
+                                let pid = match io.output_string_to_input_port(tmp) {
+                                    Ok(p) => p,
+                                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                                };
                                 self.lisp.port(pid).map_err(Into::into)
                             }
                             None => Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -1671,8 +1922,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
-                let mut buf = [0u8; 2048];
-                let mut byte_len = 0;
+                // Collect chars into an arena cons list (reversed order)
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut count: usize = 0;
                 let mut got_char = false;
                 loop {
                     match io.read_char(pid) {
@@ -1686,10 +1939,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         Ok(c) => {
                             got_char = true;
-                            let enc_len = c.len_utf8();
-                            if byte_len + enc_len > buf.len() { break; }
-                            c.encode_utf8(&mut buf[byte_len..]);
-                            byte_len += enc_len;
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
+                            count += 1;
                         }
                         Err(grift_parser::IoErrorKind::Eof) => {
                             if !got_char {
@@ -1700,9 +1952,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                     }
                 }
-                let s = core::str::from_utf8(&buf[..byte_len])
-                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                self.lisp.string(s).map_err(Into::into)
+                // Build string from reversed cons list of chars
+                let result = self.lisp.make_string(count, '\0')?;
+                let mut cursor = collected;
+                let mut i = count;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    match self.lisp.get(ch)? {
+                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
             }
 
             Builtin::ReadString => {
@@ -1714,7 +1977,196 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 let rest = self.lisp.cdr(args)?;
                 let pid = if self.lisp.get(rest)?.is_nil() {
-                    grift_parser::PortId::STDIN
+                    self.current_input_port
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                // Collect chars into an arena cons list (reversed order)
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut chars_read: usize = 0;
+                while chars_read < k {
+                    match io.read_char(pid) {
+                        Ok(c) => {
+                            let ch = self.lisp.alloc(Value::Char(c))?;
+                            collected = self.lisp.cons(ch, collected)?;
+                            chars_read += 1;
+                        }
+                        Err(grift_parser::IoErrorKind::Eof) => break,
+                        Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                }
+                if chars_read == 0 {
+                    return self.lisp.eof().map_err(Into::into);
+                }
+                // Build string from reversed cons list of chars
+                let result = self.lisp.make_string(chars_read, '\0')?;
+                let mut cursor = collected;
+                let mut i = chars_read;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    i -= 1;
+                    let ch = self.lisp.car(cursor)?;
+                    match self.lisp.get(ch)? {
+                        Value::Char(c) => self.lisp.string_set(result, i, c)?,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
+            }
+
+            Builtin::TextualPortp => self.port_predicate(args, |io, pid| io.is_textual_port(pid)),
+
+            Builtin::BinaryPortp => self.port_predicate(args, |io, pid| io.is_binary_port(pid)),
+
+            Builtin::InputPortOpenp => self.port_predicate(args, |io, pid| io.is_input_port(pid) && io.is_port_open(pid)),
+
+            Builtin::OutputPortOpenp => self.port_predicate(args, |io, pid| io.is_output_port(pid) && io.is_port_open(pid)),
+
+            // ================================================================
+            // File port operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::OpenInputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_input_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
+                }
+            }
+
+            Builtin::OpenOutputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_output_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
+                }
+            }
+
+            Builtin::OpenBinaryInputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_binary_input_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
+                }
+            }
+
+            Builtin::OpenBinaryOutputFile => {
+                let arg = self.lisp.car(args)?;
+                let path = self.extract_string_arg(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_binary_output_file(&path)
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
+                }
+            }
+
+            // call-with-input-file/output-file and with-input-from-file/output-to-file
+            // and call-with-port are handled in apply_builtin_trampolined
+            Builtin::CallWithInputFile | Builtin::CallWithOutputFile
+            | Builtin::WithInputFromFile | Builtin::WithOutputToFile
+            | Builtin::CallWithPort => {
+                Err(self.make_error(ErrorKind::Generic, call_expr))
+            }
+
+            // ================================================================
+            // Binary I/O operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::ReadU8 | Builtin::PeekU8 => {
+                // (read-u8) or (read-u8 port)
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let result = if matches!(builtin, Builtin::ReadU8) {
+                            io.read_u8(pid)
+                        } else {
+                            io.peek_u8(pid)
+                        };
+                        match result {
+                            Ok(b) => self.lisp.number(b as isize).map_err(Into::into),
+                            Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::U8Readyp => {
+                let pid = self.extract_input_port(args, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        let ready = io.u8_ready(pid).unwrap_or(false);
+                        self.lisp.boolean(ready).map_err(Into::into)
+                    }
+                    None => self.lisp.boolean(false).map_err(Into::into),
+                }
+            }
+
+            Builtin::WriteU8 => {
+                // (write-u8 byte) or (write-u8 byte port)
+                let byte_arg = self.lisp.car(args)?;
+                let byte_val = match self.lisp.get(byte_arg)? {
+                    Value::Number(n) if n >= 0 && n <= 255 => n as u8,
+                    v => return Err(self.type_error(call_expr, "exact integer 0..255", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let pid = if self.lisp.get(rest)?.is_nil() {
+                    self.current_output_port
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                match &mut self.io {
+                    Some(io) => {
+                        io.write_u8(pid, byte_val)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::ReadBytevector => {
+                // (read-bytevector k) or (read-bytevector k port)
+                let k_arg = self.lisp.car(args)?;
+                let k = match self.lisp.get(k_arg)? {
+                    Value::Number(n) if n >= 0 => n as usize,
+                    v => return Err(self.type_error(call_expr, "non-negative integer", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let pid = if self.lisp.get(rest)?.is_nil() {
+                    self.current_input_port
                 } else {
                     let port_arg = self.lisp.car(rest)?;
                     match self.lisp.get(port_arg)? {
@@ -1727,36 +2179,270 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
                 let mut buf = [0u8; 2048];
-                let mut byte_len = 0;
-                let mut chars_read = 0;
-                while chars_read < k {
-                    match io.read_char(pid) {
-                        Ok(c) => {
-                            let enc_len = c.len_utf8();
-                            if byte_len + enc_len > buf.len() { break; }
-                            c.encode_utf8(&mut buf[byte_len..]);
-                            byte_len += enc_len;
-                            chars_read += 1;
+                let read_len = k.min(buf.len());
+                match io.read_bytevector(pid, &mut buf[..read_len]) {
+                    Ok(n) => {
+                        // Create a bytevector from the read bytes
+                        let bv = self.lisp.make_bytevector(n, 0)?;
+                        for i in 0..n {
+                            self.lisp.bytevector_set(bv, i, buf[i])?;
                         }
-                        Err(grift_parser::IoErrorKind::Eof) => break,
-                        Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        Ok(bv)
+                    }
+                    Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                    Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::ReadBytevectorBang => {
+                // (read-bytevector! bv) or (read-bytevector! bv port) or (read-bytevector! bv port start) or (read-bytevector! bv port start end)
+                let bv_arg = self.lisp.car(args)?;
+                let bv_len = match self.lisp.get(bv_arg)? {
+                    Value::Bytevector { len, .. } => len,
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
+                    (self.current_input_port, 0, bv_len)
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    let pid = match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    };
+                    let rest2 = self.lisp.cdr(rest)?;
+                    if self.lisp.get(rest2)?.is_nil() {
+                        (pid, 0, bv_len)
+                    } else {
+                        let start_arg = self.lisp.car(rest2)?;
+                        let start = self.get_int(start_arg, call_expr)? as usize;
+                        let rest3 = self.lisp.cdr(rest2)?;
+                        let end = if self.lisp.get(rest3)?.is_nil() {
+                            bv_len
+                        } else {
+                            let end_arg = self.lisp.car(rest3)?;
+                            self.get_int(end_arg, call_expr)? as usize
+                        };
+                        (pid, start, end)
+                    }
+                };
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                let read_len = end.saturating_sub(start);
+                let mut buf = [0u8; 2048];
+                let actual_len = read_len.min(buf.len());
+                match io.read_bytevector(pid, &mut buf[..actual_len]) {
+                    Ok(n) => {
+                        for i in 0..n {
+                            self.lisp.bytevector_set(bv_arg, start + i, buf[i])?;
+                        }
+                        self.lisp.number(n as isize).map_err(Into::into)
+                    }
+                    Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
+                    Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::WriteBytevector => {
+                // (write-bytevector bv) or (write-bytevector bv port) or (write-bytevector bv port start) or (write-bytevector bv port start end)
+                let bv_arg = self.lisp.car(args)?;
+                let bv_len = match self.lisp.get(bv_arg)? {
+                    Value::Bytevector { len, .. } => len,
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
+                    (self.current_output_port, 0, bv_len)
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    let pid = match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    };
+                    let rest2 = self.lisp.cdr(rest)?;
+                    if self.lisp.get(rest2)?.is_nil() {
+                        (pid, 0, bv_len)
+                    } else {
+                        let start_arg = self.lisp.car(rest2)?;
+                        let start = self.get_int(start_arg, call_expr)? as usize;
+                        let rest3 = self.lisp.cdr(rest2)?;
+                        let end = if self.lisp.get(rest3)?.is_nil() {
+                            bv_len
+                        } else {
+                            let end_arg = self.lisp.car(rest3)?;
+                            self.get_int(end_arg, call_expr)? as usize
+                        };
+                        (pid, start, end)
+                    }
+                };
+                // Extract bytes from bytevector into stack buffer
+                let write_len = end.saturating_sub(start);
+                let mut buf = [0u8; 2048];
+                let actual_len = write_len.min(buf.len());
+                for i in 0..actual_len {
+                    let byte_slot = self.lisp.bytevector_get(bv_arg, start + i)?;
+                    match self.lisp.get(byte_slot)? {
+                        Value::Number(n) => buf[i] = n as u8,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                     }
                 }
-                if chars_read == 0 {
-                    return self.lisp.eof().map_err(Into::into);
+                match &mut self.io {
+                    Some(io) => {
+                        io.write_bytevector(pid, &buf[..actual_len])
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            // ================================================================
+            // Bytevector port operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::OpenInputBytevector => {
+                // (open-input-bytevector bv)
+                let arg = self.lisp.car(args)?;
+                let bv_len = match self.lisp.get(arg)? {
+                    Value::Bytevector { len, .. } => len,
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                };
+                let mut buf = [0u8; 2048];
+                let actual_len = bv_len.min(buf.len());
+                for i in 0..actual_len {
+                    let byte_slot = self.lisp.bytevector_get(arg, i)?;
+                    match self.lisp.get(byte_slot)? {
+                        Value::Number(n) => buf[i] = n as u8,
+                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    }
+                }
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_input_bytevector(&buf[..actual_len])
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::OpenOutputBytevector => {
+                // (open-output-bytevector)
+                match &mut self.io {
+                    Some(io) => {
+                        let pid = io.open_output_bytevector()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.port(pid).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::GetOutputBytevector => {
+                // (get-output-bytevector port)
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Port(pid) => {
+                        match &self.io {
+                            Some(io) => {
+                                let bytes = io.get_output_bytevector(pid)
+                                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                                let len = bytes.len();
+                                let bv = self.lisp.make_bytevector(len, 0)?;
+                                for i in 0..len {
+                                    self.lisp.bytevector_set(bv, i, bytes[i])?;
+                                }
+                                Ok(bv)
+                            }
+                            None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "port", v.type_name())),
+                }
+            }
+
+            // ================================================================
+            // Additional I/O operations (R7RS §6.13.2)
+            // ================================================================
+
+            Builtin::WriteStringPort => {
+                // (write-string string) or (write-string string port) or (write-string string port start) or (write-string string port start end)
+                let str_arg = self.lisp.car(args)?;
+                let (str_len, str_data) = match self.lisp.get(str_arg)? {
+                    Value::String { len, data } => (len, data),
+                    v => return Err(self.type_error(call_expr, "string", v.type_name())),
+                };
+                let rest = self.lisp.cdr(args)?;
+                let (pid, start, end) = if self.lisp.get(rest)?.is_nil() {
+                    (self.current_output_port, 0, str_len)
+                } else {
+                    let port_arg = self.lisp.car(rest)?;
+                    let pid = match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    };
+                    let rest2 = self.lisp.cdr(rest)?;
+                    if self.lisp.get(rest2)?.is_nil() {
+                        (pid, 0, str_len)
+                    } else {
+                        let start_arg = self.lisp.car(rest2)?;
+                        let start = self.get_int(start_arg, call_expr)? as usize;
+                        let rest3 = self.lisp.cdr(rest2)?;
+                        let end = if self.lisp.get(rest3)?.is_nil() {
+                            str_len
+                        } else {
+                            let end_arg = self.lisp.car(rest3)?;
+                            self.get_int(end_arg, call_expr)? as usize
+                        };
+                        (pid, start, end)
+                    }
+                };
+                // Extract chars from string to stack buffer
+                let mut buf = [0u8; 2048];
+                let mut byte_len = 0;
+                for i in start..end {
+                    let char_slot = self.lisp.arena_index_at_offset(str_data, i)?;
+                    if let Value::Char(c) = self.lisp.get(char_slot)? {
+                        let enc_len = c.len_utf8();
+                        if byte_len + enc_len > buf.len() { break; }
+                        c.encode_utf8(&mut buf[byte_len..]);
+                        byte_len += enc_len;
+                    }
                 }
                 let s = core::str::from_utf8(&buf[..byte_len])
                     .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                self.lisp.string(s).map_err(Into::into)
+                match &mut self.io {
+                    Some(io) => {
+                        io.write_str(pid, s)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
             }
 
-            Builtin::TextualPortp => self.port_predicate(args, |io, pid| io.is_textual_port(pid)),
-
-            Builtin::BinaryPortp => self.port_predicate(args, |io, pid| io.is_binary_port(pid)),
-
-            Builtin::InputPortOpenp => self.port_predicate(args, |io, pid| io.is_input_port(pid) && io.is_port_open(pid)),
-
-            Builtin::OutputPortOpenp => self.port_predicate(args, |io, pid| io.is_output_port(pid) && io.is_port_open(pid)),
+            Builtin::FlushOutputPort => {
+                // (flush-output-port) or (flush-output-port port)
+                let pid = if self.lisp.get(args)?.is_nil() {
+                    self.current_output_port
+                } else {
+                    let port_arg = self.lisp.car(args)?;
+                    match self.lisp.get(port_arg)? {
+                        Value::Port(pid) => pid,
+                        v => return Err(self.type_error(call_expr, "port", v.type_name())),
+                    }
+                };
+                match &mut self.io {
+                    Some(io) => {
+                        io.flush(pid)
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
 
             // ================================================================
             // File system operations (R7RS §6.13)
@@ -1783,10 +2469,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match &mut self.io {
                     Some(io) => {
                         io.delete_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.void_val().map_err(Into::into)
                     }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
                 }
             }
 
@@ -1880,10 +2566,801 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let env = self.global_env.0;
                 self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
             }
+
+            Builtin::SchemeReportEnvironment => {
+                // (scheme-report-environment version)
+                // Returns an environment corresponding to R^version RS (e.g., R5RS)
+                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if version != 5 && version != 7 {
+                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
+                }
+                // Return the global environment as immutable (read-only snapshot)
+                let env = self.global_env.0;
+                self.lisp.alloc(Value::Environment { env, mutable: false }).map_err(Into::into)
+            }
+
+            Builtin::NullEnvironment => {
+                // (null-environment version)
+                // Returns a minimal environment with only syntax (no procedure bindings)
+                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if version != 5 && version != 7 {
+                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
+                }
+                // Return an empty environment (immutable)
+                let nil = self.lisp.nil()?;
+                self.lisp.alloc(Value::Environment { env: nil, mutable: false }).map_err(Into::into)
+            }
+
+            // ================================================================
+            // Bytevector operations (R7RS §6.9)
+            // ================================================================
+
+            Builtin::Bytevectorp => {
+                // (bytevector? obj) - Check if value is a bytevector
+                builtin_unary_pred!(self, args, |v: Value| v.is_bytevector())
+            }
+
+            Builtin::MakeBytevector => {
+                // (make-bytevector k) or (make-bytevector k byte)
+                let k = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let rest = self.lisp.cdr(args)?;
+                let fill: u8 = if self.lisp.get(rest)?.is_nil() {
+                    0
+                } else {
+                    let byte_val = self.get_int(self.lisp.car(rest)?, call_expr)?;
+                    if !(0..=255).contains(&byte_val) {
+                        return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                    }
+                    byte_val as u8
+                };
+                self.lisp.make_bytevector(k as usize, fill).map_err(Into::into)
+            }
+
+            Builtin::BytevectorLength => {
+                // (bytevector-length bytevector) - Get length
+                let bv = self.lisp.car(args)?;
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let len = self.lisp.bytevector_len(bv)?;
+                        self.lisp.number(len as isize).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorU8Ref => {
+                // (bytevector-u8-ref bytevector k) - Get byte at index
+                extract_args!(self, args, bv, k_idx);
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 {
+                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                        }
+                        let elem = self.lisp.bytevector_get(bv, k as usize)?;
+                        Ok(elem)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorU8Set => {
+                // (bytevector-u8-set! bytevector k byte) - Set byte at index
+                let bv = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let k_idx = self.lisp.car(rest)?;
+                let rest2 = self.lisp.cdr(rest)?;
+                let byte_idx = self.lisp.car(rest2)?;
+
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let k = self.get_int(k_idx, call_expr)?;
+                        if k < 0 {
+                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                        }
+                        let byte_val = self.get_int(byte_idx, call_expr)?;
+                        if !(0..=255).contains(&byte_val) {
+                            return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                        }
+                        self.lisp.bytevector_set(bv, k as usize, byte_val as u8)?;
+                        self.lisp.void_val().map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorCopy => {
+                // (bytevector-copy bytevector [start [end]]) - Copy a bytevector
+                let bv = self.lisp.car(args)?;
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let len = self.lisp.bytevector_len(bv)?;
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        let new_len = end - start;
+                        let result = self.lisp.make_bytevector(new_len, 0)?;
+
+                        for i in 0..new_len {
+                            let elem = self.lisp.bytevector_get(bv, start + i)?;
+                            let byte = match self.lisp.get(elem)? {
+                                Value::Number(n) => n as u8,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            };
+                            self.lisp.bytevector_set(result, i, byte)?;
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::BytevectorAppend => {
+                // (bytevector-append bytevector ...) - Concatenate bytevectors
+                const MAX_TOTAL_BYTES: usize = 4096;
+                let mut bytes: [u8; MAX_TOTAL_BYTES] = [0u8; MAX_TOTAL_BYTES];
+                let mut total_len = 0;
+
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            match self.lisp.get(car)? {
+                                Value::Bytevector { .. } => {
+                                    let len = self.lisp.bytevector_len(car)?;
+                                    if total_len + len > MAX_TOTAL_BYTES {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    for i in 0..len {
+                                        let elem = self.lisp.bytevector_get(car, i)?;
+                                        match self.lisp.get(elem)? {
+                                            Value::Number(n) => {
+                                                bytes[total_len] = n as u8;
+                                                total_len += 1;
+                                            }
+                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                                        }
+                                    }
+                                }
+                                v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                            }
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+
+                let result = self.lisp.make_bytevector(total_len, 0)?;
+                for (i, &b) in bytes.iter().enumerate().take(total_len) {
+                    self.lisp.bytevector_set(result, i, b)?;
+                }
+                Ok(result)
+            }
+
+            Builtin::Bytevector_ => {
+                // (bytevector byte ...) - Create bytevector from given byte values
+                // Stack-allocated buffer limit, matching bytevector-append's MAX_TOTAL_BYTES
+                const MAX_BYTES: usize = 4096;
+                let mut bytes: [u8; MAX_BYTES] = [0u8; MAX_BYTES];
+                let mut len = 0;
+
+                let mut current = args;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            let car = self.lisp.car(current)?;
+                            let cdr = self.lisp.cdr(current)?;
+                            let byte_val = self.get_int(car, call_expr)?;
+                            if !(0..=255).contains(&byte_val) {
+                                return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                            }
+                            if len >= MAX_BYTES {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                            bytes[len] = byte_val as u8;
+                            len += 1;
+                            current = cdr;
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                }
+
+                let result = self.lisp.make_bytevector(len, 0)?;
+                for (i, &b) in bytes.iter().enumerate().take(len) {
+                    self.lisp.bytevector_set(result, i, b)?;
+                }
+                Ok(result)
+            }
+
+            Builtin::BytevectorCopyBang => {
+                // (bytevector-copy! to at from [start [end]])
+                let to = self.lisp.car(args)?;
+                let rest1 = self.lisp.cdr(args)?;
+                let at_val = self.lisp.car(rest1)?;
+                let rest2 = self.lisp.cdr(rest1)?;
+                let from = self.lisp.car(rest2)?;
+                let rest3 = self.lisp.cdr(rest2)?;
+
+                // Validate types
+                match self.lisp.get(to)? {
+                    Value::Bytevector { .. } => {}
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+                match self.lisp.get(from)? {
+                    Value::Bytevector { .. } => {}
+                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+
+                let at = self.get_int(at_val, call_expr)?;
+                if at < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let at = at as usize;
+
+                let from_len = self.lisp.bytevector_len(from)?;
+                let to_len = self.lisp.bytevector_len(to)?;
+                let (start, end) = self.parse_range_args(rest3, from_len, call_expr)?;
+
+                let copy_len = end - start;
+                if at + copy_len > to_len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+
+                // Copy bytes from `from[start..end]` to `to[at..at+copy_len]`
+                for i in 0..copy_len {
+                    let elem = self.lisp.bytevector_get(from, start + i)?;
+                    let byte = match self.lisp.get(elem)? {
+                        Value::Number(n) => n as u8,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    self.lisp.bytevector_set(to, at + i, byte)?;
+                }
+                self.lisp.void_val().map_err(Into::into)
+            }
+
+            Builtin::Utf8ToString => {
+                // (utf8->string bytevector [start [end]]) - Decode UTF-8 bytevector to string
+                let bv = self.lisp.car(args)?;
+                match self.lisp.get(bv)? {
+                    Value::Bytevector { .. } => {
+                        let len = self.lisp.bytevector_len(bv)?;
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        let sub_len = end - start;
+                        const MAX_BUF: usize = 4096;
+                        if sub_len > MAX_BUF {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let mut buf = [0u8; MAX_BUF];
+                        for i in 0..sub_len {
+                            let elem = self.lisp.bytevector_get(bv, start + i)?;
+                            match self.lisp.get(elem)? {
+                                Value::Number(n) => buf[i] = n as u8,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        let s = core::str::from_utf8(&buf[..sub_len])
+                            .map_err(|_| self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"))?;
+                        self.lisp.string(s).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                }
+            }
+
+            Builtin::StringToUtf8 => {
+                // (string->utf8 string [start [end]]) - Encode string as UTF-8 bytevector
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        // Collect UTF-8 bytes from the character range
+                        const MAX_BUF: usize = 4096;
+                        let mut buf = [0u8; MAX_BUF];
+                        let mut byte_len = 0;
+                        for i in start..end {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => {
+                                    let mut tmp = [0u8; 4];
+                                    let encoded = c.encode_utf8(&mut tmp);
+                                    if byte_len + encoded.len() > MAX_BUF {
+                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    }
+                                    buf[byte_len..byte_len + encoded.len()].copy_from_slice(encoded.as_bytes());
+                                    byte_len += encoded.len();
+                                }
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+
+                        let result = self.lisp.make_bytevector(byte_len, 0)?;
+                        for (i, &b) in buf.iter().enumerate().take(byte_len) {
+                            self.lisp.bytevector_set(result, i, b)?;
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+
+            // ============================================================
+            // Time procedures (R7RS §6.13.3)
+            // ============================================================
+
+            Builtin::CurrentSecond => {
+                // (current-second) - Returns inexact seconds since epoch
+                match &self.io {
+                    Some(io) => {
+                        let secs = io.current_second()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        self.lisp.float(secs as fsize).map_err(Into::into)
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::CurrentJiffy => {
+                // (current-jiffy) - Returns exact integer jiffies
+                match &self.io {
+                    Some(io) => {
+                        let jiffies = io.current_jiffy()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        match isize::try_from(jiffies) {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.float(jiffies as fsize).map_err(Into::into),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            Builtin::JiffiesPerSecond => {
+                // (jiffies-per-second) - Returns exact integer
+                match &self.io {
+                    Some(io) => {
+                        let jps = io.jiffies_per_second()
+                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                        match isize::try_from(jps) {
+                            Ok(n) => self.lisp.number(n).map_err(Into::into),
+                            Err(_) => self.lisp.float(jps as fsize).map_err(Into::into),
+                        }
+                    }
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+            }
+
+            // ============================================================
+            // Error predicates (R7RS §6.11)
+            // ============================================================
+
+            Builtin::ReadErrorP => {
+                // (read-error? obj) - Returns #t if obj is a read error
+                let arg = self.lisp.car(args)?;
+                let is_read_error = match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        let err_type = self.lisp.cdr(irritants_and_type)?;
+                        self.lisp.symbol_matches(err_type, "read-error").unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(is_read_error).map_err(Into::into)
+            }
+
+            Builtin::FileErrorP => {
+                // (file-error? obj) - Returns #t if obj is a file error
+                let arg = self.lisp.car(args)?;
+                let is_file_error = match self.lisp.get(arg)? {
+                    Value::ErrorObject { irritants_and_type, .. } => {
+                        let err_type = self.lisp.cdr(irritants_and_type)?;
+                        self.lisp.symbol_matches(err_type, "file-error").unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                self.lisp.boolean(is_file_error).map_err(Into::into)
+            }
+
+            // ============================================================
+            // Vector-String conversion (R7RS §6.8)
+            // ============================================================
+
+            Builtin::VectorToString => {
+                // (vector->string vector [start [end]])
+                let vec_idx = self.lisp.car(args)?;
+                match self.lisp.get(vec_idx)? {
+                    Value::Array { len, data } => {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        const MAX_LEN: usize = 1024;
+                        let count = end - start;
+                        if count > MAX_LEN {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
+                        let mut chars = ['\0'; MAX_LEN];
+                        for i in 0..count {
+                            let slot = self.lisp.arena_index_at_offset(data, start + i)?;
+                            match self.lisp.get(slot)? {
+                                Value::Char(c) => chars[i] = c,
+                                _ => return Err(self.type_error(call_expr, "character", self.lisp.get(slot)?.type_name())),
+                            }
+                        }
+                        self.lisp.string_from_chars(&chars[..count]).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "vector", v.type_name())),
+                }
+            }
+
+            Builtin::StringToVector => {
+                // (string->vector string [start [end]])
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+
+                        let count = end - start;
+                        // Create a vector and fill with characters
+                        let default = self.lisp.char('\0')?;
+                        let result = self.lisp.make_array(count, default)?;
+                        for i in 0..count {
+                            let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
+                            let ch = self.lisp.get(char_slot)?;
+                            match ch {
+                                Value::Char(c) => {
+                                    let char_val = self.lisp.char(c)?;
+                                    self.lisp.array_set(result, i, char_val)?;
+                                }
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+
+            // ================================================================
+            // Transcendental functions (R7RS §6.2.6) — powered by libm
+            // ================================================================
+
+            Builtin::Exp => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::exp(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Log => {
+                let z = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    self.lisp.float(libm::log(z as f64) as fsize).map_err(Into::into)
+                } else {
+                    let base = self.get_num_as_fsize(self.lisp.car(rest)?, call_expr)?;
+                    let result = libm::log(z as f64) / libm::log(base as f64);
+                    self.lisp.float(result as fsize).map_err(Into::into)
+                }
+            }
+
+            Builtin::Sin => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::sin(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Cos => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::cos(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Tan => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::tan(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Asin => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::asin(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Acos => {
+                let f = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                self.lisp.float(libm::acos(f as f64) as fsize).map_err(Into::into)
+            }
+
+            Builtin::Atan => {
+                let y = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    self.lisp.float(libm::atan(y as f64) as fsize).map_err(Into::into)
+                } else {
+                    let x = self.get_num_as_fsize(self.lisp.car(rest)?, call_expr)?;
+                    self.lisp.float(libm::atan2(y as f64, x as f64) as fsize).map_err(Into::into)
+                }
+            }
+
+            // ================================================================
+            // Division procedures (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::FloorQuotient => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::floor((n as f64) / (d as f64));
+                self.return_exact_if_both_exact(args, q as fsize, call_expr)
+            }
+
+            Builtin::FloorRemainder => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::floor((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                self.return_exact_if_both_exact(args, r as fsize, call_expr)
+            }
+
+            Builtin::FloorDiv => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::floor((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                let qv = self.return_exact_if_both_exact(args, q as fsize, call_expr)?;
+                let rv = self.return_exact_if_both_exact(args, r as fsize, call_expr)?;
+                let nil = self.lisp.nil()?;
+                let tail = self.lisp.cons(rv, nil)?;
+                self.lisp.cons(qv, tail).map_err(Into::into)
+            }
+
+            Builtin::TruncateQuotient => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::trunc((n as f64) / (d as f64));
+                self.return_exact_if_both_exact(args, q as fsize, call_expr)
+            }
+
+            Builtin::TruncateRemainder => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::trunc((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                self.return_exact_if_both_exact(args, r as fsize, call_expr)
+            }
+
+            Builtin::TruncateDiv => {
+                let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if d == 0.0 {
+                    return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                }
+                let q = libm::trunc((n as f64) / (d as f64));
+                let r = n as f64 - d as f64 * q;
+                let qv = self.return_exact_if_both_exact(args, q as fsize, call_expr)?;
+                let rv = self.return_exact_if_both_exact(args, r as fsize, call_expr)?;
+                let nil = self.lisp.nil()?;
+                let tail = self.lisp.cons(rv, nil)?;
+                self.lisp.cons(qv, tail).map_err(Into::into)
+            }
+
+            // ================================================================
+            // Rational number operations (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::Numerator => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => self.lisp.number(n).map_err(Into::into),
+                    Value::Float(f) => {
+                        if !f.is_finite() {
+                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
+                        }
+                        let (num, _den) = float_to_rational(f as f64);
+                        self.lisp.float(num as fsize).map_err(Into::into)
+                    }
+                    Value::Rational { num, .. } => self.lisp.number(num).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Denominator => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) => self.lisp.number(1).map_err(Into::into),
+                    Value::Float(f) => {
+                        if !f.is_finite() {
+                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
+                        }
+                        let (_num, den) = float_to_rational(f as f64);
+                        self.lisp.float(den as fsize).map_err(Into::into)
+                    }
+                    Value::Rational { denom, .. } => self.lisp.number(denom).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Rationalize => {
+                let x = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let tol = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let (num, den) = rationalize_impl(x as f64, libm::fabs(tol as f64));
+                if den == 1.0 {
+                    let both_exact = matches!(self.lisp.get(self.lisp.car(args)?)?, Value::Number(_));
+                    if both_exact {
+                        self.lisp.number(num as isize).map_err(Into::into)
+                    } else {
+                        self.lisp.float(num as fsize).map_err(Into::into)
+                    }
+                } else {
+                    self.lisp.float((num / den) as fsize).map_err(Into::into)
+                }
+            }
+
+            // ================================================================
+            // Exact integer square root (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::ExactIntegerSqrt => {
+                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
+                if n < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                }
+                let n_u = n as usize;
+                let s = isqrt(n_u);
+                let r = n_u - s * s;
+                let sv = self.lisp.number(s as isize)?;
+                let rv = self.lisp.number(r as isize)?;
+                let nil = self.lisp.nil()?;
+                let tail = self.lisp.cons(rv, nil)?;
+                self.lisp.cons(sv, tail).map_err(Into::into)
+            }
+
+            // ================================================================
+            // Complex number operations (R7RS §6.2.6)
+            // ================================================================
+
+            Builtin::MakeRectangular => {
+                let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                if b == 0.0 {
+                    return self.lisp.float(a).map_err(Into::into);
+                }
+                self.lisp.complex(a, b).map_err(Into::into)
+            }
+
+            Builtin::MakePolar => {
+                let r = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let theta = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+                let a = (r as f64) * libm::cos(theta as f64);
+                let b = (r as f64) * libm::sin(theta as f64);
+                if libm::fabs(b) < f64::EPSILON {
+                    return self.lisp.float(a as fsize).map_err(Into::into);
+                }
+                self.lisp.complex(a as fsize, b as fsize).map_err(Into::into)
+            }
+
+            Builtin::RealPart => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => self.lisp.number(n).map_err(Into::into),
+                    Value::Float(f) => self.lisp.float(f).map_err(Into::into),
+                    Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
+                    Value::Complex { real, .. } => self.lisp.float(real).map_err(Into::into),
+                    Value::Cons { .. } => {
+                        // Check if tagged complex: (complex rect re im)
+                        if self.is_complex_tagged(arg)? {
+                            let cdr1 = self.lisp.cdr(arg)?; // (rect re im)
+                            let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+                            self.lisp.car(cdr2).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::ImagPart => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Float(_) | Value::Rational { .. } => self.lisp.number(0).map_err(Into::into),
+                    Value::Complex { imag, .. } => self.lisp.float(imag).map_err(Into::into),
+                    Value::Cons { .. } => {
+                        if self.is_complex_tagged(arg)? {
+                            let cdr1 = self.lisp.cdr(arg)?; // (rect re im)
+                            let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+                            let cdr3 = self.lisp.cdr(cdr2)?; // (im)
+                            self.lisp.car(cdr3).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Magnitude => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => {
+                        let abs_n = if n < 0 { -n } else { n };
+                        self.lisp.number(abs_n).map_err(Into::into)
+                    }
+                    Value::Float(f) => self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into),
+                    Value::Rational { num, denom } => {
+                        let f = num as fsize / denom as fsize;
+                        self.lisp.float(libm::fabs(f as f64) as fsize).map_err(Into::into)
+                    }
+                    Value::Complex { real, imag } => {
+                        let mag = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
+                        self.lisp.float(mag as fsize).map_err(Into::into)
+                    }
+                    Value::Cons { .. } => {
+                        if self.is_complex_tagged(arg)? {
+                            let re = self.complex_real_f(arg, call_expr)?;
+                            let im = self.complex_imag_f(arg, call_expr)?;
+                            let mag = libm::sqrt(re * re + im * im);
+                            self.lisp.float(mag as fsize).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
+
+            Builtin::Angle => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(n) => {
+                        if n >= 0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Float(f) => {
+                        if f >= 0.0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Rational { num, .. } => {
+                        if num >= 0 { self.lisp.float(0.0).map_err(Into::into) }
+                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                    }
+                    Value::Complex { real, imag } => {
+                        let angle = libm::atan2(imag as f64, real as f64);
+                        self.lisp.float(angle as fsize).map_err(Into::into)
+                    }
+                    Value::Cons { .. } => {
+                        if self.is_complex_tagged(arg)? {
+                            let re = self.complex_real_f(arg, call_expr)?;
+                            let im = self.complex_imag_f(arg, call_expr)?;
+                            let angle = libm::atan2(im, re);
+                            self.lisp.float(angle as fsize).map_err(Into::into)
+                        } else {
+                            Err(self.type_error(call_expr, "number", "pair"))
+                        }
+                    }
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
         }
     }
-    
-    /// OPTIMIZED: Apply binary builtin directly without list allocation
     pub(super) fn apply_binary_builtin(&mut self, builtin: Builtin, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex) 
         -> EvalResult 
     {
@@ -1950,6 +3427,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(idx)? {
             Value::Number(n) => Ok(n as fsize),
             Value::Float(f) => Ok(f),
+            Value::Rational { num, denom } => Ok(num as fsize / denom as fsize),
+            Value::Complex { .. } => Err(self.type_error(call_expr, "real number", "complex")),
             v => Err(self.type_error(call_expr, "number", v.type_name())),
         }
     }
@@ -1962,6 +3441,52 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
+    /// Check if a value is a tagged complex number: (complex rect re im)
+    fn is_complex_tagged(&self, idx: ArenaIndex) -> Result<bool, EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Cons { .. } => {
+                let car = self.lisp.car(idx)?;
+                if let Value::Symbol(_) = self.lisp.get(car)? {
+                    self.lisp.symbol_matches(car, "complex").map_err(Into::into)
+                } else {
+                    Ok(false)
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extract real part of a tagged complex number as f64
+    fn complex_real_f(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<f64, EvalError> {
+        let cdr1 = self.lisp.cdr(idx)?; // (rect re im)
+        let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+        let re_idx = self.lisp.car(cdr2)?;
+        Ok(self.get_num_as_fsize(re_idx, call_expr)? as f64)
+    }
+
+    /// Extract imaginary part of a tagged complex number as f64
+    fn complex_imag_f(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<f64, EvalError> {
+        let cdr1 = self.lisp.cdr(idx)?; // (rect re im)
+        let cdr2 = self.lisp.cdr(cdr1)?; // (re im)
+        let cdr3 = self.lisp.cdr(cdr2)?; // (im)
+        let im_idx = self.lisp.car(cdr3)?;
+        Ok(self.get_num_as_fsize(im_idx, call_expr)? as f64)
+    }
+
+    /// Return an exact integer if both args are exact, otherwise a float
+    fn return_exact_if_both_exact(&self, args: ArenaIndex, val: fsize, _call_expr: ArenaIndex) -> EvalResult {
+        let a = self.lisp.car(args)?;
+        let b_list = self.lisp.cdr(args)?;
+        let b = self.lisp.car(b_list)?;
+        let both_exact = matches!(self.lisp.get(a)?, Value::Number(_))
+            && matches!(self.lisp.get(b)?, Value::Number(_));
+        if both_exact {
+            self.lisp.number(val as isize).map_err(Into::into)
+        } else {
+            self.lisp.float(val).map_err(Into::into)
+        }
+    }
+
     /// Scheme eq?/eqv? comparison of two values
     fn eqv_compare(&self, a: ArenaIndex, b: ArenaIndex) -> EvalResult {
         let val_a = self.lisp.get(a)?;
@@ -2025,6 +3550,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 is_float = true;
                             }
                             acc_float = float_f(acc_float, f);
+                        }
+                        Value::Rational { num, denom } => {
+                            // Promote to float for mixed arithmetic
+                            if !is_float {
+                                acc_float = acc_int as fsize;
+                                is_float = true;
+                            }
+                            acc_float = float_f(acc_float, num as fsize / denom as fsize);
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
@@ -2292,7 +3825,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Returns STDIN if no argument is provided.
     fn extract_input_port(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
         if self.lisp.get(args)?.is_nil() {
-            Ok(grift_parser::PortId::STDIN)
+            Ok(self.current_input_port)
         } else {
             let port_arg = self.lisp.car(args)?;
             match self.lisp.get(port_arg)? {
@@ -2304,31 +3837,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Implement (read) by reading characters from a port and parsing.
     fn apply_read_builtin(&mut self, pid: grift_parser::PortId, call_expr: ArenaIndex) -> EvalResult {
-        // Read characters into a stack buffer until we have a complete S-expression
-        let mut buf = [0u8; 2048];
-        let mut byte_len = 0;
-        let mut paren_depth: i32 = 0;
-        let mut in_string = false;
-        let mut escape = false;
-        let mut got_token = false;
-
         let io = match &mut self.io {
             Some(io) => io,
             None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
         };
+
+        // Open a temp output string port to accumulate chars without a fixed-size limit
+        let tmp = match io.open_output_string() {
+            Ok(p) => p,
+            Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+        };
+
+        let mut paren_depth: i32 = 0;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut got_token = false;
 
         // Skip leading whitespace
         loop {
             match io.read_char(pid) {
                 Ok(c) => {
                     if !c.is_whitespace() {
-                        // Put this char into the buffer
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() {
+                        if io.write_char(tmp, c).is_err() {
+                            let _ = io.close_port(tmp);
                             return Err(self.make_error(ErrorKind::Generic, call_expr));
                         }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
 
                         if c == '(' || c == '[' {
                             paren_depth += 1;
@@ -2341,9 +3874,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 Err(grift_parser::IoErrorKind::Eof) => {
+                    let _ = io.close_port(tmp);
                     return self.lisp.eof().map_err(Into::into);
                 }
-                Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                Err(_) => {
+                    let _ = io.close_port(tmp);
+                    return Err(self.make_error(ErrorKind::Generic, call_expr));
+                }
             }
         }
 
@@ -2352,12 +3889,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             loop {
                 match io.read_char(pid) {
                     Ok(c) => {
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() {
+                        if io.write_char(tmp, c).is_err() {
+                            let _ = io.close_port(tmp);
                             return Err(self.make_error(ErrorKind::Generic, call_expr));
                         }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
 
                         if in_string {
                             if escape {
@@ -2378,7 +3913,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                     Err(grift_parser::IoErrorKind::Eof) => break,
-                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                    Err(_) => {
+                        let _ = io.close_port(tmp);
+                        return Err(self.make_error(ErrorKind::Generic, call_expr));
+                    }
                 }
             }
         } else if got_token {
@@ -2388,33 +3926,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => break,
                     Ok(c) => {
                         let _ = io.read_char(pid);
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() { break; }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
+                        if io.write_char(tmp, c).is_err() { break; }
                     }
                     Err(_) => break,
                 }
             }
         }
 
-        let s = core::str::from_utf8(&buf[..byte_len])
-            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+        // Parse the accumulated expression from the temp port
+        let result = {
+            let s = match io.get_output_string(tmp) {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = io.close_port(tmp);
+                    return Err(self.make_error(ErrorKind::Generic, call_expr));
+                }
+            };
+            if s.is_empty() {
+                let _ = io.close_port(tmp);
+                return self.lisp.eof().map_err(Into::into);
+            }
+            grift_parser::parse(self.lisp, s)
+        };
 
-        if s.is_empty() {
-            return self.lisp.eof().map_err(Into::into);
-        }
-
-        // Parse the expression
-        match grift_parser::parse(self.lisp, s) {
+        let _ = io.close_port(tmp);
+        match result {
             Ok(expr) => Ok(expr),
-            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+            Err(e) => Err(EvalError::from(e)),
         }
     }
 
     /// Extract a Scheme string value into a stack-allocated UTF-8 buffer.
     /// Returns a fixed-size array wrapper that can be used as `&str`.
-    fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
+    pub(super) fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
         match self.lisp.get(idx)? {
             Value::String { len, data } => {
                 let mut buf = [0u8; STACK_STRING_BUF_SIZE];
@@ -2456,7 +4000,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 const STACK_STRING_BUF_SIZE: usize = 1024;
 
 /// Stack-allocated UTF-8 string buffer for passing to IoProvider methods.
-struct StackString {
+pub(super) struct StackString {
     buf: [u8; STACK_STRING_BUF_SIZE],
     len: usize,
 }
@@ -2609,4 +4153,136 @@ fn parse_float_no_std(s: &str) -> Option<fsize> {
     
     if negative { result = -result; }
     Some(result)
+}
+
+/// Parse an integer from a string with the given radix (2, 8, 10, 16).
+fn parse_int_radix(s: &str, radix: u32) -> Option<isize> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() { return None; }
+    
+    let mut pos = 0;
+    let negative = if bytes[pos] == b'-' { pos += 1; true }
+                   else if bytes[pos] == b'+' { pos += 1; false }
+                   else { false };
+    
+    if pos >= bytes.len() { return None; }
+    
+    let mut result: isize = 0;
+    let mut has_digits = false;
+    while pos < bytes.len() {
+        let digit = match bytes[pos] {
+            b'0'..=b'9' => (bytes[pos] - b'0') as u32,
+            b'a'..=b'f' => (bytes[pos] - b'a') as u32 + 10,
+            b'A'..=b'F' => (bytes[pos] - b'A') as u32 + 10,
+            _ => return None,
+        };
+        if digit >= radix { return None; }
+        result = result.checked_mul(radix as isize)?.checked_add(digit as isize)?;
+        pos += 1;
+        has_digits = true;
+    }
+    
+    if !has_digits { return None; }
+    if negative { result = -result; }
+    Some(result)
+}
+
+/// Convert a float to a rational number (numerator, denominator) using continued fractions.
+fn float_to_rational(x: f64) -> (f64, f64) {
+    if x == 0.0 { return (0.0, 1.0); }
+    
+    let negative = x < 0.0;
+    let x = libm::fabs(x);
+    
+    // Check if it's already a whole number
+    let rounded = libm::floor(x);
+    if x == rounded {
+        let n = if negative { -rounded } else { rounded };
+        return (n, 1.0);
+    }
+    
+    // Continued fraction approximation with limited iterations
+    let mut p0: f64 = 0.0;
+    let mut q0: f64 = 1.0;
+    let mut p1: f64 = 1.0;
+    let mut q1: f64 = 0.0;
+    let mut val = x;
+    
+    for _ in 0..64 {
+        let a = libm::floor(val);
+        let p2 = a * p1 + p0;
+        let q2 = a * q1 + q0;
+        
+        // Check if we've found an exact representation
+        if q2 > 1e15 { break; }
+        
+        p0 = p1; q0 = q1;
+        p1 = p2; q1 = q2;
+        
+        let remainder = val - a;
+        if libm::fabs(remainder) < 1e-15 { break; }
+        if libm::fabs(p1 / q1 - x) < 1e-15 { break; }
+        
+        val = 1.0 / remainder;
+    }
+    
+    if negative { (-p1, q1) } else { (p1, q1) }
+}
+
+/// Find the simplest rational number within a tolerance of x.
+/// Uses the Stern-Brocot tree / mediant approach.
+fn rationalize_impl(x: f64, tol: f64) -> (f64, f64) {
+    if tol >= libm::fabs(x) {
+        return (0.0, 1.0);
+    }
+    
+    let negative = x < 0.0;
+    let x = libm::fabs(x);
+    let lo = x - tol;
+    let hi = x + tol;
+    
+    // Use Stern-Brocot tree to find simplest fraction in [lo, hi]
+    let mut lo_p: f64 = 0.0;
+    let mut lo_q: f64 = 1.0;
+    let mut hi_p: f64 = 1.0;
+    let mut hi_q: f64 = 0.0;
+    
+    for _ in 0..100 {
+        let med_p = lo_p + hi_p;
+        let med_q = lo_q + hi_q;
+        
+        if med_q > 1e15 { break; }
+        
+        let med = med_p / med_q;
+        
+        if med < lo {
+            lo_p = med_p;
+            lo_q = med_q;
+        } else if med > hi {
+            hi_p = med_p;
+            hi_q = med_q;
+        } else {
+            // Found a fraction in range
+            let result_p = if negative { -med_p } else { med_p };
+            return (result_p, med_q);
+        }
+    }
+    
+    // Fallback
+    let result_p = if negative { -lo_p } else { lo_p };
+    (result_p, lo_q)
+}
+
+/// Integer square root using Newton's method.
+fn isqrt(n: usize) -> usize {
+    if n == 0 { return 0; }
+    if n == 1 { return 1; }
+    
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
