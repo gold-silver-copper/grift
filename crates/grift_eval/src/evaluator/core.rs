@@ -4,7 +4,7 @@
 //! continuation management (arena-based), trampoline loop, and basic evaluation steps.
 
 use grift_parser::{
-    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, ParseError, ParseErrorKind,
+    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, Parser, ParseError, ParseErrorKind,
     PRELUDE_SOURCE,
     libraries::LIBRARY_SOURCES,
 };
@@ -88,11 +88,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Only `define-syntax` forms are evaluated (not `define` forms, which are
     /// already handled by the StdLib enum). This allows the prelude to contain
     /// both macros and function definitions in a single file.
+    ///
+    /// Parses one form at a time to avoid holding a large unrooted list
+    /// that could be collected by auto-GC during macro evaluation.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
-        let forms = parse_all(self.lisp, PRELUDE_SOURCE)?;
-        let mut current = forms;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let form = self.lisp.car(current)?;
+        let mut parser = Parser::new(PRELUDE_SOURCE);
+        while parser.has_more() {
+            let form = parser.parse(self.lisp)?;
             // Only evaluate define-syntax forms; skip plain define forms
             // since those are already registered as StdLib builtins.
             let should_eval = if let Ok(Value::Cons { .. }) = self.lisp.get(form) {
@@ -107,7 +109,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if should_eval {
                 self.eval(ExprRef(form))?;
             }
-            current = self.lisp.cdr(current)?;
+            // Reclaim arena space from skipped/evaluated forms periodically
+            let stats = self.lisp.stats();
+            if stats.allocated >= stats.capacity * Self::GC_USAGE_THRESHOLD / 100 {
+                self.gc();
+            }
         }
         Ok(())
     }
