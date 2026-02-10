@@ -377,6 +377,121 @@ fn test_eval_in_library_environment() {
 }
 
 // ============================================================================
+// (scheme r5rs) library
+// ============================================================================
+
+#[test]
+fn test_import_scheme_r5rs() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // (scheme r5rs) should auto-load from embedded sources
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+}
+
+#[test]
+fn test_scheme_r5rs_arithmetic() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(+ 1 2 3)"), 6);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(* 4 5)"), 20);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(abs -7)"), 7);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(max 3 5 1)"), 5);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(min 3 5 1)"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(gcd 12 8)"), 4);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(quotient 10 3)"), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(modulo 10 3)"), 1);
+}
+
+#[test]
+fn test_scheme_r5rs_list_operations() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(car '(1 2 3))"), 1);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(cadr '(1 2 3))"), 2);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(length '(1 2 3))"), 3);
+    assert!(eval_is_true(&lisp, &mut eval, "(list? '(1 2))"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(list-ref '(10 20 30) 1)"), 20);
+}
+
+#[test]
+fn test_scheme_r5rs_macros() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    // let
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(let ((x 3)) x)"), 3);
+    // cond
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(cond (#f 1) (#t 2) (#t 3))"), 2);
+    // and / or
+    assert!(eval_is_true(&lisp, &mut eval, "(and #t #t)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(or #f #t)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(and #t #f)"));
+}
+
+#[test]
+fn test_scheme_r5rs_exact_inexact_names() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    // R5RS names: exact->inexact and inexact->exact
+    assert!(eval_is_true(&lisp, &mut eval, "(inexact? (exact->inexact 5))"));
+    assert!(eval_is_true(&lisp, &mut eval, "(exact? (inexact->exact 5.0))"));
+}
+
+#[test]
+fn test_scheme_r5rs_string_operations() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(string=? \"hello\" \"hello\")"));
+    assert!(eval_is_false(&lisp, &mut eval, "(string=? \"hello\" \"world\")"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(string-length \"hello\")"), 5);
+}
+
+#[test]
+fn test_scheme_r5rs_char_operations() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    assert!(eval_is_true(&lisp, &mut eval, "(char-alphabetic? #\\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, "(char-alphabetic? #\\1)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(char-ci=? #\\A #\\a)"));
+}
+
+#[test]
+fn test_scheme_r5rs_vector_operations() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-ref (vector 10 20 30) 1)"), 20);
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(vector-length (vector 1 2 3))"), 3);
+    assert!(eval_is_true(&lisp, &mut eval, "(vector? (vector 1))"));
+}
+
+#[test]
+fn test_scheme_r5rs_no_transcript() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("(import (scheme r5rs))").unwrap();
+    // transcript-on and transcript-off should NOT be available
+    // They're not implemented, so calling them should error
+    assert!(eval.eval_str("(transcript-on \"log.txt\")").is_err());
+    assert!(eval.eval_str("(transcript-off)").is_err());
+}
+
+// ============================================================================
 // Error cases
 // ============================================================================
 
