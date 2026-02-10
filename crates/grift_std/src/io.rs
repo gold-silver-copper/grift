@@ -239,8 +239,10 @@ impl IoProvider for StdIoProvider {
             Some(DynPort::InputString { data, cursor, closed }) => {
                 Ok(!closed && *cursor < data.len())
             }
-            Some(DynPort::InputFile { peeked, closed, .. }) => {
-                Ok(!closed && peeked.is_some()) // Conservative: true only if peeked
+            Some(DynPort::InputFile { closed, .. }) => {
+                // Regular files are always ready for reading (non-blocking).
+                // R7RS allows returning #t unconditionally for file ports.
+                Ok(!closed)
             }
             _ => Err(IoErrorKind::InvalidPort),
         }
@@ -463,8 +465,9 @@ impl IoProvider for StdIoProvider {
 
     fn u8_ready(&mut self, port: PortId) -> IoResult<bool> {
         match self.get_dyn(port) {
-            Some(DynPort::BinaryInputFile { peeked, closed, .. }) => {
-                Ok(!closed && peeked.is_some())
+            Some(DynPort::BinaryInputFile { closed, .. }) => {
+                // Regular files are always ready for reading (non-blocking).
+                Ok(!closed)
             }
             Some(DynPort::InputBytevector { data, cursor, closed }) => {
                 Ok(!closed && *cursor < data.len())
