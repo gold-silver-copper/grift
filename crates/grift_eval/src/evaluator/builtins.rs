@@ -2747,12 +2747,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::CurrentJiffy => {
                 // (current-jiffy) - Returns exact integer jiffies
-                self.time_u64_to_value(|io| io.current_jiffy(), call_expr)
+                self.time_i64_to_value(|io| io.current_jiffy(), call_expr)
             }
 
             Builtin::JiffiesPerSecond => {
                 // (jiffies-per-second) - Returns exact integer
-                self.time_u64_to_value(|io| io.jiffies_per_second(), call_expr)
+                self.time_i64_to_value(|io| io.jiffies_per_second(), call_expr)
             }
 
             // ============================================================
@@ -3631,9 +3631,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Convert a time value (from IoProvider) to a Lisp value.
+    /// Convert an i64 time value (from IoProvider) to a Lisp value.
     /// Tries exact integer first, falls back to float.
-    fn time_u64_to_value(
+    fn time_i64_to_value(
         &self,
         getter: impl FnOnce(&dyn grift_parser::IoProvider) -> Result<i64, grift_parser::IoErrorKind>,
         call_expr: ArenaIndex,
