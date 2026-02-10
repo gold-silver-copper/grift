@@ -2011,57 +2011,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // File port operations (R7RS §6.13.2)
             // ================================================================
 
-            Builtin::OpenInputFile => {
-                let arg = self.lisp.car(args)?;
-                let path = self.extract_string_arg(arg, call_expr)?;
-                match &mut self.io {
-                    Some(io) => {
-                        let pid = io.open_input_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
-                        self.lisp.port(pid).map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
-                }
-            }
-
-            Builtin::OpenOutputFile => {
-                let arg = self.lisp.car(args)?;
-                let path = self.extract_string_arg(arg, call_expr)?;
-                match &mut self.io {
-                    Some(io) => {
-                        let pid = io.open_output_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
-                        self.lisp.port(pid).map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
-                }
-            }
-
-            Builtin::OpenBinaryInputFile => {
-                let arg = self.lisp.car(args)?;
-                let path = self.extract_string_arg(arg, call_expr)?;
-                match &mut self.io {
-                    Some(io) => {
-                        let pid = io.open_binary_input_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
-                        self.lisp.port(pid).map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
-                }
-            }
-
-            Builtin::OpenBinaryOutputFile => {
-                let arg = self.lisp.car(args)?;
-                let path = self.extract_string_arg(arg, call_expr)?;
-                match &mut self.io {
-                    Some(io) => {
-                        let pid = io.open_binary_output_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
-                        self.lisp.port(pid).map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::FileError, call_expr)),
-                }
-            }
+            Builtin::OpenInputFile => self.open_file_port(args, call_expr, |io, path| io.open_input_file(path)),
+            Builtin::OpenOutputFile => self.open_file_port(args, call_expr, |io, path| io.open_output_file(path)),
+            Builtin::OpenBinaryInputFile => self.open_file_port(args, call_expr, |io, path| io.open_binary_input_file(path)),
+            Builtin::OpenBinaryOutputFile => self.open_file_port(args, call_expr, |io, path| io.open_binary_output_file(path)),
 
             // call-with-input-file/output-file and with-input-from-file/output-to-file
             // and call-with-port are handled in apply_builtin_trampolined
@@ -3887,6 +3840,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(StackString { buf, len: byte_len })
             }
             v => Err(self.type_error(call_expr, "string", v.type_name())),
+        }
+    }
+
+    /// Open a file port using the provided IoProvider method.
+    fn open_file_port(
+        &mut self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+        opener: impl FnOnce(&mut dyn grift_parser::IoProvider, &str) -> Result<grift_parser::PortId, grift_parser::IoErrorKind>,
+    ) -> EvalResult {
+        let arg = self.lisp.car(args)?;
+        let path = self.extract_string_arg(arg, call_expr)?;
+        match &mut self.io {
+            Some(io) => {
+                let pid = opener(&mut **io, &path)
+                    .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
+                self.lisp.port(pid).map_err(Into::into)
+            }
+            None => Err(self.make_error(ErrorKind::FileError, call_expr)),
         }
     }
 

@@ -352,22 +352,20 @@ impl<const N: usize> Lisp<N> {
         Ok(())
     }
     
-    /// Look up a string in the intern table
-    /// Returns Some(symbol_index) if found, None otherwise
-    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+    /// Scan the intern table for an entry whose string matches a predicate.
+    /// Returns Some(symbol_index) if found, None otherwise.
+    fn intern_table_find(&self, matches: impl Fn(ArenaIndex) -> ArenaResult<bool>) -> ArenaResult<Option<ArenaIndex>> {
         let mut current = self.get_intern_table_root()?;
-        
         loop {
             match self.get(current)? {
                 Value::Nil => return Ok(None),
                 Value::Cons { .. } => {
-                    // car is (string_index . symbol_index)
                     let car = self.car(current)?;
                     let cdr = self.cdr(current)?;
                     if let Value::Cons { .. } = self.get(car)? {
                         let entry_string = self.car(car)?;
                         let entry_symbol = self.cdr(car)?;
-                        if self.string_eq_contiguous(string_idx, entry_string)? {
+                        if matches(entry_string)? {
                             return Ok(Some(entry_symbol));
                         }
                     }
@@ -376,6 +374,12 @@ impl<const N: usize> Lisp<N> {
                 _ => return Err(ArenaError::InvalidIndex),
             }
         }
+    }
+
+    /// Look up a string in the intern table
+    /// Returns Some(symbol_index) if found, None otherwise
+    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+        self.intern_table_find(|entry_string| self.string_eq_contiguous(string_idx, entry_string))
     }
     
     /// Look up bytes directly in the intern table without allocating a string first.
@@ -386,28 +390,7 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Returns Some(symbol_index) if found, None otherwise
     fn intern_table_lookup_bytes(&self, bytes: &[u8]) -> ArenaResult<Option<ArenaIndex>> {
-        let mut current = self.get_intern_table_root()?;
-        
-        loop {
-            match self.get(current)? {
-                Value::Nil => return Ok(None),
-                Value::Cons { .. } => {
-                    // car is (string_index . symbol_index)
-                    let car = self.car(current)?;
-                    let cdr = self.cdr(current)?;
-                    if let Value::Cons { .. } = self.get(car)? {
-                        let entry_string = self.car(car)?;
-                        let entry_symbol = self.cdr(car)?;
-                        // Compare bytes directly without allocating
-                        if self.string_matches_bytes(entry_string, bytes)? {
-                            return Ok(Some(entry_symbol));
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-        }
+        self.intern_table_find(|entry_string| self.string_matches_bytes(entry_string, bytes))
     }
     
     /// Create or retrieve an interned symbol from a string slice
