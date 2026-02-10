@@ -4,6 +4,7 @@
 //! from a token stream produced by the [`Lexer`](crate::lexer::Lexer).
 
 use grift_arena::{ArenaIndex, ArenaError};
+use grift_core::Value;
 use crate::Lisp;
 use crate::lexer::{Lexer, Token, LexError, LexErrorKind};
 
@@ -41,8 +42,6 @@ pub enum ParseErrorKind {
     InvalidEscapeSequence,
     /// Unterminated string literal
     UnterminatedString,
-    /// Vector literal exceeds maximum size (256 elements in no_std)
-    VectorLiteralTooLarge,
 }
 
 impl ParseError {
@@ -85,6 +84,25 @@ impl From<LexError> for ParseError {
 // ============================================================================
 // Parser
 // ============================================================================
+
+/// Reverse a cons list in-place by mutating cdr pointers.
+///
+/// Given a reversed list like `(c b a)` and a tail, produces `(a b c . tail)`
+/// by relinking the same cons cells. Zero extra allocation.
+fn reverse_list_in_place<const N: usize>(
+    lisp: &Lisp<N>,
+    mut cur: ArenaIndex,
+    tail: ArenaIndex,
+) -> Result<ArenaIndex, ParseError> {
+    let mut prev = tail;
+    while !cur.is_nil() {
+        let next = lisp.cdr(cur)?;
+        lisp.set_cdr(cur, prev)?;
+        prev = cur;
+        cur = next;
+    }
+    Ok(prev)
+}
 
 /// Parser state — wraps a [`Lexer`] and builds arena-allocated AST nodes.
 ///
@@ -171,10 +189,13 @@ impl<'a> Parser<'a> {
     }
     
     /// Parse a list (after consuming the opening paren via the lexer)
+    ///
+    /// Uses in-place cons list reversal instead of a fixed-size stack array,
+    /// so the only limit is available arena memory.
     fn parse_list<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
-        const MAX_LIST_DEPTH: usize = 128;
-        let mut elements: [ArenaIndex; MAX_LIST_DEPTH] = [ArenaIndex::NIL; MAX_LIST_DEPTH];
-        let mut count = 0;
+        let nil = lisp.nil()?;
+        let mut reversed = nil;
+        let mut count = 0usize;
         
         loop {
             let loc = self.lexer.loc();
@@ -201,39 +222,28 @@ impl<'a> Parser<'a> {
                         return Err(ParseError { kind: ParseErrorKind::UnmatchedParen, loc: closing.loc });
                     }
                     
-                    // Build the dotted list
-                    let mut result = cdr;
-                    for i in (0..count).rev() {
-                        result = lisp.cons(elements[i], result)?;
-                    }
-                    return Ok(result);
+                    // Reverse in-place with cdr as the tail
+                    return reverse_list_in_place(lisp, reversed, cdr);
                 }
                 other => {
-                    if count >= MAX_LIST_DEPTH {
-                        return Err(ParseError { kind: ParseErrorKind::OutOfMemory, loc });
-                    }
-                    elements[count] = self.parse_token(other, loc, lisp)?;
+                    let elem = self.parse_token(other, loc, lisp)?;
+                    reversed = lisp.cons(elem, reversed)?;
                     count += 1;
                 }
             }
         }
         
-        // Build proper list
+        // Build proper list by reversing in-place
         if count == 0 {
-            return lisp.nil().map_err(Into::into);
+            return Ok(nil);
         }
-        let mut result = lisp.nil()?;
-        for i in (0..count).rev() {
-            result = lisp.cons(elements[i], result)?;
-        }
-        Ok(result)
+        reverse_list_in_place(lisp, reversed, nil)
     }
     
     /// Parse vector literal #(obj ...)
     /// 
-    /// Note: In no_std environments, vector literals are limited to 256 elements
-    /// due to stack allocation constraints. Use `make-vector` or `vector` for
-    /// larger vectors.
+    /// Uses in-place cons list reversal instead of a fixed-size stack array,
+    /// so the only limit is available arena memory.
     fn parse_vector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         // The VectorOpen token has consumed only the '#' character;
         // the '(' must be consumed separately
@@ -244,7 +254,8 @@ impl<'a> Parser<'a> {
             return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
         }
         
-        let mut elements: [ArenaIndex; 256] = [ArenaIndex::NIL; 256];
+        let nil = lisp.nil()?;
+        let mut reversed = nil;
         let mut count = 0usize;
         
         loop {
@@ -257,10 +268,8 @@ impl<'a> Parser<'a> {
             match token {
                 Token::RParen => break,
                 other => {
-                    if count >= 256 {
-                        return Err(ParseError { kind: ParseErrorKind::VectorLiteralTooLarge, loc });
-                    }
-                    elements[count] = self.parse_token(other, loc, lisp)?;
+                    let elem = self.parse_token(other, loc, lisp)?;
+                    reversed = lisp.cons(elem, reversed)?;
                     count += 1;
                 }
             }
@@ -270,9 +279,15 @@ impl<'a> Parser<'a> {
         let placeholder = lisp.number(0)?;
         let vec = lisp.make_array(count, placeholder)?;
         
-        // Fill in elements
-        for (i, &elem) in elements.iter().enumerate().take(count) {
-            lisp.array_set(vec, i, elem)?;
+        // Reverse the list in-place, then walk it to fill the array
+        if count > 0 {
+            let list = reverse_list_in_place(lisp, reversed, nil)?;
+            let mut cur = list;
+            for i in 0..count {
+                let (car, cdr) = lisp.car_cdr(cur)?;
+                lisp.array_set(vec, i, car)?;
+                cur = cdr;
+            }
         }
         
         Ok(vec)
@@ -281,6 +296,8 @@ impl<'a> Parser<'a> {
     /// Parse bytevector literal #u8(byte ...)
     ///
     /// Each element must be an exact integer in the range 0–255.
+    /// Uses in-place cons list reversal instead of a fixed-size stack array,
+    /// so the only limit is available arena memory.
     fn parse_bytevector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         // BytevectorOpen token consumed '#u8'; the '(' must be consumed separately
         let open_loc = self.lexer.loc();
@@ -290,7 +307,8 @@ impl<'a> Parser<'a> {
             return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
         }
         
-        let mut bytes: [u8; 256] = [0; 256];
+        let nil = lisp.nil()?;
+        let mut reversed = nil;
         let mut count = 0usize;
         
         loop {
@@ -303,13 +321,11 @@ impl<'a> Parser<'a> {
             match token {
                 Token::RParen => break,
                 Token::Number(n) => {
-                    if count >= 256 {
-                        return Err(ParseError { kind: ParseErrorKind::VectorLiteralTooLarge, loc });
-                    }
                     if !(0..=255).contains(&n) {
                         return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc });
                     }
-                    bytes[count] = n as u8;
+                    let elem = lisp.number(n)?;
+                    reversed = lisp.cons(elem, reversed)?;
                     count += 1;
                 }
                 _ => {
@@ -318,10 +334,18 @@ impl<'a> Parser<'a> {
             }
         }
         
-        // Create the bytevector
+        // Create the bytevector and fill from the reversed-then-restored list
         let bv = lisp.make_bytevector(count, 0)?;
-        for (i, &byte) in bytes.iter().enumerate().take(count) {
-            lisp.bytevector_set(bv, i, byte)?;
+        if count > 0 {
+            let list = reverse_list_in_place(lisp, reversed, nil)?;
+            let mut cur = list;
+            for i in 0..count {
+                let (car, cdr) = lisp.car_cdr(cur)?;
+                if let Value::Number(n) = lisp.get(car)? {
+                    lisp.bytevector_set(bv, i, n as u8)?;
+                }
+                cur = cdr;
+            }
         }
         
         Ok(bv)
@@ -345,20 +369,23 @@ pub fn parse<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaIndex, 
 }
 
 /// Parse multiple expressions
+///
+/// Uses in-place cons list reversal instead of a fixed-size stack array,
+/// so the only limit is available arena memory.
 pub fn parse_all<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaIndex, ParseError> {
     let mut parser = Parser::new(input);
-    let mut results = [ArenaIndex::NIL; 64];
-    let mut count = 0;
+    let nil = lisp.nil()?;
+    let mut reversed = nil;
+    let mut count = 0usize;
     
-    while parser.has_more() && count < 64 {
-        results[count] = parser.parse(lisp)?;
+    while parser.has_more() {
+        let expr = parser.parse(lisp)?;
+        reversed = lisp.cons(expr, reversed)?;
         count += 1;
     }
     
-    // Build list of results
-    let mut result = lisp.nil()?;
-    for i in (0..count).rev() {
-        result = lisp.cons(results[i], result)?;
+    if count == 0 {
+        return Ok(nil);
     }
-    Ok(result)
+    reverse_list_in_place(lisp, reversed, nil)
 }
