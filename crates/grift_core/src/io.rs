@@ -143,6 +143,20 @@ pub trait IoProvider {
         Err(IoErrorKind::Unsupported)
     }
 
+    /// Convert an output string port into an input string port.
+    ///
+    /// The accumulated content of the output port becomes the data source
+    /// for the new input port. The original output port is closed.
+    ///
+    /// This avoids the need to copy the accumulated string through a
+    /// fixed-size stack buffer when creating an input port from collected
+    /// character data.
+    ///
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn output_string_to_input_port(&mut self, _output_port: PortId) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
     // ----------------------------------------------------------------
     // File port operations (R7RS §6.13.2)
     // ----------------------------------------------------------------

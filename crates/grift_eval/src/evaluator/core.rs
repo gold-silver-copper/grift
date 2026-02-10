@@ -861,37 +861,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(env2);
         }
         
-        // Create a copy of env1 with its tail pointing to env2
-        // Collect env1 bindings
-        let mut bindings = [ArenaIndex::new(0); 64];
-        let mut count = 0;
+        // Collect env1 bindings into an arena cons list (reversed)
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
         let mut current = env1;
         
         while let Value::Cons { .. } = self.lisp.get(current)? {
-            if count >= bindings.len() {
-                // Buffer overflow: too many local bindings to copy.
-                // Fall back to recursive processing for the remaining bindings.
-                let (car, cdr) = self.lisp.car_cdr(current)?;
-                let rest_merged = self.merge_environments(cdr, env2)?;
-                let mut result = rest_merged;
-                result = self.lisp.cons(car, result)?;
-                
-                // Add the already-collected bindings in reverse order
-                for i in (0..count).rev() {
-                    result = self.lisp.cons(bindings[i], result)?;
-                }
-                return Ok(result);
-            }
             let (car, cdr) = self.lisp.car_cdr(current)?;
-            bindings[count] = car;
-            count += 1;
+            collected = self.lisp.cons(car, collected)?;
             current = cdr;
         }
         
-        // Build new env chain: bindings from env1 -> env2
+        // Build new env chain by walking the reversed list.
+        // Since collected is reversed, consing each element onto env2
+        // restores the original order with env1 bindings in front.
         let mut result = env2;
-        for i in (0..count).rev() {
-            result = self.lisp.cons(bindings[i], result)?;
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let (car, cdr) = self.lisp.car_cdr(cursor)?;
+            result = self.lisp.cons(car, result)?;
+            cursor = cdr;
         }
         
         Ok(result)
