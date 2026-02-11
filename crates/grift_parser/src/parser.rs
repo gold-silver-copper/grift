@@ -73,7 +73,7 @@ impl From<LexError> for ParseError {
                 LexErrorKind::InvalidCharLiteral => ParseErrorKind::InvalidCharLiteral,
                 LexErrorKind::InvalidEscapeSequence => ParseErrorKind::InvalidEscapeSequence,
                 LexErrorKind::UnterminatedString => ParseErrorKind::UnterminatedString,
-                LexErrorKind::StringTooLong => ParseErrorKind::OutOfMemory,
+                LexErrorKind::OutOfMemory => ParseErrorKind::OutOfMemory,
                 LexErrorKind::InvalidRadixDigit => ParseErrorKind::InvalidHashLiteral,
             },
             loc: e.loc,
@@ -141,7 +141,7 @@ impl<'a> Parser<'a> {
     /// Parse a single expression
     pub fn parse<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         let loc = self.lexer.loc();
-        let spanned = self.lexer.next_token()
+        let spanned = self.lexer.next_token(lisp)
             .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc })??;
         let token = spanned.token;
         let loc = spanned.loc;
@@ -167,14 +167,11 @@ impl<'a> Parser<'a> {
             Token::Rational(num, denom) => lisp.rational(num, denom).map_err(Into::into),
             Token::Complex(real, imag) => lisp.complex(real, imag).map_err(Into::into),
             Token::Char(c) => lisp.char(c).map_err(Into::into),
-            Token::Symbol { len } => {
-                let name = self.lexer.symbol_bytes(len);
-                lisp.symbol_from_bytes(name).map_err(Into::into)
+            Token::Symbol { start, len } => {
+                let name = self.lexer.input_slice(start, len);
+                lisp.symbol_from_bytes_folded(name, self.lexer.is_fold_case()).map_err(Into::into)
             }
-            Token::String { len } => {
-                let chars = self.lexer.string_chars(len);
-                lisp.string_from_chars_interned(chars).map_err(Into::into)
-            }
+            Token::String(idx) => Ok(idx),
             Token::VectorOpen => self.parse_vector_literal(lisp),
             Token::BytevectorOpen => self.parse_bytevector_literal(lisp),
             Token::DatumComment => {
@@ -205,7 +202,7 @@ impl<'a> Parser<'a> {
         
         loop {
             let loc = self.lexer.loc();
-            let spanned = self.lexer.next_token()
+            let spanned = self.lexer.next_token(lisp)
                 .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc })??;
             let token = spanned.token;
             let loc = spanned.loc;
@@ -222,7 +219,7 @@ impl<'a> Parser<'a> {
                     
                     // Expect closing paren
                     let close_loc = self.lexer.loc();
-                    let closing = self.lexer.next_token()
+                    let closing = self.lexer.next_token(lisp)
                         .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: close_loc })??;
                     if !matches!(closing.token, Token::RParen) {
                         return Err(ParseError { kind: ParseErrorKind::UnmatchedParen, loc: closing.loc });
@@ -254,7 +251,7 @@ impl<'a> Parser<'a> {
         // The VectorOpen token has consumed only the '#' character;
         // the '(' must be consumed separately
         let open_loc = self.lexer.loc();
-        let opening = self.lexer.next_token()
+        let opening = self.lexer.next_token(lisp)
             .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: open_loc })??;
         if !matches!(opening.token, Token::LParen) {
             return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
@@ -266,7 +263,7 @@ impl<'a> Parser<'a> {
         
         loop {
             let elem_loc = self.lexer.loc();
-            let spanned = self.lexer.next_token()
+            let spanned = self.lexer.next_token(lisp)
                 .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: elem_loc })??;
             let token = spanned.token;
             let loc = spanned.loc;
@@ -307,7 +304,7 @@ impl<'a> Parser<'a> {
     fn parse_bytevector_literal<const N: usize>(&mut self, lisp: &Lisp<N>) -> Result<ArenaIndex, ParseError> {
         // BytevectorOpen token consumed '#u8'; the '(' must be consumed separately
         let open_loc = self.lexer.loc();
-        let opening = self.lexer.next_token()
+        let opening = self.lexer.next_token(lisp)
             .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: open_loc })??;
         if !matches!(opening.token, Token::LParen) {
             return Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc: opening.loc });
@@ -319,7 +316,7 @@ impl<'a> Parser<'a> {
         
         loop {
             let elem_loc = self.lexer.loc();
-            let spanned = self.lexer.next_token()
+            let spanned = self.lexer.next_token(lisp)
                 .ok_or(ParseError { kind: ParseErrorKind::UnexpectedEof, loc: elem_loc })??;
             let token = spanned.token;
             let loc = spanned.loc;

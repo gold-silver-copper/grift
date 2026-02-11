@@ -462,6 +462,69 @@ impl<const N: usize> Lisp<N> {
         self.intern_new_symbol(name_str)
     }
     
+    /// Create or retrieve an interned symbol from raw bytes, with optional case-folding.
+    ///
+    /// When `fold_case` is `true`, bytes are lowercased before comparison and storage.
+    /// When `fold_case` is `false`, this is equivalent to [`symbol_from_bytes`].
+    pub fn symbol_from_bytes_folded(&self, bytes: &[u8], fold_case: bool) -> ArenaResult<ArenaIndex> {
+        if !fold_case {
+            return self.symbol_from_bytes(bytes);
+        }
+        
+        // Case-insensitive intern table lookup
+        if let Some(existing_symbol) = self.intern_table_find(|entry_string| {
+            self.string_matches_bytes_folded(entry_string, bytes)
+        })? {
+            return Ok(existing_symbol);
+        }
+        
+        // Cache miss - create new symbol with lowercased bytes
+        let char_count = bytes.len();
+        
+        let name_str = if char_count == 0 {
+            self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
+        } else {
+            let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
+            for (i, &b) in bytes.iter().enumerate() {
+                let char_idx = self.arena.index_at_offset(data, i)?;
+                self.arena.set(char_idx, Value::Char(b.to_ascii_lowercase() as char))?;
+            }
+            self.alloc(Value::String { len: char_count, data })?
+        };
+        
+        self.intern_new_symbol(name_str)
+    }
+    
+    /// Compare a string's content against raw bytes with case-insensitive matching.
+    ///
+    /// The interned string chars are compared against `bytes[i].to_ascii_lowercase()`.
+    fn string_matches_bytes_folded(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
+        match self.arena.get(str_idx)? {
+            Value::String { len, data } => {
+                if len != bytes.len() {
+                    return Ok(false);
+                }
+                if len == 0 {
+                    return Ok(bytes.is_empty());
+                }
+                let base_idx = data.raw();
+                for (i, &byte) in bytes.iter().enumerate() {
+                    let char_slot = ArenaIndex::new(base_idx + i);
+                    match self.arena.get(char_slot)? {
+                        Value::Char(c) => {
+                            if c as u8 != byte.to_ascii_lowercase() {
+                                return Ok(false);
+                            }
+                        }
+                        _ => return Err(ArenaError::InvalidIndex),
+                    }
+                }
+                Ok(true)
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+    
     /// Create or retrieve an interned symbol from an existing string index
     /// 
     /// This method is used by string->symbol to create a symbol from an existing string.
@@ -1281,6 +1344,65 @@ impl<const N: usize> Lisp<N> {
         self.set_string_intern_root(new_table)?;
         
         Ok(str_idx)
+    }
+    
+    /// Create an interned string from character data already allocated in the arena.
+    ///
+    /// `data` must point to `len` contiguous slots of `Value::Char`.
+    /// If identical data already exists in the intern table, the passed data is
+    /// freed and the existing data is reused.
+    pub fn string_from_arena_data_interned(&self, data: ArenaIndex, len: usize) -> ArenaResult<ArenaIndex> {
+        if len == 0 {
+            return self.alloc(Value::String { len: 0, data: ArenaIndex::NIL });
+        }
+        
+        // Check if identical data already exists in intern table
+        if let Some(existing_data) = self.string_intern_lookup_arena_data(data, len)? {
+            // Free our copy and reuse existing data
+            self.arena.free_contiguous(data, len)?;
+            return self.alloc(Value::String { len, data: existing_data });
+        }
+        
+        // Not found - create string header and add to intern table
+        let str_idx = self.alloc(Value::String { len, data })?;
+        let current_table = self.get_string_intern_root()?;
+        let new_table = self.cons(str_idx, current_table)?;
+        self.set_string_intern_root(new_table)?;
+        
+        Ok(str_idx)
+    }
+    
+    /// Look up arena-allocated char data in the string intern table.
+    fn string_intern_lookup_arena_data(&self, data: ArenaIndex, len: usize) -> ArenaResult<Option<ArenaIndex>> {
+        let mut current = self.get_string_intern_root()?;
+        let new_base = data.raw();
+        loop {
+            match self.get(current)? {
+                Value::Nil => return Ok(None),
+                Value::Cons { .. } => {
+                    let entry = self.car(current)?;
+                    let rest = self.cdr(current)?;
+                    if let Value::String { len: existing_len, data: existing_data } = self.get(entry)?
+                        && existing_len == len && !existing_data.is_nil() {
+                            let existing_base = existing_data.raw();
+                            let mut matches = true;
+                            for i in 0..len {
+                                let new_val = self.arena.get(ArenaIndex::new(new_base + i))?;
+                                let existing_val = self.arena.get(ArenaIndex::new(existing_base + i))?;
+                                match (new_val, existing_val) {
+                                    (Value::Char(a), Value::Char(b)) if a == b => {}
+                                    _ => { matches = false; break; }
+                                }
+                            }
+                            if matches {
+                                return Ok(Some(existing_data));
+                            }
+                        }
+                    current = rest;
+                }
+                _ => return Ok(None),
+            }
+        }
     }
     
     /// Copy string data, returning a new data ArenaIndex.
