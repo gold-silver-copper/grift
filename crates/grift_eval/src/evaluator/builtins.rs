@@ -989,14 +989,124 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::CharUpcase | Builtin::CharDowncase => {
+            Builtin::CharUpcase | Builtin::CharDowncase | Builtin::CharFoldcase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let result = if matches!(builtin, Builtin::CharUpcase) {
-                    if c.is_ascii_lowercase() { ((c as u8) - b'a' + b'A') as char } else { c }
-                } else {
-                    if c.is_ascii_uppercase() { ((c as u8) - b'A' + b'a') as char } else { c }
+                let cm = icu_casemap::CaseMapper::new();
+                let result = match builtin {
+                    Builtin::CharUpcase => cm.simple_uppercase(c),
+                    Builtin::CharDowncase => cm.simple_lowercase(c),
+                    _ => cm.simple_fold(c),
                 };
                 self.lisp.char(result).map_err(Into::into)
+            }
+            
+            Builtin::CharAlphabetic => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let set = icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>();
+                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+            }
+            
+            Builtin::CharNumeric => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let map = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new();
+                self.lisp.boolean(map.get(c) == icu_properties::props::GeneralCategory::DecimalNumber).map_err(Into::into)
+            }
+            
+            Builtin::CharWhitespace => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let set = icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>();
+                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+            }
+            
+            Builtin::CharUpperCase => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let set = icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>();
+                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+            }
+            
+            Builtin::CharLowerCase => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let set = icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>();
+                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+            }
+            
+            Builtin::DigitValue => {
+                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                let map = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new();
+                if map.get(c) == icu_properties::props::GeneralCategory::DecimalNumber {
+                    // Walk back to find the '0' digit of this block
+                    let cp = c as u32;
+                    let mut zero = cp;
+                    while zero > 0 {
+                        let prev = zero - 1;
+                        if let Some(prev_char) = char::from_u32(prev) {
+                            if map.get(prev_char) == icu_properties::props::GeneralCategory::DecimalNumber {
+                                zero = prev;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    self.lisp.number((cp - zero) as isize).map_err(Into::into)
+                } else {
+                    self.lisp.boolean(false).map_err(Into::into)
+                }
+            }
+            
+            Builtin::CharCiEq => {
+                let cm = icu_casemap::CaseMapper::new();
+                self.char_chain_compare(args, |a, b| cm.simple_fold(a) == cm.simple_fold(b), call_expr)
+            }
+            
+            Builtin::CharCiLt => {
+                let cm = icu_casemap::CaseMapper::new();
+                self.char_chain_compare(args, |a, b| cm.simple_fold(a) < cm.simple_fold(b), call_expr)
+            }
+            
+            Builtin::CharCiGt => {
+                let cm = icu_casemap::CaseMapper::new();
+                self.char_chain_compare(args, |a, b| cm.simple_fold(a) > cm.simple_fold(b), call_expr)
+            }
+            
+            Builtin::CharCiLe => {
+                let cm = icu_casemap::CaseMapper::new();
+                self.char_chain_compare(args, |a, b| cm.simple_fold(a) <= cm.simple_fold(b), call_expr)
+            }
+            
+            Builtin::CharCiGe => {
+                let cm = icu_casemap::CaseMapper::new();
+                self.char_chain_compare(args, |a, b| cm.simple_fold(a) >= cm.simple_fold(b), call_expr)
+            }
+            
+            Builtin::StringUpcase | Builtin::StringDowncase | Builtin::StringFoldcase => {
+                let str_idx = self.lisp.car(args)?;
+                match self.lisp.get(str_idx)? {
+                    Value::String { len, data } => {
+                        let cm = icu_casemap::CaseMapper::new();
+                        let result = self.lisp.make_string(len, '\0')?;
+                        for i in 0..len {
+                            let slot = self.lisp.arena_index_at_offset(data, i)?;
+                            if let Value::Char(c) = self.lisp.get(slot)? {
+                                let mapped = match builtin {
+                                    Builtin::StringUpcase => cm.simple_uppercase(c),
+                                    Builtin::StringDowncase => cm.simple_lowercase(c),
+                                    _ => cm.simple_fold(c),
+                                };
+                                self.lisp.string_set(result, i, mapped)?;
+                            } else {
+                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                            }
+                        }
+                        Ok(result)
+                    }
+                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                }
+            }
+            
+            Builtin::StringCiEq => {
+                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
             }
             
             // ============================================================
@@ -3348,16 +3458,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         
         let min_len = len_a.min(len_b);
+        let cm = if case_insensitive { Some(icu_casemap::CaseMapper::new()) } else { None };
         
         for i in 0..min_len {
             let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
             let char_a = match self.lisp.get(slot_a)? {
-                Value::Char(c) => if case_insensitive { c.to_ascii_lowercase() } else { c },
+                Value::Char(c) => if let Some(ref cm) = cm { cm.simple_fold(c) } else { c },
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
             let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
             let char_b = match self.lisp.get(slot_b)? {
-                Value::Char(c) => if case_insensitive { c.to_ascii_lowercase() } else { c },
+                Value::Char(c) => if let Some(ref cm) = cm { cm.simple_fold(c) } else { c },
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             };
             

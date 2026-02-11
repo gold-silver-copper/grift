@@ -346,6 +346,38 @@ define_builtins! {
     CharUpcase => "char-upcase",
     /// char-downcase - Convert character to lowercase
     CharDowncase => "char-downcase",
+    /// char-foldcase - Unicode simple case folding
+    CharFoldcase => "char-foldcase",
+    /// char-alphabetic? - Check if character is alphabetic (Unicode)
+    CharAlphabetic => "char-alphabetic?",
+    /// char-numeric? - Check if character is numeric (Unicode Nd)
+    CharNumeric => "char-numeric?",
+    /// char-whitespace? - Check if character is whitespace (Unicode)
+    CharWhitespace => "char-whitespace?",
+    /// char-upper-case? - Check if character is uppercase (Unicode)
+    CharUpperCase => "char-upper-case?",
+    /// char-lower-case? - Check if character is lowercase (Unicode)
+    CharLowerCase => "char-lower-case?",
+    /// digit-value - Return numeric value of a Unicode digit character
+    DigitValue => "digit-value",
+    /// char-ci=? - Case-insensitive character equality
+    CharCiEq => "char-ci=?",
+    /// char-ci<? - Case-insensitive character less than
+    CharCiLt => "char-ci<?",
+    /// char-ci>? - Case-insensitive character greater than
+    CharCiGt => "char-ci>?",
+    /// char-ci<=? - Case-insensitive character less than or equal
+    CharCiLe => "char-ci<=?",
+    /// char-ci>=? - Case-insensitive character greater than or equal
+    CharCiGe => "char-ci>=?",
+    /// string-upcase - Convert string to uppercase
+    StringUpcase => "string-upcase",
+    /// string-downcase - Convert string to lowercase
+    StringDowncase => "string-downcase",
+    /// string-foldcase - Convert string using case folding
+    StringFoldcase => "string-foldcase",
+    /// string-ci=? - Case-insensitive string equality
+    StringCiEq => "string-ci=?",
     
     // String operations (R7RS Section 6.7)
     /// string? - Check if value is a string
