@@ -32,6 +32,31 @@ use crate::native::NativeRegistry;
 /// newline requests and actual display values.
 pub type OutputCallback<const N: usize> = fn(&Lisp<N>, ArenaIndex);
 
+/// Pre-interned keyword symbols for O(1) dispatch.
+///
+/// Instead of comparing symbol names by string on every list evaluation,
+/// these are interned once at startup and compared by ArenaIndex equality.
+pub(crate) struct Keywords {
+    pub kw_if: ArenaIndex,
+    pub kw_quote: ArenaIndex,
+    pub kw_define: ArenaIndex,
+    pub kw_define_syntax: ArenaIndex,
+    pub kw_let_syntax: ArenaIndex,
+    pub kw_letrec_syntax: ArenaIndex,
+    pub kw_syntax_case: ArenaIndex,
+    pub kw_syntax: ArenaIndex,
+    pub kw_lambda: ArenaIndex,
+    pub kw_set: ArenaIndex,
+    pub kw_begin: ArenaIndex,
+    pub kw_quasiquote: ArenaIndex,
+    pub kw_syntax_error: ArenaIndex,
+    pub kw_define_record_type: ArenaIndex,
+    pub kw_define_library: ArenaIndex,
+    pub kw_import: ArenaIndex,
+    pub kw_include: ArenaIndex,
+    pub kw_include_ci: ArenaIndex,
+}
+
 /// The Lisp evaluator with full trampolined TCO.
 ///
 /// This evaluator uses continuation-passing style with an arena-based
@@ -96,4 +121,6 @@ pub struct Evaluator<'a, const N: usize> {
     /// Libraries currently being loaded — arena-based list of library names.
     /// Used for detecting circular dependencies during auto-loading.
     loading_libraries: ArenaIndex,
+    /// Pre-interned keyword symbols for O(1) special form dispatch
+    keywords: Keywords,
 }
