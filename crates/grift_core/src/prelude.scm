@@ -1,11 +1,18 @@
 ;;; Grift Scheme Prelude
 ;;;
-;;; This file contains all standard macro definitions and library functions.
-;;; It is the single source for both compile-time StdLib enum generation
+;;; This file contains core macro definitions and shared utility functions.
+;;; It is the source for both compile-time StdLib enum generation
 ;;; (via include_stdlib!) and runtime macro loading.
 ;;;
 ;;; Macro definitions (define-syntax) are evaluated at runtime.
 ;;; Function definitions (define) are extracted at compile time for StdLib.
+;;;
+;;; Library-specific definitions live in their respective library files
+;;; under lib/scheme/ (e.g. base.scm, cxr.scm, lazy.scm, case-lambda.scm).
+;;; This prelude contains only:
+;;;   - Core macros needed before any library is loaded
+;;;   - Shared helper functions used by multiple libraries or macros
+;;;   - Grift-specific extension functions not in any R7RS library
 
 ;;; ============================================================
 ;;; Macro Definitions
@@ -1008,13 +1015,6 @@
       acc  ;; Base case: return accumulator
       (fold f (f acc (car lst)) (cdr lst))))  ;; Apply f to acc and car, recurse
 
-;;; (fold-left f acc lst) - Left fold over lst (R7RS name, same as fold)
-;;; f takes (accumulator, element) and returns new accumulator
-(define (fold-left f acc lst)
-  (if (null? lst)
-      acc
-      (fold-left f (f acc (car lst)) (cdr lst))))
-
 ;;; (length lst) - Return length of lst (tail-recursive)
 (define (length lst)
   (define (length-iter lst acc)
@@ -1188,71 +1188,19 @@
 (define (assv key alist) (assoc-helper eqv? key alist))
 
 ;;; ============================================================
-;;; Additional c...r accessors (R7RS Section 6.4)
+;;; Additional c...r accessors (shared helpers)
 ;;; ============================================================
+;;; Note: Most cxr compositions have been moved to (scheme cxr).
+;;; Only those used by prelude helpers or tests without imports remain here.
 
 ;;; (caar lst) - (car (car lst))
 (define (caar lst) (car (car lst)))
-
-;;; (cdar lst) - (cdr (car lst))
-(define (cdar lst) (cdr (car lst)))
-
-;;; (caaar lst) - (car (car (car lst)))
-(define (caaar lst) (car (car (car lst))))
-
-;;; (caadr lst) - (car (car (cdr lst)))
-(define (caadr lst) (car (car (cdr lst))))
-
-;;; (cadar lst) - (car (cdr (car lst)))
-(define (cadar lst) (car (cdr (car lst))))
-
-;;; (cdaar lst) - (cdr (car (car lst)))
-(define (cdaar lst) (cdr (car (car lst))))
-
-;;; (cdadr lst) - (cdr (car (cdr lst)))
-(define (cdadr lst) (cdr (car (cdr lst))))
-
-;;; (cddar lst) - (cdr (cdr (car lst)))
-(define (cddar lst) (cdr (cdr (car lst))))
-
-;;; (cdddr lst) - (cdr (cdr (cdr lst)))
-(define (cdddr lst) (cdr (cdr (cdr lst))))
 
 ;;; (cadddr lst) - (car (cdr (cdr (cdr lst))))
 (define (cadddr lst) (car (cdr (cdr (cdr lst)))))
 
 ;;; (cddddr lst) - (cdr (cdr (cdr (cdr lst))))
 (define (cddddr lst) (cdr (cdr (cdr (cdr lst)))))
-
-;;; (caaaar lst) - (car (car (car (car lst))))
-(define (caaaar lst) (car (car (car (car lst)))))
-
-;;; (caaadr lst) - (car (car (car (cdr lst))))
-(define (caaadr lst) (car (car (car (cdr lst)))))
-
-;;; (caadar lst) - (car (car (cdr (car lst))))
-(define (caadar lst) (car (car (cdr (car lst)))))
-
-;;; (caaddr lst) - (car (car (cdr (cdr lst))))
-(define (caaddr lst) (car (car (cdr (cdr lst)))))
-
-;;; (cadaar lst) - (car (cdr (car (car lst))))
-(define (cadaar lst) (car (cdr (car (car lst)))))
-
-;;; (cadadr lst) - (car (cdr (car (cdr lst))))
-(define (cadadr lst) (car (cdr (car (cdr lst)))))
-
-;;; (caddar lst) - (car (cdr (cdr (car lst))))
-(define (caddar lst) (car (cdr (cdr (car lst)))))
-
-;;; (cdaaar lst) - (cdr (car (car (car lst))))
-(define (cdaaar lst) (cdr (car (car (car lst)))))
-
-;;; (cdaadr lst) - (cdr (car (car (cdr lst))))
-(define (cdaadr lst) (cdr (car (car (cdr lst)))))
-
-;;; (cdadar lst) - (cdr (car (cdr (car lst))))
-(define (cdadar lst) (cdr (car (cdr (car lst)))))
 
 ;;; (cdaddr lst) - (cdr (car (cdr (cdr lst))))
 (define (cdaddr lst) (cdr (car (cdr (cdr lst)))))
@@ -1271,9 +1219,6 @@
 ;;; ============================================================
 
 ;;; (modulo a b) already builtin - use remainder-based modulo for stdlib
-;;; (sign n) - Return -1, 0, or 1 based on sign of n
-(define (sign n) (if (positive? n) 1 (if (negative? n) -1 0)))
-
 ;;; sqrt and square are handled by builtins in the R7RS numeric tower.
 
 ;;; (cube x) - Return x cubed
@@ -1529,10 +1474,6 @@
 ;;; ============================================================
 ;;; Additional String Functions
 ;;; ============================================================
-
-;;; (string-for-each proc s) - Apply proc to each character for side effects
-(define (string-for-each proc s)
-  (for-each proc (string->list s)))
 
 ;;; (string-map proc s) - Map proc over characters, return new string
 (define (string-map proc s)

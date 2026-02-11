@@ -1,4 +1,7 @@
 ;;; (scheme char) — R7RS §6.6 Characters (full Unicode)
+;;;
+;;; All exports are native builtins implemented in Rust with
+;;; full Unicode support via icu4x. No Scheme definitions needed.
 (define-library (scheme char)
   (export
     char-alphabetic? char-numeric? char-whitespace?
