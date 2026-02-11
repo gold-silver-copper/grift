@@ -618,7 +618,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// (environment import-set ...) — R7RS §6.12
-    fn apply_environment_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+    fn apply_environment_builtin(&mut self, args: ArenaIndex, _call_expr: ArenaIndex)
         -> Result<TrampolineState, EvalError>
     {
         let nil = self.lisp.nil()?;
@@ -632,7 +632,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         let env_val = self.lisp.alloc(Value::Environment { env: result_env.0, mutable: false })?;
-        let _ = call_expr; // suppress unused warning
         Ok(TrampolineState::Return { val: env_val })
     }
     
