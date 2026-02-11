@@ -85,7 +85,7 @@ pub enum Token {
     /// Complex number literal (real + imaginary parts, already parsed)
     Complex(grift_core::fsize, grift_core::fsize),
     /// Symbol — raw bytes are in `input[start..start+len]`.
-    /// Use [`Lexer::symbol_input`] to get the raw bytes.
+    /// Use [`Lexer::input_slice`] to get the raw bytes.
     Symbol {
         /// Start position in the input
         start: usize,
@@ -977,8 +977,9 @@ impl<'a> Lexer<'a> {
         self.advance(); // consume opening '"'
         
         // Pre-scan to find closing quote and compute upper bound for char count.
-        // Each byte between quotes can produce at most one character, so the
-        // byte count from here to the closing quote is a safe upper bound.
+        // The byte count is a conservative upper bound because escape sequences
+        // (e.g. \n, \xHH;) and multi-byte UTF-8 sequences each produce at most
+        // one character from multiple input bytes.
         let upper_bound = {
             let mut scan = self.pos;
             while scan < self.input.len() {
@@ -1166,7 +1167,7 @@ impl<'a> Lexer<'a> {
         
         // Create interned string from arena data
         let str_idx = if len == 0 {
-            // All chars were line continuations - empty string
+            // No characters produced (empty string or all line continuations)
             let _ = lisp.arena().free_contiguous(data, upper_bound);
             lisp.alloc(grift_core::Value::String { len: 0, data: grift_arena::ArenaIndex::NIL })
                 .map_err(|_| self.error(LexErrorKind::OutOfMemory))?
