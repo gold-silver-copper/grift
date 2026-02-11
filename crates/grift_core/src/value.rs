@@ -748,26 +748,19 @@ pub enum Value {
     ///
     /// # Memory Layout
     ///
-    /// - `cont_data`: ArenaIndex to cons cell `((type . data) . parent_cont)`
-    ///   - car: cons cell `(Usize(cont_type) . data)` where data encodes continuation-specific values
+    /// - `cont_type`: The continuation type stored directly (no arena indirection)
+    /// - `cont_data`: ArenaIndex to cons cell `(data . parent_cont)`
+    ///   - car: continuation-specific data
     ///   - cdr: ArenaIndex to parent ContFrame, or Nil for Done
     /// - `env`: ArenaIndex to the environment at this continuation point
-    ///
-    /// This maintains the 2-index constraint per arena slot, matching Lambda's layout.
-    ///
-    /// # Example Continuation Types (encoded as Usize)
-    ///
-    /// - 0: Done - computation complete
-    /// - 1: ApplyForced - after evaluating function
-    /// - 2: IfBranch - after evaluating condition
-    /// - etc.
     ///
     /// # References
     ///
     /// See docs/CALL_CC_IMPLEMENTATION_PLAN.md for the full implementation plan.
     ContFrame {
-        cont_data: ArenaIndex,  // cons cell: ((type . data) . parent_cont)
-        env: ArenaIndex,        // environment at this continuation point
+        cont_type: crate::ContType,  // continuation type stored directly
+        cont_data: ArenaIndex,       // cons cell: (data . parent_cont)
+        env: ArenaIndex,             // environment at this continuation point
     },
     
     /// R7RS error object (§6.11)
@@ -1070,9 +1063,9 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*expr);
                 tracer(*context);
             }
-            Value::ContFrame { cont_data, env } => {
+            Value::ContFrame { cont_data, env, .. } => {
                 // cont_data and env are inline ArenaIndex - trace both
-                // cont_data points to a cons cell (type_and_data . parent_cont)
+                // cont_data points to a cons cell (data . parent_cont)
                 tracer(*cont_data);
                 tracer(*env);
             }

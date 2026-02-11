@@ -1056,8 +1056,8 @@ fn test_cont_frame_creation() {
     let nil = lisp.nil().unwrap();
     let env = lisp.nil().unwrap();
     
-    // Create a Done continuation (type 0, no data, no parent)
-    let cont = lisp.cont_frame(0, nil, nil, env).unwrap();
+    // Create a Done continuation (no data, no parent)
+    let cont = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
     
     // Verify it's a ContFrame
     assert!(lisp.get(cont).unwrap().is_cont_frame());
@@ -1069,12 +1069,12 @@ fn test_cont_frame_parts_extraction() {
     let nil = lisp.nil().unwrap();
     let env = lisp.symbol("test-env").unwrap();
     
-    // Create a Done continuation (type 0)
-    let cont = lisp.cont_frame(0, nil, nil, env).unwrap();
+    // Create a Done continuation
+    let cont = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
     
     // Extract parts
     let (cont_type, data, parent, extracted_env) = lisp.cont_frame_parts(cont).unwrap();
-    assert_eq!(cont_type, 0);
+    assert_eq!(cont_type, ContType::Done);
     assert_eq!(data, nil);
     assert_eq!(parent, nil);
     assert_eq!(extracted_env, env);
@@ -1085,17 +1085,17 @@ fn test_cont_frame_with_data() {
     let lisp: Lisp<100> = Lisp::new();
     let nil = lisp.nil().unwrap();
     
-    // Create some data for an IfBranch continuation (type 2)
+    // Create some data for an IfBranch continuation
     let then_expr = lisp.symbol("then").unwrap();
     let else_expr = lisp.symbol("else").unwrap();
     let data = lisp.cons(then_expr, else_expr).unwrap();
     let env = lisp.nil().unwrap();
     
-    let cont = lisp.cont_frame(2, data, nil, env).unwrap();
+    let cont = lisp.cont_frame(ContType::IfBranch, data, nil, env).unwrap();
     
     // Extract and verify
     let (cont_type, extracted_data, parent, _) = lisp.cont_frame_parts(cont).unwrap();
-    assert_eq!(cont_type, 2);
+    assert_eq!(cont_type, ContType::IfBranch);
     assert_eq!(extracted_data, data);
     assert_eq!(parent, nil);
     
@@ -1114,21 +1114,21 @@ fn test_cont_frame_linked_list() {
     
     // Create a chain of continuation frames
     // Done -> ApplyForced -> IfBranch
-    let done_cont = lisp.cont_frame(0, nil, nil, env).unwrap();
-    let apply_cont = lisp.cont_frame(1, nil, done_cont, env).unwrap();
-    let if_cont = lisp.cont_frame(2, nil, apply_cont, env).unwrap();
+    let done_cont = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
+    let apply_cont = lisp.cont_frame(ContType::ApplyForced, nil, done_cont, env).unwrap();
+    let if_cont = lisp.cont_frame(ContType::IfBranch, nil, apply_cont, env).unwrap();
     
     // Verify the chain
     let (if_type, _, if_parent, _) = lisp.cont_frame_parts(if_cont).unwrap();
-    assert_eq!(if_type, 2);
+    assert_eq!(if_type, ContType::IfBranch);
     assert_eq!(if_parent, apply_cont);
     
     let (apply_type, _, apply_parent, _) = lisp.cont_frame_parts(if_parent).unwrap();
-    assert_eq!(apply_type, 1);
+    assert_eq!(apply_type, ContType::ApplyForced);
     assert_eq!(apply_parent, done_cont);
     
     let (done_type, _, done_parent, _) = lisp.cont_frame_parts(apply_parent).unwrap();
-    assert_eq!(done_type, 0);
+    assert_eq!(done_type, ContType::Done);
     assert_eq!(done_parent, nil);  // Done has no parent
 }
 
@@ -1139,8 +1139,8 @@ fn test_cont_frame_parent_helper() {
     let env = lisp.nil().unwrap();
     
     // Create a chain
-    let done_cont = lisp.cont_frame(0, nil, nil, env).unwrap();
-    let child_cont = lisp.cont_frame(1, nil, done_cont, env).unwrap();
+    let done_cont = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
+    let child_cont = lisp.cont_frame(ContType::ApplyForced, nil, done_cont, env).unwrap();
     
     // Use the parent helper
     let parent = lisp.cont_frame_parent(child_cont).unwrap();
@@ -1158,8 +1158,8 @@ fn test_cont_frame_gc_survival() {
     let env = lisp.nil().unwrap();
     
     // Create a chain of continuation frames
-    let done_cont = lisp.cont_frame(0, nil, nil, env).unwrap();
-    let child_cont = lisp.cont_frame(1, nil, done_cont, env).unwrap();
+    let done_cont = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
+    let child_cont = lisp.cont_frame(ContType::ApplyForced, nil, done_cont, env).unwrap();
     
     // Create garbage (intentionally discarded for GC testing)
     for i in 0..50 {
@@ -1184,7 +1184,7 @@ fn test_cont_frame_type_name() {
     let lisp: Lisp<100> = Lisp::new();
     let nil = lisp.nil().unwrap();
     
-    let cont = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    let cont = lisp.cont_frame(ContType::Done, nil, nil, nil).unwrap();
     
     assert_eq!(lisp.get(cont).unwrap().type_name(), "cont-frame");
 }
@@ -1235,9 +1235,9 @@ fn test_continuation_with_cont_frame_chain() {
     let env = nil;
     
     // Create a chain of ContFrames
-    let frame1 = lisp.cont_frame(0, nil, nil, env).unwrap(); // Done
-    let frame2 = lisp.cont_frame(1, nil, frame1, env).unwrap(); // ApplyForced
-    let frame3 = lisp.cont_frame(2, nil, frame2, env).unwrap(); // IfBranch
+    let frame1 = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
+    let frame2 = lisp.cont_frame(ContType::ApplyForced, nil, frame1, env).unwrap();
+    let frame3 = lisp.cont_frame(ContType::IfBranch, nil, frame2, env).unwrap();
     
     // Create a continuation with this chain
     let cont = lisp.continuation(frame3, env, nil).unwrap();
@@ -1248,13 +1248,13 @@ fn test_continuation_with_cont_frame_chain() {
     
     // Walk the chain
     let (type3, _, parent3, _) = lisp.cont_frame_parts(extracted_chain).unwrap();
-    assert_eq!(type3, 2);
+    assert_eq!(type3, ContType::IfBranch);
     
     let (type2, _, parent2, _) = lisp.cont_frame_parts(parent3).unwrap();
-    assert_eq!(type2, 1);
+    assert_eq!(type2, ContType::ApplyForced);
     
     let (type1, _, parent1, _) = lisp.cont_frame_parts(parent2).unwrap();
-    assert_eq!(type1, 0);
+    assert_eq!(type1, ContType::Done);
     assert!(parent1.is_nil()); // Done has no parent
 }
 
@@ -1267,7 +1267,7 @@ fn test_continuation_gc_survival() {
     let env = lisp.cons(sym_x, num_1).unwrap();
     
     // Create a continuation with some data
-    let frame = lisp.cont_frame(0, nil, nil, env).unwrap();
+    let frame = lisp.cont_frame(ContType::Done, nil, nil, env).unwrap();
     let cont = lisp.continuation(frame, env, nil).unwrap();
     
     // Allocate some garbage
