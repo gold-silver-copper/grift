@@ -68,7 +68,10 @@ fn eval_str<const N: usize>(
         Err(e) => {
             // Include more details about the error
             let parse_info = if let Some(ref pe) = e.parse_error {
-                format!(" (parse: {:?} at {}:{})", pe.kind, pe.loc.line, pe.loc.column)
+                format!(
+                    " (parse: {:?} at {}:{})",
+                    pe.kind, pe.loc.line, pe.loc.column
+                )
             } else {
                 String::new()
             };
@@ -92,7 +95,7 @@ fn run_bench<const N: usize>(
     let mut last_result = String::new();
     let mut error = None;
     let mut successful_iters = 0;
-    
+
     // Track peak allocation during execution
     let initial_allocated = lisp.stats().allocated;
     let mut peak_allocated = initial_allocated;
@@ -116,7 +119,7 @@ fn run_bench<const N: usize>(
     }
 
     let duration = start.elapsed();
-    
+
     let final_allocated = lisp.stats().allocated;
     let _peak_delta = peak_allocated.saturating_sub(initial_allocated);
     let _final_delta = final_allocated.saturating_sub(initial_allocated);
@@ -176,10 +179,7 @@ fn main() {
         initial_stats.capacity,
         initial_stats.usage_percent()
     );
-    println!(
-        "  (Includes {} reserved slots: NIL, True, False)",
-        3
-    );
+    println!("  (Includes {} reserved slots: NIL, True, False)", 3);
     println!();
 
     let mut results: Vec<BenchResult> = Vec::new();
@@ -273,23 +273,23 @@ fn main() {
     // Fibonacci - exponential time, tree recursion uses lots of memory
     // fib(n) makes O(2^n) calls, each needs stack space
     results.push(run_bench(
-        "Fibonacci(12) x 5",
+        "Fibonacci(25) x 5",
         &lisp,
         &mut eval,
         5,
-        "(fib 12)",
-        Some("144"),
+        "(fib 25)",
+        Some("75025"),
     ));
 
     results.push(run_bench(
-        "Fibonacci(20) x 1",
+        "Fibonacci(30) x 1",
         &lisp,
         &mut eval,
         1,
-        "(fib 20)",
-        Some("6765"),
+        "(fib 30)",
+        Some("832040"),
     ));
-    
+
     // Memoized Fibonacci benchmark removed: `memoize` may not be available
     // or stable in all configurations yet, and was causing `UnboundVariable`
     // failures in the stress test suite.
@@ -1164,23 +1164,23 @@ fn main() {
     // Test with GC enabled (normal operation)
     let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
     let gc_on_start = Instant::now();
-    
+
     for _ in 0..50 {
         let _ = eval_str(&lisp, &mut eval, "(map (lambda (x) (* x x)) (range 1 21))");
     }
     let gc_on_time = gc_on_start.elapsed();
     eval.gc();
-    
+
     // Test with GC disabled (batch operations)
     let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
-    
+
     let gc_off_start = Instant::now();
-    
+
     for _ in 0..50 {
         let _ = eval_str(&lisp, &mut eval, "(map (lambda (x) (* x x)) (range 1 21))");
     }
     let gc_off_time = gc_off_start.elapsed();
-    
+
     // Re-enable GC and collect
     // IMPORTANT: Enable GC directly on the arena, because eval_str needs
     // to allocate memory for parsing. If the arena is full and GC is disabled,
@@ -1189,97 +1189,164 @@ fn main() {
     eval.gc();
 
     println!("[INFO] Map over 20 elements x 50 iterations:");
-    println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_time, gc_on_time.as_nanos() as f64 / 50.0 / 1000.0);
-    println!("       GC disabled: {:?} ({:.2}µs/iter)", gc_off_time, gc_off_time.as_nanos() as f64 / 50.0 / 1000.0);
-    
+    println!(
+        "       GC enabled:  {:?} ({:.2}µs/iter)",
+        gc_on_time,
+        gc_on_time.as_nanos() as f64 / 50.0 / 1000.0
+    );
+    println!(
+        "       GC disabled: {:?} ({:.2}µs/iter)",
+        gc_off_time,
+        gc_off_time.as_nanos() as f64 / 50.0 / 1000.0
+    );
+
     let speedup = if gc_off_time.as_nanos() > 0 {
         gc_on_time.as_nanos() as f64 / gc_off_time.as_nanos() as f64
     } else {
         1.0
     };
-    
+
     if gc_off_time < gc_on_time {
         println!("       Speedup with GC disabled: {:.2}x faster", speedup);
     } else {
-        println!("       Note: GC overhead minimal in this test ({:.2}x)", speedup);
+        println!(
+            "       Note: GC overhead minimal in this test ({:.2}x)",
+            speedup
+        );
     }
     println!();
 
     // Allocation-heavy test
     let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
     let gc_on_alloc_start = Instant::now();
-    
+
     for i in 0..100 {
-        let _ = eval_str(&lisp, &mut eval, &format!("(list {} {} {} {} {} {} {} {})", i, i+1, i+2, i+3, i+4, i+5, i+6, i+7));
+        let _ = eval_str(
+            &lisp,
+            &mut eval,
+            &format!(
+                "(list {} {} {} {} {} {} {} {})",
+                i,
+                i + 1,
+                i + 2,
+                i + 3,
+                i + 4,
+                i + 5,
+                i + 6,
+                i + 7
+            ),
+        );
     }
     let gc_on_alloc_time = gc_on_alloc_start.elapsed();
     eval.gc();
-    
+
     let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
     let gc_off_alloc_start = Instant::now();
-    
+
     for i in 0..100 {
-        let _ = eval_str(&lisp, &mut eval, &format!("(list {} {} {} {} {} {} {} {})", i, i+1, i+2, i+3, i+4, i+5, i+6, i+7));
+        let _ = eval_str(
+            &lisp,
+            &mut eval,
+            &format!(
+                "(list {} {} {} {} {} {} {} {})",
+                i,
+                i + 1,
+                i + 2,
+                i + 3,
+                i + 4,
+                i + 5,
+                i + 6,
+                i + 7
+            ),
+        );
     }
     let gc_off_alloc_time = gc_off_alloc_start.elapsed();
-    
+
     // Re-enable GC and collect (see comment in map test above for explanation)
     lisp.arena().set_gc_enabled(true);
     eval.gc();
 
     println!("[INFO] Allocation-heavy (8-element lists) x 100 iterations:");
-    println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_alloc_time, gc_on_alloc_time.as_nanos() as f64 / 100.0 / 1000.0);
-    println!("       GC disabled: {:?} ({:.2}µs/iter)", gc_off_alloc_time, gc_off_alloc_time.as_nanos() as f64 / 100.0 / 1000.0);
-    
+    println!(
+        "       GC enabled:  {:?} ({:.2}µs/iter)",
+        gc_on_alloc_time,
+        gc_on_alloc_time.as_nanos() as f64 / 100.0 / 1000.0
+    );
+    println!(
+        "       GC disabled: {:?} ({:.2}µs/iter)",
+        gc_off_alloc_time,
+        gc_off_alloc_time.as_nanos() as f64 / 100.0 / 1000.0
+    );
+
     let alloc_speedup = if gc_off_alloc_time.as_nanos() > 0 {
         gc_on_alloc_time.as_nanos() as f64 / gc_off_alloc_time.as_nanos() as f64
     } else {
         1.0
     };
-    
+
     if gc_off_alloc_time < gc_on_alloc_time {
-        println!("       Speedup with GC disabled: {:.2}x faster", alloc_speedup);
+        println!(
+            "       Speedup with GC disabled: {:.2}x faster",
+            alloc_speedup
+        );
     } else {
-        println!("       Note: GC overhead minimal in this test ({:.2}x)", alloc_speedup);
+        println!(
+            "       Note: GC overhead minimal in this test ({:.2}x)",
+            alloc_speedup
+        );
     }
     println!();
 
-    // Recursive test  
+    // Recursive test
     let _ = eval_str(&lisp, &mut eval, "(gc-enable)");
     let gc_on_rec_start = Instant::now();
-    
+
     for _ in 0..20 {
         let _ = eval_str(&lisp, &mut eval, "(fib 12)");
     }
     let gc_on_rec_time = gc_on_rec_start.elapsed();
     eval.gc();
-    
+
     let _ = eval_str(&lisp, &mut eval, "(gc-disable)");
     let gc_off_rec_start = Instant::now();
-    
+
     for _ in 0..20 {
         let _ = eval_str(&lisp, &mut eval, "(fib 12)");
     }
     let gc_off_rec_time = gc_off_rec_start.elapsed();
-    
+
     // Re-enable GC and collect (see comment in map test above for explanation)
     lisp.arena().set_gc_enabled(true);
     eval.gc();
 
     println!("[INFO] Fibonacci(12) x 20 iterations (recursive):");
-    println!("       GC enabled:  {:?} ({:.2}µs/iter)", gc_on_rec_time, gc_on_rec_time.as_nanos() as f64 / 20.0 / 1000.0);
-    println!("       GC disabled: {:?} ({:.2}µs/iter)", gc_off_rec_time, gc_off_rec_time.as_nanos() as f64 / 20.0 / 1000.0);
-    
+    println!(
+        "       GC enabled:  {:?} ({:.2}µs/iter)",
+        gc_on_rec_time,
+        gc_on_rec_time.as_nanos() as f64 / 20.0 / 1000.0
+    );
+    println!(
+        "       GC disabled: {:?} ({:.2}µs/iter)",
+        gc_off_rec_time,
+        gc_off_rec_time.as_nanos() as f64 / 20.0 / 1000.0
+    );
+
     let rec_speedup = if gc_off_rec_time.as_nanos() > 0 {
         gc_on_rec_time.as_nanos() as f64 / gc_off_rec_time.as_nanos() as f64
     } else {
         1.0
     };
-    
+
     if gc_off_rec_time < gc_on_rec_time {
-        println!("       Speedup with GC disabled: {:.2}x faster", rec_speedup);
+        println!(
+            "       Speedup with GC disabled: {:.2}x faster",
+            rec_speedup
+        );
     } else {
-        println!("       Note: GC overhead minimal in this test ({:.2}x)", rec_speedup);
+        println!(
+            "       Note: GC overhead minimal in this test ({:.2}x)",
+            rec_speedup
+        );
     }
     println!();
 
@@ -1386,7 +1453,7 @@ fn main() {
     eval.gc();
     let final_stats = lisp.stats();
     let final_allocated = final_stats.allocated;
-    
+
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Memory Usage Comparison:");
@@ -1403,7 +1470,7 @@ fn main() {
         final_stats.capacity,
         final_stats.usage_percent()
     );
-    
+
     let delta = final_allocated as isize - initial_allocated as isize;
     if delta > 0 {
         println!(
@@ -1416,11 +1483,9 @@ fn main() {
             delta
         );
     } else {
-        println!(
-            "  Net change:         0 cells (all test allocations were collected)"
-        );
+        println!("  Net change:         0 cells (all test allocations were collected)");
     }
-    
+
     println!();
     println!("Reserved Slots Breakdown:");
     println!(
