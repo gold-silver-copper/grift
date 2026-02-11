@@ -8586,5 +8586,65 @@ fn test_unicode_string_ci_eq() {
     assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci=? "hello" "hell")"#));
 }
 
+// ============================================================
+// Full Unicode Case Folding Tests (ß → ss expansion)
+// ============================================================
 
+#[test]
+fn test_full_unicode_string_foldcase_eszett() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // German ß (U+00DF) full-folds to "ss" (1 char → 2 chars)
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-foldcase "Straße")"#), "\"strasse\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-foldcase "STRASSE")"#), "\"strasse\"");
+    
+    // Length changes: "Straße" is 6 chars, folded "strasse" is 7
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length "Straße")"#), 6);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length (string-foldcase "Straße"))"#), 7);
+    
+    // ß alone
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-foldcase "ß")"#), "\"ss\"");
+}
+
+#[test]
+fn test_full_unicode_string_upcase_eszett() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ß full-uppercases to "SS" (1 char → 2 chars)
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-upcase "Straße")"#), "\"STRASSE\"");
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length (string-upcase "Straße"))"#), 7);
+}
+
+#[test]
+fn test_full_unicode_string_ci_eszett() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // "Straße" and "STRASSE" should be case-insensitively equal
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "Straße" "STRASSE")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "STRASSE" "Straße")"#));
+    
+    // "ß" ci=? "ss"
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "ß" "ss")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "ß" "SS")"#));
+    
+    // Not equal to different strings
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci=? "Straße" "STRAFE")"#));
+}
+
+#[test]
+fn test_unicode_string_parsing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Verify ß is parsed as a single character (U+00DF = 223)
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(char->integer (string-ref "ß" 0))"#), 223);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length "ß")"#), 1);
+    
+    // Verify other multi-byte UTF-8 characters in strings
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(string-length "αβγ")"#), 3);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r#"(char->integer (string-ref "α" 0))"#), 945); // U+03B1
+}
 

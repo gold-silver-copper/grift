@@ -923,6 +923,27 @@ impl<'a> Lexer<'a> {
         if name_len == 0 {
             // #\ followed by non-symbol character
             return match self.peek() {
+                Some(c) if c >= 0x80 => {
+                    // Multi-byte UTF-8 character literal
+                    let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
+                    let s = self.pos;
+                    let e = (s + seq_len).min(self.input.len());
+                    if let Ok(utf8) = core::str::from_utf8(&self.input[s..e]) {
+                        if let Some(ch) = utf8.chars().next() {
+                            let byte_len = ch.len_utf8();
+                            for _ in 0..byte_len {
+                                self.advance();
+                            }
+                            Ok(Token::Char(ch))
+                        } else {
+                            self.advance();
+                            Ok(Token::Char(c as char))
+                        }
+                    } else {
+                        self.advance();
+                        Ok(Token::Char(c as char))
+                    }
+                }
                 Some(c) => {
                     self.advance();
                     Ok(Token::Char(c as char))
@@ -1047,9 +1068,34 @@ impl<'a> Lexer<'a> {
                     if len >= MAX_STRING_LEN {
                         return Err(self.error(LexErrorKind::StringTooLong));
                     }
-                    self.string_buf[len] = c as char;
-                    len += 1;
-                    self.advance();
+                    if c < 0x80 {
+                        // ASCII byte
+                        self.string_buf[len] = c as char;
+                        len += 1;
+                        self.advance();
+                    } else {
+                        // Multi-byte UTF-8: determine sequence length from leading byte
+                        let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
+                        let start = self.pos;
+                        let end = (start + seq_len).min(self.input.len());
+                        if let Ok(s) = core::str::from_utf8(&self.input[start..end]) {
+                            if let Some(ch) = s.chars().next() {
+                                self.string_buf[len] = ch;
+                                len += 1;
+                                let byte_len = ch.len_utf8();
+                                for _ in 0..byte_len {
+                                    self.advance();
+                                }
+                            } else {
+                                self.advance();
+                            }
+                        } else {
+                            // Invalid UTF-8: store raw byte
+                            self.string_buf[len] = c as char;
+                            len += 1;
+                            self.advance();
+                        }
+                    }
                 }
             }
         }
