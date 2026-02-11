@@ -2808,19 +2808,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         while let Value::Cons { .. } = self.lisp.get(filenames)? {
             let filename_expr = self.lisp.car(filenames)?;
-            let path = self.extract_string_arg(filename_expr, filenames)?;
+            let str_port = self.string_to_output_port(filename_expr, filenames)?;
 
             // Read and parse the file
             let forms = match &mut self.io {
                 Some(io) => {
-                    let content = match io.read_file(&path) {
+                    let content = match io.read_file_from_string_port(str_port) {
                         Ok(s) => s,
                         Err(_) => {
+                            io.close_port(str_port).ok();
                             // Raise a file-error typed error object
                             return self.raise_file_error("include: cannot read file", filenames);
                         }
                     };
-                    grift_parser::parse_all(self.lisp, content)?
+                    let result = grift_parser::parse_all(self.lisp, content);
+                    io.close_port(str_port).ok();
+                    result?
                 }
                 None => {
                     return self.raise_file_error("include: no I/O provider", filenames);

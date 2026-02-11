@@ -172,17 +172,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         -> Result<TrampolineState, EvalError>
     {
         let arg = self.lisp.car(args)?;
-        let path = self.extract_string_arg(arg, call_expr)?;
+        let port = self.string_to_output_port(arg, call_expr)?;
 
         // Read file content and parse all expressions while holding the io borrow.
         // We must parse before releasing the borrow, since the content &str is tied to it.
         let forms = match &mut self.io {
             Some(io) => {
-                let content = match io.read_file(&path) {
+                let content = match io.read_file_from_string_port(port) {
                     Ok(s) => s,
                     Err(_) => return Err(self.make_error(ErrorKind::FileError, call_expr)),
                 };
-                grift_parser::parse_all(self.lisp, content)?
+                let result = grift_parser::parse_all(self.lisp, content);
+                io.close_port(port).ok();
+                result?
             }
             None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
@@ -265,15 +267,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let filename_val = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         let proc = self.lisp.car(rest)?;
-        let path = self.extract_string_arg(filename_val, call_expr)?;
+        let mode = if matches!(builtin, Builtin::CallWithInputFile) {
+            grift_parser::FileOpenMode::TextInput
+        } else {
+            grift_parser::FileOpenMode::TextOutput
+        };
+        let str_port = self.string_to_output_port(filename_val, call_expr)?;
 
         let pid = match &mut self.io {
             Some(io) => {
-                if matches!(builtin, Builtin::CallWithInputFile) {
-                    io.open_input_file(&path)
-                } else {
-                    io.open_output_file(&path)
-                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
+                let result = io.open_file_from_string_port(str_port, mode);
+                io.close_port(str_port).ok();
+                result.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
             }
             None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
@@ -332,16 +337,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let filename_val = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         let thunk = self.lisp.car(rest)?;
-        let path = self.extract_string_arg(filename_val, call_expr)?;
-
         let is_input = matches!(builtin, Builtin::WithInputFromFile);
+        let mode = if is_input {
+            grift_parser::FileOpenMode::TextInput
+        } else {
+            grift_parser::FileOpenMode::TextOutput
+        };
+        let str_port = self.string_to_output_port(filename_val, call_expr)?;
+
         let pid = match &mut self.io {
             Some(io) => {
-                if is_input {
-                    io.open_input_file(&path)
-                } else {
-                    io.open_output_file(&path)
-                }.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
+                let result = io.open_file_from_string_port(str_port, mode);
+                io.close_port(str_port).ok();
+                result.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?
             }
             None => return Err(self.make_error(ErrorKind::FileError, call_expr)),
         };
@@ -1387,29 +1395,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::ListToString => {
                 // (list->string list) - Convert list of characters to string
-                const MAX_STRING_LEN: usize = 1024;
-                let mut chars = ['\0'; MAX_STRING_LEN];
-                let mut len = 0;
-                
-                let mut current = self.lisp.car(args)?;
-                loop {
-                    match self.lisp.get(current)? {
-                        Value::Nil => break,
-                        Value::Cons { .. } => {
-                            let car = self.lisp.car(current)?;
-                            let cdr = self.lisp.cdr(current)?;
-                            if len >= MAX_STRING_LEN {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                            }
-                            chars[len] = self.get_char(car, call_expr)?;
-                            len += 1;
-                            current = cdr;
-                        }
-                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
-                    }
+                // Two-pass: count elements, then allocate and fill
+                let list = self.lisp.car(args)?;
+                let len = self.lisp.list_len(list)?;
+                let result = self.lisp.make_string(len, '\0')?;
+                let mut current = list;
+                for i in 0..len {
+                    let car = self.lisp.car(current)?;
+                    let c = self.get_char(car, call_expr)?;
+                    self.lisp.string_set(result, i, c)?;
+                    current = self.lisp.cdr(current)?;
                 }
-                
-                self.lisp.string_from_chars(&chars[..len]).map_err(Into::into)
+                Ok(result)
             }
             
             Builtin::Substring => {
@@ -1481,28 +1478,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.lisp.string_copy_data(to_str)?;
                 }
                 
-                // Read source characters into temp buffer for overlapping safety
-                const MAX_STRING_COPY: usize = 4096;
-                if count > MAX_STRING_COPY {
-                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                }
-                let mut temp = ['\0'; MAX_STRING_COPY];
-                for (i, ch) in temp.iter_mut().enumerate().take(count) {
+                // Read source characters into arena cons list for overlapping safety
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                for i in (0..count).rev() {
                     let char_slot = self.lisp.arena_index_at_offset(from_data, start + i)?;
                     match self.lisp.get(char_slot)? {
-                        Value::Char(c) => *ch = c,
+                        Value::Char(c) => {
+                            let ch_val = self.lisp.char(c)?;
+                            collected = self.lisp.cons(ch_val, collected)?;
+                        }
                         _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                     }
                 }
                 
-                // Write to destination
+                // Write to destination from collected list
                 let to_data = match self.lisp.get(to_str)? {
                     Value::String { data, .. } => data,
                     _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 };
-                for (i, &ch) in temp.iter().enumerate().take(count) {
-                    let char_slot = self.lisp.arena_index_at_offset(to_data, at + i)?;
-                    self.lisp.set(char_slot, Value::Char(ch))?;
+                let mut cursor = collected;
+                for i in 0..count {
+                    let ch_idx = self.lisp.car(cursor)?;
+                    if let Value::Char(ch) = self.lisp.get(ch_idx)? {
+                        let char_slot = self.lisp.arena_index_at_offset(to_data, at + i)?;
+                        self.lisp.set(char_slot, Value::Char(ch))?;
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
                 }
                 
                 self.lisp.void_val().map_err(Into::into)
@@ -2101,10 +2103,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // File port operations (R7RS §6.13.2)
             // ================================================================
 
-            Builtin::OpenInputFile => self.open_file_port(args, call_expr, |io, path| io.open_input_file(path)),
-            Builtin::OpenOutputFile => self.open_file_port(args, call_expr, |io, path| io.open_output_file(path)),
-            Builtin::OpenBinaryInputFile => self.open_file_port(args, call_expr, |io, path| io.open_binary_input_file(path)),
-            Builtin::OpenBinaryOutputFile => self.open_file_port(args, call_expr, |io, path| io.open_binary_output_file(path)),
+            Builtin::OpenInputFile => self.open_file_port(args, call_expr, grift_parser::FileOpenMode::TextInput),
+            Builtin::OpenOutputFile => self.open_file_port(args, call_expr, grift_parser::FileOpenMode::TextOutput),
+            Builtin::OpenBinaryInputFile => self.open_file_port(args, call_expr, grift_parser::FileOpenMode::BinaryInput),
+            Builtin::OpenBinaryOutputFile => self.open_file_port(args, call_expr, grift_parser::FileOpenMode::BinaryOutput),
 
             // call-with-input-file/output-file and with-input-from-file/output-to-file
             // and call-with-port are handled in apply_builtin_trampolined
@@ -2181,19 +2183,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
-                let mut buf = [0u8; 2048];
-                let read_len = k.min(buf.len());
-                match io.read_bytevector(pid, &mut buf[..read_len]) {
-                    Ok(n) => {
-                        // Create a bytevector from the read bytes
-                        let bv = self.lisp.make_bytevector(n, 0)?;
-                        for i in 0..n {
-                            self.lisp.bytevector_set(bv, i, buf[i])?;
+                // Read byte-at-a-time into arena bytevector
+                let bv = self.lisp.make_bytevector(k, 0)?;
+                let mut n = 0;
+                for i in 0..k {
+                    match io.read_u8(pid) {
+                        Ok(b) => {
+                            self.lisp.bytevector_set(bv, i, b)?;
+                            n += 1;
                         }
-                        Ok(bv)
+                        Err(grift_parser::IoErrorKind::Eof) => break,
+                        Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                     }
-                    Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
-                    Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+                if n == 0 {
+                    self.lisp.eof().map_err(Into::into)
+                } else if n < k {
+                    // Return a bytevector of the actual bytes read
+                    let result = self.lisp.make_bytevector(n, 0)?;
+                    for i in 0..n {
+                        let elem = self.lisp.bytevector_get(bv, i)?;
+                        let byte = match self.lisp.get(elem)? {
+                            Value::Number(b) => b as u8,
+                            _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        };
+                        self.lisp.bytevector_set(result, i, byte)?;
+                    }
+                    Ok(result)
+                } else {
+                    Ok(bv)
                 }
             }
 
@@ -2211,17 +2229,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
                 let read_len = end.saturating_sub(start);
-                let mut buf = [0u8; 2048];
-                let actual_len = read_len.min(buf.len());
-                match io.read_bytevector(pid, &mut buf[..actual_len]) {
-                    Ok(n) => {
-                        for i in 0..n {
-                            self.lisp.bytevector_set(bv_arg, start + i, buf[i])?;
+                // Read byte-at-a-time directly into bytevector
+                let mut n = 0;
+                for i in 0..read_len {
+                    match io.read_u8(pid) {
+                        Ok(b) => {
+                            self.lisp.bytevector_set(bv_arg, start + i, b)?;
+                            n += 1;
                         }
-                        self.lisp.number(n as isize).map_err(Into::into)
+                        Err(grift_parser::IoErrorKind::Eof) => break,
+                        Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                     }
-                    Err(grift_parser::IoErrorKind::Eof) => self.lisp.eof().map_err(Into::into),
-                    Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                }
+                if n == 0 {
+                    self.lisp.eof().map_err(Into::into)
+                } else {
+                    self.lisp.number(n as isize).map_err(Into::into)
                 }
             }
 
@@ -2234,25 +2257,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 let rest = self.lisp.cdr(args)?;
                 let (pid, start, end) = self.extract_port_and_range(rest, self.current_output_port, bv_len, call_expr)?;
-                // Extract bytes from bytevector into stack buffer
+                // Write byte-at-a-time directly from bytevector
                 let write_len = end.saturating_sub(start);
-                let mut buf = [0u8; 2048];
-                let actual_len = write_len.min(buf.len());
-                for i in 0..actual_len {
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                let io_err = EvalError::new(ErrorKind::Generic).with_expr(call_expr);
+                for i in 0..write_len {
                     let byte_slot = self.lisp.bytevector_get(bv_arg, start + i)?;
                     match self.lisp.get(byte_slot)? {
-                        Value::Number(n) => buf[i] = n as u8,
-                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        Value::Number(n) => {
+                            if io.write_u8(pid, n as u8).is_err() {
+                                return Err(io_err);
+                            }
+                        }
+                        _ => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),
                     }
                 }
-                match &mut self.io {
-                    Some(io) => {
-                        io.write_bytevector(pid, &buf[..actual_len])
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        self.lisp.void_val().map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
+                self.lisp.void_val().map_err(Into::into)
             }
 
             // ================================================================
@@ -2266,23 +2289,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Bytevector { len, .. } => len,
                     v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
                 };
-                let mut buf = [0u8; 2048];
-                let actual_len = bv_len.min(buf.len());
-                for i in 0..actual_len {
+                // Write bytes to output bytevector port, then convert to input
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
+                let generic_err = EvalError::new(ErrorKind::Generic).with_expr(call_expr);
+                let tmp_port = io.open_output_bytevector()
+                    .map_err(|_| EvalError::new(ErrorKind::Generic).with_expr(call_expr))?;
+                for i in 0..bv_len {
                     let byte_slot = self.lisp.bytevector_get(arg, i)?;
                     match self.lisp.get(byte_slot)? {
-                        Value::Number(n) => buf[i] = n as u8,
-                        _ => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        Value::Number(n) => {
+                            if io.write_u8(tmp_port, n as u8).is_err() {
+                                return Err(generic_err);
+                            }
+                        }
+                        _ => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),
                     }
                 }
-                match &mut self.io {
-                    Some(io) => {
-                        let pid = io.open_input_bytevector(&buf[..actual_len])
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        self.lisp.port(pid).map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
+                let pid = io.output_bytevector_to_input_port(tmp_port)
+                    .map_err(|_| EvalError::new(ErrorKind::Generic).with_expr(call_expr))?;
+                self.lisp.port(pid).map_err(Into::into)
             }
 
             Builtin::OpenOutputBytevector => {
@@ -2333,28 +2361,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 let rest = self.lisp.cdr(args)?;
                 let (pid, start, end) = self.extract_port_and_range(rest, self.current_output_port, str_len, call_expr)?;
-                // Extract chars from string to stack buffer
-                let mut buf = [0u8; 2048];
-                let mut byte_len = 0;
+                // Write char-at-a-time directly from string data
+                let io = match &mut self.io {
+                    Some(io) => io,
+                    None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                };
                 for i in start..end {
                     let char_slot = self.lisp.arena_index_at_offset(str_data, i)?;
                     if let Value::Char(c) = self.lisp.get(char_slot)? {
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() { break; }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
+                        if io.write_char(pid, c).is_err() {
+                            return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr));
+                        }
                     }
                 }
-                let s = core::str::from_utf8(&buf[..byte_len])
-                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                match &mut self.io {
-                    Some(io) => {
-                        io.write_str(pid, s)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        self.lisp.void_val().map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
+                self.lisp.void_val().map_err(Into::into)
             }
 
             Builtin::FlushOutputPort => {
@@ -2377,25 +2397,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::FileExistsP => {
                 // (file-exists? filename)
                 let arg = self.lisp.car(args)?;
-                let path = self.extract_string_arg(arg, call_expr)?;
-                match &self.io {
-                    Some(io) => {
-                        let exists = io.file_exists(&path)
-                            .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
-                        self.lisp.boolean(exists).map_err(Into::into)
-                    }
-                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
-                }
+                let str_port = self.string_to_output_port(arg, call_expr)?;
+                let io = self.io.as_ref()
+                    .ok_or_else(|| self.make_error(ErrorKind::Generic, call_expr))?;
+                let exists = io.file_exists_from_string_port(str_port)
+                    .map_err(|_| self.make_error(ErrorKind::Generic, call_expr))?;
+                // Close the temp port (need mut ref)
+                if let Some(io) = &mut self.io { io.close_port(str_port).ok(); }
+                self.lisp.boolean(exists).map_err(Into::into)
             }
 
             Builtin::DeleteFile => {
                 // (delete-file filename)
                 let arg = self.lisp.car(args)?;
-                let path = self.extract_string_arg(arg, call_expr)?;
+                let str_port = self.string_to_output_port(arg, call_expr)?;
                 match &mut self.io {
                     Some(io) => {
-                        io.delete_file(&path)
-                            .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
+                        let result = io.delete_file_from_string_port(str_port);
+                        io.close_port(str_port).ok();
+                        result.map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
                         self.lisp.void_val().map_err(Into::into)
                     }
                     None => Err(self.make_error(ErrorKind::FileError, call_expr)),
@@ -2450,13 +2470,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::GetEnvironmentVariable => {
                 // (get-environment-variable name) -> string or #f
                 let arg = self.lisp.car(args)?;
-                let name = self.extract_string_arg(arg, call_expr)?;
+                let str_port = self.string_to_output_port(arg, call_expr)?;
                 match &mut self.io {
                     Some(io) => {
-                        match io.get_environment_variable(&name) {
-                            Ok(Some(val)) => self.lisp.string(val).map_err(Into::into),
-                            Ok(None) => self.lisp.false_val().map_err(Into::into),
-                            Err(_) => Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        match io.get_env_var_from_string_port(str_port) {
+                            Ok(Some(val)) => {
+                                let result = self.lisp.string(val);
+                                io.close_port(str_port).ok();
+                                result.map_err(Into::into)
+                            }
+                            Ok(None) => {
+                                io.close_port(str_port).ok();
+                                self.lisp.false_val().map_err(Into::into)
+                            }
+                            Err(_) => {
+                                io.close_port(str_port).ok();
+                                Err(self.make_error(ErrorKind::Generic, call_expr))
+                            }
                         }
                     }
                     None => Err(self.make_error(ErrorKind::Generic, call_expr)),
@@ -2626,10 +2656,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::BytevectorAppend => {
                 // (bytevector-append bytevector ...) - Concatenate bytevectors
-                const MAX_TOTAL_BYTES: usize = 4096;
-                let mut bytes: [u8; MAX_TOTAL_BYTES] = [0u8; MAX_TOTAL_BYTES];
+                // Two-pass: count total length, then allocate and copy directly
                 let mut total_len = 0;
-
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -2639,20 +2667,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let cdr = self.lisp.cdr(current)?;
                             match self.lisp.get(car)? {
                                 Value::Bytevector { .. } => {
-                                    let len = self.lisp.bytevector_len(car)?;
-                                    if total_len + len > MAX_TOTAL_BYTES {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                    }
-                                    for i in 0..len {
-                                        let elem = self.lisp.bytevector_get(car, i)?;
-                                        match self.lisp.get(elem)? {
-                                            Value::Number(n) => {
-                                                bytes[total_len] = n as u8;
-                                                total_len += 1;
-                                            }
-                                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                                        }
-                                    }
+                                    total_len += self.lisp.bytevector_len(car)?;
                                 }
                                 v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
                             }
@@ -2663,19 +2678,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
 
                 let result = self.lisp.make_bytevector(total_len, 0)?;
-                for (i, &b) in bytes.iter().enumerate().take(total_len) {
-                    self.lisp.bytevector_set(result, i, b)?;
-                }
-                Ok(result)
-            }
-
-            Builtin::Bytevector_ => {
-                // (bytevector byte ...) - Create bytevector from given byte values
-                // Stack-allocated buffer limit, matching bytevector-append's MAX_TOTAL_BYTES
-                const MAX_BYTES: usize = 4096;
-                let mut bytes: [u8; MAX_BYTES] = [0u8; MAX_BYTES];
-                let mut len = 0;
-
+                let mut offset = 0;
                 let mut current = args;
                 loop {
                     match self.lisp.get(current)? {
@@ -2683,24 +2686,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Cons { .. } => {
                             let car = self.lisp.car(current)?;
                             let cdr = self.lisp.cdr(current)?;
-                            let byte_val = self.get_int(car, call_expr)?;
-                            if !(0..=255).contains(&byte_val) {
-                                return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                            let len = self.lisp.bytevector_len(car)?;
+                            for i in 0..len {
+                                let elem = self.lisp.bytevector_get(car, i)?;
+                                match self.lisp.get(elem)? {
+                                    Value::Number(n) => {
+                                        self.lisp.bytevector_set(result, offset, n as u8)?;
+                                        offset += 1;
+                                    }
+                                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                                }
                             }
-                            if len >= MAX_BYTES {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                            }
-                            bytes[len] = byte_val as u8;
-                            len += 1;
                             current = cdr;
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                 }
+                Ok(result)
+            }
+
+            Builtin::Bytevector_ => {
+                // (bytevector byte ...) - Create bytevector from given byte values
+                // Two-pass: count args, then allocate and fill
+                let len = self.lisp.list_len(args)?;
 
                 let result = self.lisp.make_bytevector(len, 0)?;
-                for (i, &b) in bytes.iter().enumerate().take(len) {
-                    self.lisp.bytevector_set(result, i, b)?;
+                let mut current = args;
+                for i in 0..len {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    let byte_val = self.get_int(car, call_expr)?;
+                    if !(0..=255).contains(&byte_val) {
+                        return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                    }
+                    self.lisp.bytevector_set(result, i, byte_val as u8)?;
+                    current = cdr;
                 }
                 Ok(result)
             }
@@ -2753,6 +2773,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::Utf8ToString => {
                 // (utf8->string bytevector [start [end]]) - Decode UTF-8 bytevector to string
+                // Manual UTF-8 decoding from bytevector bytes, building a reversed cons list of chars
                 let bv = self.lisp.car(args)?;
                 match self.lisp.get(bv)? {
                     Value::Bytevector { .. } => {
@@ -2760,22 +2781,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let rest = self.lisp.cdr(args)?;
                         let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        let sub_len = end - start;
-                        const MAX_BUF: usize = 4096;
-                        if sub_len > MAX_BUF {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        let nil = self.lisp.nil()?;
+                        let mut collected = nil;
+                        let mut char_count = 0;
+                        let mut i = start;
+                        while i < end {
+                            let b0 = self.get_bv_byte(bv, i)?;
+                            let (ch, advance) = if b0 < 0x80 {
+                                (b0 as u32, 1)
+                            } else if b0 & 0xE0 == 0xC0 {
+                                if i + 1 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                                let b1 = self.get_bv_byte(bv, i + 1)?;
+                                if b1 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                                (((b0 as u32 & 0x1F) << 6) | (b1 as u32 & 0x3F), 2)
+                            } else if b0 & 0xF0 == 0xE0 {
+                                if i + 2 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                                let b1 = self.get_bv_byte(bv, i + 1)?;
+                                let b2 = self.get_bv_byte(bv, i + 2)?;
+                                if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                                (((b0 as u32 & 0x0F) << 12) | ((b1 as u32 & 0x3F) << 6) | (b2 as u32 & 0x3F), 3)
+                            } else if b0 & 0xF8 == 0xF0 {
+                                if i + 3 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                                let b1 = self.get_bv_byte(bv, i + 1)?;
+                                let b2 = self.get_bv_byte(bv, i + 2)?;
+                                let b3 = self.get_bv_byte(bv, i + 3)?;
+                                if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 || b3 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                                (((b0 as u32 & 0x07) << 18) | ((b1 as u32 & 0x3F) << 12) | ((b2 as u32 & 0x3F) << 6) | (b3 as u32 & 0x3F), 4)
+                            } else {
+                                return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"));
+                            };
+                            let c = char::from_u32(ch)
+                                .ok_or_else(|| self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"))?;
+                            let ch_val = self.lisp.char(c)?;
+                            collected = self.lisp.cons(ch_val, collected)?;
+                            char_count += 1;
+                            i += advance;
                         }
-                        let mut buf = [0u8; MAX_BUF];
-                        for i in 0..sub_len {
-                            let elem = self.lisp.bytevector_get(bv, start + i)?;
-                            match self.lisp.get(elem)? {
-                                Value::Number(n) => buf[i] = n as u8,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
-                        }
-                        let s = core::str::from_utf8(&buf[..sub_len])
-                            .map_err(|_| self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"))?;
-                        self.lisp.string(s).map_err(Into::into)
+                        self.reversed_char_cons_to_string(collected, char_count)
                     }
                     v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
                 }
@@ -2789,29 +2831,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let rest = self.lisp.cdr(args)?;
                         let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        // Collect UTF-8 bytes from the character range
-                        const MAX_BUF: usize = 4096;
-                        let mut buf = [0u8; MAX_BUF];
+                        // Two-pass: count total UTF-8 bytes needed, then allocate and fill
                         let mut byte_len = 0;
+                        for i in start..end {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            match self.lisp.get(char_slot)? {
+                                Value::Char(c) => byte_len += c.len_utf8(),
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            }
+                        }
+
+                        let result = self.lisp.make_bytevector(byte_len, 0)?;
+                        let mut offset = 0;
                         for i in start..end {
                             let char_slot = self.lisp.arena_index_at_offset(data, i)?;
                             match self.lisp.get(char_slot)? {
                                 Value::Char(c) => {
                                     let mut tmp = [0u8; 4];
                                     let encoded = c.encode_utf8(&mut tmp);
-                                    if byte_len + encoded.len() > MAX_BUF {
-                                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                    for &b in encoded.as_bytes() {
+                                        self.lisp.bytevector_set(result, offset, b)?;
+                                        offset += 1;
                                     }
-                                    buf[byte_len..byte_len + encoded.len()].copy_from_slice(encoded.as_bytes());
-                                    byte_len += encoded.len();
                                 }
                                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                             }
-                        }
-
-                        let result = self.lisp.make_bytevector(byte_len, 0)?;
-                        for (i, &b) in buf.iter().enumerate().take(byte_len) {
-                            self.lisp.bytevector_set(result, i, b)?;
                         }
                         Ok(result)
                     }
@@ -3269,19 +3313,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Copy a range of characters from string data into a new string.
     fn copy_string_range(&self, data: ArenaIndex, start: usize, count: usize, call_expr: ArenaIndex) -> EvalResult {
-        const MAX_STRING_LEN: usize = 1024;
-        let mut chars = ['\0'; MAX_STRING_LEN];
-        if count > MAX_STRING_LEN {
-            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-        }
-        for (i, ch) in chars.iter_mut().enumerate().take(count) {
+        let result = self.lisp.make_string(count, '\0')?;
+        for i in 0..count {
             let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
             match self.lisp.get(char_slot)? {
-                Value::Char(c) => *ch = c,
+                Value::Char(c) => self.lisp.string_set(result, i, c)?,
                 _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
             }
         }
-        self.lisp.string_from_chars(&chars[..count]).map_err(Into::into)
+        Ok(result)
+    }
+
+    /// Extract a single byte from a bytevector at the given index.
+    fn get_bv_byte(&self, bv: ArenaIndex, index: usize) -> Result<u8, EvalError> {
+        let elem = self.lisp.bytevector_get(bv, index)?;
+        match self.lisp.get(elem)? {
+            Value::Number(n) => Ok(n as u8),
+            _ => Err(EvalError::new(ErrorKind::TypeError)),
+        }
     }
 
     /// Get number as fsize from already-evaluated value
@@ -3992,45 +4041,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Extract a Scheme string value into a stack-allocated UTF-8 buffer.
-    /// Returns a fixed-size array wrapper that can be used as `&str`.
-    pub(super) fn extract_string_arg(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<StackString, EvalError> {
-        match self.lisp.get(idx)? {
-            Value::String { len, data } => {
-                let mut buf = [0u8; STACK_STRING_BUF_SIZE];
-                let mut byte_len = 0;
-                for i in 0..len {
-                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                    if let Value::Char(c) = self.lisp.get(char_slot)? {
-                        let enc_len = c.len_utf8();
-                        if byte_len + enc_len > buf.len() { break; }
-                        c.encode_utf8(&mut buf[byte_len..]);
-                        byte_len += enc_len;
-                    }
+    /// Write the characters of a Scheme string into an output string port.
+    /// Returns the PortId of the output string port containing the string content.
+    /// The caller is responsible for closing the port after use.
+    pub(super) fn string_to_output_port(&mut self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
+        let (len, data) = match self.lisp.get(idx)? {
+            Value::String { len, data } => (len, data),
+            v => return Err(self.type_error(call_expr, "string", v.type_name())),
+        };
+        let io = match &mut self.io {
+            Some(io) => io,
+            None => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),
+        };
+        let port = match io.open_output_string() {
+            Ok(p) => p,
+            Err(_) => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),
+        };
+        for i in 0..len {
+            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+            if let Value::Char(c) = self.lisp.get(char_slot)? {
+                if io.write_char(port, c).is_err() {
+                    return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr));
                 }
-                Ok(StackString { buf, len: byte_len })
             }
-            v => Err(self.type_error(call_expr, "string", v.type_name())),
         }
+        Ok(port)
     }
 
-    /// Open a file port using the provided IoProvider method.
+    /// Open a file port using the provided file open mode.
     fn open_file_port(
         &mut self,
         args: ArenaIndex,
         call_expr: ArenaIndex,
-        opener: impl FnOnce(&mut dyn grift_parser::IoProvider, &str) -> Result<grift_parser::PortId, grift_parser::IoErrorKind>,
+        mode: grift_parser::FileOpenMode,
     ) -> EvalResult {
         let arg = self.lisp.car(args)?;
-        let path = self.extract_string_arg(arg, call_expr)?;
-        match &mut self.io {
-            Some(io) => {
-                let pid = opener(&mut **io, &path)
-                    .map_err(|_| self.make_error(ErrorKind::FileError, call_expr))?;
-                self.lisp.port(pid).map_err(Into::into)
+        let port = self.string_to_output_port(arg, call_expr)?;
+        let io = match &mut self.io {
+            Some(io) => io,
+            None => return Err(EvalError::new(ErrorKind::FileError).with_expr(call_expr)),
+        };
+        let pid = match io.open_file_from_string_port(port, mode) {
+            Ok(p) => p,
+            Err(_) => {
+                io.close_port(port).ok();
+                return Err(EvalError::new(ErrorKind::FileError).with_expr(call_expr));
             }
-            None => Err(self.make_error(ErrorKind::FileError, call_expr)),
-        }
+        };
+        io.close_port(port).ok();
+        self.lisp.port(pid).map_err(Into::into)
     }
 
     /// Extract an exit code from optional arguments.
@@ -4048,23 +4107,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Number(n) => Ok(n as i32),
             v => Err(self.type_error(call_expr, "integer or boolean", v.type_name())),
         }
-    }
-}
-
-/// Maximum size of a stack-allocated string buffer for IoProvider arguments.
-const STACK_STRING_BUF_SIZE: usize = 1024;
-
-/// Stack-allocated UTF-8 string buffer for passing to IoProvider methods.
-pub(super) struct StackString {
-    buf: [u8; STACK_STRING_BUF_SIZE],
-    len: usize,
-}
-
-impl core::ops::Deref for StackString {
-    type Target = str;
-    fn deref(&self) -> &str {
-        // The buffer was constructed from valid UTF-8 chars
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }
 

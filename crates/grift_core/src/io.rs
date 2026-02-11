@@ -57,6 +57,19 @@ pub enum IoErrorKind {
 /// Result type for I/O operations.
 pub type IoResult<T> = Result<T, IoErrorKind>;
 
+/// Mode for opening a file port via [`IoProvider::open_file_from_string_port`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOpenMode {
+    /// Open for textual input (like `open-input-file`).
+    TextInput,
+    /// Open for textual output (like `open-output-file`).
+    TextOutput,
+    /// Open for binary input (like `open-binary-input-file`).
+    BinaryInput,
+    /// Open for binary output (like `open-binary-output-file`).
+    BinaryOutput,
+}
+
 // ============================================================================
 // IoProvider Trait
 // ============================================================================
@@ -249,6 +262,20 @@ pub trait IoProvider {
         Err(IoErrorKind::Unsupported)
     }
 
+    /// Convert an output bytevector port into an input bytevector port.
+    ///
+    /// The accumulated bytes of the output port become the data source
+    /// for the new input port. The original output port is closed.
+    ///
+    /// This avoids the need to copy accumulated bytes through a
+    /// fixed-size stack buffer when creating an input port from collected
+    /// byte data.
+    ///
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn output_bytevector_to_input_port(&mut self, _output_port: PortId) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
     // ----------------------------------------------------------------
     // File system operations (R7RS §6.13)
     // ----------------------------------------------------------------
@@ -268,6 +295,41 @@ pub trait IoProvider {
     /// Read the entire contents of a file as a string.
     /// Default: returns [`IoErrorKind::Unsupported`].
     fn read_file(&mut self, _path: &str) -> IoResult<&str> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Open a file port using a path accumulated in an output string port.
+    ///
+    /// The `string_port` must have been created by [`open_output_string`](Self::open_output_string)
+    /// and contain the file path. The `mode` selects the kind of port to open.
+    /// The string port is NOT closed by this method.
+    ///
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn open_file_from_string_port(&mut self, _string_port: PortId, _mode: FileOpenMode) -> IoResult<PortId> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Check whether a file exists using a path from an output string port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn file_exists_from_string_port(&self, _string_port: PortId) -> IoResult<bool> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Delete a file using a path from an output string port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn delete_file_from_string_port(&mut self, _string_port: PortId) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Read a file using a path from an output string port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn read_file_from_string_port(&mut self, _string_port: PortId) -> IoResult<&str> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Get an environment variable using a name from an output string port.
+    /// Default: returns [`IoErrorKind::Unsupported`].
+    fn get_env_var_from_string_port(&mut self, _string_port: PortId) -> IoResult<Option<&str>> {
         Err(IoErrorKind::Unsupported)
     }
 
