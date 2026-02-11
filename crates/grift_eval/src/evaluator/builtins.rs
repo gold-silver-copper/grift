@@ -2263,13 +2263,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
-                let io_err = EvalError::new(ErrorKind::Generic).with_expr(call_expr);
                 for i in 0..write_len {
                     let byte_slot = self.lisp.bytevector_get(bv_arg, start + i)?;
                     match self.lisp.get(byte_slot)? {
                         Value::Number(n) => {
                             if io.write_u8(pid, n as u8).is_err() {
-                                return Err(io_err);
+                                return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr));
                             }
                         }
                         _ => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),
@@ -2294,7 +2293,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Some(io) => io,
                     None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
                 };
-                let generic_err = EvalError::new(ErrorKind::Generic).with_expr(call_expr);
                 let tmp_port = io.open_output_bytevector()
                     .map_err(|_| EvalError::new(ErrorKind::Generic).with_expr(call_expr))?;
                 for i in 0..bv_len {
@@ -2302,7 +2300,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     match self.lisp.get(byte_slot)? {
                         Value::Number(n) => {
                             if io.write_u8(tmp_port, n as u8).is_err() {
-                                return Err(generic_err);
+                                return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr));
                             }
                         }
                         _ => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),

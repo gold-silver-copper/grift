@@ -1459,63 +1459,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Uses a fixed 256-byte stack buffer. Returns an error if the
     /// combined prefix + name exceeds this limit.
     pub(super) fn prefix_symbol(&self, prefix: ArenaIndex, sym: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        // Build a reversed cons list of characters, then create the symbol
-        let nil = self.lisp.nil()?;
-        let mut collected = nil;
-        let mut char_count = 0;
-
-        // Collect prefix chars (in forward order, so we build reversed)
+        // Two-pass: count total chars, then allocate string and fill directly
+        let mut prefix_len = 0;
         if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
-            let plen = self.lisp.string_len(pchars).map_err(EvalError::from)?;
-            for i in (0..plen).rev() {
-                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
-                let ch_val = self.lisp.char(c)?;
-                collected = self.lisp.cons(ch_val, collected)?;
-                char_count += 1;
-            }
+            prefix_len = self.lisp.string_len(pchars).map_err(EvalError::from)?;
         }
-
-        // Collect original symbol chars (append after prefix)
-        // Since we built prefix in forward order, we need to append suffix at the end
-        // Build suffix as its own forward list, then append
-        let mut suffix = nil;
-        let mut suffix_count = 0;
+        let mut sym_len = 0;
         if let Value::Symbol(schars) = self.lisp.get(sym)? {
-            let slen = self.lisp.string_len(schars).map_err(EvalError::from)?;
-            for i in (0..slen).rev() {
-                let c = self.lisp.string_char_at(schars, i).map_err(EvalError::from)?;
-                let ch_val = self.lisp.char(c)?;
-                suffix = self.lisp.cons(ch_val, suffix)?;
-                suffix_count += 1;
-            }
+            sym_len = self.lisp.string_len(schars).map_err(EvalError::from)?;
         }
 
-        // Concatenate: walk to end of collected, set its last cdr to suffix
-        // Actually, since we have forward-order lists, just create the string directly
-        let total_len = char_count + suffix_count;
+        let total_len = prefix_len + sym_len;
         let result_str = self.lisp.make_string(total_len, '\0')?;
-        let mut cursor = collected;
-        for i in 0..char_count {
-            let ch_idx = self.lisp.car(cursor)?;
-            if let Value::Char(c) = self.lisp.get(ch_idx)? {
+
+        // Fill prefix chars
+        if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
+            for i in 0..prefix_len {
+                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
                 self.lisp.string_set(result_str, i, c)?;
             }
-            cursor = self.lisp.cdr(cursor)?;
         }
-        let mut cursor = suffix;
-        for i in 0..suffix_count {
-            let ch_idx = self.lisp.car(cursor)?;
-            if let Value::Char(c) = self.lisp.get(ch_idx)? {
-                self.lisp.string_set(result_str, char_count + i, c)?;
+        // Fill symbol chars
+        if let Value::Symbol(schars) = self.lisp.get(sym)? {
+            for i in 0..sym_len {
+                let c = self.lisp.string_char_at(schars, i).map_err(EvalError::from)?;
+                self.lisp.string_set(result_str, prefix_len + i, c)?;
             }
-            cursor = self.lisp.cdr(cursor)?;
         }
 
-        // Extract the string content as a symbol
-        // We need to read back the chars and call lisp.symbol()
-        // Actually, symbols are created from &str. Let's build using the chars directly.
-        // Use string_char_at on our result string to collect chars, then pass to symbol creation.
-        // The lisp.symbol() method takes &str, but we can use symbol_from_string.
         self.lisp.symbol_from_string(result_str).map_err(EvalError::from)
     }
 }
