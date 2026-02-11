@@ -140,6 +140,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // First-class procedure builtins (R7RS requires these to be values)
         if matches!(builtin, Builtin::Values) {
             // (values v ...) — return args list as multi-value result
+            // R7RS: (values x) with a single value is equivalent to x
+            if let Value::Cons { .. } = self.lisp.get(args)? {
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    // Single value — return it directly
+                    let single = self.lisp.car(args)?;
+                    return Ok(TrampolineState::Return { val: single });
+                }
+            }
             return Ok(TrampolineState::Return { val: args });
         }
         if matches!(builtin, Builtin::Apply) {
