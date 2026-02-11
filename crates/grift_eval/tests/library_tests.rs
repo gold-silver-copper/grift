@@ -708,4 +708,43 @@ fn test_scheme_base_read_bytevector_exports() {
     assert!(eval_is_true(&lisp, &mut eval, "(procedure? read-bytevector!)"));
 }
 
+// ============================================================================
+// import inside begin block must not halt execution
+// ============================================================================
+
+#[test]
+fn test_import_does_not_halt_begin_block() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // import inside a begin block should not prevent subsequent expressions
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(begin (import (scheme base)) 42)"), 42);
+}
+
+#[test]
+fn test_import_then_define_in_begin() {
+    let lisp: Lisp<30000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // import followed by define and use in a begin block
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(begin (import (scheme write)) (define x 99) x)"), 99);
+}
+
+#[test]
+fn test_import_in_begin_with_user_library() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    eval.eval_str("
+        (define-library (test begin-lib)
+          (export my-val)
+          (begin (define my-val 7)))
+    ").unwrap();
+
+    // import a user library inside a begin block
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(begin (import (test begin-lib)) (+ my-val 3))"), 10);
+}
+
 
