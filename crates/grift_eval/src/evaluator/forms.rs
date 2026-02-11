@@ -989,6 +989,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let continuable = !self.lisp.get(data)?.is_nil();
                 self.invoke_exception_handler(val, continuable)
             }
+
+            ContType::BuiltinReturnValue => {
+                // Discard val, return the saved value from data
+                let saved = self.unpack1(data);
+                Ok(Some(TrampolineState::Return { val: saved }))
+            }
         }
     }
 
@@ -1114,96 +1120,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
     
-    /// Evaluate apply - apply function to list of arguments
-    pub(super) fn step_eval_apply(&mut self, args: ArenaIndex, env: EnvRef) -> Result<TrampolineState, EvalError> {
-        let func_expr = self.lisp.car(args)?;
-        let args_list_expr = self.lisp.car(self.lisp.cdr(args)?)?;
-        
-        // Push continuation to evaluate args_list after func is evaluated
-        // Data: (args_list_expr . env)
-        self.cont(ContType::ApplyFirst, env).data2(args_list_expr, env.0)?;
-        
-        // Evaluate function first
-        Ok(TrampolineState::Eval { expr: ExprRef(func_expr), env })
-    }
-    
-    /// Evaluate values - create a multi-value return (trampolined)
-    pub(super) fn eval_values(&mut self, args: ArenaIndex, env: EnvRef) -> Result<TrampolineState, EvalError> {
-        if self.lisp.get(args)?.is_nil() {
-            // No values - return empty list
-            let nil = self.lisp.nil()?;
-            return Ok(TrampolineState::Return { val: nil });
-        }
-        
-        // Start evaluating first value
-        let first_expr = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        let nil = self.lisp.nil()?;
-        
-        // Data: (remaining . (collected . env))
-        self.cont(ContType::ValuesCollect, env).data3(rest, nil, env.0)?;
-        Ok(TrampolineState::Eval { expr: ExprRef(first_expr), env })
-    }
-    
-    /// Evaluate call-with-values - call producer, apply consumer to results
-    /// 
-    /// (call-with-values producer consumer)
-    /// 
-    /// Calls producer with no arguments, then applies consumer to the values
-    /// returned by producer. If producer returns multiple values (via values),
-    /// those become the arguments to consumer.
-    pub(super) fn step_eval_call_with_values(&mut self, args: ArenaIndex, env: EnvRef) -> Result<TrampolineState, EvalError> {
-        let producer_expr = self.lisp.car(args)?;
-        let consumer_expr = self.lisp.car(self.lisp.cdr(args)?)?;
-        
-        // Push continuation to call consumer after producer is evaluated and called
-        // Data: (consumer_expr . env)
-        self.cont(ContType::CallWithValuesProducer, env).data2(consumer_expr, env.0)?;
-        
-        // Evaluate producer first
-        Ok(TrampolineState::Eval { expr: ExprRef(producer_expr), env })
-    }
-    
-    /// Evaluate call-with-current-continuation (call/cc)
-    /// 
-    /// (call/cc proc) or (call-with-current-continuation proc)
-    /// 
-    /// Captures the current continuation as a first-class value and calls proc
-    /// with that continuation as its only argument. If proc returns normally,
-    /// that value becomes the result of call/cc. If the captured continuation
-    /// is ever called with a value, that value immediately becomes the result
-    /// of the call/cc, abandoning the current computation.
-    pub(super) fn step_eval_call_cc(&mut self, args: ArenaIndex, env: EnvRef) -> Result<TrampolineState, EvalError> {
-        // Check that we have exactly one argument (the procedure)
-        if self.lisp.get(args)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("call/cc requires exactly 1 argument"));
-        }
-        let proc_expr = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        if !self.lisp.get(rest)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("call/cc requires exactly 1 argument"));
-        }
-        
-        // Capture the current continuation BEFORE evaluating the procedure
-        // This is the continuation that will be restored when the captured
-        // continuation is invoked
-        let captured_continuation = self.capture_continuation(env.0)?;
-        
-        // Push continuation to apply proc to the captured continuation after proc is evaluated
-        // Data: captured_continuation
-        self.cont(ContType::CallCcApply, env).data1(captured_continuation)?;
-        
-        // Evaluate the procedure expression
-        Ok(TrampolineState::Eval { expr: ExprRef(proc_expr), env })
-    }
-    
     /// Capture the current continuation as a first-class value
     /// 
     /// With arena-based continuations, capture is O(1) - we just save the
     /// current_cont pointer as a Continuation value.
-    fn capture_continuation(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
+    pub(super) fn capture_continuation(&self, env: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         // The current continuation is already an arena-based ContFrame chain
         let cont_chain = self.current_cont;
         
@@ -1771,63 +1692,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // dynamic-wind support
     // ========================================================================
     
-    /// Evaluate dynamic-wind
-    ///
-    /// (dynamic-wind before body after)
-    ///
-    /// Calls the before thunk, then the body thunk, then the after thunk.
-    /// Returns the value of the body thunk.
-    ///
-    /// When a continuation captured inside the body is invoked from outside,
-    /// the after thunk is called before leaving this dynamic extent.
-    /// When a continuation captured outside is invoked from inside the body,
-    /// the after thunk is called before leaving, and if the continuation
-    /// captured inside is invoked again, the before thunk is called to re-enter.
-    pub(super) fn step_eval_dynamic_wind(
-        &mut self,
-        args: ArenaIndex,
-        env: EnvRef,
-    ) -> Result<TrampolineState, EvalError> {
-        // Parse arguments: (before body after)
-        if self.lisp.get(args)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("dynamic-wind requires 3 arguments"));
-        }
-        let before_expr = self.lisp.car(args)?;
-        let rest1 = self.lisp.cdr(args)?;
-        
-        if self.lisp.get(rest1)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("dynamic-wind requires 3 arguments"));
-        }
-        let body_expr = self.lisp.car(rest1)?;
-        let rest2 = self.lisp.cdr(rest1)?;
-        
-        if self.lisp.get(rest2)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("dynamic-wind requires 3 arguments"));
-        }
-        let after_expr = self.lisp.car(rest2)?;
-        let rest3 = self.lisp.cdr(rest2)?;
-        
-        if !self.lisp.get(rest3)?.is_nil() {
-            return Err(self.make_error(ErrorKind::WrongArgCount, args)
-                .with_message("dynamic-wind requires 3 arguments"));
-        }
-        
-        // Save current dynamic-wind chain
-        let saved_dw_chain = self.dynamic_wind_chain;
-        
-        // Push continuation for when before thunk is evaluated
-        // Data: (body_expr . (after_expr . (env . saved_dw_chain)))
-        self.cont(ContType::DynamicWindBefore, env).data4(body_expr, after_expr, env.0, saved_dw_chain)?;
-        
-        // Evaluate the before thunk
-        Ok(TrampolineState::Eval { expr: ExprRef(before_expr), env })
-    }
-    
     /// Apply a thunk (zero-argument procedure)
-    fn apply_thunk(
+    pub(super) fn apply_thunk(
         &mut self,
         thunk: ArenaIndex,
         env: EnvRef,
@@ -2255,43 +2121,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Exception handling (R7RS §6.11)
     // ========================================================================
     
-    /// (with-exception-handler handler thunk) — evaluate thunk with handler installed
-    pub(super) fn step_eval_with_exception_handler(
-        &mut self,
-        args: ArenaIndex,
-        env: EnvRef,
-    ) -> Result<TrampolineState, EvalError> {
-        let handler_expr = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        let thunk_expr = self.lisp.car(rest)?;
-        
-        // Push continuation to evaluate thunk after handler is evaluated
-        self.cont(ContType::WithExceptionHandlerEvalThunk, env).data2(thunk_expr, env.0)?;
-        
-        // Evaluate the handler expression first
-        Ok(TrampolineState::Eval { expr: ExprRef(handler_expr), env })
-    }
-    
-    /// (raise obj) or (raise-continuable obj) — evaluate obj then invoke handler
-    pub(super) fn step_eval_raise(
-        &mut self,
-        args: ArenaIndex,
-        env: EnvRef,
-        continuable: bool,
-    ) -> Result<TrampolineState, EvalError> {
-        let obj_expr = self.lisp.car(args)?;
-        
-        // Marker: Nil = non-continuable, True = continuable
-        let marker = if continuable {
-            self.lisp.true_val()?
-        } else {
-            self.lisp.nil()?
-        };
-        
-        self.cont(ContType::RaiseEval, env).data1(marker)?;
-        Ok(TrampolineState::Eval { expr: ExprRef(obj_expr), env })
-    }
-    
     /// Invoke the current exception handler with the given exception object
     pub(super) fn invoke_exception_handler(
         &mut self,
@@ -2464,44 +2293,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(TrampolineState::Return { val: void })
     }
 
-    /// Evaluate `(environment <import-set>...)`
-    ///
-    /// Creates a new immutable environment containing bindings from the
-    /// specified libraries. Each import-set is processed just like `import`
-    /// but the bindings are collected into a fresh environment object
-    /// instead of the global environment.
-    ///
-    /// Supports quoted and unquoted import specs:
-    ///   (environment (scheme base))
-    ///   (environment '(scheme base))
-    pub(super) fn step_eval_environment(&mut self, args: ArenaIndex, _env: EnvRef)
-        -> Result<TrampolineState, EvalError>
-    {
-        let nil = self.lisp.nil()?;
-        let mut result_env = EnvRef(nil);
-
-        let mut sets = args;
-        while let Value::Cons { .. } = self.lisp.get(sets)? {
-            let mut import_set = self.lisp.car(sets)?;
-            sets = self.lisp.cdr(sets)?;
-
-            // Unwrap a single level of (quote ...) so that
-            // (environment '(scheme base)) works the same as
-            // (environment (scheme base))
-            if let Value::Cons { .. } = self.lisp.get(import_set)? {
-                let head = self.lisp.car(import_set)?;
-                if self.lisp.symbol_matches(head, "quote")? {
-                    import_set = self.lisp.car(self.lisp.cdr(import_set)?)?;
-                }
-            }
-
-            result_env = self.import_library_into_env(import_set, result_env)?;
-        }
-
-        let env_val = self.lisp.alloc(Value::Environment { env: result_env.0, mutable: false })?;
-        Ok(TrampolineState::Return { val: env_val })
-    }
-
     /// Evaluate `(import <import-set>...)`
     ///
     /// Each import-set is a library name or an import modifier.
@@ -2525,7 +2316,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Handles import modifiers: `only`, `except`, `prefix`, `rename`.
     /// Also imports macro bindings into `self.macro_env`.
-    fn import_library_into_env(&mut self, import_set: ArenaIndex, target: EnvRef)
+    pub(super) fn import_library_into_env(&mut self, import_set: ArenaIndex, target: EnvRef)
         -> Result<EnvRef, EvalError>
     {
         let (lib_env, lib_macro_env) = self.resolve_import_set(import_set)?;

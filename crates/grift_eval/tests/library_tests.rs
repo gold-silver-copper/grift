@@ -355,7 +355,7 @@ fn test_environment_with_scheme_base() {
     let lisp: Lisp<30000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
 
-    let result = eval.eval_str("(environment (scheme base))").unwrap();
+    let result = eval.eval_str("(environment '(scheme base))").unwrap();
     assert!(
         matches!(lisp.get(result).unwrap(), Value::Environment { mutable: false, .. }),
         "environment should return an immutable environment"
@@ -369,7 +369,7 @@ fn test_eval_in_library_environment() {
 
     // Pre-create the environment, then use it in eval
     eval.eval_str("(import (scheme base))").unwrap();
-    eval.eval_str("(define base-env (environment (scheme base)))").unwrap();
+    eval.eval_str("(define base-env (environment '(scheme base)))").unwrap();
     assert_eq!(
         eval_to_num(&lisp, &mut eval, "(eval '(+ 2 3) base-env)"),
         5

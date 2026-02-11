@@ -535,6 +535,30 @@ define_builtins! {
     VectorToString => "vector->string",
     /// string->vector - Create vector of characters from string
     StringToVector => "string->vector",
+
+    // First-class procedures (R7RS requires these to be values, not special forms)
+    /// values - Return multiple values
+    Values => "values",
+    /// call-with-values - Call producer, apply consumer to results
+    CallWithValues => "call-with-values",
+    /// apply - Apply procedure to list of arguments
+    Apply => "apply",
+    /// call/cc - Capture current continuation
+    CallCc => "call/cc",
+    /// call-with-current-continuation - Capture current continuation (long form)
+    CallWithCurrentContinuation => "call-with-current-continuation",
+    /// dynamic-wind - Install before/after thunks around body
+    DynamicWind => "dynamic-wind",
+    /// with-exception-handler - Install exception handler around thunk
+    WithExceptionHandler => "with-exception-handler",
+    /// raise - Raise a non-continuable exception
+    RaiseBuiltin => "raise",
+    /// raise-continuable - Raise a continuable exception
+    RaiseContinuable => "raise-continuable",
+    /// eval - Evaluate expression in environment
+    EvalBuiltin => "eval",
+    /// environment - Create environment from import sets
+    EnvironmentBuiltin => "environment",
 }
 
 // Define all standard library functions using the include_stdlib! macro.
