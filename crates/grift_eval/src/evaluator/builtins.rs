@@ -991,6 +991,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::CharUpcase | Builtin::CharDowncase | Builtin::CharFoldcase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
+                // CaseMapper::new() is a const fn returning a reference to static compiled data (zero-cost)
                 let cm = icu_casemap::CaseMapper::new();
                 let result = match builtin {
                     Builtin::CharUpcase => cm.simple_uppercase(c),
@@ -1000,34 +1001,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.char(result).map_err(Into::into)
             }
             
+            // Character classification predicates — all use icu4x CodePointSetData/CodePointMapData.
+            // These ::new() calls are const fns returning references to static compiled data (zero-cost).
             Builtin::CharAlphabetic => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let set = icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>();
-                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>().contains(c)).map_err(Into::into)
             }
             
             Builtin::CharNumeric => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let map = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new();
-                self.lisp.boolean(map.get(c) == icu_properties::props::GeneralCategory::DecimalNumber).map_err(Into::into)
+                let gc = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new().get(c);
+                self.lisp.boolean(gc == icu_properties::props::GeneralCategory::DecimalNumber).map_err(Into::into)
             }
             
             Builtin::CharWhitespace => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let set = icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>();
-                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>().contains(c)).map_err(Into::into)
             }
             
             Builtin::CharUpperCase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let set = icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>();
-                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>().contains(c)).map_err(Into::into)
             }
             
             Builtin::CharLowerCase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let set = icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>();
-                self.lisp.boolean(set.contains(c)).map_err(Into::into)
+                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>().contains(c)).map_err(Into::into)
             }
             
             Builtin::DigitValue => {
@@ -1055,29 +1054,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::CharCiEq => {
+            Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
+            | Builtin::CharCiLe | Builtin::CharCiGe => {
+                // CaseMapper::new() is a const fn returning a reference to static compiled data (zero-cost)
                 let cm = icu_casemap::CaseMapper::new();
-                self.char_chain_compare(args, |a, b| cm.simple_fold(a) == cm.simple_fold(b), call_expr)
-            }
-            
-            Builtin::CharCiLt => {
-                let cm = icu_casemap::CaseMapper::new();
-                self.char_chain_compare(args, |a, b| cm.simple_fold(a) < cm.simple_fold(b), call_expr)
-            }
-            
-            Builtin::CharCiGt => {
-                let cm = icu_casemap::CaseMapper::new();
-                self.char_chain_compare(args, |a, b| cm.simple_fold(a) > cm.simple_fold(b), call_expr)
-            }
-            
-            Builtin::CharCiLe => {
-                let cm = icu_casemap::CaseMapper::new();
-                self.char_chain_compare(args, |a, b| cm.simple_fold(a) <= cm.simple_fold(b), call_expr)
-            }
-            
-            Builtin::CharCiGe => {
-                let cm = icu_casemap::CaseMapper::new();
-                self.char_chain_compare(args, |a, b| cm.simple_fold(a) >= cm.simple_fold(b), call_expr)
+                let cmp_fn: fn(char, char) -> bool = match builtin {
+                    Builtin::CharCiEq => |a, b| a == b,
+                    Builtin::CharCiLt => |a, b| a < b,
+                    Builtin::CharCiGt => |a, b| a > b,
+                    Builtin::CharCiLe => |a, b| a <= b,
+                    _ => |a, b| a >= b,
+                };
+                self.char_chain_compare(args, |a, b| cmp_fn(cm.simple_fold(a), cm.simple_fold(b)), call_expr)
             }
             
             Builtin::StringUpcase | Builtin::StringDowncase | Builtin::StringFoldcase => {
