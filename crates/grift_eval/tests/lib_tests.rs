@@ -8367,5 +8367,224 @@ fn test_square_with_floats() {
     assert_eq!(eval_to_num(&lisp, &mut eval, "(square 5)"), 25);
 }
 
+// ============================================================
+// Unicode Character and String Tests (icu4x)
+// ============================================================
+
+#[test]
+fn test_unicode_char_alphabetic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\Z)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-alphabetic? #\0)"));
+    
+    // Unicode: Greek letters
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\x03B1)")); // α (alpha)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\x03A9)")); // Ω (Omega)
+    
+    // Unicode: Cyrillic
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\x0414)")); // Д
+    
+    // Unicode: CJK ideograph
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-alphabetic? #\x4E2D)")); // 中
+    
+    // Non-alphabetic: digit, punctuation
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-alphabetic? #\x0660)")); // Arabic-Indic digit 0
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-alphabetic? #\x0021)")); // !
+}
+
+#[test]
+fn test_unicode_char_numeric() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII digits
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\0)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\9)"));
+    
+    // Arabic-Indic digits (U+0660..U+0669)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\x0660)")); // ٠
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\x0669)")); // ٩
+    
+    // Devanagari digits (U+0966..U+096F)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-numeric? #\x0966)")); // ०
+    
+    // Non-numeric
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-numeric? #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-numeric? #\x03B1)")); // α
+}
+
+#[test]
+fn test_unicode_char_whitespace() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Standard ASCII whitespace
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\space)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\tab)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\newline)"));
+    
+    // Unicode whitespace: NO-BREAK SPACE (U+00A0)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\x00A0)"));
+    
+    // Unicode whitespace: EM SPACE (U+2003)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-whitespace? #\x2003)"));
+    
+    // Non-whitespace
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-whitespace? #\a)"));
+}
+
+#[test]
+fn test_unicode_char_upper_lower_case() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-upper-case? #\A)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-upper-case? #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-lower-case? #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-lower-case? #\A)"));
+    
+    // Greek uppercase/lowercase
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-upper-case? #\x0391)")); // Α (Alpha)
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-upper-case? #\x03B1)")); // α
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-lower-case? #\x03B1)")); // α
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-lower-case? #\x0391)")); // Α
+    
+    // Cyrillic
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-upper-case? #\x0414)")); // Д
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-lower-case? #\x0434)")); // д
+}
+
+#[test]
+fn test_unicode_char_upcase_downcase() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII case conversion
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-upcase #\a) #\A)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-downcase #\A) #\a)"));
+    
+    // Greek case conversion
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-upcase #\x03B1) #\x0391)")); // α → Α
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-downcase #\x0391) #\x03B1)")); // Α → α
+    
+    // Cyrillic case conversion
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-upcase #\x0434) #\x0414)")); // д → Д
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-downcase #\x0414) #\x0434)")); // Д → д
+    
+    // Already correct case (no-op)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-upcase #\A) #\A)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-downcase #\a) #\a)"));
+    
+    // Non-letter (should be unchanged)
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-upcase #\0) #\0)"));
+}
+
+#[test]
+fn test_unicode_char_foldcase() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // Basic case folding
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-foldcase #\A) #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-foldcase #\a) #\a)"));
+    
+    // Greek case folding
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-foldcase #\x0391) #\x03B1)")); // Α → α
+    
+    // Non-letter is unchanged
+    assert!(eval_is_true(&lisp, &mut eval, r"(char=? (char-foldcase #\0) #\0)"));
+}
+
+#[test]
+fn test_unicode_digit_value() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII digits
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\0)"), 0);
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\9)"), 9);
+    
+    // Arabic-Indic digits
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\x0660)"), 0); // ٠
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\x0665)"), 5); // ٥
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\x0669)"), 9); // ٩
+    
+    // Devanagari digits
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\x0966)"), 0); // ०
+    assert_eq!(eval_to_num(&lisp, &mut eval, r"(digit-value #\x096F)"), 9); // ९
+    
+    // Non-digit returns #f
+    assert!(eval_is_false(&lisp, &mut eval, r"(digit-value #\a)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(digit-value #\x03B1)")); // α
+}
+
+#[test]
+fn test_unicode_char_ci_comparisons() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII case-insensitive
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci=? #\A #\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci=? #\a #\A)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-ci=? #\A #\b)"));
+    
+    // Greek case-insensitive
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci=? #\x0391 #\x03B1)")); // Α = α
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci=? #\x03B1 #\x0391)")); // α = Α
+    
+    // Ordering
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci<? #\a #\b)"));
+    assert!(eval_is_true(&lisp, &mut eval, r"(char-ci<? #\A #\b)"));
+    assert!(eval_is_false(&lisp, &mut eval, r"(char-ci<? #\b #\a)"));
+}
+
+#[test]
+fn test_unicode_string_upcase_downcase() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    // ASCII
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-upcase "hello")"#), "\"HELLO\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-downcase "HELLO")"#), "\"hello\"");
+    
+    // Empty string
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-upcase "")"#), "\"\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-downcase "")"#), "\"\"");
+    
+    // Mixed case
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-upcase "Hello World")"#), "\"HELLO WORLD\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-downcase "Hello World")"#), "\"hello world\"");
+}
+
+#[test]
+fn test_unicode_string_foldcase() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-foldcase "HELLO")"#), "\"hello\"");
+    assert_eq!(eval_to_string(&lisp, &mut eval, r#"(string-foldcase "hello")"#), "\"hello\"");
+}
+
+#[test]
+fn test_unicode_string_ci_eq() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+    
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "Hello" "hello")"#));
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "HELLO" "hello")"#));
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci=? "Hello" "world")"#));
+    
+    // Empty strings
+    assert!(eval_is_true(&lisp, &mut eval, r#"(string-ci=? "" "")"#));
+    
+    // Different lengths
+    assert!(eval_is_false(&lisp, &mut eval, r#"(string-ci=? "hello" "hell")"#));
+}
+
 
 
