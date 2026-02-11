@@ -16,7 +16,7 @@ use crate::error::{
 use crate::continuation::{TrampolineState, GcRoots, ContType, EnvRef, ExprRef};
 use crate::native::{NativeRegistry, NativeFn};
 
-use super::{Evaluator, Keywords};
+use super::Evaluator;
 
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
@@ -34,32 +34,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with standard environment
     pub fn new(lisp: &'a Lisp<N>) -> Result<Self, EvalError> {
         let nil = lisp.nil()?;
-        
-        // Pre-intern keyword symbols for O(1) dispatch during evaluation.
-        // These indices are stable because: (1) the GC is mark-and-sweep without
-        // compaction, so arena slots are never relocated, and (2) interned symbols
-        // are reachable from the intern table (a GC root), so they won't be collected.
-        let keywords = Keywords {
-            kw_if: lisp.symbol("if")?,
-            kw_quote: lisp.symbol("quote")?,
-            kw_define: lisp.symbol("define")?,
-            kw_define_syntax: lisp.symbol("define-syntax")?,
-            kw_let_syntax: lisp.symbol("let-syntax")?,
-            kw_letrec_syntax: lisp.symbol("letrec-syntax")?,
-            kw_syntax_case: lisp.symbol("syntax-case")?,
-            kw_syntax: lisp.symbol("syntax")?,
-            kw_lambda: lisp.symbol("lambda")?,
-            kw_set: lisp.symbol("set!")?,
-            kw_begin: lisp.symbol("begin")?,
-            kw_quasiquote: lisp.symbol("quasiquote")?,
-            kw_syntax_error: lisp.symbol("syntax-error")?,
-            kw_define_record_type: lisp.symbol("define-record-type")?,
-            kw_define_library: lisp.symbol("define-library")?,
-            kw_import: lisp.symbol("import")?,
-            kw_include: lisp.symbol("include")?,
-            kw_include_ci: lisp.symbol("include-ci")?,
-        };
-        
         let mut eval = Evaluator {
             lisp,
             global_env: EnvRef(nil),
@@ -78,7 +52,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current_output_port: grift_parser::PortId::STDOUT,
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
-            keywords,
         };
         
         // Initialize global environment with builtins
@@ -147,7 +120,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
     fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
-        idx == self.keywords.kw_define
+        if let Ok(Value::Symbol(chars)) = self.lisp.get(idx) {
+            let len = self.lisp.string_len(chars).unwrap_or(0);
+            if len != 6 {
+                return false;
+            }
+            // Check for exactly "define"
+            for (i, &expected) in b"define".iter().enumerate() {
+                if let Ok(c) = self.lisp.string_char_at(chars, i) {
+                    if c as u8 != expected {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
     
     /// Get the Lisp context
@@ -976,7 +967,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
-        if name == self.keywords.kw_if {
+        if self.lisp.symbol_matches(name, "if")? {
             let cond_expr = self.lisp.car(cdr)?;
             let rest = self.lisp.cdr(cdr)?;
             let then_expr = self.lisp.car(rest)?;
@@ -1001,42 +992,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn try_dispatch_non_core_form(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
-        /// Dispatch a non-core form: check pre-interned keyword match + variable override,
+        /// Dispatch a non-core form: check keyword match + variable override,
         /// then call the handler and return `Some(result)`.
         macro_rules! dispatch {
             ($self:expr, $car:expr, $env:expr, $keyword:expr, $body:expr) => {
-                if $car == $keyword {
+                if $self.lisp.symbol_matches($car, $keyword)? {
                     if $self.is_variable_bound($env, $car)? { return Ok(None); }
                     return $body;
                 }
             };
         }
 
-        dispatch!(self, car, env, self.keywords.kw_quote, {
+        dispatch!(self, car, env, "quote", {
             let val = self.lisp.car(cdr)?;
             Ok(Some(TrampolineState::Return { val }))
         });
-        dispatch!(self, car, env, self.keywords.kw_define_syntax, self.step_eval_define_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_let_syntax, self.step_eval_let_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_letrec_syntax, self.step_eval_letrec_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_syntax_case, self.step_eval_syntax_case(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_syntax, self.step_eval_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_lambda, {
+        dispatch!(self, car, env, "define-syntax", self.step_eval_define_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "let-syntax", self.step_eval_let_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "letrec-syntax", self.step_eval_letrec_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "syntax-case", self.step_eval_syntax_case(cdr, env).map(Some));
+        dispatch!(self, car, env, "syntax", self.step_eval_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, "lambda", {
             let val = self.eval_lambda(cdr, env)?;
             Ok(Some(TrampolineState::Return { val }))
         });
-        dispatch!(self, car, env, self.keywords.kw_define, self.eval_define(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_set, self.eval_set(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_begin, self.step_eval_begin(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_quasiquote, self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
+        dispatch!(self, car, env, "define", self.eval_define(cdr, env).map(Some));
+        dispatch!(self, car, env, "set!", self.eval_set(cdr, env).map(Some));
+        dispatch!(self, car, env, "begin", self.step_eval_begin(cdr, env).map(Some));
+        dispatch!(self, car, env, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
 
-        dispatch!(self, car, env, self.keywords.kw_syntax_error, 
+        dispatch!(self, car, env, "syntax-error", 
             Err(self.make_error(ErrorKind::SyntaxError, cdr).with_message("syntax-error")));
-        dispatch!(self, car, env, self.keywords.kw_define_record_type, self.step_eval_define_record_type(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_define_library, self.step_eval_define_library(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_import, self.step_eval_import(cdr, env).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_include, self.step_eval_include(cdr, env, false).map(Some));
-        dispatch!(self, car, env, self.keywords.kw_include_ci, self.step_eval_include(cdr, env, true).map(Some));
+        dispatch!(self, car, env, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
+        dispatch!(self, car, env, "define-library", self.step_eval_define_library(cdr, env).map(Some));
+        dispatch!(self, car, env, "import", self.step_eval_import(cdr, env).map(Some));
+        dispatch!(self, car, env, "include", self.step_eval_include(cdr, env, false).map(Some));
+        dispatch!(self, car, env, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
         
         Ok(None)
     }

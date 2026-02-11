@@ -1503,7 +1503,6 @@ impl<const N: usize> Lisp<N> {
     /// # Errors
     /// 
     /// Returns an error if either string index is invalid.
-    #[inline]
     pub fn string_eq_contiguous(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index
         if a == b {
@@ -1553,45 +1552,22 @@ impl<const N: usize> Lisp<N> {
     /// # Errors
     /// 
     /// Returns an error if the string index is invalid.
-    #[inline]
     pub fn string_matches(&self, str_idx: ArenaIndex, s: &str) -> ArenaResult<bool> {
-        // Fast path for ASCII strings (covers all Scheme keywords and most symbols).
-        // Avoids expensive `s.chars().count()` which calls `char_count_general_case`.
-        if s.is_ascii() {
-            return self.string_matches_bytes(str_idx, s.as_bytes());
+        let len = self.string_len(str_idx)?;
+        let s_len = s.chars().count();
+        
+        if len != s_len {
+            return Ok(false);
         }
         
-        // Non-ASCII: single-pass comparison without separate chars().count()
-        match self.arena.get(str_idx)? {
-            Value::String { len, data } => {
-                if len == 0 {
-                    return Ok(s.is_empty());
-                }
-                if data.is_nil() {
-                    return Err(ArenaError::InvalidIndex);
-                }
-                
-                let base_idx = data.raw();
-                let mut i = 0;
-                for expected in s.chars() {
-                    if i >= len {
-                        return Ok(false);
-                    }
-                    let char_slot = ArenaIndex::new(base_idx + i);
-                    match self.arena.get(char_slot)? {
-                        Value::Char(c) => {
-                            if c != expected {
-                                return Ok(false);
-                            }
-                        }
-                        _ => return Err(ArenaError::InvalidIndex),
-                    }
-                    i += 1;
-                }
-                Ok(i == len)
+        for (i, expected) in s.chars().enumerate() {
+            let actual = self.string_char_at(str_idx, i)?;
+            if actual != expected {
+                return Ok(false);
             }
-            _ => Err(ArenaError::InvalidIndex),
         }
+        
+        Ok(true)
     }
     
     /// Check if a string matches a byte slice directly.
