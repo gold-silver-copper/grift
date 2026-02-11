@@ -2248,6 +2248,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                     let saved_global = self.global_env;
                     let saved_macros = self.macro_env;
+                    let saved_cont = self.current_cont;
+                    let saved_depth = self.call_stack_depth;
                     self.global_env = lib_env;
                     self.macro_env = lib_macro_env;
                     let _result = self.eval(crate::continuation::ExprRef(expr))?;
@@ -2255,6 +2257,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     lib_macro_env = self.macro_env;  // capture define-syntax
                     self.global_env = saved_global;
                     self.macro_env = saved_macros;
+                    self.current_cont = saved_cont;
+                    self.call_stack_depth = saved_depth;
                 }
             }
         }

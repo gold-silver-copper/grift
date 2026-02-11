@@ -1363,6 +1363,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Mark as loading
                 self.loading_libraries = self.lisp.cons(name, self.loading_libraries)?;
 
+                // Save continuation state so that nested eval() calls
+                // don't clobber the outer continuation stack (e.g. when
+                // import is used inside a begin block).
+                let saved_cont = self.current_cont;
+                let saved_depth = self.call_stack_depth;
+
                 // Parse and evaluate the define-library form
                 let forms = parse_all(self.lisp, source.source)?;
                 let mut current = forms;
@@ -1371,6 +1377,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.eval(ExprRef(form))?;
                     current = self.lisp.cdr(current)?;
                 }
+
+                // Restore continuation state
+                self.current_cont = saved_cont;
+                self.call_stack_depth = saved_depth;
 
                 // Done loading
                 self.finish_library_loading(name)?;
