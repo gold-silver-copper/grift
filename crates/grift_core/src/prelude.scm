@@ -1,11 +1,18 @@
 ;;; Grift Scheme Prelude
 ;;;
-;;; This file contains all standard macro definitions and library functions.
-;;; It is the single source for both compile-time StdLib enum generation
+;;; This file contains core macro definitions and shared utility functions.
+;;; It is the source for both compile-time StdLib enum generation
 ;;; (via include_stdlib!) and runtime macro loading.
 ;;;
 ;;; Macro definitions (define-syntax) are evaluated at runtime.
 ;;; Function definitions (define) are extracted at compile time for StdLib.
+;;;
+;;; Library-specific definitions live in their respective library files
+;;; under lib/scheme/ (e.g. base.scm, cxr.scm, lazy.scm, case-lambda.scm).
+;;; This prelude contains only:
+;;;   - Core macros needed before any library is loaded
+;;;   - Shared helper functions used by multiple libraries or macros
+;;;   - Grift-specific extension functions not in any R7RS library
 
 ;;; ============================================================
 ;;; Macro Definitions

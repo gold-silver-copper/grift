@@ -1,4 +1,6 @@
 ;;; (scheme file) — R7RS §6.13 File I/O
+;;;
+;;; All exports are native builtins implemented in Rust.
 (define-library (scheme file)
   (export
     file-exists? delete-file
