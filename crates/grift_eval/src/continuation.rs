@@ -1,8 +1,8 @@
 //! Continuation types for arena-based trampolined evaluation.
 //!
 //! Continuations are stored in the arena as a linked list of `ContFrame` values.
-//! Each frame stores a `ContType` directly, along with associated data and a
-//! reference to the parent continuation.
+//! Each frame references a `Value::ContType` in the arena to identify its kind,
+//! along with associated data and a reference to the parent continuation.
 //!
 //! This design enables O(1) capture for call/cc (just save the current pointer)
 //! and natural structure sharing between continuations.

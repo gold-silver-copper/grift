@@ -783,10 +783,14 @@ impl<const N: usize> Lisp<N> {
         parent: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        // Pack data and parent: (data . parent)
-        let cont_data = self.cons(data, parent)?;
-        // Create the ContFrame with cont_type stored directly
-        self.arena.alloc(Value::ContFrame { cont_type, cont_data, env })
+        // Allocate the ContType in the arena
+        let type_val = self.arena.alloc(Value::ContType(cont_type))?;
+        // Pack type and data: (cont_type_ref . data)
+        let type_and_data = self.cons(type_val, data)?;
+        // Pack with parent: ((cont_type_ref . data) . parent)
+        let cont_data = self.cons(type_and_data, parent)?;
+        // Create the ContFrame (2-index layout matching Lambda)
+        self.arena.alloc(Value::ContFrame { cont_data, env })
     }
     
     /// Extract components from a ContFrame value
@@ -808,11 +812,18 @@ impl<const N: usize> Lisp<N> {
         idx: ArenaIndex,
     ) -> ArenaResult<(crate::ContType, ArenaIndex, ArenaIndex, ArenaIndex)> {
         match self.get(idx)? {
-            Value::ContFrame { cont_type, cont_data, env } => {
-                // Unpack (data . parent)
-                let data = self.car(cont_data)?;
+            Value::ContFrame { cont_data, env } => {
+                // Unpack ((cont_type_ref . data) . parent)
+                let type_and_data = self.car(cont_data)?;
                 let parent = self.cdr(cont_data)?;
-                Ok((cont_type, data, parent, env))
+                // Unpack (cont_type_ref . data)
+                let type_val = self.car(type_and_data)?;
+                let data = self.cdr(type_and_data)?;
+                // Extract the ContType from the arena
+                match self.get(type_val)? {
+                    Value::ContType(cont_type) => Ok((cont_type, data, parent, env)),
+                    _ => Err(ArenaError::InvalidIndex),
+                }
             }
             _ => Err(ArenaError::InvalidIndex),
         }
