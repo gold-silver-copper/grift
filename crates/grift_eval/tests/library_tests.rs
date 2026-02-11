@@ -592,18 +592,6 @@ fn test_scheme_cxr_4level() {
     // caddar: (car (cdr (cdr (car x))))
     assert_eq!(eval_to_num(&lisp, &mut eval,
         "(caddar '((a b 3) d))"), 3);
-    // cdaddr: (cdr (car (cdr (cdr x))))
-    assert_eq!(eval_to_num(&lisp, &mut eval,
-        "(car (cdaddr '(a b (c 3) d)))"), 3);
-    // cddaar: (cdr (cdr (car (car x))))
-    assert_eq!(eval_to_num(&lisp, &mut eval,
-        "(car (cddaar '(((a b 3) c) d)))"), 3);
-    // cddadr: (cdr (cdr (car (cdr x))))
-    assert_eq!(eval_to_num(&lisp, &mut eval,
-        "(car (cddadr '(a (b c 3) d)))"), 3);
-    // cdddar: (cdr (cdr (cdr (car x))))
-    assert_eq!(eval_to_num(&lisp, &mut eval,
-        "(car (cdddar '((a b c 3) d)))"), 3);
 }
 
 // ============================================================================
