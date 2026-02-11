@@ -1196,9 +1196,6 @@
 ;;; (caar lst) - (car (car lst))
 (define (caar lst) (car (car lst)))
 
-;;; (cdar lst) - (cdr (car lst))
-(define (cdar lst) (cdr (car lst)))
-
 ;;; (cadddr lst) - (car (cdr (cdr (cdr lst))))
 (define (cadddr lst) (car (cdr (cdr (cdr lst)))))
 

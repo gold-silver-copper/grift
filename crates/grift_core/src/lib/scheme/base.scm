@@ -179,9 +179,7 @@
           (fold f (f acc (car lst)) (cdr lst))))
 
     (define (fold-left f acc lst)
-      (if (null? lst)
-          acc
-          (fold-left f (f acc (car lst)) (cdr lst))))
+      (fold f acc lst))
 
     (define (fold-right f init lst)
       (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))
