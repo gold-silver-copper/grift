@@ -757,20 +757,20 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_core::Lisp;
+    /// use grift_core::{Lisp, ContType};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
-    /// // Create a Done continuation (type 0, no data, no parent)
+    /// // Create a Done continuation (no data, no parent)
     /// let nil = lisp.nil().unwrap();
-    /// let done_cont = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    /// let done_cont = lisp.cont_frame(ContType::Done, nil, nil, nil).unwrap();
     /// 
-    /// // Create an IfBranch continuation (type 2) with data
+    /// // Create an IfBranch continuation with data
     /// let then_expr = lisp.symbol("then").unwrap();
     /// let else_expr = lisp.symbol("else").unwrap();
     /// let data = lisp.cons(then_expr, else_expr).unwrap();
     /// let env = lisp.nil().unwrap();
-    /// let if_cont = lisp.cont_frame(2, data, done_cont, env).unwrap();
+    /// let if_cont = lisp.cont_frame(ContType::IfBranch, data, done_cont, env).unwrap();
     /// 
     /// // Verify the continuation parent
     /// let parent = lisp.cont_frame_parent(if_cont).unwrap();
@@ -778,18 +778,18 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn cont_frame(
         &self,
-        cont_type: usize,
+        cont_type: crate::ContType,
         data: ArenaIndex,
         parent: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        // Create type_val as Usize
-        let type_val = self.arena.alloc(Value::Usize(cont_type))?;
-        // Pack type and data: (type . data)
+        // Allocate the ContType in the arena
+        let type_val = self.arena.alloc(Value::ContType(cont_type))?;
+        // Pack type and data: (cont_type_ref . data)
         let type_and_data = self.cons(type_val, data)?;
-        // Pack with parent: ((type . data) . parent)
+        // Pack with parent: ((cont_type_ref . data) . parent)
         let cont_data = self.cons(type_and_data, parent)?;
-        // Create the ContFrame
+        // Create the ContFrame (2-index layout matching Lambda)
         self.arena.alloc(Value::ContFrame { cont_data, env })
     }
     
@@ -799,7 +799,7 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Returns
     ///
-    /// * `cont_type` - The continuation type as usize
+    /// * `cont_type` - The continuation type
     /// * `data` - Continuation-specific data (or Nil)
     /// * `parent` - Parent continuation (or Nil for Done)
     /// * `env` - Environment at this continuation point
@@ -810,18 +810,18 @@ impl<const N: usize> Lisp<N> {
     pub fn cont_frame_parts(
         &self,
         idx: ArenaIndex,
-    ) -> ArenaResult<(usize, ArenaIndex, ArenaIndex, ArenaIndex)> {
+    ) -> ArenaResult<(crate::ContType, ArenaIndex, ArenaIndex, ArenaIndex)> {
         match self.get(idx)? {
             Value::ContFrame { cont_data, env } => {
-                // Unpack ((type . data) . parent)
+                // Unpack ((cont_type_ref . data) . parent)
                 let type_and_data = self.car(cont_data)?;
                 let parent = self.cdr(cont_data)?;
-                // Unpack (type . data)
+                // Unpack (cont_type_ref . data)
                 let type_val = self.car(type_and_data)?;
                 let data = self.cdr(type_and_data)?;
-                // Get the usize value
+                // Extract the ContType from the arena
                 match self.get(type_val)? {
-                    Value::Usize(cont_type) => Ok((cont_type, data, parent, env)),
+                    Value::ContType(cont_type) => Ok((cont_type, data, parent, env)),
                     _ => Err(ArenaError::InvalidIndex),
                 }
             }
@@ -845,15 +845,15 @@ impl<const N: usize> Lisp<N> {
     ///
     /// The Nil case enables writing simple iteration loops that naturally terminate:
     /// ```
-    /// use grift_core::{Lisp, Value};
+    /// use grift_core::{Lisp, Value, ContType};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
     /// // Create a chain: cont3 -> cont2 -> cont1 -> nil
     /// let nil = lisp.nil().unwrap();
-    /// let cont1 = lisp.cont_frame(1, nil, nil, nil).unwrap();
-    /// let cont2 = lisp.cont_frame(2, nil, cont1, nil).unwrap();
-    /// let cont3 = lisp.cont_frame(3, nil, cont2, nil).unwrap();
+    /// let cont1 = lisp.cont_frame(ContType::ApplyForced, nil, nil, nil).unwrap();
+    /// let cont2 = lisp.cont_frame(ContType::IfBranch, nil, cont1, nil).unwrap();
+    /// let cont3 = lisp.cont_frame(ContType::BuiltinForceArg, nil, cont2, nil).unwrap();
     /// 
     /// // Iterate through the chain
     /// let mut current = cont3;
@@ -888,13 +888,13 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_core::{Lisp, Value};
+    /// use grift_core::{Lisp, Value, ContType};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
     /// // Create a simple continuation
     /// let nil = lisp.nil().unwrap();
-    /// let cont_chain = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    /// let cont_chain = lisp.cont_frame(ContType::Done, nil, nil, nil).unwrap();
     /// let env = lisp.nil().unwrap();
     /// let cont = lisp.continuation(cont_chain, env, nil).unwrap();
     /// 

@@ -596,7 +596,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// This is O(1) allocation and enables O(1) capture for call/cc.
     #[inline]
     pub(super) fn push_cont(&mut self, cont_type: ContType, data: ArenaIndex, env: ArenaIndex) -> Result<(), EvalError> {
-        let new_frame = self.lisp.cont_frame(cont_type.as_usize(), data, self.current_cont, env)?;
+        let new_frame = self.lisp.cont_frame(cont_type, data, self.current_cont, env)?;
         self.current_cont = new_frame;
         Ok(())
     }
@@ -634,11 +634,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok((ContType::Done, nil, nil));
         }
         
-        let (cont_type_raw, data, parent, env) = self.lisp.cont_frame_parts(self.current_cont)?;
+        let (cont_type, data, parent, env) = self.lisp.cont_frame_parts(self.current_cont)?;
         self.current_cont = parent;
-        let cont_type = ContType::from_usize(cont_type_raw)
-            .ok_or_else(|| self.make_error(crate::error::ErrorKind::Generic, data)
-                .with_message("invalid continuation type"))?;
         Ok((cont_type, data, env))
     }
     
@@ -757,7 +754,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
-            Value::ContFrame { .. } | Value::Continuation { .. } | Value::ErrorObject { .. } |
+            Value::ContFrame { .. } | Value::ContType(_) | Value::Continuation { .. } | Value::ErrorObject { .. } |
             Value::Port(_) | Value::Eof | Value::Environment { .. } => {
                 Ok(TrampolineState::Return { val: expr.0 })
             }

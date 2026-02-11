@@ -743,32 +743,31 @@ pub enum Value {
     /// Continuation frame for arena-based continuation stack (call/cc support)
     ///
     /// Continuation frames form a linked list in the arena, enabling O(1) capture
-    /// for call/cc. Each frame stores the continuation type, associated data, and
-    /// a reference to the parent continuation.
+    /// for call/cc. Each frame stores a reference to the continuation type (stored
+    /// separately in the arena as `Value::ContType`), associated data, and a
+    /// reference to the parent continuation.
     ///
-    /// # Memory Layout
+    /// # Memory Layout (2-index constraint, matching Lambda)
     ///
-    /// - `cont_data`: ArenaIndex to cons cell `((type . data) . parent_cont)`
-    ///   - car: cons cell `(Usize(cont_type) . data)` where data encodes continuation-specific values
+    /// - `cont_data`: ArenaIndex to cons cell `((cont_type_ref . data) . parent_cont)`
+    ///   - car: cons cell `(cont_type_ref . data)` where cont_type_ref points to a `Value::ContType`
     ///   - cdr: ArenaIndex to parent ContFrame, or Nil for Done
     /// - `env`: ArenaIndex to the environment at this continuation point
-    ///
-    /// This maintains the 2-index constraint per arena slot, matching Lambda's layout.
-    ///
-    /// # Example Continuation Types (encoded as Usize)
-    ///
-    /// - 0: Done - computation complete
-    /// - 1: ApplyForced - after evaluating function
-    /// - 2: IfBranch - after evaluating condition
-    /// - etc.
     ///
     /// # References
     ///
     /// See docs/CALL_CC_IMPLEMENTATION_PLAN.md for the full implementation plan.
     ContFrame {
-        cont_data: ArenaIndex,  // cons cell: ((type . data) . parent_cont)
+        cont_data: ArenaIndex,  // cons cell: ((cont_type_ref . data) . parent_cont)
         env: ArenaIndex,        // environment at this continuation point
     },
+    
+    /// Continuation type tag stored in the arena.
+    ///
+    /// This value is referenced by `ContFrame`'s `cont_data` field to identify
+    /// what kind of continuation a frame represents. Stored in the arena to
+    /// maintain the 2-index constraint on `ContFrame`.
+    ContType(crate::ContType),
     
     /// R7RS error object (§6.11)
     ///
@@ -1019,6 +1018,7 @@ impl Value {
             Value::Usize(_) => "usize",
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
+            Value::ContType(_) => "cont-type",
             Value::Continuation { .. } => "continuation",
             Value::ErrorObject { .. } => "error-object",
             Value::Port(_) => "port",
@@ -1039,7 +1039,8 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
             Value::Complex { .. } | Value::Char(_) | Value::Builtin(_) |
-            Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
+            Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof |
+            Value::ContType(_) => {
                 // No references
             }
             Value::Ref(idx) => {
@@ -1072,7 +1073,7 @@ impl<const N: usize> Trace<Value, N> for Value {
             }
             Value::ContFrame { cont_data, env } => {
                 // cont_data and env are inline ArenaIndex - trace both
-                // cont_data points to a cons cell (type_and_data . parent_cont)
+                // cont_data points to ((cont_type_ref . data) . parent_cont)
                 tracer(*cont_data);
                 tracer(*env);
             }

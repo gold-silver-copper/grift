@@ -67,7 +67,7 @@
 // Re-export everything from grift_core for backward compatibility
 pub use grift_core::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib,
+    Value, Builtin, StdLib, ContType,
     Lisp, RESERVED_SLOTS,
     DisplayValue,
     define_builtins, define_stdlib,
