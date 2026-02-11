@@ -1459,39 +1459,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Uses a fixed 256-byte stack buffer. Returns an error if the
     /// combined prefix + name exceeds this limit.
     pub(super) fn prefix_symbol(&self, prefix: ArenaIndex, sym: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        // 256 bytes is sufficient for any practical symbol name;
-        // a longer result would indicate a misuse of (prefix ...).
-        let mut buf = [0u8; 256];
-        let mut pos = 0;
-
-        // Copy prefix chars
+        // Two-pass: count total chars, then allocate string and fill directly
+        let mut prefix_len = 0;
         if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
-            let plen = self.lisp.string_len(pchars).map_err(EvalError::from)?;
-            for i in 0..plen {
-                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
-                let dest = &mut buf[pos..];
-                // Each UTF-8 char can be up to 4 bytes
-                if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
-                let encoded = c.encode_utf8(dest);
-                pos += encoded.len();
-            }
+            prefix_len = self.lisp.string_len(pchars).map_err(EvalError::from)?;
         }
-
-        // Copy original symbol chars
+        let mut sym_len = 0;
         if let Value::Symbol(schars) = self.lisp.get(sym)? {
-            let slen = self.lisp.string_len(schars).map_err(EvalError::from)?;
-            for i in 0..slen {
+            sym_len = self.lisp.string_len(schars).map_err(EvalError::from)?;
+        }
+
+        let total_len = prefix_len + sym_len;
+        let result_str = self.lisp.make_string(total_len, '\0')?;
+
+        // Fill prefix chars
+        if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
+            for i in 0..prefix_len {
+                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
+                self.lisp.string_set(result_str, i, c)?;
+            }
+        }
+        // Fill symbol chars
+        if let Value::Symbol(schars) = self.lisp.get(sym)? {
+            for i in 0..sym_len {
                 let c = self.lisp.string_char_at(schars, i).map_err(EvalError::from)?;
-                let dest = &mut buf[pos..];
-                if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
-                let encoded = c.encode_utf8(dest);
-                pos += encoded.len();
+                self.lisp.string_set(result_str, prefix_len + i, c)?;
             }
         }
 
-        let name = core::str::from_utf8(&buf[..pos])
-            .map_err(|_| self.make_error(ErrorKind::Generic, sym))?;
-        Ok(self.lisp.symbol(name)?)
+        self.lisp.symbol_from_string(result_str).map_err(EvalError::from)
     }
 }
 

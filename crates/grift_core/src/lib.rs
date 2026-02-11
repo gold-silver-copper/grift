@@ -108,4 +108,4 @@ pub use cont_type::ContType;
 
 pub use lisp::{Lisp, RESERVED_SLOTS};
 pub use display::DisplayValue;
-pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort};
+pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort, FileOpenMode};
