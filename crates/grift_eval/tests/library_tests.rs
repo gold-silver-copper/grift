@@ -592,6 +592,41 @@ fn test_scheme_cxr_4level() {
     // caddar: (car (cdr (cdr (car x))))
     assert_eq!(eval_to_num(&lisp, &mut eval,
         "(caddar '((a b 3) d))"), 3);
+    // cdaddr: (cdr (car (cdr (cdr x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cdaddr '(a b (c 3) d)))"), 3);
+    // cddaar: (cdr (cdr (car (car x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cddaar '(((a b 3) c) d)))"), 3);
+    // cddadr: (cdr (cdr (car (cdr x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cddadr '(a (b c 3) d)))"), 3);
+    // cdddar: (cdr (cdr (cdr (car x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cdddar '((a b c 3) d)))"), 3);
+}
+
+// ============================================================================
+// Test new cxr functions directly (no import needed)
+// ============================================================================
+
+#[test]
+fn test_cxr_new_4level_functions() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // cdaddr: (cdr (car (cdr (cdr x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cdaddr '(a b (c 3) d)))"), 3);
+    // cddaar: (cdr (cdr (car (car x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cddaar '(((a b 3) c) d)))"), 3);
+    // cddadr: (cdr (cdr (car (cdr x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cddadr '(a (b c 3) d)))"), 3);
+    // cdddar: (cdr (cdr (cdr (car x))))
+    assert_eq!(eval_to_num(&lisp, &mut eval,
+        "(car (cdddar '((a b c 3) d)))"), 3);
 }
 
 // ============================================================================
@@ -637,6 +672,52 @@ fn test_import_unknown_library_fails() {
 
     let result = eval.eval_str("(import (nonexistent lib))");
     assert!(result.is_err(), "Importing a non-existent library should fail");
+}
+
+// ============================================================================
+// (scheme inexact) R7RS names: exact, inexact
+// ============================================================================
+
+#[test]
+fn test_scheme_inexact_r7rs_names() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // R7RS names exact and inexact should be available as builtins
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? exact)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? inexact)"));
+    assert_eq!(eval_to_num(&lisp, &mut eval, "(exact 3.0)"), 3);
+}
+
+// ============================================================================
+// (scheme base) char comparison exports
+// ============================================================================
+
+#[test]
+fn test_scheme_base_char_comparison_exports() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // These should be available from base without explicit import
+    assert!(eval_is_true(&lisp, &mut eval, "(char=? #\\a #\\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(char<? #\\a #\\b)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(char>? #\\b #\\a)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(char<=? #\\a #\\b)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(char>=? #\\b #\\a)"));
+}
+
+// ============================================================================
+// (scheme base) read-bytevector exports
+// ============================================================================
+
+#[test]
+fn test_scheme_base_read_bytevector_exports() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // read-bytevector and read-bytevector! should be available as procedures
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? read-bytevector)"));
+    assert!(eval_is_true(&lisp, &mut eval, "(procedure? read-bytevector!)"));
 }
 
 

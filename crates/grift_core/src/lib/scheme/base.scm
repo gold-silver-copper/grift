@@ -52,6 +52,7 @@
     vector-fill! vector-copy vector-copy! vector-append
     vector-map vector-for-each
     char? char->integer integer->char
+    char=? char<? char>? char<=? char>=?
     string? make-string string string-length
     string-ref string-set!
     string=? string<? string>? string<=? string>=?
@@ -89,6 +90,7 @@
     read write write-shared write-simple
     ;; I/O - binary
     read-u8 peek-u8 u8-ready? write-u8 write-bytevector
+    read-bytevector read-bytevector!
     ;; Bytevector operations
     bytevector? make-bytevector bytevector-length
     bytevector-u8-ref bytevector-u8-set!

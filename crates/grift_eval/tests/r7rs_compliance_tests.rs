@@ -287,3 +287,33 @@ fn test_complex_make_polar() {
     // make-polar with r=5, theta=atan2(4,3) should give 3+4i approximately
     assert!(eval_is_true(&lisp, &mut eval, "(< (- (magnitude (make-polar 5 0.9272952180016122)) 5.0) 0.001)"));
 }
+
+// ============================================================================
+// member/assoc with optional comparison procedure (R7RS §6.4)
+// ============================================================================
+
+#[test]
+fn test_member_with_custom_comparator() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // member with default equal?
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(member 2 '(1 2 3))"), "(2 3)");
+    // member with custom comparator (=)
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(member 2.0 '(1 2 3) =)"), "(2 3)");
+    // member with custom comparator that never matches
+    assert!(eval_is_false(&lisp, &mut eval, "(member 2 '(1 2 3) (lambda (a b) #f))"));
+}
+
+#[test]
+fn test_assoc_with_custom_comparator() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // assoc with default equal?
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(assoc 'b '((a 1) (b 2) (c 3)))"), "(b 2)");
+    // assoc with custom comparator (=)
+    assert_eq!(eval_to_string(&lisp, &mut eval, "(assoc 2.0 '((1 a) (2 b) (3 c)) =)"), "(2 b)");
+    // assoc returns #f when custom comparator never matches
+    assert!(eval_is_false(&lisp, &mut eval, "(assoc 2 '((1 a) (2 b)) (lambda (a b) #f))"));
+}
