@@ -1568,7 +1568,7 @@ impl<const N: usize> Lisp<N> {
                     return Ok(s.is_empty());
                 }
                 if data.is_nil() {
-                    return Ok(false);
+                    return Err(ArenaError::InvalidIndex);
                 }
                 
                 let base_idx = data.raw();

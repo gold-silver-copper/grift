@@ -36,7 +36,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let nil = lisp.nil()?;
         
         // Pre-intern keyword symbols for O(1) dispatch during evaluation.
-        // Since symbols are interned, these indices remain stable across GC cycles.
+        // These indices are stable because: (1) the GC is mark-and-sweep without
+        // compaction, so arena slots are never relocated, and (2) interned symbols
+        // are reachable from the intern table (a GC root), so they won't be collected.
         let keywords = Keywords {
             kw_if: lisp.symbol("if")?,
             kw_quote: lisp.symbol("quote")?,
