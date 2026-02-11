@@ -27,6 +27,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok((index, len))
     }
 
+    /// Decode a Number-encoded port ID from an arena value.
+    fn decode_port_id(&self, enc: ArenaIndex, err_ctx: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
+        match self.lisp.get(enc)? {
+            Value::Number(n) => Ok(grift_parser::PortId(n as usize)),
+            _ => Err(self.make_error(ErrorKind::Generic, err_ctx)),
+        }
+    }
+
     pub(super) fn step_return(&mut self, val: ArenaIndex) -> Result<Option<TrampolineState>, EvalError> {
         // The cont_env field is stored for potential future use (e.g., debugging, stack traces)
         // but is not currently used during normal continuation processing.
@@ -81,55 +89,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Extract lambda parts: (params, body, env)
                         let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
                         
-                        // Check for rest-argument lambda: (lambda args body) where args is a symbol
-                        if self.lisp.get(params)?.is_symbol() {
-                            // Rest-only lambda: all args collected into a single list
-                            if self.lisp.get(args_expr)?.is_nil() {
-                                // No args - bind to empty list
-                                let nil = self.lisp.nil()?;
-                                let extended_env = self.env_extend(EnvRef(closure_env), params, nil)?;
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
-                            } else {
-                                // Evaluate first arg and start collecting
-                                let first_expr = self.lisp.car(args_expr)?;
-                                let rest_exprs = self.lisp.cdr(args_expr)?;
-                                let nil = self.lisp.nil()?;
-                                
-                                // Data: (remaining_exprs . (eval_env . (rest_param . (body . (new_env . (collected . call_expr))))))
-                                self.cont(ContType::LambdaRestCollect, EnvRef(env)).data7(rest_exprs, env, params, body, closure_env, nil, call_expr)?;
-                                
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                            }
-                        } else if self.lisp.get(args_expr)?.is_nil() {
-                            // No args - check params are also empty
-                            if !self.lisp.get(params)?.is_nil() {
-                                let expected = self.count_list(params)?;
-                                return Err(self.arg_error(call_expr, expected, 0));
-                            }
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env) }))
-                        } else {
-                            // Start evaluating first arg and binding
-                            let first_expr = self.lisp.car(args_expr)?;
-                            let rest_exprs = self.lisp.cdr(args_expr)?;
-                            
-                            // Check we have params to bind
-                            if self.lisp.get(params)?.is_nil() {
-                                let got = self.count_list(args_expr)?;
-                                return Err(self.arg_error(call_expr, 0, got));
-                            }
-                            
-                            let first_param = self.lisp.car(params)?;
-                            let rest_params = self.lisp.cdr(params)?;
-                            
-                            // Start with closure_env, we'll extend as we bind
-                            // Data for LambdaBindArg: (remaining_exprs . (eval_env . (remaining_params . (body . (new_env . call_expr)))))
-                            self.cont(ContType::LambdaBindArg, EnvRef(env)).data6(rest_exprs, env, rest_params, body, closure_env, call_expr)?;
-                            // Push binding continuation for first param
-                            // Data for LambdaFirstBind: param
-                            self.cont(ContType::LambdaFirstBind, EnvRef(env)).data1(first_param)?;
-                            
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                        }
+                        self.apply_lambda_args(params, body, closure_env, args_expr, EnvRef(env), call_expr)
                     }
                     Value::StdLib(s) => {
                         // StdLib: Parse body and params on each call
@@ -143,54 +103,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         let params = self.make_stdlib_param_list(s.params())?;
                         
                         // Use the global env for stdlib functions (they're defined at top level)
-                        let closure_env = self.global_env;
-                        
-                        // Check for rest-argument form: (lambda args body) where params is a symbol
-                        if self.lisp.get(params)?.is_symbol() {
-                            // Rest-only: all args collected into a single list
-                            if self.lisp.get(args_expr)?.is_nil() {
-                                // No args - bind to empty list
-                                let nil = self.lisp.nil()?;
-                                let extended_env = self.env_extend(closure_env, params, nil)?;
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
-                            } else {
-                                // Evaluate first arg and start collecting
-                                let first_expr = self.lisp.car(args_expr)?;
-                                let rest_exprs = self.lisp.cdr(args_expr)?;
-                                let nil = self.lisp.nil()?;
-                                
-                                self.cont(ContType::LambdaRestCollect, EnvRef(env)).data7(rest_exprs, env, params, body, closure_env.0, nil, call_expr)?;
-                                
-                                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                            }
-                        } else if self.lisp.get(args_expr)?.is_nil() {
-                            // No args - check params are also empty
-                            if !self.lisp.get(params)?.is_nil() {
-                                let expected = self.count_list(params)?;
-                                return Err(self.arg_error(call_expr, expected, 0));
-                            }
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: closure_env }))
-                        } else {
-                            // Start evaluating first arg and binding
-                            let first_expr = self.lisp.car(args_expr)?;
-                            let rest_exprs = self.lisp.cdr(args_expr)?;
-                            
-                            // Check we have params to bind
-                            if self.lisp.get(params)?.is_nil() {
-                                let got = self.count_list(args_expr)?;
-                                return Err(self.arg_error(call_expr, 0, got));
-                            }
-                            
-                            let first_param = self.lisp.car(params)?;
-                            let rest_params = self.lisp.cdr(params)?;
-                            
-                            // Start with closure_env, we'll extend as we bind
-                            self.cont(ContType::LambdaBindArg, EnvRef(env)).data6(rest_exprs, env, rest_params, body, closure_env.0, call_expr)?;
-                            // Push binding continuation for first param
-                            self.cont(ContType::LambdaFirstBind, EnvRef(env)).data1(first_param)?;
-                            
-                            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: EnvRef(env) }))
-                        }
+                        self.apply_lambda_args(params, body, self.global_env.0, args_expr, EnvRef(env), call_expr)
                     }
                     Value::Native { .. } => {
                         // Native (Rust) function: STRICT - evaluate args and pass to Rust fn
@@ -490,48 +403,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             ContType::CallWithPortClose => {
                 // val is the result of the proc
                 // Data: port_id_encoded (single value - Number encoding port id)
-                let port_id = match self.lisp.get(data)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
+                let port_id = self.decode_port_id(data, val)?;
                 if let Some(ref mut io) = self.io {
                     let _ = io.close_port(port_id);
                 }
                 Ok(Some(TrampolineState::Return { val }))
             }
 
-            ContType::WithInputFromFileRestore => {
+            ContType::WithInputFromFileRestore | ContType::WithOutputToFileRestore => {
                 // val is the result of the thunk
                 // Data: (saved_port_encoded . file_port_encoded)
                 let (saved_enc, file_enc) = self.unpack2(data)?;
-                let saved_id = match self.lisp.get(saved_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                let file_id = match self.lisp.get(file_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                self.current_input_port = saved_id;
-                if let Some(ref mut io) = self.io {
-                    let _ = io.close_port(file_id);
+                let saved_port = self.decode_port_id(saved_enc, val)?;
+                if matches!(cont_type, ContType::WithInputFromFileRestore) {
+                    self.current_input_port = saved_port;
+                } else {
+                    self.current_output_port = saved_port;
                 }
-                Ok(Some(TrampolineState::Return { val }))
-            }
-
-            ContType::WithOutputToFileRestore => {
-                // val is the result of the thunk
-                // Data: (saved_port_encoded . file_port_encoded)
-                let (saved_enc, file_enc) = self.unpack2(data)?;
-                let saved_id = match self.lisp.get(saved_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                let file_id = match self.lisp.get(file_enc)? {
-                    Value::Number(n) => grift_parser::PortId(n as usize),
-                    _ => return Err(self.make_error(ErrorKind::Generic, val)),
-                };
-                self.current_output_port = saved_id;
+                let file_id = self.decode_port_id(file_enc, val)?;
                 if let Some(ref mut io) = self.io {
                     let _ = io.close_port(file_id);
                 }
@@ -1580,56 +1469,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// After body evaluation, the macro environment is restored via the 
     /// LetSyntaxBody continuation.
     pub(super) fn step_eval_let_syntax(&mut self, args: ArenaIndex, env: EnvRef) -> Result<TrampolineState, EvalError> {
-        let bindings = self.lisp.car(args)?;
-        let body_list = self.lisp.cdr(args)?;
-        
-        // Save current macro environment for restoration after body
-        let saved_macro_env = self.macro_env;
-        
-        // Phase 1: Parse ALL transformers in the outer (saved) macro environment.
-        // This ensures no transformer can see bindings from other let-syntax clauses.
-        // Arena-allocated list of (name . transformer) pairs for parallel installation.
-        let mut parsed_bindings = self.lisp.nil()?;
-        let mut current = bindings;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let binding = self.lisp.car(current)?;
-            let name = self.lisp.car(binding)?;
-            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-            
-            let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
-            let transformer = self.parse_transformer_with_env(final_transformer_expr, env.0)?;
-            
-            let pair = self.lisp.cons(name, transformer)?;
-            parsed_bindings = self.lisp.cons(pair, parsed_bindings)?;
-            
-            current = self.lisp.cdr(current)?;
-        }
-        
-        // Phase 2: Install all bindings at once
-        let mut cursor = parsed_bindings;
-        while let Value::Cons { .. } = self.lisp.get(cursor)? {
-            let pair = self.lisp.car(cursor)?;
-            let name = self.lisp.car(pair)?;
-            let transformer = self.lisp.cdr(pair)?;
-            let macro_binding = self.lisp.cons(name, transformer)?;
-            self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
-            cursor = self.lisp.cdr(cursor)?;
-        }
-        
-        // Build body expression (wrap in begin if multiple)
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
-        
-        // Push continuation to restore macro environment after body evaluation
-        // Data: saved_macro_env
-        self.cont(ContType::LetSyntaxBody, env).data1(saved_macro_env.0)?;
-        
-        // Evaluate body with extended macro environment
-        Ok(TrampolineState::Eval { expr: ExprRef(body), env })
+        self.step_eval_syntax_bindings(args, env, true)
     }
 
     /// Evaluate (letrec-syntax ((name transformer) ...) body ...) at evaluation time
@@ -1638,27 +1478,56 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Each transformer is evaluated with all letrec-syntax bindings visible
     /// (sequential installation, like letrec for variables).
     pub(super) fn step_eval_letrec_syntax(&mut self, args: ArenaIndex, env: EnvRef) -> Result<TrampolineState, EvalError> {
+        self.step_eval_syntax_bindings(args, env, false)
+    }
+
+    /// Shared implementation for step_eval_let_syntax and step_eval_letrec_syntax.
+    /// When `parallel` is true, all transformers are parsed before installation (let-syntax).
+    /// When false, each transformer is parsed and installed sequentially (letrec-syntax).
+    fn step_eval_syntax_bindings(&mut self, args: ArenaIndex, env: EnvRef, parallel: bool) -> Result<TrampolineState, EvalError> {
         let bindings = self.lisp.car(args)?;
         let body_list = self.lisp.cdr(args)?;
-        
-        // Save current macro environment for restoration after body
         let saved_macro_env = self.macro_env;
-        
-        // Install bindings sequentially - each transformer can see previous bindings
-        let mut current = bindings;
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let binding = self.lisp.car(current)?;
-            let name = self.lisp.car(binding)?;
-            let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-            
-            let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
-            let transformer = self.parse_transformer_with_env(final_transformer_expr, env.0)?;
-            let macro_binding = self.lisp.cons(name, transformer)?;
-            self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
-            
-            current = self.lisp.cdr(current)?;
+
+        if parallel {
+            // Phase 1: Parse ALL transformers in the outer macro environment.
+            let mut parsed_bindings = self.lisp.nil()?;
+            let mut current = bindings;
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let binding = self.lisp.car(current)?;
+                let name = self.lisp.car(binding)?;
+                let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
+                let transformer = self.parse_transformer_with_env(final_transformer_expr, env.0)?;
+                let pair = self.lisp.cons(name, transformer)?;
+                parsed_bindings = self.lisp.cons(pair, parsed_bindings)?;
+                current = self.lisp.cdr(current)?;
+            }
+            // Phase 2: Install all bindings at once
+            let mut cursor = parsed_bindings;
+            while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                let pair = self.lisp.car(cursor)?;
+                let name = self.lisp.car(pair)?;
+                let transformer = self.lisp.cdr(pair)?;
+                let macro_binding = self.lisp.cons(name, transformer)?;
+                self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
+                cursor = self.lisp.cdr(cursor)?;
+            }
+        } else {
+            // Install bindings sequentially - each transformer can see previous bindings
+            let mut current = bindings;
+            while let Value::Cons { .. } = self.lisp.get(current)? {
+                let binding = self.lisp.car(current)?;
+                let name = self.lisp.car(binding)?;
+                let transformer_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                let final_transformer_expr = self.expand_transformer_if_needed(transformer_expr)?;
+                let transformer = self.parse_transformer_with_env(final_transformer_expr, env.0)?;
+                let macro_binding = self.lisp.cons(name, transformer)?;
+                self.macro_env = EnvRef(self.lisp.cons(macro_binding, self.macro_env.0)?);
+                current = self.lisp.cdr(current)?;
+            }
         }
-        
+
         // Build body expression (wrap in begin if multiple)
         let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
             self.lisp.car(body_list)?
@@ -1666,12 +1535,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let begin = self.lisp.symbol("begin")?;
             self.lisp.cons(begin, body_list)?
         };
-        
-        // Push continuation to restore macro environment after body evaluation
-        // Data: saved_macro_env
+
         self.cont(ContType::LetSyntaxBody, env).data1(saved_macro_env.0)?;
-        
-        // Evaluate body with extended macro environment
         Ok(TrampolineState::Eval { expr: ExprRef(body), env })
     }
 
@@ -2974,5 +2839,51 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
 
         Ok(TrampolineState::Return { val: last_val })
+    }
+
+    /// Common argument-binding logic for both Lambda and StdLib application.
+    /// Sets up continuations to evaluate args and bind to params, then evaluate body.
+    fn apply_lambda_args(
+        &mut self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        closure_env: ArenaIndex,
+        args_expr: ArenaIndex,
+        eval_env: EnvRef,
+        call_expr: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        // Check for rest-argument lambda: (lambda args body) where args is a symbol
+        if self.lisp.get(params)?.is_symbol() {
+            // Rest-only lambda: all args collected into a single list
+            if self.lisp.get(args_expr)?.is_nil() {
+                let nil = self.lisp.nil()?;
+                let extended_env = self.env_extend(EnvRef(closure_env), params, nil)?;
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }))
+            } else {
+                let first_expr = self.lisp.car(args_expr)?;
+                let rest_exprs = self.lisp.cdr(args_expr)?;
+                let nil = self.lisp.nil()?;
+                self.cont(ContType::LambdaRestCollect, eval_env).data7(rest_exprs, eval_env.0, params, body, closure_env, nil, call_expr)?;
+                Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: eval_env }))
+            }
+        } else if self.lisp.get(args_expr)?.is_nil() {
+            if !self.lisp.get(params)?.is_nil() {
+                let expected = self.count_list(params)?;
+                return Err(self.arg_error(call_expr, expected, 0));
+            }
+            Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(closure_env) }))
+        } else {
+            let first_expr = self.lisp.car(args_expr)?;
+            let rest_exprs = self.lisp.cdr(args_expr)?;
+            if self.lisp.get(params)?.is_nil() {
+                let got = self.count_list(args_expr)?;
+                return Err(self.arg_error(call_expr, 0, got));
+            }
+            let first_param = self.lisp.car(params)?;
+            let rest_params = self.lisp.cdr(params)?;
+            self.cont(ContType::LambdaBindArg, eval_env).data6(rest_exprs, eval_env.0, rest_params, body, closure_env, call_expr)?;
+            self.cont(ContType::LambdaFirstBind, eval_env).data1(first_param)?;
+            Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: eval_env }))
+        }
     }
 }

@@ -352,22 +352,20 @@ impl<const N: usize> Lisp<N> {
         Ok(())
     }
     
-    /// Look up a string in the intern table
-    /// Returns Some(symbol_index) if found, None otherwise
-    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+    /// Scan the intern table for an entry whose string matches a predicate.
+    /// Returns Some(symbol_index) if found, None otherwise.
+    fn intern_table_find(&self, matches: impl Fn(ArenaIndex) -> ArenaResult<bool>) -> ArenaResult<Option<ArenaIndex>> {
         let mut current = self.get_intern_table_root()?;
-        
         loop {
             match self.get(current)? {
                 Value::Nil => return Ok(None),
                 Value::Cons { .. } => {
-                    // car is (string_index . symbol_index)
                     let car = self.car(current)?;
                     let cdr = self.cdr(current)?;
                     if let Value::Cons { .. } = self.get(car)? {
                         let entry_string = self.car(car)?;
                         let entry_symbol = self.cdr(car)?;
-                        if self.string_eq_contiguous(string_idx, entry_string)? {
+                        if matches(entry_string)? {
                             return Ok(Some(entry_symbol));
                         }
                     }
@@ -376,6 +374,12 @@ impl<const N: usize> Lisp<N> {
                 _ => return Err(ArenaError::InvalidIndex),
             }
         }
+    }
+
+    /// Look up a string in the intern table
+    /// Returns Some(symbol_index) if found, None otherwise
+    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+        self.intern_table_find(|entry_string| self.string_eq_contiguous(string_idx, entry_string))
     }
     
     /// Look up bytes directly in the intern table without allocating a string first.
@@ -386,28 +390,7 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Returns Some(symbol_index) if found, None otherwise
     fn intern_table_lookup_bytes(&self, bytes: &[u8]) -> ArenaResult<Option<ArenaIndex>> {
-        let mut current = self.get_intern_table_root()?;
-        
-        loop {
-            match self.get(current)? {
-                Value::Nil => return Ok(None),
-                Value::Cons { .. } => {
-                    // car is (string_index . symbol_index)
-                    let car = self.car(current)?;
-                    let cdr = self.cdr(current)?;
-                    if let Value::Cons { .. } = self.get(car)? {
-                        let entry_string = self.car(car)?;
-                        let entry_symbol = self.cdr(car)?;
-                        // Compare bytes directly without allocating
-                        if self.string_matches_bytes(entry_string, bytes)? {
-                            return Ok(Some(entry_symbol));
-                        }
-                    }
-                    current = cdr;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-        }
+        self.intern_table_find(|entry_string| self.string_matches_bytes(entry_string, bytes))
     }
     
     /// Create or retrieve an interned symbol from a string slice
@@ -774,20 +757,20 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_core::Lisp;
+    /// use grift_core::{Lisp, ContType};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
-    /// // Create a Done continuation (type 0, no data, no parent)
+    /// // Create a Done continuation (no data, no parent)
     /// let nil = lisp.nil().unwrap();
-    /// let done_cont = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    /// let done_cont = lisp.cont_frame(ContType::Done, nil, nil, nil).unwrap();
     /// 
-    /// // Create an IfBranch continuation (type 2) with data
+    /// // Create an IfBranch continuation with data
     /// let then_expr = lisp.symbol("then").unwrap();
     /// let else_expr = lisp.symbol("else").unwrap();
     /// let data = lisp.cons(then_expr, else_expr).unwrap();
     /// let env = lisp.nil().unwrap();
-    /// let if_cont = lisp.cont_frame(2, data, done_cont, env).unwrap();
+    /// let if_cont = lisp.cont_frame(ContType::IfBranch, data, done_cont, env).unwrap();
     /// 
     /// // Verify the continuation parent
     /// let parent = lisp.cont_frame_parent(if_cont).unwrap();
@@ -795,18 +778,18 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn cont_frame(
         &self,
-        cont_type: usize,
+        cont_type: crate::ContType,
         data: ArenaIndex,
         parent: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        // Create type_val as Usize
-        let type_val = self.arena.alloc(Value::Usize(cont_type))?;
-        // Pack type and data: (type . data)
+        // Allocate the ContType in the arena
+        let type_val = self.arena.alloc(Value::ContType(cont_type))?;
+        // Pack type and data: (cont_type_ref . data)
         let type_and_data = self.cons(type_val, data)?;
-        // Pack with parent: ((type . data) . parent)
+        // Pack with parent: ((cont_type_ref . data) . parent)
         let cont_data = self.cons(type_and_data, parent)?;
-        // Create the ContFrame
+        // Create the ContFrame (2-index layout matching Lambda)
         self.arena.alloc(Value::ContFrame { cont_data, env })
     }
     
@@ -816,7 +799,7 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Returns
     ///
-    /// * `cont_type` - The continuation type as usize
+    /// * `cont_type` - The continuation type
     /// * `data` - Continuation-specific data (or Nil)
     /// * `parent` - Parent continuation (or Nil for Done)
     /// * `env` - Environment at this continuation point
@@ -827,18 +810,18 @@ impl<const N: usize> Lisp<N> {
     pub fn cont_frame_parts(
         &self,
         idx: ArenaIndex,
-    ) -> ArenaResult<(usize, ArenaIndex, ArenaIndex, ArenaIndex)> {
+    ) -> ArenaResult<(crate::ContType, ArenaIndex, ArenaIndex, ArenaIndex)> {
         match self.get(idx)? {
             Value::ContFrame { cont_data, env } => {
-                // Unpack ((type . data) . parent)
+                // Unpack ((cont_type_ref . data) . parent)
                 let type_and_data = self.car(cont_data)?;
                 let parent = self.cdr(cont_data)?;
-                // Unpack (type . data)
+                // Unpack (cont_type_ref . data)
                 let type_val = self.car(type_and_data)?;
                 let data = self.cdr(type_and_data)?;
-                // Get the usize value
+                // Extract the ContType from the arena
                 match self.get(type_val)? {
-                    Value::Usize(cont_type) => Ok((cont_type, data, parent, env)),
+                    Value::ContType(cont_type) => Ok((cont_type, data, parent, env)),
                     _ => Err(ArenaError::InvalidIndex),
                 }
             }
@@ -862,15 +845,15 @@ impl<const N: usize> Lisp<N> {
     ///
     /// The Nil case enables writing simple iteration loops that naturally terminate:
     /// ```
-    /// use grift_core::{Lisp, Value};
+    /// use grift_core::{Lisp, Value, ContType};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
     /// // Create a chain: cont3 -> cont2 -> cont1 -> nil
     /// let nil = lisp.nil().unwrap();
-    /// let cont1 = lisp.cont_frame(1, nil, nil, nil).unwrap();
-    /// let cont2 = lisp.cont_frame(2, nil, cont1, nil).unwrap();
-    /// let cont3 = lisp.cont_frame(3, nil, cont2, nil).unwrap();
+    /// let cont1 = lisp.cont_frame(ContType::ApplyForced, nil, nil, nil).unwrap();
+    /// let cont2 = lisp.cont_frame(ContType::IfBranch, nil, cont1, nil).unwrap();
+    /// let cont3 = lisp.cont_frame(ContType::BuiltinForceArg, nil, cont2, nil).unwrap();
     /// 
     /// // Iterate through the chain
     /// let mut current = cont3;
@@ -905,13 +888,13 @@ impl<const N: usize> Lisp<N> {
     /// # Example
     ///
     /// ```
-    /// use grift_core::{Lisp, Value};
+    /// use grift_core::{Lisp, Value, ContType};
     /// 
     /// let lisp: Lisp<1000> = Lisp::new();
     /// 
     /// // Create a simple continuation
     /// let nil = lisp.nil().unwrap();
-    /// let cont_chain = lisp.cont_frame(0, nil, nil, nil).unwrap();
+    /// let cont_chain = lisp.cont_frame(ContType::Done, nil, nil, nil).unwrap();
     /// let env = lisp.nil().unwrap();
     /// let cont = lisp.continuation(cont_chain, env, nil).unwrap();
     /// 
@@ -1094,41 +1077,20 @@ impl<const N: usize> Lisp<N> {
     /// This limit is chosen to balance stack usage in no_std environments
     /// with typical program needs. Most Lisp programs use far fewer roots.
     pub fn gc(&self, roots: &[ArenaIndex]) -> GcStats {
-        // Create a new roots array with reserved slots and intern table included
         // Using const-sized array to avoid alloc in no_std
-        // 512 roots should be sufficient for most programs while keeping
-        // stack usage reasonable (~8KB on 64-bit systems)
         const MAX_ROOTS: usize = 512;
         
-        // Panic if too many roots - this indicates a programming error
         // Account for 6 reserved roots (nil, void, true, false, intern_table, string_intern_table)
         assert!(roots.len() < MAX_ROOTS - 6, 
             "Too many GC roots: {} (max {})", roots.len(), MAX_ROOTS - 6 - 1);
         
         let mut all_roots = [ArenaIndex::NIL; MAX_ROOTS];
-        let mut root_count = 0;
-        
-        // Add reserved slots as roots to prevent them from being collected
-        all_roots[root_count] = self.nil_slot;
-        root_count += 1;
-        all_roots[root_count] = self.void_slot;
-        root_count += 1;
-        all_roots[root_count] = self.true_slot;
-        root_count += 1;
-        all_roots[root_count] = self.false_slot;
-        root_count += 1;
-        
-        // Add intern table reference cell as root
-        // This is a cons cell whose car is the intern table alist
-        // Tracing from this cell will reach all interned symbols
-        all_roots[root_count] = self.intern_table_slot;
-        root_count += 1;
-        
-        // Add string intern table reference cell as root
-        // This is a cons cell whose car is the list of interned string headers
-        // Tracing from this cell preserves interned string data
-        all_roots[root_count] = self.string_intern_table_slot;
-        root_count += 1;
+        let reserved = [
+            self.nil_slot, self.void_slot, self.true_slot, self.false_slot,
+            self.intern_table_slot, self.string_intern_table_slot,
+        ];
+        all_roots[..reserved.len()].copy_from_slice(&reserved);
+        let mut root_count = reserved.len();
         
         // Copy provided roots
         for &root in roots {

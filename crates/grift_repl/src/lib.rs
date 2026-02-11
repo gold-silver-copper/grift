@@ -182,6 +182,9 @@ fn format_value_impl<const N: usize>(
         Ok(Value::ContFrame { .. }) => {
             buf.push_str("#<cont-frame>");
         }
+        Ok(Value::ContType(_)) => {
+            buf.push_str("#<cont-type>");
+        }
         Ok(Value::Continuation { .. }) => {
             buf.push_str("#<continuation>");
         }

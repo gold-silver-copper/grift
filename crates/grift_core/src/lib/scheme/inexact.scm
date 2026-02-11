@@ -3,4 +3,4 @@
   (export
     finite? infinite? nan?
     sqrt exp log sin cos tan asin acos atan
-    exact->inexact inexact->exact))
+    exact inexact))

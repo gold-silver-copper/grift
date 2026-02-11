@@ -98,10 +98,12 @@ mod macros;
 mod value;
 mod lisp;
 mod display;
+mod cont_type;
 pub mod io;
 pub mod libraries;
 
 pub use value::{Value, Builtin, StdLib};
+pub use cont_type::ContType;
 // Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]
 
 pub use lisp::{Lisp, RESERVED_SLOTS};

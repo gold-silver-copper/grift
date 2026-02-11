@@ -743,32 +743,31 @@ pub enum Value {
     /// Continuation frame for arena-based continuation stack (call/cc support)
     ///
     /// Continuation frames form a linked list in the arena, enabling O(1) capture
-    /// for call/cc. Each frame stores the continuation type, associated data, and
-    /// a reference to the parent continuation.
+    /// for call/cc. Each frame stores a reference to the continuation type (stored
+    /// separately in the arena as `Value::ContType`), associated data, and a
+    /// reference to the parent continuation.
     ///
-    /// # Memory Layout
+    /// # Memory Layout (2-index constraint, matching Lambda)
     ///
-    /// - `cont_data`: ArenaIndex to cons cell `((type . data) . parent_cont)`
-    ///   - car: cons cell `(Usize(cont_type) . data)` where data encodes continuation-specific values
+    /// - `cont_data`: ArenaIndex to cons cell `((cont_type_ref . data) . parent_cont)`
+    ///   - car: cons cell `(cont_type_ref . data)` where cont_type_ref points to a `Value::ContType`
     ///   - cdr: ArenaIndex to parent ContFrame, or Nil for Done
     /// - `env`: ArenaIndex to the environment at this continuation point
-    ///
-    /// This maintains the 2-index constraint per arena slot, matching Lambda's layout.
-    ///
-    /// # Example Continuation Types (encoded as Usize)
-    ///
-    /// - 0: Done - computation complete
-    /// - 1: ApplyForced - after evaluating function
-    /// - 2: IfBranch - after evaluating condition
-    /// - etc.
     ///
     /// # References
     ///
     /// See docs/CALL_CC_IMPLEMENTATION_PLAN.md for the full implementation plan.
     ContFrame {
-        cont_data: ArenaIndex,  // cons cell: ((type . data) . parent_cont)
+        cont_data: ArenaIndex,  // cons cell: ((cont_type_ref . data) . parent_cont)
         env: ArenaIndex,        // environment at this continuation point
     },
+    
+    /// Continuation type tag stored in the arena.
+    ///
+    /// This value is referenced by `ContFrame`'s `cont_data` field to identify
+    /// what kind of continuation a frame represents. Stored in the arena to
+    /// maintain the 2-index constraint on `ContFrame`.
+    ContType(crate::ContType),
     
     /// R7RS error object (§6.11)
     ///
@@ -854,39 +853,66 @@ pub enum Value {
     Environment { env: ArenaIndex, mutable: bool },
 }
 
+/// Generate simple `is_*` predicate methods on `Value`.
+macro_rules! value_predicates {
+    ($( $(#[doc = $doc:literal])* $name:ident => $pat:pat ),+ $(,)?) => {
+        $(
+            $(#[doc = $doc])*
+            #[inline]
+            pub const fn $name(&self) -> bool {
+                matches!(self, $pat)
+            }
+        )+
+    };
+}
+
 impl Value {
-    /// Check if this value is nil (empty list)
-    #[inline]
-    pub const fn is_nil(&self) -> bool {
-        matches!(self, Value::Nil)
-    }
-    
-    /// Check if this value is void (unspecified value)
-    /// 
-    /// Void is returned by side-effect-only forms like `define`, `set!`, `display`.
-    /// The REPL should not print anything when this value is returned.
-    #[inline]
-    pub const fn is_void(&self) -> bool {
-        matches!(self, Value::Void)
-    }
-    
-    /// Check if this value is false (#f)
-    /// This is the ONLY way to be false in this Lisp
-    #[inline]
-    pub const fn is_false(&self) -> bool {
-        matches!(self, Value::False)
-    }
-    
-    /// Check if this value is true (#t)
-    #[inline]
-    pub const fn is_true(&self) -> bool {
-        matches!(self, Value::True)
-    }
-    
-    /// Check if this value is a boolean (#t or #f)
-    #[inline]
-    pub const fn is_boolean(&self) -> bool {
-        matches!(self, Value::True | Value::False)
+    value_predicates! {
+        /// Check if this value is nil (empty list)
+        is_nil => Value::Nil,
+        /// Check if this value is void (unspecified value)
+        ///
+        /// Void is returned by side-effect-only forms like `define`, `set!`, `display`.
+        /// The REPL should not print anything when this value is returned.
+        is_void => Value::Void,
+        /// Check if this value is false (#f) — the ONLY way to be false in this Lisp
+        is_false => Value::False,
+        /// Check if this value is true (#t)
+        is_true => Value::True,
+        /// Check if this value is a boolean (#t or #f)
+        is_boolean => Value::True | Value::False,
+        /// Check if this value is a float
+        is_float => Value::Float(_),
+        /// Check if this value is a symbol
+        is_symbol => Value::Symbol(_),
+        /// Check if this value is a cons cell (pair)
+        is_cons => Value::Cons { .. },
+        /// Check if this value is a lambda
+        is_lambda => Value::Lambda { .. },
+        /// Check if this value is a builtin
+        is_builtin => Value::Builtin(_),
+        /// Check if this value is a stdlib function
+        is_stdlib => Value::StdLib(_),
+        /// Check if this value is a native (Rust) function
+        is_native => Value::Native { .. },
+        /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
+        is_procedure => Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. },
+        /// Check if this value is an array
+        is_array => Value::Array { .. },
+        /// Check if this value is a bytevector
+        is_bytevector => Value::Bytevector { .. },
+        /// Check if this value is a string
+        is_string => Value::String { .. },
+        /// Check if this value is a ref (internal arena index reference)
+        is_ref => Value::Ref(_),
+        /// Check if this value is a usize (internal unsigned integer)
+        is_usize => Value::Usize(_),
+        /// Check if this value is a syntax object
+        is_syntax => Value::Syntax { .. },
+        /// Check if this value is a continuation frame
+        is_cont_frame => Value::ContFrame { .. },
+        /// Check if this value is a captured continuation (from call/cc)
+        is_continuation => Value::Continuation { .. },
     }
     
     /// Check if this value is an atom (not a cons cell)
@@ -905,12 +931,6 @@ impl Value {
     #[inline]
     pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
-    }
-    
-    /// Check if this value is a float
-    #[inline]
-    pub const fn is_float(&self) -> bool {
-        matches!(self, Value::Float(_))
     }
     
     /// Extract ArenaIndex from a Ref value.
@@ -932,73 +952,7 @@ impl Value {
             _ => panic!("expected Ref"),
         }
     }
-    
-    /// Check if this value is a symbol
-    #[inline]
-    pub const fn is_symbol(&self) -> bool {
-        matches!(self, Value::Symbol(_))
-    }
-    
-    /// Check if this value is a cons cell (pair)
-    #[inline]
-    pub const fn is_cons(&self) -> bool {
-        matches!(self, Value::Cons { .. })
-    }
-    
-    /// Check if this value is a lambda
-    #[inline]
-    pub const fn is_lambda(&self) -> bool {
-        matches!(self, Value::Lambda { .. })
-    }
-    
-    /// Check if this value is a builtin
-    #[inline]
-    pub const fn is_builtin(&self) -> bool {
-        matches!(self, Value::Builtin(_))
-    }
-    
-    /// Check if this value is a stdlib function
-    #[inline]
-    pub const fn is_stdlib(&self) -> bool {
-        matches!(self, Value::StdLib(_))
-    }
-    
-    /// Check if this value is a native (Rust) function
-    #[inline]
-    pub const fn is_native(&self) -> bool {
-        matches!(self, Value::Native { .. })
-    }
-    
-    /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
-    #[inline]
-    pub const fn is_procedure(&self) -> bool {
-        matches!(self, Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. })
-    }
-    
-    /// Check if this value is an array
-    #[inline]
-    pub const fn is_array(&self) -> bool {
-        matches!(self, Value::Array { .. })
-    }
-    
-    /// Check if this value is a bytevector
-    #[inline]
-    pub const fn is_bytevector(&self) -> bool {
-        matches!(self, Value::Bytevector { .. })
-    }
-    
-    /// Check if this value is a string
-    #[inline]
-    pub const fn is_string(&self) -> bool {
-        matches!(self, Value::String { .. })
-    }
-    
-    /// Check if this value is a ref (internal arena index reference)
-    #[inline]
-    pub const fn is_ref(&self) -> bool {
-        matches!(self, Value::Ref(_))
-    }
-    
+
     /// Get the number value if this is an integer
     #[inline]
     pub const fn as_number(&self) -> Option<isize> {
@@ -1036,12 +990,6 @@ impl Value {
         }
     }
     
-    /// Check if this value is a usize (internal unsigned integer)
-    #[inline]
-    pub const fn is_usize(&self) -> bool {
-        matches!(self, Value::Usize(_))
-    }
-    
     /// Get the usize value if this is a Usize
     #[inline]
     pub const fn as_usize(&self) -> Option<usize> {
@@ -1057,16 +1005,11 @@ impl Value {
             Value::Nil => "nil",
             Value::Void => "void",
             Value::True | Value::False => "boolean",
-            Value::Number(_) => "number",
-            Value::Float(_) => "number",
-            Value::Rational { .. } => "number",
-            Value::Complex { .. } => "number",
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
-            Value::Lambda { .. } => "procedure",
-            Value::Builtin(_) => "procedure",
-            Value::StdLib(_) => "procedure",
+            Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) => "procedure",
             Value::Native { .. } => "native",
             Value::Array { .. } => "array",
             Value::Bytevector { .. } => "bytevector",
@@ -1075,6 +1018,7 @@ impl Value {
             Value::Usize(_) => "usize",
             Value::Syntax { .. } => "syntax",
             Value::ContFrame { .. } => "cont-frame",
+            Value::ContType(_) => "cont-type",
             Value::Continuation { .. } => "continuation",
             Value::ErrorObject { .. } => "error-object",
             Value::Port(_) => "port",
@@ -1083,23 +1027,6 @@ impl Value {
         }
     }
     
-    /// Check if this value is a syntax object
-    #[inline]
-    pub const fn is_syntax(&self) -> bool {
-        matches!(self, Value::Syntax { .. })
-    }
-    
-    /// Check if this value is a continuation frame
-    #[inline]
-    pub const fn is_cont_frame(&self) -> bool {
-        matches!(self, Value::ContFrame { .. })
-    }
-    
-    /// Check if this value is a captured continuation (from call/cc)
-    #[inline]
-    pub const fn is_continuation(&self) -> bool {
-        matches!(self, Value::Continuation { .. })
-    }
 }
 
 /// Implement Trace for GC support
@@ -1112,7 +1039,8 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
             Value::Complex { .. } | Value::Char(_) | Value::Builtin(_) |
-            Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof => {
+            Value::StdLib(_) | Value::Usize(_) | Value::Port(_) | Value::Eof |
+            Value::ContType(_) => {
                 // No references
             }
             Value::Ref(idx) => {
@@ -1145,7 +1073,7 @@ impl<const N: usize> Trace<Value, N> for Value {
             }
             Value::ContFrame { cont_data, env } => {
                 // cont_data and env are inline ArenaIndex - trace both
-                // cont_data points to a cons cell (type_and_data . parent_cont)
+                // cont_data points to ((cont_type_ref . data) . parent_cont)
                 tracer(*cont_data);
                 tracer(*env);
             }
@@ -1161,37 +1089,14 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(*cont_chain);
                 tracer(*metadata);
             }
-            Value::Array { len, data } => {
-                // For non-empty arrays, trace all elements
-                // Empty arrays have len=0 and data == NIL
+            Value::Array { len, data }
+            | Value::Bytevector { len, data }
+            | Value::String { len, data } => {
+                // For non-empty contiguous data, trace all element slots
                 if *len > 0 {
                     let base_idx = data.raw();
                     for i in 0..*len {
-                        // Elements are at data, data+1, ..., data+len-1
-                        let elem_idx = ArenaIndex::new(base_idx + i);
-                        tracer(elem_idx);
-                    }
-                }
-            }
-            Value::Bytevector { len, data } => {
-                // Same layout as Array — trace all element slots
-                if *len > 0 {
-                    let base_idx = data.raw();
-                    for i in 0..*len {
-                        let elem_idx = ArenaIndex::new(base_idx + i);
-                        tracer(elem_idx);
-                    }
-                }
-            }
-            Value::String { len, data } => {
-                // For non-empty strings, trace all Char slots
-                // Empty strings have len=0 and data == NIL
-                if *len > 0 {
-                    let base_idx = data.raw();
-                    for i in 0..*len {
-                        // Characters are at data, data+1, ..., data+len-1
-                        let char_idx = ArenaIndex::new(base_idx + i);
-                        tracer(char_idx);
+                        tracer(ArenaIndex::new(base_idx + i));
                     }
                 }
             }
