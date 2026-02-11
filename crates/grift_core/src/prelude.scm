@@ -1084,11 +1084,13 @@
 ;;; Member and Assoc Functions (Using Helpers)
 ;;; ============================================================
 
-;;; (member x lst) - Find x in lst using equal?, return sublist or #f
-(define (member x lst) (mem-helper equal? x lst))
+;;; (member x lst) or (member x lst compare) - Find x in lst, return sublist or #f
+(define (member x lst . rest)
+  (mem-helper (if (null? rest) equal? (car rest)) x lst))
 
-;;; (assoc key alist) - Look up key in association list using equal?
-(define (assoc key alist) (assoc-helper equal? key alist))
+;;; (assoc key alist) or (assoc key alist compare) - Look up key in association list
+(define (assoc key alist . rest)
+  (assoc-helper (if (null? rest) equal? (car rest)) key alist))
 
 ;;; (range start end) - Generate list of integers [start, end) (tail-recursive)
 (define (range start end)
@@ -1251,6 +1253,18 @@
 
 ;;; (cdadar lst) - (cdr (car (cdr (car lst))))
 (define (cdadar lst) (cdr (car (cdr (car lst)))))
+
+;;; (cdaddr lst) - (cdr (car (cdr (cdr lst))))
+(define (cdaddr lst) (cdr (car (cdr (cdr lst)))))
+
+;;; (cddaar lst) - (cdr (cdr (car (car lst))))
+(define (cddaar lst) (cdr (cdr (car (car lst)))))
+
+;;; (cddadr lst) - (cdr (cdr (car (cdr lst))))
+(define (cddadr lst) (cdr (cdr (car (cdr lst)))))
+
+;;; (cdddar lst) - (cdr (cdr (cdr (car lst))))
+(define (cdddar lst) (cdr (cdr (cdr (car lst)))))
 
 ;;; ============================================================
 ;;; Number utilities (R7RS Section 6.2.6)
