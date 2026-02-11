@@ -136,6 +136,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
             return self.apply_with_file(builtin, args, call_expr);
         }
+
+        // First-class procedure builtins (R7RS requires these to be values)
+        if matches!(builtin, Builtin::Values) {
+            // (values v ...) — return args list as multi-value result
+            // R7RS: (values x) with a single value is equivalent to x
+            if let Value::Cons { .. } = self.lisp.get(args)? {
+                let rest = self.lisp.cdr(args)?;
+                if self.lisp.get(rest)?.is_nil() {
+                    // Single value — return it directly
+                    let single = self.lisp.car(args)?;
+                    return Ok(TrampolineState::Return { val: single });
+                }
+            }
+            return Ok(TrampolineState::Return { val: args });
+        }
+        if matches!(builtin, Builtin::Apply) {
+            return self.apply_apply_builtin(args, call_expr);
+        }
+        if matches!(builtin, Builtin::CallWithValues) {
+            return self.apply_call_with_values_builtin(args, call_expr);
+        }
+        if matches!(builtin, Builtin::CallCc | Builtin::CallWithCurrentContinuation) {
+            return self.apply_call_cc_builtin(args, call_expr);
+        }
+        if matches!(builtin, Builtin::DynamicWind) {
+            return self.apply_dynamic_wind_builtin(args, call_expr);
+        }
+        if matches!(builtin, Builtin::WithExceptionHandler) {
+            return self.apply_with_exception_handler_builtin(args, call_expr);
+        }
+        if matches!(builtin, Builtin::RaiseBuiltin) {
+            return self.apply_raise_builtin(args, call_expr, false);
+        }
+        if matches!(builtin, Builtin::RaiseContinuable) {
+            return self.apply_raise_builtin(args, call_expr, true);
+        }
+        if matches!(builtin, Builtin::EvalBuiltin) {
+            return self.apply_eval_builtin(args, call_expr);
+        }
+        if matches!(builtin, Builtin::EnvironmentBuiltin) {
+            return self.apply_environment_builtin(args, call_expr);
+        }
         
         // In strict evaluation, args are already evaluated values
         let result = self.apply_builtin(builtin, args, call_expr)?;
@@ -383,6 +425,214 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let nil = self.lisp.nil()?;
         self.cont(ContType::ApplyForced, EnvRef(env)).data3(nil, env, call_expr)?;
         Ok(TrampolineState::Return { val: thunk })
+    }
+
+    /// (apply proc arg ... args-list) — R7RS §6.4
+    /// Apply procedure to arguments, with last arg being a list that gets spliced.
+    fn apply_apply_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let func = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        // Collect fixed args and the trailing list
+        // (apply f a b '(c d)) => apply f to (a b c d)
+        let args_list = self.build_apply_args(rest, call_expr)?;
+        let new_call = self.lisp.cons(func, args_list)?;
+        self.push_frame(new_call, func)?;
+        let env = self.global_env.0;
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, new_call)?;
+        Ok(TrampolineState::Return { val: func })
+    }
+
+    /// Build the argument list for (apply proc arg ... args-list).
+    /// The last element must be a list; preceding elements are prepended.
+    fn build_apply_args(&self, rest: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        match self.lisp.get(rest)? {
+            Value::Nil => {
+                // No args at all — error
+                Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                    .with_message("apply requires at least 2 arguments"))
+            }
+            Value::Cons { .. } => {
+                let head = self.lisp.car(rest)?;
+                let tail = self.lisp.cdr(rest)?;
+                if self.lisp.get(tail)?.is_nil() {
+                    // Last element — must be a list; use it directly
+                    Ok(head)
+                } else {
+                    // More elements follow — prepend this one
+                    let rest_args = self.build_apply_args(tail, call_expr)?;
+                    self.lisp.cons(head, rest_args).map_err(Into::into)
+                }
+            }
+            _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
+        }
+    }
+
+    /// (call-with-values producer consumer) — R7RS §6.10
+    fn apply_call_with_values_builtin(&mut self, args: ArenaIndex, _call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let producer = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let consumer = self.lisp.car(rest)?;
+
+        // Call producer with no args, then apply consumer to results.
+        // Use CallWithValuesConsumer to hold the consumer until producer returns.
+        // CallWithValuesConsumer will Eval the consumer value (self-evaluating for
+        // lambdas/builtins), then CallWithValuesApply will apply it to producer results.
+        let nil = self.lisp.nil()?;
+        let producer_call = self.lisp.cons(producer, nil)?;
+        let env = self.global_env.0;
+
+        self.cont(ContType::CallWithValuesConsumer, EnvRef(env)).data2(consumer, env)?;
+
+        // Apply producer with no args
+        self.push_frame(producer_call, producer)?;
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(nil, env, producer_call)?;
+        Ok(TrampolineState::Return { val: producer })
+    }
+
+    /// (call/cc proc) or (call-with-current-continuation proc) — R7RS §6.10
+    fn apply_call_cc_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let proc = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        if !self.lisp.get(rest)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                .with_message("call/cc requires exactly 1 argument"));
+        }
+
+        // Capture the current continuation
+        let env = self.global_env.0;
+        let captured_continuation = self.capture_continuation(env)?;
+
+        // Apply proc to the captured continuation
+        let nil = self.lisp.nil()?;
+        let cont_args = self.lisp.cons(captured_continuation, nil)?;
+        let call = self.lisp.cons(proc, cont_args)?;
+        self.push_frame(call, proc)?;
+        self.cont(ContType::ApplyForced, EnvRef(env)).data3(cont_args, env, call)?;
+        Ok(TrampolineState::Return { val: proc })
+    }
+
+    /// (dynamic-wind before body after) — R7RS §6.10
+    fn apply_dynamic_wind_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let before = self.lisp.car(args)?;
+        let rest1 = self.lisp.cdr(args)?;
+        let body = self.lisp.car(rest1)?;
+        let rest2 = self.lisp.cdr(rest1)?;
+        let after = self.lisp.car(rest2)?;
+        let rest3 = self.lisp.cdr(rest2)?;
+        if !self.lisp.get(rest3)?.is_nil() {
+            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                .with_message("dynamic-wind requires exactly 3 arguments"));
+        }
+
+        let saved_dw_chain = self.dynamic_wind_chain;
+        let env = self.global_env.0;
+
+        // Set up the continuation chain:
+        // 1. Call before thunk
+        // 2. When before returns → DynamicWindCallBody fires
+        //    (expects val=body_thunk, but we need to feed body_thunk)
+        //
+        // Use DynamicWindCallBody which expects val = body thunk.
+        // We chain: call before → ignore result → return body → DynamicWindCallBody
+        //
+        // Push DynamicWindCallBody (will receive body as val via BuiltinReturnValue)
+        self.cont(ContType::DynamicWindCallBody, EnvRef(env))
+            .data4(before, after, env, saved_dw_chain)?;
+
+        // Push a continuation that discards before's return value and returns body
+        self.cont(ContType::BuiltinReturnValue, EnvRef(env)).data1(body)?;
+
+        // Call the before thunk
+        match self.apply_thunk(before, EnvRef(env))? {
+            Some(state) => Ok(state),
+            None => Err(self.make_error(ErrorKind::NotAFunction, call_expr)
+                .with_message("dynamic-wind: before must be a thunk")),
+        }
+    }
+
+    /// (with-exception-handler handler thunk) — R7RS §6.11
+    fn apply_with_exception_handler_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let handler = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+        let thunk = self.lisp.car(rest)?;
+
+        // Both handler and thunk are already evaluated values.
+        // Install handler and call thunk (same logic as WithExceptionHandlerCallThunk)
+        let saved_chain = self.exception_handler_chain;
+        self.exception_handler_chain = self.lisp.cons(handler, saved_chain)?;
+
+        let true_val = self.lisp.true_val()?;
+        let global = self.global_env;
+        self.cont(ContType::ExceptionHandlerFrame, global)
+            .data3(handler, saved_chain, true_val)?;
+
+        match self.apply_thunk(thunk, self.global_env)? {
+            Some(state) => Ok(state),
+            None => Err(self.make_error(ErrorKind::NotAFunction, call_expr)
+                .with_message("with-exception-handler: thunk must be a procedure")),
+        }
+    }
+
+    /// (raise obj) or (raise-continuable obj) — R7RS §6.11
+    fn apply_raise_builtin(&mut self, args: ArenaIndex, call_expr: ArenaIndex, continuable: bool)
+        -> Result<TrampolineState, EvalError>
+    {
+        let obj = self.lisp.car(args)?;
+        match self.invoke_exception_handler(obj, continuable)? {
+            Some(state) => Ok(state),
+            None => Err(self.make_error(ErrorKind::UserError, call_expr)),
+        }
+    }
+
+    /// (eval expr) or (eval expr env) — R7RS §6.12
+    /// Arguments are already evaluated when called as a builtin.
+    fn apply_eval_builtin(&mut self, args: ArenaIndex, _call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let expr = self.lisp.car(args)?;
+        let rest = self.lisp.cdr(args)?;
+
+        if self.lisp.get(rest)?.is_nil() {
+            // (eval expr) — evaluate expr in global env
+            Ok(TrampolineState::Eval { expr: ExprRef(expr), env: self.global_env })
+        } else {
+            // (eval expr env-val) — evaluate expr in given environment
+            let env_val = self.lisp.car(rest)?;
+            match self.lisp.get(env_val)? {
+                Value::Environment { env: target_env, .. } => {
+                    Ok(TrampolineState::Eval { expr: ExprRef(expr), env: EnvRef(target_env) })
+                }
+                _ => Err(self.type_error(env_val, "environment", self.lisp.get(env_val)?.type_name())),
+            }
+        }
+    }
+
+    /// (environment import-set ...) — R7RS §6.12
+    fn apply_environment_builtin(&mut self, args: ArenaIndex, _call_expr: ArenaIndex)
+        -> Result<TrampolineState, EvalError>
+    {
+        let nil = self.lisp.nil()?;
+        let mut result_env = EnvRef(nil);
+
+        let mut sets = args;
+        while let Value::Cons { .. } = self.lisp.get(sets)? {
+            let import_set = self.lisp.car(sets)?;
+            sets = self.lisp.cdr(sets)?;
+            result_env = self.import_library_into_env(import_set, result_env)?;
+        }
+
+        let env_val = self.lisp.alloc(Value::Environment { env: result_env.0, mutable: false })?;
+        Ok(TrampolineState::Return { val: env_val })
     }
     
     /// Apply a builtin with already-evaluated arguments
@@ -3221,6 +3471,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
+            }
+
+            // These are handled in apply_builtin_trampolined (need continuation support)
+            Builtin::Values | Builtin::CallWithValues | Builtin::Apply |
+            Builtin::CallCc | Builtin::CallWithCurrentContinuation |
+            Builtin::DynamicWind | Builtin::WithExceptionHandler |
+            Builtin::RaiseBuiltin | Builtin::RaiseContinuable |
+            Builtin::EvalBuiltin | Builtin::EnvironmentBuiltin => {
+                unreachable!("handled in apply_builtin_trampolined")
             }
         }
     }

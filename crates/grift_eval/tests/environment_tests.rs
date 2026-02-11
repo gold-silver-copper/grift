@@ -73,7 +73,7 @@ fn test_environment_with_library() {
     eval.eval_str("(define-library (test math) (export add1) (begin (define (add1 x) (+ x 1))))").unwrap();
 
     // Create environment from library
-    let result = eval.eval_str("(environment (test math))").unwrap();
+    let result = eval.eval_str("(environment '(test math))").unwrap();
     assert!(
         matches!(lisp.get(result).unwrap(), Value::Environment { mutable: false, .. }),
         "environment should return an immutable environment"
@@ -89,7 +89,7 @@ fn test_eval_in_library_environment() {
     eval.eval_str("(define-library (test math) (export add1) (begin (define (add1 x) (+ x 1))))").unwrap();
 
     // Create env and eval in it
-    eval.eval_str("(define math-env (environment (test math)))").unwrap();
+    eval.eval_str("(define math-env (environment '(test math)))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(eval '(add1 10) math-env)"), 11);
 }
 
@@ -116,7 +116,7 @@ fn test_environment_multiple_libraries() {
     eval.eval_str("(define-library (lib b) (export y) (begin (define y 20)))").unwrap();
 
     // Combine both
-    eval.eval_str("(define combined-env (environment (lib a) (lib b)))").unwrap();
+    eval.eval_str("(define combined-env (environment '(lib a) '(lib b)))").unwrap();
     assert_eq!(eval_to_num(&lisp, &mut eval, "(eval 'x combined-env)"), 10);
     assert_eq!(eval_to_num(&lisp, &mut eval, "(eval 'y combined-env)"), 20);
 }

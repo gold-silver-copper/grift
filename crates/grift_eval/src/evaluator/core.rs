@@ -1021,42 +1021,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         dispatch!(self, car, env, "begin", self.step_eval_begin(cdr, env).map(Some));
         dispatch!(self, car, env, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
 
-        // eval - continuation-based evaluation at runtime
-        dispatch!(self, car, env, "eval", {
-            let expr_to_eval = self.lisp.car(cdr)?;
-            let rest = self.lisp.cdr(cdr)?;
-            if self.lisp.get(rest)?.is_nil() {
-                let global = self.global_env.0;
-                self.cont(ContType::EvalExpr, env).data1(global)?;
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }))
-            } else {
-                let env_expr = self.lisp.car(rest)?;
-                self.cont(ContType::EvalEnvArg, env).data2(expr_to_eval, env.0)?;
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(env_expr), env }))
-            }
-        });
-
-        dispatch!(self, car, env, "apply", self.step_eval_apply(cdr, env).map(Some));
-        dispatch!(self, car, env, "values", self.eval_values(cdr, env).map(Some));
-        dispatch!(self, car, env, "call-with-values", self.step_eval_call_with_values(cdr, env).map(Some));
-
-        // call-with-current-continuation / call/cc
-        if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
-            || self.lisp.symbol_matches(car, "call/cc")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_call_cc(cdr, env).map(Some);
-        }
-
-        dispatch!(self, car, env, "dynamic-wind", self.step_eval_dynamic_wind(cdr, env).map(Some));
         dispatch!(self, car, env, "syntax-error", 
             Err(self.make_error(ErrorKind::SyntaxError, cdr).with_message("syntax-error")));
-        dispatch!(self, car, env, "with-exception-handler", self.step_eval_with_exception_handler(cdr, env).map(Some));
-        dispatch!(self, car, env, "raise", self.step_eval_raise(cdr, env, false).map(Some));
-        dispatch!(self, car, env, "raise-continuable", self.step_eval_raise(cdr, env, true).map(Some));
         dispatch!(self, car, env, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
         dispatch!(self, car, env, "define-library", self.step_eval_define_library(cdr, env).map(Some));
         dispatch!(self, car, env, "import", self.step_eval_import(cdr, env).map(Some));
-        dispatch!(self, car, env, "environment", self.step_eval_environment(cdr, env).map(Some));
         dispatch!(self, car, env, "include", self.step_eval_include(cdr, env, false).map(Some));
         dispatch!(self, car, env, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
         

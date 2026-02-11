@@ -217,4 +217,10 @@ pub enum ContType {
     /// with-output-to-file: After thunk returns, restore previous output port and close file port
     /// Data: (saved_port_encoded . file_port_encoded)
     WithOutputToFileRestore,
+
+    /// Discard the incoming value and return a saved value instead.
+    /// Used by first-class builtins (e.g., dynamic-wind) to bridge
+    /// between continuation steps.
+    /// Data: saved_value (single value)
+    BuiltinReturnValue,
 }
