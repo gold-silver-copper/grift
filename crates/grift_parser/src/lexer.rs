@@ -923,8 +923,8 @@ impl<'a> Lexer<'a> {
         if name_len == 0 {
             // #\ followed by non-symbol character
             return match self.peek() {
-                Some(c) if c >= 0x80 => {
-                    // Multi-byte UTF-8 character literal
+                Some(c) if c >= 0xC0 => {
+                    // Multi-byte UTF-8 character literal (valid leading bytes start at 0xC0)
                     let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
                     let s = self.pos;
                     let e = (s + seq_len).min(self.input.len());
@@ -1073,8 +1073,9 @@ impl<'a> Lexer<'a> {
                         self.string_buf[len] = c as char;
                         len += 1;
                         self.advance();
-                    } else {
+                    } else if c >= 0xC0 {
                         // Multi-byte UTF-8: determine sequence length from leading byte
+                        // (valid leading bytes start at 0xC0; 0x80-0xBF are continuation bytes)
                         let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
                         let start = self.pos;
                         let end = (start + seq_len).min(self.input.len());
@@ -1095,6 +1096,11 @@ impl<'a> Lexer<'a> {
                             len += 1;
                             self.advance();
                         }
+                    } else {
+                        // Continuation byte (0x80-0xBF) without leading byte: store raw byte
+                        self.string_buf[len] = c as char;
+                        len += 1;
+                        self.advance();
                     }
                 }
             }

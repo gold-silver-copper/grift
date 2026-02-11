@@ -1115,9 +1115,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 let s = c.encode_utf8(&mut utf8_buf);
                                 let mut collector = CaseMapCollector::new();
                                 match builtin {
-                                    Builtin::StringUpcase => { { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); } }
-                                    Builtin::StringDowncase => { { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); } }
-                                    _ => { { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); } }
+                                    Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
+                                    Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
+                                    _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
                                 }
                                 total_len += collector.len;
                             } else {
@@ -1143,9 +1143,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 let s = c.encode_utf8(&mut utf8_buf);
                                 let mut collector = CaseMapCollector::new();
                                 match builtin {
-                                    Builtin::StringUpcase => { { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); } }
-                                    Builtin::StringDowncase => { { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); } }
-                                    _ => { { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); } }
+                                    Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
+                                    Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
+                                    _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
                                 }
                                 for j in 0..collector.len {
                                     self.lisp.string_set(result, pos, collector.chars[j])?;
