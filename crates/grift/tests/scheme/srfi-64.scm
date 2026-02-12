@@ -29,7 +29,7 @@
   (display suite-name)
   (newline))
 
-(define (test-end)
+(define (test-end . args)
   (display "SRFI64:SUMMARY passed:")
   (display %srfi64-pass-count)
   (display " failed:")

@@ -37,6 +37,22 @@ enum DynPort {
     OutputBytevector { buf: Vec<u8>, closed: bool },
 }
 
+impl DynPort {
+    /// Returns `true` if this port has been closed.
+    fn is_closed(&self) -> bool {
+        match self {
+            DynPort::InputString { closed, .. }
+            | DynPort::OutputString { closed, .. }
+            | DynPort::InputFile { closed, .. }
+            | DynPort::OutputFile { closed, .. }
+            | DynPort::BinaryInputFile { closed, .. }
+            | DynPort::BinaryOutputFile { closed, .. }
+            | DynPort::InputBytevector { closed, .. }
+            | DynPort::OutputBytevector { closed, .. } => *closed,
+        }
+    }
+}
+
 /// An [`IoProvider`] implementation backed by Rust's standard I/O.
 ///
 /// Supports the three well-known ports:
@@ -79,12 +95,21 @@ impl StdIoProvider {
 
     /// Allocate a fresh [`PortId`] and store the given dynamic port.
     fn alloc_port(&mut self, port: DynPort) -> IoResult<PortId> {
-        // Try to reuse a freed slot
-        for (i, slot) in self.ports.iter_mut().enumerate() {
+        // Try to reuse a freed slot (None) first, or a closed port slot as fallback
+        let mut closed_idx = None;
+        for (i, slot) in self.ports.iter().enumerate() {
             if slot.is_none() {
-                *slot = Some(port);
+                self.ports[i] = Some(port);
                 return Ok(PortId(DYNAMIC_PORT_BASE + i));
             }
+            if closed_idx.is_none() && slot.as_ref().is_some_and(|p| p.is_closed()) {
+                closed_idx = Some(i);
+            }
+        }
+        // Reuse the first closed slot if found
+        if let Some(i) = closed_idx {
+            self.ports[i] = Some(port);
+            return Ok(PortId(DYNAMIC_PORT_BASE + i));
         }
         // Allocate a new slot
         if self.ports.len() >= MAX_DYNAMIC_PORTS {
