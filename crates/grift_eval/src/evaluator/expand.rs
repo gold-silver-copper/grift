@@ -272,7 +272,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// The substitution environment is an alist of (name . binding) pairs.
     /// This is identical in structure to a regular environment lookup.
-    #[inline]
     pub(super) fn lookup_in_subst(
         &self,
         name: ArenaIndex,
@@ -282,7 +281,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Look up a name in an environment
-    #[inline]
     fn lookup_in_env(
         &self,
         name: ArenaIndex,
@@ -424,7 +422,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Check if a variable is bound anywhere in an environment
-    #[inline]
     fn env_bound_anywhere(&self, env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
         let mut current = env;
         loop {

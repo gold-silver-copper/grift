@@ -1186,7 +1186,6 @@ impl<'a> Lexer<'a> {
 
 /// Check if a byte is a valid symbol character.
 /// Uses a 256-byte lookup table for O(1) classification.
-#[inline]
 pub(crate) fn is_symbol_char(c: u8) -> bool {
     SYMBOL_CHAR_TABLE[c as usize]
 }

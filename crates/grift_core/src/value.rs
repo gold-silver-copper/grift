@@ -965,7 +965,6 @@ macro_rules! value_predicates {
     ($( $(#[doc = $doc:literal])* $name:ident => $pat:pat ),+ $(,)?) => {
         $(
             $(#[doc = $doc])*
-            #[inline]
             pub const fn $name(&self) -> bool {
                 matches!(self, $pat)
             }
@@ -1023,26 +1022,22 @@ impl Value {
     }
     
     /// Check if this value is an atom (not a cons cell)
-    #[inline]
     pub const fn is_atom(&self) -> bool {
         !matches!(self, Value::Cons { .. })
     }
     
     /// Check if this value is a number (integer, float, rational, or complex)
-    #[inline]
     pub const fn is_number(&self) -> bool {
         matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. })
     }
     
     /// Check if this value is an integer
-    #[inline]
     pub const fn is_integer(&self) -> bool {
         matches!(self, Value::Number(_))
     }
     
     /// Extract ArenaIndex from a Ref value.
     /// Returns None if not a Ref.
-    #[inline]
     pub const fn as_ref(&self) -> Option<ArenaIndex> {
         match self {
             Value::Ref(idx) => Some(*idx),
@@ -1052,7 +1047,6 @@ impl Value {
     
     /// Extract ArenaIndex from a Ref value, panicking if not a Ref.
     /// Use only when you are certain the value is a Ref (e.g., after alloc_contiguous for Refs).
-    #[inline]
     pub fn unwrap_ref(self) -> ArenaIndex {
         match self {
             Value::Ref(idx) => idx,
@@ -1061,7 +1055,6 @@ impl Value {
     }
 
     /// Get the number value if this is an integer
-    #[inline]
     pub const fn as_number(&self) -> Option<isize> {
         match self {
             Value::Number(n) => Some(*n),
@@ -1070,7 +1063,6 @@ impl Value {
     }
     
     /// Get the float value if this is a Float
-    #[inline]
     pub fn as_float(&self) -> Option<fsize> {
         match self {
             Value::Float(f) => Some(*f),
@@ -1079,7 +1071,6 @@ impl Value {
     }
     
     /// Get the numeric value as an fsize (works for both Number and Float)
-    #[inline]
     pub fn as_fsize(&self) -> Option<fsize> {
         match self {
             Value::Number(n) => Some(*n as fsize),
@@ -1089,7 +1080,6 @@ impl Value {
     }
     
     /// Get the char value if this is a char
-    #[inline]
     pub const fn as_char(&self) -> Option<char> {
         match self {
             Value::Char(c) => Some(*c),
@@ -1098,7 +1088,6 @@ impl Value {
     }
     
     /// Get the usize value if this is a Usize
-    #[inline]
     pub const fn as_usize(&self) -> Option<usize> {
         match self {
             Value::Usize(n) => Some(*n),

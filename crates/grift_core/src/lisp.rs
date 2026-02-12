@@ -131,19 +131,16 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a value
-    #[inline]
     pub fn alloc(&self, value: Value) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(value)
     }
     
     /// Get a value from the arena by index
-    #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<Value> {
         self.arena.get(index)
     }
     
     /// Set a value
-    #[inline]
     pub fn set(&self, index: ArenaIndex, value: Value) -> ArenaResult<()> {
         self.arena.set(index, value)
     }
@@ -151,7 +148,6 @@ impl<const N: usize> Lisp<N> {
     /// Get an arena index at a given offset from a base index.
     /// 
     /// This is useful for accessing elements in contiguous storage (strings, arrays).
-    #[inline]
     pub fn arena_index_at_offset(&self, base: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
         self.arena.index_at_offset(base, offset)
     }
@@ -159,7 +155,6 @@ impl<const N: usize> Lisp<N> {
     /// Get the pre-allocated Nil singleton (empty list)
     /// 
     /// Returns the reserved slot 0 which always contains `Value::Nil`.
-    #[inline]
     pub fn nil(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.nil_slot)
     }
@@ -168,7 +163,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Returns the reserved slot 1 which always contains `Value::Void`.
     /// Used as return value for side-effect-only forms like `define`, `set!`, `display`.
-    #[inline]
     pub fn void_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.void_slot)
     }
@@ -176,7 +170,6 @@ impl<const N: usize> Lisp<N> {
     /// Get the pre-allocated True singleton (#t)
     /// 
     /// Returns the reserved slot 2 which always contains `Value::True`.
-    #[inline]
     pub fn true_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.true_slot)
     }
@@ -184,31 +177,26 @@ impl<const N: usize> Lisp<N> {
     /// Get the pre-allocated False singleton (#f)
     /// 
     /// Returns the reserved slot 3 which always contains `Value::False`.
-    #[inline]
     pub fn false_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.false_slot)
     }
     
     /// Allocate a boolean based on a Rust bool
-    #[inline]
     pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
         if b { self.true_val() } else { self.false_val() }
     }
     
     /// Allocate a number
-    #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Number(n))
     }
     
     /// Allocate a floating-point number
-    #[inline]
     pub fn float(&self, f: fsize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Float(f))
     }
 
     /// Allocate a rational number, reduced to lowest terms.
-    #[inline]
     pub fn rational(&self, num: isize, denom: isize) -> ArenaResult<ArenaIndex> {
         if denom == 0 {
             return Err(grift_arena::ArenaError::InvalidIndex);
@@ -225,13 +213,11 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Allocate a complex number.
-    #[inline]
     pub fn complex(&self, real: fsize, imag: fsize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Complex { real, imag })
     }
     
     /// Allocate a character
-    #[inline]
     pub fn char(&self, c: char) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Char(c))
     }
@@ -240,7 +226,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Creates a cons cell with inline car and cdr indices.
     /// No arena data slots are needed - the indices are stored directly in the Value.
-    #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Cons { car, cdr })
     }
@@ -249,7 +234,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// In Scheme R7RS, car of an empty list is an error.
     /// O(1) access - car is stored inline.
-    #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(index)? {
             Value::Cons { car, .. } => Ok(car),
@@ -262,7 +246,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// In Scheme R7RS, cdr of an empty list is an error.
     /// O(1) access - cdr is stored inline.
-    #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(index)? {
             Value::Cons { cdr, .. } => Ok(cdr),
@@ -275,7 +258,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// More efficient than calling car() and cdr() separately when both are needed.
     /// O(1) access - both are stored inline.
-    #[inline]
     pub fn car_cdr(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
         match self.arena.get(index)? {
             Value::Cons { car, cdr } => Ok((car, cdr)),
@@ -286,7 +268,6 @@ impl<const N: usize> Lisp<N> {
     
     /// Set car of a cons cell (mutation operation)
     /// Returns the new value on success
-    #[inline]
     pub fn set_car(&self, index: ArenaIndex, new_car: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { cdr, .. } => {
@@ -299,7 +280,6 @@ impl<const N: usize> Lisp<N> {
     
     /// Set cdr of a cons cell (mutation operation)
     /// Returns the new value on success
-    #[inline]
     pub fn set_cdr(&self, index: ArenaIndex, new_cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { car, .. } => {
@@ -586,7 +566,6 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a builtin function
-    #[inline]
     pub fn builtin(&self, b: Builtin) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Builtin(b))
     }
@@ -595,7 +574,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// StdLib functions are stored in static memory with on-demand parsing.
     /// The function body is parsed on each call.
-    #[inline]
     pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::StdLib(s))
     }
@@ -606,7 +584,6 @@ impl<const N: usize> Lisp<N> {
     /// The `id` is the index in the NativeRegistry.
     /// 
     /// The value is stored inline - no arena data slots needed.
-    #[inline]
     pub fn native(&self, id: usize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Native { id })
     }
@@ -621,13 +598,11 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a port value.
-    #[inline]
     pub fn port(&self, port_id: PortId) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Port(port_id))
     }
     
     /// Allocate the EOF object.
-    #[inline]
     pub fn eof(&self) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Eof)
     }
@@ -645,7 +620,6 @@ impl<const N: usize> Lisp<N> {
     /// Extract parts from a lambda: (params, body, env)
     /// 
     /// Lambda has inline params and body_env, where body_env is a cons (body . env).
-    #[inline]
     pub fn lambda_parts(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
         let val = self.get(index)?;
         match val {
@@ -1037,7 +1011,6 @@ impl<const N: usize> Lisp<N> {
     /// Check if two symbols are equal.
     /// 
     /// Symbols are compared by their underlying string content.
-    #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index means same symbol (common for interned symbols)
         if a == b {
@@ -1062,7 +1035,6 @@ impl<const N: usize> Lisp<N> {
     /// Check if two values are eqv? (Scheme eqv? predicate)
     /// 
     /// Returns true if values are identical or have the same primitive value.
-    #[inline]
     pub fn eqv(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index
         if a == b {
@@ -1084,7 +1056,6 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Check if a symbol matches a string.
-    #[inline]
     pub fn symbol_matches(&self, sym: ArenaIndex, name: &str) -> ArenaResult<bool> {
         let val = self.get(sym)?;
         
@@ -1579,7 +1550,6 @@ impl<const N: usize> Lisp<N> {
     /// # Errors
     /// 
     /// Returns an error if the string index is invalid.
-    #[inline]
     pub fn string_matches_bytes(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
         match self.arena.get(str_idx)? {
             Value::String { len, data } => {
@@ -1864,7 +1834,6 @@ impl<const N: usize> Lisp<N> {
     /// let dv = lisp.display(val);
     /// // write!(f, "{}", dv) or format!("{}", dv)
     /// ```
-    #[inline]
     pub fn display(&self, value: ArenaIndex) -> crate::display::DisplayValue<'_, N> {
         crate::display::DisplayValue::new(value, self)
     }

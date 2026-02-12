@@ -86,7 +86,6 @@ macro_rules! define_builtins {
             
             /// Convert from usize discriminant (for continuation data stack encoding)
             /// Returns the first builtin if out of range.
-            #[inline]
             pub fn from_usize(n: usize) -> Self {
                 Self::ALL.get(n).copied().unwrap_or(Self::ALL[0])
             }
@@ -103,19 +102,16 @@ macro_rules! define_builtins {
 macro_rules! impl_pack_unpack_refs {
     // Special case for 1 (no contiguous allocation needed)
     (1, $pack_name:ident, $unpack_name:ident) => {
-        #[inline]
         pub fn $pack_name(&self, a: ArenaIndex) -> ArenaResult<ArenaIndex> {
             self.arena.alloc(Value::Ref(a))
         }
         
-        #[inline]
         pub fn $unpack_name(&self, data: ArenaIndex) -> ArenaResult<ArenaIndex> {
             self.arena.get(data)?.as_ref().ok_or(ArenaError::InvalidIndex)
         }
     };
     // General case for N >= 2
     ($n:expr, $pack_name:ident, $unpack_name:ident, $set_fn:ident, $get_fn:ident, [$($var:ident),+ $(,)?]) => {
-        #[inline]
         #[allow(clippy::too_many_arguments)]
         pub fn $pack_name(&self, $($var: ArenaIndex),+) -> ArenaResult<ArenaIndex> {
             let data = self.arena.alloc_contiguous($n, Value::Nil)?;
@@ -123,7 +119,6 @@ macro_rules! impl_pack_unpack_refs {
             Ok(data)
         }
         
-        #[inline]
         pub fn $unpack_name(&self, data: ArenaIndex) -> ArenaResult<( $( impl_pack_unpack_refs!(@T $var) ),+ )> {
             let ($($var),+) = self.arena.$get_fn(data)?;
             match ($($var.as_ref()),+) {

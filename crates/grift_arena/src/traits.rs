@@ -148,7 +148,6 @@ pub trait Trace<T: Copy, const N: usize> {
     /// elements to trace. Override this method for such types.
     ///
     /// The default implementation just calls `trace()`.
-    #[inline]
     fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &Arena<T, N>, tracer: F) {
         self.trace(tracer)
     }
