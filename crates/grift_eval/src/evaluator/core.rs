@@ -389,51 +389,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Err(err);
         }
 
-        // Build the message string for the error object
-        let msg_str = err.kind.as_str();
-        let message = match self.lisp.string(msg_str) {
-            Ok(m) => m,
-            Err(_) => return Err(err),
-        };
+        // Helper: bail with the original error on allocation failure
+        macro_rules! or_bail {
+            ($e:expr) => { match $e { Ok(v) => v, Err(_) => return Err(err) } }
+        }
 
-        // Build irritants list from the error context
-        let nil = match self.lisp.nil() {
-            Ok(n) => n,
-            Err(_) => return Err(err),
-        };
+        let msg_str = err.kind.as_str();
+        let message = or_bail!(self.lisp.string(msg_str));
+        let nil = or_bail!(self.lisp.nil());
 
         let irritants = if !err.expr.is_nil() {
-            match self.lisp.cons(err.expr, nil) {
-                Ok(i) => i,
-                Err(_) => return Err(err),
-            }
+            or_bail!(self.lisp.cons(err.expr, nil))
         } else {
             nil
         };
 
-        // Build the R7RS error object: (irritants . type)
         // Tag parse errors as read-errors and file errors as file-errors per R7RS §6.11
-        let error_type = if err.kind == ErrorKind::Parse {
-            match self.lisp.symbol("read-error") {
-                Ok(s) => s,
-                Err(_) => return Err(err),
-            }
-        } else if err.kind == ErrorKind::FileError {
-            match self.lisp.symbol("file-error") {
-                Ok(s) => s,
-                Err(_) => return Err(err),
-            }
-        } else {
-            nil
+        let error_type = match err.kind {
+            ErrorKind::Parse => or_bail!(self.lisp.symbol("read-error")),
+            ErrorKind::FileError => or_bail!(self.lisp.symbol("file-error")),
+            _ => nil,
         };
-        let irritants_and_type = match self.lisp.cons(irritants, error_type) {
-            Ok(it) => it,
-            Err(_) => return Err(err),
-        };
-        let error_obj = match self.lisp.alloc(Value::ErrorObject { message, irritants_and_type }) {
-            Ok(o) => o,
-            Err(_) => return Err(err),
-        };
+        let irritants_and_type = or_bail!(self.lisp.cons(irritants, error_type));
+        let error_obj = or_bail!(self.lisp.alloc(Value::ErrorObject { message, irritants_and_type }));
 
         // Route through the exception handler chain (non-continuable)
         match self.invoke_exception_handler(error_obj, false) {
@@ -454,78 +432,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(EnvRef(self.lisp.cons(binding, env.0)?))
     }
     
-    /// Look up a variable in an environment
-    pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
-        let mut current = env.0;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Try global
-                    return self.env_lookup_global(name);
-                }
-                Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
-    /// Look up in global environment only
-    fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env.0;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
-                Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
-    /// Check if a variable is bound in the environment (local or global)
-    /// Returns true if the variable exists, false otherwise.
-    /// This is used to determine if a variable binding shadows a macro.
-    pub(super) fn is_variable_bound(&self, env: EnvRef, name: ArenaIndex) -> Result<bool, EvalError> {
-        // Check local environment first
-        if self.env_contains(env.0, name)? {
-            return Ok(true);
-        }
-        
-        // Check global environment
-        self.env_contains(self.global_env.0, name)
-    }
-    
-    /// Helper to check if a name exists in a specific environment chain
-    fn env_contains(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
+    /// Find a binding cell `(name . value)` for `name` in an environment chain.
+    ///
+    /// Returns `Ok(Some(binding_cell))` if found, `Ok(None)` if the chain ends
+    /// with Nil, or `Err` if the environment is malformed (e.g., not a proper list).
+    fn env_find_binding(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         loop {
             match self.lisp.get(env)? {
-                Value::Nil => {
-                    return Ok(false);
-                }
+                Value::Nil => return Ok(None),
                 Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, cdr: _ } = self.lisp.get(car)?
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
                         && self.lisp.symbol_eq(bound_name, name)?
                     {
-                        return Ok(true);
+                        return Ok(Some(car));
                     }
                     env = cdr;
                 }
@@ -533,82 +452,65 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
+
+    pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
+        if let Some(binding) = self.env_find_binding(env.0, name)? {
+            return self.lisp.cdr(binding).map_err(Into::into);
+        }
+        // Try global
+        self.env_lookup_global(name)
+    }
+    
+    /// Look up in global environment only
+    fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
+        match self.env_find_binding(self.global_env.0, name)? {
+            Some(binding) => self.lisp.cdr(binding).map_err(Into::into),
+            None => Err(self.make_error(ErrorKind::UnboundVariable, name)),
+        }
+    }
+    
+    /// Check if a variable is bound in the environment (local or global)
+    /// Returns true if the variable exists, false otherwise.
+    /// This is used to determine if a variable binding shadows a macro.
+    pub(super) fn is_variable_bound(&self, env: EnvRef, name: ArenaIndex) -> Result<bool, EvalError> {
+        if self.env_find_binding(env.0, name)?.is_some() {
+            return Ok(true);
+        }
+        Ok(self.env_find_binding(self.global_env.0, name)?.is_some())
+    }
     
     /// Set a variable in an environment (mutation operation)
     /// Searches both local and global environments
     /// Returns the new value on success
     pub(super) fn env_set(&self, env: EnvRef, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // First search local environment
-        let mut current = env.0;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found in local env, try global
-                    return self.env_set_global(name, value);
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
+        if let Some(binding) = self.env_find_binding(env.0, name)? {
+            self.lisp.set_cdr(binding, value)?;
+            return Ok(value);
         }
+        // Not found in local env, try global
+        self.env_set_global(name, value)
     }
     
     /// Set a variable in global environment only
     fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env.0;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found anywhere - error
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+        match self.env_find_binding(self.global_env.0, name)? {
+            Some(binding) => {
+                self.lisp.set_cdr(binding, value)?;
+                Ok(value)
             }
+            None => Err(self.make_error(ErrorKind::UnboundVariable, name)),
         }
     }
     
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // Check if already defined and update
-        let mut current = self.global_env.0;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found, add new binding
-                    self.global_env = self.env_extend(self.global_env, name, value)?;
-                    return Ok(value);
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Update existing
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
+        if let Some(binding) = self.env_find_binding(self.global_env.0, name)? {
+            self.lisp.set_cdr(binding, value)?;
+            return Ok(value);
         }
+        // Not found, add new binding
+        self.global_env = self.env_extend(self.global_env, name, value)?;
+        Ok(value)
     }
     
     // ========================================================================

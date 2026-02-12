@@ -2496,6 +2496,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
 
+    /// Apply a name transformation to both environment and macro environment.
+    ///
+    /// Calls `transform` on each binding name in `env` and `macro_env` via
+    /// [`map_env_names`]. Returns the transformed pair `(new_env, new_macro_env)`,
+    /// or propagates any error from `transform`.
+    fn map_env_pair(
+        &self,
+        env: ArenaIndex,
+        macro_env: ArenaIndex,
+        transform: &mut dyn FnMut(ArenaIndex) -> Result<ArenaIndex, EvalError>,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let new_env = self.map_env_names(env, transform)?;
+        let new_menv = self.map_env_names(macro_env, transform)?;
+        Ok((new_env, new_menv))
+    }
+
     /// `(prefix ...)` — prefix all names with the given identifier.
     fn apply_env_prefix(
         &self,
@@ -2503,12 +2519,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         macro_env: ArenaIndex,
         prefix: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let mut transform = |name: ArenaIndex| -> Result<ArenaIndex, EvalError> {
-            self.prefix_symbol(prefix, name)
-        };
-        let new_env = self.map_env_names(env, &mut transform)?;
-        let new_menv = self.map_env_names(macro_env, &mut transform)?;
-        Ok((new_env, new_menv))
+        self.map_env_pair(env, macro_env, &mut |name| self.prefix_symbol(prefix, name))
     }
 
     /// `(rename ...)` — rename specific identifiers.
@@ -2518,7 +2529,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         macro_env: ArenaIndex,
         renames: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let mut transform = |name: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+        self.map_env_pair(env, macro_env, &mut |name| {
             let mut ren_list = renames;
             while let Value::Cons { .. } = self.lisp.get(ren_list)? {
                 let pair = self.lisp.car(ren_list)?;
@@ -2532,10 +2543,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             Ok(name)
-        };
-        let new_env = self.map_env_names(env, &mut transform)?;
-        let new_menv = self.map_env_names(macro_env, &mut transform)?;
-        Ok((new_env, new_menv))
+        })
     }
 
     /// Compare two library names for equality.
