@@ -2497,6 +2497,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Apply a name transformation to both environment and macro environment.
+    ///
+    /// Calls `transform` on each binding name in `env` and `macro_env` via
+    /// [`map_env_names`]. Returns the transformed pair `(new_env, new_macro_env)`,
+    /// or propagates any error from `transform`.
     fn map_env_pair(
         &self,
         env: ArenaIndex,

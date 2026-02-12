@@ -432,9 +432,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(EnvRef(self.lisp.cons(binding, env.0)?))
     }
     
-    /// Look up a variable in an environment
-    /// Find a binding cell (name . value) for `name` in an environment chain.
-    /// Returns `Ok(Some(binding_cell))` if found, `Ok(None)` if the chain ends with Nil.
+    /// Find a binding cell `(name . value)` for `name` in an environment chain.
+    ///
+    /// Returns `Ok(Some(binding_cell))` if found, `Ok(None)` if the chain ends
+    /// with Nil, or `Err` if the environment is malformed (e.g., not a proper list).
     fn env_find_binding(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         loop {
             match self.lisp.get(env)? {

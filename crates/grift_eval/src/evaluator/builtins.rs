@@ -4633,7 +4633,10 @@ fn isqrt(n: usize) -> usize {
     x
 }
 
-/// Format an isize in decimal into a char buffer, returning the number of chars written.
+/// Format an isize as a decimal string into `buf`, returning the number of chars written.
+///
+/// The caller must ensure `buf` is large enough to hold the formatted number
+/// (at most 20 digits plus an optional sign character).
 fn format_isize_decimal(n: isize, buf: &mut [char]) -> usize {
     let negative = n < 0;
     let mut val = n.unsigned_abs();
