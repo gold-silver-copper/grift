@@ -82,7 +82,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// When disabled, [`Arena::collect_garbage`] returns immediately without
     /// performing any collection.
-    #[inline]
     pub fn is_gc_enabled(&self) -> bool {
         self.gc_enabled.get()
     }
@@ -110,7 +109,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// // Re-enable and collect
     /// arena.set_gc_enabled(true);
     /// ```
-    #[inline]
     pub fn set_gc_enabled(&self, enabled: bool) {
         self.gc_enabled.set(enabled);
     }
@@ -159,31 +157,26 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     /// Get the maximum capacity of this arena.
-    #[inline]
     pub const fn capacity(&self) -> usize {
         N
     }
 
     /// Get the number of currently allocated cells.
-    #[inline]
     pub fn len(&self) -> usize {
         self.len.get()
     }
 
     /// Check if the arena is empty (no allocated cells).
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Check if the arena is full (all cells allocated).
-    #[inline]
     pub fn is_full(&self) -> bool {
         self.len() == N
     }
 
     /// Get the number of free cells.
-    #[inline]
     pub fn available(&self) -> usize {
         N - self.len()
     }
@@ -234,7 +227,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// Check that an index is valid (in bounds).
     /// Returns the slot index if valid.
     /// Note: Does NOT check if the slot is occupied - caller must verify.
-    #[inline]
     fn check_bounds(&self, index: ArenaIndex) -> ArenaResult<usize> {
         let idx = index.raw();
 
@@ -246,7 +238,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     /// Validate an index and return the slot index if valid.
-    #[inline]
     fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
         let idx = self.check_bounds(index)?;
 
@@ -262,7 +253,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Errors
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
-    #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
         let idx = self.check_bounds(index)?;
 
@@ -278,7 +268,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Errors
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
-    #[inline]
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
@@ -305,7 +294,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// arena.modify(idx, |v| *v += 10).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 52);
     /// ```
-    #[inline]
     pub fn modify<F>(&self, index: ArenaIndex, f: F) -> ArenaResult<()>
     where
         F: FnOnce(&mut T),
@@ -325,7 +313,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// This is a convenience method for cases where you expect the index
     /// might be invalid and want to handle it with `Option` instead of `Result`.
-    #[inline]
     #[must_use]
     pub fn try_get(&self, index: ArenaIndex) -> Option<T> {
         self.get(index).ok()
@@ -407,7 +394,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// arena.free(idx).unwrap();
     /// assert_eq!(arena.len(), 0);
     /// ```
-    #[inline]
     pub fn free(&self, index: ArenaIndex) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
@@ -423,7 +409,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     /// Check if an index is currently valid (allocated).
-    #[inline]
     pub fn is_allocated(&self, index: ArenaIndex) -> bool {
         self.validate_index(index).is_ok()
     }

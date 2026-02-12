@@ -45,27 +45,23 @@ pub struct EnvRef(pub(crate) ArenaIndex);
 
 impl EnvRef {
     /// Get the underlying [`ArenaIndex`].
-    #[inline]
     pub const fn index(self) -> ArenaIndex {
         self.0
     }
 
     /// Create an `EnvRef` from a raw [`ArenaIndex`].
-    #[inline]
     pub const fn new(idx: ArenaIndex) -> Self {
         EnvRef(idx)
     }
 }
 
 impl From<ArenaIndex> for EnvRef {
-    #[inline]
     fn from(idx: ArenaIndex) -> Self {
         EnvRef(idx)
     }
 }
 
 impl From<EnvRef> for ArenaIndex {
-    #[inline]
     fn from(r: EnvRef) -> Self {
         r.0
     }
@@ -80,27 +76,23 @@ pub struct ExprRef(pub(crate) ArenaIndex);
 
 impl ExprRef {
     /// Get the underlying [`ArenaIndex`].
-    #[inline]
     pub const fn index(self) -> ArenaIndex {
         self.0
     }
 
     /// Create an `ExprRef` from a raw [`ArenaIndex`].
-    #[inline]
     pub const fn new(idx: ArenaIndex) -> Self {
         ExprRef(idx)
     }
 }
 
 impl From<ArenaIndex> for ExprRef {
-    #[inline]
     fn from(idx: ArenaIndex) -> Self {
         ExprRef(idx)
     }
 }
 
 impl From<ExprRef> for ArenaIndex {
-    #[inline]
     fn from(r: ExprRef) -> Self {
         r.0
     }

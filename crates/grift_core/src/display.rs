@@ -53,7 +53,6 @@ pub struct DisplayValue<'a, const N: usize> {
 
 impl<'a, const N: usize> DisplayValue<'a, N> {
     /// Create a new `DisplayValue` wrapper (uses `write` semantics by default).
-    #[inline]
     pub fn new(value: ArenaIndex, lisp: &'a Lisp<N>) -> Self {
         DisplayValue { value, lisp, display_mode: false }
     }
@@ -63,7 +62,6 @@ impl<'a, const N: usize> DisplayValue<'a, N> {
     /// In display mode, strings are printed without surrounding quotes and
     /// without escape sequences, and characters are printed as-is without the
     /// `#\` prefix (per R7RS §6.13.3).
-    #[inline]
     pub fn new_display(value: ArenaIndex, lisp: &'a Lisp<N>) -> Self {
         DisplayValue { value, lisp, display_mode: true }
     }

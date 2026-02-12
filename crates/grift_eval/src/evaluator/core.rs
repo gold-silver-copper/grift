@@ -449,14 +449,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     
     /// Extend an environment with a binding
-    #[inline]
     pub(crate) fn env_extend(&self, env: EnvRef, name: ArenaIndex, value: ArenaIndex) -> Result<EnvRef, EvalError> {
         let binding = self.lisp.cons(name, value)?;
         Ok(EnvRef(self.lisp.cons(binding, env.0)?))
     }
     
     /// Look up a variable in an environment
-    #[inline]
     pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
         let mut current = env.0;
         
@@ -517,7 +515,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Helper to check if a name exists in a specific environment chain
-    #[inline]
     fn env_contains(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
         loop {
             match self.lisp.get(env)? {
@@ -622,7 +619,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Creates a new ContFrame in the arena and links it to the current continuation chain.
     /// This is O(1) allocation and enables O(1) capture for call/cc.
-    #[inline]
     pub(super) fn push_cont(&mut self, cont_type: ContType, data: ArenaIndex, env: ArenaIndex) -> Result<(), EvalError> {
         let new_frame = self.lisp.cont_frame(cont_type, data, self.current_cont, env)?;
         self.current_cont = new_frame;
@@ -644,7 +640,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// // Use:
     /// self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env)?;
     /// ```
-    #[inline]
     pub(super) fn cont(&mut self, cont_type: ContType, env: EnvRef) -> ContBuilder<'_, 'a, N> {
         ContBuilder { evaluator: self, cont_type, env }
     }
@@ -655,7 +650,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// then updates current_cont to point to the parent frame.
     ///
     /// Returns (ContType::Done, nil, nil) if the continuation stack is empty.
-    #[inline]
     pub(super) fn pop_cont(&mut self) -> Result<(ContType, ArenaIndex, ArenaIndex), EvalError> {
         if self.current_cont.is_nil() {
             let nil = self.lisp.nil()?;
@@ -913,7 +907,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Look up a symbol in an environment, returning None if not found
-    #[inline]
     pub(super) fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = env;
         
@@ -1121,49 +1114,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // a packed ArenaIndex.
     
     /// Unpack 1 value (just returns it as-is)
-    #[inline]
     pub(super) fn unpack1(&self, data: ArenaIndex) -> ArenaIndex {
         data
     }
     
     /// Pack 2 values into a cons cell: (a . b)
-    #[inline]
     pub(super) fn pack2(&self, a: ArenaIndex, b: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         self.lisp.cons(a, b).map_err(Into::into)
     }
     
     /// Unpack 2 values from a cons cell: (a . b) -> (a, b)
-    #[inline]
     pub(super) fn unpack2(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         self.lisp.car_cdr(data).map_err(Into::into)
     }
     
     /// Pack N values into nested cons: builds right-nested (a . (b . (c . ...)))
-    #[inline]
     pub(super) fn pack3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack2(b, c)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack3(b, c, d)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack4(b, c, d, e)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack5(b, c, d, e, f)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack6(b, c, d, e, f, g)?;
@@ -1171,35 +1156,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Unpack N values from nested cons
-    #[inline]
     pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c) = self.unpack2(rest)?;
         Ok((a, b, c))
     }
     
-    #[inline]
     pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d) = self.unpack3(rest)?;
         Ok((a, b, c, d))
     }
     
-    #[inline]
     pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d, e) = self.unpack4(rest)?;
         Ok((a, b, c, d, e))
     }
     
-    #[inline]
     pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d, e, f) = self.unpack5(rest)?;
         Ok((a, b, c, d, e, f))
     }
     
-    #[inline]
     #[allow(clippy::type_complexity)]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
@@ -1208,25 +1188,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Encode Builtin as ArenaIndex (store discriminant as raw usize)
-    #[inline]
     pub(super) fn encode_builtin(builtin: Builtin) -> ArenaIndex {
         ArenaIndex::new(builtin as usize)
     }
     
     /// Decode Builtin from ArenaIndex
-    #[inline]
     pub(super) fn decode_builtin(encoded: ArenaIndex) -> Builtin {
         Builtin::from_usize(encoded.raw())
     }
     
     /// Encode usize as ArenaIndex
-    #[inline]
     pub(super) fn encode_usize(val: usize) -> ArenaIndex {
         ArenaIndex::new(val)
     }
     
     /// Decode usize from ArenaIndex
-    #[inline]
     pub(super) fn decode_usize(encoded: ArenaIndex) -> usize {
         encoded.raw()
     }
@@ -1248,7 +1224,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Check if a value is false (ONLY #f is false)
-    #[inline]
     pub(super) fn is_false(&self, val: ArenaIndex) -> Result<bool, EvalError> {
         Ok(self.lisp.get(val)?.is_false())
     }
@@ -1544,48 +1519,41 @@ pub(super) struct ContBuilder<'e, 'a, const N: usize> {
 
 impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
     /// Push with a single value (no packing needed).
-    #[inline]
     pub fn data1(self, a: ArenaIndex) -> Result<(), EvalError> {
         self.evaluator.push_cont(self.cont_type, a, self.env.0)
     }
     
     /// Pack 2 values as `(a . b)` and push.
-    #[inline]
     pub fn data2(self, a: ArenaIndex, b: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack2(a, b)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 3 values as `(a . (b . c))` and push.
-    #[inline]
     pub fn data3(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack3(a, b, c)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 4 values as `(a . (b . (c . d)))` and push.
-    #[inline]
     pub fn data4(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack4(a, b, c, d)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 5 values as `(a . (b . (c . (d . e))))` and push.
-    #[inline]
     pub fn data5(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack5(a, b, c, d, e)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 6 values as `(a . (b . (c . (d . (e . f)))))` and push.
-    #[inline]
     pub fn data6(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack6(a, b, c, d, e, f)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
-    #[inline]
     #[allow(clippy::too_many_arguments)]
     pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;

@@ -12,7 +12,6 @@
 macro_rules! impl_get_contiguous {
     // Base case with explicit indices for each variable
     ($fn_name:ident, [$($idx:expr => $var:ident),+ $(,)?]) => {
-        #[inline]
         pub fn $fn_name(&self, start: ArenaIndex) -> ArenaResult<( $( impl_get_contiguous!(@T $var) ),+ )> {
             let base = start.raw();
             // Bounds check: last index must be < N
@@ -47,7 +46,6 @@ macro_rules! impl_get_contiguous {
 /// Reduces ~110 lines of repetitive code to ~10 lines of macro invocations.
 macro_rules! impl_set_contiguous {
     ($fn_name:ident, [$($idx:expr => $var:ident),+ $(,)?]) => {
-        #[inline]
         #[allow(clippy::too_many_arguments)]
         pub fn $fn_name(&self, start: ArenaIndex, $($var: T),+) -> ArenaResult<()> {
             let base = start.raw();

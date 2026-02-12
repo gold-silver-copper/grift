@@ -19,13 +19,11 @@ pub struct GcStats {
 
 impl GcStats {
     /// Check if any garbage was collected.
-    #[inline]
     pub const fn did_collect(&self) -> bool {
         self.collected > 0
     }
 
     /// Get the number of objects remaining after collection.
-    #[inline]
     pub const fn remaining(&self) -> usize {
         self.total_before - self.collected
     }
@@ -89,13 +87,11 @@ impl ArenaStats {
     }
 
     /// Check if the arena is empty.
-    #[inline]
     pub const fn is_empty(&self) -> bool {
         self.allocated == 0
     }
 
     /// Check if the arena is full.
-    #[inline]
     pub const fn is_full(&self) -> bool {
         self.free == 0
     }
