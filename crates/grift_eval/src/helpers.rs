@@ -93,6 +93,24 @@ fn equal_recursive_depth<const N: usize>(
             }
             equal_recursive_depth(lisp, cdr_a, cdr_b, depth + 1)
         }
+        (Value::Bytevector { len: len_a, .. }, Value::Bytevector { len: len_b, .. }) => {
+            if len_a != len_b {
+                return Ok(false);
+            }
+            for i in 0..len_a {
+                let byte_a = lisp.bytevector_get(a, i)?;
+                let byte_b = lisp.bytevector_get(b, i)?;
+                let va = lisp.get(byte_a)?;
+                let vb = lisp.get(byte_b)?;
+                match (va, vb) {
+                    (Value::Number(x), Value::Number(y)) => {
+                        if x != y { return Ok(false); }
+                    }
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }

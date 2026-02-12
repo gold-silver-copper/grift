@@ -261,3 +261,4 @@ srfi64_test!(srfi64_lists_test, "lists-test.scm");
 srfi64_test!(srfi64_strings_test, "strings-test.scm");
 srfi64_test!(srfi64_control_test, "control-test.scm");
 srfi64_test!(srfi64_closures_test, "closures-test.scm");
+srfi64_test!(srfi64_bytevector_test, "bytevector-test.scm");
