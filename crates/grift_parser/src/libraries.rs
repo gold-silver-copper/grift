@@ -39,6 +39,7 @@
 //! | `scheme-r5rs`          | `(scheme r5rs)`             |
 //! | `scheme-time`          | `(scheme time)`             |
 //! | `scheme-write`         | `(scheme write)`            |
+//! | `srfi-64`              | `(srfi 64)`                 |
 //! | `all-libraries`        | All of the above            |
 
 /// A single entry in the embedded library source registry.
@@ -55,9 +56,9 @@ pub struct LibrarySource {
 /// The evaluator consults this table when `import` refers to a library that
 /// has not yet been loaded into the library registry.
 ///
-/// The contents of this slice depend on which `scheme-*` feature flags are
-/// enabled at compile time.  With the default `all-libraries` feature every
-/// library is included.
+/// The contents of this slice depend on which `scheme-*` and `srfi-*` feature
+/// flags are enabled at compile time.  With the default `all-libraries`
+/// feature every library is included.
 pub const LIBRARY_SOURCES: &[LibrarySource] = &[
     #[cfg(feature = "scheme-base")]
     LibrarySource { name: &["scheme", "base"],            source: include_str!("lib/scheme/base.scm") },
@@ -91,4 +92,7 @@ pub const LIBRARY_SOURCES: &[LibrarySource] = &[
     LibrarySource { name: &["scheme", "time"],            source: include_str!("lib/scheme/time.scm") },
     #[cfg(feature = "scheme-write")]
     LibrarySource { name: &["scheme", "write"],           source: include_str!("lib/scheme/write.scm") },
+    // SRFI libraries
+    #[cfg(feature = "srfi-64")]
+    LibrarySource { name: &["srfi", "64"],                source: include_str!("lib/srfi/64.scm") },
 ];

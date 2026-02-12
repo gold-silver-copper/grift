@@ -45,6 +45,7 @@ scheme-read = ["grift_parser/scheme-read"]
 scheme-repl = ["grift_parser/scheme-repl"]
 scheme-time = ["grift_parser/scheme-time"]
 scheme-write = ["grift_parser/scheme-write"]
+srfi-64 = ["grift_parser/srfi-64"]
 
 [dependencies]
 grift_arena = { workspace = true }
