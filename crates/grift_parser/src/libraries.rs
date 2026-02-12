@@ -13,7 +13,7 @@
 //! need:
 //!
 //! ```toml
-//! [dependencies.grift_core]
+//! [dependencies.grift_parser]
 //! version = "..."
 //! default-features = false
 //! features = ["scheme-base", "scheme-write"]
