@@ -10,7 +10,7 @@ keywords = ["evaluator", "lisp", "scheme", "no_std", "embedded"]
 categories = ["no-std", "development-tools", "embedded"]
 
 [features]
-default = []
+default = ["alloc"]
 alloc = ["dep:icu_casemap", "dep:icu_properties", "dep:icu_locale_core", "dep:writeable"]
 
 [dependencies]

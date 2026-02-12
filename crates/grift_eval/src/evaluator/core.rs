@@ -107,6 +107,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Load standard macros
         eval.load_standard_macros()?;
+
+        // Register (scheme base) in the library registry so that
+        // `(import (scheme base))` finds it without re-evaluating
+        // base.scm (which would cause macro redefinition conflicts).
+        eval.register_base_library()?;
         
         Ok(eval)
     }
@@ -152,7 +157,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         Ok(())
     }
-    
+
+    /// Register `(scheme base)` in the library registry.
+    ///
+    /// After `load_standard_macros` evaluates base.scm's definitions into the
+    /// global and macro environments, we register the library so that
+    /// subsequent `(import (scheme base))` calls resolve from the registry
+    /// without re-parsing and re-evaluating the define-library form.
+    fn register_base_library(&mut self) -> Result<(), EvalError> {
+        let scheme = self.lisp.symbol("scheme")?;
+        let base = self.lisp.symbol("base")?;
+        let nil = self.lisp.nil()?;
+        let lib_name = self.lisp.cons(base, nil)?;
+        let lib_name = self.lisp.cons(scheme, lib_name)?;
+
+        let env_pair = self.lisp.cons(self.global_env.0, self.macro_env.0)?;
+        let entry = self.lisp.cons(lib_name, env_pair)?;
+        self.library_registry = self.lisp.cons(entry, self.library_registry)?;
+        Ok(())
+    }
+
     /// Extract the content inside the first `(begin ...)` block of a
     /// `define-library` form. Returns a string slice starting after the
     /// `(begin` token, ending before the final closing paren of the
@@ -260,26 +284,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
-    fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
-        if let Ok(Value::Symbol(chars)) = self.lisp.get(idx) {
-            let len = self.lisp.string_len(chars).unwrap_or(0);
-            if len != 6 {
-                return false;
-            }
-            // Check for exactly "define"
-            for (i, &expected) in b"define".iter().enumerate() {
-                if let Ok(c) = self.lisp.string_char_at(chars, i) {
-                    if c as u8 != expected {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
+    pub(super) fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
+        self.lisp.symbol_matches(idx, "define").unwrap_or(false)
     }
     
     /// Get the Lisp context

@@ -621,19 +621,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             ContType::QuasiquoteUnquoteWrap => {
                 // val is the inner processed value - wrap with unquote
-                let unquote_sym = self.lisp.symbol("unquote")?;
-                let nil = self.lisp.nil()?;
-                let inner_list = self.lisp.cons(val, nil)?;
-                let result = self.lisp.cons(unquote_sym, inner_list)?;
+                let result = self.wrap_with_symbol(val, "unquote")?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
             ContType::QuasiquoteNestedWrap => {
                 // val is the inner processed value - wrap with quasiquote
-                let qq_sym = self.lisp.symbol("quasiquote")?;
-                let nil = self.lisp.nil()?;
-                let inner_list = self.lisp.cons(val, nil)?;
-                let result = self.lisp.cons(qq_sym, inner_list)?;
+                let result = self.wrap_with_symbol(val, "quasiquote")?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
@@ -1118,6 +1112,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             _ => Err(self.make_error(ErrorKind::TypeError, a)),
         }
+    }
+
+    /// Wrap a value in a list headed by a symbol: `(symbol val)`
+    pub(super) fn wrap_with_symbol(&self, val: ArenaIndex, name: &str) -> EvalResult {
+        let sym = self.lisp.symbol(name)?;
+        let nil = self.lisp.nil()?;
+        let inner = self.lisp.cons(val, nil)?;
+        self.lisp.cons(sym, inner).map_err(Into::into)
     }
     
     /// Capture the current continuation as a first-class value
@@ -2228,6 +2230,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
 
+        // Pre-scan pass: collect all define names from begin blocks
+        // and pre-bind them with placeholder values (like letrec).
+        // This ensures forward references between library-level defines work
+        // correctly, since lambdas capture the env at definition time.
+        let placeholder = self.lisp.void_val()?;
+        let mut current = decls;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let decl = self.lisp.car(current)?;
+            current = self.lisp.cdr(current)?;
+            if !matches!(self.lisp.get(decl)?, Value::Cons { .. }) { continue; }
+            let decl_head = self.lisp.car(decl)?;
+            let decl_body = self.lisp.cdr(decl)?;
+            if self.lisp.symbol_matches(decl_head, "begin")? {
+                let mut body = decl_body;
+                while let Value::Cons { .. } = self.lisp.get(body)? {
+                    let expr = self.lisp.car(body)?;
+                    body = self.lisp.cdr(body)?;
+                    if let Value::Cons { .. } = self.lisp.get(expr)? {
+                        let head = self.lisp.car(expr)?;
+                        if self.is_define_symbol(head) {
+                            let first = self.lisp.car(self.lisp.cdr(expr)?)?;
+                            let name = match self.lisp.get(first)? {
+                                Value::Symbol(_) => first,
+                                Value::Cons { .. } => self.lisp.car(first)?,
+                                _ => continue,
+                            };
+                            if matches!(self.lisp.get(name)?, Value::Symbol(_)) {
+                                lib_env = self.env_extend(lib_env, name, placeholder)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Second pass: evaluate begin bodies in the library environment
         // Save and restore both global_env and macro_env so that
         // define-syntax forms inside the library are captured.
@@ -2241,25 +2278,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let decl_body = self.lisp.cdr(decl)?;
 
             if self.lisp.symbol_matches(decl_head, "begin")? {
+                let saved_global = self.global_env;
+                let saved_macros = self.macro_env;
+                let saved_cont = self.current_cont;
+                let saved_depth = self.call_stack_depth;
+                self.global_env = lib_env;
+                self.macro_env = lib_macro_env;
                 let mut body = decl_body;
                 while let Value::Cons { .. } = self.lisp.get(body)? {
                     let expr = self.lisp.car(body)?;
                     body = self.lisp.cdr(body)?;
 
-                    let saved_global = self.global_env;
-                    let saved_macros = self.macro_env;
-                    let saved_cont = self.current_cont;
-                    let saved_depth = self.call_stack_depth;
-                    self.global_env = lib_env;
-                    self.macro_env = lib_macro_env;
                     let _result = self.eval(crate::continuation::ExprRef(expr))?;
-                    lib_env = self.global_env;       // capture defines
-                    lib_macro_env = self.macro_env;  // capture define-syntax
-                    self.global_env = saved_global;
-                    self.macro_env = saved_macros;
-                    self.current_cont = saved_cont;
-                    self.call_stack_depth = saved_depth;
                 }
+                lib_env = self.global_env;       // capture defines
+                lib_macro_env = self.macro_env;  // capture define-syntax
+                self.global_env = saved_global;
+                self.macro_env = saved_macros;
+                self.current_cont = saved_cont;
+                self.call_stack_depth = saved_depth;
             }
         }
 
