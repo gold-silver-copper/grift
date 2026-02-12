@@ -407,7 +407,11 @@
           (if (null? lst) '()
               (drop (- n 1) (cdr lst)))))
 
-    (define (zip a b) (if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b))))))
+    (define (zip a b)
+      (if (null? a) '()
+          (if (null? b) '()
+              (cons (cons (car a) (car b))
+                    (zip (cdr a) (cdr b))))))
 
     (define (range start end)
       (define (range-iter n acc)
@@ -433,11 +437,24 @@
     (define (last lst)
       (car (last-pair lst)))
 
-    (define (reduce f init lst) (if (null? lst) init (f (car lst) (reduce f init (cdr lst)))))
+    (define (reduce f init lst)
+      (if (null? lst) init
+          (f (car lst) (reduce f init (cdr lst)))))
 
-    (define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))
-    (define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))
-    (define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))
+    (define (any pred lst)
+      (if (null? lst) #f
+          (if (pred (car lst)) #t
+              (any pred (cdr lst)))))
+    (define (every pred lst)
+      (if (null? lst) #t
+          (if (pred (car lst))
+              (every pred (cdr lst))
+              #f)))
+    (define (find pred lst)
+      (if (null? lst) #f
+          (if (pred (car lst))
+              (car lst)
+              (find pred (cdr lst)))))
 
     (define (filter-map f lst)
       (define (filter-map-iter lst acc)
