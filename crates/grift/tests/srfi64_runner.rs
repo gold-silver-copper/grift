@@ -285,3 +285,16 @@ srfi64_test!(
     "r7rs-new-procedures-test.scm"
 );
 srfi64_test!(srfi64_r7rs_numeric_test, "r7rs-numeric-test.scm");
+srfi64_test!(srfi64_io_test, "io-test.scm");
+srfi64_test!(srfi64_syntax_extended_test, "syntax-extended-test.scm");
+srfi64_test!(
+    srfi64_syntactic_extension_html_test,
+    "syntactic-extension-html-test.scm"
+);
+srfi64_test!(srfi64_system_test, "system-test.scm");
+srfi64_test!(
+    srfi64_syntax_edge_case_test,
+    "syntax-edge-case-test.scm"
+);
+//srfi64_test!(srfi64_syntax_proper_test, "syntax-proper-test.scm");
+
