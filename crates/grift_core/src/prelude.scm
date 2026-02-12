@@ -1124,6 +1124,9 @@
 ;;; (cddr lst) - (cdr (cdr lst))
 (define (cddr lst) (cdr (cdr lst)))
 
+;;; (cdddr lst) - (cdr (cdr (cdr lst)))
+(define (cdddr lst) (cdr (cdr (cdr lst))))
+
 ;;; ============================================================
 ;;; Phase 1: Core R7RS Procedures (Section 6.3-6.4)
 ;;; ============================================================
