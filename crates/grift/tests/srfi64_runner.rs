@@ -286,3 +286,4 @@ srfi64_test!(
 );
 srfi64_test!(srfi64_r7rs_numeric_test, "r7rs-numeric-test.scm");
 srfi64_test!(srfi64_io_test, "io-test.scm");
+srfi64_test!(srfi64_syntax_extended_test, "syntax-extended-test.scm");
