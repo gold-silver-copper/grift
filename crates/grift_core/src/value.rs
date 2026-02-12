@@ -585,7 +585,7 @@ pub struct StdLibEntry {
 /// Downstream crates (like `grift_parser`) define the actual set of stdlib
 /// functions via `STDLIB_ALL`.
 #[derive(Clone, Copy, Debug)]
-pub struct StdLib(pub &'static StdLibEntry);
+pub struct StdLib(&'static StdLibEntry);
 
 impl PartialEq for StdLib {
     fn eq(&self, other: &Self) -> bool {

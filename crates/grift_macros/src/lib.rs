@@ -356,13 +356,3 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
         body,
     })
 }
-
-/// Convert a lisp-style name to PascalCase
-/// e.g., "map" -> "Map", "set-car!" -> "SetCar", "null?" -> "NullP"
-///
-/// Delegates to [`grift_util::to_pascal_case`] to keep the conversion logic
-/// in a single place shared between compile-time and runtime code.
-#[allow(dead_code)]
-fn to_pascal_case(name: &str) -> String {
-    grift_util::to_pascal_case(name)
-}
