@@ -52,21 +52,13 @@ impl core::fmt::Write for CaseMapCollector {
 /// ASCII-only uppercase conversion (fallback when `alloc` feature is disabled).
 #[cfg(not(feature = "alloc"))]
 fn ascii_upcase(c: char) -> char {
-    if c.is_ascii_lowercase() {
-        (c as u8 - b'a' + b'A') as char
-    } else {
-        c
-    }
+    c.to_ascii_uppercase()
 }
 
 /// ASCII-only lowercase conversion (fallback when `alloc` feature is disabled).
 #[cfg(not(feature = "alloc"))]
 fn ascii_downcase(c: char) -> char {
-    if c.is_ascii_uppercase() {
-        (c as u8 - b'A' + b'a') as char
-    } else {
-        c
-    }
+    c.to_ascii_lowercase()
 }
 
 /// ASCII-only case folding (lowercase, fallback when `alloc` feature is disabled).
@@ -131,81 +123,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn apply_builtin_trampolined(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> Result<TrampolineState, EvalError> 
     {
-        // Special handling for error - creates error object and raises through exception system
-        if matches!(builtin, Builtin::Error) {
-            return self.apply_error_builtin(args, call_expr);
-        }
-        
-        // Special handling for load - reads file and evaluates all expressions
-        if matches!(builtin, Builtin::Load) {
-            return self.apply_load_builtin(args, call_expr);
-        }
-        
-        // Special handling for vector-map - needs to apply proc via trampolining
-        if matches!(builtin, Builtin::VectorMap) {
-            return self.apply_vector_map(args, call_expr);
-        }
-        
-        // Special handling for vector-for-each - needs to apply proc via trampolining
-        if matches!(builtin, Builtin::VectorForEach) {
-            return self.apply_vector_for_each(args, call_expr);
-        }
-
-        // call-with-input-file / call-with-output-file — open port, apply proc, close port
-        if matches!(builtin, Builtin::CallWithInputFile | Builtin::CallWithOutputFile) {
-            return self.apply_call_with_file(builtin, args, call_expr);
-        }
-
-        // call-with-port — apply proc to port, close port when done
-        if matches!(builtin, Builtin::CallWithPort) {
-            return self.apply_call_with_port(args, call_expr);
-        }
-
-        // with-input-from-file / with-output-to-file — redirect current port, call thunk, restore
-        if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
-            return self.apply_with_file(builtin, args, call_expr);
-        }
-
-        // First-class procedure builtins (R7RS requires these to be values)
-        if matches!(builtin, Builtin::Values) {
-            // (values v ...) — return args list as multi-value result
-            // R7RS: (values x) with a single value is equivalent to x
-            if let Value::Cons { .. } = self.lisp.get(args)? {
-                let rest = self.lisp.cdr(args)?;
-                if self.lisp.get(rest)?.is_nil() {
-                    // Single value — return it directly
-                    let single = self.lisp.car(args)?;
-                    return Ok(TrampolineState::Return { val: single });
+        match builtin {
+            Builtin::Error => return self.apply_error_builtin(args, call_expr),
+            Builtin::Load => return self.apply_load_builtin(args, call_expr),
+            Builtin::VectorMap => return self.apply_vector_map(args, call_expr),
+            Builtin::VectorForEach => return self.apply_vector_for_each(args, call_expr),
+            Builtin::CallWithInputFile | Builtin::CallWithOutputFile =>
+                return self.apply_call_with_file(builtin, args, call_expr),
+            Builtin::CallWithPort => return self.apply_call_with_port(args, call_expr),
+            Builtin::WithInputFromFile | Builtin::WithOutputToFile =>
+                return self.apply_with_file(builtin, args, call_expr),
+            Builtin::Values => {
+                if let Value::Cons { .. } = self.lisp.get(args)? {
+                    let rest = self.lisp.cdr(args)?;
+                    if self.lisp.get(rest)?.is_nil() {
+                        let single = self.lisp.car(args)?;
+                        return Ok(TrampolineState::Return { val: single });
+                    }
                 }
+                return Ok(TrampolineState::Return { val: args });
             }
-            return Ok(TrampolineState::Return { val: args });
-        }
-        if matches!(builtin, Builtin::Apply) {
-            return self.apply_apply_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::CallWithValues) {
-            return self.apply_call_with_values_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::CallCc | Builtin::CallWithCurrentContinuation) {
-            return self.apply_call_cc_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::DynamicWind) {
-            return self.apply_dynamic_wind_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::WithExceptionHandler) {
-            return self.apply_with_exception_handler_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::RaiseBuiltin) {
-            return self.apply_raise_builtin(args, call_expr, false);
-        }
-        if matches!(builtin, Builtin::RaiseContinuable) {
-            return self.apply_raise_builtin(args, call_expr, true);
-        }
-        if matches!(builtin, Builtin::EvalBuiltin) {
-            return self.apply_eval_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::EnvironmentBuiltin) {
-            return self.apply_environment_builtin(args, call_expr);
+            Builtin::Apply => return self.apply_apply_builtin(args, call_expr),
+            Builtin::CallWithValues => return self.apply_call_with_values_builtin(args, call_expr),
+            Builtin::CallCc | Builtin::CallWithCurrentContinuation =>
+                return self.apply_call_cc_builtin(args, call_expr),
+            Builtin::DynamicWind => return self.apply_dynamic_wind_builtin(args, call_expr),
+            Builtin::WithExceptionHandler =>
+                return self.apply_with_exception_handler_builtin(args, call_expr),
+            Builtin::RaiseBuiltin => return self.apply_raise_builtin(args, call_expr, false),
+            Builtin::RaiseContinuable => return self.apply_raise_builtin(args, call_expr, true),
+            Builtin::EvalBuiltin => return self.apply_eval_builtin(args, call_expr),
+            Builtin::EnvironmentBuiltin => return self.apply_environment_builtin(args, call_expr),
+            _ => {}
         }
         
         // In strict evaluation, args are already evaluated values
@@ -1299,29 +1248,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Char(_)))
             }
             
-            Builtin::CharEq => {
-                // (char=? char1 char2 ...) - Character equality
-                self.char_chain_compare(args, |a, b| a == b, call_expr)
-            }
-            
-            Builtin::CharLt => {
-                // (char<? char1 char2 ...) - Monotonically increasing
-                self.char_chain_compare(args, |a, b| a < b, call_expr)
-            }
-            
-            Builtin::CharGt => {
-                // (char>? char1 char2 ...) - Monotonically decreasing
-                self.char_chain_compare(args, |a, b| a > b, call_expr)
-            }
-            
-            Builtin::CharLe => {
-                // (char<=? char1 char2 ...) - Monotonically non-decreasing
-                self.char_chain_compare(args, |a, b| a <= b, call_expr)
-            }
-            
-            Builtin::CharGe => {
-                // (char>=? char1 char2 ...) - Monotonically non-increasing
-                self.char_chain_compare(args, |a, b| a >= b, call_expr)
+            Builtin::CharEq | Builtin::CharLt | Builtin::CharGt
+            | Builtin::CharLe | Builtin::CharGe => {
+                let cmp_fn: fn(char, char) -> bool = match builtin {
+                    Builtin::CharEq => |a, b| a == b,
+                    Builtin::CharLt => |a, b| a < b,
+                    Builtin::CharGt => |a, b| a > b,
+                    Builtin::CharLe => |a, b| a <= b,
+                    _ => |a, b| a >= b,
+                };
+                self.char_chain_compare(args, cmp_fn, call_expr)
             }
             
             Builtin::CharToInteger => builtin_char_to_int!(self, args, call_expr),
@@ -1361,12 +1297,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             // Character classification predicates
-            Builtin::CharAlphabetic => {
+            Builtin::CharAlphabetic | Builtin::CharWhitespace
+            | Builtin::CharUpperCase | Builtin::CharLowerCase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
                 #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>().contains(c);
+                let result = match builtin {
+                    Builtin::CharAlphabetic => icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>().contains(c),
+                    Builtin::CharWhitespace => icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>().contains(c),
+                    Builtin::CharUpperCase => icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>().contains(c),
+                    _ => icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>().contains(c),
+                };
                 #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_alphabetic();
+                let result = match builtin {
+                    Builtin::CharAlphabetic => c.is_ascii_alphabetic(),
+                    Builtin::CharWhitespace => c.is_ascii_whitespace(),
+                    Builtin::CharUpperCase => c.is_ascii_uppercase(),
+                    _ => c.is_ascii_lowercase(),
+                };
                 self.lisp.boolean(result).map_err(Into::into)
             }
             
@@ -1379,33 +1326,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
                 #[cfg(not(feature = "alloc"))]
                 let result = c.is_ascii_digit();
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-            
-            Builtin::CharWhitespace => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_whitespace();
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-            
-            Builtin::CharUpperCase => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_uppercase();
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-            
-            Builtin::CharLowerCase => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_lowercase();
                 self.lisp.boolean(result).map_err(Into::into)
             }
             
@@ -1474,20 +1394,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let cm = icu_casemap::CaseMapper::new();
                             let default_langid = icu_locale_core::LanguageIdentifier::UNKNOWN;
                             
+                            // Helper closure to perform case mapping for a single char
+                            let case_map_char = |c: char, collector: &mut CaseMapCollector| {
+                                let mut utf8_buf = [0u8; 4];
+                                let s = c.encode_utf8(&mut utf8_buf);
+                                use writeable::Writeable;
+                                match builtin {
+                                    Builtin::StringUpcase => { let _ = cm.uppercase(s, &default_langid).write_to(collector); }
+                                    Builtin::StringDowncase => { let _ = cm.lowercase(s, &default_langid).write_to(collector); }
+                                    _ => { let _ = cm.fold(s).write_to(collector); }
+                                }
+                            };
+                            
                             // First pass: compute total length after full case mapping
-                            // (full mapping can expand characters, e.g. ß → ss, ß → SS)
                             let mut total_len = 0usize;
                             for i in 0..len {
                                 let slot = self.lisp.arena_index_at_offset(data, i)?;
                                 if let Value::Char(c) = self.lisp.get(slot)? {
-                                    let mut utf8_buf = [0u8; 4];
-                                    let s = c.encode_utf8(&mut utf8_buf);
                                     let mut collector = CaseMapCollector::new();
-                                    match builtin {
-                                        Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
-                                        Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
-                                        _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
-                                    }
+                                    case_map_char(c, &mut collector);
                                     total_len += collector.len;
                                 } else {
                                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
@@ -1508,14 +1433,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             for i in 0..len {
                                 let slot = self.lisp.arena_index_at_offset(data, i)?;
                                 if let Value::Char(c) = self.lisp.get(slot)? {
-                                    let mut utf8_buf = [0u8; 4];
-                                    let s = c.encode_utf8(&mut utf8_buf);
                                     let mut collector = CaseMapCollector::new();
-                                    match builtin {
-                                        Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
-                                        Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
-                                        _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
-                                    }
+                                    case_map_char(c, &mut collector);
                                     for j in 0..collector.len {
                                         self.lisp.string_set(result, pos, collector.chars[j])?;
                                         pos += 1;
@@ -1556,13 +1475,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::StringCiEq => {
-                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
+            Builtin::StringCiEq | Builtin::StringCiLt | Builtin::StringCiGt
+            | Builtin::StringCiLe | Builtin::StringCiGe => {
+                let cmp_fn: fn(core::cmp::Ordering) -> bool = match builtin {
+                    Builtin::StringCiEq => |o| o == core::cmp::Ordering::Equal,
+                    Builtin::StringCiLt => |o| o == core::cmp::Ordering::Less,
+                    Builtin::StringCiGt => |o| o == core::cmp::Ordering::Greater,
+                    Builtin::StringCiLe => |o| o != core::cmp::Ordering::Greater,
+                    _ => |o| o != core::cmp::Ordering::Less,
+                };
+                self.string_ci_chain_compare(args, cmp_fn, call_expr)
             }
-            
-            // ============================================================
-            // String operations (R7RS Section 6.7)
-            // ============================================================
             
             Builtin::Stringp => {
                 // (string? obj) - Check if value is a string
@@ -1677,29 +1600,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::StringEq => {
-                // (string=? string1 string2 ...) - String equality
-                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
-            }
-            
-            Builtin::StringLt => {
-                // (string<? string1 string2 ...) - Monotonically increasing
-                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
-            }
-            
-            Builtin::StringGt => {
-                // (string>? string1 string2 ...) - Monotonically decreasing
-                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringLe => {
-                // (string<=? string1 string2 ...) - Monotonically non-decreasing
-                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringGe => {
-                // (string>=? string1 string2 ...) - Monotonically non-increasing
-                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
+            Builtin::StringEq | Builtin::StringLt | Builtin::StringGt
+            | Builtin::StringLe | Builtin::StringGe => {
+                let cmp_fn: fn(core::cmp::Ordering) -> bool = match builtin {
+                    Builtin::StringEq => |o| o == core::cmp::Ordering::Equal,
+                    Builtin::StringLt => |o| o == core::cmp::Ordering::Less,
+                    Builtin::StringGt => |o| o == core::cmp::Ordering::Greater,
+                    Builtin::StringLe => |o| o != core::cmp::Ordering::Greater,
+                    _ => |o| o != core::cmp::Ordering::Less,
+                };
+                self.string_chain_compare(args, cmp_fn, call_expr)
             }
             
             Builtin::StringAppend => {
@@ -1931,26 +1841,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::StringCiLt => {
-                // (string-ci<? string1 string2 ...) - Case-insensitive less than
-                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
-            }
-            
-            Builtin::StringCiGt => {
-                // (string-ci>? string1 string2 ...) - Case-insensitive greater than
-                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringCiLe => {
-                // (string-ci<=? string1 string2 ...) - Case-insensitive less than or equal
-                self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringCiGe => {
-                // (string-ci>=? string1 string2 ...) - Case-insensitive greater than or equal
-                self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
-            }
-            
             // ============================================================
             // Syntax-case support (R6RS Chapter 11)
             // ============================================================
@@ -2086,43 +1976,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Format as "num/denom"
                         let mut chars = ['\0'; 42];
                         let mut pos = 0;
-                        // Format numerator
-                        let negative = num < 0;
-                        let mut val = num.unsigned_abs();
-                        let mut digits = [0u8; 20];
-                        let mut dlen = 0;
-                        if val == 0 {
-                            digits[0] = b'0';
-                            dlen = 1;
-                        } else {
-                            while val > 0 {
-                                digits[dlen] = b'0' + (val % 10) as u8;
-                                dlen += 1;
-                                val /= 10;
-                            }
-                        }
-                        if negative {
-                            chars[pos] = '-';
-                            pos += 1;
-                        }
-                        for i in (0..dlen).rev() {
-                            chars[pos] = digits[i] as char;
-                            pos += 1;
-                        }
+                        pos += format_isize_decimal(num, &mut chars[pos..]);
                         chars[pos] = '/';
                         pos += 1;
-                        // Format denominator
-                        let mut val = denom.unsigned_abs();
-                        dlen = 0;
-                        while val > 0 {
-                            digits[dlen] = b'0' + (val % 10) as u8;
-                            dlen += 1;
-                            val /= 10;
-                        }
-                        for i in (0..dlen).rev() {
-                            chars[pos] = digits[i] as char;
-                            pos += 1;
-                        }
+                        pos += format_isize_decimal(denom, &mut chars[pos..]);
                         self.lisp.string_from_chars(&chars[..pos]).map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
@@ -3584,27 +3441,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::Number(n) => {
-                        if n >= 0 { self.lisp.float(0.0).map_err(Into::into) }
-                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                        let angle = if n >= 0 { 0.0 } else { core::f64::consts::PI as fsize };
+                        self.lisp.float(angle).map_err(Into::into)
                     }
                     Value::Float(f) => {
-                        if f >= 0.0 { self.lisp.float(0.0).map_err(Into::into) }
-                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                        let angle = if f >= 0.0 { 0.0 } else { core::f64::consts::PI as fsize };
+                        self.lisp.float(angle).map_err(Into::into)
                     }
                     Value::Rational { num, .. } => {
-                        if num >= 0 { self.lisp.float(0.0).map_err(Into::into) }
-                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                        let angle = if num >= 0 { 0.0 } else { core::f64::consts::PI as fsize };
+                        self.lisp.float(angle).map_err(Into::into)
                     }
                     Value::Complex { real, imag } => {
-                        let angle = libm::atan2(imag as f64, real as f64);
-                        self.lisp.float(angle as fsize).map_err(Into::into)
+                        self.lisp.float(libm::atan2(imag as f64, real as f64) as fsize).map_err(Into::into)
                     }
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
                             let re = self.complex_real_f(arg, call_expr)?;
                             let im = self.complex_imag_f(arg, call_expr)?;
-                            let angle = libm::atan2(im, re);
-                            self.lisp.float(angle as fsize).map_err(Into::into)
+                            self.lisp.float(libm::atan2(im, re) as fsize).map_err(Into::into)
                         } else {
                             Err(self.type_error(call_expr, "number", "pair"))
                         }
@@ -4805,4 +4660,32 @@ fn isqrt(n: usize) -> usize {
         y = (x + n / x) / 2;
     }
     x
+}
+
+/// Format an isize in decimal into a char buffer, returning the number of chars written.
+fn format_isize_decimal(n: isize, buf: &mut [char]) -> usize {
+    let negative = n < 0;
+    let mut val = n.unsigned_abs();
+    let mut digits = [0u8; 20];
+    let mut dlen = 0;
+    if val == 0 {
+        digits[0] = b'0';
+        dlen = 1;
+    } else {
+        while val > 0 {
+            digits[dlen] = b'0' + (val % 10) as u8;
+            dlen += 1;
+            val /= 10;
+        }
+    }
+    let mut pos = 0;
+    if negative {
+        buf[pos] = '-';
+        pos += 1;
+    }
+    for i in (0..dlen).rev() {
+        buf[pos] = digits[i] as char;
+        pos += 1;
+    }
+    pos
 }
