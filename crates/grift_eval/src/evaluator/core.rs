@@ -285,25 +285,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
     pub(super) fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
-        if let Ok(Value::Symbol(chars)) = self.lisp.get(idx) {
-            let len = self.lisp.string_len(chars).unwrap_or(0);
-            if len != 6 {
-                return false;
-            }
-            // Check for exactly "define"
-            for (i, &expected) in b"define".iter().enumerate() {
-                if let Ok(c) = self.lisp.string_char_at(chars, i) {
-                    if c as u8 != expected {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
+        self.lisp.symbol_matches(idx, "define").unwrap_or(false)
     }
     
     /// Get the Lisp context

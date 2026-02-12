@@ -621,19 +621,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             ContType::QuasiquoteUnquoteWrap => {
                 // val is the inner processed value - wrap with unquote
-                let unquote_sym = self.lisp.symbol("unquote")?;
-                let nil = self.lisp.nil()?;
-                let inner_list = self.lisp.cons(val, nil)?;
-                let result = self.lisp.cons(unquote_sym, inner_list)?;
+                let result = self.wrap_with_symbol(val, "unquote")?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
             ContType::QuasiquoteNestedWrap => {
                 // val is the inner processed value - wrap with quasiquote
-                let qq_sym = self.lisp.symbol("quasiquote")?;
-                let nil = self.lisp.nil()?;
-                let inner_list = self.lisp.cons(val, nil)?;
-                let result = self.lisp.cons(qq_sym, inner_list)?;
+                let result = self.wrap_with_symbol(val, "quasiquote")?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
@@ -1118,6 +1112,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             _ => Err(self.make_error(ErrorKind::TypeError, a)),
         }
+    }
+
+    /// Wrap a value in a list headed by a symbol: `(symbol val)`
+    pub(super) fn wrap_with_symbol(&self, val: ArenaIndex, name: &str) -> EvalResult {
+        let sym = self.lisp.symbol(name)?;
+        let nil = self.lisp.nil()?;
+        let inner = self.lisp.cons(val, nil)?;
+        self.lisp.cons(sym, inner).map_err(Into::into)
     }
     
     /// Capture the current continuation as a first-class value

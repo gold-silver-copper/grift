@@ -1249,15 +1249,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::CharEq | Builtin::CharLt | Builtin::CharGt
-            | Builtin::CharLe | Builtin::CharGe => {
+            | Builtin::CharLe | Builtin::CharGe
+            | Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
+            | Builtin::CharCiLe | Builtin::CharCiGe => {
                 let cmp_fn: fn(char, char) -> bool = match builtin {
-                    Builtin::CharEq => |a, b| a == b,
-                    Builtin::CharLt => |a, b| a < b,
-                    Builtin::CharGt => |a, b| a > b,
-                    Builtin::CharLe => |a, b| a <= b,
+                    Builtin::CharEq | Builtin::CharCiEq => |a, b| a == b,
+                    Builtin::CharLt | Builtin::CharCiLt => |a, b| a < b,
+                    Builtin::CharGt | Builtin::CharCiGt => |a, b| a > b,
+                    Builtin::CharLe | Builtin::CharCiLe => |a, b| a <= b,
                     _ => |a, b| a >= b,
                 };
-                self.char_chain_compare(args, cmp_fn, call_expr)
+                let case_insensitive = matches!(builtin,
+                    Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
+                    | Builtin::CharCiLe | Builtin::CharCiGe);
+                if case_insensitive {
+                    #[cfg(feature = "alloc")]
+                    {
+                        let cm = icu_casemap::CaseMapper::new();
+                        self.char_chain_compare(args, |a, b| cmp_fn(cm.simple_fold(a), cm.simple_fold(b)), call_expr)
+                    }
+                    #[cfg(not(feature = "alloc"))]
+                    {
+                        self.char_chain_compare(args, |a, b| cmp_fn(ascii_foldcase(a), ascii_foldcase(b)), call_expr)
+                    }
+                } else {
+                    self.char_chain_compare(args, cmp_fn, call_expr)
+                }
             }
             
             Builtin::CharToInteger => builtin_char_to_int!(self, args, call_expr),
@@ -1365,25 +1382,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
-            | Builtin::CharCiLe | Builtin::CharCiGe => {
-                let cmp_fn: fn(char, char) -> bool = match builtin {
-                    Builtin::CharCiEq => |a, b| a == b,
-                    Builtin::CharCiLt => |a, b| a < b,
-                    Builtin::CharCiGt => |a, b| a > b,
-                    Builtin::CharCiLe => |a, b| a <= b,
-                    _ => |a, b| a >= b,
-                };
-                #[cfg(feature = "alloc")]
-                {
-                    let cm = icu_casemap::CaseMapper::new();
-                    self.char_chain_compare(args, |a, b| cmp_fn(cm.simple_fold(a), cm.simple_fold(b)), call_expr)
-                }
-                #[cfg(not(feature = "alloc"))]
-                {
-                    self.char_chain_compare(args, |a, b| cmp_fn(ascii_foldcase(a), ascii_foldcase(b)), call_expr)
-                }
-            }
             
             Builtin::StringUpcase | Builtin::StringDowncase | Builtin::StringFoldcase => {
                 let str_idx = self.lisp.car(args)?;
