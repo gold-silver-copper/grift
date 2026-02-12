@@ -890,20 +890,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
-        match self.lisp.get(template)? {
-            Value::Symbol(_) => {
-                self.transcribe_symbol(template, bindings, renames, def_env)
-            }
-
-            Value::Nil => Ok(self.lisp.nil()?),
-
-            Value::Cons { .. } => {
-                self.transcribe_list(template, bindings, renames, def_env)
-            }
-
-            // Other atoms pass through unchanged
-            _ => Ok(template),
-        }
+        self.transcribe_template_impl(template, bindings, renames, def_env, None)
     }
     
     /// Transcribe a template with matched bindings, capturing lexical environment
@@ -923,19 +910,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         def_env: ArenaIndex,
         lex_env: ArenaIndex,
     ) -> EvalResult {
+        self.transcribe_template_impl(template, bindings, renames, def_env, Some(lex_env))
+    }
+
+    /// Unified template transcription with optional lexical environment.
+    fn transcribe_template_impl(
+        &mut self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
         match self.lisp.get(template)? {
             Value::Symbol(_) => {
-                self.transcribe_symbol_with_env(template, bindings, renames, def_env, lex_env)
+                if let Some(le) = lex_env {
+                    self.transcribe_symbol_with_env(template, bindings, renames, def_env, le)
+                } else {
+                    self.transcribe_symbol(template, bindings, renames, def_env)
+                }
             }
 
             Value::Nil => Ok(self.lisp.nil()?),
 
             Value::Cons { .. } => {
-                self.transcribe_list_with_env(template, bindings, renames, def_env, lex_env)
+                self.transcribe_list_impl(template, bindings, renames, def_env, lex_env)
             }
             
-            // Syntax objects: preserve their existing context
-            Value::Syntax { .. } => Ok(template),
+            // Syntax objects: preserve their existing context (only relevant with lex_env)
+            Value::Syntax { .. } if lex_env.is_some() => Ok(template),
 
             // Other atoms pass through unchanged
             _ => Ok(template),
@@ -1011,13 +1014,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Transcribe a list with lexical environment capture.
-    fn transcribe_list_with_env(
+    /// Transcribe a list with optional lexical environment capture.
+    fn transcribe_list_impl(
         &mut self,
         template: ArenaIndex,
         bindings: ArenaIndex,
         renames: ArenaIndex,
         def_env: ArenaIndex,
-        lex_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
     ) -> EvalResult {
         let (car, cdr) = self.lisp.car_cdr(template)?;
 
@@ -1055,20 +1059,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             current = self.lisp.cdr(current)?;
             
-            // Check if we've hit a special form
+            // Check if we've hit a special form in the middle of the list
             if let Value::Cons { .. } = self.lisp.get(current)? {
                     let next_car = self.lisp.car(current)?;
                     let next_cdr = self.lisp.cdr(current)?;
                     
+                    // Stop if we hit ellipsis or binding keyword in middle
                     if self.has_ellipsis(next_cdr)? || self.is_binding_keyword(next_car)? {
-                        let rest_transcribed = self.transcribe_template_with_env(current, bindings, renames, def_env, lex_env)?;
+                        // Process collected elements, then handle rest specially
+                        let rest_transcribed = self.transcribe_template_impl(current, bindings, renames, def_env, lex_env)?;
                         let mut result = rest_transcribed;
                         
                         // Walk reversed collected list, transcribe and cons (restores original order)
                         let mut cursor = collected;
                         while let Value::Cons { .. } = self.lisp.get(cursor)? {
                             let e = self.lisp.car(cursor)?;
-                            let transcribed = self.transcribe_template_with_env(e, bindings, renames, def_env, lex_env)?;
+                            let transcribed = self.transcribe_template_impl(e, bindings, renames, def_env, lex_env)?;
                             result = self.lisp.cons(transcribed, result)?;
                             cursor = self.lisp.cdr(cursor)?;
                         }
@@ -1083,13 +1089,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut result = if self.lisp.get(current)?.is_nil() {
             nil
         } else {
-            self.transcribe_template_with_env(current, bindings, renames, def_env, lex_env)?
+            // Improper list - transcribe the tail
+            self.transcribe_template_impl(current, bindings, renames, def_env, lex_env)?
         };
         
         let mut cursor = collected;
         while let Value::Cons { .. } = self.lisp.get(cursor)? {
             let elem = self.lisp.car(cursor)?;
-            let transcribed = self.transcribe_template_with_env(elem, bindings, renames, def_env, lex_env)?;
+            let transcribed = self.transcribe_template_impl(elem, bindings, renames, def_env, lex_env)?;
             result = self.lisp.cons(transcribed, result)?;
             cursor = self.lisp.cdr(cursor)?;
         }
@@ -1127,95 +1134,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(sym)
     }
 
-    /// Transcribe a list in template
-    /// 
-    /// Iterative implementation to avoid stack overflow on deeply nested templates.
-    fn transcribe_list(
-        &mut self,
-        template: ArenaIndex,
-        bindings: ArenaIndex,
-        renames: ArenaIndex,
-        def_env: ArenaIndex,
-    ) -> EvalResult {
-        let (car, cdr) = self.lisp.car_cdr(template)?;
-
-        // Check for escaping ellipsis: (... <template>) means treat <template> literally
-        if self.lisp.symbol_matches(car, "...")? {
-            if let Value::Cons { .. } = self.lisp.get(cdr)? {
-                let inner = self.lisp.car(cdr)?;
-                return Ok(inner);
-            }
-            return Ok(cdr);
-        }
-
-        // Check for ellipsis
-        if self.has_ellipsis(cdr)? {
-            return self.transcribe_ellipsis(car, cdr, bindings, renames, def_env);
-        }
-
-        // Check for binding forms that need special handling
-        if self.is_binding_keyword(car)? {
-            return self.transcribe_binding_form(
-                template, bindings, renames, def_env
-            );
-        }
-
-        // Regular list: transcribe each element iteratively
-        // Collect elements into arena cons list (reversed by prepending)
-        let nil = self.lisp.nil()?;
-        let mut collected = nil;
-        let mut current = template;
-        
-        while let Value::Cons { .. } = self.lisp.get(current)? {
-            let elem = self.lisp.car(current)?;
-            collected = self.lisp.cons(elem, collected)?;
-            
-            current = self.lisp.cdr(current)?;
-            
-            // Check if we've hit a special form in the middle of the list
-            if let Value::Cons { .. } = self.lisp.get(current)? {
-                    let next_car = self.lisp.car(current)?;
-                    let next_cdr = self.lisp.cdr(current)?;
-                    
-                    // Stop if we hit ellipsis or binding keyword in middle
-                    if self.has_ellipsis(next_cdr)? || self.is_binding_keyword(next_car)? {
-                        // Process collected elements, then handle rest specially
-                        let rest_transcribed = self.transcribe_template(current, bindings, renames, def_env)?;
-                        let mut result = rest_transcribed;
-                        
-                        // Walk reversed collected list, transcribe and cons (restores original order)
-                        let mut cursor = collected;
-                        while let Value::Cons { .. } = self.lisp.get(cursor)? {
-                            let e = self.lisp.car(cursor)?;
-                            let transcribed = self.transcribe_template(e, bindings, renames, def_env)?;
-                            result = self.lisp.cons(transcribed, result)?;
-                            cursor = self.lisp.cdr(cursor)?;
-                        }
-                        
-                        return Ok(result);
-                    }
-                }
-        }
-        
-        // Transcribe all collected elements and rebuild list
-        // Walk reversed collected list: transcribing and consing restores original order
-        let mut result = if self.lisp.get(current)?.is_nil() {
-            nil
-        } else {
-            // Improper list - transcribe the tail
-            self.transcribe_template(current, bindings, renames, def_env)?
-        };
-        
-        let mut cursor = collected;
-        while let Value::Cons { .. } = self.lisp.get(cursor)? {
-            let elem = self.lisp.car(cursor)?;
-            let transcribed = self.transcribe_template(elem, bindings, renames, def_env)?;
-            result = self.lisp.cons(transcribed, result)?;
-            cursor = self.lisp.cdr(cursor)?;
-        }
-        
-        Ok(result)
-    }
 
     /// Find pattern variables that have list bindings (from ellipsis matching)
     fn find_ellipsis_vars(&self, template: ArenaIndex, bindings: ArenaIndex) -> EvalResult {
