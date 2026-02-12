@@ -491,6 +491,8 @@ define_builtins! {
     SchemeReportEnvironment => "scheme-report-environment",
     /// null-environment - Return minimal environment with only syntax
     NullEnvironment => "null-environment",
+    /// environment? - Check if value is an environment
+    Environmentp => "environment?",
 
     // Bytevector operations (R7RS §6.9)
     /// bytevector? - Check if value is a bytevector

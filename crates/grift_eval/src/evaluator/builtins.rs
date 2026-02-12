@@ -874,18 +874,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Display => {
                 let val = self.lisp.car(args)?;
-                // Call output callback if set
-                if let Some(callback) = self.output_callback {
+                let rest = self.lisp.cdr(args)?;
+                let has_port = !self.lisp.get(rest)?.is_nil();
+                if has_port {
+                    // (display obj port) - write to specific port via I/O provider
+                    let pid = self.extract_output_port(rest, call_expr)?;
+                    if let Some(ref mut io) = self.io {
+                        let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                        let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                        use core::fmt::Write;
+                        let _ = write!(writer, "{}", dv);
+                    }
+                } else if let Some(callback) = self.output_callback {
+                    // (display obj) with callback - use callback for output capture
                     callback(self.lisp, val);
+                } else if let Some(ref mut io) = self.io {
+                    // (display obj) without callback - write to current output port
+                    let pid = self.current_output_port;
+                    let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                    let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                    use core::fmt::Write;
+                    let _ = write!(writer, "{}", dv);
                 }
                 // Return void (unspecified value) per R7RS
                 self.lisp.void_val().map_err(Into::into)
             }
             
             Builtin::Newline => {
-                // Call output callback with nil (marker for newline)
-                if let Some(callback) = self.output_callback {
+                let rest = args;
+                let has_port = !self.lisp.get(rest)?.is_nil();
+                if has_port {
+                    // (newline port) - write to specific port via I/O provider
+                    let pid = self.extract_output_port(rest, call_expr)?;
+                    if let Some(ref mut io) = self.io {
+                        let _ = io.write_char(pid, '\n');
+                    }
+                } else if let Some(callback) = self.output_callback {
+                    // (newline) with callback - use callback
                     callback(self.lisp, self.lisp.nil()?);
+                } else if let Some(ref mut io) = self.io {
+                    // (newline) without callback - write to current output port
+                    let pid = self.current_output_port;
+                    let _ = io.write_char(pid, '\n');
                 }
                 // Return void (unspecified value) per R7RS
                 self.lisp.void_val().map_err(Into::into)
@@ -2793,6 +2823,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Return an empty environment (immutable)
                 let nil = self.lisp.nil()?;
                 self.lisp.alloc(Value::Environment { env: nil, mutable: false }).map_err(Into::into)
+            }
+
+            Builtin::Environmentp => {
+                builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Environment { .. }))
             }
 
             // ================================================================
