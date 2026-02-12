@@ -2234,7 +2234,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // and pre-bind them with placeholder values (like letrec).
         // This ensures forward references between library-level defines work
         // correctly, since lambdas capture the env at definition time.
-        let void = self.lisp.void_val()?;
+        let placeholder = self.lisp.void_val()?;
         let mut current = decls;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let decl = self.lisp.car(current)?;
@@ -2257,7 +2257,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 _ => continue,
                             };
                             if matches!(self.lisp.get(name)?, Value::Symbol(_)) {
-                                lib_env = self.env_extend(lib_env, name, void)?;
+                                lib_env = self.env_extend(lib_env, name, placeholder)?;
                             }
                         }
                     }

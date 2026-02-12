@@ -936,11 +936,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Cons { .. } => {
                 self.transcribe_list_impl(template, bindings, renames, def_env, lex_env)
             }
-            
-            // Syntax objects: preserve their existing context (only relevant with lex_env)
-            Value::Syntax { .. } if lex_env.is_some() => Ok(template),
 
-            // Other atoms pass through unchanged
+            // Other values (including Syntax objects) pass through unchanged
             _ => Ok(template),
         }
     }
