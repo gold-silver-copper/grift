@@ -599,6 +599,10 @@ fn has_multiple_expressions(input: &str) -> bool {
             }
             ')' => {
                 depth -= 1;
+                if depth < 0 {
+                    // Unbalanced closing paren — not valid multi-expression input
+                    return false;
+                }
                 if depth == 0 {
                     expr_count += 1;
                     if expr_count > 1 {
@@ -638,7 +642,7 @@ fn has_multiple_expressions(input: &str) -> bool {
 /// Wrap input in `(begin ...)` if it contains multiple top-level expressions.
 fn maybe_wrap_begin(input: &str) -> String {
     if has_multiple_expressions(input) {
-        let mut wrapped = String::with_capacity(input.len() + 9);
+        let mut wrapped = String::with_capacity(input.len() + 8);
         wrapped.push_str("(begin ");
         wrapped.push_str(input);
         wrapped.push(')');

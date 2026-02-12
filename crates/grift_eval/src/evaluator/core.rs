@@ -21,6 +21,7 @@ use super::Evaluator;
 /// Format an `isize` into a byte buffer, returning the resulting `&str`.
 ///
 /// Used in `no_std` context for matching numeric library name components.
+/// A 20-byte buffer is sufficient for all `isize` values (max 19 digits + sign for i64).
 fn format_isize(mut n: isize, buf: &mut [u8; 20]) -> &str {
     let negative = n < 0;
     if negative {
@@ -41,7 +42,7 @@ fn format_isize(mut n: isize, buf: &mut [u8; 20]) -> &str {
         pos -= 1;
         buf[pos] = b'-';
     }
-    // SAFETY: digits and '-' are valid ASCII/UTF-8
+    // Only ASCII digits and '-' are written, so this is always valid UTF-8
     core::str::from_utf8(&buf[pos..]).unwrap_or("")
 }
 
