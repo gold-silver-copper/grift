@@ -11,6 +11,7 @@ use grift::{Evaluator, Lisp};
 use grift_std::StdIoProvider;
 use std::cell::RefCell;
 use std::path::Path;
+use std::time::Instant;
 
 /// Parsed SRFI-64 test result
 #[derive(Debug)]
@@ -68,8 +69,17 @@ fn output_callback<const N: usize>(lisp: &Lisp<N>, val: grift::ArenaIndex) {
     });
 }
 
-/// Run a single `.scm` test file and return parsed results.
-fn run_scheme_test(path: &Path) -> Srfi64Output {
+/// Parsed SRFI-64 test run with timing information
+#[derive(Debug)]
+struct TimedSrfi64Output {
+    output: Srfi64Output,
+    elapsed: std::time::Duration,
+}
+
+/// Run a single `.scm` test file and return parsed results with timing.
+fn run_scheme_test(path: &Path) -> TimedSrfi64Output {
+    let start = Instant::now();
+
     let test_content = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
 
@@ -117,7 +127,11 @@ fn run_scheme_test(path: &Path) -> Srfi64Output {
 
     // Parse the captured output
     let output = CAPTURED_OUTPUT.with(|o| o.borrow().clone());
-    parse_srfi64_output(&output)
+    let elapsed = start.elapsed();
+    TimedSrfi64Output {
+        output: parse_srfi64_output(&output),
+        elapsed,
+    }
 }
 
 /// Parse SRFI-64 output format into structured results.
@@ -254,8 +268,14 @@ macro_rules! srfi64_test {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/scheme")
                 .join($file);
-            let output = run_scheme_test(&path);
-            assert_srfi64_success(&output, &path);
+            let timed = run_scheme_test(&path);
+            println!(
+                "[{:.3}s] {} — {} passed",
+                timed.elapsed.as_secs_f64(),
+                $file,
+                timed.output.passed,
+            );
+            assert_srfi64_success(&timed.output, &path);
         }
     };
 }

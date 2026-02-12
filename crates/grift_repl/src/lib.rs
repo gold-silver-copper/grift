@@ -527,6 +527,127 @@ impl Validator for SchemeValidator {
     }
 }
 
+/// Check if input contains multiple top-level expressions.
+///
+/// Counts balanced parenthesized forms and standalone atoms at the top level,
+/// skipping strings and comments.  Returns true if there are two or more
+/// distinct expressions.
+fn has_multiple_expressions(input: &str) -> bool {
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut escape = false;
+    let mut expr_count: usize = 0;
+    let mut in_atom = false;
+
+    for c in input.chars() {
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            if !in_string {
+                in_string = true;
+                if depth == 0 && !in_atom {
+                    in_atom = true;
+                }
+            } else {
+                in_string = false;
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            ';' => {
+                in_line_comment = true;
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            '(' => {
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+                depth += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    expr_count += 1;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            ' ' | '\t' | '\n' | '\r' => {
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            '\'' | '`' | ',' => {
+                // Quote-like prefixes don't start a new expression on their own
+                if depth == 0 && !in_atom {
+                    in_atom = true;
+                }
+            }
+            _ => {
+                if depth == 0 && !in_atom {
+                    in_atom = true;
+                }
+            }
+        }
+    }
+    // Handle trailing atom
+    if depth == 0 && in_atom {
+        expr_count += 1;
+    }
+    expr_count > 1
+}
+
+/// Wrap input in `(begin ...)` if it contains multiple top-level expressions.
+fn maybe_wrap_begin(input: &str) -> String {
+    if has_multiple_expressions(input) {
+        let mut wrapped = String::with_capacity(input.len() + 9);
+        wrapped.push_str("(begin ");
+        wrapped.push_str(input);
+        wrapped.push(')');
+        wrapped
+    } else {
+        input.to_string()
+    }
+}
+
 /// Run a REPL session
 pub fn run_repl<const N: usize>() {
     let lisp: Lisp<N> = Lisp::new();
@@ -575,8 +696,9 @@ pub fn run_repl<const N: usize>() {
                     break;
                 }
                 
-                // Evaluate
-                match eval.eval_str(input) {
+                // Evaluate (auto-wrap multiple expressions in begin)
+                let wrapped = maybe_wrap_begin(input);
+                match eval.eval_str(&wrapped) {
                     Ok(result) => {
                         // Don't print anything for void values (from define, set!, display, etc.)
                         if !matches!(lisp.get(result), Ok(Value::Void)) {
@@ -788,3 +910,51 @@ pub fn eval_to_string<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, i
 }
 
 // ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_multiple_expressions_single() {
+        assert!(!has_multiple_expressions("(+ 1 2)"));
+        assert!(!has_multiple_expressions("42"));
+        assert!(!has_multiple_expressions("'hello"));
+        assert!(!has_multiple_expressions("(define (f x) (+ x 1))"));
+        assert!(!has_multiple_expressions("\"hello world\""));
+    }
+
+    #[test]
+    fn test_has_multiple_expressions_multiple() {
+        assert!(has_multiple_expressions("(define x 1) (define y 2)"));
+        assert!(has_multiple_expressions("(define (f x) x) (f 5)"));
+        assert!(has_multiple_expressions("42 43"));
+        assert!(has_multiple_expressions("(+ 1 2) (+ 3 4)"));
+    }
+
+    #[test]
+    fn test_has_multiple_expressions_with_comments() {
+        assert!(!has_multiple_expressions("; comment\n(+ 1 2)"));
+        assert!(has_multiple_expressions("(+ 1 2) ; comment\n(+ 3 4)"));
+    }
+
+    #[test]
+    fn test_has_multiple_expressions_with_strings() {
+        assert!(!has_multiple_expressions("(display \"hello world\")"));
+        assert!(!has_multiple_expressions("\"hello ( world\""));
+        assert!(has_multiple_expressions("(display \"hi\") (newline)"));
+    }
+
+    #[test]
+    fn test_maybe_wrap_begin_single() {
+        assert_eq!(maybe_wrap_begin("(+ 1 2)"), "(+ 1 2)");
+    }
+
+    #[test]
+    fn test_maybe_wrap_begin_multiple() {
+        assert_eq!(
+            maybe_wrap_begin("(define x 1) (define y 2)"),
+            "(begin (define x 1) (define y 2))"
+        );
+    }
+}
