@@ -11,4 +11,3 @@ categories = ["no-std", "data-structures", "embedded"]
 
 [dependencies]
 grift_arena = { workspace = true }
-grift_macros = { workspace = true }

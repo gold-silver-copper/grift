@@ -1,8 +1,7 @@
 //! Procedural macros for grift_parser standard library
 //!
 //! This crate provides the `include_stdlib!` macro which parses a `.scm` file
-//! containing function definitions and transforms them into the format expected
-//! by the `define_stdlib!` macro.
+//! containing function definitions and generates a static array of `StdLib` values.
 //!
 //! # Example
 //!
@@ -19,15 +18,14 @@
 //!
 //! Expands to:
 //! ```text
-//! define_stdlib! {
-//!     /// (map f lst) - Apply f to each element of lst
-//!     Map("map", ["f", "lst"], "(if (null? lst) '() (cons (f (car lst)) (map f (cdr lst))))"),
-//! }
+//! pub const STDLIB_ALL: &[StdLib] = &[
+//!     StdLib::new("map", &["f", "lst"], "(begin (if (null? lst) ...))"),
+//! ];
 //! ```
 
 use proc_macro::{TokenStream, TokenTree, Literal, Punct, Spacing, Ident, Span, Group, Delimiter};
 
-/// Include a `.scm` file and transform it into `define_stdlib!` format.
+/// Include a `.scm` file and transform it into a static `STDLIB_ALL` array of `StdLib` values.
 ///
 /// The Scheme file should contain function definitions in the form:
 /// ```lisp
@@ -35,7 +33,7 @@ use proc_macro::{TokenStream, TokenTree, Literal, Punct, Spacing, Ident, Span, G
 /// (define (function-name param1 param2 ...) body)
 /// ```
 ///
-/// Each definition is transformed into a `define_stdlib!` entry.
+/// Each definition is transformed into a `StdLib::new(...)` entry in the static array.
 #[proc_macro]
 pub fn include_stdlib(input: TokenStream) -> TokenStream {
     // Parse the input to get the file path
@@ -58,87 +56,115 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
     let content = std::fs::read_to_string(&full_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", full_path.display(), e));
     
-    // Parse the lisp file and generate define_stdlib! invocation
+    // Parse the lisp file and generate StdLibEntry statics + STDLIB_ALL array
     let stdlib_entries = parse_lisp_file(&content);
     
-    // Generate the define_stdlib! macro invocation
     let mut tokens = Vec::new();
     
-    // define_stdlib!
-    tokens.push(TokenTree::Ident(Ident::new("define_stdlib", Span::call_site())));
-    tokens.push(TokenTree::Punct(Punct::new('!', Spacing::Alone)));
-    
-    // Build the body of the macro
-    let mut body_tokens = Vec::new();
-    
-    for entry in stdlib_entries {
-        // Add doc comment if present
-        if let Some(doc) = &entry.doc {
-            // #[doc = "..."]
-            body_tokens.push(TokenTree::Punct(Punct::new('#', Spacing::Alone)));
-            let attr_tokens = vec![
-                TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                TokenTree::Punct(Punct::new('=', Spacing::Alone)),
-                TokenTree::Literal(Literal::string(doc)),
-            ];
-            body_tokens.push(TokenTree::Group(Group::new(
-                Delimiter::Bracket,
-                attr_tokens.into_iter().collect(),
-            )));
-        }
+    // Generate a static StdLibEntry for each function, then a STDLIB_ALL array referencing them.
+    for (i, entry) in stdlib_entries.iter().enumerate() {
+        let entry_name = format!("_STDLIB_ENTRY_{}", i);
         
-        // VariantName("name", ["param1", "param2"], "body"),
-        body_tokens.push(TokenTree::Ident(Ident::new(&entry.variant_name, Span::call_site())));
+        // static _STDLIB_ENTRY_N: StdLibEntry = StdLibEntry { name: "...", params: &[...], body: "..." };
+        tokens.push(TokenTree::Ident(Ident::new("static", Span::call_site())));
+        tokens.push(TokenTree::Ident(Ident::new(&entry_name, Span::call_site())));
+        tokens.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+        tokens.push(TokenTree::Ident(Ident::new("StdLibEntry", Span::call_site())));
+        tokens.push(TokenTree::Punct(Punct::new('=', Spacing::Alone)));
         
-        let mut args = Vec::new();
-        // "name"
-        args.push(TokenTree::Literal(Literal::string(&entry.name)));
-        args.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+        // StdLibEntry { name: "...", params: &[...], body: "..." }
+        let mut fields = Vec::new();
         
-        // ["param1", "param2"]
+        // name: "..."
+        fields.push(TokenTree::Ident(Ident::new("name", Span::call_site())));
+        fields.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+        fields.push(TokenTree::Literal(Literal::string(&entry.name)));
+        fields.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+        
+        // params: &[...]
+        fields.push(TokenTree::Ident(Ident::new("params", Span::call_site())));
+        fields.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+        fields.push(TokenTree::Punct(Punct::new('&', Spacing::Alone)));
         let mut params_tokens = Vec::new();
-        for (i, param) in entry.params.iter().enumerate() {
-            if i > 0 {
+        for (j, param) in entry.params.iter().enumerate() {
+            if j > 0 {
                 params_tokens.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
             }
             params_tokens.push(TokenTree::Literal(Literal::string(param)));
         }
-        args.push(TokenTree::Group(Group::new(
+        fields.push(TokenTree::Group(Group::new(
             Delimiter::Bracket,
             params_tokens.into_iter().collect(),
         )));
-        args.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+        fields.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
         
-        // "body"
-        args.push(TokenTree::Literal(Literal::string(&entry.body)));
+        // body: "..."
+        fields.push(TokenTree::Ident(Ident::new("body", Span::call_site())));
+        fields.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+        fields.push(TokenTree::Literal(Literal::string(&entry.body)));
+        fields.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
         
-        body_tokens.push(TokenTree::Group(Group::new(
+        tokens.push(TokenTree::Ident(Ident::new("StdLibEntry", Span::call_site())));
+        tokens.push(TokenTree::Group(Group::new(
+            Delimiter::Brace,
+            fields.into_iter().collect(),
+        )));
+        tokens.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
+    }
+    
+    // pub const STDLIB_ALL: &[StdLib] = &[StdLib::new(&_STDLIB_ENTRY_0), ...];
+    tokens.push(TokenTree::Ident(Ident::new("pub", Span::call_site())));
+    tokens.push(TokenTree::Ident(Ident::new("const", Span::call_site())));
+    tokens.push(TokenTree::Ident(Ident::new("STDLIB_ALL", Span::call_site())));
+    tokens.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+    tokens.push(TokenTree::Punct(Punct::new('&', Spacing::Alone)));
+    let slice_type = vec![
+        TokenTree::Ident(Ident::new("StdLib", Span::call_site())),
+    ];
+    tokens.push(TokenTree::Group(Group::new(
+        Delimiter::Bracket,
+        slice_type.into_iter().collect(),
+    )));
+    tokens.push(TokenTree::Punct(Punct::new('=', Spacing::Alone)));
+    tokens.push(TokenTree::Punct(Punct::new('&', Spacing::Alone)));
+    
+    let mut array_tokens = Vec::new();
+    for i in 0..stdlib_entries.len() {
+        let entry_name = format!("_STDLIB_ENTRY_{}", i);
+        // StdLib::new(&_STDLIB_ENTRY_N),
+        array_tokens.push(TokenTree::Ident(Ident::new("StdLib", Span::call_site())));
+        array_tokens.push(TokenTree::Punct(Punct::new(':', Spacing::Joint)));
+        array_tokens.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+        array_tokens.push(TokenTree::Ident(Ident::new("new", Span::call_site())));
+        
+        let mut args = Vec::new();
+        args.push(TokenTree::Punct(Punct::new('&', Spacing::Alone)));
+        args.push(TokenTree::Ident(Ident::new(&entry_name, Span::call_site())));
+        
+        array_tokens.push(TokenTree::Group(Group::new(
             Delimiter::Parenthesis,
             args.into_iter().collect(),
         )));
-        body_tokens.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+        array_tokens.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
     }
     
     tokens.push(TokenTree::Group(Group::new(
-        Delimiter::Brace,
-        body_tokens.into_iter().collect(),
+        Delimiter::Bracket,
+        array_tokens.into_iter().collect(),
     )));
+    tokens.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
     
     tokens.into_iter().collect()
 }
 
 /// A parsed stdlib function entry
 struct StdlibEntry {
-    /// The Rust enum variant name (e.g., "Map" for "map")
-    variant_name: String,
     /// The Lisp function name (e.g., "map")
     name: String,
     /// Parameter names
     params: Vec<String>,
     /// The function body as a string
     body: String,
-    /// Optional documentation comment
-    doc: Option<String>,
 }
 
 /// Parse a lisp file and extract function definitions
@@ -154,16 +180,8 @@ fn parse_lisp_file(content: &str) -> Vec<StdlibEntry> {
             continue;
         }
         
-        // Check for documentation comment (;;; ...)
-        let doc = if trimmed.starts_with(";;;") {
-            // Use strip_prefix for safe string manipulation
-            Some(trimmed.strip_prefix(";;;").unwrap_or("").trim().to_string())
-        } else {
-            None
-        };
-        
-        // If we found a doc comment, the next non-empty line should be the definition
-        let def_line = if doc.is_some() {
+        // Skip to definition if doc comment (;;; ...)
+        let def_line = if trimmed.starts_with(";;;") {
             // Skip to next non-empty, non-comment line
             loop {
                 match lines.next() {
@@ -183,7 +201,7 @@ fn parse_lisp_file(content: &str) -> Vec<StdlibEntry> {
         
         // Parse (define (name params...) body)
         if def_trimmed.starts_with("(define")
-            && let Some(entry) = parse_define(def_trimmed, doc, &mut lines)
+            && let Some(entry) = parse_define(def_trimmed, &mut lines)
         {
             entries.push(entry);
         }
@@ -235,7 +253,6 @@ fn strip_inline_comment(line: &str) -> String {
 /// Parse a (define (name params...) body) expression
 fn parse_define<'a, I: Iterator<Item = &'a str>>(
     first_line: &str,
-    doc: Option<String>,
     remaining_lines: &mut I,
 ) -> Option<StdlibEntry> {
     // Collect the full definition (may span multiple lines)
@@ -333,15 +350,10 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
     // e.g., (define (f x) (define y 1) (+ x y)) has two expressions that need begin.
     let body = format!("(begin {})", raw_body);
     
-    // Generate variant name from function name
-    let variant_name = to_pascal_case(&name);
-    
     Some(StdlibEntry {
-        variant_name,
         name,
         params,
         body,
-        doc,
     })
 }
 
@@ -350,6 +362,7 @@ fn parse_define<'a, I: Iterator<Item = &'a str>>(
 ///
 /// Delegates to [`grift_util::to_pascal_case`] to keep the conversion logic
 /// in a single place shared between compile-time and runtime code.
+#[allow(dead_code)]
 fn to_pascal_case(name: &str) -> String {
     grift_util::to_pascal_case(name)
 }
