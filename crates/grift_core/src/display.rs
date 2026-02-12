@@ -46,19 +46,32 @@ const MAX_LIST_ELEMENTS: usize = 100;
 pub struct DisplayValue<'a, const N: usize> {
     value: ArenaIndex,
     lisp: &'a Lisp<N>,
+    /// When true, uses Scheme `display` semantics (no quotes around strings,
+    /// characters printed as-is). When false, uses `write` semantics (the default).
+    display_mode: bool,
 }
 
 impl<'a, const N: usize> DisplayValue<'a, N> {
-    /// Create a new `DisplayValue` wrapper.
+    /// Create a new `DisplayValue` wrapper (uses `write` semantics by default).
     #[inline]
     pub fn new(value: ArenaIndex, lisp: &'a Lisp<N>) -> Self {
-        DisplayValue { value, lisp }
+        DisplayValue { value, lisp, display_mode: false }
+    }
+
+    /// Create a new `DisplayValue` wrapper using Scheme `display` semantics.
+    ///
+    /// In display mode, strings are printed without surrounding quotes and
+    /// without escape sequences, and characters are printed as-is without the
+    /// `#\` prefix (per R7RS §6.13.3).
+    #[inline]
+    pub fn new_display(value: ArenaIndex, lisp: &'a Lisp<N>) -> Self {
+        DisplayValue { value, lisp, display_mode: true }
     }
 }
 
 impl<const N: usize> fmt::Display for DisplayValue<'_, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        format_value(self.lisp, self.value, f, 0)
+        format_value(self.lisp, self.value, f, 0, self.display_mode)
     }
 }
 
@@ -73,6 +86,7 @@ fn format_sequence<const N: usize, F>(
     get_elem: F,
     f: &mut fmt::Formatter<'_>,
     depth: usize,
+    display_mode: bool,
 ) -> fmt::Result
 where
     F: Fn(usize) -> Result<ArenaIndex, grift_arena::ArenaError>,
@@ -83,7 +97,7 @@ where
             f.write_str(" ")?;
         }
         if let Ok(elem_idx) = get_elem(i) {
-            format_value(lisp, elem_idx, f, depth + 1)?;
+            format_value(lisp, elem_idx, f, depth + 1, display_mode)?;
         }
     }
     f.write_str(")")
@@ -94,6 +108,7 @@ fn format_value<const N: usize>(
     idx: ArenaIndex,
     f: &mut fmt::Formatter<'_>,
     depth: usize,
+    display_mode: bool,
 ) -> fmt::Result {
     if depth > MAX_DISPLAY_DEPTH {
         return f.write_str("...");
@@ -131,18 +146,24 @@ fn format_value<const N: usize>(
             }
         }
         Ok(Value::Char(c)) => {
-            f.write_str("#\\")?;
-            match c {
-                ' ' => f.write_str("space"),
-                '\n' => f.write_str("newline"),
-                '\t' => f.write_str("tab"),
-                _ => write!(f, "{}", c),
+            if display_mode {
+                // display mode: print character as-is (R7RS §6.13.3)
+                write!(f, "{}", c)
+            } else {
+                // write mode: use #\ prefix with named chars
+                f.write_str("#\\")?;
+                match c {
+                    ' ' => f.write_str("space"),
+                    '\n' => f.write_str("newline"),
+                    '\t' => f.write_str("tab"),
+                    _ => write!(f, "{}", c),
+                }
             }
         }
         Ok(Value::Symbol(chars)) => format_symbol(lisp, chars, f),
         Ok(Value::Cons { .. }) => {
             f.write_str("(")?;
-            format_list_contents(lisp, idx, f, depth + 1)?;
+            format_list_contents(lisp, idx, f, depth + 1, display_mode)?;
             f.write_str(")")
         }
         Ok(Value::Lambda { .. }) => f.write_str("#<lambda>"),
@@ -150,27 +171,39 @@ fn format_value<const N: usize>(
         Ok(Value::StdLib(s)) => write!(f, "#<stdlib:{}>", s.name()),
         Ok(Value::Array { .. }) => {
             let len = lisp.array_len(idx).unwrap_or(0);
-            format_sequence(lisp, "#(", len, |i| lisp.array_get(idx, i), f, depth)
+            format_sequence(lisp, "#(", len, |i| lisp.array_get(idx, i), f, depth, display_mode)
         }
         Ok(Value::Bytevector { .. }) => {
             let len = lisp.bytevector_len(idx).unwrap_or(0);
-            format_sequence(lisp, "#u8(", len, |i| lisp.bytevector_get(idx, i), f, depth)
+            format_sequence(lisp, "#u8(", len, |i| lisp.bytevector_get(idx, i), f, depth, display_mode)
         }
         Ok(Value::String { .. }) => {
-            f.write_str("\"")?;
-            let len = lisp.string_len(idx).unwrap_or(0);
-            for i in 0..len {
-                if let Ok(c) = lisp.string_char_at(idx, i) {
-                    match c {
-                        '"' => f.write_str("\\\"")?,
-                        '\\' => f.write_str("\\\\")?,
-                        '\n' => f.write_str("\\n")?,
-                        '\t' => f.write_str("\\t")?,
-                        _ => write!(f, "{}", c)?,
+            if display_mode {
+                // display mode: print string contents without quotes or escaping (R7RS §6.13.3)
+                let len = lisp.string_len(idx).unwrap_or(0);
+                for i in 0..len {
+                    if let Ok(c) = lisp.string_char_at(idx, i) {
+                        write!(f, "{}", c)?;
                     }
                 }
+                Ok(())
+            } else {
+                // write mode: print with quotes and escaping
+                f.write_str("\"")?;
+                let len = lisp.string_len(idx).unwrap_or(0);
+                for i in 0..len {
+                    if let Ok(c) = lisp.string_char_at(idx, i) {
+                        match c {
+                            '"' => f.write_str("\\\"")?,
+                            '\\' => f.write_str("\\\\")?,
+                            '\n' => f.write_str("\\n")?,
+                            '\t' => f.write_str("\\t")?,
+                            _ => write!(f, "{}", c)?,
+                        }
+                    }
+                }
+                f.write_str("\"")
             }
-            f.write_str("\"")
         }
         Ok(Value::Native { .. }) => {
             let id = lisp.native_id(idx).unwrap_or(0);
@@ -180,7 +213,7 @@ fn format_value<const N: usize>(
         Ok(Value::Usize(n)) => write!(f, "#<usize:{}>", n),
         Ok(Value::Syntax { expr, .. }) => {
             f.write_str("#<syntax:")?;
-            format_value(lisp, expr, f, depth + 1)?;
+            format_value(lisp, expr, f, depth + 1, display_mode)?;
             f.write_str(">")
         }
         Ok(Value::ContFrame { .. }) => f.write_str("#<cont-frame>"),
@@ -199,6 +232,7 @@ fn format_list_contents<const N: usize>(
     mut idx: ArenaIndex,
     f: &mut fmt::Formatter<'_>,
     depth: usize,
+    display_mode: bool,
 ) -> fmt::Result {
     let mut first = true;
     let mut count = 0;
@@ -216,14 +250,14 @@ fn format_list_contents<const N: usize>(
                 }
                 first = false;
                 let (car, cdr) = lisp.car_cdr(idx).unwrap_or((ArenaIndex::NIL, ArenaIndex::NIL));
-                format_value(lisp, car, f, depth)?;
+                format_value(lisp, car, f, depth, display_mode)?;
                 idx = cdr;
                 count += 1;
             }
             Ok(_) => {
                 // Improper list (dotted pair)
                 f.write_str(" . ")?;
-                return format_value(lisp, idx, f, depth);
+                return format_value(lisp, idx, f, depth, display_mode);
             }
             Err(_) => {
                 return f.write_str(" . #<error>");

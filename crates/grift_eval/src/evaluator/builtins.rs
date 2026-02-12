@@ -878,9 +878,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let has_port = !self.lisp.get(rest)?.is_nil();
                 if has_port {
                     // (display obj port) - write to specific port via I/O provider
+                    // Use display mode (no quotes around strings, chars as-is)
                     let pid = self.extract_output_port(rest, call_expr)?;
                     if let Some(ref mut io) = self.io {
-                        let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                        let dv = grift_parser::DisplayValue::new_display(val, self.lisp);
                         let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
                         use core::fmt::Write;
                         let _ = write!(writer, "{}", dv);
@@ -890,8 +891,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     callback(self.lisp, val);
                 } else if let Some(ref mut io) = self.io {
                     // (display obj) without callback - write to current output port
+                    // Use display mode (no quotes around strings, chars as-is)
                     let pid = self.current_output_port;
-                    let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                    let dv = grift_parser::DisplayValue::new_display(val, self.lisp);
                     let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
                     use core::fmt::Write;
                     let _ = write!(writer, "{}", dv);

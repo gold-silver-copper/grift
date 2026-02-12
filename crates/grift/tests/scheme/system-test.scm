@@ -15,11 +15,13 @@
 (test-error "delete-file-nonexistent"
   (lambda () (delete-file "nonexistent_file_xyz_12345.txt")))
 
-;; load - verify it doesn't error (loaded definitions may not be accessible in begin-wrapped context)
+;; load - verify it evaluates correctly and definitions are accessible
 (call-with-output-file "/tmp/grift-system-test-load.scm"
   (lambda (port) (display "(define grift-load-test-var 42)" port)))
 (test-assert "load-file-no-error"
   (begin (load "/tmp/grift-system-test-load.scm") #t))
+
+(test-equal "load-file-defines-accessible" 42 grift-load-test-var)
 
 (test-error "load-nonexistent-file"
   (lambda () (load "nonexistent_file_xyz_12345.scm")))
