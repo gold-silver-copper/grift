@@ -10,7 +10,7 @@
 //!
 //! - [`Value`] — The core value enum representing all Lisp types
 //! - [`Builtin`] — Enum of built-in functions  
-//! - [`StdLib`] — Enum of standard library functions
+//! - [`StdLib`] — Standard library function wrapper (static string data)
 //! - [`Lisp`] — The Lisp execution context wrapping an arena
 //!
 //! ## Design
@@ -95,9 +95,9 @@ mod display;
 mod cont_type;
 pub mod io;
 
-pub use value::{Value, Builtin, StdLib};
+pub use value::{Value, Builtin, StdLib, StdLibEntry};
 pub use cont_type::ContType;
-// Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]
+// Note: define_builtins macro is exported at crate root via #[macro_export]
 
 pub use lisp::{Lisp, RESERVED_SLOTS};
 pub use display::DisplayValue;

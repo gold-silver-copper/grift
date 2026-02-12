@@ -342,7 +342,7 @@ fn main() {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // Note: map, filter, fold, range, and reverse are now part of the stdlib
-    // (defined via the define_stdlib! macro in grift_parser).
+    // (defined via the include_stdlib! macro in grift_parser).
     // The stdlib range function takes (start end) and produces [start, end).
 
     results.push(run_bench(

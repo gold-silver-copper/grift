@@ -4,8 +4,8 @@
 //! continuation management (arena-based), trampoline loop, and basic evaluation steps.
 
 use grift_parser::{
-    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, Parser, ParseError, ParseErrorKind,
-    PRELUDE_SOURCE,
+    ArenaIndex, GcStats, Lisp, Value, Builtin, parse, parse_all, Parser, ParseError, ParseErrorKind,
+    PRELUDE_SOURCE, STDLIB_ALL,
     libraries::LIBRARY_SOURCES,
 };
 
@@ -68,7 +68,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Register standard library functions
         // These are stored in static memory and parsed on-demand
-        for &stdlib in StdLib::ALL {
+        for &stdlib in STDLIB_ALL {
             let name = lisp.symbol(stdlib.name())?;
             let val = lisp.stdlib(stdlib)?;
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
