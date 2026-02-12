@@ -132,15 +132,486 @@
   (begin
 
     ;;; ========================================================
-    ;;; FUNCTION DEFINITIONS
+    ;;; MACRO DEFINITIONS
     ;;; ========================================================
-    ;;; Note: Macro definitions (syntax-rules, let, let*, letrec,
-    ;;; letrec*, and, or, when, unless, cond, case, do, append,
-    ;;; %qq-expand, delay, let-values, let*-values, define-values,
-    ;;; force, identifier-syntax, case-lambda, cond-expand,
-    ;;; delay-force, with-syntax, guard, parameterize, and all
-    ;;; internal % helpers) are provided by the prelude and
-    ;;; re-exported by this library.
+
+    ;; syntax-rules - Create pattern-based macro transformers (R7RS)
+    (define-syntax syntax-rules
+      (lambda (form)
+        (syntax-case form ()
+          ((syntax-rules (lit ...) ((keyword . pattern) template) ...)
+           (syntax
+             (lambda (x)
+               (syntax-case x (lit ...)
+                 ((dummy . pattern) (syntax template)) ...)))))))
+
+    ;; define-syntax-rule - Convenient single-clause macro definition
+    (define-syntax define-syntax-rule
+      (lambda (form)
+        (syntax-case form ()
+          ((define-syntax-rule (name . pattern) template)
+           (syntax (define-syntax name
+                     (syntax-rules ()
+                       ((name . pattern) template))))))))
+
+    ;; Internal helpers for let forms
+    (define-syntax %let-binding
+      (lambda (x)
+        (syntax-case x ()
+          ((%let-binding (name val) body ...)
+           (syntax ((lambda (name) body ...) val))))))
+
+    (define-syntax %let-parallel-helper
+      (lambda (x)
+        (syntax-case x ()
+          ((%let-parallel-helper () (vars ...) (vals ...) (body ...))
+           (syntax ((lambda (vars ...) body ...) vals ...)))
+          ((%let-parallel-helper ((var val) . rest) (vars ...) (vals ...) (body ...))
+           (syntax (%let-parallel-helper rest (vars ... var) (vals ... val) (body ...)))))))
+
+    (define-syntax %named-let-helper
+      (lambda (x)
+        (syntax-case x ()
+          ((%named-let-helper loop () (vars ...) (vals ...) (body ...))
+           (syntax ((lambda (vars ...)
+                      (letrec ((loop (lambda (vars ...) . body)))
+                        (loop vars ...)))
+                    vals ...)))
+          ((%named-let-helper loop ((var val) . rest) (vars ...) (vals ...) (body ...))
+           (syntax (%named-let-helper loop rest (vars ... var) (vals ... val) (body ...)))))))
+
+    ;; let - R5RS parallel binding semantics
+    (define-syntax let
+      (lambda (x)
+        (syntax-case x ()
+          ((let () body ...)
+           (syntax (begin body ...)))
+          ((let ((var val) . rest) body ...)
+           (syntax (%let-parallel-helper ((var val) . rest) () () (body ...))))
+          ((let loop bindings body ...)
+           (syntax (%named-let-helper loop bindings () () (body ...)))))))
+
+    ;; let* - sequential binding
+    (define-syntax let*
+      (lambda (x)
+        (syntax-case x ()
+          ((let* () body ...)
+           (syntax (begin body ...)))
+          ((let* (first-binding . rest-bindings) body ...)
+           (syntax (%let-binding first-binding
+                     (let* rest-bindings body ...)))))))
+
+    ;; letrec helpers
+    (define-syntax %letrec-names
+      (lambda (x)
+        (syntax-case x ()
+          ((%letrec-names () bindings body)
+           (syntax (%letrec-inits bindings body)))
+          ((%letrec-names ((name init) . rest) bindings body)
+           (syntax (let ((name #f))
+                     (%letrec-names rest bindings body)))))))
+
+    (define-syntax %letrec-inits
+      (lambda (x)
+        (syntax-case x ()
+          ((%letrec-inits () body)
+           (syntax body))
+          ((%letrec-inits ((name init) . rest) body)
+           (syntax (begin
+                     (set! name init)
+                     (%letrec-inits rest body)))))))
+
+    ;; letrec - mutually recursive local bindings
+    (define-syntax letrec
+      (lambda (x)
+        (syntax-case x ()
+          ((letrec () body ...)
+           (syntax (begin body ...)))
+          ((letrec bindings body ...)
+           (syntax (%letrec-names bindings bindings (begin body ...)))))))
+
+    ;; letrec* - sequential recursive local bindings
+    (define-syntax letrec*
+      (lambda (x)
+        (syntax-case x ()
+          ((letrec* () body ...)
+           (syntax (begin body ...)))
+          ((letrec* bindings body ...)
+           (syntax (%letrec-names bindings bindings (begin body ...)))))))
+
+    ;; and - logical AND
+    (define-syntax and
+      (syntax-rules ()
+        ((and) #t)
+        ((and test) test)
+        ((and test rest ...)
+         (if test (and rest ...) #f))))
+
+    ;; or - logical OR
+    (define-syntax or
+      (syntax-rules ()
+        ((or) #f)
+        ((or test) test)
+        ((or test rest ...)
+         (let ((temp test))
+           (if temp temp (or rest ...))))))
+
+    ;; when - conditional execution when test is true
+    (define-syntax when
+      (syntax-rules ()
+        ((when test body ...)
+         (if test (begin body ...)))))
+
+    ;; unless - conditional execution when test is false
+    (define-syntax unless
+      (syntax-rules ()
+        ((unless test body ...)
+         (if (not test) (begin body ...)))))
+
+    ;; cond
+    (define-syntax cond
+      (syntax-rules (else)
+        ((cond (else result))
+         result)
+        ((cond (else result1 result2 ...))
+         (begin result1 result2 ...))
+        ((cond (test result))
+         (if test result #f))
+        ((cond (test result1 result2 ...))
+         (if test (begin result1 result2 ...) #f))
+        ((cond (test result) rest ...)
+         (if test result (cond rest ...)))
+        ((cond (test result1 result2 ...) rest ...)
+         (if test (begin result1 result2 ...) (cond rest ...)))
+        ((cond)
+         #f)))
+
+    ;; case
+    (define-syntax case
+      (syntax-rules (else)
+        ((case key)
+         (if #f #f))
+        ((case key (else result ...))
+         (begin result ...))
+        ((case key ((datum ...) result ...) . rest)
+         (if (memv key '(datum ...))
+             (begin result ...)
+             (case key . rest)))))
+
+    ;; do helpers
+    (define-syntax %do-vars
+      (lambda (x)
+        (syntax-case x ()
+          ((%do-vars () (pairs ...) (steps ...) test result body ...)
+           (syntax (%do-run (pairs ...) (steps ...) test result body ...)))
+          ((%do-vars ((var init step) . rest) (pairs ...) (steps ...) test result body ...)
+           (syntax (%do-vars rest (pairs ... (var init)) (steps ... step) test result body ...)))
+          ((%do-vars ((var init) . rest) (pairs ...) (steps ...) test result body ...)
+           (syntax (%do-vars rest (pairs ... (var init)) (steps ... var) test result body ...))))))
+
+    (define-syntax %do-run
+      (lambda (x)
+        (syntax-case x ()
+          ((%do-run (bindings ...) (steps ...) test (result ...) body ...)
+           (syntax (let %do-loop (bindings ...)
+                     (if test
+                         (begin (if #f #f) result ...)
+                         (begin
+                           body ...
+                           (%do-loop steps ...)))))))))
+
+    ;; do - iteration with variable bindings
+    (define-syntax do
+      (lambda (x)
+        (syntax-case x ()
+          ((do bindings (test result ...) body ...)
+           (syntax (%do-vars bindings () () test (result ...) body ...))))))
+
+    ;; append - Variadic append macro
+    (define-syntax append
+      (syntax-rules ()
+        ((append) '())
+        ((append a) a)
+        ((append a b) (append-two a b))
+        ((append a b c ...)
+         (append-two a (append b c ...)))))
+
+    ;; Quasiquote helper
+    (define-syntax %qq-expand
+      (lambda (stx)
+        (syntax-case stx (unquote unquote-splicing quasiquote d z)
+          ((_ (unquote e) (d z))
+           (syntax e))
+          ((_ (unquote e) (d (d deeper)))
+           (syntax (list 'unquote (%qq-expand e (d deeper)))))
+          ((_ (quasiquote inner) depth)
+           (syntax (list 'quasiquote (%qq-expand inner (d depth)))))
+          ((_ ((unquote-splicing e) . rest) (d z))
+           (syntax (append e (%qq-expand rest (d z)))))
+          ((_ ((unquote-splicing e) . rest) (d (d deeper)))
+           (syntax (cons (list 'unquote-splicing (%qq-expand e (d deeper)))
+                         (%qq-expand rest (d (d deeper))))))
+          ((_ ((unquote e) . rest) (d z))
+           (syntax (cons e (%qq-expand rest (d z)))))
+          ((_ ((unquote e) . rest) (d (d deeper)))
+           (syntax (cons (list 'unquote (%qq-expand e (d deeper)))
+                         (%qq-expand rest (d (d deeper))))))
+          ((_ (a . rest) depth)
+           (syntax (cons (%qq-expand a depth) (%qq-expand rest depth))))
+          ((_ () depth)
+           (syntax '()))
+          ((_ atom depth)
+           (syntax 'atom)))))
+
+    ;; delay - create a promise (memoizing thunk)
+    (define-syntax delay
+      (syntax-rules ()
+        ((delay expr)
+         (let ((forced #f)
+               (value #f))
+           (lambda ()
+             (if forced
+                 value
+                 (begin
+                   (set! value expr)
+                   (set! forced #t)
+                   value)))))))
+
+    ;; let-values
+    (define-syntax let-values
+      (syntax-rules ()
+        ((let-values () body ...)
+         (begin body ...))
+        ((let-values ((formals init)) body ...)
+         (call-with-values
+           (lambda () init)
+           (lambda formals body ...)))
+        ((let-values ((formals init) rest ...) body ...)
+         (call-with-values
+           (lambda () init)
+           (lambda formals
+             (let-values (rest ...) body ...))))))
+
+    ;; let*-values
+    (define-syntax let*-values
+      (syntax-rules ()
+        ((let*-values () body ...)
+         (begin body ...))
+        ((let*-values ((formals init) rest ...) body ...)
+         (call-with-values
+           (lambda () init)
+           (lambda formals
+             (let*-values (rest ...) body ...))))))
+
+    ;; define-values
+    (define-syntax define-values
+      (lambda (x)
+        (syntax-case x ()
+          ((define-values () expr)
+           (syntax (define %define-values-dummy
+                     (call-with-values (lambda () expr) (lambda args #f)))))
+          ((define-values (var) expr)
+           (syntax (define var (call-with-values (lambda () expr) (lambda (val) val)))))
+          ((define-values (var0 var1 ... varn) expr)
+           (syntax (begin
+                     (define var0
+                       (call-with-values (lambda () expr) list))
+                     (define var1
+                       (let ((v (cadr var0)))
+                         (set-cdr! var0 (cddr var0))
+                         v)) ...
+                     (define varn
+                       (let ((v (cadr var0)))
+                         (set! var0 (car var0))
+                         v)))))
+          ((define-values var expr)
+           (syntax (define var
+                     (call-with-values (lambda () expr) list)))))))
+
+    ;; force
+    (define-syntax force
+      (syntax-rules ()
+        ((force promise)
+         (promise))))
+
+    ;; identifier-syntax
+    (define-syntax identifier-syntax
+      (lambda (x)
+        (syntax-case x ()
+          ((_ e)
+           (syntax
+             (lambda (x)
+               (syntax-case x ()
+                 (id (identifier? (syntax id)) (syntax e))
+                 ((id rest (... ...)) (identifier? (syntax id)) (syntax (e rest (... ...)))))))))))
+
+    ;; case-lambda helpers
+    (define-syntax %cl-arity-check
+      (lambda (x)
+        (syntax-case x ()
+          ((%cl-arity-check n ()) (syntax (= n 0)))
+          ((%cl-arity-check n (a)) (syntax (= n 1)))
+          ((%cl-arity-check n (a b)) (syntax (= n 2)))
+          ((%cl-arity-check n (a b c)) (syntax (= n 3)))
+          ((%cl-arity-check n (a b c d)) (syntax (= n 4)))
+          ((%cl-arity-check n (a b c d e)) (syntax (= n 5)))
+          ((%cl-arity-check n (a b c d e f)) (syntax (= n 6)))
+          ((%cl-arity-check n (a b c d e f g)) (syntax (= n 7)))
+          ((%cl-arity-check n (a b c d e f g h)) (syntax (= n 8)))
+          ((%cl-arity-check n variadic) (syntax #t)))))
+
+    (define-syntax %cl-build
+      (lambda (x)
+        (syntax-case x ()
+          ((%cl-build n args ())
+           (syntax (error "case-lambda: no matching clause for argument count")))
+          ((%cl-build n args ((formals body ...) . rest))
+           (syntax (if (%cl-arity-check n formals)
+                       (apply (lambda formals body ...) args)
+                       (%cl-build n args rest)))))))
+
+    ;; case-lambda
+    (define-syntax case-lambda
+      (lambda (x)
+        (syntax-case x ()
+          ((case-lambda)
+           (syntax (lambda args (error "case-lambda: no clauses provided"))))
+          ((case-lambda (formals body ...))
+           (syntax (lambda formals body ...)))
+          ((case-lambda clause ...)
+           (syntax (lambda %args
+                     (let ((%n (length %args)))
+                       (%cl-build %n %args (clause ...)))))))))
+
+    ;; cond-expand helpers
+    (define-syntax %feature-check
+      (lambda (x)
+        (syntax-case x (and or not library r7rs grift exact-closed exact-complex ratios ieee-float
+                        scheme base case-lambda char cxr eval file inexact lazy load
+                        process-context read repl time write)
+          ((%feature-check r7rs) (syntax #t))
+          ((%feature-check grift) (syntax #t))
+          ((%feature-check exact-closed) (syntax #t))
+          ((%feature-check exact-complex) (syntax #f))
+          ((%feature-check ratios) (syntax #f))
+          ((%feature-check ieee-float) (syntax #f))
+          ((%feature-check (and)) (syntax #t))
+          ((%feature-check (and req)) (syntax (%feature-check req)))
+          ((%feature-check (and req1 req2 ...))
+           (syntax (if (%feature-check req1)
+                       (%feature-check (and req2 ...))
+                       #f)))
+          ((%feature-check (or)) (syntax #f))
+          ((%feature-check (or req)) (syntax (%feature-check req)))
+          ((%feature-check (or req1 req2 ...))
+           (syntax (if (%feature-check req1)
+                       #t
+                       (%feature-check (or req2 ...)))))
+          ((%feature-check (not req))
+           (syntax (if (%feature-check req) #f #t)))
+          ((%feature-check (library (scheme base))) (syntax #t))
+          ((%feature-check (library (scheme case-lambda))) (syntax #t))
+          ((%feature-check (library (scheme char))) (syntax #t))
+          ((%feature-check (library (scheme cxr))) (syntax #t))
+          ((%feature-check (library (scheme eval))) (syntax #t))
+          ((%feature-check (library (scheme file))) (syntax #t))
+          ((%feature-check (library (scheme inexact))) (syntax #t))
+          ((%feature-check (library (scheme lazy))) (syntax #t))
+          ((%feature-check (library (scheme load))) (syntax #t))
+          ((%feature-check (library (scheme process-context))) (syntax #t))
+          ((%feature-check (library (scheme read))) (syntax #t))
+          ((%feature-check (library (scheme repl))) (syntax #t))
+          ((%feature-check (library (scheme time))) (syntax #t))
+          ((%feature-check (library (scheme write))) (syntax #t))
+          ((%feature-check (library name)) (syntax #f))
+          ((%feature-check other) (syntax #f)))))
+
+    ;; cond-expand
+    (define-syntax cond-expand
+      (lambda (x)
+        (syntax-case x (else)
+          ((cond-expand)
+           (syntax (if #f #f)))
+          ((cond-expand (else body ...))
+           (syntax (begin body ...)))
+          ((cond-expand (req body ...))
+           (syntax (if (%feature-check req)
+                       (begin body ...)
+                       (if #f #f))))
+          ((cond-expand (req body ...) rest ...)
+           (syntax (if (%feature-check req)
+                       (begin body ...)
+                       (cond-expand rest ...)))))))
+
+    ;; delay-force
+    (define-syntax delay-force
+      (syntax-rules ()
+        ((delay-force expr)
+         (let ((forced #f)
+               (value #f))
+           (lambda ()
+             (if forced
+                 value
+                 (let ((result expr))
+                   (let ((final-value (if (procedure? result)
+                                          (result)
+                                          result)))
+                     (set! value final-value)
+                     (set! forced #t)
+                     final-value))))))))
+
+    ;; with-syntax
+    (define-syntax with-syntax
+      (lambda (x)
+        (syntax-case x ()
+          ((_ () e1 e2 ...)
+           (syntax (begin e1 e2 ...)))
+          ((_ ((out in)) e1 e2 ...)
+           (syntax (syntax-case in ()
+                     (out (begin e1 e2 ...)))))
+          ((_ ((out in) ...) e1 e2 ...)
+           (syntax (syntax-case (list in ...) ()
+                     ((out ...) (begin e1 e2 ...))))))))
+
+    ;; guard - Exception handling (R7RS §4.2.7)
+    (define-syntax %guard-cond
+      (syntax-rules (else)
+        ((%guard-cond var (else result ...))
+         (begin result ...))
+        ((%guard-cond var (test result ...))
+         (if test (begin result ...) (raise-continuable var)))
+        ((%guard-cond var (test result ...) rest ...)
+         (if test (begin result ...) (%guard-cond var rest ...)))))
+
+    (define-syntax guard
+      (lambda (x)
+        (syntax-case x ()
+          ((guard (var clause ...) body ...)
+           (syntax
+             (with-exception-handler
+               (lambda (var) (%guard-cond var clause ...))
+               (lambda () body ...)))))))
+
+    ;; parameterize
+    (define-syntax parameterize
+      (lambda (x)
+        (syntax-case x ()
+          ((parameterize () body ...)
+           (syntax (begin body ...)))
+          ((parameterize ((param value)) body ...)
+           (syntax
+             (let ((saved (param)))
+               (dynamic-wind
+                 (lambda () (param value))
+                 (lambda () body ...)
+                 (lambda () (param saved))))))
+          ((parameterize ((p1 v1) rest ...) body ...)
+           (syntax
+             (parameterize ((p1 v1))
+               (parameterize (rest ...) body ...)))))))
+
+    ;;; ========================================================
+    ;;; FUNCTION DEFINITIONS
     ;;; ========================================================
 
     ;;; --------------------------------------------------------
@@ -329,9 +800,9 @@
       (if (= k 0) (car lst) (list-ref (cdr lst) (- k 1))))
 
     (define (make-list k fill)
-      (define (make-list-loop k acc)
-        (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc))))
-      (make-list-loop k '()))
+      (if (< k 0) (error "make-list: expected non-negative integer" k)
+          (let make-list-loop ((k k) (acc '()))
+            (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc))))))
 
     (define (list-set! lst k obj)
       (set-car! (list-tail lst k) obj))

@@ -200,10 +200,13 @@ fn parse_lisp_file(content: &str) -> Vec<StdlibEntry> {
         let def_trimmed = def_line.trim();
         
         // Parse (define (name params...) body)
-        if def_trimmed.starts_with("(define")
-            && let Some(entry) = parse_define(def_trimmed, &mut lines)
+        // Skip define-library, define-syntax, define-values, etc. — only match plain define
+        if def_trimmed.starts_with("(define ")
+            || def_trimmed.starts_with("(define(")
         {
-            entries.push(entry);
+            if let Some(entry) = parse_define(def_trimmed, &mut lines) {
+                entries.push(entry);
+            }
         }
     }
     

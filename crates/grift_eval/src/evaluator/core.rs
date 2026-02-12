@@ -111,16 +111,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(eval)
     }
     
-    /// Load standard macro definitions from the combined prelude.
+    /// Load standard macro definitions from base.scm.
     /// 
     /// Only `define-syntax` forms are evaluated (not `define` forms, which are
-    /// already handled by the StdLib enum). This allows the prelude to contain
-    /// both macros and function definitions in a single file.
+    /// already handled by the StdLib enum). This allows the file to contain
+    /// both macros and function definitions.
     ///
-    /// Parses one form at a time to avoid holding a large unrooted list
-    /// that could be collected by auto-GC during macro evaluation.
+    /// Since base.scm is wrapped in a `define-library` form, this method
+    /// skips past the wrapper (define-library, export, begin) to find the
+    /// actual definitions inside the begin block. It then parses and
+    /// evaluates forms one at a time like the original prelude loader.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
-        let mut parser = Parser::new(PRELUDE_SOURCE);
+        // Find the start of the (begin ...) block's contents within base.scm.
+        // We scan for the last "(begin" line that's part of the define-library
+        // wrapper, then parse forms from there.
+        let begin_content = Self::extract_begin_content(PRELUDE_SOURCE);
+        
+        let mut parser = Parser::new(begin_content);
         while parser.has_more() {
             let form = parser.parse(self.lisp)?;
             // Only evaluate define-syntax forms; skip plain define forms
@@ -144,6 +151,112 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         Ok(())
+    }
+    
+    /// Extract the content inside the first `(begin ...)` block of a
+    /// `define-library` form. Returns a string slice starting after the
+    /// `(begin` token, ending before the final closing paren of the
+    /// define-library form.
+    ///
+    /// This allows parsing each definition inside the begin block
+    /// individually, avoiding the need to parse the entire library form
+    /// as one giant s-expression (which would use too much arena space).
+    fn extract_begin_content(source: &str) -> &str {
+        // Find "(begin" that's part of the define-library wrapper.
+        // In base.scm, the structure is:
+        //   (define-library (scheme base)
+        //     (export ...)
+        //     ...
+        //     (begin
+        //       <definitions here>
+        //     ))
+        //
+        // We need to find the "(begin" at the right nesting level.
+        // We look for a line that, when trimmed, starts with "(begin"
+        // and is inside the define-library but not inside another form.
+        
+        // Simple approach: find the first "(begin" that appears at the
+        // define-library body level (depth 1 from the define-library open paren).
+        let mut depth: i32 = 0;
+        let mut in_begin = false;
+        let mut begin_start = 0;
+        
+        let bytes = source.as_bytes();
+        let mut i = 0;
+        let mut in_string = false;
+        let mut in_comment = false;
+        
+        while i < bytes.len() {
+            let b = bytes[i];
+            
+            if in_comment {
+                if b == b'\n' {
+                    in_comment = false;
+                }
+                i += 1;
+                continue;
+            }
+            
+            if b == b';' && !in_string {
+                in_comment = true;
+                i += 1;
+                continue;
+            }
+            
+            if b == b'"' {
+                in_string = !in_string;
+                i += 1;
+                continue;
+            }
+            
+            if b == b'\\' && in_string {
+                i += 2; // Skip escaped character
+                continue;
+            }
+            
+            if in_string {
+                i += 1;
+                continue;
+            }
+            
+            if b == b'(' {
+                depth += 1;
+                // Check if this opens a (begin at depth 2
+                // (depth 1 = define-library, depth 2 = export/begin)
+                if depth == 2 {
+                    // Check if this is "(begin"
+                    let rest = &source[i..];
+                    if rest.starts_with("(begin") {
+                        // Skip past "(begin" and whitespace
+                        let after_begin = &source[i + 6..];
+                        // Find the start of actual content (skip whitespace/newlines)
+                        let content_start = i + 6 + after_begin.len() 
+                            - after_begin.trim_start().len();
+                        begin_start = content_start;
+                        in_begin = true;
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            
+            if b == b')' {
+                if in_begin && depth == 2 {
+                    // This closes the (begin ...) block
+                    // Return content from begin_start to here
+                    return &source[begin_start..i];
+                }
+                depth -= 1;
+                i += 1;
+                continue;
+            }
+            
+            i += 1;
+        }
+        
+        // Fallback: if we can't find begin block, return the whole source
+        // (this maintains backward compatibility with flat prelude files)
+        source
     }
     
     /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
