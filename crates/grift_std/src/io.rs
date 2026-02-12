@@ -37,6 +37,22 @@ enum DynPort {
     OutputBytevector { buf: Vec<u8>, closed: bool },
 }
 
+impl DynPort {
+    /// Returns `true` if this port has been closed.
+    fn is_closed(&self) -> bool {
+        match self {
+            DynPort::InputString { closed, .. }
+            | DynPort::OutputString { closed, .. }
+            | DynPort::InputFile { closed, .. }
+            | DynPort::OutputFile { closed, .. }
+            | DynPort::BinaryInputFile { closed, .. }
+            | DynPort::BinaryOutputFile { closed, .. }
+            | DynPort::InputBytevector { closed, .. }
+            | DynPort::OutputBytevector { closed, .. } => *closed,
+        }
+    }
+}
+
 /// An [`IoProvider`] implementation backed by Rust's standard I/O.
 ///
 /// Supports the three well-known ports:
@@ -79,12 +95,21 @@ impl StdIoProvider {
 
     /// Allocate a fresh [`PortId`] and store the given dynamic port.
     fn alloc_port(&mut self, port: DynPort) -> IoResult<PortId> {
-        // Try to reuse a freed slot
-        for (i, slot) in self.ports.iter_mut().enumerate() {
+        // Try to reuse a freed slot (None) first, or a closed port slot as fallback
+        let mut closed_idx = None;
+        for (i, slot) in self.ports.iter().enumerate() {
             if slot.is_none() {
-                *slot = Some(port);
+                self.ports[i] = Some(port);
                 return Ok(PortId(DYNAMIC_PORT_BASE + i));
             }
+            if closed_idx.is_none() && slot.as_ref().is_some_and(|p| p.is_closed()) {
+                closed_idx = Some(i);
+            }
+        }
+        // Reuse the first closed slot if found
+        if let Some(i) = closed_idx {
+            self.ports[i] = Some(port);
+            return Ok(PortId(DYNAMIC_PORT_BASE + i));
         }
         // Allocate a new slot
         if self.ports.len() >= MAX_DYNAMIC_PORTS {
@@ -567,6 +592,21 @@ impl IoProvider for StdIoProvider {
         }
     }
 
+    fn output_bytevector_to_input_port(&mut self, output_port: PortId) -> IoResult<PortId> {
+        // Extract bytes from the output bytevector port
+        let bytes: Vec<u8> = match self.get_dyn(output_port) {
+            Some(DynPort::OutputBytevector { buf, closed }) => {
+                if *closed { return Err(IoErrorKind::PortClosed); }
+                buf.clone()
+            }
+            _ => return Err(IoErrorKind::InvalidPort),
+        };
+        // Close the output port
+        self.close_port(output_port)?;
+        // Create a new input bytevector port from the collected bytes
+        self.alloc_port(DynPort::InputBytevector { data: bytes, cursor: 0, closed: false })
+    }
+
     fn file_exists(&self, path: &str) -> IoResult<bool> {
         Ok(std::path::Path::new(path).exists())
     }
@@ -648,5 +688,49 @@ impl IoProvider for StdIoProvider {
 
     fn jiffies_per_second(&self) -> IoResult<i64> {
         Ok(1_000_000_000) // nanoseconds per second
+    }
+
+    fn open_file_from_string_port(&mut self, string_port: PortId, mode: grift_core::FileOpenMode) -> IoResult<PortId> {
+        let path = match self.get_dyn(string_port) {
+            Some(DynPort::OutputString { buf, .. }) => buf.clone(),
+            _ => return Err(IoErrorKind::InvalidPort),
+        };
+        match mode {
+            grift_core::FileOpenMode::TextInput => self.open_input_file(&path),
+            grift_core::FileOpenMode::TextOutput => self.open_output_file(&path),
+            grift_core::FileOpenMode::BinaryInput => self.open_binary_input_file(&path),
+            grift_core::FileOpenMode::BinaryOutput => self.open_binary_output_file(&path),
+        }
+    }
+
+    fn file_exists_from_string_port(&self, string_port: PortId) -> IoResult<bool> {
+        match self.get_dyn(string_port) {
+            Some(DynPort::OutputString { buf, .. }) => self.file_exists(buf),
+            _ => Err(IoErrorKind::InvalidPort),
+        }
+    }
+
+    fn delete_file_from_string_port(&mut self, string_port: PortId) -> IoResult<()> {
+        let path = match self.get_dyn(string_port) {
+            Some(DynPort::OutputString { buf, .. }) => buf.clone(),
+            _ => return Err(IoErrorKind::InvalidPort),
+        };
+        self.delete_file(&path)
+    }
+
+    fn read_file_from_string_port(&mut self, string_port: PortId) -> IoResult<&str> {
+        let path = match self.get_dyn(string_port) {
+            Some(DynPort::OutputString { buf, .. }) => buf.clone(),
+            _ => return Err(IoErrorKind::InvalidPort),
+        };
+        self.read_file(&path)
+    }
+
+    fn get_env_var_from_string_port(&mut self, string_port: PortId) -> IoResult<Option<&str>> {
+        let name = match self.get_dyn(string_port) {
+            Some(DynPort::OutputString { buf, .. }) => buf.clone(),
+            _ => return Err(IoErrorKind::InvalidPort),
+        };
+        self.get_environment_variable(&name)
     }
 }

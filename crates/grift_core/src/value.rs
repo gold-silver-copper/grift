@@ -2,7 +2,7 @@
 //!
 //! This module contains the core Value enum and related types like Builtin and StdLib.
 //!
-//! Note: The `define_builtins!` and `define_stdlib!` macros have been moved to `src/macros.rs`.
+//! Note: The `define_builtins!` macro has been moved to `src/macros.rs`.
 
 use grift_arena::{ArenaIndex, Trace};
 use crate::fsize;
@@ -491,6 +491,8 @@ define_builtins! {
     SchemeReportEnvironment => "scheme-report-environment",
     /// null-environment - Return minimal environment with only syntax
     NullEnvironment => "null-environment",
+    /// environment? - Check if value is an environment
+    Environmentp => "environment?",
 
     // Bytevector operations (R7RS §6.9)
     /// bytevector? - Check if value is a bytevector
@@ -535,15 +537,88 @@ define_builtins! {
     VectorToString => "vector->string",
     /// string->vector - Create vector of characters from string
     StringToVector => "string->vector",
+
+    // First-class procedures (R7RS requires these to be values, not special forms)
+    /// values - Return multiple values
+    Values => "values",
+    /// call-with-values - Call producer, apply consumer to results
+    CallWithValues => "call-with-values",
+    /// apply - Apply procedure to list of arguments
+    Apply => "apply",
+    /// call/cc - Capture current continuation
+    CallCc => "call/cc",
+    /// call-with-current-continuation - Capture current continuation (long form)
+    CallWithCurrentContinuation => "call-with-current-continuation",
+    /// dynamic-wind - Install before/after thunks around body
+    DynamicWind => "dynamic-wind",
+    /// with-exception-handler - Install exception handler around thunk
+    WithExceptionHandler => "with-exception-handler",
+    /// raise - Raise a non-continuable exception
+    RaiseBuiltin => "raise",
+    /// raise-continuable - Raise a continuable exception
+    RaiseContinuable => "raise-continuable",
+    /// eval - Evaluate expression in environment
+    EvalBuiltin => "eval",
+    /// environment - Create environment from import sets
+    EnvironmentBuiltin => "environment",
 }
 
-// Define all standard library functions using the include_stdlib! macro.
-// This macro reads the stdlib.scm file and generates the StdLib enum.
-// To add a new function, simply add a new entry in stdlib.scm.
-// Note: member/assoc use eq? for comparison (like Scheme's memq/assq).
-// This works for symbols and identical objects. For value comparison,
-// define a custom function or use fold with a predicate.
-grift_macros::include_stdlib!("src/prelude.scm");
+/// Standard library function definition data.
+///
+/// Holds the static data for a single stdlib function:
+/// - `name`: The Scheme function name (e.g. `"map"`)
+/// - `params`: The parameter names (e.g. `&["f", "lst"]`)
+/// - `body`: The body source code (e.g. `"(begin (if (null? lst) ...))"`)
+#[derive(Debug)]
+pub struct StdLibEntry {
+    /// The function name.
+    pub name: &'static str,
+    /// The parameter names.
+    pub params: &'static [&'static str],
+    /// The body source code.
+    pub body: &'static str,
+}
+
+/// Standard library function (stored in static memory, parsed on-demand)
+///
+/// A thin wrapper around a reference to static [`StdLibEntry`] data.
+/// Downstream crates (like `grift_parser`) define the actual set of stdlib
+/// functions via `STDLIB_ALL`.
+#[derive(Clone, Copy, Debug)]
+pub struct StdLib(&'static StdLibEntry);
+
+impl PartialEq for StdLib {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for StdLib {}
+
+impl StdLib {
+    /// Create a new StdLib function reference.
+    pub const fn new(entry: &'static StdLibEntry) -> Self {
+        Self(entry)
+    }
+
+    /// Get the function name.
+    pub const fn name(&self) -> &'static str {
+        self.0.name
+    }
+
+    /// Get the parameter names for this function.
+    pub const fn params(&self) -> &'static [&'static str] {
+        self.0.params
+    }
+
+    /// Get the body source code (Lisp expression as static string).
+    ///
+    /// This string is parsed on each call to the function.
+    /// The parsed AST is temporary and GC'd after evaluation.
+    pub const fn body(&self) -> &'static str {
+        self.0.body
+    }
+}
 
 /// A Lisp value
 /// 

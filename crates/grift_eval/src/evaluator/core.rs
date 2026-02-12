@@ -4,8 +4,8 @@
 //! continuation management (arena-based), trampoline loop, and basic evaluation steps.
 
 use grift_parser::{
-    ArenaIndex, GcStats, Lisp, Value, Builtin, StdLib, parse, parse_all, Parser, ParseError, ParseErrorKind,
-    PRELUDE_SOURCE,
+    ArenaIndex, GcStats, Lisp, Value, Builtin, parse, parse_all, Parser, ParseError, ParseErrorKind,
+    PRELUDE_SOURCE, STDLIB_ALL,
     libraries::LIBRARY_SOURCES,
 };
 
@@ -68,7 +68,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Register standard library functions
         // These are stored in static memory and parsed on-demand
-        for &stdlib in StdLib::ALL {
+        for &stdlib in STDLIB_ALL {
             let name = lisp.symbol(stdlib.name())?;
             let val = lisp.stdlib(stdlib)?;
             eval.global_env = eval.env_extend(eval.global_env, name, val)?;
@@ -1021,42 +1021,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         dispatch!(self, car, env, "begin", self.step_eval_begin(cdr, env).map(Some));
         dispatch!(self, car, env, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
 
-        // eval - continuation-based evaluation at runtime
-        dispatch!(self, car, env, "eval", {
-            let expr_to_eval = self.lisp.car(cdr)?;
-            let rest = self.lisp.cdr(cdr)?;
-            if self.lisp.get(rest)?.is_nil() {
-                let global = self.global_env.0;
-                self.cont(ContType::EvalExpr, env).data1(global)?;
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(expr_to_eval), env }))
-            } else {
-                let env_expr = self.lisp.car(rest)?;
-                self.cont(ContType::EvalEnvArg, env).data2(expr_to_eval, env.0)?;
-                Ok(Some(TrampolineState::Eval { expr: ExprRef(env_expr), env }))
-            }
-        });
-
-        dispatch!(self, car, env, "apply", self.step_eval_apply(cdr, env).map(Some));
-        dispatch!(self, car, env, "values", self.eval_values(cdr, env).map(Some));
-        dispatch!(self, car, env, "call-with-values", self.step_eval_call_with_values(cdr, env).map(Some));
-
-        // call-with-current-continuation / call/cc
-        if self.lisp.symbol_matches(car, "call-with-current-continuation")? 
-            || self.lisp.symbol_matches(car, "call/cc")? {
-            if self.is_variable_bound(env, car)? { return Ok(None); }
-            return self.step_eval_call_cc(cdr, env).map(Some);
-        }
-
-        dispatch!(self, car, env, "dynamic-wind", self.step_eval_dynamic_wind(cdr, env).map(Some));
         dispatch!(self, car, env, "syntax-error", 
             Err(self.make_error(ErrorKind::SyntaxError, cdr).with_message("syntax-error")));
-        dispatch!(self, car, env, "with-exception-handler", self.step_eval_with_exception_handler(cdr, env).map(Some));
-        dispatch!(self, car, env, "raise", self.step_eval_raise(cdr, env, false).map(Some));
-        dispatch!(self, car, env, "raise-continuable", self.step_eval_raise(cdr, env, true).map(Some));
         dispatch!(self, car, env, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
         dispatch!(self, car, env, "define-library", self.step_eval_define_library(cdr, env).map(Some));
         dispatch!(self, car, env, "import", self.step_eval_import(cdr, env).map(Some));
-        dispatch!(self, car, env, "environment", self.step_eval_environment(cdr, env).map(Some));
         dispatch!(self, car, env, "include", self.step_eval_include(cdr, env, false).map(Some));
         dispatch!(self, car, env, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
         
@@ -1394,6 +1363,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Mark as loading
                 self.loading_libraries = self.lisp.cons(name, self.loading_libraries)?;
 
+                // Save continuation state so that nested eval() calls
+                // don't clobber the outer continuation stack (e.g. when
+                // import is used inside a begin block).
+                let saved_cont = self.current_cont;
+                let saved_depth = self.call_stack_depth;
+
                 // Parse and evaluate the define-library form
                 let forms = parse_all(self.lisp, source.source)?;
                 let mut current = forms;
@@ -1402,6 +1377,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     self.eval(ExprRef(form))?;
                     current = self.lisp.cdr(current)?;
                 }
+
+                // Restore continuation state
+                self.current_cont = saved_cont;
+                self.call_stack_depth = saved_depth;
 
                 // Done loading
                 self.finish_library_loading(name)?;
@@ -1459,39 +1438,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Uses a fixed 256-byte stack buffer. Returns an error if the
     /// combined prefix + name exceeds this limit.
     pub(super) fn prefix_symbol(&self, prefix: ArenaIndex, sym: ArenaIndex) -> Result<ArenaIndex, EvalError> {
-        // 256 bytes is sufficient for any practical symbol name;
-        // a longer result would indicate a misuse of (prefix ...).
-        let mut buf = [0u8; 256];
-        let mut pos = 0;
-
-        // Copy prefix chars
+        // Two-pass: count total chars, then allocate string and fill directly
+        let mut prefix_len = 0;
         if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
-            let plen = self.lisp.string_len(pchars).map_err(EvalError::from)?;
-            for i in 0..plen {
-                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
-                let dest = &mut buf[pos..];
-                // Each UTF-8 char can be up to 4 bytes
-                if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
-                let encoded = c.encode_utf8(dest);
-                pos += encoded.len();
-            }
+            prefix_len = self.lisp.string_len(pchars).map_err(EvalError::from)?;
         }
-
-        // Copy original symbol chars
+        let mut sym_len = 0;
         if let Value::Symbol(schars) = self.lisp.get(sym)? {
-            let slen = self.lisp.string_len(schars).map_err(EvalError::from)?;
-            for i in 0..slen {
+            sym_len = self.lisp.string_len(schars).map_err(EvalError::from)?;
+        }
+
+        let total_len = prefix_len + sym_len;
+        let result_str = self.lisp.make_string(total_len, '\0')?;
+
+        // Fill prefix chars
+        if let Value::Symbol(pchars) = self.lisp.get(prefix)? {
+            for i in 0..prefix_len {
+                let c = self.lisp.string_char_at(pchars, i).map_err(EvalError::from)?;
+                self.lisp.string_set(result_str, i, c)?;
+            }
+        }
+        // Fill symbol chars
+        if let Value::Symbol(schars) = self.lisp.get(sym)? {
+            for i in 0..sym_len {
                 let c = self.lisp.string_char_at(schars, i).map_err(EvalError::from)?;
-                let dest = &mut buf[pos..];
-                if dest.len() < 4 { return Err(self.make_error(ErrorKind::Generic, sym)); }
-                let encoded = c.encode_utf8(dest);
-                pos += encoded.len();
+                self.lisp.string_set(result_str, prefix_len + i, c)?;
             }
         }
 
-        let name = core::str::from_utf8(&buf[..pos])
-            .map_err(|_| self.make_error(ErrorKind::Generic, sym))?;
-        Ok(self.lisp.symbol(name)?)
+        self.lisp.symbol_from_string(result_str).map_err(EvalError::from)
     }
 }
 

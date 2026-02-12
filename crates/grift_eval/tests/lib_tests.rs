@@ -3771,8 +3771,8 @@ fn test_size_check() {
     println!("║ Function Types:                                            ║");
     println!("║   Builtin:         {:>3} bytes (align: {:>2}, {} variants)     ║", 
              size_of::<Builtin>(), align_of::<Builtin>(), Builtin::ALL.len());
-    println!("║   StdLib:          {:>3} bytes (align: {:>2}, {} variants)      ║", 
-             size_of::<StdLib>(), align_of::<StdLib>(), StdLib::ALL.len());
+    println!("║   StdLib:          {:>3} bytes (align: {:>2}, {} entries)      ║", 
+             size_of::<StdLib>(), align_of::<StdLib>(), grift_eval::STDLIB_ALL.len());
     
     println!("╠════════════════════════════════════════════════════════════╣");
     println!("║ Rust Primitives (for reference):                           ║");
@@ -6313,7 +6313,7 @@ fn test_procedural_quasiquote_macro_nested() {
 /// Test that procedural quasiquote produces same results as special form
 #[test]
 fn test_procedural_quasiquote_matches_special_form() {
-    let lisp: Lisp<30000> = Lisp::new();
+    let lisp: Lisp<50000> = Lisp::new();
     let mut eval = Evaluator::new(&lisp).unwrap();
     
     eval.eval_str("(define x 10)").unwrap();

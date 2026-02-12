@@ -22,9 +22,9 @@ license = "MIT OR Apache-2.0"
 grift_arena = { version = "1.4.0", path = "crates/grift_arena" }
 grift_macros = { version = "1.4.0", path = "crates/grift_macros" }
 grift_util = { version = "1.4.0", path = "crates/grift_util" }
-grift_core = { version = "1.4.0", path = "crates/grift_core", default-features = false }
-grift_parser = { version = "1.4.0", path = "crates/grift_parser" }
-grift_eval = { version = "1.4.0", path = "crates/grift_eval" }
+grift_core = { version = "1.4.0", path = "crates/grift_core" }
+grift_parser = { version = "1.4.0", path = "crates/grift_parser", default-features = false }
+grift_eval = { version = "1.4.0", path = "crates/grift_eval", default-features = false }
 grift_repl = { version = "1.4.0", path = "crates/grift_repl" }
 grift_std = { version = "1.4.0", path = "crates/grift_std" }
 grift_arena_embedded = { version = "1.4.0", path = "crates/grift_arena_embedded" }

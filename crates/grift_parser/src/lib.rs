@@ -67,15 +67,25 @@
 // Re-export everything from grift_core for backward compatibility
 pub use grift_core::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib, ContType,
+    Value, Builtin, StdLib, StdLibEntry, ContType,
     Lisp, RESERVED_SLOTS,
     DisplayValue,
-    define_builtins, define_stdlib,
-    IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
-    PRELUDE_SOURCE,
+    define_builtins,
+    IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort, FileOpenMode,
     fsize,
-    libraries,
 };
+
+/// The combined prelude source containing all macro and function definitions.
+///
+/// This is the raw content of `prelude.scm`, embedded at compile time.
+/// The evaluator uses this to load standard macros at startup.
+pub const PRELUDE_SOURCE: &str = include_str!("prelude.scm");
+
+// Generate STDLIB_ALL: &[StdLib] from prelude.scm at compile time.
+// This extracts all (define (name ...) body) forms and creates a static array.
+grift_macros::include_stdlib!("src/prelude.scm");
+
+pub mod libraries;
 
 pub mod lexer;
 mod parser;

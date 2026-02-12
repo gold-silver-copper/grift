@@ -84,22 +84,19 @@ pub enum Token {
     Rational(isize, isize),
     /// Complex number literal (real + imaginary parts, already parsed)
     Complex(grift_core::fsize, grift_core::fsize),
-    /// Symbol — raw bytes are in `input[start..start+len]` (not yet lowercased).
-    /// Use [`Lexer::symbol_bytes`] to get the lowercased bytes.
+    /// Symbol — raw bytes are in `input[start..start+len]`.
+    /// Use [`Lexer::input_slice`] to get the raw bytes.
     Symbol {
+        /// Start position in the input
+        start: usize,
         /// Length of the symbol name in bytes
         len: usize,
     },
     /// Character literal (`#\a`, `#\space`, `#\newline`, etc.)
     Char(char),
-    /// String literal — processed characters are in the lexer's string buffer.
-    /// Use [`Lexer::string_chars`] to access the character data.
-    ///
-    /// Escape sequences are already processed.
-    String {
-        /// Number of characters in the string
-        len: usize,
-    },
+    /// String literal — characters are allocated in the arena.
+    /// The `ArenaIndex` points to a `Value::String` in the arena.
+    String(grift_arena::ArenaIndex),
 }
 
 /// Source location for error reporting
@@ -133,8 +130,8 @@ pub enum LexErrorKind {
     InvalidEscapeSequence,
     /// Unterminated string literal
     UnterminatedString,
-    /// String literal exceeds maximum length
-    StringTooLong,
+    /// Arena allocation failure (out of memory)
+    OutOfMemory,
     /// Invalid digit for the given radix (e.g., #b2, #o8)
     InvalidRadixDigit,
 }
@@ -150,12 +147,6 @@ pub struct LexError {
 // Lexer
 // ============================================================================
 
-/// Maximum string literal length supported by the lexer
-const MAX_STRING_LEN: usize = 1024;
-
-/// Maximum symbol name length supported by the lexer
-const MAX_SYMBOL_LEN: usize = 64;
-
 /// A standalone lexer that produces tokens on demand without heap allocation.
 ///
 /// The lexer processes input bytes and yields [`Token`] values one at a time.
@@ -164,17 +155,18 @@ const MAX_SYMBOL_LEN: usize = 64;
 ///
 /// # No-std Compatible
 ///
-/// The lexer uses fixed-size stack buffers for string and symbol content,
-/// avoiding any heap allocation. String literals are limited to 1024 characters
-/// and symbols to 64 characters.
+/// The lexer uses arena allocation (via `Lisp`) for string literals and
+/// references the input directly for symbols. Symbol and string sizes are
+/// bounded only by arena capacity.
 ///
 /// # Example
 ///
 /// ```
-/// use grift_parser::Lexer;
+/// use grift_parser::{Lexer, Lisp};
 ///
+/// let lisp: Lisp<1024> = Lisp::new();
 /// let mut lexer = Lexer::new("(+ 1 2)");
-/// while let Some(result) = lexer.next_token() {
+/// while let Some(result) = lexer.next_token(&lisp) {
 ///     let spanned = result.unwrap();
 ///     // Process token...
 /// }
@@ -186,10 +178,6 @@ pub struct Lexer<'a> {
     column: usize,
     /// Whether symbol names are case-folded (lowercased). Controlled by `#!fold-case` / `#!no-fold-case`.
     fold_case: bool,
-    /// Internal buffer for lowercased symbol names
-    symbol_buf: [u8; MAX_SYMBOL_LEN],
-    /// Internal buffer for string literal characters
-    string_buf: [char; MAX_STRING_LEN],
 }
 
 impl<'a> Lexer<'a> {
@@ -201,8 +189,6 @@ impl<'a> Lexer<'a> {
             line: 1,
             column: 1,
             fold_case: true,
-            symbol_buf: [0; MAX_SYMBOL_LEN],
-            string_buf: ['\0'; MAX_STRING_LEN],
         }
     }
     
@@ -214,8 +200,6 @@ impl<'a> Lexer<'a> {
             line: 1,
             column: 1,
             fold_case: true,
-            symbol_buf: [0; MAX_SYMBOL_LEN],
-            string_buf: ['\0'; MAX_STRING_LEN],
         }
     }
     
@@ -224,20 +208,16 @@ impl<'a> Lexer<'a> {
         SourceLoc { line: self.line, column: self.column }
     }
     
-    /// Get the lowercased symbol bytes from the last `Token::Symbol` produced.
+    /// Get a slice of the input bytes.
     ///
-    /// The `len` field from `Token::Symbol { len }` indicates how many
-    /// bytes are valid.
-    pub fn symbol_bytes(&self, len: usize) -> &[u8] {
-        &self.symbol_buf[..len]
+    /// Used by the parser to retrieve symbol bytes from `Token::Symbol { start, len }`.
+    pub fn input_slice(&self, start: usize, len: usize) -> &[u8] {
+        &self.input[start..start + len]
     }
     
-    /// Get the string characters from the last `Token::String` produced.
-    ///
-    /// The `len` field from `Token::String { len }` indicates how many
-    /// characters are valid.
-    pub fn string_chars(&self, len: usize) -> &[char] {
-        &self.string_buf[..len]
+    /// Whether the lexer is in case-folding mode.
+    pub fn is_fold_case(&self) -> bool {
+        self.fold_case
     }
     
     /// Get current position in the input
@@ -256,7 +236,7 @@ impl<'a> Lexer<'a> {
     /// Returns `None` when there is no more input (after whitespace).
     /// Returns `Some(Err(...))` for lexer errors.
     /// Returns `Some(Ok(...))` for successfully lexed tokens.
-    pub fn next_token(&mut self) -> Option<Result<SpannedToken, LexError>> {
+    pub fn next_token<const N: usize>(&mut self, lisp: &grift_core::Lisp<N>) -> Option<Result<SpannedToken, LexError>> {
         self.skip_whitespace();
         
         let c = self.peek()?;
@@ -276,7 +256,7 @@ impl<'a> Lexer<'a> {
                     Ok(Token::Unquote)
                 }
             }
-            b'"' => self.lex_string(),
+            b'"' => self.lex_string(lisp),
             b'#' => self.lex_hash(),
             b'0'..=b'9' => self.lex_number(),
             b'-' | b'+' => {
@@ -693,27 +673,36 @@ impl<'a> Lexer<'a> {
     }
     
     fn lex_symbol(&mut self) -> Result<Token, LexError> {
-        let mut len = 0;
+        let start = self.pos;
         
         while let Some(c) = self.peek() {
-            if is_symbol_char(c) && len < MAX_SYMBOL_LEN {
-                self.symbol_buf[len] = if self.fold_case { c.to_ascii_lowercase() } else { c };
-                len += 1;
+            if is_symbol_char(c) {
                 self.advance();
             } else {
                 break;
             }
         }
         
+        let len = self.pos - start;
+        let bytes = &self.input[start..self.pos];
+        
         // Check for R7RS special float constants: +inf.0, -inf.0, +nan.0, -nan.0
-        match &self.symbol_buf[..len] {
-            b"+inf.0" => return Ok(Token::Float(grift_core::fsize::INFINITY)),
-            b"-inf.0" => return Ok(Token::Float(grift_core::fsize::NEG_INFINITY)),
-            b"+nan.0" | b"-nan.0" => return Ok(Token::Float(grift_core::fsize::NAN)),
-            _ => {}
+        // Compare with case-insensitive matching when fold_case is enabled
+        if len == 6 {
+            let matches = |target: &[u8]| -> bool {
+                if self.fold_case {
+                    bytes.iter().zip(target.iter()).all(|(&a, &b)| a.to_ascii_lowercase() == b)
+                } else {
+                    bytes == target
+                }
+            };
+            
+            if matches(b"+inf.0") { return Ok(Token::Float(grift_core::fsize::INFINITY)); }
+            if matches(b"-inf.0") { return Ok(Token::Float(grift_core::fsize::NEG_INFINITY)); }
+            if matches(b"+nan.0") || matches(b"-nan.0") { return Ok(Token::Float(grift_core::fsize::NAN)); }
         }
         
-        Ok(Token::Symbol { len })
+        Ok(Token::Symbol { start, len })
     }
     
     fn lex_hash(&mut self) -> Result<Token, LexError> {
@@ -984,13 +973,52 @@ impl<'a> Lexer<'a> {
         }
     }
     
-    fn lex_string(&mut self) -> Result<Token, LexError> {
+    fn lex_string<const N: usize>(&mut self, lisp: &grift_core::Lisp<N>) -> Result<Token, LexError> {
         self.advance(); // consume opening '"'
+        
+        // Pre-scan to find closing quote and compute upper bound for char count.
+        // The byte count is a conservative upper bound because escape sequences
+        // (e.g. \n, \xHH;) and multi-byte UTF-8 sequences each produce at most
+        // one character from multiple input bytes.
+        let upper_bound = {
+            let mut scan = self.pos;
+            while scan < self.input.len() {
+                match self.input[scan] {
+                    b'"' => break,
+                    b'\\' => {
+                        scan += 1; // skip backslash
+                        if scan < self.input.len() { scan += 1; } // skip next byte
+                    }
+                    _ => scan += 1,
+                }
+            }
+            scan - self.pos
+        };
+        
+        // Empty string fast path
+        if upper_bound == 0 {
+            if self.peek() == Some(b'"') {
+                self.advance();
+                let str_idx = lisp.alloc(grift_core::Value::String { len: 0, data: grift_arena::ArenaIndex::NIL })
+                    .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                return Ok(Token::String(str_idx));
+            }
+            return Err(self.error(LexErrorKind::UnterminatedString));
+        }
+        
+        // Allocate contiguous arena slots for the upper bound
+        let data = lisp.arena().alloc_contiguous(upper_bound, grift_core::Value::Nil)
+            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+        
         let mut len = 0;
         
         loop {
             match self.peek() {
-                None => return Err(self.error(LexErrorKind::UnterminatedString)),
+                None => {
+                    // Free allocated data before returning error
+                    let _ = lisp.arena().free_contiguous(data, upper_bound);
+                    return Err(self.error(LexErrorKind::UnterminatedString));
+                }
                 Some(b'"') => {
                     self.advance();
                     break;
@@ -998,7 +1026,10 @@ impl<'a> Lexer<'a> {
                 Some(b'\\') => {
                     self.advance(); // consume '\'
                     let c = match self.peek() {
-                        None => return Err(self.error(LexErrorKind::UnterminatedString)),
+                        None => {
+                            let _ = lisp.arena().free_contiguous(data, upper_bound);
+                            return Err(self.error(LexErrorKind::UnterminatedString));
+                        }
                         Some(b'a') => { self.advance(); '\x07' }
                         Some(b'b') => { self.advance(); '\x08' }
                         Some(b't') => { self.advance(); '\t' }
@@ -1015,20 +1046,28 @@ impl<'a> Lexer<'a> {
                                 if c.is_ascii_hexdigit() {
                                     self.advance();
                                 } else {
+                                    let _ = lisp.arena().free_contiguous(data, upper_bound);
                                     return Err(self.error(LexErrorKind::InvalidEscapeSequence));
                                 }
                             }
                             let hex_bytes = &self.input[hex_start..self.pos];
                             if self.peek() != Some(b';') {
+                                let _ = lisp.arena().free_contiguous(data, upper_bound);
                                 return Err(self.error(LexErrorKind::InvalidEscapeSequence));
                             }
                             self.advance(); // consume ';'
                             match parse_hex(hex_bytes) {
                                 Some(code) => match char::from_u32(code) {
                                     Some(ch) => ch,
-                                    None => return Err(self.error(LexErrorKind::InvalidEscapeSequence)),
+                                    None => {
+                                        let _ = lisp.arena().free_contiguous(data, upper_bound);
+                                        return Err(self.error(LexErrorKind::InvalidEscapeSequence));
+                                    }
                                 },
-                                None => return Err(self.error(LexErrorKind::InvalidEscapeSequence)),
+                                None => {
+                                    let _ = lisp.arena().free_contiguous(data, upper_bound);
+                                    return Err(self.error(LexErrorKind::InvalidEscapeSequence));
+                                }
                             }
                         }
                         Some(b'\n') | Some(b'\r') => {
@@ -1051,37 +1090,43 @@ impl<'a> Lexer<'a> {
                                     }
                                     break;
                                 } else {
+                                    let _ = lisp.arena().free_contiguous(data, upper_bound);
                                     return Err(self.error(LexErrorKind::InvalidEscapeSequence));
                                 }
                             }
                             continue;
                         }
-                        Some(_) => return Err(self.error(LexErrorKind::InvalidEscapeSequence)),
+                        Some(_) => {
+                            let _ = lisp.arena().free_contiguous(data, upper_bound);
+                            return Err(self.error(LexErrorKind::InvalidEscapeSequence));
+                        }
                     };
-                    if len >= MAX_STRING_LEN {
-                        return Err(self.error(LexErrorKind::StringTooLong));
-                    }
-                    self.string_buf[len] = c;
+                    let char_idx = lisp.arena().index_at_offset(data, len)
+                        .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                    lisp.arena().set(char_idx, grift_core::Value::Char(c))
+                        .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
                     len += 1;
                 }
                 Some(c) => {
-                    if len >= MAX_STRING_LEN {
-                        return Err(self.error(LexErrorKind::StringTooLong));
-                    }
                     if c < 0x80 {
                         // ASCII byte
-                        self.string_buf[len] = c as char;
+                        let char_idx = lisp.arena().index_at_offset(data, len)
+                            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                        lisp.arena().set(char_idx, grift_core::Value::Char(c as char))
+                            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
                         len += 1;
                         self.advance();
                     } else if c >= 0xC0 {
                         // Multi-byte UTF-8: determine sequence length from leading byte
-                        // (valid leading bytes start at 0xC0; 0x80-0xBF are continuation bytes)
                         let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
                         let start = self.pos;
                         let end = (start + seq_len).min(self.input.len());
                         if let Ok(s) = core::str::from_utf8(&self.input[start..end]) {
                             if let Some(ch) = s.chars().next() {
-                                self.string_buf[len] = ch;
+                                let char_idx = lisp.arena().index_at_offset(data, len)
+                                    .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                                lisp.arena().set(char_idx, grift_core::Value::Char(ch))
+                                    .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
                                 len += 1;
                                 let byte_len = ch.len_utf8();
                                 for _ in 0..byte_len {
@@ -1092,13 +1137,19 @@ impl<'a> Lexer<'a> {
                             }
                         } else {
                             // Invalid UTF-8: store raw byte
-                            self.string_buf[len] = c as char;
+                            let char_idx = lisp.arena().index_at_offset(data, len)
+                                .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                            lisp.arena().set(char_idx, grift_core::Value::Char(c as char))
+                                .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
                             len += 1;
                             self.advance();
                         }
                     } else {
                         // Continuation byte (0x80-0xBF) without leading byte: store raw byte
-                        self.string_buf[len] = c as char;
+                        let char_idx = lisp.arena().index_at_offset(data, len)
+                            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                        lisp.arena().set(char_idx, grift_core::Value::Char(c as char))
+                            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
                         len += 1;
                         self.advance();
                     }
@@ -1106,7 +1157,26 @@ impl<'a> Lexer<'a> {
             }
         }
         
-        Ok(Token::String { len })
+        // Free unused slots at the end of the contiguous allocation
+        if len < upper_bound {
+            let _ = lisp.arena().free_contiguous(
+                grift_arena::ArenaIndex::new(data.raw() + len),
+                upper_bound - len,
+            );
+        }
+        
+        // Create interned string from arena data
+        let str_idx = if len == 0 {
+            // No characters produced (empty string or all line continuations)
+            let _ = lisp.arena().free_contiguous(data, upper_bound);
+            lisp.alloc(grift_core::Value::String { len: 0, data: grift_arena::ArenaIndex::NIL })
+                .map_err(|_| self.error(LexErrorKind::OutOfMemory))?
+        } else {
+            lisp.string_from_arena_data_interned(data, len)
+                .map_err(|_| self.error(LexErrorKind::OutOfMemory))?
+        };
+        
+        Ok(Token::String(str_idx))
     }
 }
 

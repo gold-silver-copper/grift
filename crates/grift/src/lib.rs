@@ -112,7 +112,7 @@ pub mod core_types {
     pub use grift_core::{
         Value, Builtin, StdLib, Lisp, RESERVED_SLOTS,
         DisplayValue,
-        define_builtins, define_stdlib,
+        define_builtins,
         IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort,
     };
 }
@@ -123,7 +123,7 @@ pub mod parser {
         Value, Builtin, StdLib, Lisp, DisplayValue,
         Lexer, Token, SpannedToken, LexError, LexErrorKind,
         parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
-        define_builtins, define_stdlib,
+        define_builtins, STDLIB_ALL,
     };
 }
 
@@ -131,7 +131,7 @@ pub use parser::{
     Value, Builtin, StdLib, Lisp, DisplayValue,
     Lexer, Token, SpannedToken, LexError, LexErrorKind,
     parse, parse_all, Parser, ParseError, ParseErrorKind, SourceLoc,
-    define_builtins, define_stdlib,
+    define_builtins, STDLIB_ALL,
 };
 
 /// Evaluator, error handling, and native function interop.

@@ -10,7 +10,7 @@
 //!
 //! - [`Value`] — The core value enum representing all Lisp types
 //! - [`Builtin`] — Enum of built-in functions  
-//! - [`StdLib`] — Enum of standard library functions
+//! - [`StdLib`] — Standard library function wrapper (static string data)
 //! - [`Lisp`] — The Lisp execution context wrapping an arena
 //!
 //! ## Design
@@ -85,12 +85,6 @@ pub type fsize = f64;
 #[cfg(target_pointer_width = "32")]
 pub type fsize = f32;
 
-/// The combined prelude source containing all macro and function definitions.
-///
-/// This is the raw content of `prelude.scm`, embedded at compile time.
-/// The evaluator uses this to load standard macros at startup.
-pub const PRELUDE_SOURCE: &str = include_str!("prelude.scm");
-
 // Macros module (must be declared before other modules that use the macros)
 #[macro_use]
 mod macros;
@@ -100,12 +94,11 @@ mod lisp;
 mod display;
 mod cont_type;
 pub mod io;
-pub mod libraries;
 
-pub use value::{Value, Builtin, StdLib};
+pub use value::{Value, Builtin, StdLib, StdLibEntry};
 pub use cont_type::ContType;
-// Note: define_builtins and define_stdlib macros are exported at crate root via #[macro_export]
+// Note: define_builtins macro is exported at crate root via #[macro_export]
 
 pub use lisp::{Lisp, RESERVED_SLOTS};
 pub use display::DisplayValue;
-pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort};
+pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort, FileOpenMode};
