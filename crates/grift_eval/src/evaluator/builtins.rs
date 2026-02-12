@@ -20,11 +20,13 @@ use super::Evaluator;
 /// Used to capture the output of ICU4X full case mapping operations (fold, uppercase, lowercase).
 /// The Unicode standard guarantees no single character expands to more than 3 characters
 /// under any case mapping operation.
+#[cfg(feature = "alloc")]
 struct CaseMapCollector {
     chars: [char; 3],
     len: usize,
 }
 
+#[cfg(feature = "alloc")]
 impl CaseMapCollector {
     fn new() -> Self {
         CaseMapCollector {
@@ -34,6 +36,7 @@ impl CaseMapCollector {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl core::fmt::Write for CaseMapCollector {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for c in s.chars() {
@@ -44,6 +47,32 @@ impl core::fmt::Write for CaseMapCollector {
         }
         Ok(())
     }
+}
+
+/// ASCII-only uppercase conversion (fallback when `alloc` feature is disabled).
+#[cfg(not(feature = "alloc"))]
+fn ascii_upcase(c: char) -> char {
+    if c.is_ascii_lowercase() {
+        (c as u8 - b'a' + b'A') as char
+    } else {
+        c
+    }
+}
+
+/// ASCII-only lowercase conversion (fallback when `alloc` feature is disabled).
+#[cfg(not(feature = "alloc"))]
+fn ascii_downcase(c: char) -> char {
+    if c.is_ascii_uppercase() {
+        (c as u8 - b'A' + b'a') as char
+    } else {
+        c
+    }
+}
+
+/// ASCII-only case folding (lowercase, fallback when `alloc` feature is disabled).
+#[cfg(not(feature = "alloc"))]
+fn ascii_foldcase(c: char) -> char {
+    ascii_downcase(c)
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -1311,73 +1340,113 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::CharUpcase | Builtin::CharDowncase | Builtin::CharFoldcase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                // CaseMapper::new() is a const fn returning a reference to static compiled data (zero-cost)
-                let cm = icu_casemap::CaseMapper::new();
-                let result = match builtin {
-                    Builtin::CharUpcase => cm.simple_uppercase(c),
-                    Builtin::CharDowncase => cm.simple_lowercase(c),
-                    _ => cm.simple_fold(c),
+                #[cfg(feature = "alloc")]
+                let result = {
+                    let cm = icu_casemap::CaseMapper::new();
+                    match builtin {
+                        Builtin::CharUpcase => cm.simple_uppercase(c),
+                        Builtin::CharDowncase => cm.simple_lowercase(c),
+                        _ => cm.simple_fold(c),
+                    }
+                };
+                #[cfg(not(feature = "alloc"))]
+                let result = {
+                    match builtin {
+                        Builtin::CharUpcase => ascii_upcase(c),
+                        Builtin::CharDowncase => ascii_downcase(c),
+                        _ => ascii_foldcase(c),
+                    }
                 };
                 self.lisp.char(result).map_err(Into::into)
             }
             
-            // Character classification predicates — all use icu4x CodePointSetData/CodePointMapData.
-            // These ::new() calls are const fns returning references to static compiled data (zero-cost).
+            // Character classification predicates
             Builtin::CharAlphabetic => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>().contains(c)).map_err(Into::into)
+                #[cfg(feature = "alloc")]
+                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>().contains(c);
+                #[cfg(not(feature = "alloc"))]
+                let result = c.is_ascii_alphabetic();
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::CharNumeric => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let gc = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new().get(c);
-                self.lisp.boolean(gc == icu_properties::props::GeneralCategory::DecimalNumber).map_err(Into::into)
+                #[cfg(feature = "alloc")]
+                let result = {
+                    let gc = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new().get(c);
+                    gc == icu_properties::props::GeneralCategory::DecimalNumber
+                };
+                #[cfg(not(feature = "alloc"))]
+                let result = c.is_ascii_digit();
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::CharWhitespace => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>().contains(c)).map_err(Into::into)
+                #[cfg(feature = "alloc")]
+                let result = icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>().contains(c);
+                #[cfg(not(feature = "alloc"))]
+                let result = c.is_ascii_whitespace();
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::CharUpperCase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>().contains(c)).map_err(Into::into)
+                #[cfg(feature = "alloc")]
+                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>().contains(c);
+                #[cfg(not(feature = "alloc"))]
+                let result = c.is_ascii_uppercase();
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::CharLowerCase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                self.lisp.boolean(icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>().contains(c)).map_err(Into::into)
+                #[cfg(feature = "alloc")]
+                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>().contains(c);
+                #[cfg(not(feature = "alloc"))]
+                let result = c.is_ascii_lowercase();
+                self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::DigitValue => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                let map = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new();
-                if map.get(c) == icu_properties::props::GeneralCategory::DecimalNumber {
-                    // Walk back to find the '0' digit of this block
-                    let cp = c as u32;
-                    let mut zero = cp;
-                    while zero > 0 {
-                        let prev = zero - 1;
-                        if let Some(prev_char) = char::from_u32(prev) {
-                            if map.get(prev_char) == icu_properties::props::GeneralCategory::DecimalNumber {
-                                zero = prev;
+                #[cfg(feature = "alloc")]
+                {
+                    let map = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new();
+                    if map.get(c) == icu_properties::props::GeneralCategory::DecimalNumber {
+                        // Walk back to find the '0' digit of this block
+                        let cp = c as u32;
+                        let mut zero = cp;
+                        while zero > 0 {
+                            let prev = zero - 1;
+                            if let Some(prev_char) = char::from_u32(prev) {
+                                if map.get(prev_char) == icu_properties::props::GeneralCategory::DecimalNumber {
+                                    zero = prev;
+                                } else {
+                                    break;
+                                }
                             } else {
                                 break;
                             }
-                        } else {
-                            break;
                         }
+                        self.lisp.number((cp - zero) as isize).map_err(Into::into)
+                    } else {
+                        self.lisp.boolean(false).map_err(Into::into)
                     }
-                    self.lisp.number((cp - zero) as isize).map_err(Into::into)
-                } else {
-                    self.lisp.boolean(false).map_err(Into::into)
+                }
+                #[cfg(not(feature = "alloc"))]
+                {
+                    if c.is_ascii_digit() {
+                        self.lisp.number((c as u32 - '0' as u32) as isize).map_err(Into::into)
+                    } else {
+                        self.lisp.boolean(false).map_err(Into::into)
+                    }
                 }
             }
             
             Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
             | Builtin::CharCiLe | Builtin::CharCiGe => {
-                // CaseMapper::new() is a const fn returning a reference to static compiled data (zero-cost)
-                let cm = icu_casemap::CaseMapper::new();
                 let cmp_fn: fn(char, char) -> bool = match builtin {
                     Builtin::CharCiEq => |a, b| a == b,
                     Builtin::CharCiLt => |a, b| a < b,
@@ -1385,68 +1454,103 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Builtin::CharCiLe => |a, b| a <= b,
                     _ => |a, b| a >= b,
                 };
-                self.char_chain_compare(args, |a, b| cmp_fn(cm.simple_fold(a), cm.simple_fold(b)), call_expr)
+                #[cfg(feature = "alloc")]
+                {
+                    let cm = icu_casemap::CaseMapper::new();
+                    self.char_chain_compare(args, |a, b| cmp_fn(cm.simple_fold(a), cm.simple_fold(b)), call_expr)
+                }
+                #[cfg(not(feature = "alloc"))]
+                {
+                    self.char_chain_compare(args, |a, b| cmp_fn(ascii_foldcase(a), ascii_foldcase(b)), call_expr)
+                }
             }
             
             Builtin::StringUpcase | Builtin::StringDowncase | Builtin::StringFoldcase => {
                 let str_idx = self.lisp.car(args)?;
                 match self.lisp.get(str_idx)? {
                     Value::String { len, data } => {
-                        let cm = icu_casemap::CaseMapper::new();
-                        let default_langid = icu_locale_core::LanguageIdentifier::UNKNOWN;
-                        
-                        // First pass: compute total length after full case mapping
-                        // (full mapping can expand characters, e.g. ß → ss, ß → SS)
-                        let mut total_len = 0usize;
-                        for i in 0..len {
-                            let slot = self.lisp.arena_index_at_offset(data, i)?;
-                            if let Value::Char(c) = self.lisp.get(slot)? {
-                                let mut utf8_buf = [0u8; 4];
-                                let s = c.encode_utf8(&mut utf8_buf);
-                                let mut collector = CaseMapCollector::new();
-                                match builtin {
-                                    Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
-                                    Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
-                                    _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
+                        #[cfg(feature = "alloc")]
+                        {
+                            let cm = icu_casemap::CaseMapper::new();
+                            let default_langid = icu_locale_core::LanguageIdentifier::UNKNOWN;
+                            
+                            // First pass: compute total length after full case mapping
+                            // (full mapping can expand characters, e.g. ß → ss, ß → SS)
+                            let mut total_len = 0usize;
+                            for i in 0..len {
+                                let slot = self.lisp.arena_index_at_offset(data, i)?;
+                                if let Value::Char(c) = self.lisp.get(slot)? {
+                                    let mut utf8_buf = [0u8; 4];
+                                    let s = c.encode_utf8(&mut utf8_buf);
+                                    let mut collector = CaseMapCollector::new();
+                                    match builtin {
+                                        Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
+                                        Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
+                                        _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
+                                    }
+                                    total_len += collector.len;
+                                } else {
+                                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
                                 }
-                                total_len += collector.len;
-                            } else {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
                             }
-                        }
-                        
-                        // Re-read data after potential arena operations above
-                        let data = match self.lisp.get(str_idx)? {
-                            Value::String { data, .. } => data,
-                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                        };
-                        
-                        // Allocate result string with full mapped length
-                        let result = self.lisp.make_string(total_len, '\0')?;
-                        
-                        // Second pass: fill result with mapped characters
-                        let mut pos = 0;
-                        for i in 0..len {
-                            let slot = self.lisp.arena_index_at_offset(data, i)?;
-                            if let Value::Char(c) = self.lisp.get(slot)? {
-                                let mut utf8_buf = [0u8; 4];
-                                let s = c.encode_utf8(&mut utf8_buf);
-                                let mut collector = CaseMapCollector::new();
-                                match builtin {
-                                    Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
-                                    Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
-                                    _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
+                            
+                            // Re-read data after potential arena operations above
+                            let data = match self.lisp.get(str_idx)? {
+                                Value::String { data, .. } => data,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            };
+                            
+                            // Allocate result string with full mapped length
+                            let result = self.lisp.make_string(total_len, '\0')?;
+                            
+                            // Second pass: fill result with mapped characters
+                            let mut pos = 0;
+                            for i in 0..len {
+                                let slot = self.lisp.arena_index_at_offset(data, i)?;
+                                if let Value::Char(c) = self.lisp.get(slot)? {
+                                    let mut utf8_buf = [0u8; 4];
+                                    let s = c.encode_utf8(&mut utf8_buf);
+                                    let mut collector = CaseMapCollector::new();
+                                    match builtin {
+                                        Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
+                                        Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
+                                        _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
+                                    }
+                                    for j in 0..collector.len {
+                                        self.lisp.string_set(result, pos, collector.chars[j])?;
+                                        pos += 1;
+                                    }
+                                } else {
+                                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
                                 }
-                                for j in 0..collector.len {
-                                    self.lisp.string_set(result, pos, collector.chars[j])?;
-                                    pos += 1;
-                                }
-                            } else {
-                                return Err(self.make_error(ErrorKind::TypeError, call_expr));
                             }
+                            
+                            Ok(result)
                         }
-                        
-                        Ok(result)
+                        #[cfg(not(feature = "alloc"))]
+                        {
+                            let _ = data; // used only in alloc path's first pass
+                            let case_fn: fn(char) -> char = match builtin {
+                                Builtin::StringUpcase => ascii_upcase,
+                                Builtin::StringDowncase => ascii_downcase,
+                                _ => ascii_foldcase,
+                            };
+                            let result = self.lisp.make_string(len, '\0')?;
+                            // Re-read data after arena allocation
+                            let data = match self.lisp.get(str_idx)? {
+                                Value::String { data, .. } => data,
+                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                            };
+                            for i in 0..len {
+                                let slot = self.lisp.arena_index_at_offset(data, i)?;
+                                if let Value::Char(c) = self.lisp.get(slot)? {
+                                    self.lisp.string_set(result, i, case_fn(c))?;
+                                } else {
+                                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                                }
+                            }
+                            Ok(result)
+                        }
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
@@ -3879,9 +3983,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Ok(len_a.cmp(&len_b))
         } else {
-            // Case-insensitive: use full Unicode case folding via iterators.
-            // Full folding can expand characters (e.g. ß → ss), so we produce
-            // folded chars on the fly from each source string and compare them.
+            // Case-insensitive comparison
             let (len_a, data_a) = match self.lisp.get(a)? {
                 Value::String { len, data } => (len, data),
                 v => return Err(self.type_error(call_expr, "string", v.type_name())),
@@ -3891,67 +3993,95 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 v => return Err(self.type_error(call_expr, "string", v.type_name())),
             };
             
-            let cm = icu_casemap::CaseMapper::new();
-            
-            // State for iterating folded chars from string A
-            let mut src_a = 0usize;    // next source char index in string A
-            let mut buf_a = CaseMapCollector::new();
-            let mut buf_a_pos = 0usize; // position within buf_a
-            
-            // State for iterating folded chars from string B
-            let mut src_b = 0usize;
-            let mut buf_b = CaseMapCollector::new();
-            let mut buf_b_pos = 0usize;
-            
-            loop {
-                // Refill buffer A if needed
-                while buf_a_pos >= buf_a.len && src_a < len_a {
-                    let slot = self.lisp.arena_index_at_offset(data_a, src_a)?;
-                    if let Value::Char(c) = self.lisp.get(slot)? {
-                        let mut utf8_buf = [0u8; 4];
-                        let s = c.encode_utf8(&mut utf8_buf);
-                        buf_a = CaseMapCollector::new();
-                        { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut buf_a); }
-                        buf_a_pos = 0;
-                        src_a += 1;
-                    } else {
-                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+            #[cfg(feature = "alloc")]
+            {
+                // Use full Unicode case folding via ICU4X iterators.
+                // Full folding can expand characters (e.g. ß → ss), so we produce
+                // folded chars on the fly from each source string and compare them.
+                let cm = icu_casemap::CaseMapper::new();
+                
+                // State for iterating folded chars from string A
+                let mut src_a = 0usize;    // next source char index in string A
+                let mut buf_a = CaseMapCollector::new();
+                let mut buf_a_pos = 0usize; // position within buf_a
+                
+                // State for iterating folded chars from string B
+                let mut src_b = 0usize;
+                let mut buf_b = CaseMapCollector::new();
+                let mut buf_b_pos = 0usize;
+                
+                loop {
+                    // Refill buffer A if needed
+                    while buf_a_pos >= buf_a.len && src_a < len_a {
+                        let slot = self.lisp.arena_index_at_offset(data_a, src_a)?;
+                        if let Value::Char(c) = self.lisp.get(slot)? {
+                            let mut utf8_buf = [0u8; 4];
+                            let s = c.encode_utf8(&mut utf8_buf);
+                            buf_a = CaseMapCollector::new();
+                            { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut buf_a); }
+                            buf_a_pos = 0;
+                            src_a += 1;
+                        } else {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
                     }
-                }
-                
-                // Refill buffer B if needed
-                while buf_b_pos >= buf_b.len && src_b < len_b {
-                    let slot = self.lisp.arena_index_at_offset(data_b, src_b)?;
-                    if let Value::Char(c) = self.lisp.get(slot)? {
-                        let mut utf8_buf = [0u8; 4];
-                        let s = c.encode_utf8(&mut utf8_buf);
-                        buf_b = CaseMapCollector::new();
-                        { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut buf_b); }
-                        buf_b_pos = 0;
-                        src_b += 1;
-                    } else {
-                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    
+                    // Refill buffer B if needed
+                    while buf_b_pos >= buf_b.len && src_b < len_b {
+                        let slot = self.lisp.arena_index_at_offset(data_b, src_b)?;
+                        if let Value::Char(c) = self.lisp.get(slot)? {
+                            let mut utf8_buf = [0u8; 4];
+                            let s = c.encode_utf8(&mut utf8_buf);
+                            buf_b = CaseMapCollector::new();
+                            { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut buf_b); }
+                            buf_b_pos = 0;
+                            src_b += 1;
+                        } else {
+                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                        }
                     }
-                }
-                
-                let has_a = buf_a_pos < buf_a.len;
-                let has_b = buf_b_pos < buf_b.len;
-                
-                match (has_a, has_b) {
-                    (false, false) => return Ok(core::cmp::Ordering::Equal),
-                    (true, false) => return Ok(core::cmp::Ordering::Greater),
-                    (false, true) => return Ok(core::cmp::Ordering::Less),
-                    (true, true) => {
-                        let ca = buf_a.chars[buf_a_pos];
-                        let cb = buf_b.chars[buf_b_pos];
-                        buf_a_pos += 1;
-                        buf_b_pos += 1;
-                        match ca.cmp(&cb) {
-                            core::cmp::Ordering::Equal => {}
-                            ord => return Ok(ord),
+                    
+                    let has_a = buf_a_pos < buf_a.len;
+                    let has_b = buf_b_pos < buf_b.len;
+                    
+                    match (has_a, has_b) {
+                        (false, false) => return Ok(core::cmp::Ordering::Equal),
+                        (true, false) => return Ok(core::cmp::Ordering::Greater),
+                        (false, true) => return Ok(core::cmp::Ordering::Less),
+                        (true, true) => {
+                            let ca = buf_a.chars[buf_a_pos];
+                            let cb = buf_b.chars[buf_b_pos];
+                            buf_a_pos += 1;
+                            buf_b_pos += 1;
+                            match ca.cmp(&cb) {
+                                core::cmp::Ordering::Equal => {}
+                                ord => return Ok(ord),
+                            }
                         }
                     }
                 }
+            }
+            #[cfg(not(feature = "alloc"))]
+            {
+                // ASCII-only case folding: compare character by character
+                let min_len = len_a.min(len_b);
+                for i in 0..min_len {
+                    let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
+                    let char_a = match self.lisp.get(slot_a)? {
+                        Value::Char(c) => ascii_foldcase(c),
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
+                    let char_b = match self.lisp.get(slot_b)? {
+                        Value::Char(c) => ascii_foldcase(c),
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    match char_a.cmp(&char_b) {
+                        core::cmp::Ordering::Equal => {}
+                        ord => return Ok(ord),
+                    }
+                }
+                Ok(len_a.cmp(&len_b))
             }
         }
     }

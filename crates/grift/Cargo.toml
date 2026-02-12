@@ -27,8 +27,9 @@ required-features = ["std"]
 doc-scrape-examples = false
 
 [features]
-default = ["all-libraries"]
+default = ["all-libraries", "alloc"]
 std = ["dep:grift_repl", "dep:grift_std"]
+alloc = ["grift_eval/alloc"]
 all-libraries = ["grift_core/all-libraries"]
 scheme-base = ["grift_core/scheme-base"]
 scheme-case-lambda = ["grift_core/scheme-case-lambda"]
