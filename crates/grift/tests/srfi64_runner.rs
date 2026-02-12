@@ -291,4 +291,10 @@ srfi64_test!(
     srfi64_syntactic_extension_html_test,
     "syntactic-extension-html-test.scm"
 );
+srfi64_test!(srfi64_system_test, "system-test.scm");
+srfi64_test!(
+    srfi64_syntax_edge_case_test,
+    "syntax-edge-case-test.scm"
+);
+//srfi64_test!(srfi64_syntax_proper_test, "syntax-proper-test.scm");
 

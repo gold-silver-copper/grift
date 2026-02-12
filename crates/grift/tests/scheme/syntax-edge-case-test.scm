@@ -441,4 +441,4 @@
 (test-equal "k2-tree-mutated-left" 0 (k2-tree-left k2-t))
 (test-equal "k2-tree-right-still-intact" 2 (k2-tree-left (k2-tree-right k2-t)))
 
-(test-end "syntax-edge-case")
+(test-end)
