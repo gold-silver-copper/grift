@@ -1529,7 +1529,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         #[cfg(not(feature = "alloc"))]
                         {
-                            let _ = data; // used only in alloc path's first pass
+                            let _ = data; // suppress unused binding from outer match pattern
                             let case_fn: fn(char) -> char = match builtin {
                                 Builtin::StringUpcase => ascii_upcase,
                                 Builtin::StringDowncase => ascii_downcase,
