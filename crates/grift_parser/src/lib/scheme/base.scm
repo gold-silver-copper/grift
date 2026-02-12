@@ -109,7 +109,40 @@
     vector->string string->vector
     ;; Introspection
     features)
+  (export
+    ;; Prelude-only extensions
+    nth take drop zip range
+    compose identity constantly flip curry
+    cube sum product average
+    last last-pair
+    reduce any every find filter-map
+    partition remove delete
+    boolean-eq member-equal assoc-equal
+    iota1 iota2 iota3
+    list-tabulate
+    first second third fourth fifth
+    sixth seventh eighth ninth tenth
+    take-right drop-right split-at
+    concatenate flatten count
+    string-null? string-reverse string-contains
+    string-join string-split string-trim
+    caar cadr caddr cddr cdddr cadddr cddddr
+    cdaddr cddaar cddadr cdddar
+    append-two)
   (begin
+
+    ;;; ========================================================
+    ;;; FUNCTION DEFINITIONS
+    ;;; ========================================================
+    ;;; Note: Macro definitions (syntax-rules, let, let*, letrec,
+    ;;; letrec*, and, or, when, unless, cond, case, do, append,
+    ;;; %qq-expand, delay, let-values, let*-values, define-values,
+    ;;; force, identifier-syntax, case-lambda, cond-expand,
+    ;;; delay-force, with-syntax, guard, parameterize, and all
+    ;;; internal % helpers) are provided by the prelude and
+    ;;; re-exported by this library.
+    ;;; ========================================================
+
     ;;; --------------------------------------------------------
     ;;; Numeric predicates and operations (R7RS §6.2–6.3)
     ;;; --------------------------------------------------------
@@ -290,42 +323,18 @@
     ;;; --------------------------------------------------------
 
     (define (list-tail lst k)
-      (if (not (and (integer? k) (exact? k) (>= k 0)))
-          (error "list-tail: invalid index" k)
-          (list-tail-iter lst k)))
-    (define (list-tail-iter lst k)
-      (if (= k 0) lst
-          (if (null? lst)
-              (error "list-tail: index out of range" k)
-              (list-tail-iter (cdr lst) (- k 1)))))
+      (if (= k 0) lst (list-tail (cdr lst) (- k 1))))
 
     (define (list-ref lst k)
-      (if (not (list? lst))
-          (error "list-ref: not a list" lst)
-          (if (not (and (integer? k) (exact? k) (>= k 0)))
-              (error "list-ref: invalid index" k)
-              (list-ref-iter lst k k))))
-    (define (list-ref-iter lst k original-k)
-      (if (null? lst)
-          (error "list-ref: index out of range" original-k)
-          (if (= k 0) (car lst)
-              (list-ref-iter (cdr lst) (- k 1) original-k))))
+      (if (= k 0) (car lst) (list-ref (cdr lst) (- k 1))))
 
     (define (make-list k fill)
-      (if (not (and (integer? k) (exact? k)))
-          (error "make-list: expected exact integer" k)
-          (if (< k 0)
-              (error "make-list: expected non-negative integer" k)
-              (make-list-iter k fill '()))))
-    (define (make-list-iter k fill acc)
-      (if (<= k 0)
-          acc
-          (make-list-iter (- k 1) fill (cons fill acc))))
+      (define (make-list-loop k acc)
+        (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc))))
+      (make-list-loop k '()))
 
     (define (list-set! lst k obj)
-      (if (not (and (integer? k) (exact? k) (>= k 0)))
-          (error "list-set!: invalid index" k)
-          (set-car! (list-tail lst k) obj)))
+      (set-car! (list-tail lst k) obj))
 
     ;;; --------------------------------------------------------
     ;;; String operations (R7RS §6.7)
@@ -361,4 +370,231 @@
     ;;; --------------------------------------------------------
 
     (define (features)
-      '(r7rs grift exact-closed))))
+      '(r7rs grift exact-closed))
+
+    ;;; --------------------------------------------------------
+    ;;; Prelude extensions: c..r accessors
+    ;;; --------------------------------------------------------
+
+    (define (caar lst) (car (car lst)))
+    (define (cadr lst) (car (cdr lst)))
+    (define (caddr lst) (car (cdr (cdr lst))))
+    (define (cddr lst) (cdr (cdr lst)))
+    (define (cdddr lst) (cdr (cdr (cdr lst))))
+    (define (cadddr lst) (car (cdr (cdr (cdr lst)))))
+    (define (cddddr lst) (cdr (cdr (cdr (cdr lst)))))
+    (define (cdaddr lst) (cdr (car (cdr (cdr lst)))))
+    (define (cddaar lst) (cdr (cdr (car (car lst)))))
+    (define (cddadr lst) (cdr (cdr (car (cdr lst)))))
+    (define (cdddar lst) (cdr (cdr (cdr (car lst)))))
+
+    ;;; --------------------------------------------------------
+    ;;; Prelude extensions: list functions
+    ;;; --------------------------------------------------------
+
+    (define (nth n lst)
+      (if (= n 0) (car lst) (nth (- n 1) (cdr lst))))
+
+    (define (take n lst)
+      (define (take-iter n lst acc)
+        (if (= n 0) (reverse acc)
+            (if (null? lst) (reverse acc)
+                (take-iter (- n 1) (cdr lst) (cons (car lst) acc)))))
+      (take-iter n lst '()))
+
+    (define (drop n lst)
+      (if (= n 0) lst
+          (if (null? lst) '()
+              (drop (- n 1) (cdr lst)))))
+
+    (define (zip a b) (if (null? a) '() (if (null? b) '() (cons (cons (car a) (car b)) (zip (cdr a) (cdr b))))))
+
+    (define (range start end)
+      (define (range-iter n acc)
+        (if (< n start)
+            acc
+            (range-iter (- n 1) (cons n acc))))
+      (range-iter (- end 1) '()))
+
+    (define (compose f g) (lambda (x) (f (g x))))
+    (define (identity x) x)
+    (define (constantly x) (lambda (y) x))
+    (define (flip f) (lambda (a b) (f b a)))
+    (define (curry f x) (lambda (y) (f x y)))
+
+    (define (cube x) (* x x x))
+    (define (sum lst) (fold + 0 lst))
+    (define (product lst) (fold * 1 lst))
+    (define (average lst) (/ (sum lst) (length lst)))
+
+    (define (last-pair lst)
+      (if (null? (cdr lst)) lst (last-pair (cdr lst))))
+
+    (define (last lst)
+      (car (last-pair lst)))
+
+    (define (reduce f init lst) (if (null? lst) init (f (car lst) (reduce f init (cdr lst)))))
+
+    (define (any pred lst) (if (null? lst) #f (if (pred (car lst)) #t (any pred (cdr lst)))))
+    (define (every pred lst) (if (null? lst) #t (if (pred (car lst)) (every pred (cdr lst)) #f)))
+    (define (find pred lst) (if (null? lst) #f (if (pred (car lst)) (car lst) (find pred (cdr lst)))))
+
+    (define (filter-map f lst)
+      (define (filter-map-iter lst acc)
+        (if (null? lst)
+            (reverse acc)
+            (let ((result (f (car lst))))
+              (if result
+                  (filter-map-iter (cdr lst) (cons result acc))
+                  (filter-map-iter (cdr lst) acc)))))
+      (filter-map-iter lst '()))
+
+    (define (partition pred lst)
+      (define (partition-helper pred lst matches non-matches)
+        (if (null? lst)
+            (cons (reverse matches) (reverse non-matches))
+            (if (pred (car lst))
+                (partition-helper pred (cdr lst) (cons (car lst) matches) non-matches)
+                (partition-helper pred (cdr lst) matches (cons (car lst) non-matches)))))
+      (partition-helper pred lst '() '()))
+
+    (define (remove pred lst) (filter (lambda (x) (not (pred x))) lst))
+    (define (delete x lst) (filter (lambda (y) (not (equal? x y))) lst))
+
+    (define (boolean-eq b1 b2) (or (and b1 b2) (and (not b1) (not b2))))
+    (define (member-equal obj lst) (mem-helper equal? obj lst))
+    (define (assoc-equal key alist) (assoc-helper equal? key alist))
+
+    (define (iota-helper count start step acc)
+      (if (<= count 0)
+          (reverse acc)
+          (iota-helper (- count 1) (+ start step) step (cons start acc))))
+
+    (define (iota1 count) (iota-helper count 0 1 '()))
+    (define (iota2 count start) (iota-helper count start 1 '()))
+    (define (iota3 count start step) (iota-helper count start step '()))
+
+    (define (list-tabulate n proc)
+      (define (list-tabulate-helper n i proc acc)
+        (if (>= i n)
+            (reverse acc)
+            (list-tabulate-helper n (+ i 1) proc (cons (proc i) acc))))
+      (list-tabulate-helper n 0 proc '()))
+
+    (define (first lst) (car lst))
+    (define (second lst) (cadr lst))
+    (define (third lst) (caddr lst))
+    (define (fourth lst) (cadddr lst))
+    (define (fifth lst) (car (cddddr lst)))
+    (define (sixth lst) (cadr (cddddr lst)))
+    (define (seventh lst) (caddr (cddddr lst)))
+    (define (eighth lst) (cadddr (cddddr lst)))
+    (define (ninth lst) (car (cddddr (cddddr lst))))
+    (define (tenth lst) (cadr (cddddr (cddddr lst))))
+
+    (define (take-right lst k)
+      (define (advance p count)
+        (if (= count 0)
+            p
+            (if (null? p)
+                '()
+                (advance (cdr p) (- count 1)))))
+      (define (walk lead lag)
+        (if (null? lead)
+            lag
+            (walk (cdr lead) (cdr lag))))
+      (let ((lead (advance lst k)))
+        (if (null? lead)
+            lst
+            (walk lead lst))))
+
+    (define (drop-right lst k)
+      (define (advance p count)
+        (if (= count 0)
+            p
+            (if (null? p)
+                '()
+                (advance (cdr p) (- count 1)))))
+      (define (walk lead lag acc)
+        (if (null? lead)
+            (reverse acc)
+            (walk (cdr lead) (cdr lag) (cons (car lag) acc))))
+      (let ((lead (advance lst k)))
+        (if (null? lead)
+            '()
+            (walk lead lst '()))))
+
+    (define (split-at lst k)
+      (cons (take k lst) (drop k lst)))
+
+    (define (concatenate lsts)
+      (fold-right append-two '() lsts))
+
+    (define (flatten lst)
+      (define (flatten-iter lst acc)
+        (cond
+          ((null? lst) acc)
+          ((not (pair? lst)) (cons lst acc))
+          (else (flatten-iter (car lst) (flatten-iter (cdr lst) acc)))))
+      (flatten-iter lst '()))
+
+    (define (count pred lst)
+      (fold (lambda (acc x) (if (pred x) (+ acc 1) acc)) 0 lst))
+
+    ;;; --------------------------------------------------------
+    ;;; Prelude extensions: string functions
+    ;;; --------------------------------------------------------
+
+    (define (string-null? s)
+      (= (string-length s) 0))
+
+    (define (string-reverse s)
+      (list->string (reverse (string->list s))))
+
+    (define (string-prefix? s1 s2 start)
+      (define (string-prefix-helper s1 s2 i j len2)
+        (if (>= j len2)
+            #t
+            (if (char=? (string-ref s1 i) (string-ref s2 j))
+                (string-prefix-helper s1 s2 (+ i 1) (+ j 1) len2)
+                #f)))
+      (string-prefix-helper s1 s2 start 0 (string-length s2)))
+
+    (define (string-contains s1 s2)
+      (let ((len1 (string-length s1))
+            (len2 (string-length s2)))
+        (if (> len2 len1)
+            #f
+            (let loop ((i 0))
+              (if (> (+ i len2) len1)
+                  #f
+                  (if (string-prefix? s1 s2 i)
+                      i
+                      (loop (+ i 1))))))))
+
+    (define (string-join lst sep)
+      (if (null? lst)
+          ""
+          (fold (lambda (acc s) (string-append acc sep s))
+                (car lst)
+                (cdr lst))))
+
+    (define (string-split s sep)
+      (define (string-split-helper chars sep current result)
+        (cond
+          ((null? chars)
+           (reverse (cons (list->string (reverse current)) result)))
+          ((char=? (car chars) sep)
+           (string-split-helper (cdr chars) sep '()
+                                (cons (list->string (reverse current)) result)))
+          (else
+           (string-split-helper (cdr chars) sep (cons (car chars) current) result))))
+      (string-split-helper (string->list s) sep '() '()))
+
+    (define (string-trim s)
+      (define (drop-while-ws lst)
+        (cond
+          ((null? lst) '())
+          ((char-whitespace? (car lst)) (drop-while-ws (cdr lst)))
+          (else lst)))
+      (list->string (reverse (drop-while-ws (reverse (drop-while-ws (string->list s)))))))))
