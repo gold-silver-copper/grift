@@ -85,12 +85,6 @@ pub type fsize = f64;
 #[cfg(target_pointer_width = "32")]
 pub type fsize = f32;
 
-/// The combined prelude source containing all macro and function definitions.
-///
-/// This is the raw content of `prelude.scm`, embedded at compile time.
-/// The evaluator uses this to load standard macros at startup.
-pub const PRELUDE_SOURCE: &str = include_str!("prelude.scm");
-
 // Macros module (must be declared before other modules that use the macros)
 #[macro_use]
 mod macros;
@@ -100,7 +94,6 @@ mod lisp;
 mod display;
 mod cont_type;
 pub mod io;
-pub mod libraries;
 
 pub use value::{Value, Builtin, StdLib};
 pub use cont_type::ContType;

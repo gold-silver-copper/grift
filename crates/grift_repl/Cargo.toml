@@ -21,8 +21,8 @@ doc-scrape-examples = false
 
 [dependencies]
 grift_arena = { workspace = true }
-grift_core = { workspace = true, features = ["all-libraries"] }
-grift_parser = { workspace = true }
+grift_core = { workspace = true }
+grift_parser = { workspace = true, features = ["all-libraries"] }
 grift_eval = { workspace = true, features = ["alloc"] }
 grift_arena_embedded = { workspace = true }
 grift_std = { workspace = true }

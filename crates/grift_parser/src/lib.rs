@@ -72,10 +72,16 @@ pub use grift_core::{
     DisplayValue,
     define_builtins, define_stdlib,
     IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort, FileOpenMode,
-    PRELUDE_SOURCE,
     fsize,
-    libraries,
 };
+
+/// The combined prelude source containing all macro and function definitions.
+///
+/// This is the raw content of `prelude.scm`, embedded at compile time.
+/// The evaluator uses this to load standard macros at startup.
+pub const PRELUDE_SOURCE: &str = include_str!("prelude.scm");
+
+pub mod libraries;
 
 pub mod lexer;
 mod parser;
