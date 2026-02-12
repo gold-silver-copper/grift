@@ -18,6 +18,33 @@ use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
 
+/// Format an `isize` into a byte buffer, returning the resulting `&str`.
+///
+/// Used in `no_std` context for matching numeric library name components.
+fn format_isize(mut n: isize, buf: &mut [u8; 20]) -> &str {
+    let negative = n < 0;
+    if negative {
+        n = -n;
+    }
+    let mut pos = buf.len();
+    if n == 0 {
+        pos -= 1;
+        buf[pos] = b'0';
+    } else {
+        while n > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+    }
+    if negative {
+        pos -= 1;
+        buf[pos] = b'-';
+    }
+    // SAFETY: digits and '-' are valid ASCII/UTF-8
+    core::str::from_utf8(&buf[pos..]).unwrap_or("")
+}
+
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
         tracer(self.global_env.0);
@@ -1294,6 +1321,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ====================================================================
 
     /// Check whether a library name matches a static `&[&str]` name.
+    ///
+    /// Handles both symbol and numeric library name components,
+    /// e.g. `(srfi 64)` where `64` is parsed as a number.
     pub(super) fn library_name_matches_static(
         &self,
         arena_name: ArenaIndex,
@@ -1303,7 +1333,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         for &part in static_name {
             if let Value::Cons { .. } = self.lisp.get(cur)? {
                 let head = self.lisp.car(cur)?;
-                if !self.lisp.symbol_matches(head, part)? {
+                // Check if the part matches as a symbol
+                let matches_sym = self.lisp.symbol_matches(head, part)?;
+                // Also check if the part is a number matching the string
+                let matches_num = if !matches_sym {
+                    if let Value::Number(n) = self.lisp.get(head)? {
+                        // Compare the number's string representation to the part
+                        let mut buf = [0u8; 20];
+                        let s = format_isize(n, &mut buf);
+                        s == part
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !matches_sym && !matches_num {
                     return Ok(false);
                 }
                 cur = self.lisp.cdr(cur)?;
