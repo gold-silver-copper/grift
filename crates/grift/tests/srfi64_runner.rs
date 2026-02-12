@@ -298,3 +298,41 @@ srfi64_test!(
 );
 srfi64_test!(srfi64_syntax_proper_test, "syntax-proper-test.scm");
 
+// R7RS benchmarks (ported from https://github.com/skyfskyf/r7rs-benchmarks)
+srfi64_test!(srfi64_r7rs_bench_fib_test, "r7rs-bench-fib-test.scm");
+srfi64_test!(srfi64_r7rs_bench_tak_test, "r7rs-bench-tak-test.scm");
+srfi64_test!(
+    srfi64_r7rs_bench_cpstak_test,
+    "r7rs-bench-cpstak-test.scm"
+);
+srfi64_test!(
+    srfi64_r7rs_bench_primes_test,
+    "r7rs-bench-primes-test.scm"
+);
+srfi64_test!(srfi64_r7rs_bench_sum_test, "r7rs-bench-sum-test.scm");
+srfi64_test!(
+    srfi64_r7rs_bench_sumfp_test,
+    "r7rs-bench-sumfp-test.scm"
+);
+srfi64_test!(
+    srfi64_r7rs_bench_deriv_test,
+    "r7rs-bench-deriv-test.scm"
+);
+srfi64_test!(
+    srfi64_r7rs_bench_nqueens_test,
+    "r7rs-bench-nqueens-test.scm"
+);
+srfi64_test!(
+    srfi64_r7rs_bench_diviter_test,
+    "r7rs-bench-diviter-test.scm"
+);
+srfi64_test!(
+    srfi64_r7rs_bench_divrec_test,
+    "r7rs-bench-divrec-test.scm"
+);
+srfi64_test!(srfi64_r7rs_bench_ack_test, "r7rs-bench-ack-test.scm");
+srfi64_test!(
+    srfi64_r7rs_bench_fibfp_test,
+    "r7rs-bench-fibfp-test.scm"
+);
+
