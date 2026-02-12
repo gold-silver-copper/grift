@@ -2764,28 +2764,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
             }
 
-            Builtin::SchemeReportEnvironment => {
-                // (scheme-report-environment version)
-                // Returns an environment corresponding to R^version RS (e.g., R5RS)
+            Builtin::SchemeReportEnvironment | Builtin::NullEnvironment => {
                 let version = self.get_int(self.lisp.car(args)?, call_expr)?;
                 if version != 5 && version != 7 {
                     return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
                 }
-                // Return the global environment as immutable (read-only snapshot)
-                let env = self.global_env.0;
+                let env = if matches!(builtin, Builtin::SchemeReportEnvironment) {
+                    self.global_env.0
+                } else {
+                    self.lisp.nil()?
+                };
                 self.lisp.alloc(Value::Environment { env, mutable: false }).map_err(Into::into)
-            }
-
-            Builtin::NullEnvironment => {
-                // (null-environment version)
-                // Returns a minimal environment with only syntax (no procedure bindings)
-                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
-                if version != 5 && version != 7 {
-                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
-                }
-                // Return an empty environment (immutable)
-                let nil = self.lisp.nil()?;
-                self.lisp.alloc(Value::Environment { env: nil, mutable: false }).map_err(Into::into)
             }
 
             Builtin::Environmentp => {
@@ -3248,62 +3237,44 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Division procedures (R7RS §6.2.6)
             // ================================================================
 
-            Builtin::FloorQuotient => {
-                let (q, _) = self.division_op(args, call_expr, libm::floor)?;
-                self.return_exact_if_both_exact(args, q, call_expr)
-            }
-
-            Builtin::FloorRemainder => {
-                let (_, r) = self.division_op(args, call_expr, libm::floor)?;
-                self.return_exact_if_both_exact(args, r, call_expr)
+            Builtin::FloorQuotient | Builtin::FloorRemainder
+            | Builtin::TruncateQuotient | Builtin::TruncateRemainder => {
+                let round_fn: fn(f64) -> f64 = match builtin {
+                    Builtin::FloorQuotient | Builtin::FloorRemainder => libm::floor,
+                    _ => libm::trunc,
+                };
+                let (q, r) = self.division_op(args, call_expr, round_fn)?;
+                let val = match builtin {
+                    Builtin::FloorQuotient | Builtin::TruncateQuotient => q,
+                    _ => r,
+                };
+                self.return_exact_if_both_exact(args, val, call_expr)
             }
 
             Builtin::FloorDiv => self.division_values(args, call_expr, libm::floor),
-
-            Builtin::TruncateQuotient => {
-                let (q, _) = self.division_op(args, call_expr, libm::trunc)?;
-                self.return_exact_if_both_exact(args, q, call_expr)
-            }
-
-            Builtin::TruncateRemainder => {
-                let (_, r) = self.division_op(args, call_expr, libm::trunc)?;
-                self.return_exact_if_both_exact(args, r, call_expr)
-            }
-
             Builtin::TruncateDiv => self.division_values(args, call_expr, libm::trunc),
 
             // ================================================================
             // Rational number operations (R7RS §6.2.6)
             // ================================================================
 
-            Builtin::Numerator => {
+            Builtin::Numerator | Builtin::Denominator => {
+                let is_num = matches!(builtin, Builtin::Numerator);
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Number(n) => self.lisp.number(n).map_err(Into::into),
+                    Value::Number(n) => {
+                        self.lisp.number(if is_num { n } else { 1 }).map_err(Into::into)
+                    }
                     Value::Float(f) => {
                         if !f.is_finite() {
                             return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
                         }
-                        let (num, _den) = float_to_rational(f as f64);
-                        self.lisp.float(num as fsize).map_err(Into::into)
+                        let (num, den) = float_to_rational(f as f64);
+                        self.lisp.float(if is_num { num } else { den } as fsize).map_err(Into::into)
                     }
-                    Value::Rational { num, .. } => self.lisp.number(num).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
-
-            Builtin::Denominator => {
-                let arg = self.lisp.car(args)?;
-                match self.lisp.get(arg)? {
-                    Value::Number(_) => self.lisp.number(1).map_err(Into::into),
-                    Value::Float(f) => {
-                        if !f.is_finite() {
-                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
-                        }
-                        let (_num, den) = float_to_rational(f as f64);
-                        self.lisp.float(den as fsize).map_err(Into::into)
+                    Value::Rational { num, denom } => {
+                        self.lisp.number(if is_num { num } else { denom }).map_err(Into::into)
                     }
-                    Value::Rational { denom, .. } => self.lisp.number(denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
