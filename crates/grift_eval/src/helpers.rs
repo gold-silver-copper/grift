@@ -111,6 +111,34 @@ fn equal_recursive_depth<const N: usize>(
             }
             Ok(true)
         }
+        (Value::Array { len: len_a, .. }, Value::Array { len: len_b, .. }) => {
+            if len_a != len_b {
+                return Ok(false);
+            }
+            for i in 0..len_a {
+                let elem_a = lisp.array_get(a, i)?;
+                let elem_b = lisp.array_get(b, i)?;
+                if !equal_recursive_depth(lisp, elem_a, elem_b, depth + 1)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+            Ok(n1 * d2 == n2 * d1)
+        }
+        (Value::Rational { num, denom }, Value::Number(y)) => {
+            Ok(num == y * denom)
+        }
+        (Value::Number(x), Value::Rational { num, denom }) => {
+            Ok(x * denom == num)
+        }
+        (Value::Rational { num, denom }, Value::Float(y)) => {
+            Ok((num as fsize / denom as fsize) == y)
+        }
+        (Value::Float(x), Value::Rational { num, denom }) => {
+            Ok(x == (num as fsize / denom as fsize))
+        }
         _ => Ok(false),
     }
 }

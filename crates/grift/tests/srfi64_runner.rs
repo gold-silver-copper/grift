@@ -8,6 +8,7 @@
 //! actual values.
 
 use grift::{Evaluator, Lisp};
+use grift_std::StdIoProvider;
 use std::cell::RefCell;
 use std::path::Path;
 
@@ -86,6 +87,10 @@ fn run_scheme_test(path: &Path) -> Srfi64Output {
     let lisp: Box<Lisp<100000>> = Box::new(Lisp::new());
     let mut eval =
         Evaluator::new(&*lisp).unwrap_or_else(|e| panic!("Failed to create evaluator: {:?}", e));
+
+    // Set up I/O provider for tests that need file/time/port operations
+    let mut io = StdIoProvider::new();
+    eval.set_io_provider(&mut io);
 
     // Set up output capture
     eval.set_output_callback(Some(output_callback::<100000>));

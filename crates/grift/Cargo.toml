@@ -53,6 +53,9 @@ grift_eval = { workspace = true }
 grift_repl = { workspace = true, optional = true }
 grift_std = { workspace = true, optional = true }
 
+[dev-dependencies]
+grift_std = { workspace = true }
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
