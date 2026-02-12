@@ -1,0 +1,13 @@
+[package]
+name = "grift_unicode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unicode character operations for the Grift Scheme language"
+repository = "https://github.com/gold-silver-copper/grift"
+documentation = "https://docs.rs/grift_unicode"
+keywords = ["unicode", "case-mapping", "no_std", "embedded", "scheme"]
+categories = ["no-std", "text-processing", "embedded"]
+
+[dependencies]
+unicode-case-mapping = { version = "1.0.0", default-features = false }
