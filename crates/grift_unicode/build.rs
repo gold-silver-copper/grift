@@ -10,13 +10,15 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+const CASEFOLDING_FILE: &str = "CaseFolding.txt";
+
 fn main() {
-    let casefolding_path = Path::new("CaseFolding.txt");
-    println!("cargo:rerun-if-changed=CaseFolding.txt");
+    let casefolding_path = Path::new(CASEFOLDING_FILE);
+    println!("cargo:rerun-if-changed={}", CASEFOLDING_FILE);
     println!("cargo:rerun-if-changed=build.rs");
 
     let contents = fs::read_to_string(casefolding_path)
-        .expect("Failed to read CaseFolding.txt");
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", CASEFOLDING_FILE, e));
 
     // Parse all 'F' status entries into a sorted map: code_point -> Vec<u32>
     let mut entries: BTreeMap<u32, (Vec<u32>, String)> = BTreeMap::new();
@@ -38,12 +40,13 @@ fn main() {
         }
 
         let code_point = u32::from_str_radix(parts[0].trim(), 16)
-            .expect("Invalid code point");
+            .unwrap_or_else(|e| panic!("Invalid code point '{}': {}", parts[0].trim(), e));
 
         let mapping: Vec<u32> = parts[2]
             .trim()
             .split_whitespace()
-            .map(|s| u32::from_str_radix(s, 16).expect("Invalid mapping code point"))
+            .map(|s| u32::from_str_radix(s, 16)
+                .unwrap_or_else(|e| panic!("Invalid mapping code point '{}': {}", s, e)))
             .collect();
 
         // Extract the comment (after '#')
