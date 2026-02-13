@@ -650,10 +650,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             
-            Builtin::Mul => self.numeric_fold(args, 1, 
-                |a, b| a.checked_mul(b),
-                |a, b| a * b,
-                call_expr),
+            Builtin::Mul => self.numeric_fold_mul(args, call_expr),
             
             Builtin::Div => {
                 // Division: (/ n) => 1/n, (/ n m ...) => n/m/...
@@ -3243,9 +3240,47 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Sub => binary_int_op!(self, a, b, call_expr, 
                 |x: isize, y: isize| x.checked_sub(y),
                 |x: fsize, y: fsize| x - y),
-            Builtin::Mul => binary_int_op!(self, a, b, call_expr, 
-                |x: isize, y: isize| x.checked_mul(y),
-                |x: fsize, y: fsize| x * y),
+            Builtin::Mul => {
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                match (val_a, val_b) {
+                    (Value::Number(x), Value::Number(y)) => {
+                        match x.checked_mul(y) {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.float(x as fsize * y as fsize).map_err(Into::into),
+                        }
+                    }
+                    (Value::Number(x), Value::Float(y)) => self.lisp.float(x as fsize * y).map_err(Into::into),
+                    (Value::Float(x), Value::Number(y)) => self.lisp.float(x * y as fsize).map_err(Into::into),
+                    (Value::Float(x), Value::Float(y)) => self.lisp.float(x * y).map_err(Into::into),
+                    (Value::Rational { num, denom }, Value::Number(y)) => {
+                        match num.checked_mul(y) {
+                            Some(nn) => self.lisp.rational(nn, denom).map_err(Into::into),
+                            None => self.lisp.float((num as fsize / denom as fsize) * y as fsize).map_err(Into::into),
+                        }
+                    }
+                    (Value::Number(x), Value::Rational { num, denom }) => {
+                        match x.checked_mul(num) {
+                            Some(nn) => self.lisp.rational(nn, denom).map_err(Into::into),
+                            None => self.lisp.float(x as fsize * (num as fsize / denom as fsize)).map_err(Into::into),
+                        }
+                    }
+                    (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                        match (n1.checked_mul(n2), d1.checked_mul(d2)) {
+                            (Some(nn), Some(nd)) => self.lisp.rational(nn, nd).map_err(Into::into),
+                            _ => self.lisp.float((n1 as fsize / d1 as fsize) * (n2 as fsize / d2 as fsize)).map_err(Into::into),
+                        }
+                    }
+                    (Value::Rational { num, denom }, Value::Float(y)) => {
+                        self.lisp.float((num as fsize / denom as fsize) * y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Rational { num, denom }) => {
+                        self.lisp.float(x * (num as fsize / denom as fsize)).map_err(Into::into)
+                    }
+                    (v, _) if !v.is_number() => Err(self.type_error(call_expr, "number", v.type_name())),
+                    (_, v) => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
             // Division: exact integer division produces rationals
             Builtin::Div => {
@@ -3502,15 +3537,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let mut acc_int: isize = init;
         let mut acc_float: fsize = init as fsize;
-        let mut is_float = false;
+        // Track accumulator state: 0=int, 1=rational, 2=float
+        let mut state: u8 = 0;
+        let mut acc_num: isize = init;
+        let mut acc_denom: isize = 1;
         let mut current = args;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
-                    return if is_float {
-                        self.lisp.float(acc_float).map_err(Into::into)
-                    } else {
-                        self.lisp.number(acc_int).map_err(Into::into)
+                    return match state {
+                        2 => self.lisp.float(acc_float).map_err(Into::into),
+                        1 => self.lisp.rational(acc_num, acc_denom).map_err(Into::into),
+                        _ => self.lisp.number(acc_int).map_err(Into::into),
                     };
                 }
                 Value::Cons { .. } => {
@@ -3518,34 +3556,93 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let cdr = self.lisp.cdr(current)?;
                     match self.lisp.get(car)? {
                         Value::Number(n) => {
-                            if is_float {
-                                acc_float = float_f(acc_float, n as fsize);
-                            } else {
-                                match int_f(acc_int, n) {
-                                    Some(r) => acc_int = r,
-                                    None => {
-                                        // Integer overflow: promote to float
-                                        acc_float = float_f(acc_int as fsize, n as fsize);
-                                        is_float = true;
+                            match state {
+                                2 => { acc_float = float_f(acc_float, n as fsize); }
+                                1 => {
+                                    // rational + int: (acc_num/acc_denom) op (n/1)
+                                    // For add: (acc_num + n*acc_denom) / acc_denom
+                                    // For mul: (acc_num * n) / acc_denom
+                                    let n_num = n.checked_mul(acc_denom);
+                                    match n_num.and_then(|nn| int_f(acc_num, nn)) {
+                                        Some(r) => { acc_num = r; }
+                                        None => {
+                                            acc_float = float_f(acc_num as fsize / acc_denom as fsize, n as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    match int_f(acc_int, n) {
+                                        Some(r) => acc_int = r,
+                                        None => {
+                                            acc_float = float_f(acc_int as fsize, n as fsize);
+                                            state = 2;
+                                        }
                                     }
                                 }
                             }
                         }
                         Value::Float(f) => {
-                            if !is_float {
-                                // Promote accumulator to float
-                                acc_float = acc_int as fsize;
-                                is_float = true;
+                            match state {
+                                2 => { acc_float = float_f(acc_float, f); }
+                                1 => {
+                                    acc_float = float_f(acc_num as fsize / acc_denom as fsize, f);
+                                    state = 2;
+                                }
+                                _ => {
+                                    acc_float = float_f(acc_int as fsize, f);
+                                    state = 2;
+                                }
                             }
-                            acc_float = float_f(acc_float, f);
                         }
                         Value::Rational { num, denom } => {
-                            // Promote to float for mixed arithmetic
-                            if !is_float {
-                                acc_float = acc_int as fsize;
-                                is_float = true;
+                            match state {
+                                2 => {
+                                    acc_float = float_f(acc_float, num as fsize / denom as fsize);
+                                }
+                                1 => {
+                                    // rational op rational: (a/b) op (n/d)
+                                    // For add: (a*d + n*b) / (b*d)
+                                    // For mul: (a*n) / (b*d) 
+                                    let new_denom = acc_denom.checked_mul(denom);
+                                    let a_scaled = acc_num.checked_mul(denom);
+                                    let n_scaled = num.checked_mul(acc_denom);
+                                    match (new_denom, a_scaled, n_scaled) {
+                                        (Some(nd), Some(as_), Some(ns)) => {
+                                            match int_f(as_, ns) {
+                                                Some(new_num) => {
+                                                    acc_num = new_num;
+                                                    acc_denom = nd;
+                                                }
+                                                None => {
+                                                    acc_float = float_f(acc_num as fsize / acc_denom as fsize, num as fsize / denom as fsize);
+                                                    state = 2;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            acc_float = float_f(acc_num as fsize / acc_denom as fsize, num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // int -> rational: promote to rational
+                                    // (acc_int/1) op (num/denom) 
+                                    let a_scaled = acc_int.checked_mul(denom);
+                                    match a_scaled.and_then(|as_| int_f(as_, num)) {
+                                        Some(new_num) => {
+                                            acc_num = new_num;
+                                            acc_denom = denom;
+                                            state = 1;
+                                        }
+                                        None => {
+                                            acc_float = float_f(acc_int as fsize, num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
                             }
-                            acc_float = float_f(acc_float, num as fsize / denom as fsize);
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
@@ -3667,6 +3764,103 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let cdr = self.lisp.cdr(current)?;
                     let n = self.get_num_as_fsize(car, call_expr)?;
                     acc = float_f(acc, n);
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Fold multiplication over args with proper rational support.
+    /// (* a b c) keeps exact rational results when possible.
+    fn numeric_fold_mul(&self, args: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        // state: 0=int, 1=rational, 2=float
+        let mut state: u8 = 0;
+        let mut acc_int: isize = 1;
+        let mut acc_num: isize = 1;
+        let mut acc_denom: isize = 1;
+        let mut acc_float: fsize = 1.0;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    return match state {
+                        2 => self.lisp.float(acc_float).map_err(Into::into),
+                        1 => self.lisp.rational(acc_num, acc_denom).map_err(Into::into),
+                        _ => self.lisp.number(acc_int).map_err(Into::into),
+                    };
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    match self.lisp.get(car)? {
+                        Value::Number(n) => {
+                            match state {
+                                2 => { acc_float *= n as fsize; }
+                                1 => {
+                                    match acc_num.checked_mul(n) {
+                                        Some(r) => { acc_num = r; }
+                                        None => {
+                                            acc_float = (acc_num as fsize / acc_denom as fsize) * n as fsize;
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    match acc_int.checked_mul(n) {
+                                        Some(r) => { acc_int = r; }
+                                        None => {
+                                            acc_float = acc_int as fsize * n as fsize;
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Value::Float(f) => {
+                            acc_float = match state {
+                                2 => acc_float * f,
+                                1 => (acc_num as fsize / acc_denom as fsize) * f,
+                                _ => acc_int as fsize * f,
+                            };
+                            state = 2;
+                        }
+                        Value::Rational { num, denom } => {
+                            match state {
+                                2 => {
+                                    acc_float *= num as fsize / denom as fsize;
+                                }
+                                1 => {
+                                    // (a/b) * (n/d) = (a*n) / (b*d)
+                                    match (acc_num.checked_mul(num), acc_denom.checked_mul(denom)) {
+                                        (Some(nn), Some(nd)) => {
+                                            acc_num = nn;
+                                            acc_denom = nd;
+                                        }
+                                        _ => {
+                                            acc_float = (acc_num as fsize / acc_denom as fsize) * (num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // int * rational: (acc_int * num) / denom
+                                    match acc_int.checked_mul(num) {
+                                        Some(nn) => {
+                                            acc_num = nn;
+                                            acc_denom = denom;
+                                            state = 1;
+                                        }
+                                        None => {
+                                            acc_float = acc_int as fsize * (num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
                     current = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::TypeError, current)),
@@ -4213,15 +4407,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Implement (read) by reading characters from a port and parsing.
     fn apply_read_builtin(&mut self, pid: grift_parser::PortId, call_expr: ArenaIndex) -> EvalResult {
-        let io = match &mut self.io {
-            Some(io) => io,
+        let tmp = match self.io.as_mut() {
+            Some(io) => match io.open_output_string() {
+                Ok(p) => p,
+                Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            },
             None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
-        };
-
-        // Open a temp output string port to accumulate chars without a fixed-size limit
-        let tmp = match io.open_output_string() {
-            Ok(p) => p,
-            Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
         };
 
         let mut paren_depth: i32 = 0;
@@ -4229,20 +4420,159 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut escape = false;
         let mut got_token = false;
 
-        // Skip leading whitespace
-        loop {
-            match io.read_char(pid) {
-                Ok(c) => {
-                    if !c.is_whitespace() {
-                        if io.write_char(tmp, c).is_err() {
-                            let _ = io.close_port(tmp);
-                            return Err(self.make_error(ErrorKind::Generic, call_expr));
-                        }
+        // Helper macros for IO operations that re-borrow self.io each time
+        macro_rules! io_read {
+            () => {{
+                self.io.as_mut().unwrap().read_char(pid)
+            }};
+        }
+        macro_rules! io_peek {
+            () => {{
+                self.io.as_mut().unwrap().peek_char(pid)
+            }};
+        }
+        macro_rules! io_write {
+            ($c:expr) => {{
+                let _ = self.io.as_mut().unwrap().write_char(tmp, $c);
+            }};
+        }
+        macro_rules! io_close_tmp {
+            () => {{
+                if let Some(io) = self.io.as_mut() { let _ = io.close_port(tmp); }
+            }};
+        }
 
+        // Skip leading whitespace and comments
+        loop {
+            match io_read!() {
+                Ok(c) => {
+                    if c == ';' {
+                        // Line comment
+                        loop {
+                            match io_read!() {
+                                Ok('\n') | Ok('\r') => break,
+                                Ok(_) => {}
+                                Err(_) => break,
+                            }
+                        }
+                        continue;
+                    }
+                    if c == '#' {
+                        match io_peek!() {
+                            Ok('|') => {
+                                let _ = io_read!();
+                                let mut depth = 1i32;
+                                let mut prev = ' ';
+                                while depth > 0 {
+                                    match io_read!() {
+                                        Ok(bc) => {
+                                            if prev == '#' && bc == '|' { depth += 1; }
+                                            if prev == '|' && bc == '#' { depth -= 1; }
+                                            prev = bc;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                continue;
+                            }
+                            Ok(';') => {
+                                let _ = io_read!();
+                                let _ = self.apply_read_builtin(pid, call_expr);
+                                continue;
+                            }
+                            Ok('(') => {
+                                let _ = io_read!();
+                                io_write!('#');
+                                io_write!('(');
+                                paren_depth += 1;
+                                break;
+                            }
+                            Ok('u') => {
+                                let _ = io_read!();
+                                io_write!('#');
+                                io_write!('u');
+                                match io_peek!() {
+                                    Ok('8') => {
+                                        let _ = io_read!();
+                                        io_write!('8');
+                                        match io_peek!() {
+                                            Ok('(') => {
+                                                let _ = io_read!();
+                                                io_write!('(');
+                                                paren_depth += 1;
+                                                break;
+                                            }
+                                            _ => { got_token = true; break; }
+                                        }
+                                    }
+                                    _ => { got_token = true; break; }
+                                }
+                            }
+                            Ok('!') => {
+                                // #!fold-case or #!no-fold-case directive - pass through to parser
+                                io_write!('#');
+                                io_write!('!');
+                                loop {
+                                    match io_peek!() {
+                                        Ok(c) if c.is_alphanumeric() || c == '-' => {
+                                            let _ = io_read!();
+                                            io_write!(c);
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                // Skip whitespace after directive, then continue reading the datum
+                                loop {
+                                    match io_peek!() {
+                                        Ok(c) if c.is_whitespace() => {
+                                            let _ = io_read!();
+                                            io_write!(c);
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                // Read the rest of the token/expression that follows
+                                continue;
+                            }
+                            _ => {
+                                io_write!('#');
+                                got_token = true;
+                                break;
+                            }
+                        }
+                    } else if !c.is_whitespace() {
+                        io_write!(c);
                         if c == '(' || c == '[' {
                             paren_depth += 1;
                         } else if c == '"' {
                             in_string = true;
+                        } else if c == '\'' || c == '`' {
+                            // Quote/quasiquote prefix
+                            io_close_tmp!();
+                            let inner = self.apply_read_builtin(pid, call_expr)?;
+                            let sym = if c == '\'' {
+                                self.lisp.symbol("quote")?
+                            } else {
+                                self.lisp.symbol("quasiquote")?
+                            };
+                            let nil = self.lisp.nil()?;
+                            let tail = self.lisp.cons(inner, nil)?;
+                            return self.lisp.cons(sym, tail).map_err(Into::into);
+                        } else if c == ',' {
+                            io_close_tmp!();
+                            let is_splicing = match io_peek!() {
+                                Ok('@') => { let _ = io_read!(); true }
+                                _ => false,
+                            };
+                            let inner = self.apply_read_builtin(pid, call_expr)?;
+                            let sym = if is_splicing {
+                                self.lisp.symbol("unquote-splicing")?
+                            } else {
+                                self.lisp.symbol("unquote")?
+                            };
+                            let nil = self.lisp.nil()?;
+                            let tail = self.lisp.cons(inner, nil)?;
+                            return self.lisp.cons(sym, tail).map_err(Into::into);
                         } else if paren_depth == 0 {
                             got_token = true;
                         }
@@ -4250,27 +4580,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 Err(grift_parser::IoErrorKind::Eof) => {
-                    let _ = io.close_port(tmp);
+                    io_close_tmp!();
                     return self.lisp.eof().map_err(Into::into);
                 }
                 Err(_) => {
-                    let _ = io.close_port(tmp);
+                    io_close_tmp!();
                     return Err(self.make_error(ErrorKind::Generic, call_expr));
                 }
             }
         }
 
-        // Read remaining characters to form a complete expression
+        // Read remaining characters
         if paren_depth > 0 || in_string {
             loop {
-                match io.read_char(pid) {
+                match io_read!() {
                     Ok(c) => {
-                        if io.write_char(tmp, c).is_err() {
-                            let _ = io.close_port(tmp);
-                            return Err(self.make_error(ErrorKind::Generic, call_expr));
-                        }
-
                         if in_string {
+                            io_write!(c);
                             if escape {
                                 escape = false;
                             } else if c == '\\' {
@@ -4279,53 +4605,114 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 in_string = false;
                                 if paren_depth == 0 { break; }
                             }
-                        } else if c == '(' || c == '[' {
-                            paren_depth += 1;
-                        } else if c == ')' || c == ']' {
-                            paren_depth -= 1;
-                            if paren_depth == 0 { break; }
-                        } else if c == '"' {
-                            in_string = true;
+                        } else if c == ';' {
+                            loop {
+                                match io_read!() {
+                                    Ok('\n') | Ok('\r') => break,
+                                    Ok(_) => {}
+                                    Err(_) => break,
+                                }
+                            }
+                        } else if c == '#' {
+                            match io_peek!() {
+                                Ok('|') => {
+                                    let _ = io_read!();
+                                    let mut depth = 1i32;
+                                    let mut prev = ' ';
+                                    while depth > 0 {
+                                        match io_read!() {
+                                            Ok(bc) => {
+                                                if prev == '#' && bc == '|' { depth += 1; }
+                                                if prev == '|' && bc == '#' { depth -= 1; }
+                                                prev = bc;
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+                                Ok(';') => {
+                                    let _ = io_read!();
+                                    let _ = self.apply_read_builtin(pid, call_expr);
+                                }
+                                Ok('(') => {
+                                    let _ = io_read!();
+                                    io_write!('#');
+                                    io_write!('(');
+                                    paren_depth += 1;
+                                }
+                                Ok('u') => {
+                                    let _ = io_read!();
+                                    io_write!('#');
+                                    io_write!('u');
+                                    match io_peek!() {
+                                        Ok('8') => {
+                                            let _ = io_read!();
+                                            io_write!('8');
+                                            match io_peek!() {
+                                                Ok('(') => {
+                                                    let _ = io_read!();
+                                                    io_write!('(');
+                                                    paren_depth += 1;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {
+                                    io_write!(c);
+                                }
+                            }
+                        } else {
+                            io_write!(c);
+                            if c == '(' || c == '[' {
+                                paren_depth += 1;
+                            } else if c == ')' || c == ']' {
+                                paren_depth -= 1;
+                                if paren_depth == 0 { break; }
+                            } else if c == '"' {
+                                in_string = true;
+                            }
                         }
                     }
                     Err(grift_parser::IoErrorKind::Eof) => break,
                     Err(_) => {
-                        let _ = io.close_port(tmp);
+                        io_close_tmp!();
                         return Err(self.make_error(ErrorKind::Generic, call_expr));
                     }
                 }
             }
         } else if got_token {
-            // Continue reading the token (number, symbol, etc.)
             loop {
-                match io.peek_char(pid) {
+                match io_peek!() {
                     Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';' => break,
                     Ok(c) => {
-                        let _ = io.read_char(pid);
-                        if io.write_char(tmp, c).is_err() { break; }
+                        let _ = io_read!();
+                        io_write!(c);
                     }
                     Err(_) => break,
                 }
             }
         }
 
-        // Parse the accumulated expression from the temp port
+        // Parse the accumulated expression
         let result = {
-            let s = match io.get_output_string(tmp) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ = io.close_port(tmp);
+            let s = match self.io.as_ref().and_then(|io| io.get_output_string(tmp).ok()) {
+                Some(s) => s,
+                None => {
+                    io_close_tmp!();
                     return Err(self.make_error(ErrorKind::Generic, call_expr));
                 }
             };
             if s.is_empty() {
-                let _ = io.close_port(tmp);
+                io_close_tmp!();
                 return self.lisp.eof().map_err(Into::into);
             }
             grift_parser::parse(self.lisp, s)
         };
 
-        let _ = io.close_port(tmp);
+        io_close_tmp!();
         match result {
             Ok(expr) => Ok(expr),
             Err(e) => Err(EvalError::from(e)),

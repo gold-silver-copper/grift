@@ -226,15 +226,31 @@ macro_rules! binary_int_op {
             (Value::Float(x), Value::Float(y)) => {
                 $self.lisp.float($float_op(x, y)).map_err(Into::into)
             }
-            // Rational promotion to float
+            // Rational + Number: exact rational arithmetic
             (Value::Rational { num, denom }, Value::Number(y)) => {
-                $self.lisp.float($float_op(num as $crate::fsize / denom as $crate::fsize, y as $crate::fsize)).map_err(Into::into)
+                // (num/denom) op (y/1) => scale y to same denominator
+                match y.checked_mul(denom).and_then(|yd| $int_op(num, yd)) {
+                    Some(new_num) => $self.lisp.rational(new_num, denom).map_err(Into::into),
+                    None => $self.lisp.float($float_op(num as $crate::fsize / denom as $crate::fsize, y as $crate::fsize)).map_err(Into::into),
+                }
             }
             (Value::Number(x), Value::Rational { num, denom }) => {
-                $self.lisp.float($float_op(x as $crate::fsize, num as $crate::fsize / denom as $crate::fsize)).map_err(Into::into)
+                match x.checked_mul(denom).and_then(|xd| $int_op(xd, num)) {
+                    Some(new_num) => $self.lisp.rational(new_num, denom).map_err(Into::into),
+                    None => $self.lisp.float($float_op(x as $crate::fsize, num as $crate::fsize / denom as $crate::fsize)).map_err(Into::into),
+                }
             }
             (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
-                $self.lisp.float($float_op(n1 as $crate::fsize / d1 as $crate::fsize, n2 as $crate::fsize / d2 as $crate::fsize)).map_err(Into::into)
+                // (n1/d1) op (n2/d2) => (n1*d2 op n2*d1) / (d1*d2)
+                match (d1.checked_mul(d2), n1.checked_mul(d2), n2.checked_mul(d1)) {
+                    (Some(new_d), Some(s1), Some(s2)) => {
+                        match $int_op(s1, s2) {
+                            Some(new_n) => $self.lisp.rational(new_n, new_d).map_err(Into::into),
+                            None => $self.lisp.float($float_op(n1 as $crate::fsize / d1 as $crate::fsize, n2 as $crate::fsize / d2 as $crate::fsize)).map_err(Into::into),
+                        }
+                    }
+                    _ => $self.lisp.float($float_op(n1 as $crate::fsize / d1 as $crate::fsize, n2 as $crate::fsize / d2 as $crate::fsize)).map_err(Into::into),
+                }
             }
             (Value::Rational { num, denom }, Value::Float(y)) => {
                 $self.lisp.float($float_op(num as $crate::fsize / denom as $crate::fsize, y)).map_err(Into::into)
