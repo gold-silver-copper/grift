@@ -76,7 +76,7 @@ fn equal_recursive_depth<const N: usize>(
         (Value::True, Value::True) => Ok(true),
         (Value::False, Value::False) => Ok(true),
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
-        (Value::Float(x), Value::Float(y)) => Ok(x == y),
+        (Value::Float(x), Value::Float(y)) => Ok(x == y || (x.is_nan() && y.is_nan())),
         (Value::Number(x), Value::Float(y)) => Ok((x as fsize) == y),
         (Value::Float(x), Value::Number(y)) => Ok(x == (y as fsize)),
         (Value::Char(x), Value::Char(y)) => Ok(x == y),

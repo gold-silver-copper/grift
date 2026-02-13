@@ -3559,9 +3559,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             (Value::True, Value::True) => true,
             (Value::False, Value::False) => true,
             (Value::Number(x), Value::Number(y)) => x == y,
-            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y || (x.is_nan() && y.is_nan()),
             (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => n1 == n2 && d1 == d2,
-            (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => r1 == r2 && i1 == i2,
+            (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => {
+                (r1 == r2 || (r1.is_nan() && r2.is_nan())) && (i1 == i2 || (i1.is_nan() && i2.is_nan()))
+            }
             (Value::Char(x), Value::Char(y)) => x == y,
             (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
             (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {

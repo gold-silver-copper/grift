@@ -1319,6 +1319,10 @@ impl<'a> Lexer<'a> {
                         return Ok(Token::Number(f as isize));
                     }
                 }
+                // Check for complex suffix after float
+                if let Token::Float(real) = tok {
+                    return self.try_lex_complex_suffix(real);
+                }
                 return Ok(tok);
             }
         }
@@ -1362,9 +1366,11 @@ impl<'a> Lexer<'a> {
         
         // #i forces inexact (float) representation
         if exactness == 2 {
-            Ok(Token::Float(value as grift_core::fsize))
+            // Check for complex suffix on inexact number
+            self.try_lex_complex_suffix(value as grift_core::fsize)
         } else {
-            Ok(Token::Number(value))
+            // Check for complex suffix on exact integer
+            self.try_lex_complex_suffix_int(value)
         }
     }
     
