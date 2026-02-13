@@ -3474,6 +3474,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             (Value::False, Value::False) => true,
             (Value::Number(x), Value::Number(y)) => x == y,
             (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => n1 == n2 && d1 == d2,
             (Value::Char(x), Value::Char(y)) => x == y,
             (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
             (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {

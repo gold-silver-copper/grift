@@ -33,6 +33,13 @@ fn is_ascii_ws(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
 }
 
+/// Check if a byte is an R7RS exponent marker (e/E, s/S, f/F, d/D, l/L).
+/// All are treated as double-precision float exponents.
+#[inline]
+fn is_exponent_marker(b: u8) -> bool {
+    matches!(b, b'e' | b'E' | b's' | b'S' | b'f' | b'F' | b'd' | b'D' | b'l' | b'L')
+}
+
 // ============================================================================
 // Token Types
 // ============================================================================
@@ -263,25 +270,35 @@ impl<'a> Lexer<'a> {
                 if self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
                     if c == b'+' { self.advance(); } // consume '+' prefix
                     self.lex_number()
+                } else if self.peek_next() == Some(b'.') && self.input.get(self.pos + 2).is_some_and(|c| c.is_ascii_digit()) {
+                    // -.1 or +.1 style float literal
+                    let negative = c == b'-';
+                    self.advance(); // consume sign
+                    self.lex_dot_number(negative)
                 } else {
                     self.lex_symbol()
                 }
             }
             b'.' => {
-                // Could be dot (for dotted pairs) or symbol starting with dot
+                // Could be dot (for dotted pairs), decimal float (.1), or symbol starting with dot
                 let next_pos = self.pos + 1;
-                let is_dot = if next_pos < self.input.len() {
-                    let next_char = self.input[next_pos];
-                    is_ascii_ws(next_char) || next_char == b')'
+                if next_pos < self.input.len() && self.input[next_pos].is_ascii_digit() {
+                    // .1 style float literal
+                    self.lex_dot_number(false)
                 } else {
-                    true
-                };
-                
-                if is_dot {
-                    self.advance();
-                    Ok(Token::Dot)
-                } else {
-                    self.lex_symbol()
+                    let is_dot = if next_pos < self.input.len() {
+                        let next_char = self.input[next_pos];
+                        is_ascii_ws(next_char) || next_char == b')'
+                    } else {
+                        true
+                    };
+                    
+                    if is_dot {
+                        self.advance();
+                        Ok(Token::Dot)
+                    } else {
+                        self.lex_symbol()
+                    }
                 }
             }
             b'|' => self.lex_escaped_symbol(lisp),
@@ -530,10 +547,11 @@ impl<'a> Lexer<'a> {
         
         // Check for decimal point or exponent → floating-point literal
         // R7RS allows trailing dot: "3." is equivalent to "3.0"
+        // R7RS exponent markers: e/E, s/S, f/F, d/D, l/L (all treated as double precision)
         let has_dot = self.peek() == Some(b'.') 
-            && self.peek_next().map_or(true, |c| c.is_ascii_digit() || c == b'e' || c == b'E'
+            && self.peek_next().map_or(true, |c| c.is_ascii_digit() || is_exponent_marker(c)
                 || c == b')' || c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b';');
-        let has_exp = self.peek() == Some(b'e') || self.peek() == Some(b'E');
+        let has_exp = self.peek().map_or(false, is_exponent_marker);
         
         if has_dot || has_exp {
             let float_tok = self.lex_float_tail(value, negative)?;
@@ -571,6 +589,38 @@ impl<'a> Lexer<'a> {
         self.try_lex_complex_suffix_int(value)
     }
     
+    /// Lex a number starting with dot: `.1`, `-.1`, etc.
+    fn lex_dot_number(&mut self, negative: bool) -> Result<Token, LexError> {
+        // We're positioned at '.', followed by digits
+        self.advance(); // consume '.'
+        let mut result: grift_core::fsize = 0.0;
+        self.parse_frac_part(&mut result);
+        
+        // Parse optional exponent
+        if self.peek().map_or(false, is_exponent_marker) {
+            self.advance();
+            let exp_negative = match self.peek() {
+                Some(b'+') => { self.advance(); false }
+                Some(b'-') => { self.advance(); true }
+                _ => false,
+            };
+            let mut exp: i32 = 0;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.advance();
+                    exp = exp.saturating_mul(10).saturating_add((c - b'0') as i32);
+                } else {
+                    break;
+                }
+            }
+            if exp_negative { exp = -exp; }
+            result = mul_pow10(result, exp);
+        }
+        
+        if negative { result = -result; }
+        self.try_lex_complex_suffix(result)
+    }
+
     /// Continue lexing a floating-point literal after the integer part.
     /// `int_part` is the integer part parsed so far (always non-negative).
     fn lex_float_tail(&mut self, int_part: isize, negative: bool) -> Result<Token, LexError> {
@@ -583,8 +633,8 @@ impl<'a> Lexer<'a> {
             self.parse_frac_part(&mut result);
         }
         
-        // Parse exponent part
-        if self.peek() == Some(b'e') || self.peek() == Some(b'E') {
+        // Parse exponent part (R7RS: e/E, s/S, f/F, d/D, l/L)
+        if self.peek().map_or(false, is_exponent_marker) {
             self.advance(); // consume 'e'/'E'
             let exp_negative = match self.peek() {
                 Some(b'+') => { self.advance(); false }
