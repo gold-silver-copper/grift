@@ -711,7 +711,10 @@
         (if (null? lst) acc (append-iter (cdr lst) (cons (car lst) acc))))
       (append-iter (rev-helper a '()) b))
 
-    (define (list-copy lst) (if (null? lst) '() (cons (car lst) (list-copy (cdr lst)))))
+    (define (list-copy lst)
+      (if (pair? lst)
+          (cons (car lst) (list-copy (cdr lst)))
+          lst))
 
     ;;; --------------------------------------------------------
     ;;; Higher-order functions (R7RS §6.4, §6.10)
