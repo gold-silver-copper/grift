@@ -455,15 +455,25 @@ impl<'a> Lexer<'a> {
 
     /// Parse a fractional decimal part (digits after '.'), accumulating into `result`.
     fn parse_frac_part(&mut self, result: &mut grift_core::fsize) {
-        let mut frac_scale: grift_core::fsize = 0.1;
+        // Accumulate fractional digits as an integer, then divide once
+        // to minimize floating-point rounding errors.
+        let mut frac_int: u64 = 0;
+        let mut frac_digits: u32 = 0;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
-                *result += (c - b'0') as grift_core::fsize * frac_scale;
-                frac_scale *= 0.1;
+                frac_int = frac_int * 10 + (c - b'0') as u64;
+                frac_digits += 1;
             } else {
                 break;
             }
+        }
+        if frac_digits > 0 {
+            let mut divisor: grift_core::fsize = 1.0;
+            for _ in 0..frac_digits {
+                divisor *= 10.0;
+            }
+            *result += frac_int as grift_core::fsize / divisor;
         }
     }
 
