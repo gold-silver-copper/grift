@@ -282,8 +282,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             c if is_symbol_char(c) => self.lex_symbol(),
-            c if c >= 0xC0 => {
-                // Multi-byte UTF-8 leading byte: check if it starts a Unicode letter/number
+            c if c >= 0xC2 => {
                 if let Some(ch) = self.peek_utf8_char() {
                     if ch.is_alphabetic() || ch.is_numeric() {
                         self.lex_symbol()
@@ -321,13 +320,16 @@ impl<'a> Lexer<'a> {
     }
     
     /// Decode the UTF-8 character at the current position.
-    /// Returns `None` if the current byte is ASCII or if the UTF-8 sequence is invalid.
+    /// Returns `None` if the UTF-8 sequence is invalid.
     fn peek_utf8_char(&self) -> Option<char> {
         let c = *self.input.get(self.pos)?;
         if c < 0x80 {
             return Some(c as char);
         }
-        let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
+        if c < 0xC2 {
+            return None; // Invalid start byte (continuation or overlong)
+        }
+        let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else if c < 0xF5 { 4 } else { return None };
         let end = (self.pos + seq_len).min(self.input.len());
         let s = core::str::from_utf8(&self.input[self.pos..end]).ok()?;
         s.chars().next()
@@ -349,8 +351,7 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.peek() {
             if is_ascii_ws(c) {
                 self.advance();
-            } else if c >= 0xC0 {
-                // Check for Unicode whitespace in multi-byte UTF-8 sequences
+            } else if c >= 0xC2 {
                 if let Some(ch) = self.peek_utf8_char() {
                     if grift_unicode::char_is_whitespace(ch) {
                         let byte_len = ch.len_utf8();
@@ -716,8 +717,7 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.peek() {
             if is_symbol_char(c) {
                 self.advance();
-            } else if c >= 0xC0 {
-                // Multi-byte UTF-8: accept Unicode letters and numbers in symbols
+            } else if c >= 0xC2 {
                 if let Some(ch) = self.peek_utf8_char() {
                     if ch.is_alphabetic() || ch.is_numeric() {
                         let byte_len = ch.len_utf8();
@@ -1238,8 +1238,8 @@ impl<'a> Lexer<'a> {
 
 /// Check if a byte is a valid ASCII symbol character.
 /// Uses a 128-byte lookup table for O(1) classification of ASCII bytes.
-/// Non-ASCII bytes (>= 0x80) are not valid symbol start bytes on their own;
-/// Unicode symbol characters are handled via `is_unicode_symbol_char`.
+/// Non-ASCII bytes (>= 0x80) are handled via UTF-8 decoding and Unicode
+/// property checks (`is_alphabetic` / `is_numeric`) in the lexer methods.
 pub(crate) fn is_symbol_char(c: u8) -> bool {
     (c as usize) < 128 && SYMBOL_CHAR_TABLE[c as usize]
 }
