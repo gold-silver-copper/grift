@@ -360,8 +360,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let packed = self.lisp.cons(proc, d1)?;
                     self.cont(ContType::VectorMapStep, EnvRef(cont_env)).data1(packed)?;
                     
-                    // Apply proc via ApplyForced
-                    self.cont(ContType::ApplyForced, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
+                    // Apply proc with pre-evaluated args
+                    self.cont(ContType::ApplyDirect, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
                     Ok(Some(TrampolineState::Return { val: proc }))
                 }
             }
@@ -394,8 +394,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let packed = self.lisp.cons(proc, d1)?;
                     self.cont(ContType::VectorForEachStep, EnvRef(cont_env)).data1(packed)?;
                     
-                    // Apply proc via ApplyForced
-                    self.cont(ContType::ApplyForced, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
+                    // Apply proc with pre-evaluated args
+                    self.cont(ContType::ApplyDirect, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
                     Ok(Some(TrampolineState::Return { val: proc }))
                 }
             }
@@ -470,7 +470,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let args_list = val;
                 let call_expr = self.lisp.cons(func, args_list)?;
                 self.push_frame(call_expr, func)?;
-                self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+                self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: func }))
             }
 
@@ -550,7 +550,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let call_expr = self.lisp.cons(val, args_list)?;
                 
                 self.push_frame(call_expr, val)?;
-                self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+                self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
                 Ok(Some(TrampolineState::Return { val }))
             }
 
@@ -716,11 +716,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     _ => {
                         // For other callable types, use the standard apply mechanism
-                        // Create a call expression and go through ApplyForced
                         let call_expr = self.lisp.cons(val, args)?;
                         self.push_frame(call_expr, val)?;
                         let global = self.global_env;
-                        self.cont(ContType::ApplyForced, global).data3(args, global.0, call_expr)?;
+                        self.cont(ContType::ApplyDirect, global).data3(args, global.0, call_expr)?;
                         Ok(Some(TrampolineState::Return { val }))
                     }
                 }
@@ -988,6 +987,60 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Discard val, return the saved value from data
                 let saved = self.unpack1(data);
                 Ok(Some(TrampolineState::Return { val: saved }))
+            }
+
+            ContType::ApplyDirect => {
+                // Data: (args_list . (env . call_expr))
+                // val is the already-evaluated function
+                // args_list contains already-evaluated argument values
+                let (args_list, _env, call_expr) = self.unpack3(data)?;
+                self.pop_frame();
+
+                match self.lisp.get(val)? {
+                    Value::Builtin(b) => {
+                        let result = self.apply_builtin_trampolined(b, args_list, call_expr)?;
+                        Ok(Some(result))
+                    }
+                    Value::Lambda { .. } => {
+                        let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
+                        self.apply_direct_lambda(params, body, closure_env, args_list, call_expr)
+                    }
+                    Value::StdLib(s) => {
+                        let parsed_body = parse(self.lisp, s.body())
+                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        let body = self.expand(parsed_body)?;
+                        let params = self.make_stdlib_param_list(s.params())?;
+                        self.apply_direct_lambda(params, body, self.global_env.0, args_list, call_expr)
+                    }
+                    Value::Native { .. } => {
+                        let id = self.lisp.native_id(val)?;
+                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
+                            let result = native_fn(self.lisp, args_list)?;
+                            Ok(Some(TrampolineState::Return { val: result }))
+                        } else {
+                            Err(self.make_error(ErrorKind::NotAFunction, call_expr)
+                                .with_message("native function not found"))
+                        }
+                    }
+                    Value::Continuation { .. } => {
+                        // Continuation invocation with pre-evaluated arg
+                        if self.lisp.get(args_list)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("continuation requires exactly 1 argument"));
+                        }
+                        let arg = self.lisp.car(args_list)?;
+                        let rest = self.lisp.cdr(args_list)?;
+                        if !self.lisp.get(rest)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("continuation requires exactly 1 argument"));
+                        }
+                        self.restore_continuation(val)?;
+                        Ok(Some(TrampolineState::Return { val: arg }))
+                    }
+                    _ => {
+                        Err(self.make_error(ErrorKind::NotAFunction, call_expr))
+                    }
+                }
             }
         }
     }
@@ -2168,7 +2221,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let call_expr = self.lisp.cons(handler, arg_list)?;
                 let global = self.global_env;
                 self.push_frame(call_expr, handler)?;
-                self.cont(ContType::ApplyForced, global)
+                self.cont(ContType::ApplyDirect, global)
                     .data3(arg_list, global.0, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: handler }))
             }
@@ -2727,6 +2780,69 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.cont(ContType::LambdaBindArg, eval_env).data6(rest_exprs, eval_env.0, rest_params, body, closure_env, call_expr)?;
             self.cont(ContType::LambdaFirstBind, eval_env).data1(first_param)?;
             Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: eval_env }))
+        }
+    }
+
+    /// Apply a lambda/stdlib with pre-evaluated arguments (no re-evaluation).
+    /// Used by ApplyDirect, apply builtin, and call-with-values.
+    fn apply_direct_lambda(
+        &mut self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        closure_env: ArenaIndex,
+        args_list: ArenaIndex,
+        call_expr: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        // Rest-argument lambda: (lambda args body) where args is a symbol
+        if self.lisp.get(params)?.is_symbol() {
+            let extended_env = self.env_extend(EnvRef(closure_env), params, args_list)?;
+            return Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }));
+        }
+
+        // Bind params to values directly
+        let mut current_params = params;
+        let mut current_args = args_list;
+        let mut env = closure_env;
+
+        loop {
+            match (self.lisp.get(current_params)?, self.lisp.get(current_args)?) {
+                (Value::Nil, Value::Nil) => {
+                    // All params bound
+                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(env) }));
+                }
+                (Value::Nil, _) => {
+                    let got = self.count_list(args_list)?;
+                    let expected = self.count_list(params)?;
+                    return Err(self.arg_error(call_expr, expected, got));
+                }
+                (Value::Symbol(_), _) => {
+                    // Rest parameter: bind remaining args as list
+                    let extended_env = self.env_extend(EnvRef(env), current_params, current_args)?;
+                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }));
+                }
+                (Value::Cons { .. }, Value::Cons { .. }) => {
+                    let param = self.lisp.car(current_params)?;
+                    let arg_val = self.lisp.car(current_args)?;
+
+                    // Check for dotted pair rest parameter
+                    if self.lisp.get(param)?.is_symbol() {
+                        let extended = self.env_extend(EnvRef(env), param, arg_val)?;
+                        env = extended.0;
+                        current_params = self.lisp.cdr(current_params)?;
+                        current_args = self.lisp.cdr(current_args)?;
+                    } else {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
+                }
+                (Value::Cons { .. }, Value::Nil) => {
+                    let got = self.count_list(args_list)?;
+                    let expected = self.count_list(params)?;
+                    return Err(self.arg_error(call_expr, expected, got));
+                }
+                _ => {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+            }
         }
     }
 }
