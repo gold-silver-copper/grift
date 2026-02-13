@@ -284,7 +284,7 @@ impl<'a> Lexer<'a> {
             c if is_symbol_char(c) => self.lex_symbol(),
             c if c >= 0xC2 => {
                 if let Some(ch) = self.peek_utf8_char() {
-                    if ch.is_alphabetic() || ch.is_numeric() {
+                    if !grift_unicode::char_is_whitespace(ch) {
                         self.lex_symbol()
                     } else {
                         self.advance();
@@ -719,7 +719,7 @@ impl<'a> Lexer<'a> {
                 self.advance();
             } else if c >= 0xC2 {
                 if let Some(ch) = self.peek_utf8_char() {
-                    if ch.is_alphabetic() || ch.is_numeric() {
+                    if !grift_unicode::char_is_whitespace(ch) {
                         let byte_len = ch.len_utf8();
                         for _ in 0..byte_len {
                             self.advance();

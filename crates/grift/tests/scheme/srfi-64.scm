@@ -41,7 +41,7 @@
   (display %srfi64-suite-name)
   (newline))
 
-(define (test-group name thunk)
+(define (%srfi64-run-group name thunk)
   (display "SRFI64:GROUP:BEGIN ")
   (display name)
   (newline)
@@ -52,6 +52,11 @@
   (display "SRFI64:GROUP:END ")
   (display name)
   (newline))
+
+(define-syntax test-group
+  (syntax-rules ()
+    ((_ name body ...)
+     (%srfi64-run-group name (lambda () body ...)))))
 
 (define (%srfi64-record-pass name)
   (set! %srfi64-pass-count (+ %srfi64-pass-count 1))
