@@ -402,12 +402,54 @@ impl<'a> Lexer<'a> {
         }
     }
     
+    /// Save the current lexer position for later restoration.
+    fn save_pos(&self) -> (usize, usize, usize) {
+        (self.pos, self.line, self.column)
+    }
+
+    /// Restore the lexer position from a previously saved state.
+    fn restore_pos(&mut self, saved: (usize, usize, usize)) {
+        self.pos = saved.0;
+        self.line = saved.1;
+        self.column = saved.2;
+    }
+
+    /// Parse a fractional decimal part (digits after '.'), accumulating into `result`.
+    fn parse_frac_part(&mut self, result: &mut grift_core::fsize) {
+        let mut frac_scale: grift_core::fsize = 0.1;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.advance();
+                *result += (c - b'0') as grift_core::fsize * frac_scale;
+                frac_scale *= 0.1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Parse a non-negative float value (integer part + optional fractional part).
+    fn parse_unsigned_float(&mut self) -> grift_core::fsize {
+        let mut val: grift_core::fsize = 0.0;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.advance();
+                val = val * 10.0 + (c - b'0') as grift_core::fsize;
+            } else {
+                break;
+            }
+        }
+        if self.peek() == Some(b'.') {
+            self.advance();
+            self.parse_frac_part(&mut val);
+        }
+        val
+    }
+
     /// Try to consume a `#!fold-case` or `#!no-fold-case` directive.
     /// Returns true if a directive was consumed, false otherwise (position unchanged).
     fn try_skip_fold_case_directive(&mut self) -> bool {
-        let save_pos = self.pos;
-        let save_line = self.line;
-        let save_col = self.column;
+        let saved = self.save_pos();
         
         self.advance(); // consume '#'
         self.advance(); // consume '!'
@@ -432,9 +474,7 @@ impl<'a> Lexer<'a> {
         }
         
         // Not a recognized directive — restore position
-        self.pos = save_pos;
-        self.line = save_line;
-        self.column = save_col;
+        self.restore_pos(saved);
         false
     }
     
@@ -516,16 +556,7 @@ impl<'a> Lexer<'a> {
         // Parse fractional part
         if self.peek() == Some(b'.') {
             self.advance(); // consume '.'
-            let mut frac_scale: grift_core::fsize = 0.1;
-            while let Some(c) = self.peek() {
-                if c.is_ascii_digit() {
-                    self.advance();
-                    result += (c - b'0') as grift_core::fsize * frac_scale;
-                    frac_scale *= 0.1;
-                } else {
-                    break;
-                }
-            }
+            self.parse_frac_part(&mut result);
         }
         
         // Parse exponent part
@@ -567,37 +598,14 @@ impl<'a> Lexer<'a> {
                     return Ok(Token::Complex(real, imag));
                 }
                 // Parse imaginary part number
-                let mut imag_val: grift_core::fsize = 0.0;
-                while let Some(c) = self.peek() {
-                    if c.is_ascii_digit() {
-                        self.advance();
-                        imag_val = imag_val * 10.0 + (c - b'0') as grift_core::fsize;
-                    } else {
-                        break;
-                    }
-                }
-                // Check for decimal part
-                if self.peek() == Some(b'.') {
-                    self.advance();
-                    let mut frac_scale: grift_core::fsize = 0.1;
-                    while let Some(c) = self.peek() {
-                        if c.is_ascii_digit() {
-                            self.advance();
-                            imag_val += (c - b'0') as grift_core::fsize * frac_scale;
-                            frac_scale *= 0.1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
+                let mut imag_val = self.parse_unsigned_float();
                 if neg { imag_val = -imag_val; }
                 // Must end with 'i'
                 if self.peek() == Some(b'i') {
                     self.advance();
                     Ok(Token::Complex(real, imag_val))
                 } else {
-                    // Not a complex literal, return just the real part
-                    // (the +/- was consumed; this is an error in practice)
+                    // +/- was consumed but no trailing 'i'; malformed complex literal
                     Err(self.error(LexErrorKind::NumberOverflow))
                 }
             }
@@ -611,28 +619,7 @@ impl<'a> Lexer<'a> {
                     if self.peek() == Some(b'+') { self.advance(); }
                     false
                 };
-                let mut angle: grift_core::fsize = 0.0;
-                while let Some(c) = self.peek() {
-                    if c.is_ascii_digit() {
-                        self.advance();
-                        angle = angle * 10.0 + (c - b'0') as grift_core::fsize;
-                    } else {
-                        break;
-                    }
-                }
-                if self.peek() == Some(b'.') {
-                    self.advance();
-                    let mut frac_scale: grift_core::fsize = 0.1;
-                    while let Some(c) = self.peek() {
-                        if c.is_ascii_digit() {
-                            self.advance();
-                            angle += (c - b'0') as grift_core::fsize * frac_scale;
-                            frac_scale *= 0.1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
+                let mut angle = self.parse_unsigned_float();
                 if angle_neg { angle = -angle; }
                 // Convert polar to rectangular
                 let r = real;
@@ -665,29 +652,7 @@ impl<'a> Lexer<'a> {
                 }
                 // Check if followed by digits (for imaginary part)
                 if self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    let mut imag_val: grift_core::fsize = 0.0;
-                    while let Some(c) = self.peek() {
-                        if c.is_ascii_digit() {
-                            self.advance();
-                            imag_val = imag_val * 10.0 + (c - b'0') as grift_core::fsize;
-                        } else {
-                            break;
-                        }
-                    }
-                    // Check for decimal part
-                    if self.peek() == Some(b'.') {
-                        self.advance();
-                        let mut frac_scale: grift_core::fsize = 0.1;
-                        while let Some(c) = self.peek() {
-                            if c.is_ascii_digit() {
-                                self.advance();
-                                imag_val += (c - b'0') as grift_core::fsize * frac_scale;
-                                frac_scale *= 0.1;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
+                    let mut imag_val = self.parse_unsigned_float();
                     if neg { imag_val = -imag_val; }
                     if self.peek() == Some(b'i') {
                         self.advance();
@@ -773,24 +738,18 @@ impl<'a> Lexer<'a> {
             }
             Some(b'u') => {
                 // #u8( bytevector literal
-                let save_pos = self.pos;
-                let save_line = self.line;
-                let save_col = self.column;
+                let saved = self.save_pos();
                 self.advance(); // consume 'u'
                 if self.peek() == Some(b'8') {
                     self.advance(); // consume '8'
                     if self.peek() == Some(b'(') {
                         Ok(Token::BytevectorOpen)
                     } else {
-                        self.pos = save_pos;
-                        self.line = save_line;
-                        self.column = save_col;
+                        self.restore_pos(saved);
                         Err(self.error(LexErrorKind::InvalidHashLiteral))
                     }
                 } else {
-                    self.pos = save_pos;
-                    self.line = save_line;
-                    self.column = save_col;
+                    self.restore_pos(saved);
                     Err(self.error(LexErrorKind::InvalidHashLiteral))
                 }
             }
@@ -909,9 +868,7 @@ impl<'a> Lexer<'a> {
     /// Try to lex special float constants: inf.0, nan.0
     /// Called when sign has already been parsed. Returns None if not a match (position unchanged).
     fn try_lex_special_float(&mut self, negative: bool) -> Option<Token> {
-        let save_pos = self.pos;
-        let save_line = self.line;
-        let save_col = self.column;
+        let saved = self.save_pos();
         
         // Peek ahead for "inf.0" or "nan.0"
         let start = self.pos;
@@ -939,9 +896,7 @@ impl<'a> Lexer<'a> {
         }
         
         // Not a match - restore position
-        self.pos = save_pos;
-        self.line = save_line;
-        self.column = save_col;
+        self.restore_pos(saved);
         None
     }
     

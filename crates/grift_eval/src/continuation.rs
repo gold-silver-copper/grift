@@ -35,68 +35,59 @@ pub trait GcRoots {
 // Typed Index Newtypes
 // ============================================================================
 
-/// A typed wrapper around [`ArenaIndex`] representing an environment chain.
+/// Macro to generate a typed wrapper around [`ArenaIndex`].
 ///
-/// Environments are linked lists of `(name . value)` bindings stored in the
-/// arena. Using a distinct type prevents accidentally passing an expression
-/// where an environment is expected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EnvRef(pub(crate) ArenaIndex);
+/// Each generated type provides `index()`, `new()`, and bidirectional `From`
+/// conversions, preventing accidentally passing an expression where an
+/// environment is expected (or vice versa).
+macro_rules! define_index_wrapper {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct $name(pub(crate) ArenaIndex);
 
-impl EnvRef {
-    /// Get the underlying [`ArenaIndex`].
-    pub const fn index(self) -> ArenaIndex {
-        self.0
-    }
+        impl $name {
+            /// Get the underlying [`ArenaIndex`].
+            pub const fn index(self) -> ArenaIndex {
+                self.0
+            }
 
-    /// Create an `EnvRef` from a raw [`ArenaIndex`].
-    pub const fn new(idx: ArenaIndex) -> Self {
-        EnvRef(idx)
-    }
+            /// Create from a raw [`ArenaIndex`].
+            pub const fn new(idx: ArenaIndex) -> Self {
+                $name(idx)
+            }
+        }
+
+        impl From<ArenaIndex> for $name {
+            fn from(idx: ArenaIndex) -> Self {
+                $name(idx)
+            }
+        }
+
+        impl From<$name> for ArenaIndex {
+            fn from(r: $name) -> Self {
+                r.0
+            }
+        }
+    };
 }
 
-impl From<ArenaIndex> for EnvRef {
-    fn from(idx: ArenaIndex) -> Self {
-        EnvRef(idx)
-    }
-}
+define_index_wrapper!(
+    /// A typed wrapper around [`ArenaIndex`] representing an environment chain.
+    ///
+    /// Environments are linked lists of `(name . value)` bindings stored in the
+    /// arena. Using a distinct type prevents accidentally passing an expression
+    /// where an environment is expected.
+    EnvRef
+);
 
-impl From<EnvRef> for ArenaIndex {
-    fn from(r: EnvRef) -> Self {
-        r.0
-    }
-}
-
-/// A typed wrapper around [`ArenaIndex`] representing an expression to evaluate.
-///
-/// Expressions are S-expressions stored in the arena. Using a distinct type
-/// prevents accidentally passing an environment where an expression is expected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExprRef(pub(crate) ArenaIndex);
-
-impl ExprRef {
-    /// Get the underlying [`ArenaIndex`].
-    pub const fn index(self) -> ArenaIndex {
-        self.0
-    }
-
-    /// Create an `ExprRef` from a raw [`ArenaIndex`].
-    pub const fn new(idx: ArenaIndex) -> Self {
-        ExprRef(idx)
-    }
-}
-
-impl From<ArenaIndex> for ExprRef {
-    fn from(idx: ArenaIndex) -> Self {
-        ExprRef(idx)
-    }
-}
-
-impl From<ExprRef> for ArenaIndex {
-    fn from(r: ExprRef) -> Self {
-        r.0
-    }
-}
+define_index_wrapper!(
+    /// A typed wrapper around [`ArenaIndex`] representing an expression to evaluate.
+    ///
+    /// Expressions are S-expressions stored in the arena. Using a distinct type
+    /// prevents accidentally passing an environment where an expression is expected.
+    ExprRef
+);
 
 // ============================================================================
 // Continuation Type Enum
