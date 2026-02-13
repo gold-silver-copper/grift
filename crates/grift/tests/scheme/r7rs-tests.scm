@@ -1136,16 +1136,16 @@
 (test-equal "r7rs-463" #f (symbol? #f))
 
 (test-equal "r7rs-464" #t (symbol=? 'a 'a))
-;; FAILING: (test-equal "r7rs-465" #f (symbol=? 'a 'A))
+(test-equal "r7rs-465" #f (symbol=? 'a 'A))
 (test-equal "r7rs-466" #t (symbol=? 'a 'a 'a))
-;; FAILING: (test-equal "r7rs-467" #f (symbol=? 'a 'a 'A))
+(test-equal "r7rs-467" #f (symbol=? 'a 'a 'A))
 
 (test-equal "r7rs-468" "flying-fish" (symbol->string 'flying-fish))
-;; FAILING: (test-equal "r7rs-469" "Martin" (symbol->string 'Martin))
+(test-equal "r7rs-469" "Martin" (symbol->string 'Martin))
 (test-equal "r7rs-470" "Malvina" (symbol->string (string->symbol "Malvina")))
 
-;; FAILING: (test-equal "r7rs-471" 'mISSISSIppi (string->symbol "mISSISSIppi"))
-;; FAILING: (test-equal "r7rs-472" #t (eq? 'bitBlt (string->symbol "bitBlt")))
+(test-equal "r7rs-471" 'mISSISSIppi (string->symbol "mISSISSIppi"))
+(test-equal "r7rs-472" #t (eq? 'bitBlt (string->symbol "bitBlt")))
 (test-equal "r7rs-473" #t (eq? 'LollyPop (string->symbol (symbol->string 'LollyPop))))
 (test-equal "r7rs-474" #t (string=? "K. Harper, M.D."
                    (symbol->string (string->symbol "K. Harper, M.D."))))
@@ -1386,8 +1386,8 @@
 (test-equal "r7rs-659" '(#\a) (string->list "a"))
 (test-equal "r7rs-660" '(#\a #\b #\c) (string->list "abc"))
 (test-equal "r7rs-661" '(#\a #\b #\c) (string->list "abc" 0))
-;; FAILING: (test-equal "r7rs-662" '(#\b #\c) (string->list "abc" 1))
-;; FAILING: (test-equal "r7rs-663" '(#\b #\c) (string->list "abc" 1 3))
+(test-equal "r7rs-662" '(#\b #\c) (string->list "abc" 1))
+(test-equal "r7rs-663" '(#\b #\c) (string->list "abc" 1 3))
 
 (test-equal "r7rs-664" "" (list->string '()))
 (test-equal "r7rs-665" "abc" (list->string '(#\a #\b #\c)))
@@ -1442,8 +1442,8 @@
   vec))
 
 (test-equal "r7rs-694" '(dah dah didah) (vector->list '#(dah dah didah)))
-;; FAILING: (test-equal "r7rs-695" '(dah didah) (vector->list '#(dah dah didah) 1))
-;; FAILING: (test-equal "r7rs-696" '(dah) (vector->list '#(dah dah didah) 1 2))
+(test-equal "r7rs-695" '(dah didah) (vector->list '#(dah dah didah) 1))
+(test-equal "r7rs-696" '(dah) (vector->list '#(dah dah didah) 1 2))
 (test-equal "r7rs-697" #(dididit dah) (list->vector '(dididit dah)))
 
 (test-equal "r7rs-698" #() (string->vector ""))
@@ -1468,10 +1468,10 @@
 (test-equal "r7rs-714" #(a b c d e) (vector-append #(a b c) #(d e)))
 (test-equal "r7rs-715" #(a b c d e f) (vector-append #(a b c) #(d e) #(f)))
 
-;; FAILING: (test-equal "r7rs-716" #(1 2 smash smash 5) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'smash 2 4) vec))
+(test-equal "r7rs-716" #(1 2 smash smash 5) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'smash 2 4) vec))
 (test-equal "r7rs-717" #(x x x x x) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'x) vec))
-;; FAILING: (test-equal "r7rs-718" #(1 2 x x x) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'x 2) vec))
-;; FAILING: (test-equal "r7rs-719" #(1 2 x 4 5) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'x 2 3) vec))
+(test-equal "r7rs-718" #(1 2 x x x) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'x 2) vec))
+(test-equal "r7rs-719" #(1 2 x 4 5) (let ((vec (vector 1 2 3 4 5))) (vector-fill! vec 'x 2 3) vec))
 
 (test-equal "r7rs-720" #(1 a b 4 5) (let ((vec (vector 1 2 3 4 5))) (vector-copy! vec 1 #(a b c d e) 0 2) vec))
 (test-equal "r7rs-721" #(a b c d e) (let ((vec (vector 1 2 3 4 5))) (vector-copy! vec 0 #(a b c d e)) vec))

@@ -1005,15 +1005,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::VectorToList => {
-                // (vector->list vec) - convert vector to list
+                // (vector->list vec [start [end]]) - convert vector to list
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
                     Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
                         // Build list from end to front
                         let mut result = self.lisp.nil()?;
-                        for i in (0..len).rev() {
+                        for i in (start..end).rev() {
                             let elem = self.lisp.array_get(vec, i)?;
                             result = self.lisp.cons(elem, result)?;
                         }
@@ -1030,13 +1032,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::VectorFill => {
-                // (vector-fill! vec fill) - fill vector with value
-                extract_args!(self, args, vec, fill);
+                // (vector-fill! vec fill [start [end]]) - fill vector with value
+                let vec = self.lisp.car(args)?;
+                let rest1 = self.lisp.cdr(args)?;
+                let fill = self.lisp.car(rest1)?;
+                let rest2 = self.lisp.cdr(rest1)?;
                 
                 match self.lisp.get(vec)? {
                     Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
-                        for i in 0..len {
+                        let (start, end) = self.parse_range_args(rest2, len, call_expr)?;
+                        for i in start..end {
                             self.lisp.array_set(vec, i, fill)?;
                         }
                         // R7RS: returns unspecified, we return the vector
@@ -1514,12 +1520,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::StringToList => {
-                // (string->list string) - Convert string to list of characters
+                // (string->list string [start [end]]) - Convert string to list of characters
                 let str_idx = self.lisp.car(args)?;
                 let (len, data) = self.get_string(str_idx, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
                 let mut result = self.lisp.nil()?;
                 // Build list from end to start
-                for i in (0..len).rev() {
+                for i in (start..end).rev() {
                     // Characters start at data (no header with inline length)
                     let char_slot = self.lisp.arena_index_at_offset(data, i)?;
                     match self.lisp.get(char_slot)? {

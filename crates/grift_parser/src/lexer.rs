@@ -188,7 +188,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             line: 1,
             column: 1,
-            fold_case: true,
+            fold_case: false,
         }
     }
     
@@ -199,7 +199,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             line: 1,
             column: 1,
-            fold_case: true,
+            fold_case: false,
         }
     }
     
@@ -728,14 +728,10 @@ impl<'a> Lexer<'a> {
         let bytes = &self.input[start..self.pos];
         
         // Check for R7RS special float constants: +inf.0, -inf.0, +nan.0, -nan.0
-        // Compare with case-insensitive matching when fold_case is enabled
+        // These are always case-insensitive per R7RS §7.1.1
         if len == 6 {
             let matches = |target: &[u8]| -> bool {
-                if self.fold_case {
-                    bytes.iter().zip(target.iter()).all(|(&a, &b)| a.to_ascii_lowercase() == b)
-                } else {
-                    bytes == target
-                }
+                bytes.iter().zip(target.iter()).all(|(&a, &b)| a.to_ascii_lowercase() == b)
             };
             
             if matches(b"+inf.0") { return Ok(Token::Float(grift_core::fsize::INFINITY)); }
