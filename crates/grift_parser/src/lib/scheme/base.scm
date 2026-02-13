@@ -443,9 +443,6 @@
                          v)))))
           ((define-values var expr)
            (syntax (define var
-                     (call-with-values (lambda () expr) list))))
-          ((define-values var expr)
-           (syntax (define var
                      (call-with-values (lambda () expr) list)))))))
 
     ;; force

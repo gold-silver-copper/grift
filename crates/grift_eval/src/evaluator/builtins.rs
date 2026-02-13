@@ -3267,17 +3267,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     (Value::Rational { num: n1, denom: d1 }, Value::Number(y)) => {
                         if y == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
-                        self.lisp.rational(n1, d1.checked_mul(y).unwrap_or(1)).map_err(Into::into)
+                        match d1.checked_mul(y) {
+                            Some(new_d) => self.lisp.rational(n1, new_d).map_err(Into::into),
+                            None => self.lisp.float(n1 as fsize / (d1 as fsize * y as fsize)).map_err(Into::into),
+                        }
                     }
                     (Value::Number(x), Value::Rational { num: n2, denom: d2 }) => {
                         if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
-                        self.lisp.rational(x.checked_mul(d2).unwrap_or(x), n2).map_err(Into::into)
+                        match x.checked_mul(d2) {
+                            Some(new_n) => self.lisp.rational(new_n, n2).map_err(Into::into),
+                            None => self.lisp.float(x as fsize * d2 as fsize / n2 as fsize).map_err(Into::into),
+                        }
                     }
                     (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
                         if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
-                        let new_num = n1.checked_mul(d2).unwrap_or(1);
-                        let new_denom = d1.checked_mul(n2).unwrap_or(1);
-                        self.lisp.rational(new_num, new_denom).map_err(Into::into)
+                        match (n1.checked_mul(d2), d1.checked_mul(n2)) {
+                            (Some(new_num), Some(new_denom)) => self.lisp.rational(new_num, new_denom).map_err(Into::into),
+                            _ => self.lisp.float((n1 as fsize * d2 as fsize) / (d1 as fsize * n2 as fsize)).map_err(Into::into),
+                        }
                     }
                     (Value::Rational { num, denom }, Value::Float(y)) => {
                         self.lisp.float(num as fsize / denom as fsize / y).map_err(Into::into)
