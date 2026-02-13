@@ -77,11 +77,24 @@ fn format_value_impl<const N: usize>(
         }
         Ok(Value::Complex { real, imag }) => {
             use std::fmt::Write;
-            if imag >= 0.0 {
-                write!(buf, "{}+{}i", real, imag).unwrap();
-            } else {
-                write!(buf, "{}{}i", real, imag).unwrap();
+            fn fmt_fsize(buf: &mut String, v: grift_eval::fsize) {
+                if v.is_nan() {
+                    buf.push_str("+nan.0");
+                } else if v.is_infinite() {
+                    if v > 0.0 { buf.push_str("+inf.0"); } else { buf.push_str("-inf.0"); }
+                } else if v.is_finite() && v == (v as isize as grift_eval::fsize) {
+                    write!(buf, "{:.1}", v).unwrap();
+                } else {
+                    write!(buf, "{}", v).unwrap();
+                }
             }
+            fmt_fsize(buf, real);
+            // Add '+' only for finite non-negative values; inf/nan already include sign
+            if !imag.is_nan() && !imag.is_infinite() && imag >= 0.0 {
+                buf.push('+');
+            }
+            fmt_fsize(buf, imag);
+            buf.push('i');
         }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");

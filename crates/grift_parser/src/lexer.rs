@@ -275,6 +275,13 @@ impl<'a> Lexer<'a> {
                     let negative = c == b'-';
                     self.advance(); // consume sign
                     self.lex_dot_number(negative)
+                } else if self.peek_next() == Some(b'i') && !self.input.get(self.pos + 2).is_some_and(|c| c.is_ascii_alphanumeric()) {
+                    // +i or -i: pure imaginary unit
+                    let negative = c == b'-';
+                    self.advance(); // consume sign
+                    self.advance(); // consume 'i'
+                    let imag = if negative { -1.0 } else { 1.0 };
+                    Ok(Token::Complex(0.0, imag))
                 } else {
                     self.lex_symbol()
                 }
@@ -669,29 +676,109 @@ impl<'a> Lexer<'a> {
         Ok(Token::Float(result))
     }
 
+    /// Parse the imaginary part of a complex number after +/- sign has been consumed.
+    /// Returns (value, is_float_literal) where is_float_literal indicates the imag part
+    /// was written with a decimal point (e.g., 0.0i vs 0i).
+    fn parse_imag_part(&mut self) -> Option<(grift_core::fsize, bool)> {
+        // Check for bare 'i' (meaning +1i or -1i)
+        if self.peek() == Some(b'i') && !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+            self.advance();
+            return Some((1.0, false));
+        }
+        // Check for inf.0i or nan.0i
+        if self.peek().is_some_and(|c| c == b'i' || c == b'I' || c == b'n' || c == b'N') {
+            let saved = self.save_pos();
+            let start = self.pos;
+            for _ in 0..5 {
+                if let Some(c) = self.peek() {
+                    if c.is_ascii_alphanumeric() || c == b'.' {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let name = &self.input[start..self.pos];
+            if (name == b"inf.0" || name == b"INF.0") && self.peek() == Some(b'i') {
+                self.advance(); // consume 'i'
+                return Some((grift_core::fsize::INFINITY, true));
+            }
+            if (name == b"nan.0" || name == b"NAN.0") && self.peek() == Some(b'i') {
+                self.advance(); // consume 'i'
+                return Some((grift_core::fsize::NAN, true));
+            }
+            self.restore_pos(saved);
+        }
+        // Parse digits-based imaginary part
+        if self.peek().is_some_and(|c| c.is_ascii_digit() || c == b'.') {
+            let start_pos = self.pos;
+            let imag_val = self.parse_unsigned_float();
+            // Detect if input contained a '.' (makes it a float literal)
+            let is_float = self.input[start_pos..self.pos].contains(&b'.');
+            // Check for rational form: num/deni
+            if self.peek() == Some(b'/') {
+                let saved = self.save_pos();
+                self.advance();
+                if self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    let denom = self.parse_unsigned_float();
+                    if self.peek() == Some(b'i') {
+                        self.advance();
+                        return Some((imag_val / denom, true));
+                    }
+                }
+                self.restore_pos(saved);
+            }
+            // Check for exponent marker before 'i'
+            if self.peek().map_or(false, is_exponent_marker) {
+                let saved = self.save_pos();
+                self.advance();
+                let exp_neg = match self.peek() {
+                    Some(b'+') => { self.advance(); false }
+                    Some(b'-') => { self.advance(); true }
+                    _ => false,
+                };
+                let mut exp: i32 = 0;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.advance();
+                        exp = exp.saturating_mul(10).saturating_add((c - b'0') as i32);
+                    } else {
+                        break;
+                    }
+                }
+                if exp_neg { exp = -exp; }
+                if self.peek() == Some(b'i') {
+                    self.advance();
+                    return Some((mul_pow10(imag_val, exp), true));
+                }
+                self.restore_pos(saved);
+            }
+            if self.peek() == Some(b'i') {
+                self.advance();
+                return Some((imag_val, is_float));
+            }
+        }
+        None
+    }
+
     /// After parsing a float `real`, check for complex suffix: +imag i, -imag i, or @angle
     fn try_lex_complex_suffix(&mut self, real: grift_core::fsize) -> Result<Token, LexError> {
         match self.peek() {
             Some(b'+') | Some(b'-') => {
                 let neg = self.peek() == Some(b'-');
                 self.advance();
-                // Check for bare 'i' (meaning +1i or -1i)
-                if self.peek() == Some(b'i') && !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) {
-                    self.advance();
-                    let imag = if neg { -1.0 } else { 1.0 };
+                if let Some((imag_unsigned, is_float_imag)) = self.parse_imag_part() {
+                    let imag = if neg { -imag_unsigned } else { imag_unsigned };
+                    // Collapse to float when imaginary part is exact integer zero
+                    if imag == 0.0 && !imag.is_nan() && !is_float_imag {
+                        return Ok(Token::Float(real));
+                    }
                     return Ok(Token::Complex(real, imag));
                 }
-                // Parse imaginary part number
-                let mut imag_val = self.parse_unsigned_float();
-                if neg { imag_val = -imag_val; }
-                // Must end with 'i'
-                if self.peek() == Some(b'i') {
-                    self.advance();
-                    Ok(Token::Complex(real, imag_val))
-                } else {
-                    // +/- was consumed but no trailing 'i'; malformed complex literal
-                    Err(self.error(LexErrorKind::NumberOverflow))
-                }
+                // +/- was consumed but no trailing 'i'; malformed complex literal
+                Err(self.error(LexErrorKind::NumberOverflow))
             }
             Some(b'@') => {
                 // Polar form: magnitude@angle
@@ -728,20 +815,13 @@ impl<'a> Lexer<'a> {
                 let saved_pos = self.pos;
                 let neg = self.peek() == Some(b'-');
                 self.advance();
-                // Check for bare 'i'
-                if self.peek() == Some(b'i') && !self.peek_next().is_some_and(|c| c.is_ascii_alphanumeric()) {
-                    self.advance();
-                    let imag = if neg { -1.0 } else { 1.0 };
-                    return Ok(Token::Complex(value as grift_core::fsize, imag));
-                }
-                // Check if followed by digits (for imaginary part)
-                if self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    let mut imag_val = self.parse_unsigned_float();
-                    if neg { imag_val = -imag_val; }
-                    if self.peek() == Some(b'i') {
-                        self.advance();
-                        return Ok(Token::Complex(value as grift_core::fsize, imag_val));
+                if let Some((imag_unsigned, is_float_imag)) = self.parse_imag_part() {
+                    let imag = if neg { -imag_unsigned } else { imag_unsigned };
+                    // Collapse to integer when imaginary part is exact integer zero
+                    if imag == 0.0 && !imag.is_nan() && !is_float_imag {
+                        return Ok(Token::Number(value));
                     }
+                    return Ok(Token::Complex(value as grift_core::fsize, imag));
                 }
                 // Not a complex literal - restore position
                 self.pos = saved_pos;
@@ -799,7 +879,93 @@ impl<'a> Lexer<'a> {
             if matches(b"+nan.0") || matches(b"-nan.0") { return Ok(Token::Float(grift_core::fsize::NAN)); }
         }
         
+        // Check for special float + complex suffix: +inf.0+inf.0i, etc.
+        if len > 6 {
+            let lower = |i: usize| bytes.get(i).map(|b| b.to_ascii_lowercase());
+            // Try to match +inf.0 or -inf.0 at the start
+            let real_part = if len >= 6 {
+                let first6: [u8; 6] = [
+                    lower(0).unwrap_or(0), lower(1).unwrap_or(0), lower(2).unwrap_or(0),
+                    lower(3).unwrap_or(0), lower(4).unwrap_or(0), lower(5).unwrap_or(0),
+                ];
+                if &first6 == b"+inf.0" { Some(grift_core::fsize::INFINITY) }
+                else if &first6 == b"-inf.0" { Some(grift_core::fsize::NEG_INFINITY) }
+                else if &first6 == b"+nan.0" { Some(grift_core::fsize::NAN) }
+                else if &first6 == b"-nan.0" { Some(grift_core::fsize::NAN) }
+                else { None }
+            } else { None };
+            
+            if let Some(real) = real_part {
+                // Rest should be +imag_i or -imag_i
+                let rest = &self.input[start + 6..self.pos];
+                if let Some(imag) = Self::parse_complex_imag_suffix(rest) {
+                    return Ok(Token::Complex(real, imag));
+                }
+            }
+        }
+        
         Ok(Token::Symbol { start, len })
+    }
+
+    /// Parse a complex imaginary suffix like "+inf.0i", "-nan.0i", "+2.5i", "-1i", "+i", "-i"
+    /// from a byte slice. Returns Some(imag) if valid, None otherwise.
+    fn parse_complex_imag_suffix(rest: &[u8]) -> Option<grift_core::fsize> {
+        if rest.is_empty() { return None; }
+        let neg = rest[0] == b'-';
+        if rest[0] != b'+' && rest[0] != b'-' { return None; }
+        let after_sign = &rest[1..];
+        // Check for bare 'i'
+        if after_sign == b"i" {
+            return Some(if neg { -1.0 } else { 1.0 });
+        }
+        // Check for inf.0i or nan.0i
+        if after_sign.len() == 6 {
+            let lower: [u8; 5] = [
+                after_sign[0].to_ascii_lowercase(),
+                after_sign[1].to_ascii_lowercase(),
+                after_sign[2].to_ascii_lowercase(),
+                after_sign[3].to_ascii_lowercase(),
+                after_sign[4].to_ascii_lowercase(),
+            ];
+            if after_sign[5] == b'i' {
+                if &lower == b"inf.0" {
+                    let v = if neg { grift_core::fsize::NEG_INFINITY } else { grift_core::fsize::INFINITY };
+                    return Some(v);
+                }
+                if &lower == b"nan.0" {
+                    return Some(grift_core::fsize::NAN);
+                }
+            }
+        }
+        // Check for digit-based imaginary: digits[.digits]i
+        if after_sign.last() == Some(&b'i') && after_sign.len() >= 2 {
+            let num_part = &after_sign[..after_sign.len() - 1];
+            if num_part.iter().all(|&b| b.is_ascii_digit() || b == b'.') && num_part.iter().any(|&b| b.is_ascii_digit()) {
+                // Simple numeric parse
+                let mut val: grift_core::fsize = 0.0;
+                let mut frac = false;
+                let mut frac_int: u64 = 0;
+                let mut frac_digits: u32 = 0;
+                for &b in num_part {
+                    if b == b'.' {
+                        frac = true;
+                    } else if frac {
+                        frac_int = frac_int * 10 + (b - b'0') as u64;
+                        frac_digits += 1;
+                    } else {
+                        val = val * 10.0 + (b - b'0') as grift_core::fsize;
+                    }
+                }
+                if frac_digits > 0 {
+                    let mut divisor: grift_core::fsize = 1.0;
+                    for _ in 0..frac_digits { divisor *= 10.0; }
+                    val += frac_int as grift_core::fsize / divisor;
+                }
+                if neg { val = -val; }
+                return Some(val);
+            }
+        }
+        None
     }
 
     /// Lex a `|...|` escaped symbol (R7RS §7.1.1).

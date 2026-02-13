@@ -733,12 +733,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Sqrt => {
-                // Square root - always returns float for non-perfect squares
+                // Square root - R7RS: returns complex for negative numbers
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::Number(n) => {
                         if n < 0 {
-                            return Err(self.type_error(call_expr, "non-negative number", "negative integer"));
+                            // sqrt of negative integer → complex
+                            let mag = float_sqrt((-n) as fsize);
+                            return self.lisp.complex(0.0, mag).map_err(Into::into);
                         }
                         // Check for perfect square
                         let root = float_sqrt(n as fsize);
@@ -750,17 +752,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                     Value::Float(f) => {
-                        self.lisp.float(float_sqrt(f)).map_err(Into::into)
+                        if f < 0.0 {
+                            let mag = float_sqrt(-f);
+                            self.lisp.complex(0.0, mag).map_err(Into::into)
+                        } else {
+                            self.lisp.float(float_sqrt(f)).map_err(Into::into)
+                        }
+                    }
+                    Value::Complex { real, imag } => {
+                        // sqrt of complex: use formula sqrt(r) * (cos(θ/2) + i*sin(θ/2))
+                        let r = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
+                        let theta = libm::atan2(imag as f64, real as f64);
+                        let sqrt_r = libm::sqrt(r);
+                        let half_theta = theta / 2.0;
+                        let re = sqrt_r * libm::cos(half_theta);
+                        let im = sqrt_r * libm::sin(half_theta);
+                        if libm::fabs(im) < f64::EPSILON {
+                            self.lisp.float(re as fsize).map_err(Into::into)
+                        } else {
+                            self.lisp.complex(re as fsize, im as fsize).map_err(Into::into)
+                        }
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
             
-            // integer? is true for exact integers and floats that are whole numbers
+            // integer? is true for exact integers, floats that are whole numbers,
+            // and complex with zero imaginary and integer real (R7RS §6.2.5)
             Builtin::Integerp => {
                 builtin_unary_pred!(self, args, |v: Value| match v {
                     Value::Number(_) => true,
                     Value::Float(f) => f.is_finite() && f == (f as isize as fsize),
+                    Value::Complex { real, imag } => imag == 0.0 && real.is_finite() && real == (real as isize as fsize),
                     _ => false,
                 })
             }
@@ -770,11 +793,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Inexactp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |_f| true),
             
-            Builtin::Finitep => builtin_numeric_pred!(self, args, call_expr, |_n| true, |f| f.is_finite()),
+            Builtin::Finitep => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Rational { .. } => self.lisp.true_val().map_err(Into::into),
+                    Value::Float(f) => self.lisp.boolean(f.is_finite()).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.boolean(real.is_finite() && imag.is_finite()).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Infinitep => builtin_numeric_pred!(self, args, call_expr, |_n| false, |f| f.is_infinite()),
+            Builtin::Infinitep => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Rational { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Float(f) => self.lisp.boolean(f.is_infinite()).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.boolean(real.is_infinite() || imag.is_infinite()).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Nanp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |f| f.is_nan()),
+            Builtin::Nanp => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Rational { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Float(f) => self.lisp.boolean(f.is_nan()).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.boolean(real.is_nan() || imag.is_nan()).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
             // Rounding operations - identity for integers, actual rounding for floats
             Builtin::Floor => builtin_rounding_op!(self, args, call_expr, float_floor),
@@ -3101,9 +3148,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::MakeRectangular => {
                 let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
                 let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if b == 0.0 {
-                    return self.lisp.float(a).map_err(Into::into);
-                }
                 self.lisp.complex(a, b).map_err(Into::into)
             }
 

@@ -676,7 +676,7 @@
       (if (eq? s1 s2) (check s1 rest) #f))
 
     (define (exact-integer? x) (and (integer? x) (exact? x)))
-    (define (real? x) (number? x))
+    (define (real? x) (and (number? x) (exact? (imag-part x))))
     (define (rational? x)
       (and (number? x)
            (if (inexact? x) (finite? x) #t)))
