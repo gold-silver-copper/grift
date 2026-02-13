@@ -171,6 +171,7 @@ impl<'a> Parser<'a> {
                 let name = self.lexer.input_slice(start, len);
                 lisp.symbol_from_bytes_folded(name, self.lexer.is_fold_case()).map_err(Into::into)
             }
+            Token::InternedSymbol(idx) => Ok(idx),
             Token::String(idx) => Ok(idx),
             Token::VectorOpen => self.parse_vector_literal(lisp),
             Token::BytevectorOpen => self.parse_bytevector_literal(lisp),

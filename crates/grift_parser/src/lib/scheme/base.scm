@@ -270,11 +270,17 @@
 
     ;; cond
     (define-syntax cond
-      (syntax-rules (else)
+      (syntax-rules (else =>)
         ((cond (else result))
          result)
         ((cond (else result1 result2 ...))
          (begin result1 result2 ...))
+        ((cond (test => proc))
+         (let ((tmp test))
+           (if tmp (proc tmp) #f)))
+        ((cond (test => proc) rest ...)
+         (let ((tmp test))
+           (if tmp (proc tmp) (cond rest ...))))
         ((cond (test result))
          (if test result #f))
         ((cond (test result1 result2 ...))
@@ -286,17 +292,28 @@
         ((cond)
          #f)))
 
-    ;; case
+    ;; case - R7RS §4.2.1
+    ;; Supports (else result ...), (else => proc), and ((datum ...) => proc) clauses
     (define-syntax case
-      (syntax-rules (else)
+      (syntax-rules (else =>)
         ((case key)
          (if #f #f))
+        ((case key (else => proc))
+         (let ((tmp key))
+           (proc tmp)))
         ((case key (else result ...))
-         (begin result ...))
+         (let ((tmp key))
+           (begin result ...)))
+        ((case key ((datum ...) => proc) . rest)
+         (let ((tmp key))
+           (if (memv tmp '(datum ...))
+               (proc tmp)
+               (case tmp . rest))))
         ((case key ((datum ...) result ...) . rest)
-         (if (memv key '(datum ...))
-             (begin result ...)
-             (case key . rest)))))
+         (let ((tmp key))
+           (if (memv tmp '(datum ...))
+               (begin result ...)
+               (case tmp . rest))))))
 
     ;; do helpers
     (define-syntax %do-vars

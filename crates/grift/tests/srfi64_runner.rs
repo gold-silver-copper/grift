@@ -118,9 +118,22 @@ fn run_scheme_test(path: &Path) -> TimedSrfi64Output {
     // Run the test file (wrap in begin since eval_str handles one expression)
     let test_wrapped = format!("(begin\n{}\n)", test_content);
     eval.eval_str(&test_wrapped).unwrap_or_else(|e| {
+        // Try to get more info about the error
+        let mut extra = String::new();
+        if let Ok(grift::Value::Symbol(name_idx)) = lisp.get(e.expr) {
+            let len = lisp.string_len(name_idx).unwrap_or(0);
+            let mut name = String::new();
+            for i in 0..len {
+                if let Ok(c) = lisp.string_char_at(name_idx, i) {
+                    name.push(c);
+                }
+            }
+            extra = format!(" (symbol: '{}')", name);
+        }
         panic!(
-            "Failed to evaluate test file: {:?}\nFile: {}",
+            "Failed to evaluate test file: {:?}{}\nFile: {}",
             e,
+            extra,
             path.display()
         )
     });

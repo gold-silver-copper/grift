@@ -89,6 +89,9 @@ pub enum Token {
         /// Length of the symbol name in bytes
         len: usize,
     },
+    /// Pre-interned symbol from `|...|` escaped syntax.
+    /// The `ArenaIndex` points to the already-interned symbol in the arena.
+    InternedSymbol(grift_arena::ArenaIndex),
     /// Character literal (`#\a`, `#\space`, `#\newline`, etc.)
     Char(char),
     /// String literal — characters are allocated in the arena.
@@ -281,6 +284,7 @@ impl<'a> Lexer<'a> {
                     self.lex_symbol()
                 }
             }
+            b'|' => self.lex_escaped_symbol(lisp),
             c if is_symbol_char(c) => self.lex_symbol(),
             c if c >= 0xC2 => {
                 if let Some(ch) = self.peek_utf8_char() {
@@ -507,8 +511,10 @@ impl<'a> Lexer<'a> {
         }
         
         // Check for decimal point or exponent → floating-point literal
+        // R7RS allows trailing dot: "3." is equivalent to "3.0"
         let has_dot = self.peek() == Some(b'.') 
-            && self.peek_next().is_some_and(|c| c.is_ascii_digit() || c == b'e' || c == b'E');
+            && self.peek_next().map_or(true, |c| c.is_ascii_digit() || c == b'e' || c == b'E'
+                || c == b')' || c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b';');
         let has_exp = self.peek() == Some(b'e') || self.peek() == Some(b'E');
         
         if has_dot || has_exp {
@@ -720,6 +726,177 @@ impl<'a> Lexer<'a> {
         }
         
         Ok(Token::Symbol { start, len })
+    }
+
+    /// Lex a `|...|` escaped symbol (R7RS §7.1.1).
+    ///
+    /// Characters between vertical bars form a symbol name.
+    /// The escape sequences `\\` and `\|` are supported.
+    /// No case-folding is applied to escaped symbols.
+    fn lex_escaped_symbol<const N: usize>(&mut self, lisp: &grift_core::Lisp<N>) -> Result<Token, LexError> {
+        self.advance(); // consume opening '|'
+
+        // Check if the content has any escape sequences
+        let scan_start = self.pos;
+        let mut has_escapes = false;
+        let mut scan = self.pos;
+        while scan < self.input.len() {
+            match self.input[scan] {
+                b'|' => break,
+                b'\\' => { has_escapes = true; scan += 2; }
+                _ => scan += 1,
+            }
+        }
+
+        if !has_escapes {
+            // Fast path: no escapes, symbol content is directly in the input
+            let start = self.pos;
+            while let Some(c) = self.peek() {
+                if c == b'|' {
+                    break;
+                }
+                self.advance();
+            }
+            let len = self.pos - start;
+            if self.peek() != Some(b'|') {
+                return Err(self.error(LexErrorKind::UnexpectedEof));
+            }
+            self.advance(); // consume closing '|'
+            // R7RS: escaped symbols are NOT case-folded, so use symbol_from_bytes
+            // which does no case-folding, and return InternedSymbol to bypass
+            // the parser's case-folding logic.
+            let name = &self.input[start..start + len];
+            let sym_idx = lisp.symbol_from_bytes(name)
+                .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+            return Ok(Token::InternedSymbol(sym_idx));
+        }
+
+        // Slow path: has escape sequences, need to process them
+        // Count the actual character count
+        self.pos = scan_start; // reset to start
+        let mut char_count = 0;
+        {
+            let mut p = scan_start;
+            while p < self.input.len() {
+                match self.input[p] {
+                    b'|' => break,
+                    b'\\' => { char_count += 1; p += 2; }
+                    c if c >= 0xC2 => {
+                        char_count += 1;
+                        // Count UTF-8 bytes
+                        let width = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
+                        p += width;
+                    }
+                    _ => { char_count += 1; p += 1; }
+                }
+            }
+        }
+
+        // Create symbol by building a string and interning it
+        if char_count == 0 {
+            // Empty escaped symbol ||
+            if self.peek() == Some(b'|') {
+                self.advance();
+            } else {
+                return Err(self.error(LexErrorKind::UnexpectedEof));
+            }
+            return lisp.symbol("")
+                .map(|_idx| Token::Symbol { start: self.pos, len: 0 })
+                .map_err(|_| self.error(LexErrorKind::OutOfMemory));
+        }
+
+        // Allocate space for the symbol name chars in the arena
+        let data = lisp.arena().alloc_contiguous(char_count, grift_core::Value::Nil)
+            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+
+        let mut ci = 0;
+        loop {
+            match self.peek() {
+                None => {
+                    let _ = lisp.arena().free_contiguous(data, char_count);
+                    return Err(self.error(LexErrorKind::UnexpectedEof));
+                }
+                Some(b'|') => {
+                    self.advance(); // consume closing '|'
+                    break;
+                }
+                Some(b'\\') => {
+                    self.advance(); // consume '\'
+                    let c = match self.peek() {
+                        Some(b'|') => { self.advance(); '|' }
+                        Some(b'\\') => { self.advance(); '\\' }
+                        Some(b'a') => { self.advance(); '\x07' }
+                        Some(b'b') => { self.advance(); '\x08' }
+                        Some(b't') => { self.advance(); '\t' }
+                        Some(b'n') => { self.advance(); '\n' }
+                        Some(b'r') => { self.advance(); '\r' }
+                        Some(other) => {
+                            self.advance();
+                            other as char
+                        }
+                        None => {
+                            let _ = lisp.arena().free_contiguous(data, char_count);
+                            return Err(self.error(LexErrorKind::UnexpectedEof));
+                        }
+                    };
+                    let char_idx = lisp.arena().index_at_offset(data, ci)
+                        .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                    lisp.arena().set(char_idx, grift_core::Value::Char(c))
+                        .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                    ci += 1;
+                }
+                Some(c) if c >= 0xC2 => {
+                    if let Some(ch) = self.peek_utf8_char() {
+                        let byte_len = ch.len_utf8();
+                        for _ in 0..byte_len {
+                            self.advance();
+                        }
+                        let char_idx = lisp.arena().index_at_offset(data, ci)
+                            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                        lisp.arena().set(char_idx, grift_core::Value::Char(ch))
+                            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                        ci += 1;
+                    } else {
+                        self.advance();
+                    }
+                }
+                Some(c) => {
+                    self.advance();
+                    let char_idx = lisp.arena().index_at_offset(data, ci)
+                        .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                    lisp.arena().set(char_idx, grift_core::Value::Char(c as char))
+                        .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+                    ci += 1;
+                }
+            }
+        }
+
+        // Trim unused slots if char_count was an overestimate
+        if ci < char_count {
+            let _ = lisp.arena().free_contiguous(
+                lisp.arena().index_at_offset(data, ci)
+                    .map_err(|_| self.error(LexErrorKind::OutOfMemory))?,
+                char_count - ci,
+            );
+        }
+
+        // Create the String value
+        let name_str = lisp.alloc(grift_core::Value::String { len: ci, data })
+            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+
+        // Check intern table before adding
+        if let Some(existing) = lisp.intern_table_lookup(name_str)
+            .map_err(|_| self.error(LexErrorKind::OutOfMemory))? {
+            lisp.string_free(name_str)
+                .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+            return Ok(Token::InternedSymbol(existing));
+        }
+
+        // Intern as new symbol
+        let sym_idx = lisp.intern_new_symbol(name_str)
+            .map_err(|_| self.error(LexErrorKind::OutOfMemory))?;
+
+        Ok(Token::InternedSymbol(sym_idx))
     }
     
     fn lex_hash(&mut self) -> Result<Token, LexError> {
