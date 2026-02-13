@@ -4462,8 +4462,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         let mut paren_depth: i32 = 0;
         let mut in_string = false;
+        let mut in_bar_sym = false;
         let mut escape = false;
         let mut got_token = false;
+        let mut fold_case = false;
 
         // Helper macros for IO operations that re-borrow self.io each time
         macro_rules! io_read {
@@ -4554,29 +4556,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 }
                             }
                             Ok('!') => {
-                                // #!fold-case or #!no-fold-case directive - pass through to parser
-                                io_write!('#');
-                                io_write!('!');
+                                // #!fold-case or #!no-fold-case directive
+                                let _ = io_read!(); // consume '!'
+                                let mut directive = [0u8; 16];
+                                let mut dlen = 0;
                                 loop {
                                     match io_peek!() {
                                         Ok(c) if c.is_alphanumeric() || c == '-' => {
                                             let _ = io_read!();
-                                            io_write!(c);
+                                            if dlen < 16 { directive[dlen] = c.to_ascii_lowercase() as u8; dlen += 1; }
                                         }
                                         _ => break,
                                     }
                                 }
-                                // Skip whitespace after directive, then continue reading the datum
+                                if &directive[..dlen] == b"fold-case" {
+                                    fold_case = true;
+                                } else if &directive[..dlen] == b"no-fold-case" {
+                                    fold_case = false;
+                                }
+                                // Skip whitespace after directive
                                 loop {
                                     match io_peek!() {
                                         Ok(c) if c.is_whitespace() => {
                                             let _ = io_read!();
-                                            io_write!(c);
                                         }
                                         _ => break,
                                     }
                                 }
-                                // Read the rest of the token/expression that follows
                                 continue;
                             }
                             _ => {
@@ -4586,7 +4592,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             }
                         }
                     } else if !c.is_whitespace() {
-                        io_write!(c);
+                        let wc = if fold_case && c.is_ascii_alphabetic() { c.to_ascii_lowercase() } else { c };
+                        io_write!(wc);
                         if c == '(' || c == '[' {
                             paren_depth += 1;
                         } else if c == '"' {
@@ -4618,6 +4625,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let nil = self.lisp.nil()?;
                             let tail = self.lisp.cons(inner, nil)?;
                             return self.lisp.cons(sym, tail).map_err(Into::into);
+                        } else if c == '|' {
+                            in_bar_sym = true;
                         } else if paren_depth == 0 {
                             got_token = true;
                         }
@@ -4728,15 +4737,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
             }
-        } else if got_token {
+        } else if got_token || in_bar_sym {
             loop {
                 match io_peek!() {
-                    Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';' => break,
+                    Ok(c) if !in_bar_sym && (c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';') => break,
                     Ok(c) => {
                         let _ = io_read!();
-                        io_write!(c);
+                        let wc = if fold_case && !in_bar_sym && c.is_ascii_alphabetic() { c.to_ascii_lowercase() } else { c };
+                        io_write!(wc);
+                        if c == '|' { in_bar_sym = !in_bar_sym; }
+                        if !in_bar_sym && !got_token { got_token = true; break; }
                     }
                     Err(_) => break,
+                }
+            }
+            // If we just closed a bar symbol and there's more to read
+            if got_token && !in_bar_sym {
+                // Continue reading any suffix after the closing |
+                loop {
+                    match io_peek!() {
+                        Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';' => break,
+                        Ok(c) => {
+                            let _ = io_read!();
+                            let wc = if fold_case && c.is_ascii_alphabetic() { c.to_ascii_lowercase() } else { c };
+                            io_write!(wc);
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
         }

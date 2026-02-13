@@ -1020,7 +1020,18 @@ impl<'a> Lexer<'a> {
             while p < self.input.len() {
                 match self.input[p] {
                     b'|' => break,
-                    b'\\' => { char_count += 1; p += 2; }
+                    b'\\' => {
+                        char_count += 1;
+                        p += 1; // skip '\'
+                        if p < self.input.len() && self.input[p] == b'x' {
+                            // \xNN; hex escape — skip to ';'
+                            p += 1;
+                            while p < self.input.len() && self.input[p] != b';' { p += 1; }
+                            if p < self.input.len() { p += 1; } // skip ';'
+                        } else {
+                            p += 1; // skip next char
+                        }
+                    }
                     c if c >= 0xC2 => {
                         char_count += 1;
                         // Count UTF-8 bytes
@@ -1070,6 +1081,26 @@ impl<'a> Lexer<'a> {
                         Some(b't') => { self.advance(); '\t' }
                         Some(b'n') => { self.advance(); '\n' }
                         Some(b'r') => { self.advance(); '\r' }
+                        Some(b'x') => {
+                            // \xNN; hex escape
+                            self.advance(); // consume 'x'
+                            let mut code: u32 = 0;
+                            while let Some(hc) = self.peek() {
+                                if hc == b';' { self.advance(); break; }
+                                let digit = match hc {
+                                    b'0'..=b'9' => (hc - b'0') as u32,
+                                    b'a'..=b'f' => (hc - b'a' + 10) as u32,
+                                    b'A'..=b'F' => (hc - b'A' + 10) as u32,
+                                    _ => break,
+                                };
+                                self.advance();
+                                code = code * 16 + digit;
+                            }
+                            match char::from_u32(code) {
+                                Some(ch) => ch,
+                                None => '?',
+                            }
+                        }
                         Some(other) => {
                             self.advance();
                             other as char

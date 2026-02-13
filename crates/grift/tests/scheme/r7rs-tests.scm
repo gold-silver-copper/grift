@@ -2062,10 +2062,10 @@
 (test-equal "r7rs-917" 'abc (read (open-input-string "abc")))
 (test-equal "r7rs-918" 'abc (read (open-input-string "abc def")))
 (test-equal "r7rs-919" 'ABC (read (open-input-string "ABC")))
-;; FAILING: (test-equal "r7rs-920" 'Hello (read (open-input-string "|H\\x65;llo|")))
+(test-equal "r7rs-920" 'Hello (read (open-input-string "|H\\x65;llo|")))
 
-;; FAILING: (test-equal "r7rs-921" 'abc (read (open-input-string "#!fold-case ABC")))
-;; FAILING: (test-equal "r7rs-922" 'ABC (read (open-input-string "#!fold-case #!no-fold-case ABC")))
+(test-equal "r7rs-921" 'abc (read (open-input-string "#!fold-case ABC")))
+(test-equal "r7rs-922" 'ABC (read (open-input-string "#!fold-case #!no-fold-case ABC")))
 
 (test-equal "r7rs-923" 'def (read (open-input-string "#; abc def")))
 (test-equal "r7rs-924" 'def (read (open-input-string "; abc \ndef")))
