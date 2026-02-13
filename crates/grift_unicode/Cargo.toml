@@ -10,4 +10,3 @@ keywords = ["unicode", "case-mapping", "no_std", "embedded", "scheme"]
 categories = ["no-std", "text-processing", "embedded"]
 
 [dependencies]
-unicode-case-mapping = { version = "1.0.0", default-features = false }

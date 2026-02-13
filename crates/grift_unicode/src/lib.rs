@@ -7,7 +7,7 @@
 //!
 //! Provides case mapping, case folding, and character property queries
 //! without requiring `std` or `alloc`. Uses Rust's built-in Unicode-aware
-//! `core::char` methods and the `unicode-case-mapping` crate for case folding.
+//! `core::char` methods and a small static table for full case folding.
 
 /// Maximum number of characters a single character can expand to under
 /// any Unicode case mapping or folding operation.
@@ -22,6 +22,15 @@ pub struct CaseMapResult {
 }
 
 impl CaseMapResult {
+    /// Create an empty CaseMapResult.
+    #[inline]
+    pub fn default() -> Self {
+        CaseMapResult {
+            chars: ['\0'; MAX_CASE_EXPANSION],
+            len: 0,
+        }
+    }
+
     /// Number of characters in the result.
     #[inline]
     pub fn len(&self) -> usize {
@@ -60,13 +69,14 @@ impl CaseMapResult {
 /// the original character is returned unchanged (simple mapping only).
 #[inline]
 pub fn char_upcase(c: char) -> char {
-    let mapped = unicode_case_mapping::to_uppercase(c);
-    // Simple mapping: exactly one non-zero entry
-    if mapped[0] != 0 && mapped[1] == 0 {
-        char::from_u32(mapped[0]).unwrap_or(c)
-    } else {
-        // Either no mapping (all zeros → maps to itself) or expansion
+    let mut iter = c.to_uppercase();
+    let first = iter.next().unwrap_or(c);
+    // If there's a second character, this is a full (expanding) mapping.
+    // For simple mapping, return the original character unchanged.
+    if iter.next().is_some() {
         c
+    } else {
+        first
     }
 }
 
@@ -77,29 +87,23 @@ pub fn char_upcase(c: char) -> char {
 /// the original character is returned unchanged (simple mapping only).
 #[inline]
 pub fn char_downcase(c: char) -> char {
-    let mapped = unicode_case_mapping::to_lowercase(c);
-    if mapped[0] != 0 && mapped[1] == 0 {
-        char::from_u32(mapped[0]).unwrap_or(c)
-    } else {
+    let mut iter = c.to_lowercase();
+    let first = iter.next().unwrap_or(c);
+    if iter.next().is_some() {
         c
+    } else {
+        first
     }
 }
 
 /// Return the simple case fold of a character.
 ///
 /// Simple case folding maps each character to a single character,
-/// used for case-insensitive comparisons. For most characters this
-/// is equivalent to lowercasing.
+/// used for case-insensitive comparisons. For R7RS, simple case
+/// folding is equivalent to simple lowercasing.
 #[inline]
 pub fn char_foldcase(c: char) -> char {
-    match unicode_case_mapping::case_folded(c) {
-        Some(n) => match char::from_u32(n.get()) {
-            Some(folded) => folded,
-            None => c,
-        },
-        // No simple fold entry: apply simple lowercase as fallback.
-        None => char_downcase(c),
-    }
+    char_downcase(c)
 }
 
 // --- Character property predicates ---
@@ -177,8 +181,6 @@ fn digit_value_inner(c: char) -> Option<u32> {
         }
     }
     let val = cp - zero;
-    // Verify it's a valid decimal digit (0-9) and that there are exactly
-    // 10 digits in this block (the char at zero+9 is numeric, but zero+10 is not)
     if val > 9 {
         return None;
     }
@@ -187,7 +189,6 @@ fn digit_value_inner(c: char) -> Option<u32> {
     if zero > 0 {
         if let Some(before_zero) = char::from_u32(zero - 1) {
             if before_zero.is_numeric() {
-                // zero is not actually the block start
                 return None;
             }
         }
@@ -202,8 +203,7 @@ fn digit_value_inner(c: char) -> Option<u32> {
 /// May expand a single character into multiple characters.
 /// For example, 'ß' → ['S', 'S'].
 pub fn full_upcase(c: char) -> CaseMapResult {
-    let mapped = unicode_case_mapping::to_uppercase(c);
-    from_u32_array_3(&mapped, c)
+    from_char_iter(c.to_uppercase(), c)
 }
 
 /// Full lowercase mapping of a character.
@@ -211,8 +211,7 @@ pub fn full_upcase(c: char) -> CaseMapResult {
 /// May expand a single character into multiple characters.
 /// For example, 'İ' → ['i', '\u{0307}'].
 pub fn full_downcase(c: char) -> CaseMapResult {
-    let mapped = unicode_case_mapping::to_lowercase(c);
-    from_u32_array_2(&mapped, c)
+    from_char_iter(c.to_lowercase(), c)
 }
 
 /// Full case folding of a character.
@@ -220,17 +219,8 @@ pub fn full_downcase(c: char) -> CaseMapResult {
 /// Used for case-insensitive string comparisons. May expand a single
 /// character into multiple characters. For example, 'ß' → ['s', 's'].
 pub fn full_foldcase(c: char) -> CaseMapResult {
-    // The unicode-case-mapping crate only provides simple case folding.
-    // For full case folding, we handle the known expansion cases from
-    // Unicode CaseFolding.txt (status 'F') via lowercase full mapping,
-    // plus applying simple fold to each result character.
-    //
-    // Full case folding is defined as:
-    // 1. Apply full case fold from CaseFolding.txt
-    // 2. For 'F' entries, the fold expands to multiple characters
-    //
-    // Since the 'F' entries in CaseFolding.txt are a small fixed set,
-    // we handle them with a lookup table.
+    // Check the static table for full case folding expansion entries.
+    // These come from Unicode CaseFolding.txt (status 'F').
     match lookup_full_casefold(c) {
         Some(result) => result,
         None => {
@@ -244,26 +234,44 @@ pub fn full_foldcase(c: char) -> CaseMapResult {
     }
 }
 
+/// Build a CaseMapResult from a core::char iterator (ToUppercase or ToLowercase).
+fn from_char_iter<I: Iterator<Item = char>>(iter: I, original: char) -> CaseMapResult {
+    let mut result = CaseMapResult {
+        chars: ['\0'; MAX_CASE_EXPANSION],
+        len: 0,
+    };
+    for c in iter {
+        if result.len < MAX_CASE_EXPANSION {
+            result.chars[result.len] = c;
+            result.len += 1;
+        }
+    }
+    if result.len == 0 {
+        result.chars[0] = original;
+        result.len = 1;
+    }
+    result
+}
+
 /// Lookup table for Unicode full case folding (CaseFolding.txt status 'F').
 /// These are the characters that expand to multiple characters under full case folding.
 fn lookup_full_casefold(c: char) -> Option<CaseMapResult> {
     // Data from Unicode 16.0 CaseFolding.txt, status 'F' entries.
-    // Each entry maps a single code point to 2 or 3 code points.
     let (chars, len) = match c as u32 {
         0x00DF => (['s', 's', '\0'], 2),          // ß LATIN SMALL LETTER SHARP S
         0x0130 => (['i', '\u{0307}', '\0'], 2),   // İ LATIN CAPITAL LETTER I WITH DOT ABOVE
         0x0149 => (['\u{02BC}', 'n', '\0'], 2),   // ŉ LATIN SMALL LETTER N PRECEDED BY APOSTROPHE
         0x01F0 => (['j', '\u{030C}', '\0'], 2),   // ǰ LATIN SMALL LETTER J WITH CARON
-        0x0390 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3), // ΐ GREEK SMALL LETTER IOTA WITH DIALYTIKA AND TONOS
-        0x03B0 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3), // ΰ GREEK SMALL LETTER UPSILON WITH DIALYTIKA AND TONOS
+        0x0390 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3), // ΐ
+        0x03B0 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3), // ΰ
         0x0587 => (['\u{0565}', '\u{0582}', '\0'], 2), // և ARMENIAN SMALL LIGATURE ECH YIWN
-        0x1E96 => (['h', '\u{0331}', '\0'], 2),   // ḫ LATIN SMALL LETTER H WITH LINE BELOW
-        0x1E97 => (['t', '\u{0308}', '\0'], 2),   // ẗ LATIN SMALL LETTER T WITH DIAERESIS
-        0x1E98 => (['w', '\u{030A}', '\0'], 2),   // ẘ LATIN SMALL LETTER W WITH RING ABOVE
-        0x1E99 => (['y', '\u{030A}', '\0'], 2),   // ẙ LATIN SMALL LETTER Y WITH RING ABOVE
-        0x1E9A => (['a', '\u{02BE}', '\0'], 2),   // ẚ LATIN SMALL LETTER A WITH RIGHT HALF RING
+        0x1E96 => (['h', '\u{0331}', '\0'], 2),   // ḫ
+        0x1E97 => (['t', '\u{0308}', '\0'], 2),   // ẗ
+        0x1E98 => (['w', '\u{030A}', '\0'], 2),   // ẘ
+        0x1E99 => (['y', '\u{030A}', '\0'], 2),   // ẙ
+        0x1E9A => (['a', '\u{02BE}', '\0'], 2),   // ẚ
         0x1E9E => (['s', 's', '\0'], 2),           // ẞ LATIN CAPITAL LETTER SHARP S
-        0x1F50 => (['\u{03C5}', '\u{0313}', '\0'], 2), // ὐ GREEK SMALL LETTER UPSILON WITH PSILI
+        0x1F50 => (['\u{03C5}', '\u{0313}', '\0'], 2), // ὐ
         0x1F52 => (['\u{03C5}', '\u{0313}', '\u{0300}'], 3), // ὒ
         0x1F54 => (['\u{03C5}', '\u{0313}', '\u{0301}'], 3), // ὔ
         0x1F56 => (['\u{03C5}', '\u{0313}', '\u{0342}'], 3), // ὖ
@@ -291,40 +299,40 @@ fn lookup_full_casefold(c: char) -> Option<CaseMapResult> {
             let base = '\u{1F60}' as u32 + (c as u32 - 0x1FA8);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
-        0x1FB2 => (['\u{1F70}', '\u{03B9}', '\0'], 2), // ᾲ
-        0x1FB3 => (['\u{03B1}', '\u{03B9}', '\0'], 2), // ᾳ
-        0x1FB4 => (['\u{03AC}', '\u{03B9}', '\0'], 2), // ᾴ
-        0x1FB6 => (['\u{03B1}', '\u{0342}', '\0'], 2), // ᾶ
-        0x1FB7 => (['\u{03B1}', '\u{0342}', '\u{03B9}'], 3), // ᾷ
-        0x1FBC => (['\u{03B1}', '\u{03B9}', '\0'], 2), // ᾼ
-        0x1FC2 => (['\u{1F74}', '\u{03B9}', '\0'], 2), // ῂ
-        0x1FC3 => (['\u{03B7}', '\u{03B9}', '\0'], 2), // ῃ
-        0x1FC4 => (['\u{03AE}', '\u{03B9}', '\0'], 2), // ῄ
-        0x1FC6 => (['\u{03B7}', '\u{0342}', '\0'], 2), // ῆ
-        0x1FC7 => (['\u{03B7}', '\u{0342}', '\u{03B9}'], 3), // ῇ
-        0x1FCC => (['\u{03B7}', '\u{03B9}', '\0'], 2), // ῌ
-        0x1FD2 => (['\u{03B9}', '\u{0308}', '\u{0300}'], 3), // ῒ
-        0x1FD3 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3), // ΐ
-        0x1FD6 => (['\u{03B9}', '\u{0342}', '\0'], 2), // ῖ
-        0x1FD7 => (['\u{03B9}', '\u{0308}', '\u{0342}'], 3), // ῗ
-        0x1FE2 => (['\u{03C5}', '\u{0308}', '\u{0300}'], 3), // ῢ
-        0x1FE3 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3), // ΰ
-        0x1FE4 => (['\u{03C1}', '\u{0313}', '\0'], 2), // ῤ
-        0x1FE6 => (['\u{03C5}', '\u{0342}', '\0'], 2), // ῦ
-        0x1FE7 => (['\u{03C5}', '\u{0308}', '\u{0342}'], 3), // ῧ
-        0x1FF2 => (['\u{1F7C}', '\u{03B9}', '\0'], 2), // ῲ
-        0x1FF3 => (['\u{03C9}', '\u{03B9}', '\0'], 2), // ῳ
-        0x1FF4 => (['\u{03CE}', '\u{03B9}', '\0'], 2), // ῴ
-        0x1FF6 => (['\u{03C9}', '\u{0342}', '\0'], 2), // ῶ
-        0x1FF7 => (['\u{03C9}', '\u{0342}', '\u{03B9}'], 3), // ῷ
-        0x1FFC => (['\u{03C9}', '\u{03B9}', '\0'], 2), // ῼ
-        0xFB00 => (['f', 'f', '\0'], 2),             // ff
-        0xFB01 => (['f', 'i', '\0'], 2),             // fi
-        0xFB02 => (['f', 'l', '\0'], 2),             // fl
-        0xFB03 => (['f', 'f', 'i'], 3),              // ffi
-        0xFB04 => (['f', 'f', 'l'], 3),              // ffl
-        0xFB05 => (['s', 't', '\0'], 2),             // ſt LATIN SMALL LIGATURE LONG S T
-        0xFB06 => (['s', 't', '\0'], 2),             // st LATIN SMALL LIGATURE ST
+        0x1FB2 => (['\u{1F70}', '\u{03B9}', '\0'], 2),
+        0x1FB3 => (['\u{03B1}', '\u{03B9}', '\0'], 2),
+        0x1FB4 => (['\u{03AC}', '\u{03B9}', '\0'], 2),
+        0x1FB6 => (['\u{03B1}', '\u{0342}', '\0'], 2),
+        0x1FB7 => (['\u{03B1}', '\u{0342}', '\u{03B9}'], 3),
+        0x1FBC => (['\u{03B1}', '\u{03B9}', '\0'], 2),
+        0x1FC2 => (['\u{1F74}', '\u{03B9}', '\0'], 2),
+        0x1FC3 => (['\u{03B7}', '\u{03B9}', '\0'], 2),
+        0x1FC4 => (['\u{03AE}', '\u{03B9}', '\0'], 2),
+        0x1FC6 => (['\u{03B7}', '\u{0342}', '\0'], 2),
+        0x1FC7 => (['\u{03B7}', '\u{0342}', '\u{03B9}'], 3),
+        0x1FCC => (['\u{03B7}', '\u{03B9}', '\0'], 2),
+        0x1FD2 => (['\u{03B9}', '\u{0308}', '\u{0300}'], 3),
+        0x1FD3 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3),
+        0x1FD6 => (['\u{03B9}', '\u{0342}', '\0'], 2),
+        0x1FD7 => (['\u{03B9}', '\u{0308}', '\u{0342}'], 3),
+        0x1FE2 => (['\u{03C5}', '\u{0308}', '\u{0300}'], 3),
+        0x1FE3 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3),
+        0x1FE4 => (['\u{03C1}', '\u{0313}', '\0'], 2),
+        0x1FE6 => (['\u{03C5}', '\u{0342}', '\0'], 2),
+        0x1FE7 => (['\u{03C5}', '\u{0308}', '\u{0342}'], 3),
+        0x1FF2 => (['\u{1F7C}', '\u{03B9}', '\0'], 2),
+        0x1FF3 => (['\u{03C9}', '\u{03B9}', '\0'], 2),
+        0x1FF4 => (['\u{03CE}', '\u{03B9}', '\0'], 2),
+        0x1FF6 => (['\u{03C9}', '\u{0342}', '\0'], 2),
+        0x1FF7 => (['\u{03C9}', '\u{0342}', '\u{03B9}'], 3),
+        0x1FFC => (['\u{03C9}', '\u{03B9}', '\0'], 2),
+        0xFB00 => (['f', 'f', '\0'], 2),
+        0xFB01 => (['f', 'i', '\0'], 2),
+        0xFB02 => (['f', 'l', '\0'], 2),
+        0xFB03 => (['f', 'f', 'i'], 3),
+        0xFB04 => (['f', 'f', 'l'], 3),
+        0xFB05 => (['s', 't', '\0'], 2),
+        0xFB06 => (['s', 't', '\0'], 2),
         _ => return None,
     };
     Some(CaseMapResult { chars, len })
@@ -336,70 +344,9 @@ fn char_from_u32_or(cp: u32, fallback: char) -> char {
     char::from_u32(cp).unwrap_or(fallback)
 }
 
-/// Helper: convert a `[u32; 3]` from unicode-case-mapping into a CaseMapResult.
-/// If the array is all zeros, the character maps to itself.
-fn from_u32_array_3(arr: &[u32; 3], original: char) -> CaseMapResult {
-    if arr[0] == 0 {
-        // No mapping — character maps to itself
-        return CaseMapResult {
-            chars: [original, '\0', '\0'],
-            len: 1,
-        };
-    }
-    let mut result = CaseMapResult {
-        chars: ['\0'; MAX_CASE_EXPANSION],
-        len: 0,
-    };
-    for &cp in arr {
-        if cp == 0 {
-            break;
-        }
-        if let Some(c) = char::from_u32(cp) {
-            result.chars[result.len] = c;
-            result.len += 1;
-        }
-    }
-    if result.len == 0 {
-        result.chars[0] = original;
-        result.len = 1;
-    }
-    result
-}
-
-/// Helper: convert a `[u32; 2]` from unicode-case-mapping into a CaseMapResult.
-/// If the array is all zeros, the character maps to itself.
-fn from_u32_array_2(arr: &[u32; 2], original: char) -> CaseMapResult {
-    if arr[0] == 0 {
-        return CaseMapResult {
-            chars: [original, '\0', '\0'],
-            len: 1,
-        };
-    }
-    let mut result = CaseMapResult {
-        chars: ['\0'; MAX_CASE_EXPANSION],
-        len: 0,
-    };
-    for &cp in arr {
-        if cp == 0 {
-            break;
-        }
-        if let Some(c) = char::from_u32(cp) {
-            result.chars[result.len] = c;
-            result.len += 1;
-        }
-    }
-    if result.len == 0 {
-        result.chars[0] = original;
-        result.len = 1;
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- Simple case mapping tests ---
 
     #[test]
     fn test_char_upcase_ascii() {
@@ -436,8 +383,6 @@ mod tests {
         assert_eq!(char_foldcase('É'), 'é');
         assert_eq!(char_foldcase('ß'), 'ß'); // Simple fold doesn't change ß
     }
-
-    // --- Character property tests ---
 
     #[test]
     fn test_char_is_alphabetic() {
@@ -483,11 +428,9 @@ mod tests {
 
     #[test]
     fn test_char_is_numeric_unicode() {
-        // Arabic-Indic digits (U+0660-U+0669) are Nd
-        assert!(char_is_numeric('\u{0660}')); // ٠
-        assert!(char_is_numeric('\u{0663}')); // ٣
-        // Devanagari digits
-        assert!(char_is_numeric('\u{0966}')); // ०
+        assert!(char_is_numeric('\u{0660}')); // Arabic-Indic ٠
+        assert!(char_is_numeric('\u{0663}')); // Arabic-Indic ٣
+        assert!(char_is_numeric('\u{0966}')); // Devanagari ०
     }
 
     #[test]
@@ -500,13 +443,10 @@ mod tests {
 
     #[test]
     fn test_digit_value_unicode() {
-        // Arabic-Indic digits
         assert_eq!(digit_value('\u{0660}'), Some(0));
         assert_eq!(digit_value('\u{0663}'), Some(3));
         assert_eq!(digit_value('\u{0669}'), Some(9));
     }
-
-    // --- Full case mapping tests ---
 
     #[test]
     fn test_full_upcase() {
@@ -514,7 +454,6 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result.first(), 'A');
 
-        // ß → SS (full uppercase expansion)
         let result = full_upcase('ß');
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(0), Some('S'));
@@ -534,18 +473,15 @@ mod tests {
 
     #[test]
     fn test_full_foldcase() {
-        // Simple fold
         let result = full_foldcase('A');
         assert_eq!(result.len(), 1);
         assert_eq!(result.first(), 'a');
 
-        // ß → ss (full fold expansion)
         let result = full_foldcase('ß');
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(0), Some('s'));
         assert_eq!(result.get(1), Some('s'));
 
-        // fi ligature → fi
         let result = full_foldcase('\u{FB01}');
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(0), Some('f'));
@@ -554,7 +490,6 @@ mod tests {
 
     #[test]
     fn test_full_foldcase_capital_sharp_s() {
-        // ẞ (U+1E9E, LATIN CAPITAL LETTER SHARP S) → ss
         let result = full_foldcase('\u{1E9E}');
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(0), Some('s'));
