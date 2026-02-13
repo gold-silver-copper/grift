@@ -139,6 +139,9 @@ fn equal_recursive_depth<const N: usize>(
         (Value::Float(x), Value::Rational { num, denom }) => {
             Ok(x == (num as fsize / denom as fsize))
         }
+        (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => {
+            Ok(r1 == r2 && i1 == i2)
+        }
         _ => Ok(false),
     }
 }

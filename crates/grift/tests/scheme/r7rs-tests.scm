@@ -706,7 +706,7 @@
 (test-equal "r7rs-170" #t (complex? 3))
 (test-equal "r7rs-171" #t (real? 3))
 (test-equal "r7rs-172" #t (real? -2.5+0i))
-;; FAILING: (test-equal "r7rs-173" #f (real? -2.5+0.0i))
+(test-equal "r7rs-173" #f (real? -2.5+0.0i))
 (test-equal "r7rs-174" #t (real? #e1e10))
 (test-equal "r7rs-175" #t (real? +inf.0))
 (test-equal "r7rs-176" #f (rational? -inf.0))
@@ -716,7 +716,7 @@
 (test-equal "r7rs-180" #t (rational? 1.7976931348623157e308))
 (test-equal "r7rs-181" #t (rational? 6/10))
 (test-equal "r7rs-182" #t (rational? 6/3))
-;; FAILING: (test-equal "r7rs-183" #t (integer? 3+0i))
+(test-equal "r7rs-183" #t (integer? 3+0i))
 (test-equal "r7rs-184" #t (integer? 3.0))
 (test-equal "r7rs-185" #t (integer? 8/4))
 
@@ -730,12 +730,12 @@
 
 (test-equal "r7rs-192" #t (finite? 3))
 (test-equal "r7rs-193" #f (finite? +inf.0))
-;; FAILING: (test-equal "r7rs-194" #f (finite? 3.0+inf.0i))
+(test-equal "r7rs-194" #f (finite? 3.0+inf.0i))
 
 (test-equal "r7rs-195" #f (infinite? 3))
 (test-equal "r7rs-196" #t (infinite? +inf.0))
 (test-equal "r7rs-197" #f (infinite? +nan.0))
-;; FAILING: (test-equal "r7rs-198" #t (infinite? 3.0+inf.0i))
+(test-equal "r7rs-198" #t (infinite? 3.0+inf.0i))
 
 (test-equal "r7rs-199" #t (nan? +nan.0))
 (test-equal "r7rs-200" #f (nan? 32))
@@ -743,7 +743,7 @@
 (test-equal "r7rs-202" #f (nan? 1+2i))
 
 (test-equal "r7rs-203" #t (= 1 1.0 1.0+0.0i))
-;; FAILING: (test-equal "r7rs-204" #f (= 1.0 1.0+1.0i))
+(test-equal "r7rs-204" #f (= 1.0 1.0+1.0i))
 (test-equal "r7rs-205" #t (< 1 2 3))
 (test-equal "r7rs-206" #f (< 1 1 2))
 (test-equal "r7rs-207" #t (> 3.0 2.0 1.0))
@@ -795,7 +795,7 @@
 
 (test-equal "r7rs-221" #t (zero? 0))
 (test-equal "r7rs-222" #t (zero? 0.0))
-;; FAILING: (test-equal "r7rs-223" #t (zero? 0.0+0.0i))
+(test-equal "r7rs-223" #t (zero? 0.0+0.0i))
 (test-equal "r7rs-224" #f (zero? 1))
 (test-equal "r7rs-225" #f (zero? -1))
 
@@ -976,7 +976,7 @@
 (test-equal "r7rs-359" 1.0 (expt 0.0 0))
 (test-equal "r7rs-360" 0.0 (expt 0 1.0))
 
-;; FAILING: (test-equal "r7rs-361" 1+2i (make-rectangular 1 2))
+(test-equal "r7rs-361" 1+2i (make-rectangular 1 2))
 
 ;; FAILING: (test-equal "r7rs-362" 0.54030230586814+0.841470984807897i (make-polar 1 1))
 
