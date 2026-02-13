@@ -627,6 +627,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     match self.lisp.get(first_idx)? {
                         Value::Number(n) => self.lisp.number(-n).map_err(Into::into),
                         Value::Float(f) => self.lisp.float(-f).map_err(Into::into),
+                        Value::Rational { num, denom } => self.lisp.rational(-num, denom).map_err(Into::into),
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 } else {
@@ -640,6 +641,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Float(first) => {
                             // Start with float accumulator
                             self.numeric_fold_float(rest, first, |a, b| a - b, call_expr)
+                        }
+                        Value::Rational { num, denom } => {
+                            self.rational_fold_sub(rest, num, denom, call_expr)
                         }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
@@ -655,17 +659,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Division: (/ n) => 1/n, (/ n m ...) => n/m/...
                 let first_idx = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
-                match self.lisp.get(first_idx)? {
-                    Value::Number(first) => {
-                        self.numeric_fold(rest, first, 
-                            |a, b| if b == 0 { None } else { a.checked_div(b) },
-                            |a, b| a / b,
-                            call_expr)
+                if self.lisp.get(rest)?.is_nil() {
+                    // Unary reciprocal: (/ n) => 1/n
+                    match self.lisp.get(first_idx)? {
+                        Value::Number(n) => {
+                            if n == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            self.lisp.rational(1, n).map_err(Into::into)
+                        }
+                        Value::Float(f) => self.lisp.float(1.0 / f).map_err(Into::into),
+                        Value::Rational { num, denom } => {
+                            if num == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            self.lisp.rational(denom, num).map_err(Into::into)
+                        }
+                        v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
-                    Value::Float(first) => {
-                        self.numeric_fold_float(rest, first, |a, b| a / b, call_expr)
+                } else {
+                    match self.lisp.get(first_idx)? {
+                        Value::Number(first) => {
+                            self.rational_fold_div(rest, first, 1, call_expr)
+                        }
+                        Value::Float(first) => {
+                            self.numeric_fold_float(rest, first, |a, b| a / b, call_expr)
+                        }
+                        Value::Rational { num, denom } => {
+                            self.rational_fold_div(rest, num, denom, call_expr)
+                        }
+                        v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
             
@@ -797,7 +817,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Gt => self.compare_numbers(args, |a, b| a > b, call_expr),
             Builtin::Le => self.compare_numbers(args, |a, b| a <= b, call_expr),
             Builtin::Ge => self.compare_numbers(args, |a, b| a >= b, call_expr),
-            Builtin::NumEq => self.compare_numbers(args, |a, b| a == b, call_expr),
+            Builtin::NumEq => self.compare_numbers_eq(args, call_expr),
             
             Builtin::Display => {
                 let val = self.lisp.car(args)?;
@@ -3206,10 +3226,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 |x: isize, y: isize| x.checked_mul(y),
                 |x: fsize, y: fsize| x * y),
             
-            // Division operations with zero check
-            Builtin::Div => binary_div_op!(self, a, b, call_expr, 
-                |x, y| x / y,
-                |x: fsize, y: fsize| x / y),
+            // Division: exact integer division produces rationals
+            Builtin::Div => {
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                match (val_a, val_b) {
+                    (Value::Number(x), Value::Number(y)) => {
+                        if y == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        self.lisp.rational(x, y).map_err(Into::into)
+                    }
+                    (Value::Number(x), Value::Float(y)) => {
+                        self.lisp.float(x as fsize / y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Number(y)) => {
+                        self.lisp.float(x / y as fsize).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        self.lisp.float(x / y).map_err(Into::into)
+                    }
+                    (Value::Rational { num: n1, denom: d1 }, Value::Number(y)) => {
+                        if y == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        self.lisp.rational(n1, d1.checked_mul(y).unwrap_or(1)).map_err(Into::into)
+                    }
+                    (Value::Number(x), Value::Rational { num: n2, denom: d2 }) => {
+                        if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        self.lisp.rational(x.checked_mul(d2).unwrap_or(x), n2).map_err(Into::into)
+                    }
+                    (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                        if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        let new_num = n1.checked_mul(d2).unwrap_or(1);
+                        let new_denom = d1.checked_mul(n2).unwrap_or(1);
+                        self.lisp.rational(new_num, new_denom).map_err(Into::into)
+                    }
+                    (Value::Rational { num, denom }, Value::Float(y)) => {
+                        self.lisp.float(num as fsize / denom as fsize / y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Rational { num, denom }) => {
+                        self.lisp.float(x * denom as fsize / num as fsize).map_err(Into::into)
+                    }
+                    (v, _) if !v.is_number() => Err(self.type_error(call_expr, "number", v.type_name())),
+                    (_, v) => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             Builtin::Modulo => binary_div_op!(self, a, b, call_expr, 
                 |x, y| ((x % y) + y) % y,
                 |x: fsize, y: fsize| ((x % y) + y) % y),
@@ -3222,7 +3280,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Gt => binary_int_cmp!(self, a, b, call_expr, |x, y| x > y),
             Builtin::Le => binary_int_cmp!(self, a, b, call_expr, |x, y| x <= y),
             Builtin::Ge => binary_int_cmp!(self, a, b, call_expr, |x, y| x >= y),
-            Builtin::NumEq => binary_int_cmp!(self, a, b, call_expr, |x, y| x == y),
+            Builtin::NumEq => {
+                // Use precision-aware equality check
+                let rest = self.lisp.cons(b, self.lisp.nil()?)?;
+                let args = self.lisp.cons(a, rest)?;
+                self.compare_numbers_eq(args, call_expr)
+            }
             Builtin::EqP | Builtin::EqvP => self.eqv_compare(a, b),
             Builtin::Cons => {
                 self.lisp.cons(a, b).map_err(Into::into)
@@ -3468,9 +3531,96 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn compare_numbers<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(fsize, fsize) -> bool
     {
-        let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-        let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-        self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+        let mut prev = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+        let mut current = self.lisp.cdr(args)?;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let next = self.get_num_as_fsize(car, call_expr)?;
+                    if !cmp(prev, next) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev = next;
+                    current = self.lisp.cdr(current)?;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Numeric equality that respects exact/inexact precision boundaries.
+    /// When comparing an exact integer with an inexact float, checks that the
+    /// float can exactly represent the integer value (round-trip check).
+    pub(super) fn compare_numbers_eq(&self, args: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        let first = self.lisp.car(args)?;
+        let mut prev_idx = first;
+        let mut current = self.lisp.cdr(args)?;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let next_idx = self.lisp.car(current)?;
+                    if !self.nums_equal(prev_idx, next_idx, call_expr)? {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev_idx = next_idx;
+                    current = self.lisp.cdr(current)?;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Compare two numeric values for equality, respecting exact/inexact precision.
+    fn nums_equal(&self, a: ArenaIndex, b: ArenaIndex, _call_expr: ArenaIndex) -> Result<bool, EvalError> {
+        let va = self.lisp.get(a)?;
+        let vb = self.lisp.get(b)?;
+        match (va, vb) {
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Float(x), Value::Float(y)) => Ok(x == y),
+            (Value::Number(n), Value::Float(f)) | (Value::Float(f), Value::Number(n)) => {
+                // Round-trip: convert int→float→int to check exact representability
+                let n_as_f = n as fsize;
+                Ok(n_as_f == f && n_as_f as isize == n)
+            }
+            (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                // Cross-multiply to avoid float conversion
+                Ok((n1 as i128) * (d2 as i128) == (n2 as i128) * (d1 as i128))
+            }
+            (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => {
+                Ok(r1 == r2 && i1 == i2)
+            }
+            // Compare real number with complex: equal iff imaginary part is 0
+            (Value::Complex { real, imag }, _) => {
+                if imag != 0.0 { return Ok(false); }
+                // Compare real part with b
+                let real_idx = self.lisp.float(real)?;
+                self.nums_equal(real_idx, b, _call_expr)
+            }
+            (_, Value::Complex { real, imag }) => {
+                if imag != 0.0 { return Ok(false); }
+                let real_idx = self.lisp.float(real)?;
+                self.nums_equal(a, real_idx, _call_expr)
+            }
+            _ => {
+                // Fall back to fsize comparison for rational vs int/float
+                let fa = match va {
+                    Value::Number(n) => n as fsize,
+                    Value::Float(f) => f,
+                    Value::Rational { num, denom } => num as fsize / denom as fsize,
+                    _ => return Ok(false),
+                };
+                let fb = match vb {
+                    Value::Number(n) => n as fsize,
+                    Value::Float(f) => f,
+                    Value::Rational { num, denom } => num as fsize / denom as fsize,
+                    _ => return Ok(false),
+                };
+                Ok(fa == fb)
+            }
+        }
     }
     
     /// Numeric fold that always produces a float result (starts with float accumulator)
@@ -3488,6 +3638,150 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let cdr = self.lisp.cdr(current)?;
                     let n = self.get_num_as_fsize(car, call_expr)?;
                     acc = float_f(acc, n);
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Fold division over remaining args, accumulating as rational num/denom.
+    /// Produces exact rational results for integer division chains like (/ 3 4 5) => 3/20.
+    fn rational_fold_div(&self, args: ArenaIndex, init_num: isize, init_denom: isize, call_expr: ArenaIndex) -> EvalResult {
+        let mut num = init_num;
+        let mut denom = init_denom;
+        let mut is_float = false;
+        let mut acc_float: fsize = 0.0;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    return if is_float {
+                        self.lisp.float(acc_float).map_err(Into::into)
+                    } else {
+                        self.lisp.rational(num, denom).map_err(Into::into)
+                    };
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    match self.lisp.get(car)? {
+                        Value::Number(n) => {
+                            if n == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            if is_float {
+                                acc_float /= n as fsize;
+                            } else {
+                                denom = denom.checked_mul(n).unwrap_or_else(|| {
+                                    is_float = true;
+                                    acc_float = num as fsize / (denom as fsize * n as fsize);
+                                    1
+                                });
+                            }
+                        }
+                        Value::Float(f) => {
+                            if !is_float {
+                                acc_float = num as fsize / denom as fsize;
+                                is_float = true;
+                            }
+                            acc_float /= f;
+                        }
+                        Value::Rational { num: n2, denom: d2 } => {
+                            if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            if is_float {
+                                acc_float /= n2 as fsize / d2 as fsize;
+                            } else {
+                                // a/b / (n2/d2) = a*d2 / (b*n2)
+                                num = num.checked_mul(d2).unwrap_or_else(|| {
+                                    is_float = true;
+                                    acc_float = (num as fsize * d2 as fsize) / (denom as fsize * n2 as fsize);
+                                    1
+                                });
+                                if !is_float {
+                                    denom = denom.checked_mul(n2).unwrap_or_else(|| {
+                                        is_float = true;
+                                        acc_float = num as fsize / (denom as fsize * n2 as fsize);
+                                        1
+                                    });
+                                }
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Fold subtraction over remaining args with rational accumulator.
+    fn rational_fold_sub(&self, args: ArenaIndex, init_num: isize, init_denom: isize, call_expr: ArenaIndex) -> EvalResult {
+        let mut num = init_num;
+        let mut denom = init_denom;
+        let mut is_float = false;
+        let mut acc_float: fsize = 0.0;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    return if is_float {
+                        self.lisp.float(acc_float).map_err(Into::into)
+                    } else {
+                        self.lisp.rational(num, denom).map_err(Into::into)
+                    };
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    match self.lisp.get(car)? {
+                        Value::Number(n) => {
+                            if is_float {
+                                acc_float -= n as fsize;
+                            } else {
+                                // a/b - n = (a - n*b)/b
+                                match denom.checked_mul(n).and_then(|nd| num.checked_sub(nd)) {
+                                    Some(r) => num = r,
+                                    None => {
+                                        acc_float = num as fsize / denom as fsize - n as fsize;
+                                        is_float = true;
+                                    }
+                                }
+                            }
+                        }
+                        Value::Float(f) => {
+                            if !is_float {
+                                acc_float = num as fsize / denom as fsize;
+                                is_float = true;
+                            }
+                            acc_float -= f;
+                        }
+                        Value::Rational { num: n2, denom: d2 } => {
+                            if is_float {
+                                acc_float -= n2 as fsize / d2 as fsize;
+                            } else {
+                                // a/b - n2/d2 = (a*d2 - n2*b) / (b*d2)
+                                match denom.checked_mul(d2) {
+                                    Some(new_denom) => {
+                                        match num.checked_mul(d2).and_then(|ad| n2.checked_mul(denom).and_then(|nb| ad.checked_sub(nb))) {
+                                            Some(new_num) => {
+                                                num = new_num;
+                                                denom = new_denom;
+                                            }
+                                            None => {
+                                                acc_float = num as fsize / denom as fsize - n2 as fsize / d2 as fsize;
+                                                is_float = true;
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        acc_float = num as fsize / denom as fsize - n2 as fsize / d2 as fsize;
+                                        is_float = true;
+                                    }
+                                }
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
                     current = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::TypeError, current)),

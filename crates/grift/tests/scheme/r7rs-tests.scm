@@ -749,7 +749,7 @@
 (test-equal "r7rs-207" #t (> 3.0 2.0 1.0))
 (test-equal "r7rs-208" #f (> -3.0 2.0 1.0))
 (test-equal "r7rs-209" #t (<= 1 1 2))
-;; FAILING: (test-equal "r7rs-210" #f (<= 1 2 1))
+(test-equal "r7rs-210" #f (<= 1 2 1))
 (test-equal "r7rs-211" #t (>= 2 1 1))
 (test-equal "r7rs-212" #f (>= 1 2 1))
 (test-equal "r7rs-213" #f (< +nan.0 0))
@@ -757,7 +757,7 @@
 (test-equal "r7rs-215" #f (< +nan.0 0.0))
 (test-equal "r7rs-216" #f (> +nan.0 0.0))
 (test-equal "r7rs-217" '(#t #f) (list (<= 1 1 2) (<= 2 1 3)))
-;; FAILING: (test-equal "r7rs-218" #f (= 9007199254740992.0 9007199254740993))
+(test-equal "r7rs-218" #f (= 9007199254740992.0 9007199254740993))
 
 ;; From R7RS 6.2.6 Numerical operations:
 ;;
@@ -848,11 +848,11 @@
 (test-equal "r7rs-266" -1 (- 3 4))
 (test-equal "r7rs-267" -6 (- 3 4 5))
 (test-equal "r7rs-268" -3 (- 3))
-;; FAILING: (test-equal "r7rs-269" -3/2 (- 3/2))
+(test-equal "r7rs-269" -3/2 (- 3/2))
 ;; r7rs-270 uses complex rational literal -3/2-i which grift parses as two tokens
 ;; (test-equal "r7rs-270" -3/2-i (- 3/2+i))
-;; FAILING: (test-equal "r7rs-271" 3/20 (/ 3 4 5))
-;; FAILING: (test-equal "r7rs-272" 1/3 (/ 3))
+(test-equal "r7rs-271" 3/20 (/ 3 4 5))
+(test-equal "r7rs-272" 1/3 (/ 3))
 
 (test-equal "r7rs-273" 1073741824 (/ -1073741824 -1))
 (test-equal "r7rs-274" 1073741824 (quotient -1073741824 -1))
@@ -894,9 +894,9 @@
 (test-equal "r7rs-293" 288.0 (lcm 32.0 -36))
 (test-equal "r7rs-294" 1 (lcm))
 
-;; FAILING: (test-equal "r7rs-295" 3 (numerator (/ 6 4)))
-;; FAILING: (test-equal "r7rs-296" 2 (denominator (/ 6 4)))
-;; FAILING: (test-equal "r7rs-297" 2.0 (denominator (inexact (/ 6 4))))
+(test-equal "r7rs-295" 3 (numerator (/ 6 4)))
+(test-equal "r7rs-296" 2 (denominator (/ 6 4)))
+(test-equal "r7rs-297" 2.0 (denominator (inexact (/ 6 4))))
 (test-equal "r7rs-298" 11.0 (numerator 5.5))
 (test-equal "r7rs-299" 2.0 (denominator 5.5))
 (test-equal "r7rs-300" 5.0 (numerator 5.0))
