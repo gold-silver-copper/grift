@@ -1827,7 +1827,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         if len == 0 {
                             return self.lisp.false_val().map_err(Into::into);
                         }
-                        let mut buf = [0u8; 66];
+                        let mut buf = [0u8; 128];
                         if len > buf.len() {
                             return self.lisp.false_val().map_err(Into::into);
                         }
@@ -1845,50 +1845,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
                         
-                        // Check for special float constants
-                        match s {
-                            "+inf.0" => return self.lisp.float(fsize::INFINITY).map_err(Into::into),
-                            "-inf.0" => return self.lisp.float(fsize::NEG_INFINITY).map_err(Into::into),
-                            "+nan.0" | "-nan.0" => return self.lisp.float(fsize::NAN).map_err(Into::into),
-                            _ => {}
-                        }
-                        
-                        // Detect prefix notation: #b, #o, #d, #x
-                        let (num_str, radix) = if s.len() >= 2 && s.as_bytes()[0] == b'#' {
-                            let prefix_radix = match s.as_bytes()[1] {
-                                b'b' | b'B' => Some(2u32),
-                                b'o' | b'O' => Some(8u32),
-                                b'd' | b'D' => Some(10u32),
-                                b'x' | b'X' => Some(16u32),
-                                _ => None,
-                            };
-                            match prefix_radix {
-                                Some(r) => (&s[2..], r),
-                                None => return self.lisp.false_val().map_err(Into::into),
+                        // If explicit radix is provided and no prefix in string, add prefix
+                        let prefixed: [u8; 130];
+                        let to_parse = if let Some(r) = explicit_radix {
+                            if !s.starts_with('#') {
+                                let prefix = match r {
+                                    2 => "#b",
+                                    8 => "#o",
+                                    16 => "#x",
+                                    _ => "",
+                                };
+                                if !prefix.is_empty() {
+                                    let pb = prefix.as_bytes();
+                                    let sb = s.as_bytes();
+                                    let total = pb.len() + sb.len();
+                                    if total > 130 {
+                                        return self.lisp.false_val().map_err(Into::into);
+                                    }
+                                    prefixed = {
+                                        let mut arr = [0u8; 130];
+                                        arr[..pb.len()].copy_from_slice(pb);
+                                        arr[pb.len()..total].copy_from_slice(sb);
+                                        arr
+                                    };
+                                    core::str::from_utf8(&prefixed[..total]).unwrap_or("")
+                                } else {
+                                    s
+                                }
+                            } else {
+                                s
                             }
                         } else {
-                            (s, explicit_radix.unwrap_or(10))
+                            s
                         };
                         
-                        if num_str.is_empty() {
-                            return self.lisp.false_val().map_err(Into::into);
-                        }
-                        
-                        if radix == 10 {
-                            // Try integer parse first, then float
-                            if let Ok(n) = num_str.parse::<isize>() {
-                                return self.lisp.number(n).map_err(Into::into);
+                        // Use the parser/lexer to parse the number
+                        match grift_parser::parse_single(self.lisp, to_parse) {
+                            Ok(idx) => {
+                                match self.lisp.get(idx)? {
+                                    Value::Number(_) | Value::Float(_) | Value::Rational { .. } 
+                                    | Value::Complex { .. } => Ok(idx),
+                                    _ => self.lisp.false_val().map_err(Into::into),
+                                }
                             }
-                            if let Some(f) = parse_float_no_std(num_str) {
-                                return self.lisp.float(f).map_err(Into::into);
-                            }
-                            self.lisp.false_val().map_err(Into::into)
-                        } else {
-                            // Non-decimal radix: parse integer only
-                            match parse_int_radix(num_str, radix) {
-                                Some(n) => self.lisp.number(n).map_err(Into::into),
-                                None => self.lisp.false_val().map_err(Into::into),
-                            }
+                            Err(_) => self.lisp.false_val().map_err(Into::into),
                         }
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
@@ -4219,13 +4219,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Validate vector arguments for vector-map/vector-for-each.
-    /// Returns (proc, vecs_args, len) after validating all vectors have the same length.
+    /// Returns (proc, vecs_args, len) where len is the minimum length across all vectors.
     fn validate_vector_args(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, usize), EvalError> {
         let proc = self.lisp.car(args)?;
         let vecs_args = self.lisp.cdr(args)?;
         
         let first_vec = self.lisp.car(vecs_args)?;
-        let len = match self.lisp.get(first_vec)? {
+        let mut len = match self.lisp.get(first_vec)? {
             Value::Array { .. } => self.lisp.array_len(first_vec)?,
             v => return Err(self.type_error(call_expr, "vector", v.type_name())),
         };
@@ -4236,8 +4236,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             match self.lisp.get(vec)? {
                 Value::Array { .. } => {
                     let vlen = self.lisp.array_len(vec)?;
-                    if vlen != len {
-                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    if vlen < len {
+                        len = vlen;
                     }
                 }
                 v => return Err(self.type_error(call_expr, "vector", v.type_name())),

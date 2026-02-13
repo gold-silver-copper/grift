@@ -373,6 +373,17 @@ pub fn parse<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaIndex, 
     parser.parse(lisp)
 }
 
+/// Parse exactly one expression, failing if there are trailing tokens
+pub fn parse_single<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<ArenaIndex, ParseError> {
+    let mut parser = Parser::new(input);
+    let result = parser.parse(lisp)?;
+    if parser.has_more() {
+        Err(ParseError::new(crate::ParseErrorKind::UnmatchedParen, 0, 0))
+    } else {
+        Ok(result)
+    }
+}
+
 /// Parse multiple expressions
 ///
 /// Uses in-place cons list reversal instead of a fixed-size stack array,

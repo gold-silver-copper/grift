@@ -1602,17 +1602,17 @@
    (integer->char (+ 1 (char->integer c))))
  "HAL"))
 
-;; FAILING: (test-equal "r7rs-785" "StUdLyCaPs" (string-map
-;; FAILING:      (lambda (c k) (if (eqv? k #\u) (char-upcase c) (char-downcase c)))
-;; FAILING:      "studlycaps xxx"
-;; FAILING:      "ululululul"))
+(test-equal "r7rs-785" "StUdLyCaPs" (string-map
+     (lambda (c k) (if (eqv? k #\u) (char-upcase c) (char-downcase c)))
+     "studlycaps xxx"
+     "ululululul"))
 
 (test-equal "r7rs-786" #(b e h) (vector-map cadr '#((a b) (d e) (g h))))
 
 (test-equal "r7rs-787" #(1 4 27 256 3125) (vector-map (lambda (n) (expt n n))
                 '#(1 2 3 4 5)))
 
-;; FAILING: (test-equal "r7rs-788" #(5 7 9) (vector-map + '#(1 2 3) '#(4 5 6 7)))
+(test-equal "r7rs-788" #(5 7 9) (vector-map + '#(1 2 3) '#(4 5 6 7)))
 
 (test-equal "r7rs-789" #t (let ((res (let ((count 0))
                  (vector-map
@@ -1642,11 +1642,11 @@
        "abcde")
       v))
 
-;; FAILING: (test-equal "r7rs-793" '(0 1 4 9 16) (let ((v (make-list 5)))
-;; FAILING:   (vector-for-each
-;; FAILING:    (lambda (i) (list-set! v i (* i i)))
-;; FAILING:    '#(0 1 2 3 4))
-;; FAILING:   v))
+(test-equal "r7rs-793" '(0 1 4 9 16) (let ((v (make-list 5)))
+  (vector-for-each
+   (lambda (i) (list-set! v i (* i i)))
+   '#(0 1 2 3 4))
+  v))
 
 (test-equal "r7rs-794" -3 (call-with-current-continuation
   (lambda (exit)
@@ -2183,7 +2183,7 @@
 (test-numeric-syntax "-0." -0.0 "-.0" "-0.0" "0.0" "0." ".0")
 (test-numeric-syntax "#i1.0" 1.0 "1.0" "1.")
 (test-numeric-syntax "#e1.0" 1 "1")
-;; FAILING: (test-numeric-syntax "#e-.0" 0 "0")
+(test-numeric-syntax "#e-.0" 0 "0")
 (test-numeric-syntax "#e-0." 0 "0")
 ;; Decimal notation with suffix
 (test-numeric-syntax "1e2" 100.0 "100.0" "100.")
@@ -2208,12 +2208,12 @@
 (test-numeric-syntax "#i-inf.0" -inf.0 "-inf.0" "-Inf.0")
 ;; Exact ratios
 (test-numeric-syntax "1/2" (/ 1 2))
-;; FAILING: (test-numeric-syntax "#e1/2" (/ 1 2) "1/2")
+(test-numeric-syntax "#e1/2" (/ 1 2) "1/2")
 (test-numeric-syntax "10/2" 5 "5")
 (test-numeric-syntax "-1/2" (- (/ 1 2)))
 (test-numeric-syntax "0/10" 0 "0")
 (test-numeric-syntax "#e0/10" 0 "0")
-;; FAILING: (test-numeric-syntax "#i3/2" (/ 3.0 2.0) "1.5")
+(test-numeric-syntax "#i3/2" (/ 3.0 2.0) "1.5")
 ;; Exact complex
 ;; FAILING: (test-numeric-syntax "1+2i" (make-rectangular 1 2))
 ;; FAILING: (test-numeric-syntax "1+2I" (make-rectangular 1 2) "1+2i")
@@ -2273,16 +2273,16 @@
 ;; FAILING: (test-numeric-syntax "#i#x1/10" 0.0625 "0.0625")
 ;; FAILING: (test-numeric-syntax "#x#i1/10" 0.0625 "0.0625")
 ;; (Attempted) decimal notation with base prefixes
-;; FAILING: (test-numeric-syntax "#d1." 1.0 "1.0" "1.")
-;; FAILING: (test-numeric-syntax "#d.1" 0.1 "0.1" ".1" "100.0e-3")
+(test-numeric-syntax "#d1." 1.0 "1.0" "1.")
+(test-numeric-syntax "#d.1" 0.1 "0.1" ".1" "100.0e-3")
 (test-numeric-syntax "#x1e2" 482 "482")
 (test-numeric-syntax "#d1e2" 100.0 "100.0" "100.")
 ;; Fractions with prefixes
-;; FAILING: (test-numeric-syntax "#x10/2" 8 "8")
-;; FAILING: (test-numeric-syntax "#x11/2" (/ 17 2) "17/2")
-;; FAILING: (test-numeric-syntax "#d11/2" (/ 11 2) "11/2")
-;; FAILING: (test-numeric-syntax "#o11/2" (/ 9 2) "9/2")
-;; FAILING: (test-numeric-syntax "#b11/10" (/ 3 2) "3/2")
+(test-numeric-syntax "#x10/2" 8 "8")
+(test-numeric-syntax "#x11/2" (/ 17 2) "17/2")
+(test-numeric-syntax "#d11/2" (/ 11 2) "11/2")
+(test-numeric-syntax "#o11/2" (/ 9 2) "9/2")
+(test-numeric-syntax "#b11/10" (/ 3 2) "3/2")
 ;; Complex numbers with prefixes
 ;;(test-numeric-syntax "#x10+11i" (make-rectangular 16 17) "16+17i")
 ;; FAILING: (test-numeric-syntax "#d1.0+1.0i" (make-rectangular 1.0 1.0) "1.0+1.0i" "1.+1.i")

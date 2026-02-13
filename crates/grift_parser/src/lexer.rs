@@ -1083,12 +1083,26 @@ impl<'a> Lexer<'a> {
         // For decimal radix, check for floating-point continuation
         if radix == 10 {
             let has_dot = self.peek() == Some(b'.') 
-                && self.peek_next().is_some_and(|c| c.is_ascii_digit() || c == b'e' || c == b'E');
-            let has_exp = self.peek() == Some(b'e') || self.peek() == Some(b'E');
+                && self.peek_next().map_or(true, |c| c.is_ascii_digit() || is_exponent_marker(c)
+                    || c == b')' || c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b';');
+            let has_exp = self.peek().map_or(false, is_exponent_marker);
             
             if has_dot || has_exp {
-                if !has_digits {
+                if !has_digits && !has_dot {
                     return Err(self.error(LexErrorKind::InvalidHashLiteral));
+                }
+                if !has_digits && has_dot {
+                    // Handle #d.1 or #e-.0 style (leading dot, no digits before)
+                    let tok = self.lex_dot_number(negative)?;
+                    if exactness == 1 {
+                        if let Token::Float(f) = tok {
+                            if f == 0.0 || f == -0.0 {
+                                return Ok(Token::Number(0));
+                            }
+                            return Ok(Token::Number(f as isize));
+                        }
+                    }
+                    return Ok(tok);
                 }
                 // Force float path; exactness=1 (#e) will convert back to int
                 let tok = self.lex_float_tail(value, negative)?;
@@ -1107,6 +1121,37 @@ impl<'a> Lexer<'a> {
         }
         
         if negative { value = -value; }
+        
+        // Check for rational literal: numerator/denominator
+        if self.peek() == Some(b'/') {
+            self.advance(); // consume '/'
+            let mut denom: isize = 0;
+            let mut has_denom = false;
+            while let Some(c) = self.peek() {
+                let digit = match c {
+                    b'0'..=b'9' => (c - b'0') as isize,
+                    b'a'..=b'f' if radix == 16 => (c - b'a' + 10) as isize,
+                    b'A'..=b'F' if radix == 16 => (c - b'A' + 10) as isize,
+                    _ => break,
+                };
+                if digit >= radix as isize {
+                    break;
+                }
+                self.advance();
+                has_denom = true;
+                denom = denom.checked_mul(radix as isize)
+                    .and_then(|v| v.checked_add(digit))
+                    .ok_or_else(|| self.error(LexErrorKind::NumberOverflow))?;
+            }
+            if !has_denom || denom == 0 {
+                return Err(self.error(LexErrorKind::NumberOverflow));
+            }
+            if exactness == 2 {
+                // #i: convert rational to float
+                return Ok(Token::Float(value as grift_core::fsize / denom as grift_core::fsize));
+            }
+            return Ok(Token::Rational(value, denom));
+        }
         
         // #i forces inexact (float) representation
         if exactness == 2 {

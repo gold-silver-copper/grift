@@ -850,10 +850,11 @@
     (define (list-ref lst k)
       (if (= k 0) (car lst) (list-ref (cdr lst) (- k 1))))
 
-    (define (make-list k fill)
-      (if (< k 0) (error "make-list: expected non-negative integer" k)
-          (let make-list-loop ((k k) (acc '()))
-            (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc))))))
+    (define (make-list k . rest)
+      (let ((fill (if (null? rest) #f (car rest))))
+        (if (< k 0) (error "make-list: expected non-negative integer" k)
+            (let make-list-loop ((k k) (acc '()))
+              (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc)))))))
 
     (define (list-set! lst k obj)
       (set-car! (list-tail lst k) obj))
@@ -865,8 +866,19 @@
     (define (string-for-each proc s)
       (for-each proc (string->list s)))
 
-    (define (string-map proc s)
-      (list->string (map proc (string->list s))))
+    (define (string-map proc . strings)
+      (if (null? (cdr strings))
+          ;; Single string case
+          (list->string (map proc (string->list (car strings))))
+          ;; Multi-string case: map over parallel characters
+          (let* ((lists (map string->list strings))
+                 (min-len (apply min (map length lists))))
+            (let loop ((i 0) (result '()))
+              (if (= i min-len)
+                  (list->string (reverse result))
+                  (loop (+ i 1)
+                        (cons (apply proc (map (lambda (lst) (list-ref lst i)) lists))
+                              result)))))))
 
     ;;; --------------------------------------------------------
     ;;; Promise and parameter functions (R7RS §4.2.5–4.2.6)
