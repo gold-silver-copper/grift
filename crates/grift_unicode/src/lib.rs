@@ -453,4 +453,67 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result.first(), 'a');
     }
+
+    #[test]
+    fn test_cyrillic_case_mapping() {
+        // Uppercase
+        let result = full_upcase('а'); // Cyrillic A
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'А');
+
+        let result = full_upcase('я'); // Cyrillic YA
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'Я');
+
+        let result = full_upcase('ё'); // YO with diaeresis
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'Ё');
+
+        // Lowercase
+        let result = full_downcase('Б'); // Cyrillic BE
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'б');
+
+        let result = full_downcase('Ж'); // Cyrillic ZHE
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'ж');
+
+        // Case folding
+        let result = full_foldcase('Щ'); // Cyrillic SHCHA
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'щ');
+    }
+
+    #[test]
+    fn test_georgian_case_mapping() {
+        // Georgian Mtavruli (U+1C90-U+1CBF) uppercase of Mkhedruli (U+10D0-U+10FF)
+        let result = full_upcase('ა'); // Georgian AN
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'Ა');
+
+        let result = full_upcase('ბ'); // Georgian BAN
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'Ბ');
+
+        let result = full_downcase('Გ'); // Georgian GAN
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first(), 'გ');
+    }
+
+    #[test]
+    fn test_unicode_whitespace() {
+        // ASCII whitespace
+        assert!(char_is_whitespace(' '));
+        assert!(char_is_whitespace('\t'));
+        assert!(char_is_whitespace('\n'));
+
+        // Unicode whitespace
+        assert!(char_is_whitespace('\u{00A0}')); // NO-BREAK SPACE
+        assert!(char_is_whitespace('\u{2003}')); // EM SPACE
+        assert!(char_is_whitespace('\u{3000}')); // IDEOGRAPHIC SPACE
+
+        // Not whitespace
+        assert!(!char_is_whitespace('a'));
+        assert!(!char_is_whitespace('ა')); // Georgian
+    }
 }

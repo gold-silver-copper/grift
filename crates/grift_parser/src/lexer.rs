@@ -11,10 +11,11 @@
 // Character Classification Lookup Tables
 // ============================================================================
 
-/// Lookup table for symbol characters. Index by byte value, true if valid symbol char.
-/// Valid symbol chars: a-z, A-Z, 0-9, + - * / < > = ? ! _ & % ^ ~ .
-pub(crate) static SYMBOL_CHAR_TABLE: [bool; 256] = {
-    let mut table = [false; 256];
+/// Lookup table for symbol characters. Index by byte value, true if valid ASCII symbol char.
+/// Valid ASCII symbol chars: a-z, A-Z, 0-9, + - * / < > = ? ! _ & % ^ ~ .
+/// Non-ASCII bytes (>= 0x80) are handled separately via Unicode property checks.
+pub(crate) static SYMBOL_CHAR_TABLE: [bool; 128] = {
+    let mut table = [false; 128];
     let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-*/<>=?!_&%^~.";
     let mut i = 0;
     while i < chars.len() {
@@ -24,17 +25,13 @@ pub(crate) static SYMBOL_CHAR_TABLE: [bool; 256] = {
     table
 };
 
-/// Lookup table for whitespace characters.
-pub(crate) static WHITESPACE_TABLE: [bool; 256] = {
-    let mut table = [false; 256];
-    table[b' ' as usize] = true;   // space
-    table[b'\t' as usize] = true;  // tab
-    table[b'\n' as usize] = true;  // newline
-    table[b'\r' as usize] = true;  // carriage return
-    table[0x0B] = true;            // vertical tab
-    table[0x0C] = true;            // form feed
-    table
-};
+/// Check if a byte represents an ASCII whitespace character.
+/// For non-ASCII bytes, Unicode whitespace is handled via `grift_unicode::char_is_whitespace`
+/// after UTF-8 decoding.
+#[inline]
+fn is_ascii_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
+}
 
 // ============================================================================
 // Token Types
@@ -272,7 +269,7 @@ impl<'a> Lexer<'a> {
                 let next_pos = self.pos + 1;
                 let is_dot = if next_pos < self.input.len() {
                     let next_char = self.input[next_pos];
-                    WHITESPACE_TABLE[next_char as usize] || next_char == b')'
+                    is_ascii_ws(next_char) || next_char == b')'
                 } else {
                     true
                 };
@@ -285,6 +282,20 @@ impl<'a> Lexer<'a> {
                 }
             }
             c if is_symbol_char(c) => self.lex_symbol(),
+            c if c >= 0xC0 => {
+                // Multi-byte UTF-8 leading byte: check if it starts a Unicode letter/number
+                if let Some(ch) = self.peek_utf8_char() {
+                    if ch.is_alphabetic() || ch.is_numeric() {
+                        self.lex_symbol()
+                    } else {
+                        self.advance();
+                        Err(LexError { kind: LexErrorKind::UnexpectedChar(ch), loc })
+                    }
+                } else {
+                    self.advance();
+                    Err(LexError { kind: LexErrorKind::UnexpectedChar(c as char), loc })
+                }
+            }
             c => {
                 self.advance();
                 Err(LexError { kind: LexErrorKind::UnexpectedChar(c as char), loc })
@@ -309,6 +320,19 @@ impl<'a> Lexer<'a> {
         self.input.get(self.pos + 1).copied()
     }
     
+    /// Decode the UTF-8 character at the current position.
+    /// Returns `None` if the current byte is ASCII or if the UTF-8 sequence is invalid.
+    fn peek_utf8_char(&self) -> Option<char> {
+        let c = *self.input.get(self.pos)?;
+        if c < 0x80 {
+            return Some(c as char);
+        }
+        let seq_len = if c < 0xE0 { 2 } else if c < 0xF0 { 3 } else { 4 };
+        let end = (self.pos + seq_len).min(self.input.len());
+        let s = core::str::from_utf8(&self.input[self.pos..end]).ok()?;
+        s.chars().next()
+    }
+    
     fn advance(&mut self) -> Option<u8> {
         let c = self.peek()?;
         self.pos += 1;
@@ -323,8 +347,22 @@ impl<'a> Lexer<'a> {
     
     fn skip_whitespace(&mut self) {
         while let Some(c) = self.peek() {
-            if WHITESPACE_TABLE[c as usize] {
+            if is_ascii_ws(c) {
                 self.advance();
+            } else if c >= 0xC0 {
+                // Check for Unicode whitespace in multi-byte UTF-8 sequences
+                if let Some(ch) = self.peek_utf8_char() {
+                    if grift_unicode::char_is_whitespace(ch) {
+                        let byte_len = ch.len_utf8();
+                        for _ in 0..byte_len {
+                            self.advance();
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             } else if c == b';' {
                 while let Some(c) = self.advance() {
                     if c == b'\n' {
@@ -678,6 +716,20 @@ impl<'a> Lexer<'a> {
         while let Some(c) = self.peek() {
             if is_symbol_char(c) {
                 self.advance();
+            } else if c >= 0xC0 {
+                // Multi-byte UTF-8: accept Unicode letters and numbers in symbols
+                if let Some(ch) = self.peek_utf8_char() {
+                    if ch.is_alphabetic() || ch.is_numeric() {
+                        let byte_len = ch.len_utf8();
+                        for _ in 0..byte_len {
+                            self.advance();
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
@@ -1184,10 +1236,12 @@ impl<'a> Lexer<'a> {
 // Free Functions
 // ============================================================================
 
-/// Check if a byte is a valid symbol character.
-/// Uses a 256-byte lookup table for O(1) classification.
+/// Check if a byte is a valid ASCII symbol character.
+/// Uses a 128-byte lookup table for O(1) classification of ASCII bytes.
+/// Non-ASCII bytes (>= 0x80) are not valid symbol start bytes on their own;
+/// Unicode symbol characters are handled via `is_unicode_symbol_char`.
 pub(crate) fn is_symbol_char(c: u8) -> bool {
-    SYMBOL_CHAR_TABLE[c as usize]
+    (c as usize) < 128 && SYMBOL_CHAR_TABLE[c as usize]
 }
 
 /// Parse hex digits into a u32 value

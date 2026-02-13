@@ -40,4 +40,5 @@ srfi-64 = []
 grift_arena = { workspace = true }
 grift_macros = { workspace = true }
 grift_core = { workspace = true }
+grift_unicode = { workspace = true }
 libm = "0.2"
