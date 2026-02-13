@@ -166,17 +166,17 @@ fn split_top_level_expressions(input: &str) -> Vec<String> {
                     }
                     // Now include the next datum in current
                     if chars.peek() == Some(&'(') {
-                        let mut d = 1i32;
+                        let mut paren_depth = 1i32;
                         current.push('(');
                         chars.next();
-                        while d > 0 {
+                        while paren_depth > 0 {
                             match chars.next() {
                                 Some('(') => {
-                                    d += 1;
+                                    paren_depth += 1;
                                     current.push('(');
                                 }
                                 Some(')') => {
-                                    d -= 1;
+                                    paren_depth -= 1;
                                     current.push(')');
                                 }
                                 Some('"') => {
@@ -226,12 +226,12 @@ fn split_top_level_expressions(input: &str) -> Vec<String> {
                     }
                     // Skip the next expression
                     if chars.peek() == Some(&'(') {
-                        let mut d = 1i32;
+                        let mut paren_depth = 1i32;
                         chars.next();
-                        while d > 0 {
+                        while paren_depth > 0 {
                             match chars.next() {
-                                Some('(') => d += 1,
-                                Some(')') => d -= 1,
+                                Some('(') => paren_depth += 1,
+                                Some(')') => paren_depth -= 1,
                                 Some('"') => loop {
                                     match chars.next() {
                                         Some('\\') => {
