@@ -3431,7 +3431,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             } else {
                                 match int_f(acc_int, n) {
                                     Some(r) => acc_int = r,
-                                    None => return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                                    None => {
+                                        // Integer overflow: promote to float
+                                        acc_float = float_f(acc_int as fsize, n as fsize);
+                                        is_float = true;
+                                    }
                                 }
                             }
                         }

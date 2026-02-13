@@ -211,7 +211,10 @@ macro_rules! binary_int_op {
             (Value::Number(x), Value::Number(y)) => {
                 match $int_op(x, y) {
                     Some(n) => $self.lisp.number(n).map_err(Into::into),
-                    None => Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr)),
+                    None => {
+                        // Integer overflow: promote to float
+                        $self.lisp.float($float_op(x as $crate::fsize, y as $crate::fsize)).map_err(Into::into)
+                    }
                 }
             }
             (Value::Number(x), Value::Float(y)) => {

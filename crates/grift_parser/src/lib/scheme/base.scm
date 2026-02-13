@@ -676,7 +676,26 @@
     ;;; List fundamentals (R7RS §6.4)
     ;;; --------------------------------------------------------
 
-    (define (list? obj) (if (null? obj) #t (if (pair? obj) (list? (cdr obj)) #f)))
+    ;; list? with cycle detection (tortoise-and-hare algorithm)
+    (define (list? obj)
+      (define (race slow fast)
+        (if (null? fast)
+            #t
+            (if (not (pair? fast))
+                #f
+                (let ((fast2 (cdr fast)))
+                  (if (null? fast2)
+                      #t
+                      (if (not (pair? fast2))
+                          #f
+                          (if (eq? slow fast2)
+                              #f
+                              (race (cdr slow) (cdr fast2)))))))))
+      (if (null? obj)
+          #t
+          (if (pair? obj)
+              (race obj (cdr obj))
+              #f)))
 
     (define (length lst)
       (define (length-iter lst acc)
