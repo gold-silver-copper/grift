@@ -13,6 +13,9 @@
 /// any Unicode case mapping or folding operation.
 const MAX_CASE_EXPANSION: usize = 3;
 
+/// Code point value of ASCII digit '0'.
+const ASCII_ZERO: u32 = '0' as u32;
+
 /// Result of a full case mapping operation that may expand a single character
 /// into up to 3 characters.
 #[derive(Clone, Copy)]
@@ -21,15 +24,17 @@ pub struct CaseMapResult {
     len: usize,
 }
 
-impl CaseMapResult {
-    /// Create an empty CaseMapResult.
+impl Default for CaseMapResult {
     #[inline]
-    pub fn default() -> Self {
+    fn default() -> Self {
         CaseMapResult {
             chars: ['\0'; MAX_CASE_EXPANSION],
             len: 0,
         }
     }
+}
+
+impl CaseMapResult {
 
     /// Number of characters in the result.
     #[inline]
@@ -148,7 +153,7 @@ pub fn char_is_numeric(c: char) -> bool {
 #[inline]
 pub fn digit_value(c: char) -> Option<u32> {
     if c.is_ascii_digit() {
-        return Some(c as u32 - '0' as u32);
+        return Some(c as u32 - ASCII_ZERO);
     }
     digit_value_inner(c)
 }
@@ -258,74 +263,86 @@ fn from_char_iter<I: Iterator<Item = char>>(iter: I, original: char) -> CaseMapR
 fn lookup_full_casefold(c: char) -> Option<CaseMapResult> {
     // Data from Unicode 16.0 CaseFolding.txt, status 'F' entries.
     let (chars, len) = match c as u32 {
+        // Latin
         0x00DF => (['s', 's', '\0'], 2),          // ß LATIN SMALL LETTER SHARP S
         0x0130 => (['i', '\u{0307}', '\0'], 2),   // İ LATIN CAPITAL LETTER I WITH DOT ABOVE
         0x0149 => (['\u{02BC}', 'n', '\0'], 2),   // ŉ LATIN SMALL LETTER N PRECEDED BY APOSTROPHE
         0x01F0 => (['j', '\u{030C}', '\0'], 2),   // ǰ LATIN SMALL LETTER J WITH CARON
-        0x0390 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3), // ΐ
-        0x03B0 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3), // ΰ
+        // Greek
+        0x0390 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3), // ΐ IOTA WITH DIALYTIKA AND TONOS
+        0x03B0 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3), // ΰ UPSILON WITH DIALYTIKA AND TONOS
+        // Armenian
         0x0587 => (['\u{0565}', '\u{0582}', '\0'], 2), // և ARMENIAN SMALL LIGATURE ECH YIWN
+        // Latin Extended Additional
         0x1E96 => (['h', '\u{0331}', '\0'], 2),   // ḫ
         0x1E97 => (['t', '\u{0308}', '\0'], 2),   // ẗ
         0x1E98 => (['w', '\u{030A}', '\0'], 2),   // ẘ
         0x1E99 => (['y', '\u{030A}', '\0'], 2),   // ẙ
         0x1E9A => (['a', '\u{02BE}', '\0'], 2),   // ẚ
         0x1E9E => (['s', 's', '\0'], 2),           // ẞ LATIN CAPITAL LETTER SHARP S
-        0x1F50 => (['\u{03C5}', '\u{0313}', '\0'], 2), // ὐ
-        0x1F52 => (['\u{03C5}', '\u{0313}', '\u{0300}'], 3), // ὒ
-        0x1F54 => (['\u{03C5}', '\u{0313}', '\u{0301}'], 3), // ὔ
-        0x1F56 => (['\u{03C5}', '\u{0313}', '\u{0342}'], 3), // ὖ
-        0x1F80..=0x1F87 => {
+        // Greek Extended: upsilon with psili combinations
+        0x1F50 => (['\u{03C5}', '\u{0313}', '\0'], 2),
+        0x1F52 => (['\u{03C5}', '\u{0313}', '\u{0300}'], 3),
+        0x1F54 => (['\u{03C5}', '\u{0313}', '\u{0301}'], 3),
+        0x1F56 => (['\u{03C5}', '\u{0313}', '\u{0342}'], 3),
+        // Greek Extended: vowels with iota subscript (prosgegrammeni)
+        0x1F80..=0x1F87 => {  // alpha with iota subscript
             let base = '\u{1F00}' as u32 + (c as u32 - 0x1F80);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
-        0x1F88..=0x1F8F => {
+        0x1F88..=0x1F8F => {  // ALPHA with iota adscript
             let base = '\u{1F00}' as u32 + (c as u32 - 0x1F88);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
-        0x1F90..=0x1F97 => {
+        0x1F90..=0x1F97 => {  // eta with iota subscript
             let base = '\u{1F20}' as u32 + (c as u32 - 0x1F90);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
-        0x1F98..=0x1F9F => {
+        0x1F98..=0x1F9F => {  // ETA with iota adscript
             let base = '\u{1F20}' as u32 + (c as u32 - 0x1F98);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
-        0x1FA0..=0x1FA7 => {
+        0x1FA0..=0x1FA7 => {  // omega with iota subscript
             let base = '\u{1F60}' as u32 + (c as u32 - 0x1FA0);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
-        0x1FA8..=0x1FAF => {
+        0x1FA8..=0x1FAF => {  // OMEGA with iota adscript
             let base = '\u{1F60}' as u32 + (c as u32 - 0x1FA8);
             ([char_from_u32_or(base, c), '\u{03B9}', '\0'], 2)
         }
+        // Greek Extended: alpha with iota subscript variants
         0x1FB2 => (['\u{1F70}', '\u{03B9}', '\0'], 2),
         0x1FB3 => (['\u{03B1}', '\u{03B9}', '\0'], 2),
         0x1FB4 => (['\u{03AC}', '\u{03B9}', '\0'], 2),
         0x1FB6 => (['\u{03B1}', '\u{0342}', '\0'], 2),
         0x1FB7 => (['\u{03B1}', '\u{0342}', '\u{03B9}'], 3),
         0x1FBC => (['\u{03B1}', '\u{03B9}', '\0'], 2),
+        // Greek Extended: eta with iota subscript variants
         0x1FC2 => (['\u{1F74}', '\u{03B9}', '\0'], 2),
         0x1FC3 => (['\u{03B7}', '\u{03B9}', '\0'], 2),
         0x1FC4 => (['\u{03AE}', '\u{03B9}', '\0'], 2),
         0x1FC6 => (['\u{03B7}', '\u{0342}', '\0'], 2),
         0x1FC7 => (['\u{03B7}', '\u{0342}', '\u{03B9}'], 3),
         0x1FCC => (['\u{03B7}', '\u{03B9}', '\0'], 2),
+        // Greek Extended: iota with diaeresis variants
         0x1FD2 => (['\u{03B9}', '\u{0308}', '\u{0300}'], 3),
         0x1FD3 => (['\u{03B9}', '\u{0308}', '\u{0301}'], 3),
         0x1FD6 => (['\u{03B9}', '\u{0342}', '\0'], 2),
         0x1FD7 => (['\u{03B9}', '\u{0308}', '\u{0342}'], 3),
+        // Greek Extended: upsilon with diaeresis variants
         0x1FE2 => (['\u{03C5}', '\u{0308}', '\u{0300}'], 3),
         0x1FE3 => (['\u{03C5}', '\u{0308}', '\u{0301}'], 3),
         0x1FE4 => (['\u{03C1}', '\u{0313}', '\0'], 2),
         0x1FE6 => (['\u{03C5}', '\u{0342}', '\0'], 2),
         0x1FE7 => (['\u{03C5}', '\u{0308}', '\u{0342}'], 3),
+        // Greek Extended: omega with iota subscript variants
         0x1FF2 => (['\u{1F7C}', '\u{03B9}', '\0'], 2),
         0x1FF3 => (['\u{03C9}', '\u{03B9}', '\0'], 2),
         0x1FF4 => (['\u{03CE}', '\u{03B9}', '\0'], 2),
         0x1FF6 => (['\u{03C9}', '\u{0342}', '\0'], 2),
         0x1FF7 => (['\u{03C9}', '\u{0342}', '\u{03B9}'], 3),
         0x1FFC => (['\u{03C9}', '\u{03B9}', '\0'], 2),
+        // Alphabetic Presentation Forms: Latin ligatures
         0xFB00 => (['f', 'f', '\0'], 2),
         0xFB01 => (['f', 'i', '\0'], 2),
         0xFB02 => (['f', 'l', '\0'], 2),
