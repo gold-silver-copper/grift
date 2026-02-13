@@ -617,9 +617,11 @@
         (syntax-case x ()
           ((guard (var clause ...) body ...)
            (syntax
-             (with-exception-handler
-               (lambda (var) (%guard-cond var clause ...))
-               (lambda () body ...)))))))
+             (call-with-current-continuation
+               (lambda (guard-k)
+                 (with-exception-handler
+                   (lambda (var) (guard-k (%guard-cond var clause ...)))
+                   (lambda () body ...)))))))))
 
     ;; parameterize
     (define-syntax parameterize

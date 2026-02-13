@@ -1772,10 +1772,10 @@
            (display #\! out)
            'exception))
          (+ 1 (if (= v 0) (raise 'an-error) (/ 10 v)))))
-;; FAILING: (let* ((out (open-output-string))
-;; FAILING:        (value (test-exception-handler-3 0 out)))
-;; FAILING:   (test-equal "r7rs-819" 'exception value)
-;; FAILING:   (test-equal "r7rs-820" "condition: an-error!" (get-output-string out)))
+(let* ((out (open-output-string))
+       (value (test-exception-handler-3 0 out)))
+  (test-equal "r7rs-819" 'exception value)
+  (test-equal "r7rs-820" "condition: an-error!" (get-output-string out)))
 
 (define (test-exception-handler-4 v out)
   (call-with-current-continuation

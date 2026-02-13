@@ -997,8 +997,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let (_handler, saved_chain, _continuable_flag) = self.unpack3(data)?;
                 self.exception_handler_chain = saved_chain;
                 // Note: R7RS §6.11 says it is an error for a handler invoked by
-                // `raise` to return, but our `guard` macro relies on handler return.
-                // We permit return in all cases for compatibility.
+                // `raise` to return. Proper enforcement requires distinguishing
+                // guard-installed handlers from user-installed handlers, which our
+                // implementation does not currently do. We permit return for now.
                 Ok(Some(TrampolineState::Return { val }))
             }
             
