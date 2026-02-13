@@ -475,6 +475,10 @@
           ((%cl-arity-check n (a b c d e f)) (syntax (= n 6)))
           ((%cl-arity-check n (a b c d e f g)) (syntax (= n 7)))
           ((%cl-arity-check n (a b c d e f g h)) (syntax (= n 8)))
+          ((%cl-arity-check n (a . rest)) (syntax (>= n 1)))
+          ((%cl-arity-check n (a b . rest)) (syntax (>= n 2)))
+          ((%cl-arity-check n (a b c . rest)) (syntax (>= n 3)))
+          ((%cl-arity-check n (a b c d . rest)) (syntax (>= n 4)))
           ((%cl-arity-check n variadic) (syntax #t)))))
 
     (define-syntax %cl-build
@@ -846,12 +850,21 @@
           obj
           (lambda () obj)))
 
-    (define (make-parameter init)
-      (let ((value init))
-        (lambda args
-          (if (null? args)
-              value
-              (set! value (car args))))))
+    (define (make-parameter init . rest)
+      (if (null? rest)
+          ;; No converter
+          (let ((value init))
+            (lambda args
+              (if (null? args)
+                  value
+                  (set! value (car args)))))
+          ;; With converter
+          (let* ((converter (car rest))
+                 (value (converter init)))
+            (lambda args
+              (if (null? args)
+                  value
+                  (set! value (converter (car args))))))))
 
     ;;; --------------------------------------------------------
     ;;; Introspection (R7RS §6.14)
