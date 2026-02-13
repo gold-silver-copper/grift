@@ -1356,7 +1356,7 @@
 (test-equal "r7rs-636" "i\x0307;" (string-foldcase "İ"))
 (test-equal "r7rs-637" "J̌" (string-upcase "ǰ"))
 (test-equal "r7rs-638" "ſ" (string-downcase "ſ"))
-;; FAILING: (test-equal "r7rs-639" "s" (string-foldcase "ſ"))
+(test-equal "r7rs-639" "s" (string-foldcase "ſ"))
 
 ;; context-sensitive (final sigma)
 (test-equal "r7rs-640" "ΓΛΏΣΣΑ" (string-upcase "γλώσσα"))
@@ -1528,9 +1528,9 @@
       bv))
 
 ;; same source and dest
-;; FAILING: (test-equal "r7rs-750" #u8(1 1 2 4 5) (let ((bv (bytevector 1 2 3 4 5)))
-;; FAILING:       (bytevector-copy! bv 1 bv 0 2)
-;; FAILING:       bv))
+(test-equal "r7rs-750" #u8(1 1 2 4 5) (let ((bv (bytevector 1 2 3 4 5)))
+      (bytevector-copy! bv 1 bv 0 2)
+      bv))
 (test-equal "r7rs-751" #u8(1 2 3 1 2) (let ((bv (bytevector 1 2 3 4 5)))
       (bytevector-copy! bv 3 bv 0 2)
       bv))
@@ -1559,7 +1559,7 @@
 (test-equal "r7rs-767" #f (procedure? 'car))
 (test-equal "r7rs-768" #t (procedure? (lambda (x) (* x x))))
 (test-equal "r7rs-769" #f (procedure? '(lambda (x) (* x x))))
-;; FAILING: (test-equal "r7rs-770" #t (call-with-current-continuation procedure?))
+(test-equal "r7rs-770" #t (call-with-current-continuation procedure?))
 
 (test-equal "r7rs-771" 7 (apply + (list 3 4)))
 (test-equal "r7rs-772" 7 (apply + 3 4 (list)))
@@ -1810,16 +1810,16 @@
   (test-equal "r7rs-826" 'zero value))
 
 ;; From SRFI-34 "Examples" section - #8
-;; FAILING: (test-equal "r7rs-827" 42 (guard (condition
-;; FAILING:             ((assq 'a condition) => cdr)
-;; FAILING:             ((assq 'b condition)))
-;; FAILING:       (raise (list (cons 'a 42)))))
+(test-equal "r7rs-827" 42 (guard (condition
+            ((assq 'a condition) => cdr)
+            ((assq 'b condition)))
+      (raise (list (cons 'a 42)))))
 
 ;; From SRFI-34 "Examples" section - #9
-;; FAILING: (test-equal "r7rs-828" '(b . 23) (guard (condition
-;; FAILING:             ((assq 'a condition) => cdr)
-;; FAILING:             ((assq 'b condition)))
-;; FAILING:       (raise (list (cons 'b 23)))))
+(test-equal "r7rs-828" '(b . 23) (guard (condition
+            ((assq 'a condition) => cdr)
+            ((assq 'b condition)))
+      (raise (list (cons 'b 23)))))
 
 ;; FAILING: (test-equal "r7rs-829" 'caught-d (guard (condition
 ;; FAILING:             ((assq 'c condition) 'caught-c)

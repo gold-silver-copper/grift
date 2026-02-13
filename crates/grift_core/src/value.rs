@@ -1001,8 +1001,8 @@ impl Value {
         is_stdlib => Value::StdLib(_),
         /// Check if this value is a native (Rust) function
         is_native => Value::Native { .. },
-        /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
-        is_procedure => Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. },
+        /// Check if this value is a procedure (lambda, builtin, stdlib, native function, or continuation)
+        is_procedure => Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. } | Value::Continuation { .. },
         /// Check if this value is an array
         is_array => Value::Array { .. },
         /// Check if this value is a bytevector

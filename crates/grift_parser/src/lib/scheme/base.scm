@@ -599,9 +599,17 @@
 
     ;; guard - Exception handling (R7RS §4.2.7)
     (define-syntax %guard-cond
-      (syntax-rules (else)
+      (syntax-rules (else =>)
         ((%guard-cond var (else result ...))
          (begin result ...))
+        ((%guard-cond var (test => proc))
+         (let ((t test)) (if t (proc t) (raise-continuable var))))
+        ((%guard-cond var (test => proc) rest ...)
+         (let ((t test)) (if t (proc t) (%guard-cond var rest ...))))
+        ((%guard-cond var (test))
+         (let ((t test)) (if t t (raise-continuable var))))
+        ((%guard-cond var (test) rest ...)
+         (let ((t test)) (if t t (%guard-cond var rest ...))))
         ((%guard-cond var (test result ...))
          (if test (begin result ...) (raise-continuable var)))
         ((%guard-cond var (test result ...) rest ...)

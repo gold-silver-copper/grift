@@ -108,7 +108,22 @@ pub fn char_downcase(c: char) -> char {
 /// folding is equivalent to simple lowercasing.
 #[inline]
 pub fn char_foldcase(c: char) -> char {
-    char_downcase(c)
+    // Simple case folding: handles Unicode case fold mappings that differ
+    // from simple lowercasing (CaseFolding.txt status 'C' and 'S').
+    match c {
+        '\u{017F}' => 's',   // LATIN SMALL LETTER LONG S
+        '\u{0345}' => '\u{03B9}', // COMBINING GREEK YPOGEGRAMMENI
+        '\u{03C2}' => '\u{03C3}', // GREEK SMALL LETTER FINAL SIGMA
+        '\u{03D0}' => '\u{03B2}', // GREEK BETA SYMBOL
+        '\u{03D1}' => '\u{03B8}', // GREEK THETA SYMBOL
+        '\u{03D5}' => '\u{03C6}', // GREEK PHI SYMBOL
+        '\u{03D6}' => '\u{03C0}', // GREEK PI SYMBOL
+        '\u{03F0}' => '\u{03BA}', // GREEK KAPPA SYMBOL
+        '\u{03F1}' => '\u{03C1}', // GREEK RHO SYMBOL
+        '\u{03F5}' => '\u{03B5}', // GREEK LUNATE EPSILON SYMBOL
+        '\u{1E9B}' => '\u{1E61}', // LATIN SMALL LETTER LONG S WITH DOT ABOVE
+        _ => char_downcase(c),
+    }
 }
 
 // --- Character property predicates ---

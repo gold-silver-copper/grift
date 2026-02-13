@@ -2776,13 +2776,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
 
                 // Copy bytes from `from[start..end]` to `to[at..at+copy_len]`
-                for i in 0..copy_len {
-                    let elem = self.lisp.bytevector_get(from, start + i)?;
-                    let byte = match self.lisp.get(elem)? {
-                        Value::Number(n) => n as u8,
-                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                    };
-                    self.lisp.bytevector_set(to, at + i, byte)?;
+                // Handle overlapping regions by copying in the right direction
+                if to == from && at > start {
+                    // Copy backwards to handle forward overlap
+                    for i in (0..copy_len).rev() {
+                        let elem = self.lisp.bytevector_get(from, start + i)?;
+                        let byte = match self.lisp.get(elem)? {
+                            Value::Number(n) => n as u8,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        };
+                        self.lisp.bytevector_set(to, at + i, byte)?;
+                    }
+                } else {
+                    for i in 0..copy_len {
+                        let elem = self.lisp.bytevector_get(from, start + i)?;
+                        let byte = match self.lisp.get(elem)? {
+                            Value::Number(n) => n as u8,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        };
+                        self.lisp.bytevector_set(to, at + i, byte)?;
+                    }
                 }
                 self.lisp.void_val().map_err(Into::into)
             }
