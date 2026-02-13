@@ -605,6 +605,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     Ok(Token::Complex(real, imag_val))
                 } else {
+                    // +/- was consumed but no trailing 'i'; malformed complex literal
                     Err(self.error(LexErrorKind::NumberOverflow))
                 }
             }
