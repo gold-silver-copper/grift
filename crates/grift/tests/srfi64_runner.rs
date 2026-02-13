@@ -360,7 +360,7 @@ srfi64_test!(
     "unicode-symbol-tests.scm"
 );
 srfi64_test!(
-    chibi-r7rs-tests,
+    chibi_r7rs_tests,
     "r7rs-tests.scm"
 );
 
