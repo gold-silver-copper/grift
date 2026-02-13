@@ -417,8 +417,12 @@ impl<const N: usize> Lisp<N> {
             return Ok(existing_symbol);
         }
         
-        // Cache miss - need to create a new symbol
-        let char_count = bytes.len();
+        // Decode UTF-8 bytes into chars
+        let s = match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return Err(ArenaError::InvalidIndex),
+        };
+        let char_count = s.chars().count();
         
         // Create a Value::String for the symbol name (with inline length)
         let name_str = if char_count == 0 {
@@ -429,9 +433,9 @@ impl<const N: usize> Lisp<N> {
             let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
             
             // Set characters in slots (starting at data)
-            for (i, &b) in bytes.iter().enumerate() {
+            for (i, c) in s.chars().enumerate() {
                 let char_idx = self.arena.index_at_offset(data, i)?;
-                self.arena.set(char_idx, Value::Char(b as char))?;
+                self.arena.set(char_idx, Value::Char(c))?;
             }
             
             // Create the String value with inline length
@@ -458,16 +462,26 @@ impl<const N: usize> Lisp<N> {
             return Ok(existing_symbol);
         }
         
-        // Cache miss - create new symbol with lowercased bytes
-        let char_count = bytes.len();
+        // Decode UTF-8 bytes into chars
+        let s = match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return Err(ArenaError::InvalidIndex),
+        };
+        let char_count = s.chars().count();
         
         let name_str = if char_count == 0 {
             self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
         } else {
             let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
-            for (i, &b) in bytes.iter().enumerate() {
+            for (i, c) in s.chars().enumerate() {
                 let char_idx = self.arena.index_at_offset(data, i)?;
-                self.arena.set(char_idx, Value::Char(b.to_ascii_lowercase() as char))?;
+                // Only fold ASCII case; Unicode chars are preserved as-is
+                let folded = if c.is_ascii() {
+                    c.to_ascii_lowercase()
+                } else {
+                    c
+                };
+                self.arena.set(char_idx, Value::Char(folded))?;
             }
             self.alloc(Value::String { len: char_count, data })?
         };
@@ -477,22 +491,33 @@ impl<const N: usize> Lisp<N> {
     
     /// Compare a string's content against raw bytes with case-insensitive matching.
     ///
-    /// The interned string chars are compared against `bytes[i].to_ascii_lowercase()`.
+    /// The interned string chars are compared against the UTF-8 decoded characters
+    /// from the input bytes, with ASCII case folding applied.
     fn string_matches_bytes_folded(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
         match self.arena.get(str_idx)? {
             Value::String { len, data } => {
-                if len != bytes.len() {
+                let s = match core::str::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(false),
+                };
+                let byte_char_count = s.chars().count();
+                if len != byte_char_count {
                     return Ok(false);
                 }
                 if len == 0 {
                     return Ok(bytes.is_empty());
                 }
                 let base_idx = data.raw();
-                for (i, &byte) in bytes.iter().enumerate() {
+                for (i, c) in s.chars().enumerate() {
                     let char_slot = ArenaIndex::new(base_idx + i);
                     match self.arena.get(char_slot)? {
-                        Value::Char(c) => {
-                            if c as u8 != byte.to_ascii_lowercase() {
+                        Value::Char(stored) => {
+                            let folded = if c.is_ascii() {
+                                c.to_ascii_lowercase()
+                            } else {
+                                c
+                            };
+                            if stored != folded {
                                 return Ok(false);
                             }
                         }
@@ -1553,8 +1578,15 @@ impl<const N: usize> Lisp<N> {
     pub fn string_matches_bytes(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
         match self.arena.get(str_idx)? {
             Value::String { len, data } => {
+                // Decode UTF-8 bytes into chars
+                let s = match core::str::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(false),
+                };
+                let byte_char_count = s.chars().count();
+                
                 // Quick length check (O(1) with inline len)
-                if len != bytes.len() {
+                if len != byte_char_count {
                     return Ok(false);
                 }
                 
@@ -1565,11 +1597,11 @@ impl<const N: usize> Lisp<N> {
                 
                 // Compare each character (characters start at data, no header)
                 let base_idx = data.raw();
-                for (i, &byte) in bytes.iter().enumerate() {
+                for (i, c) in s.chars().enumerate() {
                     let char_slot = ArenaIndex::new(base_idx + i);
                     match self.arena.get(char_slot)? {
-                        Value::Char(c) => {
-                            if c as u8 != byte {
+                        Value::Char(stored) => {
+                            if stored != c {
                                 return Ok(false);
                             }
                         }
