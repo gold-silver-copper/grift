@@ -355,4 +355,9 @@ srfi64_test!(
     srfi64_r7rs_bench_fibfp_test,
     "r7rs-bench-fibfp-test.scm"
 );
+srfi64_test!(
+    srfi64_unicode_symbol_tests,
+    "unicode-symbol-tests.scm"
+);
+
 
