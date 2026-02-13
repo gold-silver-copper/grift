@@ -270,11 +270,17 @@
 
     ;; cond
     (define-syntax cond
-      (syntax-rules (else)
+      (syntax-rules (else =>)
         ((cond (else result))
          result)
         ((cond (else result1 result2 ...))
          (begin result1 result2 ...))
+        ((cond (test => proc))
+         (let ((tmp test))
+           (if tmp (proc tmp) #f)))
+        ((cond (test => proc) rest ...)
+         (let ((tmp test))
+           (if tmp (proc tmp) (cond rest ...))))
         ((cond (test result))
          (if test result #f))
         ((cond (test result1 result2 ...))
@@ -286,17 +292,28 @@
         ((cond)
          #f)))
 
-    ;; case
+    ;; case - R7RS §4.2.1
+    ;; Supports (else result ...), (else => proc), and ((datum ...) => proc) clauses
     (define-syntax case
-      (syntax-rules (else)
+      (syntax-rules (else =>)
         ((case key)
          (if #f #f))
+        ((case key (else => proc))
+         (let ((tmp key))
+           (proc tmp)))
         ((case key (else result ...))
-         (begin result ...))
+         (let ((tmp key))
+           (begin result ...)))
+        ((case key ((datum ...) => proc) . rest)
+         (let ((tmp key))
+           (if (memv tmp '(datum ...))
+               (proc tmp)
+               (case tmp . rest))))
         ((case key ((datum ...) result ...) . rest)
-         (if (memv key '(datum ...))
-             (begin result ...)
-             (case key . rest)))))
+         (let ((tmp key))
+           (if (memv tmp '(datum ...))
+               (begin result ...)
+               (case tmp . rest))))))
 
     ;; do helpers
     (define-syntax %do-vars
@@ -458,6 +475,10 @@
           ((%cl-arity-check n (a b c d e f)) (syntax (= n 6)))
           ((%cl-arity-check n (a b c d e f g)) (syntax (= n 7)))
           ((%cl-arity-check n (a b c d e f g h)) (syntax (= n 8)))
+          ((%cl-arity-check n (a . rest)) (syntax (>= n 1)))
+          ((%cl-arity-check n (a b . rest)) (syntax (>= n 2)))
+          ((%cl-arity-check n (a b c . rest)) (syntax (>= n 3)))
+          ((%cl-arity-check n (a b c d . rest)) (syntax (>= n 4)))
           ((%cl-arity-check n variadic) (syntax #t)))))
 
     (define-syntax %cl-build
@@ -655,7 +676,26 @@
     ;;; List fundamentals (R7RS §6.4)
     ;;; --------------------------------------------------------
 
-    (define (list? obj) (if (null? obj) #t (if (pair? obj) (list? (cdr obj)) #f)))
+    ;; list? with cycle detection (tortoise-and-hare algorithm)
+    (define (list? obj)
+      (define (race slow fast)
+        (if (null? fast)
+            #t
+            (if (not (pair? fast))
+                #f
+                (let ((fast2 (cdr fast)))
+                  (if (null? fast2)
+                      #t
+                      (if (not (pair? fast2))
+                          #f
+                          (if (eq? slow fast2)
+                              #f
+                              (race (cdr slow) (cdr fast2)))))))))
+      (if (null? obj)
+          #t
+          (if (pair? obj)
+              (race obj (cdr obj))
+              #f)))
 
     (define (length lst)
       (define (length-iter lst acc)
@@ -671,7 +711,10 @@
         (if (null? lst) acc (append-iter (cdr lst) (cons (car lst) acc))))
       (append-iter (rev-helper a '()) b))
 
-    (define (list-copy lst) (if (null? lst) '() (cons (car lst) (list-copy (cdr lst)))))
+    (define (list-copy lst)
+      (if (pair? lst)
+          (cons (car lst) (list-copy (cdr lst)))
+          lst))
 
     ;;; --------------------------------------------------------
     ;;; Higher-order functions (R7RS §6.4, §6.10)
@@ -829,12 +872,21 @@
           obj
           (lambda () obj)))
 
-    (define (make-parameter init)
-      (let ((value init))
-        (lambda args
-          (if (null? args)
-              value
-              (set! value (car args))))))
+    (define (make-parameter init . rest)
+      (if (null? rest)
+          ;; No converter
+          (let ((value init))
+            (lambda args
+              (if (null? args)
+                  value
+                  (set! value (car args)))))
+          ;; With converter
+          (let* ((converter (car rest))
+                 (value (converter init)))
+            (lambda args
+              (if (null? args)
+                  value
+                  (set! value (converter (car args))))))))
 
     ;;; --------------------------------------------------------
     ;;; Introspection (R7RS §6.14)

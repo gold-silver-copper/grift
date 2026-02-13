@@ -358,7 +358,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Look up a string in the intern table
     /// Returns Some(symbol_index) if found, None otherwise
-    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+    pub fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
         self.intern_table_find(|entry_string| self.string_eq_contiguous(string_idx, entry_string))
     }
     
@@ -567,7 +567,7 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Create a new symbol with the given name string and add it to the intern table.
-    fn intern_new_symbol(&self, name_str: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub fn intern_new_symbol(&self, name_str: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let symbol = self.alloc(Value::Symbol(name_str))?;
         let binding = self.cons(name_str, symbol)?;
         let current_table = self.get_intern_table_root()?;

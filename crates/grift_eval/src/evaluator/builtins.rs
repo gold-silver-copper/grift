@@ -197,7 +197,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let packed = self.lisp.cons(proc, d1)?;
         self.cont(ContType::VectorMapStep, EnvRef(env)).data1(packed)?;
         
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
     
@@ -224,7 +224,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let packed = self.lisp.cons(proc, d1)?;
         self.cont(ContType::VectorForEachStep, EnvRef(env)).data1(packed)?;
         
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -264,7 +264,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list = self.lisp.cons(port_val, nil)?;
 
         // Apply proc to the port
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -294,7 +294,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list = self.lisp.cons(port_val, nil)?;
 
         // Apply proc to the port
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -367,7 +367,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let new_call = self.lisp.cons(func, args_list)?;
         self.push_frame(new_call, func)?;
         let env = self.global_env.0;
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, new_call)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, new_call)?;
         Ok(TrampolineState::Return { val: func })
     }
 
@@ -440,7 +440,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let cont_args = self.lisp.cons(captured_continuation, nil)?;
         let call = self.lisp.cons(proc, cont_args)?;
         self.push_frame(call, proc)?;
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(cont_args, env, call)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(cont_args, env, call)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -3431,7 +3431,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             } else {
                                 match int_f(acc_int, n) {
                                     Some(r) => acc_int = r,
-                                    None => return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                                    None => {
+                                        // Integer overflow: promote to float
+                                        acc_float = float_f(acc_int as fsize, n as fsize);
+                                        is_float = true;
+                                    }
                                 }
                             }
                         }

@@ -76,6 +76,260 @@ struct TimedSrfi64Output {
     elapsed: std::time::Duration,
 }
 
+/// Split a Scheme source string into top-level expressions.
+///
+/// Tracks parenthesis nesting depth, handles string literals (including escaped
+/// chars), line comments (`;`), block comments (`#| ... |#`), and `#;` datum
+/// comments (skips the next expression). Returns a Vec of expression strings.
+fn split_top_level_expressions(input: &str) -> Vec<String> {
+    let mut exprs = Vec::new();
+    let mut chars = input.chars().peekable();
+    let mut current = String::new();
+    let mut depth: i32 = 0;
+
+    while let Some(&c) = chars.peek() {
+        match c {
+            // Line comments - skip to end of line
+            ';' => {
+                if depth > 0 {
+                    // Inside an expression, keep the comment
+                    while let Some(&ch) = chars.peek() {
+                        current.push(ch);
+                        chars.next();
+                        if ch == '\n' {
+                            break;
+                        }
+                    }
+                } else {
+                    // Top-level comment, skip it
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch == '\n' {
+                            break;
+                        }
+                    }
+                }
+            }
+            // Block comments #| ... |#
+            '#' if {
+                let mut peek = chars.clone();
+                peek.next();
+                peek.peek() == Some(&'|')
+            } =>
+            {
+                let mut comment = String::new();
+                chars.next(); // consume #
+                chars.next(); // consume |
+                comment.push_str("#|");
+                let mut block_depth = 1;
+                while block_depth > 0 {
+                    match chars.next() {
+                        Some('#') if chars.peek() == Some(&'|') => {
+                            chars.next();
+                            comment.push_str("#|");
+                            block_depth += 1;
+                        }
+                        Some('|') if chars.peek() == Some(&'#') => {
+                            chars.next();
+                            comment.push_str("|#");
+                            block_depth -= 1;
+                        }
+                        Some(ch) => comment.push(ch),
+                        None => break,
+                    }
+                }
+                if depth > 0 {
+                    current.push_str(&comment);
+                }
+            }
+            // Datum comment #; - skip next expression
+            '#' if {
+                let mut peek = chars.clone();
+                peek.next();
+                peek.peek() == Some(&';')
+            } =>
+            {
+                if depth > 0 {
+                    // Inside an expression, keep the #; and the next datum
+                    current.push('#');
+                    chars.next();
+                    current.push(';');
+                    chars.next();
+                    // Skip whitespace
+                    while let Some(&ch) = chars.peek() {
+                        if ch.is_whitespace() {
+                            current.push(ch);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    // Now include the next datum in current
+                    if chars.peek() == Some(&'(') {
+                        let mut paren_depth = 1i32;
+                        current.push('(');
+                        chars.next();
+                        while paren_depth > 0 {
+                            match chars.next() {
+                                Some('(') => {
+                                    paren_depth += 1;
+                                    current.push('(');
+                                }
+                                Some(')') => {
+                                    paren_depth -= 1;
+                                    current.push(')');
+                                }
+                                Some('"') => {
+                                    current.push('"');
+                                    loop {
+                                        match chars.next() {
+                                            Some('\\') => {
+                                                current.push('\\');
+                                                if let Some(esc) = chars.next() {
+                                                    current.push(esc);
+                                                }
+                                            }
+                                            Some('"') => {
+                                                current.push('"');
+                                                break;
+                                            }
+                                            Some(ch) => current.push(ch),
+                                            None => break,
+                                        }
+                                    }
+                                }
+                                Some(ch) => current.push(ch),
+                                None => break,
+                            }
+                        }
+                    } else {
+                        // Atom - read until whitespace or )
+                        while let Some(&ch) = chars.peek() {
+                            if ch.is_whitespace() || ch == ')' || ch == '(' {
+                                break;
+                            }
+                            current.push(ch);
+                            chars.next();
+                        }
+                    }
+                } else {
+                    // Top level #; - skip the next expression entirely
+                    chars.next(); // #
+                    chars.next(); // ;
+                    // Skip whitespace
+                    while let Some(&ch) = chars.peek() {
+                        if ch.is_whitespace() {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    // Skip the next expression
+                    if chars.peek() == Some(&'(') {
+                        let mut paren_depth = 1i32;
+                        chars.next();
+                        while paren_depth > 0 {
+                            match chars.next() {
+                                Some('(') => paren_depth += 1,
+                                Some(')') => paren_depth -= 1,
+                                Some('"') => loop {
+                                    match chars.next() {
+                                        Some('\\') => {
+                                            chars.next();
+                                        }
+                                        Some('"') => break,
+                                        None => break,
+                                        _ => {}
+                                    }
+                                },
+                                None => break,
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        while let Some(&ch) = chars.peek() {
+                            if ch.is_whitespace() || ch == ')' || ch == '(' {
+                                break;
+                            }
+                            chars.next();
+                        }
+                    }
+                }
+            }
+            // String literals
+            '"' => {
+                current.push('"');
+                chars.next();
+                loop {
+                    match chars.next() {
+                        Some('\\') => {
+                            current.push('\\');
+                            if let Some(esc) = chars.next() {
+                                current.push(esc);
+                            }
+                        }
+                        Some('"') => {
+                            current.push('"');
+                            break;
+                        }
+                        Some(ch) => current.push(ch),
+                        None => break,
+                    }
+                }
+                if depth == 0 {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        exprs.push(trimmed);
+                    }
+                    current.clear();
+                }
+            }
+            // Open paren
+            '(' | '[' => {
+                depth += 1;
+                current.push(c);
+                chars.next();
+            }
+            // Close paren
+            ')' | ']' => {
+                depth -= 1;
+                current.push(c);
+                chars.next();
+                if depth == 0 {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        exprs.push(trimmed);
+                    }
+                    current.clear();
+                }
+            }
+            // Whitespace at top level
+            c if c.is_whitespace() && depth == 0 => {
+                chars.next();
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    // This is a standalone atom (number, boolean, etc.)
+                    exprs.push(trimmed);
+                    current.clear();
+                }
+            }
+            // Any other character
+            _ => {
+                current.push(c);
+                chars.next();
+            }
+        }
+    }
+
+    // Don't lose any trailing content
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        exprs.push(trimmed);
+    }
+
+    exprs
+}
+
 /// Run a single `.scm` test file and return parsed results with timing.
 fn run_scheme_test(path: &Path) -> TimedSrfi64Output {
     let start = Instant::now();
@@ -115,15 +369,63 @@ fn run_scheme_test(path: &Path) -> TimedSrfi64Output {
         )
     });
 
-    // Run the test file (wrap in begin since eval_str handles one expression)
-    let test_wrapped = format!("(begin\n{}\n)", test_content);
-    eval.eval_str(&test_wrapped).unwrap_or_else(|e| {
-        panic!(
-            "Failed to evaluate test file: {:?}\nFile: {}",
-            e,
-            path.display()
-        )
-    });
+    // For most test files, wrap in (begin ...) since eval_str handles one
+    // expression and (import ...) / (define-library ...) need shared scope.
+    // For very large test files (like r7rs-tests.scm), evaluate each top-level
+    // expression individually to avoid issues with macro expansion in deeply
+    // nested begin contexts and port exhaustion.
+    let use_per_expr = path.file_name().map_or(false, |f| f == "r7rs-tests.scm");
+
+    if use_per_expr {
+        for expr in split_top_level_expressions(&test_content) {
+            let trimmed = expr.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            eval.eval_str(trimmed).unwrap_or_else(|e| {
+                let mut extra = String::new();
+                if let Ok(grift::Value::Symbol(name_idx)) = lisp.get(e.expr) {
+                    let len = lisp.string_len(name_idx).unwrap_or(0);
+                    let mut name = String::new();
+                    for i in 0..len {
+                        if let Ok(c) = lisp.string_char_at(name_idx, i) {
+                            name.push(c);
+                        }
+                    }
+                    extra = format!(" (symbol: '{}')", name);
+                }
+                panic!(
+                    "Failed to evaluate test file: {:?}{}\nFile: {}\nExpression: {}",
+                    e,
+                    extra,
+                    path.display(),
+                    if trimmed.len() > 200 { &trimmed[..200] } else { trimmed }
+                )
+            });
+        }
+    } else {
+        // Default: wrap in (begin ...) for shared scope
+        let test_wrapped = format!("(begin\n{}\n)", test_content);
+        eval.eval_str(&test_wrapped).unwrap_or_else(|e| {
+            let mut extra = String::new();
+            if let Ok(grift::Value::Symbol(name_idx)) = lisp.get(e.expr) {
+                let len = lisp.string_len(name_idx).unwrap_or(0);
+                let mut name = String::new();
+                for i in 0..len {
+                    if let Ok(c) = lisp.string_char_at(name_idx, i) {
+                        name.push(c);
+                    }
+                }
+                extra = format!(" (symbol: '{}')", name);
+            }
+            panic!(
+                "Failed to evaluate test file: {:?}{}\nFile: {}",
+                e,
+                extra,
+                path.display()
+            )
+        });
+    }
 
     // Parse the captured output
     let output = CAPTURED_OUTPUT.with(|o| o.borrow().clone());

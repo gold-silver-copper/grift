@@ -2,10 +2,9 @@
 ;;
 ;; SRFI-64 test suite for Unicode symbol support
 ;; Extended edition
-
-(import (scheme base)
-        (scheme char)
-        (srfi 64))
+;;
+;; Note: (import ...) is not needed here because the test runner
+;; (srfi64_runner.rs) loads SRFI-64 and scheme libraries automatically.
 
 (test-begin "unicode-symbols")
 

@@ -18,27 +18,34 @@
 (define %srfi64-fail-count 0)
 (define %srfi64-error-count 0)
 (define %srfi64-results '())
+(define %srfi64-depth 0)
 
 (define (test-begin suite-name)
-  (set! %srfi64-suite-name suite-name)
-  (set! %srfi64-pass-count 0)
-  (set! %srfi64-fail-count 0)
-  (set! %srfi64-error-count 0)
-  (set! %srfi64-results '())
+  (if (= %srfi64-depth 0)
+      (begin
+        (set! %srfi64-suite-name suite-name)
+        (set! %srfi64-pass-count 0)
+        (set! %srfi64-fail-count 0)
+        (set! %srfi64-error-count 0)
+        (set! %srfi64-results '())))
+  (set! %srfi64-depth (+ %srfi64-depth 1))
   (display "SRFI64:BEGIN ")
   (display suite-name)
   (newline))
 
 (define (test-end . args)
-  (display "SRFI64:SUMMARY passed:")
-  (display %srfi64-pass-count)
-  (display " failed:")
-  (display %srfi64-fail-count)
-  (display " errors:")
-  (display %srfi64-error-count)
-  (newline)
+  (set! %srfi64-depth (- %srfi64-depth 1))
+  (if (= %srfi64-depth 0)
+      (begin
+        (display "SRFI64:SUMMARY passed:")
+        (display %srfi64-pass-count)
+        (display " failed:")
+        (display %srfi64-fail-count)
+        (display " errors:")
+        (display %srfi64-error-count)
+        (newline)))
   (display "SRFI64:END ")
-  (display %srfi64-suite-name)
+  (display (if (null? args) %srfi64-suite-name (car args)))
   (newline))
 
 (define (%srfi64-run-group name thunk)
@@ -82,38 +89,47 @@
   (display message)
   (newline))
 
-(define (test-equal name expected expr)
-  (guard (exn
-          (#t (%srfi64-record-error
-               name
-               (if (error-object? exn)
-                   (error-object-message exn)
-                   "unknown error"))))
-    (if (equal? expected expr)
-        (%srfi64-record-pass name)
-        (%srfi64-record-fail name expected expr))))
+(define-syntax test-equal
+  (syntax-rules ()
+    ((_ name expected expr)
+     (guard (exn
+             (#t (%srfi64-record-error
+                  name
+                  (if (error-object? exn)
+                      (error-object-message exn)
+                      "unknown error"))))
+       (let ((e expected) (a expr))
+         (if (equal? e a)
+             (%srfi64-record-pass name)
+             (%srfi64-record-fail name e a)))))))
 
-(define (test-eqv name expected expr)
-  (guard (exn
-          (#t (%srfi64-record-error
-               name
-               (if (error-object? exn)
-                   (error-object-message exn)
-                   "unknown error"))))
-    (if (eqv? expected expr)
-        (%srfi64-record-pass name)
-        (%srfi64-record-fail name expected expr))))
+(define-syntax test-eqv
+  (syntax-rules ()
+    ((_ name expected expr)
+     (guard (exn
+             (#t (%srfi64-record-error
+                  name
+                  (if (error-object? exn)
+                      (error-object-message exn)
+                      "unknown error"))))
+       (let ((e expected) (a expr))
+         (if (eqv? e a)
+             (%srfi64-record-pass name)
+             (%srfi64-record-fail name e a)))))))
 
-(define (test-assert name expr)
-  (guard (exn
-          (#t (%srfi64-record-error
-               name
-               (if (error-object? exn)
-                   (error-object-message exn)
-                   "unknown error"))))
-    (if expr
-        (%srfi64-record-pass name)
-        (%srfi64-record-fail name #t expr))))
+(define-syntax test-assert
+  (syntax-rules ()
+    ((_ name expr)
+     (guard (exn
+             (#t (%srfi64-record-error
+                  name
+                  (if (error-object? exn)
+                      (error-object-message exn)
+                      "unknown error"))))
+       (let ((a expr))
+         (if a
+             (%srfi64-record-pass name)
+             (%srfi64-record-fail name #t a)))))))
 
 (define (test-error name thunk)
   (let ((got-error #f))
@@ -124,13 +140,16 @@
         (%srfi64-record-pass name)
         (%srfi64-record-fail name "error" "no error raised"))))
 
-(define (test-approximate name expected expr tolerance)
-  (guard (exn
-          (#t (%srfi64-record-error
-               name
-               (if (error-object? exn)
-                   (error-object-message exn)
-                   "unknown error"))))
-    (if (<= (abs (- expected expr)) tolerance)
-        (%srfi64-record-pass name)
-        (%srfi64-record-fail name expected expr))))
+(define-syntax test-approximate
+  (syntax-rules ()
+    ((_ name expected expr tolerance)
+     (guard (exn
+             (#t (%srfi64-record-error
+                  name
+                  (if (error-object? exn)
+                      (error-object-message exn)
+                      "unknown error"))))
+       (let ((e expected) (a expr) (t tolerance))
+         (if (<= (abs (- e a)) t)
+             (%srfi64-record-pass name)
+             (%srfi64-record-fail name e a)))))))
