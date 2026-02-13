@@ -1383,13 +1383,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::StringLength => {
                 // (string-length string) - Get length
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { .. } => {
-                        let len = self.lisp.string_len(str_idx)?;
-                        self.lisp.number(len as isize).map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
-                }
+                let (len, _) = self.get_string(str_idx, call_expr)?;
+                self.lisp.number(len as isize).map_err(Into::into)
             }
             
             Builtin::StringRef => {
@@ -2599,80 +2594,58 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::BytevectorLength => {
                 // (bytevector-length bytevector) - Get length
                 let bv = self.lisp.car(args)?;
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let len = self.lisp.bytevector_len(bv)?;
-                        self.lisp.number(len as isize).map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                }
+                let (len, _) = self.get_bytevector(bv, call_expr)?;
+                self.lisp.number(len as isize).map_err(Into::into)
             }
 
             Builtin::BytevectorU8Ref => {
                 // (bytevector-u8-ref bytevector k) - Get byte at index
                 extract_args!(self, args, bv, k_idx);
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 {
-                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
-                        }
-                        let elem = self.lisp.bytevector_get(bv, k as usize)?;
-                        Ok(elem)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                self.get_bytevector(bv, call_expr)?;
+                let k = self.get_int(k_idx, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
                 }
+                let elem = self.lisp.bytevector_get(bv, k as usize)?;
+                Ok(elem)
             }
 
             Builtin::BytevectorU8Set => {
                 // (bytevector-u8-set! bytevector k byte) - Set byte at index
-                let bv = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let k_idx = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
-                let byte_idx = self.lisp.car(rest2)?;
-
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 {
-                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
-                        }
-                        let byte_val = self.get_int(byte_idx, call_expr)?;
-                        if !(0..=255).contains(&byte_val) {
-                            return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
-                        }
-                        self.lisp.bytevector_set(bv, k as usize, byte_val as u8)?;
-                        self.lisp.void_val().map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                extract_args!(self, args, bv, k_idx, byte_idx);
+                self.get_bytevector(bv, call_expr)?;
+                let k = self.get_int(k_idx, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
                 }
+                let byte_val = self.get_int(byte_idx, call_expr)?;
+                if !(0..=255).contains(&byte_val) {
+                    return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                }
+                self.lisp.bytevector_set(bv, k as usize, byte_val as u8)?;
+                self.lisp.void_val().map_err(Into::into)
             }
 
             Builtin::BytevectorCopy => {
                 // (bytevector-copy bytevector [start [end]]) - Copy a bytevector
                 let bv = self.lisp.car(args)?;
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let len = self.lisp.bytevector_len(bv)?;
-                        let rest = self.lisp.cdr(args)?;
-                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                self.get_bytevector(bv, call_expr)?;
+                let len = self.lisp.bytevector_len(bv)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        let new_len = end - start;
-                        let result = self.lisp.make_bytevector(new_len, 0)?;
+                let new_len = end - start;
+                let result = self.lisp.make_bytevector(new_len, 0)?;
 
-                        for i in 0..new_len {
-                            let elem = self.lisp.bytevector_get(bv, start + i)?;
-                            let byte = match self.lisp.get(elem)? {
-                                Value::Number(n) => n as u8,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            };
-                            self.lisp.bytevector_set(result, i, byte)?;
-                        }
-                        Ok(result)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                for i in 0..new_len {
+                    let elem = self.lisp.bytevector_get(bv, start + i)?;
+                    let byte = match self.lisp.get(elem)? {
+                        Value::Number(n) => n as u8,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    self.lisp.bytevector_set(result, i, byte)?;
                 }
+                Ok(result)
             }
 
             Builtin::BytevectorAppend => {
