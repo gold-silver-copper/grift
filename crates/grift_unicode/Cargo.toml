@@ -8,5 +8,13 @@ repository = "https://github.com/gold-silver-copper/grift"
 documentation = "https://docs.rs/grift_unicode"
 keywords = ["unicode", "case-mapping", "no_std", "embedded", "scheme"]
 categories = ["no-std", "text-processing", "embedded"]
+include = [
+    "src/**/*",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "CaseFolding.txt",
+]
 
 [dependencies]
