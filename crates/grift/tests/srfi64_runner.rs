@@ -359,5 +359,9 @@ srfi64_test!(
     srfi64_unicode_symbol_tests,
     "unicode-symbol-tests.scm"
 );
+srfi64_test!(
+    chibi-r7rs-tests,
+    "r7rs-tests.scm"
+);
 
 
