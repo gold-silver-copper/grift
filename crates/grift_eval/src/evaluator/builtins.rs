@@ -3976,7 +3976,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Continue reading the token (number, symbol, etc.)
             loop {
                 match io.peek_char(pid) {
-                    Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => break,
+                    Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';' => break,
                     Ok(c) => {
                         let _ = io.read_char(pid);
                         if io.write_char(tmp, c).is_err() { break; }

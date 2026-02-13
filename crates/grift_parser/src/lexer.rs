@@ -418,6 +418,24 @@ impl<'a> Lexer<'a> {
         self.column = saved.2;
     }
 
+    /// Try to consume a case-insensitive suffix (e.g. "rue" after "#t" for "#true").
+    /// Only consumes if all bytes match and the suffix is followed by a delimiter.
+    fn try_consume_suffix(&mut self, suffix: &[u8]) {
+        let saved = self.save_pos();
+        for &expected in suffix {
+            match self.peek() {
+                Some(c) if c.to_ascii_lowercase() == expected => { self.advance(); }
+                _ => { self.restore_pos(saved); return; }
+            }
+        }
+        // After consuming the suffix, verify next char is a delimiter (not a symbol char)
+        match self.peek() {
+            None => {} // EOF is a valid delimiter
+            Some(c) if !is_symbol_char(c) => {} // delimiter found
+            _ => { self.restore_pos(saved); } // not a delimiter, revert
+        }
+    }
+
     /// Parse a fractional decimal part (digits after '.'), accumulating into `result`.
     fn parse_frac_part(&mut self, result: &mut grift_core::fsize) {
         let mut frac_scale: grift_core::fsize = 0.1;
@@ -903,8 +921,18 @@ impl<'a> Lexer<'a> {
         self.advance(); // consume '#'
         
         match self.peek() {
-            Some(b't') | Some(b'T') => { self.advance(); Ok(Token::True) }
-            Some(b'f') | Some(b'F') => { self.advance(); Ok(Token::False) }
+            Some(b't') | Some(b'T') => {
+                self.advance(); // consume 't'
+                // Try to consume "rue" for #true
+                self.try_consume_suffix(b"rue");
+                Ok(Token::True)
+            }
+            Some(b'f') | Some(b'F') => {
+                self.advance(); // consume 'f'
+                // Try to consume "alse" for #false
+                self.try_consume_suffix(b"alse");
+                Ok(Token::False)
+            }
             Some(b'\\') => self.lex_char_literal(),
             Some(b'(') => { Ok(Token::VectorOpen) } // Don't consume '(' - parser handles it
             Some(b'\'') => { self.advance(); Ok(Token::SyntaxQuote) }

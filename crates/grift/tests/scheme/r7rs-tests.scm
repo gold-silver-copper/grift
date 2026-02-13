@@ -308,7 +308,7 @@
 (test-equal "r7rs-81" '(list 3 4) `(list ,(+ 1 2) 4))
 (let ((name 'a)) (test-equal "r7rs-82" '(list a (quote a)) `(list ,name ',name)))
 (test-equal "r7rs-83" '(a 3 4 5 6 b) `(a ,(+ 1 2) ,@(map abs '(4 -5 6)) b))
-;; FAILING: (test-equal "r7rs-84" #(10 5 4 16 9 8) `#(10 5 ,(square 2) ,@(map square '(4 3)) 8))
+(test-equal "r7rs-84" #(10 5 4 16 9 8) `#(10 5 ,(square 2) ,@(map square '(4 3)) 8))
 (test-equal "r7rs-85" '(a `(b ,(+ 1 2) ,(foo 4 d) e) f) `(a `(b ,(+ 1 2) ,(foo ,(+ 1 3) d) e) f))
 (let ((name1 'x)
       (name2 'y))
@@ -2038,7 +2038,7 @@
 (test-equal "r7rs-898" '(#t . (5)) (read2 (open-input-string "#t(5)")))
 (test-equal "r7rs-899" '(#t . 6) (read2 (open-input-string "#true 6 ")))
 (test-equal "r7rs-900" '(#f . 7) (read2 (open-input-string "#f 7")))
-;; FAILING: (test-equal "r7rs-901" '(#f . "8") (read2 (open-input-string "#false\"8\"")))
+(test-equal "r7rs-901" '(#f . "8") (read2 (open-input-string "#false\"8\"")))
 
 (test-equal "r7rs-902" '() (read (open-input-string "()")))
 (test-equal "r7rs-903" '(1 2) (read (open-input-string "(1 2)")))

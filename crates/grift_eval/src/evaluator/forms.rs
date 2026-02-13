@@ -649,6 +649,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
+            ContType::QuasiquoteVector => {
+                // val is the processed list - convert back to vector
+                // Count elements
+                let mut count = 0usize;
+                let mut current = val;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            count += 1;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => break,
+                    }
+                }
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                current = val;
+                for i in 0..count {
+                    let elem = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, elem)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                Ok(Some(TrampolineState::Return { val: vec }))
+            }
+
             ContType::LetSyntaxBody => {
                 // Restore macro environment after let-syntax body evaluation
                 // Data: saved_macro_env
@@ -1112,6 +1138,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let depth_encoded = Self::encode_usize(depth);
                 self.cont(ContType::QuasiquoteCar, env).data3(cdr, depth_encoded, env.0)?;
                 self.step_quasiquote_trampoline(car, env, depth)
+            }
+            Value::Array { .. } => {
+                // Convert vector to list, process with quasiquote, then convert back
+                let len = self.lisp.array_len(template)?;
+                let mut list = self.lisp.nil()?;
+                for i in (0..len).rev() {
+                    let elem = self.lisp.array_get(template, i)?;
+                    list = self.lisp.cons(elem, list)?;
+                }
+                // Push continuation to convert result list back to vector
+                let nil = self.lisp.nil()?;
+                self.push_cont(ContType::QuasiquoteVector, nil, env.0)?;
+                // Process the list through quasiquote
+                self.step_quasiquote_trampoline(list, env, depth)
             }
             _ => {
                 // Atoms are returned as-is
