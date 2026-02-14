@@ -96,4 +96,7 @@ pub struct Evaluator<'a, const N: usize> {
     /// Libraries currently being loaded — arena-based list of library names.
     /// Used for detecting circular dependencies during auto-loading.
     loading_libraries: ArenaIndex,
+    /// Cached result of `(get-environment-variables)` to avoid repeated
+    /// large allocations in the same evaluator instance.
+    cached_environment_variables: ArenaIndex,
 }
