@@ -82,6 +82,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
             cached_environment_variables: nil,
+            read_labels: nil,
         };
         
         // Initialize global environment with builtins

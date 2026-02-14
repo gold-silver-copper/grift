@@ -108,6 +108,9 @@ fn reverse_list_in_place<const N: usize>(
     Ok(prev)
 }
 
+/// Maximum number of datum labels tracked by the parser.
+const MAX_DATUM_LABELS: usize = 64;
+
 /// Parser state — wraps a [`Lexer`] and builds arena-allocated AST nodes.
 ///
 /// The parser consumes tokens from the lexer and constructs S-expression
@@ -115,17 +118,33 @@ fn reverse_list_in_place<const N: usize>(
 /// desugaring, and vector literals.
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
+    /// Datum label table for `#n=datum` / `#n#` (R7RS §7.1.1).
+    /// Each entry maps a label number to its ArenaIndex value.
+    /// Uses `usize::MAX` as "unused" sentinel.
+    datum_label_keys: [usize; MAX_DATUM_LABELS],
+    datum_label_vals: [ArenaIndex; MAX_DATUM_LABELS],
+    datum_label_count: usize,
 }
 
 impl<'a> Parser<'a> {
     /// Create a new parser
     pub fn new(input: &'a str) -> Self {
-        Parser { lexer: Lexer::new(input) }
+        Parser {
+            lexer: Lexer::new(input),
+            datum_label_keys: [usize::MAX; MAX_DATUM_LABELS],
+            datum_label_vals: [ArenaIndex::NIL; MAX_DATUM_LABELS],
+            datum_label_count: 0,
+        }
     }
     
     /// Create from bytes
     pub fn from_bytes(input: &'a [u8]) -> Self {
-        Parser { lexer: Lexer::from_bytes(input) }
+        Parser {
+            lexer: Lexer::from_bytes(input),
+            datum_label_keys: [usize::MAX; MAX_DATUM_LABELS],
+            datum_label_vals: [ArenaIndex::NIL; MAX_DATUM_LABELS],
+            datum_label_count: 0,
+        }
     }
     
     /// Get a reference to the underlying lexer
@@ -207,6 +226,50 @@ impl<'a> Parser<'a> {
                 // Skip the next datum, then parse the one after it
                 self.parse(lisp)?; // parsed and discarded
                 self.parse(lisp)
+            }
+            Token::DatumLabelDef(label) => {
+                // #n= — define datum label.  Create a placeholder cons cell
+                // first so that forward/circular references can resolve.
+                let nil = lisp.nil()?;
+                let placeholder = lisp.cons(nil, nil)?;
+                // Store the label mapping
+                if self.datum_label_count < MAX_DATUM_LABELS {
+                    self.datum_label_keys[self.datum_label_count] = label;
+                    self.datum_label_vals[self.datum_label_count] = placeholder;
+                    self.datum_label_count += 1;
+                }
+                // Parse the actual datum
+                let datum = self.parse(lisp)?;
+                // Patch the placeholder if datum is a cons cell
+                match lisp.get(datum)? {
+                    Value::Cons { .. } => {
+                        let car = lisp.car(datum)?;
+                        let cdr = lisp.cdr(datum)?;
+                        lisp.set_car(placeholder, car)?;
+                        lisp.set_cdr(placeholder, cdr)?;
+                        Ok(placeholder)
+                    }
+                    _ => {
+                        // For non-cons values, update the label mapping
+                        // to point to the actual datum
+                        for i in 0..self.datum_label_count {
+                            if self.datum_label_keys[i] == label {
+                                self.datum_label_vals[i] = datum;
+                                break;
+                            }
+                        }
+                        Ok(datum)
+                    }
+                }
+            }
+            Token::DatumLabelRef(label) => {
+                // #n# — look up previously defined label
+                for i in 0..self.datum_label_count {
+                    if self.datum_label_keys[i] == label {
+                        return Ok(self.datum_label_vals[i]);
+                    }
+                }
+                Err(ParseError { kind: ParseErrorKind::InvalidHashLiteral, loc })
             }
         }
     }
