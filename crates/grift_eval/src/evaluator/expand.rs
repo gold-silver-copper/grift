@@ -1403,8 +1403,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
            || self.lisp.symbol_matches(sym, "let*")?
            || self.lisp.symbol_matches(sym, "letrec")?
            || self.lisp.symbol_matches(sym, "letrec*")?
-           || self.lisp.symbol_matches(sym, "define")?
-           || self.lisp.symbol_matches(sym, "define-syntax")?)
+           || self.lisp.symbol_matches(sym, "define")?)
     }
 
     /// Handle binding forms (lambda, let, etc.) with hygienic renaming
@@ -1427,8 +1426,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.transcribe_let_form(keyword, args, bindings, renames, def_env)
         } else if self.lisp.symbol_matches(keyword, "define")? {
             self.transcribe_define_form(args, bindings, renames, def_env)
-        } else if self.lisp.symbol_matches(keyword, "define-syntax")? {
-            self.transcribe_define_syntax_form(args, bindings, renames, def_env)
         } else {
             let new_keyword = self.transcribe_template(
                 keyword, bindings, renames, def_env
@@ -1680,10 +1677,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Transcribe a `(define-syntax name body)` form in a macro template.
-    ///
-    /// Gensyms non-pattern-variable identifiers in any nested syntax-rules
-    /// patterns to prevent capture by identifiers substituted from the
-    /// outer macro's pattern variables.
     fn transcribe_define_syntax_form(
         &mut self,
         args: ArenaIndex,
@@ -1697,108 +1690,172 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Transcribe the name (may be a pattern variable)
         let transcribed_name = self.transcribe_template(name_template, bindings, renames, def_env)?;
 
-        // For the body: collect non-pattern-variable symbols that appear
-        // in inner syntax-rules patterns and gensym them, adding to renames
-        let mut new_renames = renames;
+        // Gensym inner syntax-rules pattern vars before transcribing body
         let body_car = self.lisp.car(body_template)?;
-        if let Value::Cons { .. } = self.lisp.get(body_car)? {
+        let new_body_template = if let Value::Cons { .. } = self.lisp.get(body_car)? {
             let sr_head = self.lisp.car(body_car)?;
             if self.lisp.symbol_matches(sr_head, "syntax-rules")? {
-                // Extract the syntax-rules clauses and gensym pattern vars
-                new_renames = self.gensym_inner_pattern_vars(body_car, bindings, new_renames, def_env)?;
+                let rewritten = self.gensym_syntax_rules_pattern_vars(body_car, bindings)?;
+                let rest = self.lisp.cdr(body_template)?;
+                self.lisp.cons(rewritten, rest)?
+            } else {
+                body_template
             }
-        }
+        } else {
+            body_template
+        };
 
-        let transcribed_body = self.transcribe_template(body_template, bindings, new_renames, def_env)?;
+        let transcribed_body = self.transcribe_template(new_body_template, bindings, renames, def_env)?;
 
         let ds_sym = self.lisp.symbol("define-syntax")?;
         let rest = self.lisp.cons(transcribed_name, transcribed_body)?;
         self.lisp.cons(ds_sym, rest).map_err(Into::into)
     }
 
-    /// Walk a syntax-rules form and gensym non-pattern-variable identifiers
-    /// in its clause patterns to prevent hygiene violations.
+    /// Rewrite a syntax-rules form by gensyming non-outer-literal identifiers
+    /// in its patterns AND templates, so that inner pattern variables don't
+    /// collide with identifiers substituted from the enclosing macro's
+    /// pattern variables.
     ///
-    /// Returns updated renames.
-    fn gensym_inner_pattern_vars(
+    /// Returns the modified syntax-rules form.
+    fn gensym_syntax_rules_pattern_vars(
         &mut self,
         syntax_rules_form: ArenaIndex,
-        bindings: ArenaIndex,
-        mut renames: ArenaIndex,
-        def_env: ArenaIndex,
-    ) -> Result<ArenaIndex, EvalError> {
+        _bindings: ArenaIndex,
+    ) -> EvalResult {
         // (syntax-rules (lit ...) ((pat tmpl) ...))
-        let args = self.lisp.cdr(syntax_rules_form)?; // skip 'syntax-rules'
-        
+        let sr_sym = self.lisp.car(syntax_rules_form)?;
+        let args = self.lisp.cdr(syntax_rules_form)?;
+
         // Handle both standard and custom-ellipsis forms
         let first = self.lisp.car(args)?;
-        let clauses_start = match self.lisp.get(first)? {
+        let (custom_elli, literals, clauses) = match self.lisp.get(first)? {
             Value::Symbol(_) => {
-                // Custom ellipsis form: (syntax-rules elli (lit ...) clause ...)
+                // Custom ellipsis: (syntax-rules elli (lit ...) clause ...)
                 let rest = self.lisp.cdr(args)?;
-                self.lisp.cdr(rest)? // skip elli and literals
+                let lits = self.lisp.car(rest)?;
+                let cls = self.lisp.cdr(rest)?;
+                (Some(first), lits, cls)
             }
             _ => {
-                // Standard form: (syntax-rules (lit ...) clause ...)
-                self.lisp.cdr(args)? // skip literals
+                // Standard: (syntax-rules (lit ...) clause ...)
+                let lits = first;
+                let cls = self.lisp.cdr(args)?;
+                (None, lits, cls)
             }
         };
 
-        // Walk each clause
-        let mut current = clauses_start;
+        // Collect all identifiers from patterns that are NOT `_`, `...`, or literals
+        let nil = self.lisp.nil()?;
+        let mut replacements = nil; // ((old . new) ...)
+        let mut current = clauses;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let clause = self.lisp.car(current)?;
             let pattern = self.lisp.car(clause)?;
-            // Walk pattern and gensym any symbol that's NOT:
-            // - a pattern variable of the OUTER macro
-            // - already renamed
-            // - bound in def_env
-            // - `_` (wildcard)
-            // - `...` (ellipsis)
-            renames = self.gensym_pattern_identifiers(pattern, bindings, renames, def_env)?;
+            self.collect_pattern_identifiers_for_gensym(pattern, literals, &mut replacements)?;
             current = self.lisp.cdr(current)?;
         }
-        Ok(renames)
+
+        // If no replacements needed, return original form
+        if self.lisp.get(replacements)?.is_nil() {
+            return Ok(syntax_rules_form);
+        }
+
+        // Apply replacements to the entire clauses (both patterns and templates)
+        let new_clauses = self.apply_replacements(clauses, replacements)?;
+
+        // Rebuild syntax-rules form
+        match custom_elli {
+            Some(elli) => {
+                let tail = self.lisp.cons(literals, new_clauses)?;
+                let tail2 = self.lisp.cons(elli, tail)?;
+                self.lisp.cons(sr_sym, tail2).map_err(Into::into)
+            }
+            None => {
+                let tail = self.lisp.cons(literals, new_clauses)?;
+                self.lisp.cons(sr_sym, tail).map_err(Into::into)
+            }
+        }
     }
 
-    /// Walk a pattern and gensym non-pattern-variable identifiers.
-    fn gensym_pattern_identifiers(
+    /// Collect identifiers from a pattern that need to be gensym'd.
+    fn collect_pattern_identifiers_for_gensym(
         &mut self,
         pattern: ArenaIndex,
-        bindings: ArenaIndex,
-        mut renames: ArenaIndex,
-        _def_env: ArenaIndex,
-    ) -> Result<ArenaIndex, EvalError> {
+        literals: ArenaIndex,
+        replacements: &mut ArenaIndex,
+    ) -> Result<(), EvalError> {
         match self.lisp.get(pattern)? {
             Value::Symbol(_) => {
-                // Skip if it's a pattern variable of the outer macro
-                if self.bindings_lookup(bindings, pattern)?.is_some() {
-                    return Ok(renames);
-                }
-                // Skip if already renamed
-                let renamed = self.rename_lookup(pattern, renames)?;
-                if !self.symbols_eq(renamed, pattern)? {
-                    return Ok(renames);
-                }
                 // Skip _ and ...
-                if self.lisp.symbol_matches(pattern, "_")? || self.lisp.symbol_matches(pattern, "...")? {
-                    return Ok(renames);
+                if self.lisp.symbol_matches(pattern, "_")?
+                    || self.lisp.symbol_matches(pattern, "...")? {
+                    return Ok(());
                 }
-                // Gensym this identifier — it's introduced by the outer macro
-                // and must not collide with identifiers substituted from
-                // outer pattern variables.
+                // Skip if it's in the literals list
+                if self.symbol_in_list(pattern, literals)? {
+                    return Ok(());
+                }
+                // Skip if already in replacements
+                let mut cursor = *replacements;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    let pair = self.lisp.car(cursor)?;
+                    let old = self.lisp.car(pair)?;
+                    if self.symbols_eq(old, pattern)? {
+                        return Ok(()); // Already have a replacement
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                // Generate a gensym replacement
                 let fresh = self.gensym_simple()?;
-                renames = self.rename_extend(renames, pattern, fresh)?;
-                Ok(renames)
+                let pair = self.lisp.cons(pattern, fresh)?;
+                *replacements = self.lisp.cons(pair, *replacements)?;
+                Ok(())
             }
             Value::Cons { .. } => {
                 let car = self.lisp.car(pattern)?;
                 let cdr = self.lisp.cdr(pattern)?;
-                renames = self.gensym_pattern_identifiers(car, bindings, renames, _def_env)?;
-                renames = self.gensym_pattern_identifiers(cdr, bindings, renames, _def_env)?;
-                Ok(renames)
+                self.collect_pattern_identifiers_for_gensym(car, literals, replacements)?;
+                self.collect_pattern_identifiers_for_gensym(cdr, literals, replacements)?;
+                Ok(())
             }
-            _ => Ok(renames),
+            _ => Ok(()),
+        }
+    }
+
+    /// Apply symbol replacements throughout a tree.
+    fn apply_replacements(
+        &self,
+        tree: ArenaIndex,
+        replacements: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(tree)? {
+            Value::Symbol(_) => {
+                // Check if this symbol has a replacement
+                let mut cursor = replacements;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    let pair = self.lisp.car(cursor)?;
+                    let old = self.lisp.car(pair)?;
+                    if self.lisp.symbol_eq(old, tree)? {
+                        let new = self.lisp.cdr(pair)?;
+                        return Ok(new);
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(tree)
+            }
+            Value::Cons { .. } => {
+                let car = self.lisp.car(tree)?;
+                let cdr = self.lisp.cdr(tree)?;
+                let new_car = self.apply_replacements(car, replacements)?;
+                let new_cdr = self.apply_replacements(cdr, replacements)?;
+                if new_car == car && new_cdr == cdr {
+                    Ok(tree) // No change
+                } else {
+                    self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+                }
+            }
+            _ => Ok(tree),
         }
     }
 
