@@ -115,6 +115,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // `(import (scheme base))` finds it without re-evaluating
         // base.scm (which would cause macro redefinition conflicts).
         eval.register_base_library()?;
+
+        // Load Chibi loop compatibility (loop, in-string, in-string-reverse)
+        eval.load_chibi_loop_compat()?;
         
         Ok(eval)
     }
@@ -177,6 +180,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let env_pair = self.lisp.cons(self.global_env.0, self.macro_env.0)?;
         let entry = self.lisp.cons(lib_name, env_pair)?;
         self.library_registry = self.lisp.cons(entry, self.library_registry)?;
+        Ok(())
+    }
+
+    /// Load Chibi loop compatibility definitions into the global environment.
+    fn load_chibi_loop_compat(&mut self) -> Result<(), EvalError> {
+        let src = "(begin \
+          (define (in-string s) (string->list s)) \
+          (define (in-string-reverse s) (reverse (string->list s))))";
+        self.eval_str(src)?;
+        // Define loop as a procedure-based macro using syntax-case
+        let loop_src = "(define-syntax loop \
+          (lambda (x) \
+            (syntax-case x (for listing =>) \
+              ((loop ((for var1 (proc1 arg1)) (for var2 (listing var1))) => var2) \
+               (syntax (let lp ((items (proc1 arg1)) (var2 (quote ()))) \
+                 (if (null? items) \
+                     (reverse var2) \
+                     (let ((var1 (car items))) \
+                       (lp (cdr items) (cons var1 var2))))))))))";
+        self.eval_str(loop_src)?;
         Ok(())
     }
 
