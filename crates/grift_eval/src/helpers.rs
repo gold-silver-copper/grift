@@ -192,48 +192,22 @@ const E: fsize = core::f32::consts::E;
 
 /// Floor function for no_std: largest integer value not greater than x.
 pub fn float_floor(x: fsize) -> fsize {
-    if x.is_nan() || x.is_infinite() {
-        return x;
-    }
-    let i = x as isize;
-    let fi = i as fsize;
-    if x < fi { fi - 1.0 } else { fi }
+    libm::floor(x as f64) as fsize
 }
 
 /// Ceiling function for no_std: smallest integer value not less than x.
 pub fn float_ceil(x: fsize) -> fsize {
-    if x.is_nan() || x.is_infinite() {
-        return x;
-    }
-    let i = x as isize;
-    let fi = i as fsize;
-    if x > fi { fi + 1.0 } else { fi }
+    libm::ceil(x as f64) as fsize
 }
 
 /// Truncate function for no_std: integer part of x towards zero.
 pub fn float_truncate(x: fsize) -> fsize {
-    if x.is_nan() || x.is_infinite() {
-        return x;
-    }
-    (x as isize) as fsize
+    libm::trunc(x as f64) as fsize
 }
 
 /// Round function for no_std: round to nearest, ties to even (banker's rounding).
 pub fn float_round(x: fsize) -> fsize {
-    if x.is_nan() || x.is_infinite() {
-        return x;
-    }
-    let fl = float_floor(x);
-    let diff = x - fl;
-    if diff < 0.5 {
-        fl
-    } else if diff > 0.5 {
-        fl + 1.0
-    } else {
-        // Tie: round to even
-        let fl_i = fl as isize;
-        if fl_i % 2 == 0 { fl } else { fl + 1.0 }
-    }
+    libm::rint(x as f64) as fsize
 }
 
 /// Square root for no_std: Newton's method approximation.

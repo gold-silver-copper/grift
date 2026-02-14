@@ -72,6 +72,10 @@
     ;; R7RS §6.2.6 numeric operations
     floor-quotient floor-remainder floor/
     truncate-quotient truncate-remainder truncate/
+    ceiling-quotient ceiling-remainder ceiling/
+    round-quotient round-remainder round/
+    euclidean-quotient euclidean-remainder euclidean/
+    balanced-quotient balanced-remainder balanced/
     numerator denominator rationalize
     exact-integer-sqrt
     exp log sin cos tan asin acos atan
