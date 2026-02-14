@@ -975,6 +975,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let head = self.lisp.get(car)?;
         
+        // Handle syntax-wrapped identifiers at the head of a list.
+        // When a macro template introduces a keyword like `let` or `begin`,
+        // the transcriber wraps it in a syntax object to protect it from
+        // use-site variable shadowing.  Unwrap the syntax object and dispatch
+        // the underlying symbol as a special form or macro, bypassing the
+        // variable binding check that would otherwise allow the user's local
+        // binding to shadow the keyword.
+        if let Value::Syntax { .. } = head {
+            let datum = self.lisp.syntax_to_datum(car)?;
+            if let Value::Symbol(_) = self.lisp.get(datum)? {
+                // Check for macro (e.g., `let` is a macro in base.scm)
+                if let Some(transformer) = self.lookup_macro(datum)? {
+                    // Rebuild the expression with the unwrapped symbol so the
+                    // transformer receives a normal (name args...) form.
+                    let unwrapped_expr = self.lisp.cons(datum, cdr)?;
+                    return self.apply_macro_trampolined(transformer, unwrapped_expr, env);
+                }
+                // All special forms — bypass is_variable_bound check
+                // since the symbol was introduced by the macro, not the user.
+                // This covers both core forms (`if`) and non-core forms (`let`, etc.).
+                if let Some(result) = self.try_dispatch_non_core_form_forced(datum, cdr, env)? {
+                    return Ok(result);
+                }
+                // Not a special form — evaluate the syntax object as a function expression
+            }
+        }
+        
         // Check for special forms and macros
         if let Value::Symbol(_) = head {
             // Macro check first (macro env is small, so this is cheap).
@@ -1019,14 +1046,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Note: step_eval_cond removed - cond is now handled by macros
     
     /// Try to dispatch a symbol as the `if` special form.
-    /// Returns Some(TrampolineState) if the symbol is `if`, None otherwise.
-    /// `if` is always recognized regardless of variable bindings - this ensures
-    /// hygienic macros that use `if` (like `or`, `and`, `cond`) work correctly
-    /// even when the user has locally rebound `if`.
+    /// Returns Some(TrampolineState) if the symbol is `if` and not locally
+    /// rebound as a variable.  Per R7RS, `if` can be shadowed by local
+    /// variable bindings.  Macro-introduced `if` is protected separately via
+    /// syntax-object wrapping (handled in the syntax-wrapped dispatch above).
     fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
-        if self.lisp.symbol_matches(name, "if")? {
+        if self.lisp.symbol_matches(name, "if")?
+            && !self.is_variable_bound(env, name)? {
             let cond_expr = self.lisp.car(cdr)?;
             let rest = self.lisp.cdr(cdr)?;
             let then_expr = self.lisp.car(rest)?;
@@ -1087,6 +1115,62 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         dispatch!(self, car, env, "import", self.step_eval_import(cdr, env).map(Some));
         dispatch!(self, car, env, "include", self.step_eval_include(cdr, env, false).map(Some));
         dispatch!(self, car, env, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
+        
+        Ok(None)
+    }
+    
+    /// Like `try_dispatch_non_core_form`, but does NOT check `is_variable_bound`.
+    /// Used for macro-introduced keywords that should always be treated as
+    /// special forms, even when the user has locally rebound the keyword name.
+    fn try_dispatch_non_core_form_forced(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        /// Dispatch without variable-binding check.
+        macro_rules! dispatch_forced {
+            ($self:expr, $car:expr, $keyword:expr, $body:expr) => {
+                if $self.lisp.symbol_matches($car, $keyword)? {
+                    return $body;
+                }
+            };
+        }
+
+        dispatch_forced!(self, car, "quote", {
+            let val = self.lisp.car(cdr)?;
+            Ok(Some(TrampolineState::Return { val }))
+        });
+        dispatch_forced!(self, car, "if", {
+            let cond_expr = self.lisp.car(cdr)?;
+            let rest = self.lisp.cdr(cdr)?;
+            let then_expr = self.lisp.car(rest)?;
+            let else_rest = self.lisp.cdr(rest)?;
+            let else_expr = if self.lisp.get(else_rest)?.is_nil() {
+                self.lisp.nil()?
+            } else {
+                self.lisp.car(else_rest)?
+            };
+            self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env.0)?;
+            Ok(Some(TrampolineState::Eval { expr: ExprRef(cond_expr), env }))
+        });
+        dispatch_forced!(self, car, "define-syntax", self.step_eval_define_syntax(cdr, env).map(Some));
+        dispatch_forced!(self, car, "let-syntax", self.step_eval_let_syntax(cdr, env).map(Some));
+        dispatch_forced!(self, car, "letrec-syntax", self.step_eval_letrec_syntax(cdr, env).map(Some));
+        dispatch_forced!(self, car, "syntax-case", self.step_eval_syntax_case(cdr, env).map(Some));
+        dispatch_forced!(self, car, "syntax", self.step_eval_syntax(cdr, env).map(Some));
+        dispatch_forced!(self, car, "lambda", {
+            let val = self.eval_lambda(cdr, env)?;
+            Ok(Some(TrampolineState::Return { val }))
+        });
+        dispatch_forced!(self, car, "define", self.eval_define(cdr, env).map(Some));
+        dispatch_forced!(self, car, "set!", self.eval_set(cdr, env).map(Some));
+        dispatch_forced!(self, car, "begin", self.step_eval_begin(cdr, env).map(Some));
+        dispatch_forced!(self, car, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
+        dispatch_forced!(self, car, "syntax-error", 
+            Err(self.make_error(ErrorKind::SyntaxError, cdr).with_message("syntax-error")));
+        dispatch_forced!(self, car, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
+        dispatch_forced!(self, car, "define-library", self.step_eval_define_library(cdr, env).map(Some));
+        dispatch_forced!(self, car, "import", self.step_eval_import(cdr, env).map(Some));
+        dispatch_forced!(self, car, "include", self.step_eval_include(cdr, env, false).map(Some));
+        dispatch_forced!(self, car, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
         
         Ok(None)
     }
