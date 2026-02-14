@@ -68,7 +68,7 @@
 pub use grift_core::{
     Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
     Value, Builtin, StdLib, StdLibEntry, ContType,
-    Lisp, RESERVED_SLOTS,
+    Lisp, RESERVED_SLOTS, LIMB_BITS, MAX_LIMBS,
     DisplayValue,
     define_builtins,
     IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort, FileOpenMode,

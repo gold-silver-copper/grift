@@ -9,9 +9,7 @@ use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
 use crate::fsize;
 use crate::io::PortId;
-
-/// Number of bits per limb (depends on pointer width).
-const LIMB_BITS: u32 = core::mem::size_of::<usize>() as u32 * 8;
+use crate::LIMB_BITS;
 
 /// Compute the greatest common divisor (Euclidean algorithm).
 fn gcd(mut a: usize, mut b: usize) -> usize {
