@@ -55,6 +55,7 @@ impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
         tracer(self.exception_handler_chain);
         tracer(self.library_registry);
         tracer(self.loading_libraries);
+        tracer(self.cached_environment_variables);
     }
 }
 
@@ -80,6 +81,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current_output_port: grift_parser::PortId::STDOUT,
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
+            cached_environment_variables: nil,
         };
         
         // Initialize global environment with builtins
