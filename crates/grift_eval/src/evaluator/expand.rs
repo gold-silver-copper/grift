@@ -1933,16 +1933,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Ok(expr);
                         }
 
-                        // define-syntax is NOT processed during expansion - see step_eval_define_syntax
-                        // in forms.rs for the evaluation-time implementation that captures lexical scope.
-
-                        if self.lisp.symbol_matches(head, "let-syntax")? {
-                            return self.expand_let_syntax(args, renames);
-                        }
-
-                        if self.lisp.symbol_matches(head, "letrec-syntax")? {
-                            return self.expand_letrec_syntax(args, renames);
-                        }
+                        // define-syntax, let-syntax, and letrec-syntax are NOT processed
+                        // during expansion — they are handled at evaluation time by
+                        // step_eval_define_syntax, step_eval_let_syntax, and
+                        // step_eval_letrec_syntax in forms.rs.  Evaluation-time handling
+                        // is necessary so the transformer captures the correct lexical
+                        // environment for free variables in templates (R7RS §4.3).
 
                         // Check for macro invocation
                         if let Some(transformer) = self.lookup_macro(head)? {
