@@ -73,6 +73,14 @@
 
 pub use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, GcStats, Trace};
 
+/// Number of bits per limb (depends on pointer width).
+///
+/// BigNum values are stored as arrays of `usize` limbs in base 2^LIMB_BITS.
+pub const LIMB_BITS: u32 = core::mem::size_of::<usize>() as u32 * 8;
+
+/// Maximum number of limbs supported (128 limbs = 4096 bits on 32-bit, 8192 bits on 64-bit).
+pub const MAX_LIMBS: usize = 128;
+
 /// Platform-dependent floating-point type, matching the width of `isize`/`usize`.
 ///
 /// On 64-bit platforms this is `f64`; on 32-bit platforms it is `f32`.
