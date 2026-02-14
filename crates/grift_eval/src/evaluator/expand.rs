@@ -1072,6 +1072,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.transcribe_binding_form(template, bindings, renames, def_env);
         }
 
+        // Check for begin containing defines — propagate define renames
+        // across sibling forms.  Only trigger when the body actually
+        // contains a `define` AND the body has no ellipsis (ellipsis
+        // bodies are handled by the regular transcription path).
+        if self.lisp.symbol_matches(car, "begin")? {
+            let has_define = self.begin_body_has_define(cdr)?;
+            let body_has_ellipsis = self.has_ellipsis(cdr)?;
+            if has_define && !body_has_ellipsis {
+                // Also check there's no ellipsis deeper (e.g., (begin x ... y))
+                let mut elli_found = false;
+                let mut scan = cdr;
+                while let Value::Cons { .. } = self.lisp.get(scan)? {
+                    let scan_cdr = self.lisp.cdr(scan)?;
+                    if self.has_ellipsis(scan_cdr)? {
+                        elli_found = true;
+                        break;
+                    }
+                    scan = scan_cdr;
+                }
+                if !elli_found {
+                    return self.transcribe_begin_body(car, cdr, bindings, renames, def_env);
+                }
+            }
+        }
+
         // Regular list: transcribe each element iteratively
         // Collect elements into arena cons list (reversed by prepending)
         let nil = self.lisp.nil()?;
@@ -1605,6 +1630,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
+        let (form, _) = self.transcribe_define_form_with_renames(args, bindings, renames, def_env)?;
+        Ok(form)
+    }
+
+    /// Like `transcribe_define_form` but also returns the updated renames
+    /// so callers (e.g., `begin` bodies) can propagate them to siblings.
+    fn transcribe_define_form_with_renames(
+        &mut self,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let name_template = self.lisp.car(args)?;
         let val_template = self.lisp.cdr(args)?;
 
@@ -1634,7 +1672,78 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         let define_sym = self.lisp.symbol("define")?;
         let rest = self.lisp.cons(final_name, new_val)?;
-        self.lisp.cons(define_sym, rest).map_err(Into::into)
+        let form = self.lisp.cons(define_sym, rest)?;
+        Ok((form, new_renames))
+    }
+
+    /// Check if a begin body contains at least one `define` form (not define-syntax).
+    fn begin_body_has_define(&self, body: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = body;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let form = self.lisp.car(current)?;
+            if let Value::Cons { .. } = self.lisp.get(form)? {
+                let head = self.lisp.car(form)?;
+                if self.lisp.symbol_matches(head, "define")? {
+                    return Ok(true);
+                }
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        Ok(false)
+    }
+
+    /// Transcribe a begin body, propagating define renames to siblings.
+    ///
+    /// When `(begin (define x 1) (define y x) ...)` appears in a macro
+    /// template, the gensym for `x` in the first define must be used
+    /// in the second define's body, and so on for all subsequent forms.
+    fn transcribe_begin_body(
+        &mut self,
+        keyword: ArenaIndex,
+        body: ArenaIndex,
+        bindings: ArenaIndex,
+        mut renames: ArenaIndex,
+        def_env: ArenaIndex,
+    ) -> EvalResult {
+        let new_keyword = self.transcribe_template(keyword, bindings, renames, def_env)?;
+        // Transcribe body forms, propagating renames
+        let nil = self.lisp.nil()?;
+        let mut reversed = nil;
+        let mut current = body;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let form = self.lisp.car(current)?;
+            let transcribed = match self.lisp.get(form)? {
+                Value::Cons { .. } => {
+                    let form_head = self.lisp.car(form)?;
+                    let form_args = self.lisp.cdr(form)?;
+                    if self.lisp.symbol_matches(form_head, "define")? {
+                        let (t, new_r) = self.transcribe_define_form_with_renames(
+                            form_args, bindings, renames, def_env
+                        )?;
+                        renames = new_r;
+                        t
+                    } else if self.lisp.symbol_matches(form_head, "define-syntax")? {
+                        // For define-syntax, transcribe with current renames
+                        // but don't propagate new renames from it
+                        self.transcribe_binding_form(form, bindings, renames, def_env)?
+                    } else {
+                        self.transcribe_template_impl(form, bindings, renames, def_env, None)?
+                    }
+                }
+                _ => self.transcribe_template_impl(form, bindings, renames, def_env, None)?,
+            };
+            reversed = self.lisp.cons(transcribed, reversed)?;
+            current = self.lisp.cdr(current)?;
+        }
+        // Reverse to restore order
+        let mut result = nil;
+        let mut cursor = reversed;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            result = self.lisp.cons(elem, result)?;
+            cursor = self.lisp.cdr(cursor)?;
+        }
+        self.lisp.cons(new_keyword, result).map_err(Into::into)
     }
 
     /// Transcribe lambda, renaming parameters for hygiene
