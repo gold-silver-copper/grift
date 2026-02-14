@@ -4157,12 +4157,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             (Value::BigNum { .. }, Value::Float(f)) | (Value::Float(f), Value::BigNum { .. }) => {
+                // For transitive =: convert float to exact BigNum and compare exactly.
+                // This avoids precision loss from BigNum→f64 conversion.
                 let big_idx = if matches!(va, Value::BigNum { .. }) { a } else { b };
                 let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
-                let mut buf = crate::bignum::BigNumBuf::zero();
-                buf.limbs[..len].copy_from_slice(&limbs[..len]);
-                buf.len = len; buf.negative = neg;
-                Ok(buf.to_f64() as fsize == f)
+                match crate::bignum::BigNumBuf::from_f64(f as f64) {
+                    Some(float_as_big) => {
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        Ok(buf.cmp(&float_as_big) == core::cmp::Ordering::Equal)
+                    }
+                    None => Ok(false), // NaN, Infinity, or non-integer float
+                }
             }
             _ => {
                 // Fall back to fsize comparison for rational vs int/float
