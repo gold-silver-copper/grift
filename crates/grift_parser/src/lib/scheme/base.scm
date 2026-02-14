@@ -136,13 +136,15 @@
     ;;; ========================================================
 
     ;; syntax-rules - Create pattern-based macro transformers (R7RS)
+    ;; The lambda parameter uses %sr-input (an internal name) to avoid
+    ;; capturing user variables like x, y, etc. in templates.
     (define-syntax syntax-rules
       (lambda (form)
         (syntax-case form ()
           ((syntax-rules (lit ...) ((keyword . pattern) template) ...)
            (syntax
-             (lambda (x)
-               (syntax-case x (lit ...)
+             (lambda (%sr-input)
+               (syntax-case %sr-input (lit ...)
                  ((dummy . pattern) (syntax template)) ...)))))))
 
     ;; define-syntax-rule - Convenient single-clause macro definition

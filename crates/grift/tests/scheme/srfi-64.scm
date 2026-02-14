@@ -89,6 +89,31 @@
   (display message)
   (newline))
 
+(define (%approx-equal? a b)
+  ;; Approximate comparison for inexact numbers (like Chibi's test library)
+  (cond
+    ((and (number? a) (number? b) (or (inexact? a) (inexact? b))
+          (real? a) (real? b))
+     (cond
+       ((and (infinite? a) (infinite? b)) (= a b))
+       ((and (nan? a) (nan? b)) #t)
+       ((or (nan? a) (nan? b)) #f)
+       ((or (infinite? a) (infinite? b)) #f)
+       (else (< (abs (- a b)) (max 1e-10 (* (abs a) 1e-10))))))
+    ((and (number? a) (number? b) (or (inexact? a) (inexact? b)))
+     ;; Complex number comparison: compare real and imag parts
+     (and (%approx-equal? (real-part a) (real-part b))
+          (%approx-equal? (imag-part a) (imag-part b))))
+    ((and (pair? a) (pair? b))
+     (and (%approx-equal? (car a) (car b))
+          (%approx-equal? (cdr a) (cdr b))))
+    ((and (vector? a) (vector? b) (= (vector-length a) (vector-length b)))
+     (let loop ((i 0))
+       (or (= i (vector-length a))
+           (and (%approx-equal? (vector-ref a i) (vector-ref b i))
+                (loop (+ i 1))))))
+    (else (equal? a b))))
+
 (define-syntax test-equal
   (syntax-rules ()
     ((_ name expected expr)
@@ -99,7 +124,7 @@
                       (error-object-message exn)
                       "unknown error"))))
        (let ((e expected) (a expr))
-         (if (equal? e a)
+         (if (%approx-equal? e a)
              (%srfi64-record-pass name)
              (%srfi64-record-fail name e a)))))))
 

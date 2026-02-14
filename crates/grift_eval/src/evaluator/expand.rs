@@ -631,11 +631,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let expr = self.lisp.syntax_to_datum(stx)?;
         
         match self.lisp.get(pattern)? {
-            // Wildcard: matches anything, binds nothing
-            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "_")? => {
-                Ok(Some(bindings))
-            }
-
             // Ellipsis symbol itself: error (shouldn't appear here)
             Value::Symbol(_) if self.lisp.symbol_matches(pattern, "...")? => {
                 Err(self.make_error(ErrorKind::SyntaxError, pattern)
@@ -648,6 +643,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Both identifiers are resolved: the input in the call-site env,
             // the literal in the global env (where the macro was defined).
             // They match if both resolve to the same binding, or both are unbound.
+            // Note: _ in the literals list is treated as a literal, not a wildcard.
             Value::Symbol(_) if self.is_literal(pattern, literals)? => {
                 match self.lisp.get(expr)? {
                     Value::Symbol(_) if self.symbols_eq(pattern, expr)? => {
@@ -671,6 +667,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     _ => Ok(None),
                 }
+            }
+
+            // Wildcard: matches anything, binds nothing
+            // Only when _ is NOT in the literals list (checked above)
+            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "_")? => {
+                Ok(Some(bindings))
             }
 
             // Pattern variable: bind to the ORIGINAL syntax object (not unwrapped datum)
@@ -1023,12 +1025,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let (car, cdr) = self.lisp.car_cdr(template)?;
 
         // Check for escaping ellipsis: (... <template>) means treat <template> literally
+        // Per R7RS §4.3.2: (... <template>) is identical to <template>, except that
+        // ellipses within the template have no special meaning. Pattern variables
+        // are still substituted.
         // (... ...) produces the literal symbol ...
         if self.lisp.symbol_matches(car, "...")? {
-            // The cdr should be a single element - return it without ellipsis processing
             if let Value::Cons { .. } = self.lisp.get(cdr)? {
                 let inner = self.lisp.car(cdr)?;
-                return Ok(inner);
+                // Check for (... ...) which produces the literal symbol ...
+                if let Value::Symbol(_) = self.lisp.get(inner)? {
+                    if self.lisp.symbol_matches(inner, "...")? {
+                        return Ok(inner);
+                    }
+                }
+                // Transcribe the inner template with pattern variable substitution
+                // but without treating ... as ellipsis
+                return self.transcribe_no_ellipsis(inner, bindings, renames, def_env, lex_env);
             }
             // (... . atom) - return the atom literally
             return Ok(cdr);
@@ -1099,6 +1111,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         Ok(result)
+    }
+
+    /// Transcribe a template without treating `...` as an ellipsis.
+    /// Used for `(... <template>)` escape where pattern variables are still
+    /// substituted but `...` has no special meaning.
+    fn transcribe_no_ellipsis(
+        &mut self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
+        match self.lisp.get(template)? {
+            Value::Symbol(_) => {
+                // Still substitute pattern variables
+                if let Some(le) = lex_env {
+                    self.transcribe_symbol_with_env(template, bindings, renames, def_env, le)
+                } else {
+                    self.transcribe_symbol(template, bindings, renames, def_env)
+                }
+            }
+            Value::Nil => Ok(self.lisp.nil()?),
+            Value::Cons { .. } => {
+                // Transcribe list elements without ellipsis processing
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut current = template;
+                while let Value::Cons { .. } = self.lisp.get(current)? {
+                    let elem = self.lisp.car(current)?;
+                    collected = self.lisp.cons(elem, collected)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                let mut result = if self.lisp.get(current)?.is_nil() {
+                    nil
+                } else {
+                    self.transcribe_no_ellipsis(current, bindings, renames, def_env, lex_env)?
+                };
+                let mut cursor = collected;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    let elem = self.lisp.car(cursor)?;
+                    let transcribed = self.transcribe_no_ellipsis(elem, bindings, renames, def_env, lex_env)?;
+                    result = self.lisp.cons(transcribed, result)?;
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
+            }
+            _ => Ok(template),
+        }
     }
     
     /// Transcribe a symbol in template
