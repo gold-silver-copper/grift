@@ -5202,7 +5202,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         io_close_tmp!();
         match result {
             Ok(expr) => Ok(expr),
-            Err(e) => Err(EvalError::from(e)),
+            Err(e) => Err(EvalError::from_parse_error(e, call_expr)),
         }
     }
 

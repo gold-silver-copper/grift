@@ -142,7 +142,14 @@
              (#t (%srfi64-record-error
                   name
                   (if (error-object? exn)
-                      (error-object-message exn)
+                      (string-append
+                       (error-object-message exn)
+                       (if (read-error? exn) " [read-error]" "")
+                       (if (null? (error-object-irritants exn))
+                           ""
+                           (string-append " irritants:" (let ((out (open-output-string)))
+                                                           (write (error-object-irritants exn) out)
+                                                           (get-output-string out)))))
                       "unknown error"))))
        (let ((e expected) (a expr))
          (if (%approx-equal? e a)
