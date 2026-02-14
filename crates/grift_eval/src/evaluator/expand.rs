@@ -1092,6 +1092,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.transcribe_binding_form_impl(template, bindings, renames, def_env, lex_env);
         }
 
+        // Check for define-syntax with inner syntax-rules — gensym the inner
+        // pattern variables to avoid collision with outer macro substitutions.
+        if self.lisp.symbol_matches(car, "define-syntax")? {
+            return self.transcribe_define_syntax_form(cdr, bindings, renames, def_env);
+        }
+
         // Check for begin containing defines — propagate define renames
         // across sibling forms.  Only trigger when the body actually
         // contains a `define` AND the body has no ellipsis (ellipsis
@@ -1847,14 +1853,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         };
 
-        // Collect all identifiers from patterns that are NOT `_`, `...`, or literals
+        // Collect all identifiers from patterns that are NOT `_`, `...`,
+        // the custom ellipsis (if any), or literals
         let nil = self.lisp.nil()?;
         let mut replacements = nil; // ((old . new) ...)
         let mut current = clauses;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let clause = self.lisp.car(current)?;
             let pattern = self.lisp.car(clause)?;
-            self.collect_pattern_identifiers_for_gensym(pattern, literals, &mut replacements)?;
+            self.collect_pattern_identifiers_for_gensym(pattern, literals, custom_elli, &mut replacements)?;
             current = self.lisp.cdr(current)?;
         }
 
@@ -1885,6 +1892,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         &mut self,
         pattern: ArenaIndex,
         literals: ArenaIndex,
+        custom_elli: Option<ArenaIndex>,
         replacements: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
         match self.lisp.get(pattern)? {
@@ -1893,6 +1901,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.symbol_matches(pattern, "_")?
                     || self.lisp.symbol_matches(pattern, "...")? {
                     return Ok(());
+                }
+                // Skip custom ellipsis if any
+                if let Some(elli) = custom_elli {
+                    if self.symbols_eq(pattern, elli)? {
+                        return Ok(());
+                    }
                 }
                 // Skip if it's in the literals list
                 if self.symbol_in_list(pattern, literals)? {
@@ -1917,8 +1931,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Cons { .. } => {
                 let car = self.lisp.car(pattern)?;
                 let cdr = self.lisp.cdr(pattern)?;
-                self.collect_pattern_identifiers_for_gensym(car, literals, replacements)?;
-                self.collect_pattern_identifiers_for_gensym(cdr, literals, replacements)?;
+                self.collect_pattern_identifiers_for_gensym(car, literals, custom_elli, replacements)?;
+                self.collect_pattern_identifiers_for_gensym(cdr, literals, custom_elli, replacements)?;
                 Ok(())
             }
             _ => Ok(()),
