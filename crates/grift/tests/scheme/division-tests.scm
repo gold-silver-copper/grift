@@ -1,5 +1,19 @@
 
-(import (chibi test) (scheme base) (scheme division))
+;; Helper for test-values (converts multi-value returns to lists)
+(define-syntax test-values
+  (syntax-rules ()
+    ((_ expected-expr actual-expr)
+     (test-equal "test-values"
+       (call-with-values (lambda () expected-expr) list)
+       (call-with-values (lambda () actual-expr) list)))))
+
+;; Compatibility wrapper for old Chibi-style (test expected expr) calls
+(define-syntax test
+  (syntax-rules ()
+    ((_ expected expr)
+     (test-equal "test" expected expr))
+    ((_ name expected expr)
+     (test-equal name expected expr))))
 
 (test-begin "division")
 
