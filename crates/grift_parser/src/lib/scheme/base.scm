@@ -132,7 +132,9 @@
     string-join string-split string-trim
     caar cadr caddr cddr cdddr cadddr cddddr
     cdaddr cddaar cddadr cdddar
-    append-two)
+    append-two
+    make-syntactic-closure sc-macro-transformer
+    in-string in-string-reverse)
   (begin
 
     ;;; ========================================================
@@ -1195,4 +1197,12 @@
           ((null? lst) '())
           ((char-whitespace? (car lst)) (drop-while-ws (cdr lst)))
           (else lst)))
-      (list->string (reverse (drop-while-ws (reverse (drop-while-ws (string->list s)))))))))
+      (list->string (reverse (drop-while-ws (reverse (drop-while-ws (string->list s)))))))
+
+    ;; Syntactic closure compatibility (simplified)
+    (define (make-syntactic-closure env free-vars expr) expr)
+    (define (sc-macro-transformer proc) proc)
+
+    ;; Chibi loop compatibility
+    (define (in-string s) (string->list s))
+    (define (in-string-reverse s) (reverse (string->list s)))))

@@ -2693,6 +2693,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check for custom ellipsis form: (syntax-rules <ellipsis> (lit ...) clause ...)
                 let rewritten = self.rewrite_custom_ellipsis_syntax_rules(transformer_expr)?;
                 self.expand(rewritten)
+            } else if self.lisp.symbol_matches(head, "sc-macro-transformer")? {
+                // (sc-macro-transformer (lambda (exp env) body ...))
+                // Convert to (lambda (exp) (let ((env #f)) body ...))
+                let inner = self.lisp.car(self.lisp.cdr(transformer_expr)?)?;
+                let inner_head = self.lisp.car(inner)?;
+                let is_inner_lambda = self.lisp.symbol_matches(inner_head, "lambda")?;
+                if is_inner_lambda {
+                    let inner_rest = self.lisp.cdr(inner)?;
+                    let params = self.lisp.car(inner_rest)?;
+                    let body = self.lisp.cdr(inner_rest)?;
+                    // Extract exp and env parameters
+                    let exp_param = self.lisp.car(params)?;
+                    let env_param = self.lisp.car(self.lisp.cdr(params)?)?;
+                    // Build (let ((env #f)) body ...)
+                    let false_val = self.lisp.boolean(false)?;
+                    let nil = self.lisp.nil()?;
+                    let env_binding_inner = self.lisp.cons(false_val, nil)?;
+                    let env_binding = self.lisp.cons(env_param, env_binding_inner)?;
+                    let bindings = self.lisp.cons(env_binding, nil)?;
+                    let let_sym = self.lisp.symbol("let")?;
+                    let let_bindings_and_body = self.lisp.cons(bindings, body)?;
+                    let let_form = self.lisp.cons(let_sym, let_bindings_and_body)?;
+                    // Build (lambda (exp) (let ((env #f)) body ...))
+                    let lambda_sym = self.lisp.symbol("lambda")?;
+                    let new_params = self.lisp.cons(exp_param, nil)?;
+                    let let_list = self.lisp.cons(let_form, nil)?;
+                    let params_and_body = self.lisp.cons(new_params, let_list)?;
+                    let new_lambda = self.lisp.cons(lambda_sym, params_and_body)?;
+                    Ok(new_lambda)
+                } else {
+                    self.expand(transformer_expr)
+                }
             } else {
                 // Not a lambda - expand it (e.g., syntax-rules call)
                 self.expand(transformer_expr)

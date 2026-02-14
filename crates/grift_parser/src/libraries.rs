@@ -95,4 +95,6 @@ pub const LIBRARY_SOURCES: &[LibrarySource] = &[
     // SRFI libraries
     #[cfg(feature = "srfi-64")]
     LibrarySource { name: &["srfi", "64"],                source: include_str!("lib/srfi/64.scm") },
+    // Chibi compatibility libraries
+    LibrarySource { name: &["chibi", "loop"],             source: include_str!("lib/chibi/loop.scm") },
 ];
