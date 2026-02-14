@@ -701,4 +701,16 @@ srfi64_test!(
     chibi_r7rs_tests,
     "r7rs-tests.scm"
 );
+srfi64_test!(
+    chibi_division_tests,
+    "division-tests.scm"
+);
+srfi64_test!(
+    chibi_unicode_tests,
+    "unicode-tests.scm"
+);
+srfi64_test!(
+    chibi_syntax_tests,
+    "syntax-tests.scm"
+);
 
