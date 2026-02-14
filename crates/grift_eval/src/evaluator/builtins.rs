@@ -2322,6 +2322,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Read => {
                 // (read) or (read port)
                 let pid = self.extract_input_port(args, call_expr)?;
+                // Reset datum label table for each top-level read
+                self.read_labels = self.lisp.nil()?;
                 self.apply_read_builtin(pid, call_expr)
             }
 
@@ -5040,6 +5042,92 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                     }
                                 }
                                 continue;
+                            }
+                            Ok(c2) if c2.is_ascii_digit() => {
+                                // Datum label: #n=<datum> or #n#
+                                // Write the complete datum label syntax into the
+                                // buffer and let the parser handle it.
+                                io_write!('#');
+                                let _ = io_read!(); // consume first digit
+                                io_write!(c2);
+                                // Read remaining digits
+                                loop {
+                                    match io_peek!() {
+                                        Ok(d) if d.is_ascii_digit() => {
+                                            let _ = io_read!();
+                                            io_write!(d);
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                match io_peek!() {
+                                    Ok('=') => {
+                                        // #n=<datum> — write '=' and continue to read
+                                        // the labeled datum into the same buffer
+                                        let _ = io_read!();
+                                        io_write!('=');
+                                        // Check what follows
+                                        match io_peek!() {
+                                            Ok('(') | Ok('[') => {
+                                                // List datum — include it in the buffer
+                                                let _ = io_read!();
+                                                io_write!('(');
+                                                paren_depth += 1;
+                                                break;
+                                            }
+                                            Ok('#') => {
+                                                // Could be #(, #t, #f, #\, etc.
+                                                // Let the outer loop re-process from the #
+                                                // by not consuming it; break with got_token
+                                                // No — we need to continue reading.
+                                                // Just break and let the got_token path
+                                                // read the next atom, or re-enter the loop.
+                                                // Actually, we can't re-enter because we 
+                                                // already have content in the buffer.
+                                                // Write '#' and process
+                                                let _ = io_read!();
+                                                io_write!('#');
+                                                // Read the rest of the hash token inline
+                                                match io_peek!() {
+                                                    Ok('(') => {
+                                                        let _ = io_read!();
+                                                        io_write!('(');
+                                                        paren_depth += 1;
+                                                        break;
+                                                    }
+                                                    _ => {
+                                                        got_token = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            Ok('"') => {
+                                                // String datum
+                                                let _ = io_read!();
+                                                io_write!('"');
+                                                in_string = true;
+                                                break;
+                                            }
+                                            _ => {
+                                                // Atom datum (number, symbol, etc.)
+                                                got_token = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    Ok('#') => {
+                                        // #n# — datum reference, just write '#'
+                                        let _ = io_read!();
+                                        io_write!('#');
+                                        got_token = true;
+                                        break;
+                                    }
+                                    _ => {
+                                        // Not a valid datum label
+                                        got_token = true;
+                                        break;
+                                    }
+                                }
                             }
                             _ => {
                                 io_write!('#');
