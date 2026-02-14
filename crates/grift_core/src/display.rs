@@ -162,13 +162,14 @@ fn format_value<const N: usize>(
             if len == 0 {
                 return f.write_str("0");
             }
+            let limb_bits: u32 = core::mem::size_of::<usize>() as u32 * 8;
             // Collect limbs from arena
-            let mut limbs = [0u32; 128]; // max 128 limbs = 4096 bits
+            let mut limbs = [0usize; 128]; // max 128 limbs
             let limb_count = if len > 128 { 128 } else { len };
             for i in 0..limb_count {
                 if let Ok(limb_idx) = lisp.arena_index_at_offset(data, i) {
                     if let Ok(Value::Usize(v)) = lisp.get(limb_idx) {
-                        limbs[i] = v as u32;
+                        limbs[i] = v;
                     }
                 }
             }
@@ -177,7 +178,7 @@ fn format_value<const N: usize>(
             }
             // Convert to decimal using repeated division
             // Work with a copy of limbs
-            let mut work = [0u32; 128];
+            let mut work = [0usize; 128];
             work[..limb_count].copy_from_slice(&limbs[..limb_count]);
             let mut work_len = limb_count;
             // Trim leading zeros
@@ -192,10 +193,10 @@ fn format_value<const N: usize>(
             let mut dlen = 0;
             while work_len > 0 {
                 // Divide work by 10, get remainder
-                let mut rem: u64 = 0;
+                let mut rem: u128 = 0;
                 for i in (0..work_len).rev() {
-                    let cur = rem * (1u64 << 32) + work[i] as u64;
-                    work[i] = (cur / 10) as u32;
+                    let cur = rem * (1u128 << limb_bits) + work[i] as u128;
+                    work[i] = (cur / 10) as usize;
                     rem = cur % 10;
                 }
                 digits[dlen] = rem as u8;
