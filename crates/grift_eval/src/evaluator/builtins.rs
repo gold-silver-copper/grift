@@ -2838,6 +2838,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::GetEnvironmentVariables => {
                 // (get-environment-variables) -> alist of (name . value)
+                if !self.cached_environment_variables.is_nil() {
+                    return Ok(self.cached_environment_variables);
+                }
                 // First, get count (requires &mut io)
                 let count = match &mut self.io {
                     Some(io) => io.environment_variables_count()
@@ -2857,6 +2860,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let pair = self.lisp.cons(name_str, value_str)?;
                     list = self.lisp.cons(pair, list)?;
                 }
+                self.cached_environment_variables = list;
                 Ok(list)
             }
 

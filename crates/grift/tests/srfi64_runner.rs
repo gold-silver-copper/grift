@@ -570,6 +570,31 @@ fn assert_srfi64_success(output: &Srfi64Output, path: &Path) {
     );
 }
 
+#[test]
+fn parse_srfi64_fail_with_nested_context() {
+    let parsed = parse_srfi64_output(
+        "SRFI64:BEGIN demo\n\
+         SRFI64:FAIL #3 [outer > inner] sample expected:1 actual:2\n\
+         SRFI64:SUMMARY passed:0 failed:1 errors:0\n\
+         SRFI64:END demo\n",
+    );
+
+    assert_eq!(parsed.suite_name, "demo");
+    assert_eq!(parsed.failed, 1);
+    match &parsed.results[0] {
+        TestResult::Fail {
+            name,
+            expected,
+            actual,
+        } => {
+            assert_eq!(name, "#3 [outer > inner] sample");
+            assert_eq!(expected, "1");
+            assert_eq!(actual, "2");
+        }
+        other => panic!("unexpected parsed result: {:?}", other),
+    }
+}
+
 // ============================================================================
 // Auto-generated test functions - one per .scm test file
 // ============================================================================
@@ -676,5 +701,4 @@ srfi64_test!(
     chibi_r7rs_tests,
     "r7rs-tests.scm"
 );
-
 
