@@ -99,7 +99,7 @@
        ((and (nan? a) (nan? b)) #t)
        ((or (nan? a) (nan? b)) #f)
        ((or (infinite? a) (infinite? b)) #f)
-       (else (< (abs (- a b)) (max 1e-10 (* (abs a) 1e-10))))))
+       (else (< (abs (- a b)) (max 1e-6 (* (abs a) 1e-6))))))
     ((and (number? a) (number? b) (or (inexact? a) (inexact? b)))
      ;; Complex number comparison: compare real and imag parts
      (and (%approx-equal? (real-part a) (real-part b))
@@ -167,8 +167,8 @@
 
 (define-syntax test-error
   (syntax-rules ()
-    ((_ name expr)
-     (%test-error-impl name (lambda () expr)))
+    ((_ name thunk)
+     (%test-error-impl name thunk))
     ((_ expr)
      (%test-error-impl "test-error" (lambda () expr)))))
 

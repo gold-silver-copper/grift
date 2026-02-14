@@ -172,7 +172,13 @@ fn format_value<const N: usize>(
                 }
             }
         }
-        Ok(Value::Symbol(chars)) => format_symbol(lisp, chars, f),
+        Ok(Value::Symbol(chars)) => {
+            if display_mode {
+                format_symbol(lisp, chars, f)
+            } else {
+                format_symbol_write(lisp, chars, f)
+            }
+        }
         Ok(Value::Cons { .. }) => {
             f.write_str("(")?;
             format_list_contents(lisp, idx, f, depth + 1, display_mode)?;
@@ -294,4 +300,90 @@ fn format_symbol<const N: usize>(
         }
     }
     Ok(())
+}
+
+/// Format a symbol in `write` mode (R7RS §7.1.1).
+/// Symbols that need escaping are written with |...| delimiters.
+fn format_symbol_write<const N: usize>(
+    lisp: &Lisp<N>,
+    chars: ArenaIndex,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    let len = lisp.string_len(chars).unwrap_or(0);
+
+    // Empty symbol
+    if len == 0 {
+        return f.write_str("||");
+    }
+
+    // Check if symbol needs quoting
+    let needs_quoting = symbol_needs_quoting(lisp, chars, len);
+
+    if !needs_quoting {
+        // Output directly without delimiters
+        return format_symbol(lisp, chars, f);
+    }
+
+    // Output with |...| delimiters, escaping | and \ within
+    f.write_str("|")?;
+    for i in 0..len {
+        if i > 64 {
+            f.write_str("...")?;
+            break;
+        }
+        if let Ok(c) = lisp.string_char_at(chars, i) {
+            match c {
+                '|' => f.write_str("\\|")?,
+                '\\' => f.write_str("\\\\")?,
+                _ => write!(f, "{}", c)?,
+            }
+        }
+    }
+    f.write_str("|")
+}
+
+/// Check if a symbol name needs |...| quoting in write mode.
+fn symbol_needs_quoting<const N: usize>(
+    lisp: &Lisp<N>,
+    chars: ArenaIndex,
+    len: usize,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+
+    // Check first character
+    if let Ok(first) = lisp.string_char_at(chars, 0) {
+        // Symbols starting with digits need quoting
+        if first.is_ascii_digit() {
+            return true;
+        }
+        // Special initial characters that look like numbers
+        if (first == '+' || first == '-' || first == '.') && len > 1 {
+            if let Ok(second) = lisp.string_char_at(chars, 1) {
+                if second.is_ascii_digit() || second == 'i' || second == 'n'
+                    || second == 'I' || second == 'N'
+                {
+                    return true;
+                }
+            }
+        }
+        // A lone dot needs quoting since . is special in S-expressions
+        if first == '.' && len == 1 {
+            return true;
+        }
+    }
+
+    // Check all characters for special characters needing quoting
+    for i in 0..len {
+        if let Ok(c) = lisp.string_char_at(chars, i) {
+            match c {
+                ' ' | '\t' | '\n' | '\r' | '(' | ')' | '[' | ']' | '{' | '}' |
+                '"' | ',' | '\'' | '`' | ';' | '#' | '|' | '\\' => return true,
+                _ => {}
+            }
+        }
+    }
+
+    false
 }
