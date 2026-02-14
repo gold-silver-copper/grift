@@ -1098,6 +1098,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return self.transcribe_define_syntax_form(cdr, bindings, renames, def_env);
         }
 
+        // Check for let-syntax/letrec-syntax with inner syntax-rules — gensym
+        // inner pattern variables in each binding's transformer to prevent
+        // collision with outer macro pattern variable substitutions.
+        if self.lisp.symbol_matches(car, "let-syntax")?
+            || self.lisp.symbol_matches(car, "letrec-syntax")? {
+            return self.transcribe_let_syntax_form(car, cdr, bindings, renames, def_env, lex_env);
+        }
+
         // Check for begin containing defines — propagate define renames
         // across sibling forms.  Only trigger when the body actually
         // contains a `define` AND the body has no ellipsis (ellipsis
@@ -1818,6 +1826,73 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let ds_sym = self.lisp.symbol("define-syntax")?;
         let rest = self.lisp.cons(transcribed_name, transcribed_body)?;
         self.lisp.cons(ds_sym, rest).map_err(Into::into)
+    }
+
+    /// Transcribe a `(let-syntax ((name transformer) ...) body ...)` form
+    /// or `(letrec-syntax ...)` in a macro template.
+    ///
+    /// For each binding whose transformer is `(syntax-rules ...)`, gensym the
+    /// inner pattern variables before transcribing to prevent collision with
+    /// outer macro pattern variable substitutions.
+    fn transcribe_let_syntax_form(
+        &mut self,
+        keyword: ArenaIndex,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
+        // args = (((name transformer) ...) body ...)
+        let bindings_template = self.lisp.car(args)?;
+        let body_template = self.lisp.cdr(args)?;
+
+        // Process each binding: gensym inner syntax-rules pattern vars
+        let nil = self.lisp.nil()?;
+        let mut new_bindings_reversed = nil;
+        let mut current = bindings_template;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let pair = self.lisp.car(current)?;
+            // pair = (name transformer)
+            if let Value::Cons { .. } = self.lisp.get(pair)? {
+                let name = self.lisp.car(pair)?;
+                let transformer_list = self.lisp.cdr(pair)?;
+                let transformer = self.lisp.car(transformer_list)?;
+
+                // Check if transformer is (syntax-rules ...)
+                let new_transformer = if let Value::Cons { .. } = self.lisp.get(transformer)? {
+                    let sr_head = self.lisp.car(transformer)?;
+                    if self.lisp.symbol_matches(sr_head, "syntax-rules")? {
+                        self.gensym_syntax_rules_pattern_vars(transformer, bindings)?
+                    } else {
+                        transformer
+                    }
+                } else {
+                    transformer
+                };
+
+                // Transcribe name and transformer individually
+                let transcribed_name = self.transcribe_template_impl(name, bindings, renames, def_env, lex_env)?;
+                let transcribed_transformer = self.transcribe_template_impl(new_transformer, bindings, renames, def_env, lex_env)?;
+                let new_transformer_list = self.lisp.cons(transcribed_transformer, nil)?;
+                let new_pair = self.lisp.cons(transcribed_name, new_transformer_list)?;
+                new_bindings_reversed = self.lisp.cons(new_pair, new_bindings_reversed)?;
+            } else {
+                let transcribed = self.transcribe_template_impl(pair, bindings, renames, def_env, lex_env)?;
+                new_bindings_reversed = self.lisp.cons(transcribed, new_bindings_reversed)?;
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        let new_bindings_list = self.reverse_list(new_bindings_reversed)?;
+
+        // Transcribe the body
+        let transcribed_body = self.transcribe_template_impl(body_template, bindings, renames, def_env, lex_env)?;
+
+        // Transcribe the keyword (may be wrapped in syntax object in lex_env path)
+        let transcribed_keyword = self.transcribe_template_impl(keyword, bindings, renames, def_env, lex_env)?;
+
+        let rest = self.lisp.cons(new_bindings_list, transcribed_body)?;
+        self.lisp.cons(transcribed_keyword, rest).map_err(Into::into)
     }
 
     /// Rewrite a syntax-rules form by gensyming non-outer-literal identifiers
