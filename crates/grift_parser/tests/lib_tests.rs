@@ -1416,9 +1416,9 @@ fn test_bytevector_empty_display() {
 #[test]
 fn test_fold_case_default() {
     let lisp: Lisp<100> = Lisp::new();
-    // By default, symbols are case-folded (lowercased)
+    // By default, symbols are case-preserving (R7RS §7.1.1)
     let idx = parse(&lisp, "Hello").unwrap();
-    assert!(lisp.symbol_matches(idx, "hello").unwrap());
+    assert!(lisp.symbol_matches(idx, "Hello").unwrap());
 }
 
 #[test]

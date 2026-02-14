@@ -91,4 +91,4 @@ pub mod lexer;
 mod parser;
 
 pub use lexer::{Lexer, Token, SpannedToken, LexError, LexErrorKind};
-pub use parser::{Parser, ParseError, ParseErrorKind, SourceLoc, parse, parse_all};
+pub use parser::{Parser, ParseError, ParseErrorKind, SourceLoc, parse, parse_all, parse_single};

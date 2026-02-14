@@ -229,4 +229,8 @@ pub enum ContType {
     /// are already evaluated values.
     /// Data: (args_list . (env . call_expr))
     ApplyDirect,
+
+    /// After processing quasiquote vector elements as a list, convert back to vector
+    /// Data: Nil (no data)
+    QuasiquoteVector,
 }

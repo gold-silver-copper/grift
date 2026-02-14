@@ -137,11 +137,25 @@ fn format_value<const N: usize>(
         }
         Ok(Value::Rational { num, denom }) => write!(f, "{}/{}", num, denom),
         Ok(Value::Complex { real, imag }) => {
-            if imag >= 0.0 {
-                write!(f, "{}+{}i", real, imag)
-            } else {
-                write!(f, "{}{}i", real, imag)
+            // Format real part with R7RS conventions
+            fn fmt_fsize(f: &mut core::fmt::Formatter<'_>, v: crate::fsize) -> core::fmt::Result {
+                if v.is_nan() {
+                    f.write_str("+nan.0")
+                } else if v.is_infinite() {
+                    if v > 0.0 { f.write_str("+inf.0") } else { f.write_str("-inf.0") }
+                } else if v.is_finite() && v == (v as isize as crate::fsize) {
+                    write!(f, "{:.1}", v)
+                } else {
+                    write!(f, "{}", v)
+                }
             }
+            fmt_fsize(f, real)?;
+            // Add '+' only for finite non-negative values; inf/nan already include sign
+            if !imag.is_nan() && !imag.is_infinite() && imag >= 0.0 {
+                f.write_str("+")?;
+            }
+            fmt_fsize(f, imag)?;
+            f.write_str("i")
         }
         Ok(Value::Char(c)) => {
             if display_mode {

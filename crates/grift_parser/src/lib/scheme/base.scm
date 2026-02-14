@@ -596,9 +596,17 @@
 
     ;; guard - Exception handling (R7RS §4.2.7)
     (define-syntax %guard-cond
-      (syntax-rules (else)
+      (syntax-rules (else =>)
         ((%guard-cond var (else result ...))
          (begin result ...))
+        ((%guard-cond var (test => proc))
+         (let ((t test)) (if t (proc t) (raise-continuable var))))
+        ((%guard-cond var (test => proc) rest ...)
+         (let ((t test)) (if t (proc t) (%guard-cond var rest ...))))
+        ((%guard-cond var (test))
+         (let ((t test)) (if t t (raise-continuable var))))
+        ((%guard-cond var (test) rest ...)
+         (let ((t test)) (if t t (%guard-cond var rest ...))))
         ((%guard-cond var (test result ...))
          (if test (begin result ...) (raise-continuable var)))
         ((%guard-cond var (test result ...) rest ...)
@@ -609,9 +617,11 @@
         (syntax-case x ()
           ((guard (var clause ...) body ...)
            (syntax
-             (with-exception-handler
-               (lambda (var) (%guard-cond var clause ...))
-               (lambda () body ...)))))))
+             (call-with-current-continuation
+               (lambda (guard-k)
+                 (with-exception-handler
+                   (lambda (var) (guard-k (%guard-cond var clause ...)))
+                   (lambda () body ...)))))))))
 
     ;; parameterize
     (define-syntax parameterize
@@ -666,7 +676,7 @@
       (if (eq? s1 s2) (check s1 rest) #f))
 
     (define (exact-integer? x) (and (integer? x) (exact? x)))
-    (define (real? x) (number? x))
+    (define (real? x) (and (number? x) (exact? (imag-part x))))
     (define (rational? x)
       (and (number? x)
            (if (inexact? x) (finite? x) #t)))
@@ -842,10 +852,11 @@
     (define (list-ref lst k)
       (if (= k 0) (car lst) (list-ref (cdr lst) (- k 1))))
 
-    (define (make-list k fill)
-      (if (< k 0) (error "make-list: expected non-negative integer" k)
-          (let make-list-loop ((k k) (acc '()))
-            (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc))))))
+    (define (make-list k . rest)
+      (let ((fill (if (null? rest) #f (car rest))))
+        (if (< k 0) (error "make-list: expected non-negative integer" k)
+            (let make-list-loop ((k k) (acc '()))
+              (if (<= k 0) acc (make-list-loop (- k 1) (cons fill acc)))))))
 
     (define (list-set! lst k obj)
       (set-car! (list-tail lst k) obj))
@@ -857,8 +868,19 @@
     (define (string-for-each proc s)
       (for-each proc (string->list s)))
 
-    (define (string-map proc s)
-      (list->string (map proc (string->list s))))
+    (define (string-map proc . strings)
+      (if (null? (cdr strings))
+          ;; Single string case
+          (list->string (map proc (string->list (car strings))))
+          ;; Multi-string case: map over parallel characters
+          (let* ((lists (map string->list strings))
+                 (min-len (apply min (map length lists))))
+            (let loop ((i 0) (result '()))
+              (if (= i min-len)
+                  (list->string (reverse result))
+                  (loop (+ i 1)
+                        (cons (apply proc (map (lambda (lst) (list-ref lst i)) lists))
+                              result)))))))
 
     ;;; --------------------------------------------------------
     ;;; Promise and parameter functions (R7RS §4.2.5–4.2.6)

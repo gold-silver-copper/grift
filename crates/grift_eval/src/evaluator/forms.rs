@@ -649,6 +649,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
+            ContType::QuasiquoteVector => {
+                // val is the processed list - convert back to vector
+                // Count elements
+                let mut count = 0usize;
+                let mut current = val;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            count += 1;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => break,
+                    }
+                }
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                current = val;
+                for i in 0..count {
+                    let elem = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, elem)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                Ok(Some(TrampolineState::Return { val: vec }))
+            }
+
             ContType::LetSyntaxBody => {
                 // Restore macro environment after let-syntax body evaluation
                 // Data: saved_macro_env
@@ -958,22 +984,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Push frame to restore handler chain when thunk returns.
                 // continuable_flag = true means "thunk context" — always allow return
                 let true_val = self.lisp.true_val()?;
+                let nil = self.lisp.nil()?;
                 let global = self.global_env;
                 self.cont(ContType::ExceptionHandlerFrame, global)
-                    .data3(handler, saved_chain, true_val)?;
+                    .data4(nil, saved_chain, true_val, nil)?;
                 // Call the thunk (zero-arg procedure)
                 self.apply_thunk(thunk, self.global_env)
             }
             
             ContType::ExceptionHandlerFrame => {
                 // Handler or thunk completed — restore handler chain
-                // Data: (handler . (saved_handler_chain . continuable_flag))
-                let (_handler, saved_chain, _continuable_flag) = self.unpack3(data)?;
-                self.exception_handler_chain = saved_chain;
-                // Note: R7RS §6.11 says it is an error for a handler invoked by
-                // `raise` to return, but our `guard` macro relies on handler return.
-                // We permit return in all cases for compatibility.
-                Ok(Some(TrampolineState::Return { val }))
+                // Data: (handler . (saved_handler_chain . (continuable_flag . exception_obj)))
+                let (_handler, saved_chain, continuable_flag, exception_obj) = self.unpack4(data)?;
+                if !self.lisp.get(continuable_flag)?.is_nil() {
+                    // continuable_flag is #t for raise-continuable or thunk — handler may return
+                    self.exception_handler_chain = saved_chain;
+                    Ok(Some(TrampolineState::Return { val }))
+                } else {
+                    // Non-continuable raise handler returned — R7RS says "it is an error".
+                    // Re-raise original exception to next handler in chain.
+                    // exception_handler_chain still has the parent chain (set by invoke_exception_handler).
+                    if self.lisp.get(self.exception_handler_chain)?.is_nil() {
+                        // No next handler — allow return (permissive)
+                        self.exception_handler_chain = saved_chain;
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else {
+                        self.invoke_exception_handler(exception_obj, false)
+                    }
+                }
             }
             
             ContType::RaiseEval => {
@@ -1112,6 +1150,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let depth_encoded = Self::encode_usize(depth);
                 self.cont(ContType::QuasiquoteCar, env).data3(cdr, depth_encoded, env.0)?;
                 self.step_quasiquote_trampoline(car, env, depth)
+            }
+            Value::Array { .. } => {
+                // Convert vector to list, process with quasiquote, then convert back
+                let len = self.lisp.array_len(template)?;
+                let mut list = self.lisp.nil()?;
+                for i in (0..len).rev() {
+                    let elem = self.lisp.array_get(template, i)?;
+                    list = self.lisp.cons(elem, list)?;
+                }
+                // Push continuation to convert result list back to vector
+                let nil = self.lisp.nil()?;
+                self.push_cont(ContType::QuasiquoteVector, nil, env.0)?;
+                // Process the list through quasiquote
+                self.step_quasiquote_trampoline(list, env, depth)
             }
             _ => {
                 // Atoms are returned as-is
@@ -2205,7 +2257,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         let global = self.global_env;
         self.cont(ContType::ExceptionHandlerFrame, global)
-            .data3(handler, saved_chain, continuable_flag)?;
+            .data4(handler, saved_chain, continuable_flag, obj)?;
         
         // Call the handler with the exception object
         match self.lisp.get(handler)? {
