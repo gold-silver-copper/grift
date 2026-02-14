@@ -2183,7 +2183,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Detect and rewrite `(syntax-rules <custom-ellipsis> (lit ...) clause ...)`
     /// into `(syntax-rules (lit ...) clause' ...)` where occurrences of
     /// `<custom-ellipsis>` in patterns/templates are replaced with `...`.
-    fn rewrite_custom_ellipsis_syntax_rules(&self, expr: ArenaIndex) -> EvalResult {
+    ///
+    /// Per R7RS §4.3.2, when the custom ellipsis identifier also appears in the
+    /// literals list, the literal takes priority and ellipsis behaviour is
+    /// effectively disabled.
+    fn rewrite_custom_ellipsis_syntax_rules(&mut self, expr: ArenaIndex) -> EvalResult {
         let args = self.lisp.cdr(expr)?; // skip 'syntax-rules'
         let first_arg = self.lisp.car(args)?;
 
@@ -2196,16 +2200,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let literals = self.lisp.car(rest)?;
                 let clauses = self.lisp.cdr(rest)?;
 
-                let ellipsis_sym = self.lisp.symbol("...")?;
+                // Check if the custom ellipsis also appears in the literals list
+                let elli_in_literals = self.symbol_in_list(custom_elli, literals)?;
 
-                // Rewrite each clause: replace custom ellipsis with ... in patterns and templates
-                let new_clauses = self.replace_sym_in_tree(clauses, custom_elli, ellipsis_sym)?;
-                let new_literals = self.replace_sym_in_tree(literals, custom_elli, ellipsis_sym)?;
+                if elli_in_literals {
+                    // R7RS §4.3.2: literal has priority over ellipsis.
+                    // Replace `...` in template positions with the escape
+                    // form `(... ...)` so that the template transcription
+                    // treats it as the literal symbol `...`.
+                    let ellipsis_sym = self.lisp.symbol("...")?;
+                    let escaped_elli = {
+                        let nil = self.lisp.nil()?;
+                        let inner = self.lisp.cons(ellipsis_sym, nil)?;
+                        self.lisp.cons(ellipsis_sym, inner)?  // (... ...)
+                    };
+                    let new_clauses = self.escape_ellipsis_in_templates(clauses, ellipsis_sym, escaped_elli)?;
+                    let sr_sym = self.lisp.car(expr)?;
+                    let tail = self.lisp.cons(literals, new_clauses)?;
+                    self.lisp.cons(sr_sym, tail).map_err(Into::into)
+                } else {
+                    let ellipsis_sym = self.lisp.symbol("...")?;
 
-                // Rebuild as standard form: (syntax-rules (lit ...) clause' ...)
-                let sr_sym = self.lisp.car(expr)?; // 'syntax-rules
-                let tail = self.lisp.cons(new_literals, new_clauses)?;
-                self.lisp.cons(sr_sym, tail).map_err(Into::into)
+                    // Rewrite each clause: replace custom ellipsis with ... in patterns and templates
+                    let new_clauses = self.replace_sym_in_tree(clauses, custom_elli, ellipsis_sym)?;
+                    let new_literals = self.replace_sym_in_tree(literals, custom_elli, ellipsis_sym)?;
+
+                    // Rebuild as standard form: (syntax-rules (lit ...) clause' ...)
+                    let sr_sym = self.lisp.car(expr)?; // 'syntax-rules
+                    let tail = self.lisp.cons(new_literals, new_clauses)?;
+                    self.lisp.cons(sr_sym, tail).map_err(Into::into)
+                }
             }
             _ => Ok(expr), // Standard form — return as-is
         }
@@ -2229,6 +2253,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.cons(new_car, new_cdr).map_err(Into::into)
             }
             _ => Ok(tree), // Atoms pass through unchanged
+        }
+    }
+
+    /// Walk clauses of `syntax-rules`, replacing the ellipsis symbol with its
+    /// escaped form `(... ...)` in the *template* position of each clause.
+    /// Clauses are a list of `((keyword . pattern) template)` pairs.
+    fn escape_ellipsis_in_templates(
+        &self,
+        clauses: ArenaIndex,
+        elli: ArenaIndex,
+        escaped: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(clauses)? {
+            Value::Nil => Ok(clauses),
+            Value::Cons { .. } => {
+                let clause = self.lisp.car(clauses)?;
+                let rest = self.lisp.cdr(clauses)?;
+                // clause = (pattern template)
+                let pattern = self.lisp.car(clause)?;
+                let template_pair = self.lisp.cdr(clause)?;
+                let template = self.lisp.car(template_pair)?;
+                // Replace ellipsis in template only
+                let new_template = self.replace_sym_in_tree(template, elli, escaped)?;
+                let nil = self.lisp.nil()?;
+                let new_template_pair = self.lisp.cons(new_template, nil)?;
+                let new_clause = self.lisp.cons(pattern, new_template_pair)?;
+                let new_rest = self.escape_ellipsis_in_templates(rest, elli, escaped)?;
+                self.lisp.cons(new_clause, new_rest).map_err(Into::into)
+            }
+            _ => Ok(clauses),
         }
     }
 
