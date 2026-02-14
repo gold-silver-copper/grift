@@ -93,6 +93,10 @@ macro_rules! builtin_rounding_op {
         let arg = $self.lisp.car($args)?;
         match $self.lisp.get(arg)? {
             Value::Number(n) => $self.lisp.number(n).map_err(Into::into),
+            Value::BigNum { .. } => {
+                // BigNum is already an integer
+                Ok(arg)
+            }
             Value::Float(f) => {
                 let result = $float_op(f);
                 let f64_result = result as f64;
@@ -116,6 +120,10 @@ macro_rules! builtin_rounding_op {
                 let f = num as crate::fsize / denom as crate::fsize;
                 let result = $float_op(f);
                 $self.lisp.number(result as isize).map_err(Into::into)
+            }
+            Value::Cons { .. } => {
+                // Check for tagged BigNum ratio: (%bignum-ratio quotient remainder denom)
+                $self.round_bignum_ratio(arg, $float_op)
             }
             v => Err($self.type_error($call_expr, "number", v.type_name())),
         }
