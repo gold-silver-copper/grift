@@ -782,11 +782,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Count how many elements the rest pattern needs
         let rest_len = self.pattern_min_length(rest_pattern, literals)?;
 
-        // Count expression length. If the expression is not a proper list
-        // (e.g., a symbol or atom), the ellipsis pattern can't match.
-        let expr_len = match self.list_length(expr) {
-            Ok(len) => len,
-            Err(_) => return Ok(None),
+        // Count expression length, handling both proper and improper lists.
+        // For improper lists (e.g., (a b . c)), count the number of cons cells
+        // and record the improper tail.
+        let (expr_len, _improper_tail) = {
+            let mut len = 0usize;
+            let mut cur = expr;
+            let mut tail = None;
+            loop {
+                match self.lisp.get(cur)? {
+                    Value::Nil => break,
+                    Value::Cons { .. } => {
+                        len += 1;
+                        cur = self.lisp.cdr(cur)?;
+                    }
+                    _ => {
+                        tail = Some(cur);
+                        break;
+                    }
+                }
+            }
+            (len, tail)
         };
 
         if expr_len < rest_len {
