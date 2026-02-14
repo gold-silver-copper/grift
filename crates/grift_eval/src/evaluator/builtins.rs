@@ -5156,6 +5156,99 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
+    /// Round a tagged BigNum ratio (%bignum-ratio quotient remainder denom).
+    /// The ratio represents `quotient + remainder/denom`.
+    /// `round_fn` is the standard rounding function (floor, ceil, trunc, rint).
+    pub fn round_bignum_ratio(&self, tagged: ArenaIndex, round_fn: fn(fsize) -> fsize) -> EvalResult {
+        // Check tag
+        let tag = self.lisp.car(tagged)?;
+        if !self.lisp.symbol_matches(tag, "%bignum-ratio")? {
+            // Not a tagged ratio, fall back to type error
+            return Err(self.type_error(tagged, "number", "list"));
+        }
+        let rest = self.lisp.cdr(tagged)?;
+        let q_idx = self.lisp.car(rest)?;
+        let rest2 = self.lisp.cdr(rest)?;
+        let r_idx = self.lisp.car(rest2)?;
+        let rest3 = self.lisp.cdr(rest2)?;
+        let d_idx = self.lisp.car(rest3)?;
+
+        let r = match self.lisp.get(r_idx)? {
+            Value::Number(n) => n,
+            _ => return Err(self.type_error(tagged, "number", "?")),
+        };
+        let d = match self.lisp.get(d_idx)? {
+            Value::Number(n) => n,
+            _ => return Err(self.type_error(tagged, "number", "?")),
+        };
+
+        if r == 0 || d == 0 {
+            // No fractional part, return quotient as-is
+            return Ok(q_idx);
+        }
+
+        // Compute the rounding adjustment using the fractional part r/d
+        let frac = r as fsize / d as fsize;
+        let abs_frac = if frac < 0.0 { -frac } else { frac };
+
+        // For banker's rounding (rint), when |frac| == 0.5 we need to check
+        // the parity of the quotient, not just round the fraction alone.
+        let adjustment = if abs_frac == 0.5 {
+            // Detect banker's rounding by testing round_fn(0.5)==0 AND round_fn(1.5)==2
+            let is_bankers = round_fn(0.5 as fsize) == 0.0 && round_fn(1.5 as fsize) == 2.0;
+            if is_bankers {
+                // This is banker's rounding (rint): round 0.5 to nearest even
+                // We need to check if quotient is odd or even
+                let q_is_odd = match self.lisp.get(q_idx)? {
+                    Value::Number(n) => n % 2 != 0,
+                    Value::BigNum { .. } => {
+                        let buf = self.load_bignum_buf(q_idx)?;
+                        buf.limbs[0] % 2 != 0
+                    }
+                    _ => false,
+                };
+                if q_is_odd {
+                    // q is odd, round away from q (toward even q+1 or q-1)
+                    if frac > 0.0 { 1isize } else { -1isize }
+                } else {
+                    // q is even, stay at q
+                    0isize
+                }
+            } else {
+                // Not banker's rounding, use normal round_fn
+                round_fn(frac) as isize
+            }
+        } else {
+            round_fn(frac) as isize
+        };
+
+        if adjustment == 0 {
+            // No adjustment needed
+            Ok(q_idx)
+        } else {
+            // Add adjustment to quotient
+            match self.lisp.get(q_idx)? {
+                Value::Number(n) => {
+                    match n.checked_add(adjustment) {
+                        Some(result) => self.lisp.number(result).map_err(Into::into),
+                        None => {
+                            let buf = crate::bignum::BigNumBuf::from_isize(n)
+                                .add(&crate::bignum::BigNumBuf::from_isize(adjustment));
+                            self.store_bignum_result(&buf)
+                        }
+                    }
+                }
+                Value::BigNum { .. } => {
+                    let q_buf = self.load_bignum_buf(q_idx)?;
+                    let adj_buf = crate::bignum::BigNumBuf::from_isize(adjustment);
+                    let result = q_buf.add(&adj_buf);
+                    self.store_bignum_result(&result)
+                }
+                _ => Err(self.type_error(tagged, "number", "?")),
+            }
+        }
+    }
+
     /// BigNum division fold: (/ bignum divisor ...) → rational or integer.
     /// Tracks numerator and denominator as BigNumBufs, simplifies via GCD.
     fn bignum_fold_div(&self, first_idx: ArenaIndex, rest: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
@@ -5216,18 +5309,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             (None, Some(d)) => {
                 // Numerator is BigNum, denominator fits in isize
-                // Use BigNum divmod for precision, then produce float
+                // Use BigNum divmod for precision
                 let denom_buf = crate::bignum::BigNumBuf::from_isize(d);
                 let (q_buf, r_buf) = num_big.divmod(&denom_buf);
                 if r_buf.is_zero() {
                     // Exact division
                     self.store_bignum_result(&q_buf)
                 } else {
-                    // Inexact: compute q + r/d precisely
-                    let q_f64 = q_buf.to_f64();
+                    // Non-exact: store as tagged BigNum ratio
+                    // (%bignum-ratio quotient remainder denom)
+                    // This allows rounding operations to compute exact results
+                    let tag = self.lisp.symbol("%bignum-ratio")?;
+                    let q_val = self.store_bignum_result(&q_buf)?;
                     let r_isize = r_buf.to_isize().unwrap_or(0);
-                    let result = q_f64 + r_isize as f64 / d as f64;
-                    self.lisp.float(result as fsize).map_err(Into::into)
+                    let r_val = self.lisp.number(r_isize)?;
+                    let d_val = self.lisp.number(d)?;
+                    let nil = self.lisp.nil()?;
+                    let l3 = self.lisp.cons(d_val, nil)?;
+                    let l2 = self.lisp.cons(r_val, l3)?;
+                    let l1 = self.lisp.cons(q_val, l2)?;
+                    self.lisp.cons(tag, l1).map_err(Into::into)
                 }
             }
             _ => {
