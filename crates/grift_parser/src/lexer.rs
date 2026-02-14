@@ -88,6 +88,10 @@ pub enum Token {
     Rational(isize, isize),
     /// Complex number literal (real + imaginary parts, already parsed)
     Complex(grift_core::fsize, grift_core::fsize),
+    /// Big integer literal (overflowed isize).
+    /// `start` and `len` refer to the raw digit bytes in the source input.
+    /// `negative` indicates the sign.
+    BigNumLiteral { start: usize, len: usize, negative: bool },
     /// Symbol — raw bytes are in `input[start..start+len]`.
     /// Use [`Lexer::input_slice`] to get the raw bytes.
     Symbol {
@@ -550,16 +554,63 @@ impl<'a> Lexer<'a> {
             false
         };
         
+        let digit_start = self.pos; // start of digit sequence
         let mut value: isize = 0;
+        let mut overflowed = false;
+        let mut float_value: grift_core::fsize = 0.0;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
-                value = value.checked_mul(10)
-                    .and_then(|v| v.checked_add((c - b'0') as isize))
-                    .ok_or_else(|| self.error(LexErrorKind::NumberOverflow))?;
+                if overflowed {
+                    float_value = float_value * 10.0 + (c - b'0') as grift_core::fsize;
+                } else {
+                    match value.checked_mul(10).and_then(|v| v.checked_add((c - b'0') as isize)) {
+                        Some(v) => value = v,
+                        None => {
+                            // Overflow: switch to float accumulation
+                            float_value = value as grift_core::fsize * 10.0 + (c - b'0') as grift_core::fsize;
+                            overflowed = true;
+                        }
+                    }
+                }
             } else {
                 break;
             }
+        }
+
+        // If integer overflowed isize, check if it should be a float or BigNum
+        if overflowed {
+            // If followed by decimal point or exponent, it's a float
+            if self.peek() == Some(b'.') || self.peek().map_or(false, is_exponent_marker) {
+                if self.peek() == Some(b'.') {
+                    self.advance(); // consume '.'
+                    self.parse_frac_part(&mut float_value);
+                }
+                if self.peek().map_or(false, is_exponent_marker) {
+                    self.advance();
+                    let exp_negative = match self.peek() {
+                        Some(b'+') => { self.advance(); false }
+                        Some(b'-') => { self.advance(); true }
+                        _ => false,
+                    };
+                    let mut exp: i32 = 0;
+                    while let Some(c) = self.peek() {
+                        if c.is_ascii_digit() {
+                            self.advance();
+                            exp = exp.saturating_mul(10).saturating_add((c - b'0') as i32);
+                        } else {
+                            break;
+                        }
+                    }
+                    if exp_negative { exp = -exp; }
+                    float_value = mul_pow10(float_value, exp);
+                }
+                if negative { float_value = -float_value; }
+                return self.try_lex_complex_suffix(float_value);
+            }
+            // Otherwise, it's a BigNum literal
+            let digit_len = self.pos - digit_start;
+            return Ok(Token::BigNumLiteral { start: digit_start, len: digit_len, negative });
         }
         
         // Check for decimal point or exponent → floating-point literal
@@ -597,6 +648,30 @@ impl<'a> Lexer<'a> {
                 return Err(self.error(LexErrorKind::NumberOverflow));
             }
             let num = if negative { -value } else { value };
+            // Check for complex suffix after rational: e.g., 3/2+i, 3/2-2i
+            if let Some(c) = self.peek() {
+                if c == b'+' || c == b'-' {
+                    // Find the end of potential complex suffix (up to next delimiter)
+                    let saved_pos = self.pos;
+                    let rest_bytes = &self.input[self.pos..];
+                    // Find length of suffix up to delimiter
+                    let mut suf_len = 0;
+                    for &b in rest_bytes {
+                        if b == b')' || b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b';' {
+                            break;
+                        }
+                        suf_len += 1;
+                    }
+                    if suf_len > 0 {
+                        let suffix = &rest_bytes[..suf_len];
+                        if let Some(imag) = Self::parse_complex_imag_suffix(suffix) {
+                            self.pos = saved_pos + suf_len;
+                            let real = num as grift_core::fsize / denom as grift_core::fsize;
+                            return Ok(Token::Complex(real, imag));
+                        }
+                    }
+                }
+            }
             return Ok(Token::Rational(num, denom));
         }
         

@@ -631,11 +631,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let expr = self.lisp.syntax_to_datum(stx)?;
         
         match self.lisp.get(pattern)? {
-            // Wildcard: matches anything, binds nothing
-            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "_")? => {
-                Ok(Some(bindings))
-            }
-
             // Ellipsis symbol itself: error (shouldn't appear here)
             Value::Symbol(_) if self.lisp.symbol_matches(pattern, "...")? => {
                 Err(self.make_error(ErrorKind::SyntaxError, pattern)
@@ -648,6 +643,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Both identifiers are resolved: the input in the call-site env,
             // the literal in the global env (where the macro was defined).
             // They match if both resolve to the same binding, or both are unbound.
+            // Note: _ in the literals list is treated as a literal, not a wildcard.
             Value::Symbol(_) if self.is_literal(pattern, literals)? => {
                 match self.lisp.get(expr)? {
                     Value::Symbol(_) if self.symbols_eq(pattern, expr)? => {
@@ -671,6 +667,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     _ => Ok(None),
                 }
+            }
+
+            // Wildcard: matches anything, binds nothing
+            // Only when _ is NOT in the literals list (checked above)
+            Value::Symbol(_) if self.lisp.symbol_matches(pattern, "_")? => {
+                Ok(Some(bindings))
             }
 
             // Pattern variable: bind to the ORIGINAL syntax object (not unwrapped datum)
@@ -1023,12 +1025,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let (car, cdr) = self.lisp.car_cdr(template)?;
 
         // Check for escaping ellipsis: (... <template>) means treat <template> literally
+        // Per R7RS §4.3.2: (... <template>) is identical to <template>, except that
+        // ellipses within the template have no special meaning. Pattern variables
+        // are still substituted.
         // (... ...) produces the literal symbol ...
         if self.lisp.symbol_matches(car, "...")? {
-            // The cdr should be a single element - return it without ellipsis processing
             if let Value::Cons { .. } = self.lisp.get(cdr)? {
                 let inner = self.lisp.car(cdr)?;
-                return Ok(inner);
+                // Check for (... ...) which produces the literal symbol ...
+                if let Value::Symbol(_) = self.lisp.get(inner)? {
+                    if self.lisp.symbol_matches(inner, "...")? {
+                        return Ok(inner);
+                    }
+                }
+                // Transcribe the inner template with pattern variable substitution
+                // but without treating ... as ellipsis
+                return self.transcribe_no_ellipsis(inner, bindings, renames, def_env, lex_env);
             }
             // (... . atom) - return the atom literally
             return Ok(cdr);
@@ -1099,6 +1111,55 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         
         Ok(result)
+    }
+
+    /// Transcribe a template without treating `...` as an ellipsis.
+    /// Used for `(... <template>)` escape where pattern variables are still
+    /// substituted but `...` has no special meaning.
+    fn transcribe_no_ellipsis(
+        &mut self,
+        template: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
+        match self.lisp.get(template)? {
+            Value::Symbol(_) => {
+                // Still substitute pattern variables
+                if let Some(le) = lex_env {
+                    self.transcribe_symbol_with_env(template, bindings, renames, def_env, le)
+                } else {
+                    self.transcribe_symbol(template, bindings, renames, def_env)
+                }
+            }
+            Value::Nil => Ok(self.lisp.nil()?),
+            Value::Cons { .. } => {
+                // Transcribe list elements without ellipsis processing
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut current = template;
+                while let Value::Cons { .. } = self.lisp.get(current)? {
+                    let elem = self.lisp.car(current)?;
+                    collected = self.lisp.cons(elem, collected)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                let mut result = if self.lisp.get(current)?.is_nil() {
+                    nil
+                } else {
+                    self.transcribe_no_ellipsis(current, bindings, renames, def_env, lex_env)?
+                };
+                let mut cursor = collected;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    let elem = self.lisp.car(cursor)?;
+                    let transcribed = self.transcribe_no_ellipsis(elem, bindings, renames, def_env, lex_env)?;
+                    result = self.lisp.cons(transcribed, result)?;
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(result)
+            }
+            _ => Ok(template),
+        }
     }
     
     /// Transcribe a symbol in template
@@ -1859,6 +1920,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Ok(expr);
                         }
 
+                        if self.lisp.symbol_matches(head, "syntax")?
+                            || self.lisp.symbol_matches(head, "quasisyntax")? {
+                            // Don't expand inside syntax/quasisyntax templates —
+                            // they are evaluated at runtime by step_eval_syntax
+                            return Ok(expr);
+                        }
+
+                        if self.lisp.symbol_matches(head, "syntax-case")? {
+                            // Don't expand inside syntax-case —
+                            // patterns and templates are processed at runtime
+                            return Ok(expr);
+                        }
+
                         // define-syntax is NOT processed during expansion - see step_eval_define_syntax
                         // in forms.rs for the evaluation-time implementation that captures lexical scope.
 
@@ -2097,12 +2171,68 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(head, "lambda")? {
                 // Already a lambda - use as-is (don't expand body)
                 Ok(transformer_expr)
+            } else if self.lisp.symbol_matches(head, "syntax-rules")? {
+                // Check for custom ellipsis form: (syntax-rules <ellipsis> (lit ...) clause ...)
+                let rewritten = self.rewrite_custom_ellipsis_syntax_rules(transformer_expr)?;
+                self.expand(rewritten)
             } else {
                 // Not a lambda - expand it (e.g., syntax-rules call)
                 self.expand(transformer_expr)
             }
         } else {
             Ok(transformer_expr)
+        }
+    }
+
+    /// Detect and rewrite `(syntax-rules <custom-ellipsis> (lit ...) clause ...)`
+    /// into `(syntax-rules (lit ...) clause' ...)` where occurrences of
+    /// `<custom-ellipsis>` in patterns/templates are replaced with `...`.
+    fn rewrite_custom_ellipsis_syntax_rules(&self, expr: ArenaIndex) -> EvalResult {
+        let args = self.lisp.cdr(expr)?; // skip 'syntax-rules'
+        let first_arg = self.lisp.car(args)?;
+
+        // If first arg is a list (or nil), it's the standard form — no rewriting needed
+        match self.lisp.get(first_arg)? {
+            Value::Symbol(_) => {
+                // Custom ellipsis form: first arg is the ellipsis identifier
+                let custom_elli = first_arg;
+                let rest = self.lisp.cdr(args)?;
+                let literals = self.lisp.car(rest)?;
+                let clauses = self.lisp.cdr(rest)?;
+
+                let ellipsis_sym = self.lisp.symbol("...")?;
+
+                // Rewrite each clause: replace custom ellipsis with ... in patterns and templates
+                let new_clauses = self.replace_sym_in_tree(clauses, custom_elli, ellipsis_sym)?;
+                let new_literals = self.replace_sym_in_tree(literals, custom_elli, ellipsis_sym)?;
+
+                // Rebuild as standard form: (syntax-rules (lit ...) clause' ...)
+                let sr_sym = self.lisp.car(expr)?; // 'syntax-rules
+                let tail = self.lisp.cons(new_literals, new_clauses)?;
+                self.lisp.cons(sr_sym, tail).map_err(Into::into)
+            }
+            _ => Ok(expr), // Standard form — return as-is
+        }
+    }
+
+    /// Walk a syntax tree, replacing all occurrences of `from_sym` with `to_sym`.
+    fn replace_sym_in_tree(&self, tree: ArenaIndex, from_sym: ArenaIndex, to_sym: ArenaIndex) -> EvalResult {
+        match self.lisp.get(tree)? {
+            Value::Symbol(_) => {
+                if self.lisp.symbol_eq(tree, from_sym)? {
+                    Ok(to_sym)
+                } else {
+                    Ok(tree)
+                }
+            }
+            Value::Cons { .. } => {
+                let car = self.lisp.car(tree)?;
+                let cdr = self.lisp.cdr(tree)?;
+                let new_car = self.replace_sym_in_tree(car, from_sym, to_sym)?;
+                let new_cdr = self.replace_sym_in_tree(cdr, from_sym, to_sym)?;
+                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+            }
+            _ => Ok(tree), // Atoms pass through unchanged
         }
     }
 

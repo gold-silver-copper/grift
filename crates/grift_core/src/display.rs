@@ -157,6 +157,61 @@ fn format_value<const N: usize>(
             fmt_fsize(f, imag)?;
             f.write_str("i")
         }
+        Ok(Value::BigNum { len, data, negative }) => {
+            // Display bignum as decimal
+            if len == 0 {
+                return f.write_str("0");
+            }
+            // Collect limbs from arena
+            let mut limbs = [0u32; 128]; // max 128 limbs = 4096 bits
+            let limb_count = if len > 128 { 128 } else { len };
+            for i in 0..limb_count {
+                if let Ok(limb_idx) = lisp.arena_index_at_offset(data, i) {
+                    if let Ok(Value::Usize(v)) = lisp.get(limb_idx) {
+                        limbs[i] = v as u32;
+                    }
+                }
+            }
+            if negative {
+                f.write_str("-")?;
+            }
+            // Convert to decimal using repeated division
+            // Work with a copy of limbs
+            let mut work = [0u32; 128];
+            work[..limb_count].copy_from_slice(&limbs[..limb_count]);
+            let mut work_len = limb_count;
+            // Trim leading zeros
+            while work_len > 0 && work[work_len - 1] == 0 {
+                work_len -= 1;
+            }
+            if work_len == 0 {
+                return f.write_str("0");
+            }
+            // Collect decimal digits in reverse
+            let mut digits = [0u8; 1300]; // enough for 2^4096
+            let mut dlen = 0;
+            while work_len > 0 {
+                // Divide work by 10, get remainder
+                let mut rem: u64 = 0;
+                for i in (0..work_len).rev() {
+                    let cur = rem * (1u64 << 32) + work[i] as u64;
+                    work[i] = (cur / 10) as u32;
+                    rem = cur % 10;
+                }
+                digits[dlen] = rem as u8;
+                dlen += 1;
+                // Trim leading zeros
+                while work_len > 0 && work[work_len - 1] == 0 {
+                    work_len -= 1;
+                }
+            }
+            // Write digits in correct order (most significant first)
+            for i in (0..dlen).rev() {
+                let c = (b'0' + digits[i]) as char;
+                write!(f, "{}", c)?;
+            }
+            Ok(())
+        }
         Ok(Value::Char(c)) => {
             if display_mode {
                 // display mode: print character as-is (R7RS §6.13.3)
@@ -172,7 +227,13 @@ fn format_value<const N: usize>(
                 }
             }
         }
-        Ok(Value::Symbol(chars)) => format_symbol(lisp, chars, f),
+        Ok(Value::Symbol(chars)) => {
+            if display_mode {
+                format_symbol(lisp, chars, f)
+            } else {
+                format_symbol_write(lisp, chars, f)
+            }
+        }
         Ok(Value::Cons { .. }) => {
             f.write_str("(")?;
             format_list_contents(lisp, idx, f, depth + 1, display_mode)?;
@@ -294,4 +355,90 @@ fn format_symbol<const N: usize>(
         }
     }
     Ok(())
+}
+
+/// Format a symbol in `write` mode (R7RS §7.1.1).
+/// Symbols that need escaping are written with |...| delimiters.
+fn format_symbol_write<const N: usize>(
+    lisp: &Lisp<N>,
+    chars: ArenaIndex,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    let len = lisp.string_len(chars).unwrap_or(0);
+
+    // Empty symbol
+    if len == 0 {
+        return f.write_str("||");
+    }
+
+    // Check if symbol needs quoting
+    let needs_quoting = symbol_needs_quoting(lisp, chars, len);
+
+    if !needs_quoting {
+        // Output directly without delimiters
+        return format_symbol(lisp, chars, f);
+    }
+
+    // Output with |...| delimiters, escaping | and \ within
+    f.write_str("|")?;
+    for i in 0..len {
+        if i > 64 {
+            f.write_str("...")?;
+            break;
+        }
+        if let Ok(c) = lisp.string_char_at(chars, i) {
+            match c {
+                '|' => f.write_str("\\|")?,
+                '\\' => f.write_str("\\\\")?,
+                _ => write!(f, "{}", c)?,
+            }
+        }
+    }
+    f.write_str("|")
+}
+
+/// Check if a symbol name needs |...| quoting in write mode.
+fn symbol_needs_quoting<const N: usize>(
+    lisp: &Lisp<N>,
+    chars: ArenaIndex,
+    len: usize,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+
+    // Check first character
+    if let Ok(first) = lisp.string_char_at(chars, 0) {
+        // Symbols starting with digits need quoting
+        if first.is_ascii_digit() {
+            return true;
+        }
+        // Special initial characters that look like numbers
+        if (first == '+' || first == '-' || first == '.') && len > 1 {
+            if let Ok(second) = lisp.string_char_at(chars, 1) {
+                if second.is_ascii_digit() || second == 'i' || second == 'n'
+                    || second == 'I' || second == 'N'
+                {
+                    return true;
+                }
+            }
+        }
+        // A lone dot needs quoting since . is special in S-expressions
+        if first == '.' && len == 1 {
+            return true;
+        }
+    }
+
+    // Check all characters for special characters needing quoting
+    for i in 0..len {
+        if let Ok(c) = lisp.string_char_at(chars, i) {
+            match c {
+                ' ' | '\t' | '\n' | '\r' | '(' | ')' | '[' | ']' | '{' | '}' |
+                '"' | ',' | '\'' | '`' | ';' | '#' | '|' | '\\' => return true,
+                _ => {}
+            }
+        }
+    }
+
+    false
 }

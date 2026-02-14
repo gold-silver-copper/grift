@@ -166,6 +166,34 @@ impl<'a> Parser<'a> {
             Token::Float(f) => lisp.float(f).map_err(Into::into),
             Token::Rational(num, denom) => lisp.rational(num, denom).map_err(Into::into),
             Token::Complex(real, imag) => lisp.complex(real, imag).map_err(Into::into),
+            Token::BigNumLiteral { start, len, negative } => {
+                // Parse decimal digit bytes into BigNum limbs
+                let digits = self.lexer.input_slice(start, len);
+                // Convert decimal digits to base-2^32 limbs
+                let mut limbs = [0u32; 128];
+                let mut limb_count: usize = 0;
+                // Start with zero, multiply by 10 and add each digit
+                for &d in digits {
+                    if !d.is_ascii_digit() { continue; }
+                    let digit = (d - b'0') as u32;
+                    // Multiply existing limbs by 10 and add digit
+                    let mut carry: u64 = digit as u64;
+                    for i in 0..limb_count {
+                        let v = limbs[i] as u64 * 10 + carry;
+                        limbs[i] = v as u32;
+                        carry = v >> 32;
+                    }
+                    if carry > 0 && limb_count < 128 {
+                        limbs[limb_count] = carry as u32;
+                        limb_count += 1;
+                    }
+                    if limb_count == 0 && digit > 0 {
+                        limbs[0] = digit;
+                        limb_count = 1;
+                    }
+                }
+                lisp.bignum_from_limbs(&limbs[..limb_count], negative).map_err(Into::into)
+            }
             Token::Char(c) => lisp.char(c).map_err(Into::into),
             Token::Symbol { start, len } => {
                 let name = self.lexer.input_slice(start, len);

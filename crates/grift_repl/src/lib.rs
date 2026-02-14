@@ -96,6 +96,11 @@ fn format_value_impl<const N: usize>(
             fmt_fsize(buf, imag);
             buf.push('i');
         }
+        Ok(Value::BigNum { .. }) => {
+            use std::fmt::Write;
+            // Use the Display implementation from grift_core
+            write!(buf, "{}", lisp.display(idx)).unwrap();
+        }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
             match c {

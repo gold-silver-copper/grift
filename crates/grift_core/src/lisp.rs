@@ -216,6 +216,84 @@ impl<const N: usize> Lisp<N> {
     pub fn complex(&self, real: fsize, imag: fsize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Complex { real, imag })
     }
+
+    /// Allocate a bignum from u32 limbs (little-endian, base 2^32).
+    ///
+    /// Limbs are stored in contiguous arena slots as `Value::Usize`.
+    /// If the value fits in an `isize`, returns a regular `Number` instead.
+    pub fn bignum_from_limbs(&self, limbs: &[u32], negative: bool) -> ArenaResult<ArenaIndex> {
+        // Trim leading zero limbs
+        let mut len = limbs.len();
+        while len > 0 && limbs[len - 1] == 0 {
+            len -= 1;
+        }
+        if len == 0 {
+            return self.number(0);
+        }
+        // Check if it fits in isize
+        if len == 1 {
+            let v = limbs[0] as isize;
+            return self.number(if negative { -v } else { v });
+        }
+        if len == 2 {
+            let v = limbs[0] as u64 | ((limbs[1] as u64) << 32);
+            if v <= isize::MAX as u64 {
+                let sv = v as isize;
+                return self.number(if negative { -sv } else { sv });
+            }
+            // Special case: -(isize::MIN) doesn't fit in isize, but isize::MIN does
+            if negative && v == (isize::MAX as u64) + 1 {
+                return self.number(isize::MIN);
+            }
+        }
+        // Allocate contiguous limb slots
+        let data = self.arena.alloc_contiguous(len, Value::Usize(0))?;
+        for i in 0..len {
+            let limb_idx = self.arena.index_at_offset(data, i)?;
+            self.arena.set(limb_idx, Value::Usize(limbs[i] as usize))?;
+        }
+        self.alloc(Value::BigNum { len, data, negative })
+    }
+
+    /// Allocate a bignum from a single u128 value.
+    pub fn bignum_from_u128(&self, val: u128, negative: bool) -> ArenaResult<ArenaIndex> {
+        if val == 0 {
+            return self.number(0);
+        }
+        let mut limbs = [0u32; 4];
+        limbs[0] = val as u32;
+        limbs[1] = (val >> 32) as u32;
+        limbs[2] = (val >> 64) as u32;
+        limbs[3] = (val >> 96) as u32;
+        self.bignum_from_limbs(&limbs, negative)
+    }
+
+    /// Get bignum limbs as array. Returns (limbs, len, negative).
+    pub fn bignum_limbs(&self, idx: ArenaIndex) -> ArenaResult<([u32; 128], usize, bool)> {
+        match self.get(idx)? {
+            Value::BigNum { len, data, negative } => {
+                let mut limbs = [0u32; 128];
+                let n = if len > 128 { 128 } else { len };
+                for i in 0..n {
+                    let limb_idx = self.arena.index_at_offset(data, i)?;
+                    if let Value::Usize(v) = self.arena.get(limb_idx)? {
+                        limbs[i] = v as u32;
+                    }
+                }
+                Ok((limbs, n, negative))
+            }
+            Value::Number(n) => {
+                let mut limbs = [0u32; 128];
+                let negative = n < 0;
+                let abs_val = n.unsigned_abs() as u64;
+                limbs[0] = abs_val as u32;
+                limbs[1] = (abs_val >> 32) as u32;
+                let len = if limbs[1] > 0 { 2 } else { 1 };
+                Ok((limbs, len, negative))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
     
     /// Allocate a character
     pub fn char(&self, c: char) -> ArenaResult<ArenaIndex> {
