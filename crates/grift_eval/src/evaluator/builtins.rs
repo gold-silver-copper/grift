@@ -615,10 +615,56 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Symbolp => builtin_unary_pred!(self, args, |v: Value| v.is_symbol()),
             
-            Builtin::Add => self.numeric_fold(args, 0, 
-                |a, b| a.checked_add(b), 
-                |a, b| a + b,
-                call_expr),
+            Builtin::Add => {
+                // Handle zero-argument case (+) => 0
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(0).map_err(Into::into);
+                }
+                // Check if first argument is a BigNum - if so, use BigNum fold
+                let first_idx = self.lisp.car(args)?;
+                match self.lisp.get(first_idx)? {
+                    Value::BigNum { .. } => {
+                        // BigNum start: fold with addition
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                        let mut acc = crate::bignum::BigNumBuf::zero();
+                        acc.limbs[..len].copy_from_slice(&limbs[..len]);
+                        acc.len = len; acc.negative = neg;
+                        let mut current = self.lisp.cdr(args)?;
+                        while let Value::Cons { .. } = self.lisp.get(current)? {
+                            let elem = self.lisp.car(current)?;
+                            match self.lisp.get(elem)? {
+                                Value::Number(n) => {
+                                    let b = crate::bignum::BigNumBuf::from_isize(n);
+                                    acc = acc.add(&b);
+                                }
+                                Value::BigNum { .. } => {
+                                    let (bl, blen, bneg) = self.lisp.bignum_limbs(elem)?;
+                                    let mut bb = crate::bignum::BigNumBuf::zero();
+                                    bb.limbs[..blen].copy_from_slice(&bl[..blen]);
+                                    bb.len = blen; bb.negative = bneg;
+                                    acc = acc.add(&bb);
+                                }
+                                Value::Float(f) => {
+                                    let result = acc.to_f64() as fsize + f;
+                                    return self.lisp.float(result).map_err(Into::into);
+                                }
+                                v => return Err(self.type_error(call_expr, "number", v.type_name())),
+                            }
+                            current = self.lisp.cdr(current)?;
+                        }
+                        match acc.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&acc.limbs[..acc.len], acc.negative).map_err(Into::into),
+                        }
+                    }
+                    _ => {
+                        self.numeric_fold(args, 0, 
+                            |a, b| a.checked_add(b), 
+                            |a, b| a + b,
+                            call_expr)
+                    }
+                }
+            }
             
             Builtin::Sub => {
                 let first_idx = self.lisp.car(args)?;
@@ -626,10 +672,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(rest)?.is_nil() {
                     // Unary minus
                     match self.lisp.get(first_idx)? {
-                        Value::Number(n) => self.lisp.number(-n).map_err(Into::into),
+                        Value::Number(n) => {
+                            match n.checked_neg() {
+                                Some(neg) => self.lisp.number(neg).map_err(Into::into),
+                                None => {
+                                    // isize::MIN negation overflows
+                                    let buf = crate::bignum::BigNumBuf::from_isize(n).negate();
+                                    self.lisp.bignum_from_limbs(&buf.limbs[..buf.len], buf.negative).map_err(Into::into)
+                                }
+                            }
+                        }
                         Value::Float(f) => self.lisp.float(-f).map_err(Into::into),
                         Value::Rational { num, denom } => self.lisp.rational(-num, denom).map_err(Into::into),
                         Value::Complex { real, imag } => self.lisp.complex(-real, -imag).map_err(Into::into),
+                        Value::BigNum { .. } => {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len; buf.negative = neg;
+                            let result = buf.negate();
+                            match result.to_isize() {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                            }
+                        }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 } else {
@@ -641,18 +707,95 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 call_expr)
                         }
                         Value::Float(first) => {
-                            // Start with float accumulator
                             self.numeric_fold_float(rest, first, |a, b| a - b, call_expr)
                         }
                         Value::Rational { num, denom } => {
                             self.rational_fold_sub(rest, num, denom, call_expr)
+                        }
+                        Value::BigNum { .. } => {
+                            // BigNum start: fold with subtraction
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                            let mut acc = crate::bignum::BigNumBuf::zero();
+                            acc.limbs[..len].copy_from_slice(&limbs[..len]);
+                            acc.len = len; acc.negative = neg;
+                            let mut current = rest;
+                            while let Value::Cons { .. } = self.lisp.get(current)? {
+                                let elem = self.lisp.car(current)?;
+                                match self.lisp.get(elem)? {
+                                    Value::Number(n) => {
+                                        let b = crate::bignum::BigNumBuf::from_isize(n);
+                                        acc = acc.sub(&b);
+                                    }
+                                    Value::BigNum { .. } => {
+                                        let (bl, blen, bneg) = self.lisp.bignum_limbs(elem)?;
+                                        let mut bb = crate::bignum::BigNumBuf::zero();
+                                        bb.limbs[..blen].copy_from_slice(&bl[..blen]);
+                                        bb.len = blen; bb.negative = bneg;
+                                        acc = acc.sub(&bb);
+                                    }
+                                    Value::Float(f) => {
+                                        let result = acc.to_f64() as fsize - f;
+                                        return self.lisp.float(result).map_err(Into::into);
+                                    }
+                                    v => return Err(self.type_error(call_expr, "number", v.type_name())),
+                                }
+                                current = self.lisp.cdr(current)?;
+                            }
+                            match acc.to_isize() {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.bignum_from_limbs(&acc.limbs[..acc.len], acc.negative).map_err(Into::into),
+                            }
                         }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 }
             }
             
-            Builtin::Mul => self.numeric_fold_mul(args, call_expr),
+            Builtin::Mul => {
+                // Handle zero-argument case (*) => 1
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(1).map_err(Into::into);
+                }
+                // Check if first argument is a BigNum
+                let first_idx = self.lisp.car(args)?;
+                match self.lisp.get(first_idx)? {
+                    Value::BigNum { .. } => {
+                        // BigNum start: fold with multiplication
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                        let mut acc = crate::bignum::BigNumBuf::zero();
+                        acc.limbs[..len].copy_from_slice(&limbs[..len]);
+                        acc.len = len; acc.negative = neg;
+                        let mut current = self.lisp.cdr(args)?;
+                        while let Value::Cons { .. } = self.lisp.get(current)? {
+                            let elem = self.lisp.car(current)?;
+                            match self.lisp.get(elem)? {
+                                Value::Number(n) => {
+                                    let b = crate::bignum::BigNumBuf::from_isize(n);
+                                    acc = acc.mul(&b);
+                                }
+                                Value::BigNum { .. } => {
+                                    let (bl, blen, bneg) = self.lisp.bignum_limbs(elem)?;
+                                    let mut bb = crate::bignum::BigNumBuf::zero();
+                                    bb.limbs[..blen].copy_from_slice(&bl[..blen]);
+                                    bb.len = blen; bb.negative = bneg;
+                                    acc = acc.mul(&bb);
+                                }
+                                Value::Float(f) => {
+                                    let result = acc.to_f64() as fsize * f;
+                                    return self.lisp.float(result).map_err(Into::into);
+                                }
+                                v => return Err(self.type_error(call_expr, "number", v.type_name())),
+                            }
+                            current = self.lisp.cdr(current)?;
+                        }
+                        match acc.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&acc.limbs[..acc.len], acc.negative).map_err(Into::into),
+                        }
+                    }
+                    _ => self.numeric_fold_mul(args, call_expr),
+                }
+            }
             
             Builtin::Div => {
                 // Division: (/ n) => 1/n, (/ n m ...) => n/m/...
@@ -835,22 +978,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // and complex with zero imaginary and integer real (R7RS §6.2.5)
             Builtin::Integerp => {
                 builtin_unary_pred!(self, args, |v: Value| match v {
-                    Value::Number(_) => true,
+                    Value::Number(_) | Value::BigNum { .. } => true,
                     Value::Float(f) => f.is_finite() && f == (f as isize as fsize),
                     Value::Complex { real, imag } => imag == 0.0 && real.is_finite() && real == (real as isize as fsize),
                     _ => false,
                 })
             }
             
-            // exact? is true for integers (exact numbers)
-            Builtin::Exactp => builtin_numeric_pred!(self, args, call_expr, |_n| true, |_f| false),
+            // exact? is true for integers and rationals (exact numbers)
+            Builtin::Exactp => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::BigNum { .. } | Value::Rational { .. } => self.lisp.true_val().map_err(Into::into),
+                    Value::Float(_) | Value::Complex { .. } => self.lisp.false_val().map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Inexactp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |_f| true),
+            Builtin::Inexactp => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::BigNum { .. } | Value::Rational { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Float(_) | Value::Complex { .. } => self.lisp.true_val().map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
             Builtin::Finitep => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Number(_) | Value::Rational { .. } => self.lisp.true_val().map_err(Into::into),
+                    Value::Number(_) | Value::Rational { .. } | Value::BigNum { .. } => self.lisp.true_val().map_err(Into::into),
                     Value::Float(f) => self.lisp.boolean(f.is_finite()).map_err(Into::into),
                     Value::Complex { real, imag } => self.lisp.boolean(real.is_finite() && imag.is_finite()).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
@@ -860,7 +1017,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Infinitep => {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Number(_) | Value::Rational { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Number(_) | Value::Rational { .. } | Value::BigNum { .. } => self.lisp.false_val().map_err(Into::into),
                     Value::Float(f) => self.lisp.boolean(f.is_infinite()).map_err(Into::into),
                     Value::Complex { real, imag } => self.lisp.boolean(real.is_infinite() || imag.is_infinite()).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
@@ -891,6 +1048,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
                     Value::Rational { num, denom } => self.lisp.float(num as fsize / denom as fsize).map_err(Into::into),
                     Value::Complex { real, imag } => self.lisp.complex(real, imag).map_err(Into::into),
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(val)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        self.lisp.float(buf.to_f64() as fsize).map_err(Into::into)
+                    }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -3626,6 +3790,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Float(f) => Ok(f),
             Value::Rational { num, denom } => Ok(num as fsize / denom as fsize),
             Value::Complex { .. } => Err(self.type_error(call_expr, "real number", "complex")),
+            Value::BigNum { .. } => {
+                let (limbs, len, neg) = self.lisp.bignum_limbs(idx)?;
+                let mut buf = crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                Ok(buf.to_f64() as fsize)
+            }
             v => Err(self.type_error(call_expr, "number", v.type_name())),
         }
     }
@@ -3842,6 +4013,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 }
                             }
                         }
+                        Value::BigNum { .. } => {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(car)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len; buf.negative = neg;
+                            let big_f = buf.to_f64() as fsize;
+                            match state {
+                                2 => { acc_float = float_f(acc_float, big_f); }
+                                1 => {
+                                    acc_float = float_f(acc_num as fsize / acc_denom as fsize, big_f);
+                                    state = 2;
+                                }
+                                _ => {
+                                    acc_float = float_f(acc_int as fsize, big_f);
+                                    state = 2;
+                                }
+                            }
+                        }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
                     current = cdr;
@@ -3928,18 +4117,58 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let real_idx = self.lisp.float(real)?;
                 self.nums_equal(a, real_idx, _call_expr)
             }
+            // BigNum comparisons
+            (Value::BigNum { .. }, Value::BigNum { .. }) => {
+                let (la, lena, nega) = self.lisp.bignum_limbs(a)?;
+                let (lb, lenb, negb) = self.lisp.bignum_limbs(b)?;
+                if lena != lenb || nega != negb { return Ok(false); }
+                Ok(la[..lena] == lb[..lenb])
+            }
+            (Value::BigNum { .. }, Value::Number(n)) | (Value::Number(n), Value::BigNum { .. }) => {
+                let big_idx = if matches!(va, Value::BigNum { .. }) { a } else { b };
+                let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
+                let mut buf = crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                match buf.to_isize() {
+                    Some(v) => Ok(v == n),
+                    None => Ok(false),
+                }
+            }
+            (Value::BigNum { .. }, Value::Float(f)) | (Value::Float(f), Value::BigNum { .. }) => {
+                let big_idx = if matches!(va, Value::BigNum { .. }) { a } else { b };
+                let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
+                let mut buf = crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                Ok(buf.to_f64() as fsize == f)
+            }
             _ => {
                 // Fall back to fsize comparison for rational vs int/float
                 let fa = match va {
                     Value::Number(n) => n as fsize,
                     Value::Float(f) => f,
                     Value::Rational { num, denom } => num as fsize / denom as fsize,
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(a)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        buf.to_f64() as fsize
+                    }
                     _ => return Ok(false),
                 };
                 let fb = match vb {
                     Value::Number(n) => n as fsize,
                     Value::Float(f) => f,
                     Value::Rational { num, denom } => num as fsize / denom as fsize,
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(b)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        buf.to_f64() as fsize
+                    }
                     _ => return Ok(false),
                 };
                 Ok(fa == fb)
@@ -4054,6 +4283,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                             state = 2;
                                         }
                                     }
+                                }
+                            }
+                        }
+                        Value::BigNum { .. } => {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(car)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len; buf.negative = neg;
+                            let big_f = buf.to_f64() as fsize;
+                            match state {
+                                2 => { acc_float *= big_f; }
+                                1 => {
+                                    acc_float = (acc_num as fsize / acc_denom as fsize) * big_f;
+                                    state = 2;
+                                }
+                                _ => {
+                                    acc_float = acc_int as fsize * big_f;
+                                    state = 2;
                                 }
                             }
                         }
