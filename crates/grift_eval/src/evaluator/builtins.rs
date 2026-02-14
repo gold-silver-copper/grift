@@ -1064,13 +1064,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(val)? {
                     Value::Number(n) => self.lisp.number(n).map_err(Into::into),
                     Value::Float(f) => {
-                        if f.is_finite() {
-                            self.lisp.number(f as isize).map_err(Into::into)
-                        } else {
-                            Err(self.type_error(call_expr, "finite number", "infinite or nan"))
+                        if !f.is_finite() {
+                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
                         }
+                        // Check if it's an integer
+                        let trunc = libm::trunc(f as f64) as fsize;
+                        if f == trunc && libm::fabs(f as f64) < isize::MAX as f64 {
+                            return self.lisp.number(f as isize).map_err(Into::into);
+                        }
+                        // Convert float to exact rational using continued fraction
+                        let (num_f, denom_f) = float_to_rational(f as f64);
+                        self.lisp.rational(num_f as isize, denom_f as isize).map_err(Into::into)
                     }
                     Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
+                    Value::BigNum { .. } => Ok(val), // already exact
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -3340,15 +3347,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             Builtin::Rationalize => {
-                let x = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let first_arg = self.lisp.car(args)?;
+                let x = self.get_num_as_fsize(first_arg, call_expr)?;
                 let tol = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 let (num, den) = rationalize_impl(x as f64, libm::fabs(tol as f64));
-                if den == 1.0 {
-                    let both_exact = matches!(self.lisp.get(self.lisp.car(args)?)?, Value::Number(_));
-                    if both_exact {
+                // Check if both arguments are exact
+                let first_exact = match self.lisp.get(first_arg)? {
+                    Value::Number(_) | Value::Rational { .. } | Value::BigNum { .. } => true,
+                    _ => false,
+                };
+                if first_exact {
+                    // Return exact result
+                    if den == 1.0 {
                         self.lisp.number(num as isize).map_err(Into::into)
                     } else {
-                        self.lisp.float(num as fsize).map_err(Into::into)
+                        self.lisp.rational(num as isize, den as isize).map_err(Into::into)
                     }
                 } else {
                     self.lisp.float((num / den) as fsize).map_err(Into::into)
