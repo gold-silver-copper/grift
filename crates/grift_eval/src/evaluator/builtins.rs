@@ -673,6 +673,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Complex { real, imag } => {
                             // 1/(a+bi) = (a-bi)/(a²+b²)
                             let denom = real * real + imag * imag;
+                            if denom == 0.0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
                             self.lisp.complex(real / denom, -imag / denom).map_err(Into::into)
                         }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
