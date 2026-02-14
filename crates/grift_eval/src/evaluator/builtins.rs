@@ -1069,7 +1069,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         // Check if it's an integer
                         let trunc = libm::trunc(f as f64) as fsize;
-                        if f == trunc && libm::fabs(f as f64) < isize::MAX as f64 {
+                        if f == trunc && libm::fabs(f as f64) <= isize::MAX as f64 {
                             return self.lisp.number(f as isize).map_err(Into::into);
                         }
                         // Convert float to exact rational using continued fraction

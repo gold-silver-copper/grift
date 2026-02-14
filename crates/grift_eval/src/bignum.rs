@@ -528,8 +528,7 @@ fn bignum_long_division(u: &BigNumBuf, v: &BigNumBuf) -> (BigNumBuf, BigNumBuf) 
     }
     remainder.len = n;
     remainder.trim();
-    let remainder = remainder.shr(shift);
-    let mut remainder = remainder;
+    let mut remainder = remainder.shr(shift);
     remainder.negative = u.negative;
     remainder.trim();
 
