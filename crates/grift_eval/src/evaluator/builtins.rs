@@ -2259,15 +2259,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.void_val().map_err(Into::into)
             }
 
-            Builtin::Write | Builtin::WriteShared | Builtin::WriteSimple => {
-                // (write obj [port]) / (write-shared obj [port]) / (write-simple obj [port])
-                // In this implementation, all behave identically since we don't
-                // have circular structures.
+            Builtin::WriteSimple => {
+                // (write-simple obj [port]) - no datum labels
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
                 let has_port = !self.lisp.get(rest)?.is_nil();
                 if has_port {
-                    // (write obj port) - write to specific port via I/O provider
                     let pid = self.extract_output_port(rest, call_expr)?;
                     if let Some(ref mut io) = self.io {
                         let dv = grift_parser::DisplayValue::new(val, self.lisp);
@@ -2279,15 +2276,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                 } else if let Some(callback) = self.output_callback {
-                    // (write obj) with callback - pass value to callback
                     callback(self.lisp, val);
                 } else if let Some(ref mut io) = self.io {
-                    // (write obj) without callback - write to current output port
                     let pid = self.current_output_port;
                     let dv = grift_parser::DisplayValue::new(val, self.lisp);
                     let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
                     use core::fmt::Write;
                     let _ = write!(writer, "{}", dv);
+                    if writer.error {
+                        return Err(self.make_error(ErrorKind::Generic, call_expr));
+                    }
+                }
+                self.lisp.void_val().map_err(Into::into)
+            }
+
+            Builtin::Write | Builtin::WriteShared => {
+                // (write obj [port]) - datum labels for circular structures
+                // (write-shared obj [port]) - datum labels for all shared structures
+                let shared_mode = matches!(builtin, Builtin::WriteShared);
+                let val = self.lisp.car(args)?;
+                let rest = self.lisp.cdr(args)?;
+                let has_port = !self.lisp.get(rest)?.is_nil();
+                if has_port {
+                    let pid = self.extract_output_port(rest, call_expr)?;
+                    if let Some(ref mut io) = self.io {
+                        let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                        write_with_labels(self.lisp, val, &mut writer, shared_mode);
+                        if writer.error {
+                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                        }
+                    }
+                } else if let Some(callback) = self.output_callback {
+                    callback(self.lisp, val);
+                } else if let Some(ref mut io) = self.io {
+                    let pid = self.current_output_port;
+                    let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                    write_with_labels(self.lisp, val, &mut writer, shared_mode);
                     if writer.error {
                         return Err(self.make_error(ErrorKind::Generic, call_expr));
                     }
@@ -5307,6 +5331,359 @@ impl core::fmt::Write for IoPortWriter<'_> {
             Ok(())
         }
     }
+}
+
+// ============================================================================
+// Write with datum labels (R7RS §6.13.3)
+// ============================================================================
+
+/// Maximum number of trackable cons cells for shared/circular detection.
+/// When exceeded, additional nodes are silently ignored (no labels emitted).
+const MAX_TRACKED_NODES: usize = 256;
+
+/// Maximum write depth to prevent stack overflow on deep structures.
+const MAX_WRITE_DEPTH: usize = 100;
+
+/// Maximum list elements to write before truncating.
+const MAX_WRITE_LIST_ELEMENTS: usize = 100;
+
+/// Entry in the node tracker. Nodes not present in the tracker are unseen.
+/// `count` tracks how many times a node has been visited during scanning.
+/// After label assignment, `label >= 0` means this node gets a datum label.
+#[derive(Clone, Copy)]
+struct TrackerEntry {
+    raw: usize,
+    count: u16,
+    label: i16, // -1 = no label, >= 0 = assigned label number
+    emitted: bool,
+}
+
+/// Fixed-size tracker for detecting shared/circular cons cells.
+struct NodeTracker {
+    entries: [TrackerEntry; MAX_TRACKED_NODES],
+    len: usize,
+}
+
+impl NodeTracker {
+    fn new() -> Self {
+        NodeTracker {
+            entries: [TrackerEntry { raw: 0, count: 0, label: -1, emitted: false }; MAX_TRACKED_NODES],
+            len: 0,
+        }
+    }
+
+    /// Find index of entry for given ArenaIndex, or None.
+    fn find(&self, idx: ArenaIndex) -> Option<usize> {
+        let raw = idx.raw();
+        for i in 0..self.len {
+            if self.entries[i].raw == raw {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Record a visit to a node. Returns the count after this visit.
+    fn visit(&mut self, idx: ArenaIndex) -> u16 {
+        let raw = idx.raw();
+        if let Some(i) = self.find(idx) {
+            if self.entries[i].count < u16::MAX {
+                self.entries[i].count += 1;
+            }
+            return self.entries[i].count;
+        }
+        if self.len < MAX_TRACKED_NODES {
+            self.entries[self.len] = TrackerEntry { raw, count: 1, label: -1, emitted: false };
+            self.len += 1;
+        }
+        1
+    }
+
+    /// Mark a node as needing a datum label.
+    fn mark_labeled(&mut self, idx: ArenaIndex, label: i16) {
+        if let Some(i) = self.find(idx) {
+            self.entries[i].label = label;
+        }
+    }
+
+    /// Get the label for a node, or -1 if none.
+    fn get_label(&self, idx: ArenaIndex) -> i16 {
+        if let Some(i) = self.find(idx) {
+            self.entries[i].label
+        } else {
+            -1
+        }
+    }
+
+    /// Check if this node's label has been emitted (first occurrence written).
+    fn is_emitted(&self, idx: ArenaIndex) -> bool {
+        if let Some(i) = self.find(idx) {
+            self.entries[i].emitted
+        } else {
+            false
+        }
+    }
+
+    /// Mark a node's label as emitted.
+    fn set_emitted(&mut self, idx: ArenaIndex) {
+        if let Some(i) = self.find(idx) {
+            self.entries[i].emitted = true;
+        }
+    }
+}
+
+/// Phase 1 for `write-shared`: count all cons cell occurrences.
+fn scan_shared<const N: usize>(
+    lisp: &grift_parser::Lisp<N>,
+    idx: ArenaIndex,
+    tracker: &mut NodeTracker,
+) {
+    match lisp.get(idx) {
+        Ok(Value::Cons { .. }) => {
+            let count = tracker.visit(idx);
+            if count > 1 {
+                return; // already visited, don't recurse again
+            }
+            if let Ok((car, cdr)) = lisp.car_cdr(idx) {
+                scan_shared(lisp, car, tracker);
+                scan_shared(lisp, cdr, tracker);
+            }
+        }
+        Ok(Value::Array { len, .. }) => {
+            for i in 0..len {
+                if let Ok(elem) = lisp.array_get(idx, i) {
+                    scan_shared(lisp, elem, tracker);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Phase 1 for `write`: detect circular cons cells using DFS with "in-progress" marking.
+/// Uses a separate stack-based tracker for the "currently on stack" set.
+fn scan_circular<const N: usize>(
+    lisp: &grift_parser::Lisp<N>,
+    idx: ArenaIndex,
+    tracker: &mut NodeTracker,
+    on_stack: &mut [usize; MAX_TRACKED_NODES],
+    on_stack_len: &mut usize,
+) {
+    match lisp.get(idx) {
+        Ok(Value::Cons { .. }) => {
+            let raw = idx.raw();
+            // Check if on current DFS stack (circular)
+            for i in 0..*on_stack_len {
+                if on_stack[i] == raw {
+                    // Found cycle - mark this node
+                    tracker.visit(idx);
+                    tracker.visit(idx); // count=2 to flag as shared
+                    return;
+                }
+            }
+            // Check if already fully visited
+            if let Some(i) = tracker.find(idx) {
+                if tracker.entries[i].count > 0 {
+                    return; // already explored this subtree
+                }
+            }
+            // Mark as visited and push onto stack
+            tracker.visit(idx);
+            if *on_stack_len < MAX_TRACKED_NODES {
+                on_stack[*on_stack_len] = raw;
+                *on_stack_len += 1;
+            }
+            if let Ok((car, cdr)) = lisp.car_cdr(idx) {
+                scan_circular(lisp, car, tracker, on_stack, on_stack_len);
+                scan_circular(lisp, cdr, tracker, on_stack, on_stack_len);
+            }
+            // Pop from stack
+            if *on_stack_len > 0 {
+                *on_stack_len -= 1;
+            }
+        }
+        Ok(Value::Array { len, .. }) => {
+            for i in 0..len {
+                if let Ok(elem) = lisp.array_get(idx, i) {
+                    scan_circular(lisp, elem, tracker, on_stack, on_stack_len);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Phase 2: assign datum labels to nodes that need them (count > 1).
+fn assign_labels(tracker: &mut NodeTracker) {
+    let mut next_label: i16 = 0;
+    for i in 0..tracker.len {
+        if tracker.entries[i].count > 1 {
+            tracker.entries[i].label = next_label;
+            next_label += 1;
+        }
+    }
+}
+
+/// Phase 3: write value with datum labels.
+fn write_value_labeled<const N: usize, W: core::fmt::Write>(
+    lisp: &grift_parser::Lisp<N>,
+    idx: ArenaIndex,
+    w: &mut W,
+    tracker: &mut NodeTracker,
+    depth: usize,
+) {
+    if depth > MAX_WRITE_DEPTH {
+        let _ = w.write_str("...");
+        return;
+    }
+    match lisp.get(idx) {
+        Ok(Value::Cons { .. }) => {
+            let label = tracker.get_label(idx);
+            if label >= 0 {
+                if tracker.is_emitted(idx) {
+                    // Back-reference
+                    let _ = w.write_str("#");
+                    write_usize(w, label as usize);
+                    let _ = w.write_str("#");
+                    return;
+                }
+                // First occurrence - emit definition
+                tracker.set_emitted(idx);
+                let _ = w.write_str("#");
+                write_usize(w, label as usize);
+                let _ = w.write_str("=");
+            }
+            let _ = w.write_str("(");
+            write_list_labeled(lisp, idx, w, tracker, depth + 1);
+            let _ = w.write_str(")");
+        }
+        Ok(Value::Array { len, .. }) => {
+            let _ = w.write_str("#(");
+            for i in 0..len {
+                if i > 0 {
+                    let _ = w.write_str(" ");
+                }
+                if let Ok(elem) = lisp.array_get(idx, i) {
+                    write_value_labeled(lisp, elem, w, tracker, depth + 1);
+                }
+            }
+            let _ = w.write_str(")");
+        }
+        _ => {
+            // Non-composite values: delegate to DisplayValue
+            let dv = grift_parser::DisplayValue::new(idx, lisp);
+            let _ = core::fmt::write(w, format_args!("{}", dv));
+        }
+    }
+}
+
+/// Write list contents with datum label awareness.
+fn write_list_labeled<const N: usize, W: core::fmt::Write>(
+    lisp: &grift_parser::Lisp<N>,
+    mut idx: ArenaIndex,
+    w: &mut W,
+    tracker: &mut NodeTracker,
+    depth: usize,
+) {
+    let mut first = true;
+    let mut count = 0;
+    loop {
+        if count > MAX_WRITE_LIST_ELEMENTS {
+            let _ = w.write_str(" ...");
+            return;
+        }
+        match lisp.get(idx) {
+            Ok(Value::Nil) => return,
+            Ok(Value::Cons { .. }) => {
+                if !first {
+                    // Check if this cdr cons has a label (shared/circular reference)
+                    let label = tracker.get_label(idx);
+                    if label >= 0 {
+                        if tracker.is_emitted(idx) {
+                            // Back-reference to already-emitted cons
+                            let _ = w.write_str(" . ");
+                            let _ = w.write_str("#");
+                            write_usize(w, label as usize);
+                            let _ = w.write_str("#");
+                            return;
+                        }
+                        // First occurrence in cdr position - emit with label
+                        let _ = w.write_str(" . ");
+                        tracker.set_emitted(idx);
+                        let _ = w.write_str("#");
+                        write_usize(w, label as usize);
+                        let _ = w.write_str("=");
+                        let _ = w.write_str("(");
+                        write_list_labeled(lisp, idx, w, tracker, depth);
+                        let _ = w.write_str(")");
+                        return;
+                    }
+                    let _ = w.write_str(" ");
+                }
+                first = false;
+                if let Ok((car, cdr)) = lisp.car_cdr(idx) {
+                    write_value_labeled(lisp, car, w, tracker, depth);
+                    idx = cdr;
+                } else {
+                    return;
+                }
+                count += 1;
+            }
+            Ok(_) => {
+                // Improper list
+                let _ = w.write_str(" . ");
+                write_value_labeled(lisp, idx, w, tracker, depth);
+                return;
+            }
+            Err(_) => {
+                let _ = w.write_str(" . #<error>");
+                return;
+            }
+        }
+    }
+}
+
+/// Write a usize as decimal digits (20-digit buffer suffices for u64::MAX).
+fn write_usize<W: core::fmt::Write>(w: &mut W, mut n: usize) {
+    if n == 0 {
+        let _ = w.write_str("0");
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut len = 0;
+    while n > 0 {
+        digits[len] = (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    for i in (0..len).rev() {
+        let _ = w.write_str(match digits[i] {
+            0 => "0", 1 => "1", 2 => "2", 3 => "3", 4 => "4",
+            5 => "5", 6 => "6", 7 => "7", 8 => "8", _ => "9",
+        });
+    }
+}
+
+/// Top-level: write a value with datum labels for shared/circular structures.
+fn write_with_labels<const N: usize, W: core::fmt::Write>(
+    lisp: &grift_parser::Lisp<N>,
+    idx: ArenaIndex,
+    w: &mut W,
+    shared_mode: bool,
+) {
+    let mut tracker = NodeTracker::new();
+    // Phase 1: scan for shared/circular structures
+    if shared_mode {
+        scan_shared(lisp, idx, &mut tracker);
+    } else {
+        let mut on_stack = [0usize; MAX_TRACKED_NODES];
+        let mut on_stack_len = 0usize;
+        scan_circular(lisp, idx, &mut tracker, &mut on_stack, &mut on_stack_len);
+    }
+    // Phase 2: assign labels to nodes seen more than once
+    assign_labels(&mut tracker);
+    // Phase 3: write with labels
+    write_value_labeled(lisp, idx, w, &mut tracker, 0);
 }
 
 // ============================================================================
