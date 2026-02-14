@@ -5,6 +5,7 @@
 
 use grift_arena::{ArenaIndex, ArenaError};
 use grift_core::Value;
+use grift_core::{LIMB_BITS, MAX_LIMBS};
 use crate::Lisp;
 use crate::lexer::{Lexer, Token, LexError, LexErrorKind};
 
@@ -189,8 +190,7 @@ impl<'a> Parser<'a> {
                 // Parse decimal digit bytes into BigNum limbs
                 let digits = self.lexer.input_slice(start, len);
                 // Convert decimal digits to base-2^LIMB_BITS limbs
-                let limb_bits: u32 = core::mem::size_of::<usize>() as u32 * 8;
-                let mut limbs = [0usize; 128];
+                let mut limbs = [0usize; MAX_LIMBS];
                 let mut limb_count: usize = 0;
                 // Start with zero, multiply by 10 and add each digit
                 for &d in digits {
@@ -201,9 +201,9 @@ impl<'a> Parser<'a> {
                     for i in 0..limb_count {
                         let v = limbs[i] as u128 * 10 + carry;
                         limbs[i] = v as usize;
-                        carry = v >> limb_bits;
+                        carry = v >> LIMB_BITS;
                     }
-                    if carry > 0 && limb_count < 128 {
+                    if carry > 0 && limb_count < MAX_LIMBS {
                         limbs[limb_count] = carry as usize;
                         limb_count += 1;
                     }

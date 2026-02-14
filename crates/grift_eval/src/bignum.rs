@@ -3,11 +3,7 @@
 //! All operations work on usize limbs in little-endian order (least significant first).
 //! Base is 2^LIMB_BITS. No heap allocation - uses fixed-size stack arrays.
 
-/// Maximum number of limbs supported (128 limbs = 4096 bits)
-pub const MAX_LIMBS: usize = 128;
-
-/// Number of bits per limb (depends on pointer width).
-pub const LIMB_BITS: u32 = core::mem::size_of::<usize>() as u32 * 8;
+use grift_parser::{LIMB_BITS, MAX_LIMBS};
 
 /// Maximum value that fits in a single limb.
 const LIMB_MAX: u128 = (1u128 << LIMB_BITS) - 1;
