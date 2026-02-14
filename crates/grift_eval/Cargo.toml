@@ -9,18 +9,11 @@ documentation = "https://docs.rs/grift_eval"
 keywords = ["evaluator", "lisp", "scheme", "no_std", "embedded"]
 categories = ["no-std", "development-tools", "embedded"]
 
-[features]
-default = []
-alloc = ["dep:icu_casemap", "dep:icu_properties", "dep:icu_locale_core", "dep:writeable"]
-
 [dependencies]
 grift_arena = { workspace = true }
 grift_parser = { workspace = true }
+grift_unicode = { workspace = true }
 libm = "0.2"
-icu_casemap = { version = "2.1", default-features = false, features = ["compiled_data"], optional = true }
-icu_properties = { version = "2.1", default-features = false, features = ["compiled_data"], optional = true }
-icu_locale_core = { version = "2.1", default-features = false, optional = true }
-writeable = { version = "0.6", default-features = false, optional = true }
 
 [dev-dependencies]
 grift_std = { workspace = true }

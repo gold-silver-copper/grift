@@ -16,65 +16,6 @@ use crate::{
 
 use super::Evaluator;
 
-/// Collects characters written through `core::fmt::Write` into a small fixed buffer.
-/// Used to capture the output of ICU4X full case mapping operations (fold, uppercase, lowercase).
-/// The Unicode standard guarantees no single character expands to more than 3 characters
-/// under any case mapping operation.
-#[cfg(feature = "alloc")]
-struct CaseMapCollector {
-    chars: [char; 3],
-    len: usize,
-}
-
-#[cfg(feature = "alloc")]
-impl CaseMapCollector {
-    fn new() -> Self {
-        CaseMapCollector {
-            chars: ['\0'; 3],
-            len: 0,
-        }
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl core::fmt::Write for CaseMapCollector {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for c in s.chars() {
-            if self.len < 3 {
-                self.chars[self.len] = c;
-                self.len += 1;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// ASCII-only uppercase conversion (fallback when `alloc` feature is disabled).
-#[cfg(not(feature = "alloc"))]
-fn ascii_upcase(c: char) -> char {
-    if c.is_ascii_lowercase() {
-        (c as u8 - b'a' + b'A') as char
-    } else {
-        c
-    }
-}
-
-/// ASCII-only lowercase conversion (fallback when `alloc` feature is disabled).
-#[cfg(not(feature = "alloc"))]
-fn ascii_downcase(c: char) -> char {
-    if c.is_ascii_uppercase() {
-        (c as u8 - b'A' + b'a') as char
-    } else {
-        c
-    }
-}
-
-/// ASCII-only case folding (lowercase, fallback when `alloc` feature is disabled).
-#[cfg(not(feature = "alloc"))]
-fn ascii_foldcase(c: char) -> char {
-    ascii_downcase(c)
-}
-
 impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn apply_builtin_with_args(&mut self, builtin: Builtin, args_expr: ArenaIndex, env: EnvRef, call_expr: ArenaIndex) 
         -> Result<Option<TrampolineState>, EvalError> 
@@ -131,81 +72,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn apply_builtin_trampolined(&mut self, builtin: Builtin, args: ArenaIndex, call_expr: ArenaIndex) 
         -> Result<TrampolineState, EvalError> 
     {
-        // Special handling for error - creates error object and raises through exception system
-        if matches!(builtin, Builtin::Error) {
-            return self.apply_error_builtin(args, call_expr);
-        }
-        
-        // Special handling for load - reads file and evaluates all expressions
-        if matches!(builtin, Builtin::Load) {
-            return self.apply_load_builtin(args, call_expr);
-        }
-        
-        // Special handling for vector-map - needs to apply proc via trampolining
-        if matches!(builtin, Builtin::VectorMap) {
-            return self.apply_vector_map(args, call_expr);
-        }
-        
-        // Special handling for vector-for-each - needs to apply proc via trampolining
-        if matches!(builtin, Builtin::VectorForEach) {
-            return self.apply_vector_for_each(args, call_expr);
-        }
-
-        // call-with-input-file / call-with-output-file — open port, apply proc, close port
-        if matches!(builtin, Builtin::CallWithInputFile | Builtin::CallWithOutputFile) {
-            return self.apply_call_with_file(builtin, args, call_expr);
-        }
-
-        // call-with-port — apply proc to port, close port when done
-        if matches!(builtin, Builtin::CallWithPort) {
-            return self.apply_call_with_port(args, call_expr);
-        }
-
-        // with-input-from-file / with-output-to-file — redirect current port, call thunk, restore
-        if matches!(builtin, Builtin::WithInputFromFile | Builtin::WithOutputToFile) {
-            return self.apply_with_file(builtin, args, call_expr);
-        }
-
-        // First-class procedure builtins (R7RS requires these to be values)
-        if matches!(builtin, Builtin::Values) {
-            // (values v ...) — return args list as multi-value result
-            // R7RS: (values x) with a single value is equivalent to x
-            if let Value::Cons { .. } = self.lisp.get(args)? {
-                let rest = self.lisp.cdr(args)?;
-                if self.lisp.get(rest)?.is_nil() {
-                    // Single value — return it directly
-                    let single = self.lisp.car(args)?;
-                    return Ok(TrampolineState::Return { val: single });
+        match builtin {
+            Builtin::Error => return self.apply_error_builtin(args, call_expr),
+            Builtin::Load => return self.apply_load_builtin(args, call_expr),
+            Builtin::VectorMap => return self.apply_vector_map(args, call_expr),
+            Builtin::VectorForEach => return self.apply_vector_for_each(args, call_expr),
+            Builtin::CallWithInputFile | Builtin::CallWithOutputFile =>
+                return self.apply_call_with_file(builtin, args, call_expr),
+            Builtin::CallWithPort => return self.apply_call_with_port(args, call_expr),
+            Builtin::WithInputFromFile | Builtin::WithOutputToFile =>
+                return self.apply_with_file(builtin, args, call_expr),
+            Builtin::Values => {
+                if let Value::Cons { .. } = self.lisp.get(args)? {
+                    let rest = self.lisp.cdr(args)?;
+                    if self.lisp.get(rest)?.is_nil() {
+                        let single = self.lisp.car(args)?;
+                        return Ok(TrampolineState::Return { val: single });
+                    }
                 }
+                return Ok(TrampolineState::Return { val: args });
             }
-            return Ok(TrampolineState::Return { val: args });
-        }
-        if matches!(builtin, Builtin::Apply) {
-            return self.apply_apply_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::CallWithValues) {
-            return self.apply_call_with_values_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::CallCc | Builtin::CallWithCurrentContinuation) {
-            return self.apply_call_cc_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::DynamicWind) {
-            return self.apply_dynamic_wind_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::WithExceptionHandler) {
-            return self.apply_with_exception_handler_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::RaiseBuiltin) {
-            return self.apply_raise_builtin(args, call_expr, false);
-        }
-        if matches!(builtin, Builtin::RaiseContinuable) {
-            return self.apply_raise_builtin(args, call_expr, true);
-        }
-        if matches!(builtin, Builtin::EvalBuiltin) {
-            return self.apply_eval_builtin(args, call_expr);
-        }
-        if matches!(builtin, Builtin::EnvironmentBuiltin) {
-            return self.apply_environment_builtin(args, call_expr);
+            Builtin::Apply => return self.apply_apply_builtin(args, call_expr),
+            Builtin::CallWithValues => return self.apply_call_with_values_builtin(args, call_expr),
+            Builtin::CallCc | Builtin::CallWithCurrentContinuation =>
+                return self.apply_call_cc_builtin(args, call_expr),
+            Builtin::DynamicWind => return self.apply_dynamic_wind_builtin(args, call_expr),
+            Builtin::WithExceptionHandler =>
+                return self.apply_with_exception_handler_builtin(args, call_expr),
+            Builtin::RaiseBuiltin => return self.apply_raise_builtin(args, call_expr, false),
+            Builtin::RaiseContinuable => return self.apply_raise_builtin(args, call_expr, true),
+            Builtin::EvalBuiltin => return self.apply_eval_builtin(args, call_expr),
+            Builtin::EnvironmentBuiltin => return self.apply_environment_builtin(args, call_expr),
+            _ => {}
         }
         
         // In strict evaluation, args are already evaluated values
@@ -299,7 +197,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let packed = self.lisp.cons(proc, d1)?;
         self.cont(ContType::VectorMapStep, EnvRef(env)).data1(packed)?;
         
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
     
@@ -326,7 +224,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let packed = self.lisp.cons(proc, d1)?;
         self.cont(ContType::VectorForEachStep, EnvRef(env)).data1(packed)?;
         
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(first_args, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(first_args, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -366,7 +264,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list = self.lisp.cons(port_val, nil)?;
 
         // Apply proc to the port
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -396,7 +294,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let args_list = self.lisp.cons(port_val, nil)?;
 
         // Apply proc to the port
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -469,7 +367,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let new_call = self.lisp.cons(func, args_list)?;
         self.push_frame(new_call, func)?;
         let env = self.global_env.0;
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, new_call)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, new_call)?;
         Ok(TrampolineState::Return { val: func })
     }
 
@@ -542,7 +440,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let cont_args = self.lisp.cons(captured_continuation, nil)?;
         let call = self.lisp.cons(proc, cont_args)?;
         self.push_frame(call, proc)?;
-        self.cont(ContType::ApplyForced, EnvRef(env)).data3(cont_args, env, call)?;
+        self.cont(ContType::ApplyDirect, EnvRef(env)).data3(cont_args, env, call)?;
         Ok(TrampolineState::Return { val: proc })
     }
 
@@ -601,9 +499,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.exception_handler_chain = self.lisp.cons(handler, saved_chain)?;
 
         let true_val = self.lisp.true_val()?;
+        let nil = self.lisp.nil()?;
         let global = self.global_env;
         self.cont(ContType::ExceptionHandlerFrame, global)
-            .data3(handler, saved_chain, true_val)?;
+            .data4(nil, saved_chain, true_val, nil)?;
 
         match self.apply_thunk(thunk, self.global_env)? {
             Some(state) => Ok(state),
@@ -716,10 +615,56 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Symbolp => builtin_unary_pred!(self, args, |v: Value| v.is_symbol()),
             
-            Builtin::Add => self.numeric_fold(args, 0, 
-                |a, b| a.checked_add(b), 
-                |a, b| a + b,
-                call_expr),
+            Builtin::Add => {
+                // Handle zero-argument case (+) => 0
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(0).map_err(Into::into);
+                }
+                // Check if first argument is a BigNum - if so, use BigNum fold
+                let first_idx = self.lisp.car(args)?;
+                match self.lisp.get(first_idx)? {
+                    Value::BigNum { .. } => {
+                        // BigNum start: fold with addition
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                        let mut acc = crate::bignum::BigNumBuf::zero();
+                        acc.limbs[..len].copy_from_slice(&limbs[..len]);
+                        acc.len = len; acc.negative = neg;
+                        let mut current = self.lisp.cdr(args)?;
+                        while let Value::Cons { .. } = self.lisp.get(current)? {
+                            let elem = self.lisp.car(current)?;
+                            match self.lisp.get(elem)? {
+                                Value::Number(n) => {
+                                    let b = crate::bignum::BigNumBuf::from_isize(n);
+                                    acc = acc.add(&b);
+                                }
+                                Value::BigNum { .. } => {
+                                    let (bl, blen, bneg) = self.lisp.bignum_limbs(elem)?;
+                                    let mut bb = crate::bignum::BigNumBuf::zero();
+                                    bb.limbs[..blen].copy_from_slice(&bl[..blen]);
+                                    bb.len = blen; bb.negative = bneg;
+                                    acc = acc.add(&bb);
+                                }
+                                Value::Float(f) => {
+                                    let result = acc.to_f64() as fsize + f;
+                                    return self.lisp.float(result).map_err(Into::into);
+                                }
+                                v => return Err(self.type_error(call_expr, "number", v.type_name())),
+                            }
+                            current = self.lisp.cdr(current)?;
+                        }
+                        match acc.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&acc.limbs[..acc.len], acc.negative).map_err(Into::into),
+                        }
+                    }
+                    _ => {
+                        self.numeric_fold(args, 0, 
+                            |a, b| a.checked_add(b), 
+                            |a, b| a + b,
+                            call_expr)
+                    }
+                }
+            }
             
             Builtin::Sub => {
                 let first_idx = self.lisp.car(args)?;
@@ -727,8 +672,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.get(rest)?.is_nil() {
                     // Unary minus
                     match self.lisp.get(first_idx)? {
-                        Value::Number(n) => self.lisp.number(-n).map_err(Into::into),
+                        Value::Number(n) => {
+                            match n.checked_neg() {
+                                Some(neg) => self.lisp.number(neg).map_err(Into::into),
+                                None => {
+                                    // isize::MIN negation overflows
+                                    let buf = crate::bignum::BigNumBuf::from_isize(n).negate();
+                                    self.lisp.bignum_from_limbs(&buf.limbs[..buf.len], buf.negative).map_err(Into::into)
+                                }
+                            }
+                        }
                         Value::Float(f) => self.lisp.float(-f).map_err(Into::into),
+                        Value::Rational { num, denom } => self.lisp.rational(-num, denom).map_err(Into::into),
+                        Value::Complex { real, imag } => self.lisp.complex(-real, -imag).map_err(Into::into),
+                        Value::BigNum { .. } => {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len; buf.negative = neg;
+                            let result = buf.negate();
+                            match result.to_isize() {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                            }
+                        }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 } else {
@@ -740,34 +707,133 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 call_expr)
                         }
                         Value::Float(first) => {
-                            // Start with float accumulator
                             self.numeric_fold_float(rest, first, |a, b| a - b, call_expr)
+                        }
+                        Value::Rational { num, denom } => {
+                            self.rational_fold_sub(rest, num, denom, call_expr)
+                        }
+                        Value::BigNum { .. } => {
+                            // BigNum start: fold with subtraction
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                            let mut acc = crate::bignum::BigNumBuf::zero();
+                            acc.limbs[..len].copy_from_slice(&limbs[..len]);
+                            acc.len = len; acc.negative = neg;
+                            let mut current = rest;
+                            while let Value::Cons { .. } = self.lisp.get(current)? {
+                                let elem = self.lisp.car(current)?;
+                                match self.lisp.get(elem)? {
+                                    Value::Number(n) => {
+                                        let b = crate::bignum::BigNumBuf::from_isize(n);
+                                        acc = acc.sub(&b);
+                                    }
+                                    Value::BigNum { .. } => {
+                                        let (bl, blen, bneg) = self.lisp.bignum_limbs(elem)?;
+                                        let mut bb = crate::bignum::BigNumBuf::zero();
+                                        bb.limbs[..blen].copy_from_slice(&bl[..blen]);
+                                        bb.len = blen; bb.negative = bneg;
+                                        acc = acc.sub(&bb);
+                                    }
+                                    Value::Float(f) => {
+                                        let result = acc.to_f64() as fsize - f;
+                                        return self.lisp.float(result).map_err(Into::into);
+                                    }
+                                    v => return Err(self.type_error(call_expr, "number", v.type_name())),
+                                }
+                                current = self.lisp.cdr(current)?;
+                            }
+                            match acc.to_isize() {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.bignum_from_limbs(&acc.limbs[..acc.len], acc.negative).map_err(Into::into),
+                            }
                         }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 }
             }
             
-            Builtin::Mul => self.numeric_fold(args, 1, 
-                |a, b| a.checked_mul(b),
-                |a, b| a * b,
-                call_expr),
+            Builtin::Mul => {
+                // Handle zero-argument case (*) => 1
+                if self.lisp.get(args)?.is_nil() {
+                    return self.lisp.number(1).map_err(Into::into);
+                }
+                // Check if first argument is a BigNum
+                let first_idx = self.lisp.car(args)?;
+                match self.lisp.get(first_idx)? {
+                    Value::BigNum { .. } => {
+                        // BigNum start: fold with multiplication
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(first_idx)?;
+                        let mut acc = crate::bignum::BigNumBuf::zero();
+                        acc.limbs[..len].copy_from_slice(&limbs[..len]);
+                        acc.len = len; acc.negative = neg;
+                        let mut current = self.lisp.cdr(args)?;
+                        while let Value::Cons { .. } = self.lisp.get(current)? {
+                            let elem = self.lisp.car(current)?;
+                            match self.lisp.get(elem)? {
+                                Value::Number(n) => {
+                                    let b = crate::bignum::BigNumBuf::from_isize(n);
+                                    acc = acc.mul(&b);
+                                }
+                                Value::BigNum { .. } => {
+                                    let (bl, blen, bneg) = self.lisp.bignum_limbs(elem)?;
+                                    let mut bb = crate::bignum::BigNumBuf::zero();
+                                    bb.limbs[..blen].copy_from_slice(&bl[..blen]);
+                                    bb.len = blen; bb.negative = bneg;
+                                    acc = acc.mul(&bb);
+                                }
+                                Value::Float(f) => {
+                                    let result = acc.to_f64() as fsize * f;
+                                    return self.lisp.float(result).map_err(Into::into);
+                                }
+                                v => return Err(self.type_error(call_expr, "number", v.type_name())),
+                            }
+                            current = self.lisp.cdr(current)?;
+                        }
+                        match acc.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&acc.limbs[..acc.len], acc.negative).map_err(Into::into),
+                        }
+                    }
+                    _ => self.numeric_fold_mul(args, call_expr),
+                }
+            }
             
             Builtin::Div => {
                 // Division: (/ n) => 1/n, (/ n m ...) => n/m/...
                 let first_idx = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
-                match self.lisp.get(first_idx)? {
-                    Value::Number(first) => {
-                        self.numeric_fold(rest, first, 
-                            |a, b| if b == 0 { None } else { a.checked_div(b) },
-                            |a, b| a / b,
-                            call_expr)
+                if self.lisp.get(rest)?.is_nil() {
+                    // Unary reciprocal: (/ n) => 1/n
+                    match self.lisp.get(first_idx)? {
+                        Value::Number(n) => {
+                            if n == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            self.lisp.rational(1, n).map_err(Into::into)
+                        }
+                        Value::Float(f) => self.lisp.float(1.0 / f).map_err(Into::into),
+                        Value::Rational { num, denom } => {
+                            if num == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            self.lisp.rational(denom, num).map_err(Into::into)
+                        }
+                        Value::Complex { real, imag } => {
+                            // 1/(a+bi) = (a-bi)/(a²+b²)
+                            let denom = real * real + imag * imag;
+                            if denom == 0.0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            self.lisp.complex(real / denom, -imag / denom).map_err(Into::into)
+                        }
+                        v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
-                    Value::Float(first) => {
-                        self.numeric_fold_float(rest, first, |a, b| a / b, call_expr)
+                } else {
+                    match self.lisp.get(first_idx)? {
+                        Value::Number(first) => {
+                            self.rational_fold_div(rest, first, 1, call_expr)
+                        }
+                        Value::Float(first) => {
+                            self.numeric_fold_float(rest, first, |a, b| a / b, call_expr)
+                        }
+                        Value::Rational { num, denom } => {
+                            self.rational_fold_div(rest, num, denom, call_expr)
+                        }
+                        v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
             
@@ -797,14 +863,60 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let fp = power as fsize;
                             self.lisp.float(float_pow(fb, fp)).map_err(Into::into)
                         } else {
-                            let result = int_pow(base, power as usize);
-                            self.lisp.number(result).map_err(Into::into)
+                            // Use BigNum exponentiation to avoid overflow
+                            let result = bignum_pow(base, power as usize);
+                            match result.to_isize() {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                            }
+                        }
+                    }
+                    (Value::BigNum { .. }, Value::Number(power)) => {
+                        if power < 0 {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(base_idx)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len;
+                            buf.negative = neg;
+                            let fb = buf.to_f64() as fsize;
+                            let fp = power as fsize;
+                            self.lisp.float(float_pow(fb, fp)).map_err(Into::into)
+                        } else {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(base_idx)?;
+                            let mut base_big = crate::bignum::BigNumBuf::zero();
+                            base_big.limbs[..len].copy_from_slice(&limbs[..len]);
+                            base_big.len = len;
+                            base_big.negative = neg;
+                            let mut result = crate::bignum::BigNumBuf::from_isize(1);
+                            let mut exp = power as usize;
+                            let mut b = base_big;
+                            while exp > 0 {
+                                if exp % 2 == 1 {
+                                    result = result.mul(&b);
+                                }
+                                exp /= 2;
+                                if exp > 0 {
+                                    b = b.mul(&b);
+                                }
+                            }
+                            match result.to_isize() {
+                                Some(n) => self.lisp.number(n).map_err(Into::into),
+                                None => self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                            }
                         }
                     }
                     _ => {
                         let base_f = match base_val {
                             Value::Number(n) => n as fsize,
                             Value::Float(f) => f,
+                            Value::BigNum { .. } => {
+                                let (limbs, len, neg) = self.lisp.bignum_limbs(base_idx)?;
+                                let mut buf = crate::bignum::BigNumBuf::zero();
+                                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                                buf.len = len;
+                                buf.negative = neg;
+                                buf.to_f64() as fsize
+                            }
                             v => return Err(self.type_error(call_expr, "number", v.type_name())),
                         };
                         let power_f = match power_val {
@@ -818,12 +930,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::Sqrt => {
-                // Square root - always returns float for non-perfect squares
+                // Square root - R7RS: returns complex for negative numbers
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::Number(n) => {
                         if n < 0 {
-                            return Err(self.type_error(call_expr, "non-negative number", "negative integer"));
+                            // sqrt of negative integer → complex
+                            let mag = float_sqrt((-n) as fsize);
+                            return self.lisp.complex(0.0, mag).map_err(Into::into);
                         }
                         // Check for perfect square
                         let root = float_sqrt(n as fsize);
@@ -835,31 +949,98 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                     Value::Float(f) => {
-                        self.lisp.float(float_sqrt(f)).map_err(Into::into)
+                        if f < 0.0 {
+                            let mag = float_sqrt(-f);
+                            self.lisp.complex(0.0, mag).map_err(Into::into)
+                        } else {
+                            self.lisp.float(float_sqrt(f)).map_err(Into::into)
+                        }
+                    }
+                    Value::Complex { real, imag } => {
+                        // sqrt of complex: use formula sqrt(r) * (cos(θ/2) + i*sin(θ/2))
+                        let r = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
+                        // For the principal square root, use non-negative zero for imag
+                        // to ensure atan2 returns π (not -π) for negative reals with -0.0 imag.
+                        // This gives the conventional principal branch where im(sqrt(z)) >= 0
+                        // when re(sqrt(z)) ≈ 0.
+                        let imag_for_atan = if imag == 0.0 { 0.0_f64 } else { imag as f64 };
+                        let theta = libm::atan2(imag_for_atan, real as f64);
+                        let sqrt_r = libm::sqrt(r);
+                        let half_theta = theta / 2.0;
+                        let re = sqrt_r * libm::cos(half_theta);
+                        let im = sqrt_r * libm::sin(half_theta);
+                        // Clean up near-zero results from floating point imprecision
+                        let re = if libm::fabs(re) < 1e-15 { 0.0 } else { re };
+                        let im = if libm::fabs(im) < 1e-15 { 0.0 } else { im };
+                        if im == 0.0 {
+                            self.lisp.float(re as fsize).map_err(Into::into)
+                        } else {
+                            self.lisp.complex(re as fsize, im as fsize).map_err(Into::into)
+                        }
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
             
-            // integer? is true for exact integers and floats that are whole numbers
+            // integer? is true for exact integers, floats that are whole numbers,
+            // and complex with zero imaginary and integer real (R7RS §6.2.5)
             Builtin::Integerp => {
                 builtin_unary_pred!(self, args, |v: Value| match v {
-                    Value::Number(_) => true,
+                    Value::Number(_) | Value::BigNum { .. } => true,
                     Value::Float(f) => f.is_finite() && f == (f as isize as fsize),
+                    Value::Complex { real, imag } => imag == 0.0 && real.is_finite() && real == (real as isize as fsize),
                     _ => false,
                 })
             }
             
-            // exact? is true for integers (exact numbers)
-            Builtin::Exactp => builtin_numeric_pred!(self, args, call_expr, |_n| true, |_f| false),
+            // exact? is true for integers and rationals (exact numbers)
+            Builtin::Exactp => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::BigNum { .. } | Value::Rational { .. } => self.lisp.true_val().map_err(Into::into),
+                    Value::Float(_) | Value::Complex { .. } => self.lisp.false_val().map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Inexactp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |_f| true),
+            Builtin::Inexactp => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::BigNum { .. } | Value::Rational { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Float(_) | Value::Complex { .. } => self.lisp.true_val().map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Finitep => builtin_numeric_pred!(self, args, call_expr, |_n| true, |f| f.is_finite()),
+            Builtin::Finitep => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Rational { .. } | Value::BigNum { .. } => self.lisp.true_val().map_err(Into::into),
+                    Value::Float(f) => self.lisp.boolean(f.is_finite()).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.boolean(real.is_finite() && imag.is_finite()).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Infinitep => builtin_numeric_pred!(self, args, call_expr, |_n| false, |f| f.is_infinite()),
+            Builtin::Infinitep => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Rational { .. } | Value::BigNum { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Float(f) => self.lisp.boolean(f.is_infinite()).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.boolean(real.is_infinite() || imag.is_infinite()).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            Builtin::Nanp => builtin_numeric_pred!(self, args, call_expr, |_n| false, |f| f.is_nan()),
+            Builtin::Nanp => {
+                let arg = self.lisp.car(args)?;
+                match self.lisp.get(arg)? {
+                    Value::Number(_) | Value::Rational { .. } => self.lisp.false_val().map_err(Into::into),
+                    Value::Float(f) => self.lisp.boolean(f.is_nan()).map_err(Into::into),
+                    Value::Complex { real, imag } => self.lisp.boolean(real.is_nan() || imag.is_nan()).map_err(Into::into),
+                    v => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
             // Rounding operations - identity for integers, actual rounding for floats
             Builtin::Floor => builtin_rounding_op!(self, args, call_expr, float_floor),
@@ -875,6 +1056,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Float(f) => self.lisp.float(f).map_err(Into::into),
                     Value::Rational { num, denom } => self.lisp.float(num as fsize / denom as fsize).map_err(Into::into),
                     Value::Complex { real, imag } => self.lisp.complex(real, imag).map_err(Into::into),
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(val)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        self.lisp.float(buf.to_f64() as fsize).map_err(Into::into)
+                    }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -884,13 +1072,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 match self.lisp.get(val)? {
                     Value::Number(n) => self.lisp.number(n).map_err(Into::into),
                     Value::Float(f) => {
-                        if f.is_finite() {
-                            self.lisp.number(f as isize).map_err(Into::into)
-                        } else {
-                            Err(self.type_error(call_expr, "finite number", "infinite or nan"))
+                        if !f.is_finite() {
+                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
                         }
+                        // Check if it's an integer
+                        let trunc = libm::trunc(f as f64) as fsize;
+                        if f == trunc && libm::fabs(f as f64) <= isize::MAX as f64 {
+                            return self.lisp.number(f as isize).map_err(Into::into);
+                        }
+                        // Convert float to exact rational using continued fraction
+                        let (num_f, denom_f) = float_to_rational(f as f64);
+                        self.lisp.rational(num_f as isize, denom_f as isize).map_err(Into::into)
                     }
                     Value::Rational { num, denom } => self.lisp.rational(num, denom).map_err(Into::into),
+                    Value::BigNum { .. } => Ok(val), // already exact
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
@@ -899,7 +1094,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Gt => self.compare_numbers(args, |a, b| a > b, call_expr),
             Builtin::Le => self.compare_numbers(args, |a, b| a <= b, call_expr),
             Builtin::Ge => self.compare_numbers(args, |a, b| a >= b, call_expr),
-            Builtin::NumEq => self.compare_numbers(args, |a, b| a == b, call_expr),
+            Builtin::NumEq => self.compare_numbers_eq(args, call_expr),
             
             Builtin::Display => {
                 let val = self.lisp.car(args)?;
@@ -1087,15 +1282,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::VectorToList => {
-                // (vector->list vec) - convert vector to list
+                // (vector->list vec [start [end]]) - convert vector to list
                 let vec = self.lisp.car(args)?;
                 
                 match self.lisp.get(vec)? {
                     Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
+                        let rest = self.lisp.cdr(args)?;
+                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
                         // Build list from end to front
                         let mut result = self.lisp.nil()?;
-                        for i in (0..len).rev() {
+                        for i in (start..end).rev() {
                             let elem = self.lisp.array_get(vec, i)?;
                             result = self.lisp.cons(elem, result)?;
                         }
@@ -1112,13 +1309,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::VectorFill => {
-                // (vector-fill! vec fill) - fill vector with value
-                extract_args!(self, args, vec, fill);
+                // (vector-fill! vec fill [start [end]]) - fill vector with value
+                let vec = self.lisp.car(args)?;
+                let rest1 = self.lisp.cdr(args)?;
+                let fill = self.lisp.car(rest1)?;
+                let rest2 = self.lisp.cdr(rest1)?;
                 
                 match self.lisp.get(vec)? {
                     Value::Array { .. } => {
                         let len = self.lisp.array_len(vec)?;
-                        for i in 0..len {
+                        let (start, end) = self.parse_range_args(rest2, len, call_expr)?;
+                        for i in start..end {
                             self.lisp.array_set(vec, i, fill)?;
                         }
                         // R7RS: returns unspecified, we return the vector
@@ -1299,29 +1500,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 builtin_unary_pred!(self, args, |v: Value| matches!(v, Value::Char(_)))
             }
             
-            Builtin::CharEq => {
-                // (char=? char1 char2 ...) - Character equality
-                self.char_chain_compare(args, |a, b| a == b, call_expr)
-            }
-            
-            Builtin::CharLt => {
-                // (char<? char1 char2 ...) - Monotonically increasing
-                self.char_chain_compare(args, |a, b| a < b, call_expr)
-            }
-            
-            Builtin::CharGt => {
-                // (char>? char1 char2 ...) - Monotonically decreasing
-                self.char_chain_compare(args, |a, b| a > b, call_expr)
-            }
-            
-            Builtin::CharLe => {
-                // (char<=? char1 char2 ...) - Monotonically non-decreasing
-                self.char_chain_compare(args, |a, b| a <= b, call_expr)
-            }
-            
-            Builtin::CharGe => {
-                // (char>=? char1 char2 ...) - Monotonically non-increasing
-                self.char_chain_compare(args, |a, b| a >= b, call_expr)
+            Builtin::CharEq | Builtin::CharLt | Builtin::CharGt
+            | Builtin::CharLe | Builtin::CharGe
+            | Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
+            | Builtin::CharCiLe | Builtin::CharCiGe => {
+                let cmp_fn: fn(char, char) -> bool = match builtin {
+                    Builtin::CharEq | Builtin::CharCiEq => |a, b| a == b,
+                    Builtin::CharLt | Builtin::CharCiLt => |a, b| a < b,
+                    Builtin::CharGt | Builtin::CharCiGt => |a, b| a > b,
+                    Builtin::CharLe | Builtin::CharCiLe => |a, b| a <= b,
+                    _ => |a, b| a >= b,
+                };
+                let case_insensitive = matches!(builtin,
+                    Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
+                    | Builtin::CharCiLe | Builtin::CharCiGe);
+                if case_insensitive {
+                    self.char_chain_compare(args, |a, b| cmp_fn(grift_unicode::char_foldcase(a), grift_unicode::char_foldcase(b)), call_expr)
+                } else {
+                    self.char_chain_compare(args, cmp_fn, call_expr)
+                }
             }
             
             Builtin::CharToInteger => builtin_char_to_int!(self, args, call_expr),
@@ -1340,229 +1537,104 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::CharUpcase | Builtin::CharDowncase | Builtin::CharFoldcase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = {
-                    let cm = icu_casemap::CaseMapper::new();
-                    match builtin {
-                        Builtin::CharUpcase => cm.simple_uppercase(c),
-                        Builtin::CharDowncase => cm.simple_lowercase(c),
-                        _ => cm.simple_fold(c),
-                    }
-                };
-                #[cfg(not(feature = "alloc"))]
-                let result = {
-                    match builtin {
-                        Builtin::CharUpcase => ascii_upcase(c),
-                        Builtin::CharDowncase => ascii_downcase(c),
-                        _ => ascii_foldcase(c),
-                    }
+                let result = match builtin {
+                    Builtin::CharUpcase => grift_unicode::char_upcase(c),
+                    Builtin::CharDowncase => grift_unicode::char_downcase(c),
+                    _ => grift_unicode::char_foldcase(c),
                 };
                 self.lisp.char(result).map_err(Into::into)
             }
             
             // Character classification predicates
-            Builtin::CharAlphabetic => {
+            Builtin::CharAlphabetic | Builtin::CharWhitespace
+            | Builtin::CharUpperCase | Builtin::CharLowerCase => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Alphabetic>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_alphabetic();
+                let result = match builtin {
+                    Builtin::CharAlphabetic => grift_unicode::char_is_alphabetic(c),
+                    Builtin::CharWhitespace => grift_unicode::char_is_whitespace(c),
+                    Builtin::CharUpperCase => grift_unicode::char_is_uppercase(c),
+                    _ => grift_unicode::char_is_lowercase(c),
+                };
                 self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::CharNumeric => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = {
-                    let gc = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new().get(c);
-                    gc == icu_properties::props::GeneralCategory::DecimalNumber
-                };
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_digit();
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-            
-            Builtin::CharWhitespace => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::WhiteSpace>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_whitespace();
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-            
-            Builtin::CharUpperCase => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Uppercase>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_uppercase();
-                self.lisp.boolean(result).map_err(Into::into)
-            }
-            
-            Builtin::CharLowerCase => {
-                let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                let result = icu_properties::CodePointSetData::new::<icu_properties::props::Lowercase>().contains(c);
-                #[cfg(not(feature = "alloc"))]
-                let result = c.is_ascii_lowercase();
+                let result = grift_unicode::char_is_numeric(c);
                 self.lisp.boolean(result).map_err(Into::into)
             }
             
             Builtin::DigitValue => {
                 let c = self.get_char(self.lisp.car(args)?, call_expr)?;
-                #[cfg(feature = "alloc")]
-                {
-                    let map = icu_properties::CodePointMapData::<icu_properties::props::GeneralCategory>::new();
-                    if map.get(c) == icu_properties::props::GeneralCategory::DecimalNumber {
-                        // Walk back to find the '0' digit of this block
-                        let cp = c as u32;
-                        let mut zero = cp;
-                        while zero > 0 {
-                            let prev = zero - 1;
-                            if let Some(prev_char) = char::from_u32(prev) {
-                                if map.get(prev_char) == icu_properties::props::GeneralCategory::DecimalNumber {
-                                    zero = prev;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        self.lisp.number((cp - zero) as isize).map_err(Into::into)
-                    } else {
-                        self.lisp.boolean(false).map_err(Into::into)
-                    }
-                }
-                #[cfg(not(feature = "alloc"))]
-                {
-                    if c.is_ascii_digit() {
-                        self.lisp.number((c as u32 - '0' as u32) as isize).map_err(Into::into)
-                    } else {
-                        self.lisp.boolean(false).map_err(Into::into)
-                    }
+                match grift_unicode::digit_value(c) {
+                    Some(val) => self.lisp.number(val as isize).map_err(Into::into),
+                    None => self.lisp.boolean(false).map_err(Into::into),
                 }
             }
             
-            Builtin::CharCiEq | Builtin::CharCiLt | Builtin::CharCiGt
-            | Builtin::CharCiLe | Builtin::CharCiGe => {
-                let cmp_fn: fn(char, char) -> bool = match builtin {
-                    Builtin::CharCiEq => |a, b| a == b,
-                    Builtin::CharCiLt => |a, b| a < b,
-                    Builtin::CharCiGt => |a, b| a > b,
-                    Builtin::CharCiLe => |a, b| a <= b,
-                    _ => |a, b| a >= b,
-                };
-                #[cfg(feature = "alloc")]
-                {
-                    let cm = icu_casemap::CaseMapper::new();
-                    self.char_chain_compare(args, |a, b| cmp_fn(cm.simple_fold(a), cm.simple_fold(b)), call_expr)
-                }
-                #[cfg(not(feature = "alloc"))]
-                {
-                    self.char_chain_compare(args, |a, b| cmp_fn(ascii_foldcase(a), ascii_foldcase(b)), call_expr)
-                }
-            }
             
             Builtin::StringUpcase | Builtin::StringDowncase | Builtin::StringFoldcase => {
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        #[cfg(feature = "alloc")]
-                        {
-                            let cm = icu_casemap::CaseMapper::new();
-                            let default_langid = icu_locale_core::LanguageIdentifier::UNKNOWN;
-                            
-                            // First pass: compute total length after full case mapping
-                            // (full mapping can expand characters, e.g. ß → ss, ß → SS)
-                            let mut total_len = 0usize;
-                            for i in 0..len {
-                                let slot = self.lisp.arena_index_at_offset(data, i)?;
-                                if let Value::Char(c) = self.lisp.get(slot)? {
-                                    let mut utf8_buf = [0u8; 4];
-                                    let s = c.encode_utf8(&mut utf8_buf);
-                                    let mut collector = CaseMapCollector::new();
-                                    match builtin {
-                                        Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
-                                        Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
-                                        _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
-                                    }
-                                    total_len += collector.len;
-                                } else {
-                                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                }
-                            }
-                            
-                            // Re-read data after potential arena operations above
-                            let data = match self.lisp.get(str_idx)? {
-                                Value::String { data, .. } => data,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            };
-                            
-                            // Allocate result string with full mapped length
-                            let result = self.lisp.make_string(total_len, '\0')?;
-                            
-                            // Second pass: fill result with mapped characters
-                            let mut pos = 0;
-                            for i in 0..len {
-                                let slot = self.lisp.arena_index_at_offset(data, i)?;
-                                if let Value::Char(c) = self.lisp.get(slot)? {
-                                    let mut utf8_buf = [0u8; 4];
-                                    let s = c.encode_utf8(&mut utf8_buf);
-                                    let mut collector = CaseMapCollector::new();
-                                    match builtin {
-                                        Builtin::StringUpcase => { use writeable::Writeable; let _ = cm.uppercase(s, &default_langid).write_to(&mut collector); }
-                                        Builtin::StringDowncase => { use writeable::Writeable; let _ = cm.lowercase(s, &default_langid).write_to(&mut collector); }
-                                        _ => { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut collector); }
-                                    }
-                                    for j in 0..collector.len {
-                                        self.lisp.string_set(result, pos, collector.chars[j])?;
-                                        pos += 1;
-                                    }
-                                } else {
-                                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                }
-                            }
-                            
-                            Ok(result)
-                        }
-                        #[cfg(not(feature = "alloc"))]
-                        {
-                            let _ = data; // suppress unused binding from outer match pattern
-                            let case_fn: fn(char) -> char = match builtin {
-                                Builtin::StringUpcase => ascii_upcase,
-                                Builtin::StringDowncase => ascii_downcase,
-                                _ => ascii_foldcase,
-                            };
-                            let result = self.lisp.make_string(len, '\0')?;
-                            // Re-read data after arena allocation
-                            let data = match self.lisp.get(str_idx)? {
-                                Value::String { data, .. } => data,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            };
-                            for i in 0..len {
-                                let slot = self.lisp.arena_index_at_offset(data, i)?;
-                                if let Value::Char(c) = self.lisp.get(slot)? {
-                                    self.lisp.string_set(result, i, case_fn(c))?;
-                                } else {
-                                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                                }
-                            }
-                            Ok(result)
-                        }
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let case_map_char = |c: char| -> grift_unicode::CaseMapResult {
+                    match builtin {
+                        Builtin::StringUpcase => grift_unicode::full_upcase(c),
+                        Builtin::StringDowncase => grift_unicode::full_downcase(c),
+                        _ => grift_unicode::full_foldcase(c),
                     }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                };
+                
+                // First pass: compute total length after full case mapping
+                let mut total_len = 0usize;
+                for i in 0..len {
+                    let slot = self.lisp.arena_index_at_offset(data, i)?;
+                    if let Value::Char(c) = self.lisp.get(slot)? {
+                        total_len += case_map_char(c).len();
+                    } else {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
                 }
+                
+                // Re-read data after potential arena operations above
+                let data = match self.lisp.get(str_idx)? {
+                    Value::String { data, .. } => data,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                // Allocate result string with full mapped length
+                let result = self.lisp.make_string(total_len, '\0')?;
+                
+                // Second pass: fill result with mapped characters
+                let mut pos = 0;
+                for i in 0..len {
+                    let slot = self.lisp.arena_index_at_offset(data, i)?;
+                    if let Value::Char(c) = self.lisp.get(slot)? {
+                        let mapped = case_map_char(c);
+                        for j in 0..mapped.len() {
+                            if let Some(ch) = mapped.get(j) {
+                                self.lisp.string_set(result, pos, ch)?;
+                                pos += 1;
+                            }
+                        }
+                    } else {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
+                }
+                
+                Ok(result)
             }
             
-            Builtin::StringCiEq => {
-                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
+            Builtin::StringCiEq | Builtin::StringCiLt | Builtin::StringCiGt
+            | Builtin::StringCiLe | Builtin::StringCiGe => {
+                let cmp_fn: fn(core::cmp::Ordering) -> bool = match builtin {
+                    Builtin::StringCiEq => |o| o == core::cmp::Ordering::Equal,
+                    Builtin::StringCiLt => |o| o == core::cmp::Ordering::Less,
+                    Builtin::StringCiGt => |o| o == core::cmp::Ordering::Greater,
+                    Builtin::StringCiLe => |o| o != core::cmp::Ordering::Greater,
+                    _ => |o| o != core::cmp::Ordering::Less,
+                };
+                self.string_ci_chain_compare(args, cmp_fn, call_expr)
             }
-            
-            // ============================================================
-            // String operations (R7RS Section 6.7)
-            // ============================================================
             
             Builtin::Stringp => {
                 // (string? obj) - Check if value is a string
@@ -1614,92 +1686,61 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::StringLength => {
                 // (string-length string) - Get length
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { .. } => {
-                        let len = self.lisp.string_len(str_idx)?;
-                        self.lisp.number(len as isize).map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
-                }
+                let (len, _) = self.get_string(str_idx, call_expr)?;
+                self.lisp.number(len as isize).map_err(Into::into)
             }
             
             Builtin::StringRef => {
                 // (string-ref string k) - Get character at index
                 extract_args!(self, args, str_idx, k_idx);
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 || (k as usize) >= len {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
-                        // Characters start at data (no header with inline length)
-                        let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
-                        match self.lisp.get(char_slot)? {
-                            Value::Char(c) => self.lisp.char(c).map_err(Into::into),
-                            _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                        }
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let k = self.get_int(k_idx, call_expr)?;
+                if k < 0 || (k as usize) >= len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+                // Characters start at data (no header with inline length)
+                let char_slot = self.lisp.arena_index_at_offset(data, k as usize)?;
+                match self.lisp.get(char_slot)? {
+                    Value::Char(c) => self.lisp.char(c).map_err(Into::into),
+                    _ => Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 }
             }
             
             Builtin::StringSet => {
                 // (string-set! string k char) - Set character at index
-                let str_idx = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let k_idx = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
-                let char_arg = self.lisp.car(rest2)?;
-                
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 || (k as usize) >= len {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
-                        let c = self.get_char(char_arg, call_expr)?;
-                        // Copy-on-write: if the data is shared (interned), make a private copy
-                        if self.lisp.string_data_is_interned(data)? {
-                            self.lisp.string_copy_data(str_idx)?;
-                        }
-                        // Re-read data after potential COW
-                        let current_data = match self.lisp.get(str_idx)? {
-                            Value::String { data: d, .. } => d,
-                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                        };
-                        // Characters start at data (no header with inline length)
-                        let char_slot = self.lisp.arena_index_at_offset(current_data, k as usize)?;
-                        self.lisp.set(char_slot, Value::Char(c))?;
-                        // Return unspecified value (we use the string itself)
-                        Ok(str_idx)
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                extract_args!(self, args, str_idx, k_idx, char_arg);
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let k = self.get_int(k_idx, call_expr)?;
+                if k < 0 || (k as usize) >= len {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
                 }
+                let c = self.get_char(char_arg, call_expr)?;
+                // Copy-on-write: if the data is shared (interned), make a private copy
+                if self.lisp.string_data_is_interned(data)? {
+                    self.lisp.string_copy_data(str_idx)?;
+                }
+                // Re-read data after potential COW
+                let current_data = match self.lisp.get(str_idx)? {
+                    Value::String { data: d, .. } => d,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                // Characters start at data (no header with inline length)
+                let char_slot = self.lisp.arena_index_at_offset(current_data, k as usize)?;
+                self.lisp.set(char_slot, Value::Char(c))?;
+                // Return unspecified value (we use the string itself)
+                Ok(str_idx)
             }
             
-            Builtin::StringEq => {
-                // (string=? string1 string2 ...) - String equality
-                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Equal, call_expr)
-            }
-            
-            Builtin::StringLt => {
-                // (string<? string1 string2 ...) - Monotonically increasing
-                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
-            }
-            
-            Builtin::StringGt => {
-                // (string>? string1 string2 ...) - Monotonically decreasing
-                self.string_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringLe => {
-                // (string<=? string1 string2 ...) - Monotonically non-decreasing
-                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringGe => {
-                // (string>=? string1 string2 ...) - Monotonically non-increasing
-                self.string_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
+            Builtin::StringEq | Builtin::StringLt | Builtin::StringGt
+            | Builtin::StringLe | Builtin::StringGe => {
+                let cmp_fn: fn(core::cmp::Ordering) -> bool = match builtin {
+                    Builtin::StringEq => |o| o == core::cmp::Ordering::Equal,
+                    Builtin::StringLt => |o| o == core::cmp::Ordering::Less,
+                    Builtin::StringGt => |o| o == core::cmp::Ordering::Greater,
+                    Builtin::StringLe => |o| o != core::cmp::Ordering::Greater,
+                    _ => |o| o != core::cmp::Ordering::Less,
+                };
+                self.string_chain_compare(args, cmp_fn, call_expr)
             }
             
             Builtin::StringAppend => {
@@ -1756,27 +1797,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             
             Builtin::StringToList => {
-                // (string->list string) - Convert string to list of characters
+                // (string->list string [start [end]]) - Convert string to list of characters
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let mut result = self.lisp.nil()?;
-                        // Build list from end to start
-                        for i in (0..len).rev() {
-                            // Characters start at data (no header with inline length)
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                            match self.lisp.get(char_slot)? {
-                                Value::Char(c) => {
-                                    let char_val = self.lisp.char(c)?;
-                                    result = self.lisp.cons(char_val, result)?;
-                                }
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                let mut result = self.lisp.nil()?;
+                // Build list from end to start
+                for i in (start..end).rev() {
+                    // Characters start at data (no header with inline length)
+                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                    match self.lisp.get(char_slot)? {
+                        Value::Char(c) => {
+                            let char_val = self.lisp.char(c)?;
+                            result = self.lisp.cons(char_val, result)?;
                         }
-                        Ok(result)
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                     }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
+                Ok(result)
             }
             
             Builtin::ListToString => {
@@ -1797,60 +1836,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::Substring => {
                 // (substring string start end) - Extract substring
-                let str_idx = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let start_idx = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
-                let end_idx = self.lisp.car(rest2)?;
+                extract_args!(self, args, str_idx, start_idx, end_idx);
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let start = self.get_int(start_idx, call_expr)?;
+                let end = self.get_int(end_idx, call_expr)?;
                 
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let start = self.get_int(start_idx, call_expr)?;
-                        let end = self.get_int(end_idx, call_expr)?;
-                        
-                        if start < 0 || end < 0 || (start as usize) > len || (end as usize) > len || start > end {
-                            return Err(self.make_error(ErrorKind::TypeError, call_expr));
-                        }
-                        
-                        self.copy_string_range(data, start as usize, (end - start) as usize, call_expr)
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                if start < 0 || end < 0 || (start as usize) > len || (end as usize) > len || start > end {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
                 }
+                
+                self.copy_string_range(data, start as usize, (end - start) as usize, call_expr)
             }
             
             Builtin::StringCopy => {
                 // (string-copy string [start [end]]) - Copy a string
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let rest = self.lisp.cdr(args)?;
-                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
-                        self.copy_string_range(data, start, end - start, call_expr)
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
-                }
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                self.copy_string_range(data, start, end - start, call_expr)
             }
             
             Builtin::StringCopyTo => {
                 // (string-copy! to at from [start [end]]) - copy characters between strings
-                let to_str = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let at_idx = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
-                let from_str = self.lisp.car(rest2)?;
-                let rest3 = self.lisp.cdr(rest2)?;
+                extract_args!(self, args, to_str, at_idx, from_str);
                 
                 let at = match self.lisp.get(at_idx)? {
                     Value::Number(n) if n >= 0 => n as usize,
                     _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                 };
                 
-                let (to_len, _to_data, from_len, from_data) = match (self.lisp.get(to_str)?, self.lisp.get(from_str)?) {
-                    (Value::String { len: tl, data: td }, Value::String { len: fl, data: fd }) => (tl, td, fl, fd),
-                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                };
+                let (to_len, _) = self.get_string(to_str, call_expr)?;
+                let (from_len, from_data) = self.get_string(from_str, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
                 
-                let (start, end) = self.parse_range_args(rest3, from_len, call_expr)?;
+                let (start, end) = self.parse_range_args(rest, from_len, call_expr)?;
                 let count = end - start;
                 if at + count > to_len {
                     return Err(self.make_error(ErrorKind::TypeError, call_expr));
@@ -1898,57 +1918,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             
             Builtin::StringFill => {
                 // (string-fill! string fill [start [end]]) - fill string with character
-                let str_idx = self.lisp.car(args)?;
+                extract_args!(self, args, str_idx, fill_arg);
                 let rest = self.lisp.cdr(args)?;
-                let fill_arg = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
                 
                 let fill_char = self.get_char(fill_arg, call_expr)?;
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
                 
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let (start, end) = self.parse_range_args(rest2, len, call_expr)?;
-                        
-                        // Copy-on-write: ensure string is mutable
-                        if self.lisp.string_data_is_interned(data)? {
-                            self.lisp.string_copy_data(str_idx)?;
-                        }
-                        
-                        // Re-read data after potential COW
-                        let current_data = match self.lisp.get(str_idx)? {
-                            Value::String { data: d, .. } => d,
-                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                        };
-                        
-                        for i in start..end {
-                            let char_slot = self.lisp.arena_index_at_offset(current_data, i)?;
-                            self.lisp.set(char_slot, Value::Char(fill_char))?;
-                        }
-                        
-                        self.lisp.void_val().map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                // Copy-on-write: ensure string is mutable
+                if self.lisp.string_data_is_interned(data)? {
+                    self.lisp.string_copy_data(str_idx)?;
                 }
-            }
-            
-            Builtin::StringCiLt => {
-                // (string-ci<? string1 string2 ...) - Case-insensitive less than
-                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Less, call_expr)
-            }
-            
-            Builtin::StringCiGt => {
-                // (string-ci>? string1 string2 ...) - Case-insensitive greater than
-                self.string_ci_chain_compare(args, |ordering| ordering == core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringCiLe => {
-                // (string-ci<=? string1 string2 ...) - Case-insensitive less than or equal
-                self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Greater, call_expr)
-            }
-            
-            Builtin::StringCiGe => {
-                // (string-ci>=? string1 string2 ...) - Case-insensitive greater than or equal
-                self.string_ci_chain_compare(args, |ordering| ordering != core::cmp::Ordering::Less, call_expr)
+                
+                // Re-read data after potential COW
+                let current_data = match self.lisp.get(str_idx)? {
+                    Value::String { data: d, .. } => d,
+                    _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                };
+                
+                for i in start..end {
+                    let char_slot = self.lisp.arena_index_at_offset(current_data, i)?;
+                    self.lisp.set(char_slot, Value::Char(fill_char))?;
+                }
+                
+                self.lisp.void_val().map_err(Into::into)
             }
             
             // ============================================================
@@ -2086,43 +2079,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Format as "num/denom"
                         let mut chars = ['\0'; 42];
                         let mut pos = 0;
-                        // Format numerator
-                        let negative = num < 0;
-                        let mut val = num.unsigned_abs();
-                        let mut digits = [0u8; 20];
-                        let mut dlen = 0;
-                        if val == 0 {
-                            digits[0] = b'0';
-                            dlen = 1;
-                        } else {
-                            while val > 0 {
-                                digits[dlen] = b'0' + (val % 10) as u8;
-                                dlen += 1;
-                                val /= 10;
-                            }
-                        }
-                        if negative {
-                            chars[pos] = '-';
-                            pos += 1;
-                        }
-                        for i in (0..dlen).rev() {
-                            chars[pos] = digits[i] as char;
-                            pos += 1;
-                        }
+                        pos += format_isize_decimal(num, &mut chars[pos..]);
                         chars[pos] = '/';
                         pos += 1;
-                        // Format denominator
-                        let mut val = denom.unsigned_abs();
-                        dlen = 0;
-                        while val > 0 {
-                            digits[dlen] = b'0' + (val % 10) as u8;
-                            dlen += 1;
-                            val /= 10;
-                        }
-                        for i in (0..dlen).rev() {
-                            chars[pos] = digits[i] as char;
-                            pos += 1;
-                        }
+                        pos += format_isize_decimal(denom, &mut chars[pos..]);
                         self.lisp.string_from_chars(&chars[..pos]).map_err(Into::into)
                     }
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
@@ -2147,7 +2107,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         if len == 0 {
                             return self.lisp.false_val().map_err(Into::into);
                         }
-                        let mut buf = [0u8; 66];
+                        let mut buf = [0u8; 128];
                         if len > buf.len() {
                             return self.lisp.false_val().map_err(Into::into);
                         }
@@ -2165,50 +2125,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
                         
-                        // Check for special float constants
-                        match s {
-                            "+inf.0" => return self.lisp.float(fsize::INFINITY).map_err(Into::into),
-                            "-inf.0" => return self.lisp.float(fsize::NEG_INFINITY).map_err(Into::into),
-                            "+nan.0" | "-nan.0" => return self.lisp.float(fsize::NAN).map_err(Into::into),
-                            _ => {}
-                        }
-                        
-                        // Detect prefix notation: #b, #o, #d, #x
-                        let (num_str, radix) = if s.len() >= 2 && s.as_bytes()[0] == b'#' {
-                            let prefix_radix = match s.as_bytes()[1] {
-                                b'b' | b'B' => Some(2u32),
-                                b'o' | b'O' => Some(8u32),
-                                b'd' | b'D' => Some(10u32),
-                                b'x' | b'X' => Some(16u32),
-                                _ => None,
-                            };
-                            match prefix_radix {
-                                Some(r) => (&s[2..], r),
-                                None => return self.lisp.false_val().map_err(Into::into),
+                        // If explicit radix is provided and no prefix in string, add prefix
+                        let prefixed: [u8; 130];
+                        let to_parse = if let Some(r) = explicit_radix {
+                            if !s.starts_with('#') {
+                                let prefix = match r {
+                                    2 => "#b",
+                                    8 => "#o",
+                                    16 => "#x",
+                                    _ => "",
+                                };
+                                if !prefix.is_empty() {
+                                    let pb = prefix.as_bytes();
+                                    let sb = s.as_bytes();
+                                    let total = pb.len() + sb.len();
+                                    if total > 130 {
+                                        return self.lisp.false_val().map_err(Into::into);
+                                    }
+                                    prefixed = {
+                                        let mut arr = [0u8; 130];
+                                        arr[..pb.len()].copy_from_slice(pb);
+                                        arr[pb.len()..total].copy_from_slice(sb);
+                                        arr
+                                    };
+                                    core::str::from_utf8(&prefixed[..total]).unwrap_or("")
+                                } else {
+                                    s
+                                }
+                            } else {
+                                s
                             }
                         } else {
-                            (s, explicit_radix.unwrap_or(10))
+                            s
                         };
                         
-                        if num_str.is_empty() {
-                            return self.lisp.false_val().map_err(Into::into);
-                        }
-                        
-                        if radix == 10 {
-                            // Try integer parse first, then float
-                            if let Ok(n) = num_str.parse::<isize>() {
-                                return self.lisp.number(n).map_err(Into::into);
+                        // Use the parser/lexer to parse the number
+                        match grift_parser::parse_single(self.lisp, to_parse) {
+                            Ok(idx) => {
+                                match self.lisp.get(idx)? {
+                                    Value::Number(_) | Value::Float(_) | Value::Rational { .. } 
+                                    | Value::Complex { .. } => Ok(idx),
+                                    _ => self.lisp.false_val().map_err(Into::into),
+                                }
                             }
-                            if let Some(f) = parse_float_no_std(num_str) {
-                                return self.lisp.float(f).map_err(Into::into);
-                            }
-                            self.lisp.false_val().map_err(Into::into)
-                        } else {
-                            // Non-decimal radix: parse integer only
-                            match parse_int_radix(num_str, radix) {
-                                Some(n) => self.lisp.number(n).map_err(Into::into),
-                                None => self.lisp.false_val().map_err(Into::into),
-                            }
+                            Err(_) => self.lisp.false_val().map_err(Into::into),
                         }
                     }
                     v => Err(self.type_error(call_expr, "string", v.type_name())),
@@ -2305,8 +2265,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // have circular structures.
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
-                let pid = self.extract_output_port(rest, call_expr)?;
-                if let Some(ref mut io) = self.io {
+                let has_port = !self.lisp.get(rest)?.is_nil();
+                if has_port {
+                    // (write obj port) - write to specific port via I/O provider
+                    let pid = self.extract_output_port(rest, call_expr)?;
+                    if let Some(ref mut io) = self.io {
+                        let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                        let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                        use core::fmt::Write;
+                        let _ = write!(writer, "{}", dv);
+                        if writer.error {
+                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                        }
+                    }
+                } else if let Some(callback) = self.output_callback {
+                    // (write obj) with callback - pass value to callback
+                    callback(self.lisp, val);
+                } else if let Some(ref mut io) = self.io {
+                    // (write obj) without callback - write to current output port
+                    let pid = self.current_output_port;
                     let dv = grift_parser::DisplayValue::new(val, self.lisp);
                     let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
                     use core::fmt::Write;
@@ -2314,8 +2291,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if writer.error {
                         return Err(self.make_error(ErrorKind::Generic, call_expr));
                     }
-                } else if let Some(callback) = self.output_callback {
-                    callback(self.lisp, val);
                 }
                 self.lisp.void_val().map_err(Into::into)
             }
@@ -2339,35 +2314,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::OpenInputString => {
                 // (open-input-string str)
                 let arg = self.lisp.car(args)?;
-                match self.lisp.get(arg)? {
-                    Value::String { len, data } => {
-                        match &mut self.io {
-                            Some(io) => {
-                                // Write chars to a temp output string port, then convert
-                                // to an input port. This avoids any fixed-size buffer.
-                                let tmp = match io.open_output_string() {
-                                    Ok(p) => p,
-                                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
-                                };
-                                for i in 0..len {
-                                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                                    if let Value::Char(c) = self.lisp.get(char_slot)? {
-                                        if io.write_char(tmp, c).is_err() {
-                                            let _ = io.close_port(tmp);
-                                            return Err(self.make_error(ErrorKind::Generic, call_expr));
-                                        }
-                                    }
+                let (len, data) = self.get_string(arg, call_expr)?;
+                match &mut self.io {
+                    Some(io) => {
+                        // Write chars to a temp output string port, then convert
+                        // to an input port. This avoids any fixed-size buffer.
+                        let tmp = match io.open_output_string() {
+                            Ok(p) => p,
+                            Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        };
+                        for i in 0..len {
+                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                            if let Value::Char(c) = self.lisp.get(char_slot)? {
+                                if io.write_char(tmp, c).is_err() {
+                                    let _ = io.close_port(tmp);
+                                    return Err(self.make_error(ErrorKind::Generic, call_expr));
                                 }
-                                let pid = match io.output_string_to_input_port(tmp) {
-                                    Ok(p) => p,
-                                    Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
-                                };
-                                self.lisp.port(pid).map_err(Into::into)
                             }
-                            None => Err(self.make_error(ErrorKind::Generic, call_expr)),
                         }
+                        let pid = match io.output_string_to_input_port(tmp) {
+                            Ok(p) => p,
+                            Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+                        };
+                        self.lisp.port(pid).map_err(Into::into)
                     }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
+                    None => Err(self.make_error(ErrorKind::Generic, call_expr)),
                 }
             }
 
@@ -2604,10 +2575,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::ReadBytevectorBang => {
                 // (read-bytevector! bv) or (read-bytevector! bv port) or (read-bytevector! bv port start) or (read-bytevector! bv port start end)
                 let bv_arg = self.lisp.car(args)?;
-                let bv_len = match self.lisp.get(bv_arg)? {
-                    Value::Bytevector { len, .. } => len,
-                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                };
+                let (bv_len, _) = self.get_bytevector(bv_arg, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
                 let (pid, start, end) = self.extract_port_and_range(rest, self.current_input_port, bv_len, call_expr)?;
                 let io = match &mut self.io {
@@ -2637,10 +2605,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::WriteBytevector => {
                 // (write-bytevector bv) or (write-bytevector bv port) or (write-bytevector bv port start) or (write-bytevector bv port start end)
                 let bv_arg = self.lisp.car(args)?;
-                let bv_len = match self.lisp.get(bv_arg)? {
-                    Value::Bytevector { len, .. } => len,
-                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                };
+                let (bv_len, _) = self.get_bytevector(bv_arg, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
                 let (pid, start, end) = self.extract_port_and_range(rest, self.current_output_port, bv_len, call_expr)?;
                 // Write byte-at-a-time directly from bytevector
@@ -2670,10 +2635,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::OpenInputBytevector => {
                 // (open-input-bytevector bv)
                 let arg = self.lisp.car(args)?;
-                let bv_len = match self.lisp.get(arg)? {
-                    Value::Bytevector { len, .. } => len,
-                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                };
+                let (bv_len, _) = self.get_bytevector(arg, call_expr)?;
                 // Write bytes to output bytevector port, then convert to input
                 let io = match &mut self.io {
                     Some(io) => io,
@@ -2739,10 +2701,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::WriteStringPort => {
                 // (write-string string) or (write-string string port) or (write-string string port start) or (write-string string port start end)
                 let str_arg = self.lisp.car(args)?;
-                let (str_len, str_data) = match self.lisp.get(str_arg)? {
-                    Value::String { len, data } => (len, data),
-                    v => return Err(self.type_error(call_expr, "string", v.type_name())),
-                };
+                let (str_len, str_data) = self.get_string(str_arg, call_expr)?;
                 let rest = self.lisp.cdr(args)?;
                 let (pid, start, end) = self.extract_port_and_range(rest, self.current_output_port, str_len, call_expr)?;
                 // Write char-at-a-time directly from string data
@@ -2907,28 +2866,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.alloc(Value::Environment { env, mutable: true }).map_err(Into::into)
             }
 
-            Builtin::SchemeReportEnvironment => {
-                // (scheme-report-environment version)
-                // Returns an environment corresponding to R^version RS (e.g., R5RS)
+            Builtin::SchemeReportEnvironment | Builtin::NullEnvironment => {
                 let version = self.get_int(self.lisp.car(args)?, call_expr)?;
                 if version != 5 && version != 7 {
                     return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
                 }
-                // Return the global environment as immutable (read-only snapshot)
-                let env = self.global_env.0;
+                let env = if matches!(builtin, Builtin::SchemeReportEnvironment) {
+                    self.global_env.0
+                } else {
+                    self.lisp.nil()?
+                };
                 self.lisp.alloc(Value::Environment { env, mutable: false }).map_err(Into::into)
-            }
-
-            Builtin::NullEnvironment => {
-                // (null-environment version)
-                // Returns a minimal environment with only syntax (no procedure bindings)
-                let version = self.get_int(self.lisp.car(args)?, call_expr)?;
-                if version != 5 && version != 7 {
-                    return Err(self.type_error(call_expr, "version 5 or 7", "unsupported version"));
-                }
-                // Return an empty environment (immutable)
-                let nil = self.lisp.nil()?;
-                self.lisp.alloc(Value::Environment { env: nil, mutable: false }).map_err(Into::into)
             }
 
             Builtin::Environmentp => {
@@ -2966,80 +2914,58 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::BytevectorLength => {
                 // (bytevector-length bytevector) - Get length
                 let bv = self.lisp.car(args)?;
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let len = self.lisp.bytevector_len(bv)?;
-                        self.lisp.number(len as isize).map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                }
+                let (len, _) = self.get_bytevector(bv, call_expr)?;
+                self.lisp.number(len as isize).map_err(Into::into)
             }
 
             Builtin::BytevectorU8Ref => {
                 // (bytevector-u8-ref bytevector k) - Get byte at index
                 extract_args!(self, args, bv, k_idx);
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 {
-                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
-                        }
-                        let elem = self.lisp.bytevector_get(bv, k as usize)?;
-                        Ok(elem)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                self.get_bytevector(bv, call_expr)?;
+                let k = self.get_int(k_idx, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
                 }
+                let elem = self.lisp.bytevector_get(bv, k as usize)?;
+                Ok(elem)
             }
 
             Builtin::BytevectorU8Set => {
                 // (bytevector-u8-set! bytevector k byte) - Set byte at index
-                let bv = self.lisp.car(args)?;
-                let rest = self.lisp.cdr(args)?;
-                let k_idx = self.lisp.car(rest)?;
-                let rest2 = self.lisp.cdr(rest)?;
-                let byte_idx = self.lisp.car(rest2)?;
-
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let k = self.get_int(k_idx, call_expr)?;
-                        if k < 0 {
-                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
-                        }
-                        let byte_val = self.get_int(byte_idx, call_expr)?;
-                        if !(0..=255).contains(&byte_val) {
-                            return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
-                        }
-                        self.lisp.bytevector_set(bv, k as usize, byte_val as u8)?;
-                        self.lisp.void_val().map_err(Into::into)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                extract_args!(self, args, bv, k_idx, byte_idx);
+                self.get_bytevector(bv, call_expr)?;
+                let k = self.get_int(k_idx, call_expr)?;
+                if k < 0 {
+                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
                 }
+                let byte_val = self.get_int(byte_idx, call_expr)?;
+                if !(0..=255).contains(&byte_val) {
+                    return Err(self.type_error(call_expr, "exact integer 0-255", "out of range"));
+                }
+                self.lisp.bytevector_set(bv, k as usize, byte_val as u8)?;
+                self.lisp.void_val().map_err(Into::into)
             }
 
             Builtin::BytevectorCopy => {
                 // (bytevector-copy bytevector [start [end]]) - Copy a bytevector
                 let bv = self.lisp.car(args)?;
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let len = self.lisp.bytevector_len(bv)?;
-                        let rest = self.lisp.cdr(args)?;
-                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                self.get_bytevector(bv, call_expr)?;
+                let len = self.lisp.bytevector_len(bv)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        let new_len = end - start;
-                        let result = self.lisp.make_bytevector(new_len, 0)?;
+                let new_len = end - start;
+                let result = self.lisp.make_bytevector(new_len, 0)?;
 
-                        for i in 0..new_len {
-                            let elem = self.lisp.bytevector_get(bv, start + i)?;
-                            let byte = match self.lisp.get(elem)? {
-                                Value::Number(n) => n as u8,
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            };
-                            self.lisp.bytevector_set(result, i, byte)?;
-                        }
-                        Ok(result)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                for i in 0..new_len {
+                    let elem = self.lisp.bytevector_get(bv, start + i)?;
+                    let byte = match self.lisp.get(elem)? {
+                        Value::Number(n) => n as u8,
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    };
+                    self.lisp.bytevector_set(result, i, byte)?;
                 }
+                Ok(result)
             }
 
             Builtin::BytevectorAppend => {
@@ -3123,14 +3049,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let rest3 = self.lisp.cdr(rest2)?;
 
                 // Validate types
-                match self.lisp.get(to)? {
-                    Value::Bytevector { .. } => {}
-                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                }
-                match self.lisp.get(from)? {
-                    Value::Bytevector { .. } => {}
-                    v => return Err(self.type_error(call_expr, "bytevector", v.type_name())),
-                }
+                self.get_bytevector(to, call_expr)?;
+                self.get_bytevector(from, call_expr)?;
 
                 let at = self.get_int(at_val, call_expr)?;
                 if at < 0 {
@@ -3148,13 +3068,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
 
                 // Copy bytes from `from[start..end]` to `to[at..at+copy_len]`
-                for i in 0..copy_len {
-                    let elem = self.lisp.bytevector_get(from, start + i)?;
-                    let byte = match self.lisp.get(elem)? {
-                        Value::Number(n) => n as u8,
-                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                    };
-                    self.lisp.bytevector_set(to, at + i, byte)?;
+                // Handle overlapping regions by copying in the right direction
+                if to == from && at > start {
+                    // Copy backwards to handle forward overlap
+                    for i in (0..copy_len).rev() {
+                        let elem = self.lisp.bytevector_get(from, start + i)?;
+                        let byte = match self.lisp.get(elem)? {
+                            Value::Number(n) => n as u8,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        };
+                        self.lisp.bytevector_set(to, at + i, byte)?;
+                    }
+                } else {
+                    for i in 0..copy_len {
+                        let elem = self.lisp.bytevector_get(from, start + i)?;
+                        let byte = match self.lisp.get(elem)? {
+                            Value::Number(n) => n as u8,
+                            _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                        };
+                        self.lisp.bytevector_set(to, at + i, byte)?;
+                    }
                 }
                 self.lisp.void_val().map_err(Into::into)
             }
@@ -3163,92 +3096,84 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // (utf8->string bytevector [start [end]]) - Decode UTF-8 bytevector to string
                 // Manual UTF-8 decoding from bytevector bytes, building a reversed cons list of chars
                 let bv = self.lisp.car(args)?;
-                match self.lisp.get(bv)? {
-                    Value::Bytevector { .. } => {
-                        let len = self.lisp.bytevector_len(bv)?;
-                        let rest = self.lisp.cdr(args)?;
-                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                self.get_bytevector(bv, call_expr)?;
+                let len = self.lisp.bytevector_len(bv)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        let nil = self.lisp.nil()?;
-                        let mut collected = nil;
-                        let mut char_count = 0;
-                        let mut i = start;
-                        while i < end {
-                            let b0 = self.get_bv_byte(bv, i)?;
-                            let (ch, advance) = if b0 < 0x80 {
-                                (b0 as u32, 1)
-                            } else if b0 & 0xE0 == 0xC0 {
-                                if i + 1 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
-                                let b1 = self.get_bv_byte(bv, i + 1)?;
-                                if b1 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
-                                (((b0 as u32 & 0x1F) << 6) | (b1 as u32 & 0x3F), 2)
-                            } else if b0 & 0xF0 == 0xE0 {
-                                if i + 2 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
-                                let b1 = self.get_bv_byte(bv, i + 1)?;
-                                let b2 = self.get_bv_byte(bv, i + 2)?;
-                                if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
-                                (((b0 as u32 & 0x0F) << 12) | ((b1 as u32 & 0x3F) << 6) | (b2 as u32 & 0x3F), 3)
-                            } else if b0 & 0xF8 == 0xF0 {
-                                if i + 3 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
-                                let b1 = self.get_bv_byte(bv, i + 1)?;
-                                let b2 = self.get_bv_byte(bv, i + 2)?;
-                                let b3 = self.get_bv_byte(bv, i + 3)?;
-                                if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 || b3 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
-                                (((b0 as u32 & 0x07) << 18) | ((b1 as u32 & 0x3F) << 12) | ((b2 as u32 & 0x3F) << 6) | (b3 as u32 & 0x3F), 4)
-                            } else {
-                                return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"));
-                            };
-                            let c = char::from_u32(ch)
-                                .ok_or_else(|| self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"))?;
-                            let ch_val = self.lisp.char(c)?;
-                            collected = self.lisp.cons(ch_val, collected)?;
-                            char_count += 1;
-                            i += advance;
-                        }
-                        self.reversed_char_cons_to_string(collected, char_count)
-                    }
-                    v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
+                let nil = self.lisp.nil()?;
+                let mut collected = nil;
+                let mut char_count = 0;
+                let mut i = start;
+                while i < end {
+                    let b0 = self.get_bv_byte(bv, i)?;
+                    let (ch, advance) = if b0 < 0x80 {
+                        (b0 as u32, 1)
+                    } else if b0 & 0xE0 == 0xC0 {
+                        if i + 1 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                        let b1 = self.get_bv_byte(bv, i + 1)?;
+                        if b1 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                        (((b0 as u32 & 0x1F) << 6) | (b1 as u32 & 0x3F), 2)
+                    } else if b0 & 0xF0 == 0xE0 {
+                        if i + 2 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                        let b1 = self.get_bv_byte(bv, i + 1)?;
+                        let b2 = self.get_bv_byte(bv, i + 2)?;
+                        if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                        (((b0 as u32 & 0x0F) << 12) | ((b1 as u32 & 0x3F) << 6) | (b2 as u32 & 0x3F), 3)
+                    } else if b0 & 0xF8 == 0xF0 {
+                        if i + 3 >= end { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                        let b1 = self.get_bv_byte(bv, i + 1)?;
+                        let b2 = self.get_bv_byte(bv, i + 2)?;
+                        let b3 = self.get_bv_byte(bv, i + 3)?;
+                        if b1 & 0xC0 != 0x80 || b2 & 0xC0 != 0x80 || b3 & 0xC0 != 0x80 { return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence")); }
+                        (((b0 as u32 & 0x07) << 18) | ((b1 as u32 & 0x3F) << 12) | ((b2 as u32 & 0x3F) << 6) | (b3 as u32 & 0x3F), 4)
+                    } else {
+                        return Err(self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"));
+                    };
+                    let c = char::from_u32(ch)
+                        .ok_or_else(|| self.type_error(call_expr, "valid UTF-8", "invalid byte sequence"))?;
+                    let ch_val = self.lisp.char(c)?;
+                    collected = self.lisp.cons(ch_val, collected)?;
+                    char_count += 1;
+                    i += advance;
                 }
+                self.reversed_char_cons_to_string(collected, char_count)
             }
 
             Builtin::StringToUtf8 => {
                 // (string->utf8 string [start [end]]) - Encode string as UTF-8 bytevector
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let rest = self.lisp.cdr(args)?;
-                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        // Two-pass: count total UTF-8 bytes needed, then allocate and fill
-                        let mut byte_len = 0;
-                        for i in start..end {
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                            match self.lisp.get(char_slot)? {
-                                Value::Char(c) => byte_len += c.len_utf8(),
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
-                        }
-
-                        let result = self.lisp.make_bytevector(byte_len, 0)?;
-                        let mut offset = 0;
-                        for i in start..end {
-                            let char_slot = self.lisp.arena_index_at_offset(data, i)?;
-                            match self.lisp.get(char_slot)? {
-                                Value::Char(c) => {
-                                    let mut tmp = [0u8; 4];
-                                    let encoded = c.encode_utf8(&mut tmp);
-                                    for &b in encoded.as_bytes() {
-                                        self.lisp.bytevector_set(result, offset, b)?;
-                                        offset += 1;
-                                    }
-                                }
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
-                        }
-                        Ok(result)
+                // Two-pass: count total UTF-8 bytes needed, then allocate and fill
+                let mut byte_len = 0;
+                for i in start..end {
+                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                    match self.lisp.get(char_slot)? {
+                        Value::Char(c) => byte_len += c.len_utf8(),
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                     }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
+
+                let result = self.lisp.make_bytevector(byte_len, 0)?;
+                let mut offset = 0;
+                for i in start..end {
+                    let char_slot = self.lisp.arena_index_at_offset(data, i)?;
+                    match self.lisp.get(char_slot)? {
+                        Value::Char(c) => {
+                            let mut tmp = [0u8; 4];
+                            let encoded = c.encode_utf8(&mut tmp);
+                            for &b in encoded.as_bytes() {
+                                self.lisp.bytevector_set(result, offset, b)?;
+                                offset += 1;
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
+                    }
+                }
+                Ok(result)
             }
 
             // ============================================================
@@ -3328,30 +3253,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::StringToVector => {
                 // (string->vector string [start [end]])
                 let str_idx = self.lisp.car(args)?;
-                match self.lisp.get(str_idx)? {
-                    Value::String { len, data } => {
-                        let rest = self.lisp.cdr(args)?;
-                        let (start, end) = self.parse_range_args(rest, len, call_expr)?;
+                let (len, data) = self.get_string(str_idx, call_expr)?;
+                let rest = self.lisp.cdr(args)?;
+                let (start, end) = self.parse_range_args(rest, len, call_expr)?;
 
-                        let count = end - start;
-                        // Create a vector and fill with characters
-                        let default = self.lisp.char('\0')?;
-                        let result = self.lisp.make_array(count, default)?;
-                        for i in 0..count {
-                            let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
-                            let ch = self.lisp.get(char_slot)?;
-                            match ch {
-                                Value::Char(c) => {
-                                    let char_val = self.lisp.char(c)?;
-                                    self.lisp.array_set(result, i, char_val)?;
-                                }
-                                _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                            }
+                let count = end - start;
+                // Create a vector and fill with characters
+                let default = self.lisp.char('\0')?;
+                let result = self.lisp.make_array(count, default)?;
+                for i in 0..count {
+                    let char_slot = self.lisp.arena_index_at_offset(data, start + i)?;
+                    let ch = self.lisp.get(char_slot)?;
+                    match ch {
+                        Value::Char(c) => {
+                            let char_val = self.lisp.char(c)?;
+                            self.lisp.array_set(result, i, char_val)?;
                         }
-                        Ok(result)
+                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
                     }
-                    v => Err(self.type_error(call_expr, "string", v.type_name())),
                 }
+                Ok(result)
             }
 
             // ================================================================
@@ -3391,76 +3312,64 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Division procedures (R7RS §6.2.6)
             // ================================================================
 
-            Builtin::FloorQuotient => {
-                let (q, _) = self.division_op(args, call_expr, libm::floor)?;
-                self.return_exact_if_both_exact(args, q, call_expr)
-            }
-
-            Builtin::FloorRemainder => {
-                let (_, r) = self.division_op(args, call_expr, libm::floor)?;
-                self.return_exact_if_both_exact(args, r, call_expr)
+            Builtin::FloorQuotient | Builtin::FloorRemainder
+            | Builtin::TruncateQuotient | Builtin::TruncateRemainder => {
+                let round_fn: fn(f64) -> f64 = match builtin {
+                    Builtin::FloorQuotient | Builtin::FloorRemainder => libm::floor,
+                    _ => libm::trunc,
+                };
+                let (q, r) = self.division_op(args, call_expr, round_fn)?;
+                let val = match builtin {
+                    Builtin::FloorQuotient | Builtin::TruncateQuotient => q,
+                    _ => r,
+                };
+                self.return_exact_if_both_exact(args, val, call_expr)
             }
 
             Builtin::FloorDiv => self.division_values(args, call_expr, libm::floor),
-
-            Builtin::TruncateQuotient => {
-                let (q, _) = self.division_op(args, call_expr, libm::trunc)?;
-                self.return_exact_if_both_exact(args, q, call_expr)
-            }
-
-            Builtin::TruncateRemainder => {
-                let (_, r) = self.division_op(args, call_expr, libm::trunc)?;
-                self.return_exact_if_both_exact(args, r, call_expr)
-            }
-
             Builtin::TruncateDiv => self.division_values(args, call_expr, libm::trunc),
 
             // ================================================================
             // Rational number operations (R7RS §6.2.6)
             // ================================================================
 
-            Builtin::Numerator => {
+            Builtin::Numerator | Builtin::Denominator => {
+                let is_num = matches!(builtin, Builtin::Numerator);
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
-                    Value::Number(n) => self.lisp.number(n).map_err(Into::into),
+                    Value::Number(n) => {
+                        self.lisp.number(if is_num { n } else { 1 }).map_err(Into::into)
+                    }
                     Value::Float(f) => {
                         if !f.is_finite() {
                             return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
                         }
-                        let (num, _den) = float_to_rational(f as f64);
-                        self.lisp.float(num as fsize).map_err(Into::into)
+                        let (num, den) = float_to_rational(f as f64);
+                        self.lisp.float(if is_num { num } else { den } as fsize).map_err(Into::into)
                     }
-                    Value::Rational { num, .. } => self.lisp.number(num).map_err(Into::into),
-                    v => Err(self.type_error(call_expr, "number", v.type_name())),
-                }
-            }
-
-            Builtin::Denominator => {
-                let arg = self.lisp.car(args)?;
-                match self.lisp.get(arg)? {
-                    Value::Number(_) => self.lisp.number(1).map_err(Into::into),
-                    Value::Float(f) => {
-                        if !f.is_finite() {
-                            return Err(self.type_error(call_expr, "finite number", "infinite or nan"));
-                        }
-                        let (_num, den) = float_to_rational(f as f64);
-                        self.lisp.float(den as fsize).map_err(Into::into)
+                    Value::Rational { num, denom } => {
+                        self.lisp.number(if is_num { num } else { denom }).map_err(Into::into)
                     }
-                    Value::Rational { denom, .. } => self.lisp.number(denom).map_err(Into::into),
                     v => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
             }
 
             Builtin::Rationalize => {
-                let x = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+                let first_arg = self.lisp.car(args)?;
+                let x = self.get_num_as_fsize(first_arg, call_expr)?;
                 let tol = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
                 let (num, den) = rationalize_impl(x as f64, libm::fabs(tol as f64));
-                if den == 1.0 {
-                    let both_exact = matches!(self.lisp.get(self.lisp.car(args)?)?, Value::Number(_));
-                    if both_exact {
+                // Check if both arguments are exact
+                let first_exact = match self.lisp.get(first_arg)? {
+                    Value::Number(_) | Value::Rational { .. } | Value::BigNum { .. } => true,
+                    _ => false,
+                };
+                if first_exact {
+                    // Return exact result
+                    if den == 1.0 {
                         self.lisp.number(num as isize).map_err(Into::into)
                     } else {
-                        self.lisp.float(num as fsize).map_err(Into::into)
+                        self.lisp.rational(num as isize, den as isize).map_err(Into::into)
                     }
                 } else {
                     self.lisp.float((num / den) as fsize).map_err(Into::into)
@@ -3472,18 +3381,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // ================================================================
 
             Builtin::ExactIntegerSqrt => {
-                let n = self.get_int(self.lisp.car(args)?, call_expr)?;
-                if n < 0 {
-                    return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                let arg_idx = self.lisp.car(args)?;
+                let arg_val = self.lisp.get(arg_idx)?;
+                match arg_val {
+                    Value::BigNum { .. } => {
+                        // BigNum path
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(arg_idx)?;
+                        if neg {
+                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                        }
+                        let mut n_big = crate::bignum::BigNumBuf::zero();
+                        n_big.limbs[..len].copy_from_slice(&limbs[..len]);
+                        n_big.len = len;
+                        let s = n_big.isqrt();
+                        let s_sq = s.mul(&s);
+                        let r = n_big.sub(&s_sq);
+                        let sv = match s.to_isize() {
+                            Some(n) => self.lisp.number(n)?,
+                            None => self.lisp.bignum_from_limbs(&s.limbs[..s.len], s.negative)?,
+                        };
+                        let rv = match r.to_isize() {
+                            Some(n) => self.lisp.number(n)?,
+                            None => self.lisp.bignum_from_limbs(&r.limbs[..r.len], r.negative)?,
+                        };
+                        let nil = self.lisp.nil()?;
+                        let tail = self.lisp.cons(rv, nil)?;
+                        self.lisp.cons(sv, tail).map_err(Into::into)
+                    }
+                    Value::Number(n) => {
+                        if n < 0 {
+                            return Err(self.type_error(call_expr, "non-negative integer", "negative integer"));
+                        }
+                        let n_u = n as usize;
+                        let s = isqrt(n_u);
+                        let r = n_u - s * s;
+                        let sv = self.lisp.number(s as isize)?;
+                        let rv = self.lisp.number(r as isize)?;
+                        let nil = self.lisp.nil()?;
+                        let tail = self.lisp.cons(rv, nil)?;
+                        self.lisp.cons(sv, tail).map_err(Into::into)
+                    }
+                    v => Err(self.type_error(call_expr, "integer", v.type_name())),
                 }
-                let n_u = n as usize;
-                let s = isqrt(n_u);
-                let r = n_u - s * s;
-                let sv = self.lisp.number(s as isize)?;
-                let rv = self.lisp.number(r as isize)?;
-                let nil = self.lisp.nil()?;
-                let tail = self.lisp.cons(rv, nil)?;
-                self.lisp.cons(sv, tail).map_err(Into::into)
             }
 
             // ================================================================
@@ -3493,9 +3432,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::MakeRectangular => {
                 let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
                 let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-                if b == 0.0 {
-                    return self.lisp.float(a).map_err(Into::into);
-                }
                 self.lisp.complex(a, b).map_err(Into::into)
             }
 
@@ -3584,27 +3520,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let arg = self.lisp.car(args)?;
                 match self.lisp.get(arg)? {
                     Value::Number(n) => {
-                        if n >= 0 { self.lisp.float(0.0).map_err(Into::into) }
-                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                        let angle = if n >= 0 { 0.0 } else { core::f64::consts::PI as fsize };
+                        self.lisp.float(angle).map_err(Into::into)
                     }
                     Value::Float(f) => {
-                        if f >= 0.0 { self.lisp.float(0.0).map_err(Into::into) }
-                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                        let angle = if f >= 0.0 { 0.0 } else { core::f64::consts::PI as fsize };
+                        self.lisp.float(angle).map_err(Into::into)
                     }
                     Value::Rational { num, .. } => {
-                        if num >= 0 { self.lisp.float(0.0).map_err(Into::into) }
-                        else { self.lisp.float(core::f64::consts::PI as fsize).map_err(Into::into) }
+                        let angle = if num >= 0 { 0.0 } else { core::f64::consts::PI as fsize };
+                        self.lisp.float(angle).map_err(Into::into)
                     }
                     Value::Complex { real, imag } => {
-                        let angle = libm::atan2(imag as f64, real as f64);
-                        self.lisp.float(angle as fsize).map_err(Into::into)
+                        self.lisp.float(libm::atan2(imag as f64, real as f64) as fsize).map_err(Into::into)
                     }
                     Value::Cons { .. } => {
                         if self.is_complex_tagged(arg)? {
                             let re = self.complex_real_f(arg, call_expr)?;
                             let im = self.complex_imag_f(arg, call_expr)?;
-                            let angle = libm::atan2(im, re);
-                            self.lisp.float(angle as fsize).map_err(Into::into)
+                            self.lisp.float(libm::atan2(im, re) as fsize).map_err(Into::into)
                         } else {
                             Err(self.type_error(call_expr, "number", "pair"))
                         }
@@ -3634,14 +3568,149 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Sub => binary_int_op!(self, a, b, call_expr, 
                 |x: isize, y: isize| x.checked_sub(y),
                 |x: fsize, y: fsize| x - y),
-            Builtin::Mul => binary_int_op!(self, a, b, call_expr, 
-                |x: isize, y: isize| x.checked_mul(y),
-                |x: fsize, y: fsize| x * y),
+            Builtin::Mul => {
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                match (val_a, val_b) {
+                    (Value::Number(x), Value::Number(y)) => {
+                        match x.checked_mul(y) {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => {
+                                // Overflow: produce BigNum instead of float
+                                let bx = crate::bignum::BigNumBuf::from_isize(x);
+                                let by = crate::bignum::BigNumBuf::from_isize(y);
+                                let result = bx.mul(&by);
+                                self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into)
+                            }
+                        }
+                    }
+                    // BigNum * Number
+                    (Value::BigNum { .. }, Value::Number(y)) | (Value::Number(y), Value::BigNum { .. }) => {
+                        let big_idx = if matches!(val_a, Value::BigNum { .. }) { a } else { b };
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len;
+                        buf.negative = neg;
+                        let other = crate::bignum::BigNumBuf::from_isize(y);
+                        let result = buf.mul(&other);
+                        match result.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                        }
+                    }
+                    // BigNum * BigNum
+                    (Value::BigNum { .. }, Value::BigNum { .. }) => {
+                        let (la, lena, nega) = self.lisp.bignum_limbs(a)?;
+                        let (lb, lenb, negb) = self.lisp.bignum_limbs(b)?;
+                        let mut ba = crate::bignum::BigNumBuf::zero();
+                        ba.limbs[..lena].copy_from_slice(&la[..lena]);
+                        ba.len = lena; ba.negative = nega;
+                        let mut bb = crate::bignum::BigNumBuf::zero();
+                        bb.limbs[..lenb].copy_from_slice(&lb[..lenb]);
+                        bb.len = lenb; bb.negative = negb;
+                        let result = ba.mul(&bb);
+                        match result.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                        }
+                    }
+                    // BigNum * Float or Float * BigNum
+                    (Value::BigNum { .. }, Value::Float(y)) => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(a)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        self.lisp.float(buf.to_f64() as fsize * y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::BigNum { .. }) => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(b)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        self.lisp.float(x * buf.to_f64() as fsize).map_err(Into::into)
+                    }
+                    (Value::Number(x), Value::Float(y)) => self.lisp.float(x as fsize * y).map_err(Into::into),
+                    (Value::Float(x), Value::Number(y)) => self.lisp.float(x * y as fsize).map_err(Into::into),
+                    (Value::Float(x), Value::Float(y)) => self.lisp.float(x * y).map_err(Into::into),
+                    (Value::Rational { num, denom }, Value::Number(y)) => {
+                        match num.checked_mul(y) {
+                            Some(nn) => self.lisp.rational(nn, denom).map_err(Into::into),
+                            None => self.lisp.float((num as fsize / denom as fsize) * y as fsize).map_err(Into::into),
+                        }
+                    }
+                    (Value::Number(x), Value::Rational { num, denom }) => {
+                        match x.checked_mul(num) {
+                            Some(nn) => self.lisp.rational(nn, denom).map_err(Into::into),
+                            None => self.lisp.float(x as fsize * (num as fsize / denom as fsize)).map_err(Into::into),
+                        }
+                    }
+                    (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                        match (n1.checked_mul(n2), d1.checked_mul(d2)) {
+                            (Some(nn), Some(nd)) => self.lisp.rational(nn, nd).map_err(Into::into),
+                            _ => self.lisp.float((n1 as fsize / d1 as fsize) * (n2 as fsize / d2 as fsize)).map_err(Into::into),
+                        }
+                    }
+                    (Value::Rational { num, denom }, Value::Float(y)) => {
+                        self.lisp.float((num as fsize / denom as fsize) * y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Rational { num, denom }) => {
+                        self.lisp.float(x * (num as fsize / denom as fsize)).map_err(Into::into)
+                    }
+                    (v, _) if !v.is_number() => Err(self.type_error(call_expr, "number", v.type_name())),
+                    (_, v) => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             
-            // Division operations with zero check
-            Builtin::Div => binary_div_op!(self, a, b, call_expr, 
-                |x, y| x / y,
-                |x: fsize, y: fsize| x / y),
+            // Division: exact integer division produces rationals
+            Builtin::Div => {
+                let val_a = self.lisp.get(a)?;
+                let val_b = self.lisp.get(b)?;
+                match (val_a, val_b) {
+                    (Value::Number(x), Value::Number(y)) => {
+                        if y == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        self.lisp.rational(x, y).map_err(Into::into)
+                    }
+                    (Value::Number(x), Value::Float(y)) => {
+                        self.lisp.float(x as fsize / y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Number(y)) => {
+                        self.lisp.float(x / y as fsize).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Float(y)) => {
+                        self.lisp.float(x / y).map_err(Into::into)
+                    }
+                    (Value::Rational { num: n1, denom: d1 }, Value::Number(y)) => {
+                        if y == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        match d1.checked_mul(y) {
+                            Some(new_d) => self.lisp.rational(n1, new_d).map_err(Into::into),
+                            None => self.lisp.float(n1 as fsize / (d1 as fsize * y as fsize)).map_err(Into::into),
+                        }
+                    }
+                    (Value::Number(x), Value::Rational { num: n2, denom: d2 }) => {
+                        if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        match x.checked_mul(d2) {
+                            Some(new_n) => self.lisp.rational(new_n, n2).map_err(Into::into),
+                            None => self.lisp.float(x as fsize * d2 as fsize / n2 as fsize).map_err(Into::into),
+                        }
+                    }
+                    (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                        if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        match (n1.checked_mul(d2), d1.checked_mul(n2)) {
+                            (Some(new_num), Some(new_denom)) => self.lisp.rational(new_num, new_denom).map_err(Into::into),
+                            _ => self.lisp.float((n1 as fsize * d2 as fsize) / (d1 as fsize * n2 as fsize)).map_err(Into::into),
+                        }
+                    }
+                    (Value::Rational { num, denom }, Value::Float(y)) => {
+                        self.lisp.float(num as fsize / denom as fsize / y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::Rational { num, denom }) => {
+                        self.lisp.float(x * denom as fsize / num as fsize).map_err(Into::into)
+                    }
+                    (v, _) if !v.is_number() => Err(self.type_error(call_expr, "number", v.type_name())),
+                    (_, v) => Err(self.type_error(call_expr, "number", v.type_name())),
+                }
+            }
             Builtin::Modulo => binary_div_op!(self, a, b, call_expr, 
                 |x, y| ((x % y) + y) % y,
                 |x: fsize, y: fsize| ((x % y) + y) % y),
@@ -3654,7 +3723,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Builtin::Gt => binary_int_cmp!(self, a, b, call_expr, |x, y| x > y),
             Builtin::Le => binary_int_cmp!(self, a, b, call_expr, |x, y| x <= y),
             Builtin::Ge => binary_int_cmp!(self, a, b, call_expr, |x, y| x >= y),
-            Builtin::NumEq => binary_int_cmp!(self, a, b, call_expr, |x, y| x == y),
+            Builtin::NumEq => {
+                // Use precision-aware equality check
+                let rest = self.lisp.cons(b, self.lisp.nil()?)?;
+                let args = self.lisp.cons(a, rest)?;
+                self.compare_numbers_eq(args, call_expr)
+            }
             Builtin::EqP | Builtin::EqvP => self.eqv_compare(a, b),
             Builtin::Cons => {
                 self.lisp.cons(a, b).map_err(Into::into)
@@ -3737,6 +3811,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Float(f) => Ok(f),
             Value::Rational { num, denom } => Ok(num as fsize / denom as fsize),
             Value::Complex { .. } => Err(self.type_error(call_expr, "real number", "complex")),
+            Value::BigNum { .. } => {
+                let (limbs, len, neg) = self.lisp.bignum_limbs(idx)?;
+                let mut buf = crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                Ok(buf.to_f64() as fsize)
+            }
             v => Err(self.type_error(call_expr, "number", v.type_name())),
         }
     }
@@ -3746,6 +3827,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match self.lisp.get(idx)? {
             Value::Char(c) => Ok(c),
             v => Err(self.type_error(call_expr, "char", v.type_name())),
+        }
+    }
+
+    /// Get string length and data from already-evaluated value
+    pub(super) fn get_string(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<(usize, ArenaIndex), EvalError> {
+        match self.lisp.get(idx)? {
+            Value::String { len, data } => Ok((len, data)),
+            v => Err(self.type_error(call_expr, "string", v.type_name())),
+        }
+    }
+
+    /// Get bytevector length and data from already-evaluated value
+    pub(super) fn get_bytevector(&self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<(usize, ArenaIndex), EvalError> {
+        match self.lisp.get(idx)? {
+            Value::Bytevector { len, data } => Ok((len, data)),
+            v => Err(self.type_error(call_expr, "bytevector", v.type_name())),
         }
     }
     
@@ -3805,7 +3902,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             (Value::True, Value::True) => true,
             (Value::False, Value::False) => true,
             (Value::Number(x), Value::Number(y)) => x == y,
-            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y || (x.is_nan() && y.is_nan()),
+            (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => n1 == n2 && d1 == d2,
+            (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => {
+                (r1 == r2 || (r1.is_nan() && r2.is_nan())) && (i1 == i2 || (i1.is_nan() && i2.is_nan()))
+            }
             (Value::Char(x), Value::Char(y)) => x == y,
             (Value::Symbol(_), Value::Symbol(_)) => self.lisp.symbol_eq(a, b)?,
             (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
@@ -3826,15 +3927,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let mut acc_int: isize = init;
         let mut acc_float: fsize = init as fsize;
-        let mut is_float = false;
+        // Track accumulator state: 0=int, 1=rational, 2=float
+        let mut state: u8 = 0;
+        let mut acc_num: isize = init;
+        let mut acc_denom: isize = 1;
         let mut current = args;
         loop {
             match self.lisp.get(current)? {
                 Value::Nil => {
-                    return if is_float {
-                        self.lisp.float(acc_float).map_err(Into::into)
-                    } else {
-                        self.lisp.number(acc_int).map_err(Into::into)
+                    return match state {
+                        2 => self.lisp.float(acc_float).map_err(Into::into),
+                        1 => self.lisp.rational(acc_num, acc_denom).map_err(Into::into),
+                        _ => self.lisp.number(acc_int).map_err(Into::into),
                     };
                 }
                 Value::Cons { .. } => {
@@ -3842,30 +3946,111 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let cdr = self.lisp.cdr(current)?;
                     match self.lisp.get(car)? {
                         Value::Number(n) => {
-                            if is_float {
-                                acc_float = float_f(acc_float, n as fsize);
-                            } else {
-                                match int_f(acc_int, n) {
-                                    Some(r) => acc_int = r,
-                                    None => return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)),
+                            match state {
+                                2 => { acc_float = float_f(acc_float, n as fsize); }
+                                1 => {
+                                    // rational + int: (acc_num/acc_denom) op (n/1)
+                                    // For add: (acc_num + n*acc_denom) / acc_denom
+                                    // For mul: (acc_num * n) / acc_denom
+                                    let n_num = n.checked_mul(acc_denom);
+                                    match n_num.and_then(|nn| int_f(acc_num, nn)) {
+                                        Some(r) => { acc_num = r; }
+                                        None => {
+                                            acc_float = float_f(acc_num as fsize / acc_denom as fsize, n as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    match int_f(acc_int, n) {
+                                        Some(r) => acc_int = r,
+                                        None => {
+                                            acc_float = float_f(acc_int as fsize, n as fsize);
+                                            state = 2;
+                                        }
+                                    }
                                 }
                             }
                         }
                         Value::Float(f) => {
-                            if !is_float {
-                                // Promote accumulator to float
-                                acc_float = acc_int as fsize;
-                                is_float = true;
+                            match state {
+                                2 => { acc_float = float_f(acc_float, f); }
+                                1 => {
+                                    acc_float = float_f(acc_num as fsize / acc_denom as fsize, f);
+                                    state = 2;
+                                }
+                                _ => {
+                                    acc_float = float_f(acc_int as fsize, f);
+                                    state = 2;
+                                }
                             }
-                            acc_float = float_f(acc_float, f);
                         }
                         Value::Rational { num, denom } => {
-                            // Promote to float for mixed arithmetic
-                            if !is_float {
-                                acc_float = acc_int as fsize;
-                                is_float = true;
+                            match state {
+                                2 => {
+                                    acc_float = float_f(acc_float, num as fsize / denom as fsize);
+                                }
+                                1 => {
+                                    // rational op rational: (a/b) op (n/d)
+                                    // For add: (a*d + n*b) / (b*d)
+                                    // For mul: (a*n) / (b*d) 
+                                    let new_denom = acc_denom.checked_mul(denom);
+                                    let a_scaled = acc_num.checked_mul(denom);
+                                    let n_scaled = num.checked_mul(acc_denom);
+                                    match (new_denom, a_scaled, n_scaled) {
+                                        (Some(nd), Some(as_), Some(ns)) => {
+                                            match int_f(as_, ns) {
+                                                Some(new_num) => {
+                                                    acc_num = new_num;
+                                                    acc_denom = nd;
+                                                }
+                                                None => {
+                                                    acc_float = float_f(acc_num as fsize / acc_denom as fsize, num as fsize / denom as fsize);
+                                                    state = 2;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            acc_float = float_f(acc_num as fsize / acc_denom as fsize, num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // int -> rational: promote to rational
+                                    // (acc_int/1) op (num/denom) 
+                                    let a_scaled = acc_int.checked_mul(denom);
+                                    match a_scaled.and_then(|as_| int_f(as_, num)) {
+                                        Some(new_num) => {
+                                            acc_num = new_num;
+                                            acc_denom = denom;
+                                            state = 1;
+                                        }
+                                        None => {
+                                            acc_float = float_f(acc_int as fsize, num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
                             }
-                            acc_float = float_f(acc_float, num as fsize / denom as fsize);
+                        }
+                        Value::BigNum { .. } => {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(car)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len; buf.negative = neg;
+                            let big_f = buf.to_f64() as fsize;
+                            match state {
+                                2 => { acc_float = float_f(acc_float, big_f); }
+                                1 => {
+                                    acc_float = float_f(acc_num as fsize / acc_denom as fsize, big_f);
+                                    state = 2;
+                                }
+                                _ => {
+                                    acc_float = float_f(acc_int as fsize, big_f);
+                                    state = 2;
+                                }
+                            }
                         }
                         _ => return Err(self.make_error(ErrorKind::TypeError, current)),
                     }
@@ -3880,9 +4065,143 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn compare_numbers<F>(&self, args: ArenaIndex, cmp: F, call_expr: ArenaIndex) -> EvalResult
     where F: Fn(fsize, fsize) -> bool
     {
-        let a = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-        let b = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
-        self.lisp.boolean(cmp(a, b)).map_err(Into::into)
+        let mut prev = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+        let mut current = self.lisp.cdr(args)?;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let next = self.get_num_as_fsize(car, call_expr)?;
+                    if !cmp(prev, next) {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev = next;
+                    current = self.lisp.cdr(current)?;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Numeric equality that respects exact/inexact precision boundaries.
+    /// When comparing an exact integer with an inexact float, checks that the
+    /// float can exactly represent the integer value (round-trip check).
+    pub(super) fn compare_numbers_eq(&self, args: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        let first = self.lisp.car(args)?;
+        let mut prev_idx = first;
+        let mut current = self.lisp.cdr(args)?;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => return self.lisp.true_val().map_err(Into::into),
+                Value::Cons { .. } => {
+                    let next_idx = self.lisp.car(current)?;
+                    if !self.nums_equal(prev_idx, next_idx, call_expr)? {
+                        return self.lisp.false_val().map_err(Into::into);
+                    }
+                    prev_idx = next_idx;
+                    current = self.lisp.cdr(current)?;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Compare two numeric values for equality, respecting exact/inexact precision.
+    fn nums_equal(&self, a: ArenaIndex, b: ArenaIndex, _call_expr: ArenaIndex) -> Result<bool, EvalError> {
+        let va = self.lisp.get(a)?;
+        let vb = self.lisp.get(b)?;
+        match (va, vb) {
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Float(x), Value::Float(y)) => Ok(x == y),
+            (Value::Number(n), Value::Float(f)) | (Value::Float(f), Value::Number(n)) => {
+                // Round-trip: convert int→float→int to check exact representability
+                let n_as_f = n as fsize;
+                Ok(n_as_f == f && n_as_f as isize == n)
+            }
+            (Value::Rational { num: n1, denom: d1 }, Value::Rational { num: n2, denom: d2 }) => {
+                // Cross-multiply to avoid float conversion
+                Ok((n1 as i128) * (d2 as i128) == (n2 as i128) * (d1 as i128))
+            }
+            (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => {
+                Ok(r1 == r2 && i1 == i2)
+            }
+            // Compare real number with complex: equal iff imaginary part is 0
+            (Value::Complex { real, imag }, _) => {
+                if imag != 0.0 { return Ok(false); }
+                // Compare real part with b
+                let real_idx = self.lisp.float(real)?;
+                self.nums_equal(real_idx, b, _call_expr)
+            }
+            (_, Value::Complex { real, imag }) => {
+                if imag != 0.0 { return Ok(false); }
+                let real_idx = self.lisp.float(real)?;
+                self.nums_equal(a, real_idx, _call_expr)
+            }
+            // BigNum comparisons
+            (Value::BigNum { .. }, Value::BigNum { .. }) => {
+                let (la, lena, nega) = self.lisp.bignum_limbs(a)?;
+                let (lb, lenb, negb) = self.lisp.bignum_limbs(b)?;
+                if lena != lenb || nega != negb { return Ok(false); }
+                Ok(la[..lena] == lb[..lenb])
+            }
+            (Value::BigNum { .. }, Value::Number(n)) | (Value::Number(n), Value::BigNum { .. }) => {
+                let big_idx = if matches!(va, Value::BigNum { .. }) { a } else { b };
+                let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
+                let mut buf = crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                match buf.to_isize() {
+                    Some(v) => Ok(v == n),
+                    None => Ok(false),
+                }
+            }
+            (Value::BigNum { .. }, Value::Float(f)) | (Value::Float(f), Value::BigNum { .. }) => {
+                // For transitive =: convert float to exact BigNum and compare exactly.
+                // This avoids precision loss from BigNum→f64 conversion.
+                let big_idx = if matches!(va, Value::BigNum { .. }) { a } else { b };
+                let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
+                match crate::bignum::BigNumBuf::from_f64(f as f64) {
+                    Some(float_as_big) => {
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        Ok(buf.cmp(&float_as_big) == core::cmp::Ordering::Equal)
+                    }
+                    None => Ok(false), // NaN, Infinity, or non-integer float
+                }
+            }
+            _ => {
+                // Fall back to fsize comparison for rational vs int/float
+                let fa = match va {
+                    Value::Number(n) => n as fsize,
+                    Value::Float(f) => f,
+                    Value::Rational { num, denom } => num as fsize / denom as fsize,
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(a)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        buf.to_f64() as fsize
+                    }
+                    _ => return Ok(false),
+                };
+                let fb = match vb {
+                    Value::Number(n) => n as fsize,
+                    Value::Float(f) => f,
+                    Value::Rational { num, denom } => num as fsize / denom as fsize,
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = self.lisp.bignum_limbs(b)?;
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        buf.to_f64() as fsize
+                    }
+                    _ => return Ok(false),
+                };
+                Ok(fa == fb)
+            }
+        }
     }
     
     /// Numeric fold that always produces a float result (starts with float accumulator)
@@ -3900,6 +4219,265 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let cdr = self.lisp.cdr(current)?;
                     let n = self.get_num_as_fsize(car, call_expr)?;
                     acc = float_f(acc, n);
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Fold multiplication over args with proper rational support.
+    /// (* a b c) keeps exact rational results when possible.
+    fn numeric_fold_mul(&self, args: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        // state: 0=int, 1=rational, 2=float
+        let mut state: u8 = 0;
+        let mut acc_int: isize = 1;
+        let mut acc_num: isize = 1;
+        let mut acc_denom: isize = 1;
+        let mut acc_float: fsize = 1.0;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    return match state {
+                        2 => self.lisp.float(acc_float).map_err(Into::into),
+                        1 => self.lisp.rational(acc_num, acc_denom).map_err(Into::into),
+                        _ => self.lisp.number(acc_int).map_err(Into::into),
+                    };
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    match self.lisp.get(car)? {
+                        Value::Number(n) => {
+                            match state {
+                                2 => { acc_float *= n as fsize; }
+                                1 => {
+                                    match acc_num.checked_mul(n) {
+                                        Some(r) => { acc_num = r; }
+                                        None => {
+                                            acc_float = (acc_num as fsize / acc_denom as fsize) * n as fsize;
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    match acc_int.checked_mul(n) {
+                                        Some(r) => { acc_int = r; }
+                                        None => {
+                                            acc_float = acc_int as fsize * n as fsize;
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Value::Float(f) => {
+                            acc_float = match state {
+                                2 => acc_float * f,
+                                1 => (acc_num as fsize / acc_denom as fsize) * f,
+                                _ => acc_int as fsize * f,
+                            };
+                            state = 2;
+                        }
+                        Value::Rational { num, denom } => {
+                            match state {
+                                2 => {
+                                    acc_float *= num as fsize / denom as fsize;
+                                }
+                                1 => {
+                                    // (a/b) * (n/d) = (a*n) / (b*d)
+                                    match (acc_num.checked_mul(num), acc_denom.checked_mul(denom)) {
+                                        (Some(nn), Some(nd)) => {
+                                            acc_num = nn;
+                                            acc_denom = nd;
+                                        }
+                                        _ => {
+                                            acc_float = (acc_num as fsize / acc_denom as fsize) * (num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // int * rational: (acc_int * num) / denom
+                                    match acc_int.checked_mul(num) {
+                                        Some(nn) => {
+                                            acc_num = nn;
+                                            acc_denom = denom;
+                                            state = 1;
+                                        }
+                                        None => {
+                                            acc_float = acc_int as fsize * (num as fsize / denom as fsize);
+                                            state = 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Value::BigNum { .. } => {
+                            let (limbs, len, neg) = self.lisp.bignum_limbs(car)?;
+                            let mut buf = crate::bignum::BigNumBuf::zero();
+                            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                            buf.len = len; buf.negative = neg;
+                            let big_f = buf.to_f64() as fsize;
+                            match state {
+                                2 => { acc_float *= big_f; }
+                                1 => {
+                                    acc_float = (acc_num as fsize / acc_denom as fsize) * big_f;
+                                    state = 2;
+                                }
+                                _ => {
+                                    acc_float = acc_int as fsize * big_f;
+                                    state = 2;
+                                }
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Fold division over remaining args, accumulating as rational num/denom.
+    /// Produces exact rational results for integer division chains like (/ 3 4 5) => 3/20.
+    fn rational_fold_div(&self, args: ArenaIndex, init_num: isize, init_denom: isize, call_expr: ArenaIndex) -> EvalResult {
+        let mut num = init_num;
+        let mut denom = init_denom;
+        let mut is_float = false;
+        let mut acc_float: fsize = 0.0;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    return if is_float {
+                        self.lisp.float(acc_float).map_err(Into::into)
+                    } else {
+                        self.lisp.rational(num, denom).map_err(Into::into)
+                    };
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    match self.lisp.get(car)? {
+                        Value::Number(n) => {
+                            if n == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            if is_float {
+                                acc_float /= n as fsize;
+                            } else {
+                                denom = denom.checked_mul(n).unwrap_or_else(|| {
+                                    is_float = true;
+                                    acc_float = num as fsize / (denom as fsize * n as fsize);
+                                    1
+                                });
+                            }
+                        }
+                        Value::Float(f) => {
+                            if !is_float {
+                                acc_float = num as fsize / denom as fsize;
+                                is_float = true;
+                            }
+                            acc_float /= f;
+                        }
+                        Value::Rational { num: n2, denom: d2 } => {
+                            if n2 == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            if is_float {
+                                acc_float /= n2 as fsize / d2 as fsize;
+                            } else {
+                                // a/b / (n2/d2) = a*d2 / (b*n2)
+                                num = num.checked_mul(d2).unwrap_or_else(|| {
+                                    is_float = true;
+                                    acc_float = (num as fsize * d2 as fsize) / (denom as fsize * n2 as fsize);
+                                    1
+                                });
+                                if !is_float {
+                                    denom = denom.checked_mul(n2).unwrap_or_else(|| {
+                                        is_float = true;
+                                        acc_float = num as fsize / (denom as fsize * n2 as fsize);
+                                        1
+                                    });
+                                }
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
+                    current = cdr;
+                }
+                _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+            }
+        }
+    }
+
+    /// Fold subtraction over remaining args with rational accumulator.
+    fn rational_fold_sub(&self, args: ArenaIndex, init_num: isize, init_denom: isize, call_expr: ArenaIndex) -> EvalResult {
+        let mut num = init_num;
+        let mut denom = init_denom;
+        let mut is_float = false;
+        let mut acc_float: fsize = 0.0;
+        let mut current = args;
+        loop {
+            match self.lisp.get(current)? {
+                Value::Nil => {
+                    return if is_float {
+                        self.lisp.float(acc_float).map_err(Into::into)
+                    } else {
+                        self.lisp.rational(num, denom).map_err(Into::into)
+                    };
+                }
+                Value::Cons { .. } => {
+                    let car = self.lisp.car(current)?;
+                    let cdr = self.lisp.cdr(current)?;
+                    match self.lisp.get(car)? {
+                        Value::Number(n) => {
+                            if is_float {
+                                acc_float -= n as fsize;
+                            } else {
+                                // a/b - n = (a - n*b)/b
+                                match denom.checked_mul(n).and_then(|nd| num.checked_sub(nd)) {
+                                    Some(r) => num = r,
+                                    None => {
+                                        acc_float = num as fsize / denom as fsize - n as fsize;
+                                        is_float = true;
+                                    }
+                                }
+                            }
+                        }
+                        Value::Float(f) => {
+                            if !is_float {
+                                acc_float = num as fsize / denom as fsize;
+                                is_float = true;
+                            }
+                            acc_float -= f;
+                        }
+                        Value::Rational { num: n2, denom: d2 } => {
+                            if is_float {
+                                acc_float -= n2 as fsize / d2 as fsize;
+                            } else {
+                                // a/b - n2/d2 = (a*d2 - n2*b) / (b*d2)
+                                match denom.checked_mul(d2) {
+                                    Some(new_denom) => {
+                                        match num.checked_mul(d2).and_then(|ad| n2.checked_mul(denom).and_then(|nb| ad.checked_sub(nb))) {
+                                            Some(new_num) => {
+                                                num = new_num;
+                                                denom = new_denom;
+                                            }
+                                            None => {
+                                                acc_float = num as fsize / denom as fsize - n2 as fsize / d2 as fsize;
+                                                is_float = true;
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        acc_float = num as fsize / denom as fsize - n2 as fsize / d2 as fsize;
+                                        is_float = true;
+                                    }
+                                }
+                            }
+                        }
+                        _ => return Err(self.make_error(ErrorKind::TypeError, current)),
+                    }
                     current = cdr;
                 }
                 _ => return Err(self.make_error(ErrorKind::TypeError, current)),
@@ -3955,14 +4533,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn compare_strings_with(&self, a: ArenaIndex, b: ArenaIndex, call_expr: ArenaIndex, case_insensitive: bool) -> Result<core::cmp::Ordering, EvalError> {
         if !case_insensitive {
             // Case-sensitive: simple character-by-character comparison
-            let (len_a, data_a) = match self.lisp.get(a)? {
-                Value::String { len, data } => (len, data),
-                v => return Err(self.type_error(call_expr, "string", v.type_name())),
-            };
-            let (len_b, data_b) = match self.lisp.get(b)? {
-                Value::String { len, data } => (len, data),
-                v => return Err(self.type_error(call_expr, "string", v.type_name())),
-            };
+            let (len_a, data_a) = self.get_string(a, call_expr)?;
+            let (len_b, data_b) = self.get_string(b, call_expr)?;
             
             let min_len = len_a.min(len_b);
             for i in 0..min_len {
@@ -3984,41 +4556,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Ok(len_a.cmp(&len_b))
         } else {
             // Case-insensitive comparison
-            let (len_a, data_a) = match self.lisp.get(a)? {
-                Value::String { len, data } => (len, data),
-                v => return Err(self.type_error(call_expr, "string", v.type_name())),
-            };
-            let (len_b, data_b) = match self.lisp.get(b)? {
-                Value::String { len, data } => (len, data),
-                v => return Err(self.type_error(call_expr, "string", v.type_name())),
-            };
+            let (len_a, data_a) = self.get_string(a, call_expr)?;
+            let (len_b, data_b) = self.get_string(b, call_expr)?;
             
-            #[cfg(feature = "alloc")]
             {
-                // Use full Unicode case folding via ICU4X iterators.
-                // Full folding can expand characters (e.g. ß → ss), so we produce
-                // folded chars on the fly from each source string and compare them.
-                let cm = icu_casemap::CaseMapper::new();
+                // Use full Unicode case folding. Full folding can expand characters
+                // (e.g. ß → ss), so we produce folded chars on the fly and compare them.
                 
                 // State for iterating folded chars from string A
-                let mut src_a = 0usize;    // next source char index in string A
-                let mut buf_a = CaseMapCollector::new();
-                let mut buf_a_pos = 0usize; // position within buf_a
+                let mut src_a = 0usize;
+                let mut buf_a = grift_unicode::CaseMapResult::default();
+                let mut buf_a_pos = 0usize;
                 
                 // State for iterating folded chars from string B
                 let mut src_b = 0usize;
-                let mut buf_b = CaseMapCollector::new();
+                let mut buf_b = grift_unicode::CaseMapResult::default();
                 let mut buf_b_pos = 0usize;
                 
                 loop {
                     // Refill buffer A if needed
-                    while buf_a_pos >= buf_a.len && src_a < len_a {
+                    while buf_a_pos >= buf_a.len() && src_a < len_a {
                         let slot = self.lisp.arena_index_at_offset(data_a, src_a)?;
                         if let Value::Char(c) = self.lisp.get(slot)? {
-                            let mut utf8_buf = [0u8; 4];
-                            let s = c.encode_utf8(&mut utf8_buf);
-                            buf_a = CaseMapCollector::new();
-                            { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut buf_a); }
+                            buf_a = grift_unicode::full_foldcase(c);
                             buf_a_pos = 0;
                             src_a += 1;
                         } else {
@@ -4027,13 +4587,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     
                     // Refill buffer B if needed
-                    while buf_b_pos >= buf_b.len && src_b < len_b {
+                    while buf_b_pos >= buf_b.len() && src_b < len_b {
                         let slot = self.lisp.arena_index_at_offset(data_b, src_b)?;
                         if let Value::Char(c) = self.lisp.get(slot)? {
-                            let mut utf8_buf = [0u8; 4];
-                            let s = c.encode_utf8(&mut utf8_buf);
-                            buf_b = CaseMapCollector::new();
-                            { use writeable::Writeable; let _ = cm.fold(s).write_to(&mut buf_b); }
+                            buf_b = grift_unicode::full_foldcase(c);
                             buf_b_pos = 0;
                             src_b += 1;
                         } else {
@@ -4041,16 +4598,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                     
-                    let has_a = buf_a_pos < buf_a.len;
-                    let has_b = buf_b_pos < buf_b.len;
+                    let has_a = buf_a_pos < buf_a.len();
+                    let has_b = buf_b_pos < buf_b.len();
                     
                     match (has_a, has_b) {
                         (false, false) => return Ok(core::cmp::Ordering::Equal),
                         (true, false) => return Ok(core::cmp::Ordering::Greater),
                         (false, true) => return Ok(core::cmp::Ordering::Less),
                         (true, true) => {
-                            let ca = buf_a.chars[buf_a_pos];
-                            let cb = buf_b.chars[buf_b_pos];
+                            let ca = buf_a.get(buf_a_pos).unwrap_or('\0');
+                            let cb = buf_b.get(buf_b_pos).unwrap_or('\0');
                             buf_a_pos += 1;
                             buf_b_pos += 1;
                             match ca.cmp(&cb) {
@@ -4060,28 +4617,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
                 }
-            }
-            #[cfg(not(feature = "alloc"))]
-            {
-                // ASCII-only case folding: compare character by character
-                let min_len = len_a.min(len_b);
-                for i in 0..min_len {
-                    let slot_a = self.lisp.arena_index_at_offset(data_a, i)?;
-                    let char_a = match self.lisp.get(slot_a)? {
-                        Value::Char(c) => ascii_foldcase(c),
-                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                    };
-                    let slot_b = self.lisp.arena_index_at_offset(data_b, i)?;
-                    let char_b = match self.lisp.get(slot_b)? {
-                        Value::Char(c) => ascii_foldcase(c),
-                        _ => return Err(self.make_error(ErrorKind::TypeError, call_expr)),
-                    };
-                    match char_a.cmp(&char_b) {
-                        core::cmp::Ordering::Equal => {}
-                        ord => return Ok(ord),
-                    }
-                }
-                Ok(len_a.cmp(&len_b))
             }
         }
     }
@@ -4157,13 +4692,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Validate vector arguments for vector-map/vector-for-each.
-    /// Returns (proc, vecs_args, len) after validating all vectors have the same length.
+    /// Returns (proc, vecs_args, len) where len is the minimum length across all vectors.
     fn validate_vector_args(&self, args: ArenaIndex, call_expr: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, usize), EvalError> {
         let proc = self.lisp.car(args)?;
         let vecs_args = self.lisp.cdr(args)?;
         
         let first_vec = self.lisp.car(vecs_args)?;
-        let len = match self.lisp.get(first_vec)? {
+        let mut len = match self.lisp.get(first_vec)? {
             Value::Array { .. } => self.lisp.array_len(first_vec)?,
             v => return Err(self.type_error(call_expr, "vector", v.type_name())),
         };
@@ -4174,8 +4709,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             match self.lisp.get(vec)? {
                 Value::Array { .. } => {
                     let vlen = self.lisp.array_len(vec)?;
-                    if vlen != len {
-                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    if vlen < len {
+                        len = vlen;
                     }
                 }
                 v => return Err(self.type_error(call_expr, "vector", v.type_name())),
@@ -4345,36 +4880,181 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Implement (read) by reading characters from a port and parsing.
     fn apply_read_builtin(&mut self, pid: grift_parser::PortId, call_expr: ArenaIndex) -> EvalResult {
-        let io = match &mut self.io {
-            Some(io) => io,
+        let tmp = match self.io.as_mut() {
+            Some(io) => match io.open_output_string() {
+                Ok(p) => p,
+                Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
+            },
             None => return Err(self.make_error(ErrorKind::Generic, call_expr)),
-        };
-
-        // Open a temp output string port to accumulate chars without a fixed-size limit
-        let tmp = match io.open_output_string() {
-            Ok(p) => p,
-            Err(_) => return Err(self.make_error(ErrorKind::Generic, call_expr)),
         };
 
         let mut paren_depth: i32 = 0;
         let mut in_string = false;
+        let mut in_bar_sym = false;
         let mut escape = false;
         let mut got_token = false;
+        let mut fold_case = false;
 
-        // Skip leading whitespace
+        // Helper macros for IO operations that re-borrow self.io each time
+        macro_rules! io_read {
+            () => {{
+                self.io.as_mut().unwrap().read_char(pid)
+            }};
+        }
+        macro_rules! io_peek {
+            () => {{
+                self.io.as_mut().unwrap().peek_char(pid)
+            }};
+        }
+        macro_rules! io_write {
+            ($c:expr) => {{
+                let _ = self.io.as_mut().unwrap().write_char(tmp, $c);
+            }};
+        }
+        macro_rules! io_close_tmp {
+            () => {{
+                if let Some(io) = self.io.as_mut() { let _ = io.close_port(tmp); }
+            }};
+        }
+
+        // Skip leading whitespace and comments
         loop {
-            match io.read_char(pid) {
+            match io_read!() {
                 Ok(c) => {
-                    if !c.is_whitespace() {
-                        if io.write_char(tmp, c).is_err() {
-                            let _ = io.close_port(tmp);
-                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                    if c == ';' {
+                        // Line comment
+                        loop {
+                            match io_read!() {
+                                Ok('\n') | Ok('\r') => break,
+                                Ok(_) => {}
+                                Err(_) => break,
+                            }
                         }
-
+                        continue;
+                    }
+                    if c == '#' {
+                        match io_peek!() {
+                            Ok('|') => {
+                                let _ = io_read!();
+                                let mut depth = 1i32;
+                                let mut prev = ' ';
+                                while depth > 0 {
+                                    match io_read!() {
+                                        Ok(bc) => {
+                                            if prev == '#' && bc == '|' { depth += 1; }
+                                            if prev == '|' && bc == '#' { depth -= 1; }
+                                            prev = bc;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                continue;
+                            }
+                            Ok(';') => {
+                                let _ = io_read!();
+                                self.apply_read_builtin(pid, call_expr)?;
+                                continue;
+                            }
+                            Ok('(') => {
+                                let _ = io_read!();
+                                io_write!('#');
+                                io_write!('(');
+                                paren_depth += 1;
+                                break;
+                            }
+                            Ok('u') => {
+                                let _ = io_read!();
+                                io_write!('#');
+                                io_write!('u');
+                                match io_peek!() {
+                                    Ok('8') => {
+                                        let _ = io_read!();
+                                        io_write!('8');
+                                        match io_peek!() {
+                                            Ok('(') => {
+                                                let _ = io_read!();
+                                                io_write!('(');
+                                                paren_depth += 1;
+                                                break;
+                                            }
+                                            _ => { got_token = true; break; }
+                                        }
+                                    }
+                                    _ => { got_token = true; break; }
+                                }
+                            }
+                            Ok('!') => {
+                                // #!fold-case or #!no-fold-case directive
+                                let _ = io_read!(); // consume '!'
+                                let mut directive = [0u8; 16];
+                                let mut dlen = 0;
+                                loop {
+                                    match io_peek!() {
+                                        Ok(c) if c.is_alphanumeric() || c == '-' => {
+                                            let _ = io_read!();
+                                            if dlen < 16 { directive[dlen] = c.to_ascii_lowercase() as u8; dlen += 1; }
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                if &directive[..dlen] == b"fold-case" {
+                                    fold_case = true;
+                                } else if &directive[..dlen] == b"no-fold-case" {
+                                    fold_case = false;
+                                }
+                                // Skip whitespace after directive
+                                loop {
+                                    match io_peek!() {
+                                        Ok(c) if c.is_whitespace() => {
+                                            let _ = io_read!();
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                continue;
+                            }
+                            _ => {
+                                io_write!('#');
+                                got_token = true;
+                                break;
+                            }
+                        }
+                    } else if !c.is_whitespace() {
+                        let wc = if fold_case && c.is_ascii_alphabetic() { c.to_ascii_lowercase() } else { c };
+                        io_write!(wc);
                         if c == '(' || c == '[' {
                             paren_depth += 1;
                         } else if c == '"' {
                             in_string = true;
+                        } else if c == '\'' || c == '`' {
+                            // Quote/quasiquote prefix
+                            io_close_tmp!();
+                            let inner = self.apply_read_builtin(pid, call_expr)?;
+                            let sym = if c == '\'' {
+                                self.lisp.symbol("quote")?
+                            } else {
+                                self.lisp.symbol("quasiquote")?
+                            };
+                            let nil = self.lisp.nil()?;
+                            let tail = self.lisp.cons(inner, nil)?;
+                            return self.lisp.cons(sym, tail).map_err(Into::into);
+                        } else if c == ',' {
+                            io_close_tmp!();
+                            let is_splicing = match io_peek!() {
+                                Ok('@') => { let _ = io_read!(); true }
+                                _ => false,
+                            };
+                            let inner = self.apply_read_builtin(pid, call_expr)?;
+                            let sym = if is_splicing {
+                                self.lisp.symbol("unquote-splicing")?
+                            } else {
+                                self.lisp.symbol("unquote")?
+                            };
+                            let nil = self.lisp.nil()?;
+                            let tail = self.lisp.cons(inner, nil)?;
+                            return self.lisp.cons(sym, tail).map_err(Into::into);
+                        } else if c == '|' {
+                            in_bar_sym = true;
                         } else if paren_depth == 0 {
                             got_token = true;
                         }
@@ -4382,27 +5062,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
                 Err(grift_parser::IoErrorKind::Eof) => {
-                    let _ = io.close_port(tmp);
+                    io_close_tmp!();
                     return self.lisp.eof().map_err(Into::into);
                 }
                 Err(_) => {
-                    let _ = io.close_port(tmp);
+                    io_close_tmp!();
                     return Err(self.make_error(ErrorKind::Generic, call_expr));
                 }
             }
         }
 
-        // Read remaining characters to form a complete expression
+        // Read remaining characters
         if paren_depth > 0 || in_string {
             loop {
-                match io.read_char(pid) {
+                match io_read!() {
                     Ok(c) => {
-                        if io.write_char(tmp, c).is_err() {
-                            let _ = io.close_port(tmp);
-                            return Err(self.make_error(ErrorKind::Generic, call_expr));
-                        }
-
                         if in_string {
+                            io_write!(c);
                             if escape {
                                 escape = false;
                             } else if c == '\\' {
@@ -4411,56 +5087,137 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 in_string = false;
                                 if paren_depth == 0 { break; }
                             }
-                        } else if c == '(' || c == '[' {
-                            paren_depth += 1;
-                        } else if c == ')' || c == ']' {
-                            paren_depth -= 1;
-                            if paren_depth == 0 { break; }
-                        } else if c == '"' {
-                            in_string = true;
+                        } else if c == ';' {
+                            loop {
+                                match io_read!() {
+                                    Ok('\n') | Ok('\r') => break,
+                                    Ok(_) => {}
+                                    Err(_) => break,
+                                }
+                            }
+                        } else if c == '#' {
+                            match io_peek!() {
+                                Ok('|') => {
+                                    let _ = io_read!();
+                                    let mut depth = 1i32;
+                                    let mut prev = ' ';
+                                    while depth > 0 {
+                                        match io_read!() {
+                                            Ok(bc) => {
+                                                if prev == '#' && bc == '|' { depth += 1; }
+                                                if prev == '|' && bc == '#' { depth -= 1; }
+                                                prev = bc;
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+                                Ok(';') => {
+                                    let _ = io_read!();
+                                    // Datum comment: skip next datum.
+                                    // Propagate errors (e.g., #;. is invalid)
+                                    self.apply_read_builtin(pid, call_expr)?;
+                                }
+                                Ok('(') => {
+                                    let _ = io_read!();
+                                    io_write!('#');
+                                    io_write!('(');
+                                    paren_depth += 1;
+                                }
+                                Ok('u') => {
+                                    let _ = io_read!();
+                                    io_write!('#');
+                                    io_write!('u');
+                                    match io_peek!() {
+                                        Ok('8') => {
+                                            let _ = io_read!();
+                                            io_write!('8');
+                                            match io_peek!() {
+                                                Ok('(') => {
+                                                    let _ = io_read!();
+                                                    io_write!('(');
+                                                    paren_depth += 1;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {
+                                    io_write!(c);
+                                }
+                            }
+                        } else {
+                            io_write!(c);
+                            if c == '(' || c == '[' {
+                                paren_depth += 1;
+                            } else if c == ')' || c == ']' {
+                                paren_depth -= 1;
+                                if paren_depth == 0 { break; }
+                            } else if c == '"' {
+                                in_string = true;
+                            }
                         }
                     }
                     Err(grift_parser::IoErrorKind::Eof) => break,
                     Err(_) => {
-                        let _ = io.close_port(tmp);
+                        io_close_tmp!();
                         return Err(self.make_error(ErrorKind::Generic, call_expr));
                     }
                 }
             }
-        } else if got_token {
-            // Continue reading the token (number, symbol, etc.)
+        } else if got_token || in_bar_sym {
             loop {
-                match io.peek_char(pid) {
-                    Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => break,
+                match io_peek!() {
+                    Ok(c) if !in_bar_sym && (c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';') => break,
                     Ok(c) => {
-                        let _ = io.read_char(pid);
-                        if io.write_char(tmp, c).is_err() { break; }
+                        let _ = io_read!();
+                        let wc = if fold_case && !in_bar_sym && c.is_ascii_alphabetic() { c.to_ascii_lowercase() } else { c };
+                        io_write!(wc);
+                        if c == '|' { in_bar_sym = !in_bar_sym; }
+                        if !in_bar_sym && !got_token { got_token = true; break; }
                     }
                     Err(_) => break,
                 }
             }
+            // If we just closed a bar symbol and there's more to read
+            if got_token && !in_bar_sym {
+                // Continue reading any suffix after the closing |
+                loop {
+                    match io_peek!() {
+                        Ok(c) if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' || c == '"' || c == ';' => break,
+                        Ok(c) => {
+                            let _ = io_read!();
+                            let wc = if fold_case && c.is_ascii_alphabetic() { c.to_ascii_lowercase() } else { c };
+                            io_write!(wc);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
         }
 
-        // Parse the accumulated expression from the temp port
+        // Parse the accumulated expression
         let result = {
-            let s = match io.get_output_string(tmp) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ = io.close_port(tmp);
+            let s = match self.io.as_ref().and_then(|io| io.get_output_string(tmp).ok()) {
+                Some(s) => s,
+                None => {
+                    io_close_tmp!();
                     return Err(self.make_error(ErrorKind::Generic, call_expr));
                 }
             };
             if s.is_empty() {
-                let _ = io.close_port(tmp);
+                io_close_tmp!();
                 return self.lisp.eof().map_err(Into::into);
             }
             grift_parser::parse(self.lisp, s)
         };
 
-        let _ = io.close_port(tmp);
+        io_close_tmp!();
         match result {
             Ok(expr) => Ok(expr),
-            Err(e) => Err(EvalError::from(e)),
+            Err(e) => Err(EvalError::from_parse_error(e, call_expr)),
         }
     }
 
@@ -4468,10 +5225,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Returns the PortId of the output string port containing the string content.
     /// The caller is responsible for closing the port after use.
     pub(super) fn string_to_output_port(&mut self, idx: ArenaIndex, call_expr: ArenaIndex) -> Result<grift_parser::PortId, EvalError> {
-        let (len, data) = match self.lisp.get(idx)? {
-            Value::String { len, data } => (len, data),
-            v => return Err(self.type_error(call_expr, "string", v.type_name())),
-        };
+        let (len, data) = self.get_string(idx, call_expr)?;
         let io = match &mut self.io {
             Some(io) => io,
             None => return Err(EvalError::new(ErrorKind::Generic).with_expr(call_expr)),
@@ -4805,4 +5559,56 @@ fn isqrt(n: usize) -> usize {
         y = (x + n / x) / 2;
     }
     x
+}
+
+/// Format an isize as a decimal string into `buf`, returning the number of chars written.
+///
+/// The caller must ensure `buf` is large enough to hold the formatted number
+/// (at most 20 digits plus an optional sign character).
+fn format_isize_decimal(n: isize, buf: &mut [char]) -> usize {
+    let negative = n < 0;
+    let mut val = n.unsigned_abs();
+    let mut digits = [0u8; 20];
+    let mut dlen = 0;
+    if val == 0 {
+        digits[0] = b'0';
+        dlen = 1;
+    } else {
+        while val > 0 {
+            digits[dlen] = b'0' + (val % 10) as u8;
+            dlen += 1;
+            val /= 10;
+        }
+    }
+    let mut pos = 0;
+    if negative {
+        buf[pos] = '-';
+        pos += 1;
+    }
+    for i in (0..dlen).rev() {
+        buf[pos] = digits[i] as char;
+        pos += 1;
+    }
+    pos
+}
+
+/// BigNum exponentiation: base^power using BigNumBuf.
+fn bignum_pow(base: isize, power: usize) -> crate::bignum::BigNumBuf {
+    use crate::bignum::BigNumBuf;
+    if power == 0 {
+        return BigNumBuf::from_isize(1);
+    }
+    let mut result = BigNumBuf::from_isize(1);
+    let mut b = BigNumBuf::from_isize(base);
+    let mut exp = power;
+    while exp > 0 {
+        if exp % 2 == 1 {
+            result = result.mul(&b);
+        }
+        exp /= 2;
+        if exp > 0 {
+            b = b.mul(&b);
+        }
+    }
+    result
 }

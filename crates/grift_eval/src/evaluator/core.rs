@@ -18,6 +18,34 @@ use crate::native::{NativeRegistry, NativeFn};
 
 use super::Evaluator;
 
+/// Format an `isize` into a byte buffer, returning the resulting `&str`.
+///
+/// Used in `no_std` context for matching numeric library name components.
+/// A 20-byte buffer is sufficient for all `isize` values (max 19 digits + sign for i64).
+fn format_isize(mut n: isize, buf: &mut [u8; 20]) -> &str {
+    let negative = n < 0;
+    if negative {
+        n = -n;
+    }
+    let mut pos = buf.len();
+    if n == 0 {
+        pos -= 1;
+        buf[pos] = b'0';
+    } else {
+        while n > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+    }
+    if negative {
+        pos -= 1;
+        buf[pos] = b'-';
+    }
+    // Only ASCII digits and '-' are written, so this is always valid UTF-8
+    core::str::from_utf8(&buf[pos..]).unwrap_or("")
+}
+
 impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
     fn trace_roots(&self, tracer: &mut dyn FnMut(ArenaIndex)) {
         tracer(self.global_env.0);
@@ -79,20 +107,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         
         // Load standard macros
         eval.load_standard_macros()?;
+
+        // Register (scheme base) in the library registry so that
+        // `(import (scheme base))` finds it without re-evaluating
+        // base.scm (which would cause macro redefinition conflicts).
+        eval.register_base_library()?;
         
         Ok(eval)
     }
     
-    /// Load standard macro definitions from the combined prelude.
+    /// Load standard macro definitions from base.scm.
     /// 
     /// Only `define-syntax` forms are evaluated (not `define` forms, which are
-    /// already handled by the StdLib enum). This allows the prelude to contain
-    /// both macros and function definitions in a single file.
+    /// already handled by the StdLib enum). This allows the file to contain
+    /// both macros and function definitions.
     ///
-    /// Parses one form at a time to avoid holding a large unrooted list
-    /// that could be collected by auto-GC during macro evaluation.
+    /// Since base.scm is wrapped in a `define-library` form, this method
+    /// skips past the wrapper (define-library, export, begin) to find the
+    /// actual definitions inside the begin block. It then parses and
+    /// evaluates forms one at a time like the original prelude loader.
     fn load_standard_macros(&mut self) -> Result<(), EvalError> {
-        let mut parser = Parser::new(PRELUDE_SOURCE);
+        // Find the start of the (begin ...) block's contents within base.scm.
+        // We scan for the last "(begin" line that's part of the define-library
+        // wrapper, then parse forms from there.
+        let begin_content = Self::extract_begin_content(PRELUDE_SOURCE);
+        
+        let mut parser = Parser::new(begin_content);
         while parser.has_more() {
             let form = parser.parse(self.lisp)?;
             // Only evaluate define-syntax forms; skip plain define forms
@@ -117,28 +157,135 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         Ok(())
     }
+
+    /// Register `(scheme base)` in the library registry.
+    ///
+    /// After `load_standard_macros` evaluates base.scm's definitions into the
+    /// global and macro environments, we register the library so that
+    /// subsequent `(import (scheme base))` calls resolve from the registry
+    /// without re-parsing and re-evaluating the define-library form.
+    fn register_base_library(&mut self) -> Result<(), EvalError> {
+        let scheme = self.lisp.symbol("scheme")?;
+        let base = self.lisp.symbol("base")?;
+        let nil = self.lisp.nil()?;
+        let lib_name = self.lisp.cons(base, nil)?;
+        let lib_name = self.lisp.cons(scheme, lib_name)?;
+
+        let env_pair = self.lisp.cons(self.global_env.0, self.macro_env.0)?;
+        let entry = self.lisp.cons(lib_name, env_pair)?;
+        self.library_registry = self.lisp.cons(entry, self.library_registry)?;
+        Ok(())
+    }
+
+    /// Extract the content inside the first `(begin ...)` block of a
+    /// `define-library` form. Returns a string slice starting after the
+    /// `(begin` token, ending before the final closing paren of the
+    /// define-library form.
+    ///
+    /// This allows parsing each definition inside the begin block
+    /// individually, avoiding the need to parse the entire library form
+    /// as one giant s-expression (which would use too much arena space).
+    fn extract_begin_content(source: &str) -> &str {
+        // Find "(begin" that's part of the define-library wrapper.
+        // In base.scm, the structure is:
+        //   (define-library (scheme base)
+        //     (export ...)
+        //     ...
+        //     (begin
+        //       <definitions here>
+        //     ))
+        //
+        // We need to find the "(begin" at the right nesting level.
+        // We look for a line that, when trimmed, starts with "(begin"
+        // and is inside the define-library but not inside another form.
+        
+        // Simple approach: find the first "(begin" that appears at the
+        // define-library body level (depth 1 from the define-library open paren).
+        let mut depth: i32 = 0;
+        let mut in_begin = false;
+        let mut begin_start = 0;
+        
+        let bytes = source.as_bytes();
+        let mut i = 0;
+        let mut in_string = false;
+        let mut in_comment = false;
+        
+        while i < bytes.len() {
+            let b = bytes[i];
+            
+            if in_comment {
+                if b == b'\n' {
+                    in_comment = false;
+                }
+                i += 1;
+                continue;
+            }
+            
+            if b == b';' && !in_string {
+                in_comment = true;
+                i += 1;
+                continue;
+            }
+            
+            if b == b'"' {
+                in_string = !in_string;
+                i += 1;
+                continue;
+            }
+            
+            if b == b'\\' && in_string {
+                i += 2; // Skip escaped character
+                continue;
+            }
+            
+            if in_string {
+                i += 1;
+                continue;
+            }
+            
+            if b == b'(' {
+                depth += 1;
+                // Check if this opens a (begin at depth 2
+                // (depth 1 = define-library, depth 2 = export/begin)
+                if depth == 2 {
+                    // Check if this is "(begin"
+                    let rest = &source[i..];
+                    if rest.starts_with("(begin") {
+                        // Skip past "(begin" and whitespace
+                        let after_begin = &source[i + 6..];
+                        // Find the start of actual content (skip whitespace/newlines)
+                        let content_start = i + 6 + after_begin.len() 
+                            - after_begin.trim_start().len();
+                        begin_start = content_start;
+                        in_begin = true;
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            
+            if b == b')' {
+                if in_begin && depth == 2 {
+                    // This closes the (begin ...) block
+                    // Return content from begin_start to here
+                    return &source[begin_start..i];
+                }
+                depth -= 1;
+                i += 1;
+                continue;
+            }
+            
+            i += 1;
+        }
+        
+        // Fallback: if we can't find begin block, return the whole source
+        // (this maintains backward compatibility with flat prelude files)
+        source
+    }
     
     /// Check if an ArenaIndex is the `define` symbol (but not `define-syntax` etc.)
-    fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
-        if let Ok(Value::Symbol(chars)) = self.lisp.get(idx) {
-            let len = self.lisp.string_len(chars).unwrap_or(0);
-            if len != 6 {
-                return false;
-            }
-            // Check for exactly "define"
-            for (i, &expected) in b"define".iter().enumerate() {
-                if let Ok(c) = self.lisp.string_char_at(chars, i) {
-                    if c as u8 != expected {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            true
-        } else {
-            false
-        }
+    pub(super) fn is_define_symbol(&self, idx: ArenaIndex) -> bool {
+        self.lisp.symbol_matches(idx, "define").unwrap_or(false)
     }
     
     /// Get the Lisp context
@@ -361,51 +508,43 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Err(err);
         }
 
-        // Build the message string for the error object
-        let msg_str = err.kind.as_str();
-        let message = match self.lisp.string(msg_str) {
-            Ok(m) => m,
-            Err(_) => return Err(err),
-        };
+        // Helper: bail with the original error on allocation failure
+        macro_rules! or_bail {
+            ($e:expr) => { match $e { Ok(v) => v, Err(_) => return Err(err) } }
+        }
 
-        // Build irritants list from the error context
-        let nil = match self.lisp.nil() {
-            Ok(n) => n,
-            Err(_) => return Err(err),
+        let msg_str = if let Some(ref pe) = err.parse_error {
+            match pe.kind {
+                ParseErrorKind::OutOfMemory => "parse error (out of memory)",
+                ParseErrorKind::UnexpectedEof => "parse error (unexpected eof)",
+                ParseErrorKind::UnmatchedParen => "parse error (unmatched paren)",
+                ParseErrorKind::UnexpectedChar(_) => "parse error (unexpected char)",
+                ParseErrorKind::NumberOverflow => "parse error (number overflow)",
+                ParseErrorKind::InvalidHashLiteral => "parse error (invalid hash literal)",
+                ParseErrorKind::InvalidCharLiteral => "parse error (invalid char literal)",
+                ParseErrorKind::InvalidEscapeSequence => "parse error (invalid escape)",
+                ParseErrorKind::UnterminatedString => "parse error (unterminated string)",
+            }
+        } else {
+            err.kind.as_str()
         };
+        let message = or_bail!(self.lisp.string(msg_str));
+        let nil = or_bail!(self.lisp.nil());
 
         let irritants = if !err.expr.is_nil() {
-            match self.lisp.cons(err.expr, nil) {
-                Ok(i) => i,
-                Err(_) => return Err(err),
-            }
+            or_bail!(self.lisp.cons(err.expr, nil))
         } else {
             nil
         };
 
-        // Build the R7RS error object: (irritants . type)
         // Tag parse errors as read-errors and file errors as file-errors per R7RS §6.11
-        let error_type = if err.kind == ErrorKind::Parse {
-            match self.lisp.symbol("read-error") {
-                Ok(s) => s,
-                Err(_) => return Err(err),
-            }
-        } else if err.kind == ErrorKind::FileError {
-            match self.lisp.symbol("file-error") {
-                Ok(s) => s,
-                Err(_) => return Err(err),
-            }
-        } else {
-            nil
+        let error_type = match err.kind {
+            ErrorKind::Parse => or_bail!(self.lisp.symbol("read-error")),
+            ErrorKind::FileError => or_bail!(self.lisp.symbol("file-error")),
+            _ => nil,
         };
-        let irritants_and_type = match self.lisp.cons(irritants, error_type) {
-            Ok(it) => it,
-            Err(_) => return Err(err),
-        };
-        let error_obj = match self.lisp.alloc(Value::ErrorObject { message, irritants_and_type }) {
-            Ok(o) => o,
-            Err(_) => return Err(err),
-        };
+        let irritants_and_type = or_bail!(self.lisp.cons(irritants, error_type));
+        let error_obj = or_bail!(self.lisp.alloc(Value::ErrorObject { message, irritants_and_type }));
 
         // Route through the exception handler chain (non-continuable)
         match self.invoke_exception_handler(error_obj, false) {
@@ -421,86 +560,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
     
     /// Extend an environment with a binding
-    #[inline]
     pub(crate) fn env_extend(&self, env: EnvRef, name: ArenaIndex, value: ArenaIndex) -> Result<EnvRef, EvalError> {
         let binding = self.lisp.cons(name, value)?;
         Ok(EnvRef(self.lisp.cons(binding, env.0)?))
     }
     
-    /// Look up a variable in an environment
-    #[inline]
-    pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
-        let mut current = env.0;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Try global
-                    return self.env_lookup_global(name);
-                }
-                Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
-    /// Look up in global environment only
-    fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env.0;
-        
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
-                Value::Cons { car, cdr } => {
-                    // With inline cons, we get car and cdr directly
-                    if let Value::Cons { car: bound_name, cdr: bound_value } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        return Ok(bound_value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
-        }
-    }
-    
-    /// Check if a variable is bound in the environment (local or global)
-    /// Returns true if the variable exists, false otherwise.
-    /// This is used to determine if a variable binding shadows a macro.
-    pub(super) fn is_variable_bound(&self, env: EnvRef, name: ArenaIndex) -> Result<bool, EvalError> {
-        // Check local environment first
-        if self.env_contains(env.0, name)? {
-            return Ok(true);
-        }
-        
-        // Check global environment
-        self.env_contains(self.global_env.0, name)
-    }
-    
-    /// Helper to check if a name exists in a specific environment chain
-    #[inline]
-    fn env_contains(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<bool, EvalError> {
+    /// Find a binding cell `(name . value)` for `name` in an environment chain.
+    ///
+    /// Returns `Ok(Some(binding_cell))` if found, `Ok(None)` if the chain ends
+    /// with Nil, or `Err` if the environment is malformed (e.g., not a proper list).
+    fn env_find_binding(&self, mut env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         loop {
             match self.lisp.get(env)? {
-                Value::Nil => {
-                    return Ok(false);
-                }
+                Value::Nil => return Ok(None),
                 Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, cdr: _ } = self.lisp.get(car)?
+                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
                         && self.lisp.symbol_eq(bound_name, name)?
                     {
-                        return Ok(true);
+                        return Ok(Some(car));
                     }
                     env = cdr;
                 }
@@ -508,82 +585,65 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
     }
+
+    pub(super) fn env_lookup(&self, env: EnvRef, name: ArenaIndex) -> EvalResult {
+        if let Some(binding) = self.env_find_binding(env.0, name)? {
+            return self.lisp.cdr(binding).map_err(Into::into);
+        }
+        // Try global
+        self.env_lookup_global(name)
+    }
+    
+    /// Look up in global environment only
+    fn env_lookup_global(&self, name: ArenaIndex) -> EvalResult {
+        match self.env_find_binding(self.global_env.0, name)? {
+            Some(binding) => self.lisp.cdr(binding).map_err(Into::into),
+            None => Err(self.make_error(ErrorKind::UnboundVariable, name)),
+        }
+    }
+    
+    /// Check if a variable is bound in the environment (local or global)
+    /// Returns true if the variable exists, false otherwise.
+    /// This is used to determine if a variable binding shadows a macro.
+    pub(super) fn is_variable_bound(&self, env: EnvRef, name: ArenaIndex) -> Result<bool, EvalError> {
+        if self.env_find_binding(env.0, name)?.is_some() {
+            return Ok(true);
+        }
+        Ok(self.env_find_binding(self.global_env.0, name)?.is_some())
+    }
     
     /// Set a variable in an environment (mutation operation)
     /// Searches both local and global environments
     /// Returns the new value on success
     pub(super) fn env_set(&self, env: EnvRef, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // First search local environment
-        let mut current = env.0;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found in local env, try global
-                    return self.env_set_global(name, value);
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
+        if let Some(binding) = self.env_find_binding(env.0, name)? {
+            self.lisp.set_cdr(binding, value)?;
+            return Ok(value);
         }
+        // Not found in local env, try global
+        self.env_set_global(name, value)
     }
     
     /// Set a variable in global environment only
     fn env_set_global(&self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        let mut current = self.global_env.0;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found anywhere - error
-                    return Err(self.make_error(ErrorKind::UnboundVariable, name));
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Found it - mutate the binding
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
+        match self.env_find_binding(self.global_env.0, name)? {
+            Some(binding) => {
+                self.lisp.set_cdr(binding, value)?;
+                Ok(value)
             }
+            None => Err(self.make_error(ErrorKind::UnboundVariable, name)),
         }
     }
     
     /// Define in global environment (NOTE: only allowed at top-level)
     pub fn define(&mut self, name: ArenaIndex, value: ArenaIndex) -> EvalResult {
-        // Check if already defined and update
-        let mut current = self.global_env.0;
-        loop {
-            match self.lisp.get(current)? {
-                Value::Nil => {
-                    // Not found, add new binding
-                    self.global_env = self.env_extend(self.global_env, name, value)?;
-                    return Ok(value);
-                }
-                Value::Cons { car, cdr } => {
-                    if let Value::Cons { car: bound_name, .. } = self.lisp.get(car)?
-                        && self.lisp.symbol_eq(bound_name, name)?
-                    {
-                        // Update existing
-                        self.lisp.set_cdr(car, value)?;
-                        return Ok(value);
-                    }
-                    current = cdr;
-                }
-                _ => return Err(self.make_error(ErrorKind::Generic, name)),
-            }
+        if let Some(binding) = self.env_find_binding(self.global_env.0, name)? {
+            self.lisp.set_cdr(binding, value)?;
+            return Ok(value);
         }
+        // Not found, add new binding
+        self.global_env = self.env_extend(self.global_env, name, value)?;
+        Ok(value)
     }
     
     // ========================================================================
@@ -594,7 +654,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Creates a new ContFrame in the arena and links it to the current continuation chain.
     /// This is O(1) allocation and enables O(1) capture for call/cc.
-    #[inline]
     pub(super) fn push_cont(&mut self, cont_type: ContType, data: ArenaIndex, env: ArenaIndex) -> Result<(), EvalError> {
         let new_frame = self.lisp.cont_frame(cont_type, data, self.current_cont, env)?;
         self.current_cont = new_frame;
@@ -616,7 +675,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// // Use:
     /// self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env)?;
     /// ```
-    #[inline]
     pub(super) fn cont(&mut self, cont_type: ContType, env: EnvRef) -> ContBuilder<'_, 'a, N> {
         ContBuilder { evaluator: self, cont_type, env }
     }
@@ -627,7 +685,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// then updates current_cont to point to the parent frame.
     ///
     /// Returns (ContType::Done, nil, nil) if the continuation stack is empty.
-    #[inline]
     pub(super) fn pop_cont(&mut self) -> Result<(ContType, ArenaIndex, ArenaIndex), EvalError> {
         if self.current_cont.is_nil() {
             let nil = self.lisp.nil()?;
@@ -750,7 +807,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // Self-evaluating values
             Value::Nil | Value::Void | Value::True | Value::False | 
             Value::Number(_) | Value::Float(_) | Value::Rational { .. } |
-            Value::Complex { .. } | Value::Char(_) | 
+            Value::Complex { .. } | Value::BigNum { .. } | Value::Char(_) | 
             Value::Builtin(_) | Value::StdLib(_) | Value::Lambda { .. } |
             Value::Array { .. } | Value::Bytevector { .. } | Value::String { .. } | Value::Native { .. } |
             Value::Ref(_) | Value::Usize(_) |
@@ -885,7 +942,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Look up a symbol in an environment, returning None if not found
-    #[inline]
     pub(super) fn lookup_in_env_optional(&self, env: ArenaIndex, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         let mut current = env;
         
@@ -1093,49 +1149,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // a packed ArenaIndex.
     
     /// Unpack 1 value (just returns it as-is)
-    #[inline]
     pub(super) fn unpack1(&self, data: ArenaIndex) -> ArenaIndex {
         data
     }
     
     /// Pack 2 values into a cons cell: (a . b)
-    #[inline]
     pub(super) fn pack2(&self, a: ArenaIndex, b: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         self.lisp.cons(a, b).map_err(Into::into)
     }
     
     /// Unpack 2 values from a cons cell: (a . b) -> (a, b)
-    #[inline]
     pub(super) fn unpack2(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         self.lisp.car_cdr(data).map_err(Into::into)
     }
     
     /// Pack N values into nested cons: builds right-nested (a . (b . (c . ...)))
-    #[inline]
     pub(super) fn pack3(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack2(b, c)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     pub(super) fn pack4(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack3(b, c, d)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     pub(super) fn pack5(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack4(b, c, d, e)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     pub(super) fn pack6(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack5(b, c, d, e, f)?;
         self.pack2(a, rest)
     }
     
-    #[inline]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn pack7(&self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<ArenaIndex, EvalError> {
         let rest = self.pack6(b, c, d, e, f, g)?;
@@ -1143,35 +1191,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Unpack N values from nested cons
-    #[inline]
     pub(super) fn unpack3(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c) = self.unpack2(rest)?;
         Ok((a, b, c))
     }
     
-    #[inline]
     pub(super) fn unpack4(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d) = self.unpack3(rest)?;
         Ok((a, b, c, d))
     }
     
-    #[inline]
     pub(super) fn unpack5(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d, e) = self.unpack4(rest)?;
         Ok((a, b, c, d, e))
     }
     
-    #[inline]
     pub(super) fn unpack6(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
         let (b, c, d, e, f) = self.unpack5(rest)?;
         Ok((a, b, c, d, e, f))
     }
     
-    #[inline]
     #[allow(clippy::type_complexity)]
     pub(super) fn unpack7(&self, data: ArenaIndex) -> Result<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex), EvalError> {
         let (a, rest) = self.unpack2(data)?;
@@ -1180,25 +1223,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Encode Builtin as ArenaIndex (store discriminant as raw usize)
-    #[inline]
     pub(super) fn encode_builtin(builtin: Builtin) -> ArenaIndex {
         ArenaIndex::new(builtin as usize)
     }
     
     /// Decode Builtin from ArenaIndex
-    #[inline]
     pub(super) fn decode_builtin(encoded: ArenaIndex) -> Builtin {
         Builtin::from_usize(encoded.raw())
     }
     
     /// Encode usize as ArenaIndex
-    #[inline]
     pub(super) fn encode_usize(val: usize) -> ArenaIndex {
         ArenaIndex::new(val)
     }
     
     /// Decode usize from ArenaIndex
-    #[inline]
     pub(super) fn decode_usize(encoded: ArenaIndex) -> usize {
         encoded.raw()
     }
@@ -1220,7 +1259,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
     
     /// Check if a value is false (ONLY #f is false)
-    #[inline]
     pub(super) fn is_false(&self, val: ArenaIndex) -> Result<bool, EvalError> {
         Ok(self.lisp.get(val)?.is_false())
     }
@@ -1272,6 +1310,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // This is unreachable, but the compiler doesn't know that
         Err(EvalError::new(ErrorKind::OutOfMemory))
     }
+
+    /// Parse a stdlib body with auto-GC retry on out of memory.
+    /// Used when calling stdlib functions whose bodies are stored as source strings.
+    pub(super) fn parse_stdlib_body(&mut self, body: &str, call_expr: ArenaIndex, name: &str) -> EvalResult {
+        for attempt in 0..=Self::MAX_GC_RETRIES {
+            match parse(self.lisp, body) {
+                Ok(e) => return Ok(e),
+                Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => {
+                    if attempt < Self::MAX_GC_RETRIES {
+                        self.gc();
+                        continue;
+                    }
+                    return Err(self.parse_error_to_eval(e, call_expr, name));
+                }
+                Err(e) => return Err(self.parse_error_to_eval(e, call_expr, name)),
+            }
+        }
+        Err(EvalError::new(ErrorKind::OutOfMemory))
+    }
     
     /// Evaluate an expression with auto-GC retry on out of memory
     fn eval_with_gc_retry(&mut self, expr: ArenaIndex, input: &str) -> EvalResult {
@@ -1294,6 +1351,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ====================================================================
 
     /// Check whether a library name matches a static `&[&str]` name.
+    ///
+    /// Handles both symbol and numeric library name components,
+    /// e.g. `(srfi 64)` where `64` is parsed as a number.
     pub(super) fn library_name_matches_static(
         &self,
         arena_name: ArenaIndex,
@@ -1303,7 +1363,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         for &part in static_name {
             if let Value::Cons { .. } = self.lisp.get(cur)? {
                 let head = self.lisp.car(cur)?;
-                if !self.lisp.symbol_matches(head, part)? {
+                // Check if the part matches as a symbol
+                let matches_sym = self.lisp.symbol_matches(head, part)?;
+                // Also check if the part is a number matching the string
+                let matches_num = if !matches_sym {
+                    if let Value::Number(n) = self.lisp.get(head)? {
+                        // Compare the number's string representation to the part
+                        let mut buf = [0u8; 20];
+                        let s = format_isize(n, &mut buf);
+                        s == part
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !matches_sym && !matches_num {
                     return Ok(false);
                 }
                 cur = self.lisp.cdr(cur)?;
@@ -1498,48 +1573,41 @@ pub(super) struct ContBuilder<'e, 'a, const N: usize> {
 
 impl<'e, 'a, const N: usize> ContBuilder<'e, 'a, N> {
     /// Push with a single value (no packing needed).
-    #[inline]
     pub fn data1(self, a: ArenaIndex) -> Result<(), EvalError> {
         self.evaluator.push_cont(self.cont_type, a, self.env.0)
     }
     
     /// Pack 2 values as `(a . b)` and push.
-    #[inline]
     pub fn data2(self, a: ArenaIndex, b: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack2(a, b)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 3 values as `(a . (b . c))` and push.
-    #[inline]
     pub fn data3(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack3(a, b, c)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 4 values as `(a . (b . (c . d)))` and push.
-    #[inline]
     pub fn data4(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack4(a, b, c, d)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 5 values as `(a . (b . (c . (d . e))))` and push.
-    #[inline]
     pub fn data5(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack5(a, b, c, d, e)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 6 values as `(a . (b . (c . (d . (e . f)))))` and push.
-    #[inline]
     pub fn data6(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack6(a, b, c, d, e, f)?;
         self.evaluator.push_cont(self.cont_type, data, self.env.0)
     }
     
     /// Pack 7 values as `(a . (b . (c . (d . (e . (f . g))))))` and push.
-    #[inline]
     #[allow(clippy::too_many_arguments)]
     pub fn data7(self, a: ArenaIndex, b: ArenaIndex, c: ArenaIndex, d: ArenaIndex, e: ArenaIndex, f: ArenaIndex, g: ArenaIndex) -> Result<(), EvalError> {
         let data = self.evaluator.pack7(a, b, c, d, e, f, g)?;

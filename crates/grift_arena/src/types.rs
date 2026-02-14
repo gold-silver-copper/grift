@@ -43,19 +43,16 @@ impl ArenaIndex {
     /// For normal use, obtain indices from [`Arena::alloc`] or [`Arena::iter`].
     /// Fabricating indices manually may lead to undefined behavior if the
     /// index doesn't correspond to a valid allocation.
-    #[inline]
     pub const fn new(index: usize) -> Self {
         ArenaIndex(index)
     }
 
     /// Get the raw slot index value.
-    #[inline]
     pub const fn raw(self) -> usize {
         self.0
     }
 
     /// Check if this is the NIL index (slot 0).
-    #[inline]
     pub const fn is_nil(self) -> bool {
         self.0 == 0
     }

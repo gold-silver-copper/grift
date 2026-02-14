@@ -664,6 +664,19 @@ pub enum Value {
     /// Stored as real and imaginary parts (both inexact).
     Complex { real: fsize, imag: fsize },
 
+    /// Arbitrary-precision integer (bignum)
+    ///
+    /// Used when an exact integer value overflows `isize`.
+    /// Limbs are stored as contiguous `Value::Usize` slots in base 2^32.
+    /// Least-significant limb first (little-endian order).
+    ///
+    /// # Memory Layout
+    ///
+    /// - `len`: number of u32 limbs
+    /// - `data`: ArenaIndex to first contiguous limb slot
+    /// - `negative`: sign flag
+    BigNum { len: usize, data: ArenaIndex, negative: bool },
+
     /// Single character (used in strings and symbol storage)
     Char(char),
     
@@ -965,7 +978,6 @@ macro_rules! value_predicates {
     ($( $(#[doc = $doc:literal])* $name:ident => $pat:pat ),+ $(,)?) => {
         $(
             $(#[doc = $doc])*
-            #[inline]
             pub const fn $name(&self) -> bool {
                 matches!(self, $pat)
             }
@@ -1002,8 +1014,8 @@ impl Value {
         is_stdlib => Value::StdLib(_),
         /// Check if this value is a native (Rust) function
         is_native => Value::Native { .. },
-        /// Check if this value is a procedure (lambda, builtin, stdlib, or native function)
-        is_procedure => Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. },
+        /// Check if this value is a procedure (lambda, builtin, stdlib, native function, or continuation)
+        is_procedure => Value::Lambda { .. } | Value::Builtin(_) | Value::StdLib(_) | Value::Native { .. } | Value::Continuation { .. },
         /// Check if this value is an array
         is_array => Value::Array { .. },
         /// Check if this value is a bytevector
@@ -1023,26 +1035,22 @@ impl Value {
     }
     
     /// Check if this value is an atom (not a cons cell)
-    #[inline]
     pub const fn is_atom(&self) -> bool {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number (integer, float, rational, or complex)
-    #[inline]
+    /// Check if this value is a number (integer, float, rational, complex, or bignum)
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. })
+        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } | Value::BigNum { .. })
     }
     
-    /// Check if this value is an integer
-    #[inline]
+    /// Check if this value is an integer (fixnum or bignum)
     pub const fn is_integer(&self) -> bool {
-        matches!(self, Value::Number(_))
+        matches!(self, Value::Number(_) | Value::BigNum { .. })
     }
     
     /// Extract ArenaIndex from a Ref value.
     /// Returns None if not a Ref.
-    #[inline]
     pub const fn as_ref(&self) -> Option<ArenaIndex> {
         match self {
             Value::Ref(idx) => Some(*idx),
@@ -1052,7 +1060,6 @@ impl Value {
     
     /// Extract ArenaIndex from a Ref value, panicking if not a Ref.
     /// Use only when you are certain the value is a Ref (e.g., after alloc_contiguous for Refs).
-    #[inline]
     pub fn unwrap_ref(self) -> ArenaIndex {
         match self {
             Value::Ref(idx) => idx,
@@ -1061,7 +1068,6 @@ impl Value {
     }
 
     /// Get the number value if this is an integer
-    #[inline]
     pub const fn as_number(&self) -> Option<isize> {
         match self {
             Value::Number(n) => Some(*n),
@@ -1070,7 +1076,6 @@ impl Value {
     }
     
     /// Get the float value if this is a Float
-    #[inline]
     pub fn as_float(&self) -> Option<fsize> {
         match self {
             Value::Float(f) => Some(*f),
@@ -1079,7 +1084,6 @@ impl Value {
     }
     
     /// Get the numeric value as an fsize (works for both Number and Float)
-    #[inline]
     pub fn as_fsize(&self) -> Option<fsize> {
         match self {
             Value::Number(n) => Some(*n as fsize),
@@ -1089,7 +1093,6 @@ impl Value {
     }
     
     /// Get the char value if this is a char
-    #[inline]
     pub const fn as_char(&self) -> Option<char> {
         match self {
             Value::Char(c) => Some(*c),
@@ -1098,7 +1101,6 @@ impl Value {
     }
     
     /// Get the usize value if this is a Usize
-    #[inline]
     pub const fn as_usize(&self) -> Option<usize> {
         match self {
             Value::Usize(n) => Some(*n),
@@ -1112,7 +1114,7 @@ impl Value {
             Value::Nil => "nil",
             Value::Void => "void",
             Value::True | Value::False => "boolean",
-            Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } => "number",
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } | Value::BigNum { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -1200,6 +1202,15 @@ impl<const N: usize> Trace<Value, N> for Value {
             | Value::Bytevector { len, data }
             | Value::String { len, data } => {
                 // For non-empty contiguous data, trace all element slots
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        tracer(ArenaIndex::new(base_idx + i));
+                    }
+                }
+            }
+            Value::BigNum { len, data, .. } => {
+                // Trace contiguous limb slots
                 if *len > 0 {
                     let base_idx = data.raw();
                     for i in 0..*len {

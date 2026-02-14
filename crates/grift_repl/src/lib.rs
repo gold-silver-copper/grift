@@ -14,22 +14,15 @@
 //! - Integrated `StdIoProvider` from `grift_std` for port-based I/O
 //!   (stdin, stdout, stderr, and dynamic string ports)
 //!
-//! ## Usage
-//!
-//! ```rust
-//! use grift_repl::run_repl;
-//!
-//! run_repl::<10000>();
-//! ```
 
 use rustyline::error::ReadlineError;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Completer, Editor, Helper, Highlighter, Hinter};
 
 pub use grift_eval::{
-    Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats,
-    Value, Builtin, StdLib, Lisp, DisplayValue, ParseError, ParseErrorKind, SourceLoc, parse,
-    EvalError, EvalResult, Evaluator, ErrorKind, StackFrame,
+    Arena, ArenaError, ArenaIndex, ArenaResult, Builtin, DisplayValue, ErrorKind, EvalError,
+    EvalResult, Evaluator, GcStats, Lisp, ParseError, ParseErrorKind, SourceLoc, StackFrame,
+    StdLib, Trace, Value, parse,
 };
 
 // ============================================================================
@@ -43,8 +36,8 @@ pub fn format_value<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex, buf: &mut S
 
 /// Format with depth limit for protection against cycles
 fn format_value_impl<const N: usize>(
-    lisp: &Lisp<N>, 
-    idx: ArenaIndex, 
+    lisp: &Lisp<N>,
+    idx: ArenaIndex,
     buf: &mut String,
     depth: usize,
 ) {
@@ -52,7 +45,7 @@ fn format_value_impl<const N: usize>(
         buf.push_str("...");
         return;
     }
-    
+
     match lisp.get(idx) {
         Ok(Value::Nil) => buf.push_str("()"),
         Ok(Value::Void) => buf.push_str("#<void>"),
@@ -67,7 +60,11 @@ fn format_value_impl<const N: usize>(
             if f.is_nan() {
                 buf.push_str("+nan.0");
             } else if f.is_infinite() {
-                if f > 0.0 { buf.push_str("+inf.0"); } else { buf.push_str("-inf.0"); }
+                if f > 0.0 {
+                    buf.push_str("+inf.0");
+                } else {
+                    buf.push_str("-inf.0");
+                }
             } else if f.is_finite() && f == (f as isize as grift_eval::fsize) {
                 write!(buf, "{:.1}", f).unwrap();
             } else {
@@ -80,11 +77,29 @@ fn format_value_impl<const N: usize>(
         }
         Ok(Value::Complex { real, imag }) => {
             use std::fmt::Write;
-            if imag >= 0.0 {
-                write!(buf, "{}+{}i", real, imag).unwrap();
-            } else {
-                write!(buf, "{}{}i", real, imag).unwrap();
+            fn fmt_fsize(buf: &mut String, v: grift_eval::fsize) {
+                if v.is_nan() {
+                    buf.push_str("+nan.0");
+                } else if v.is_infinite() {
+                    if v > 0.0 { buf.push_str("+inf.0"); } else { buf.push_str("-inf.0"); }
+                } else if v.is_finite() && v == (v as isize as grift_eval::fsize) {
+                    write!(buf, "{:.1}", v).unwrap();
+                } else {
+                    write!(buf, "{}", v).unwrap();
+                }
             }
+            fmt_fsize(buf, real);
+            // Add '+' only for finite non-negative values; inf/nan already include sign
+            if !imag.is_nan() && !imag.is_infinite() && imag >= 0.0 {
+                buf.push('+');
+            }
+            fmt_fsize(buf, imag);
+            buf.push('i');
+        }
+        Ok(Value::BigNum { .. }) => {
+            use std::fmt::Write;
+            // Use the Display implementation from grift_core
+            write!(buf, "{}", lisp.display(idx)).unwrap();
         }
         Ok(Value::Char(c)) => {
             buf.push_str("#\\");
@@ -207,20 +222,20 @@ fn format_value_impl<const N: usize>(
 
 /// Format the contents of a list (without outer parens)
 fn format_list_contents<const N: usize>(
-    lisp: &Lisp<N>, 
-    mut idx: ArenaIndex, 
+    lisp: &Lisp<N>,
+    mut idx: ArenaIndex,
     buf: &mut String,
     depth: usize,
 ) {
     let mut first = true;
     let mut count = 0;
-    
+
     loop {
         if count > 100 {
             buf.push_str(" ...");
             break;
         }
-        
+
         match lisp.get(idx) {
             Ok(Value::Nil) => break,
             Ok(Value::Cons { .. }) => {
@@ -228,7 +243,9 @@ fn format_list_contents<const N: usize>(
                     buf.push(' ');
                 }
                 first = false;
-                let (car, cdr) = lisp.car_cdr(idx).unwrap_or((ArenaIndex::NIL, ArenaIndex::NIL));
+                let (car, cdr) = lisp
+                    .car_cdr(idx)
+                    .unwrap_or((ArenaIndex::NIL, ArenaIndex::NIL));
                 format_value_impl(lisp, car, buf, depth);
                 idx = cdr;
                 count += 1;
@@ -270,16 +287,16 @@ pub fn value_to_string<const N: usize>(lisp: &Lisp<N>, idx: ArenaIndex) -> Strin
 }
 
 /// Output callback for display/newline during evaluation.
-/// 
+///
 /// This function is called by the evaluator when display or newline is executed,
 /// including during macro expansion phases. This allows output to be visible
 /// during both runtime evaluation and macro expansion.
-/// 
+///
 /// We check if the value is nil (which represents a newline) or an actual value.
 fn output_callback<const N: usize>(lisp: &Lisp<N>, val: ArenaIndex) {
     use std::io::{self, Write};
     let mut stdout = io::stdout();
-    
+
     // Check if this is a newline (represented by nil value)
     // We distinguish by checking the actual pointer - if it's the NIL constant
     if val.is_nil() {
@@ -299,11 +316,11 @@ fn output_callback<const N: usize>(lisp: &Lisp<N>, val: ArenaIndex) {
 /// Format an evaluation error with full context
 pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
     let mut buf = String::new();
-    
+
     // Main error message
     buf.push_str("Error: ");
     buf.push_str(err.kind.as_str());
-    
+
     // Additional context based on error type
     match err.kind {
         ErrorKind::UnboundVariable => {
@@ -321,7 +338,12 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
         ErrorKind::WrongArgCount => {
             if let Some(info) = &err.arg_info {
                 use std::fmt::Write;
-                write!(buf, ": expected {} arguments, got {}", info.expected, info.got).unwrap();
+                write!(
+                    buf,
+                    ": expected {} arguments, got {}",
+                    info.expected, info.got
+                )
+                .unwrap();
             }
         }
         ErrorKind::Parse => {
@@ -338,7 +360,9 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                     ParseErrorKind::OutOfMemory => buf.push_str("out of memory"),
                     ParseErrorKind::InvalidHashLiteral => buf.push_str("invalid # literal"),
                     ParseErrorKind::InvalidCharLiteral => buf.push_str("invalid character literal"),
-                    ParseErrorKind::InvalidEscapeSequence => buf.push_str("invalid escape sequence"),
+                    ParseErrorKind::InvalidEscapeSequence => {
+                        buf.push_str("invalid escape sequence")
+                    }
                     ParseErrorKind::UnterminatedString => buf.push_str("unterminated string"),
                 }
             }
@@ -352,7 +376,11 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
                     format_value(lisp, car, &mut buf);
                     // Remaining elements are additional args
                     let mut rest = cdr;
-                    while let Ok(Value::Cons { car: arg, cdr: next }) = lisp.get(rest) {
+                    while let Ok(Value::Cons {
+                        car: arg,
+                        cdr: next,
+                    }) = lisp.get(rest)
+                    {
                         buf.push(' ');
                         format_value(lisp, arg, &mut buf);
                         rest = next;
@@ -368,7 +396,9 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
         }
         _ => {
             // Include expression if available
-            if !err.expr.is_nil() && !matches!(err.kind, ErrorKind::OutOfMemory | ErrorKind::StackOverflow) {
+            if !err.expr.is_nil()
+                && !matches!(err.kind, ErrorKind::OutOfMemory | ErrorKind::StackOverflow)
+            {
                 buf.push_str(" in: ");
                 let mut expr_buf = String::new();
                 format_value(lisp, err.expr, &mut expr_buf);
@@ -382,17 +412,17 @@ pub fn format_error<const N: usize>(lisp: &Lisp<N>, err: &EvalError) -> String {
             }
         }
     }
-    
+
     // Custom message if present
     let msg = err.message;
     if !msg.is_empty() {
         buf.push_str("\n  ");
         buf.push_str(msg);
     }
-    
+
     // Note: Stack traces are no longer embedded in EvalError for efficiency.
     // The evaluator maintains its own call stack which can be accessed separately.
-    
+
     buf
 }
 
@@ -408,11 +438,9 @@ pub struct Repl<const N: usize> {
 impl<const N: usize> Repl<N> {
     /// Create a new REPL
     pub fn new() -> Self {
-        Repl {
-            lisp: Lisp::new(),
-        }
+        Repl { lisp: Lisp::new() }
     }
-    
+
     /// Get the Lisp context
     pub fn lisp(&self) -> &Lisp<N> {
         &self.lisp
@@ -511,7 +539,9 @@ impl Validator for SchemeValidator {
             }
             if !in_string {
                 match c {
-                    ';' => { in_line_comment = true; }
+                    ';' => {
+                        in_line_comment = true;
+                    }
                     '(' => depth += 1,
                     ')' => depth -= 1,
                     _ => {}
@@ -527,6 +557,131 @@ impl Validator for SchemeValidator {
     }
 }
 
+/// Check if input contains multiple top-level expressions.
+///
+/// Counts balanced parenthesized forms and standalone atoms at the top level,
+/// skipping strings and comments.  Returns true if there are two or more
+/// distinct expressions.
+fn has_multiple_expressions(input: &str) -> bool {
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut escape = false;
+    let mut expr_count: usize = 0;
+    let mut in_atom = false;
+
+    for c in input.chars() {
+        if in_line_comment {
+            if c == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            if !in_string {
+                in_string = true;
+                if depth == 0 && !in_atom {
+                    in_atom = true;
+                }
+            } else {
+                in_string = false;
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            ';' => {
+                in_line_comment = true;
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            '(' => {
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+                depth += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    // Unbalanced closing paren — not valid multi-expression input
+                    return false;
+                }
+                if depth == 0 {
+                    expr_count += 1;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            ' ' | '\t' | '\n' | '\r' => {
+                if depth == 0 && in_atom {
+                    expr_count += 1;
+                    in_atom = false;
+                    if expr_count > 1 {
+                        return true;
+                    }
+                }
+            }
+            '\'' | '`' | ',' => {
+                // Quote-like prefixes don't start a new expression on their own
+                if depth == 0 && !in_atom {
+                    in_atom = true;
+                }
+            }
+            _ => {
+                if depth == 0 && !in_atom {
+                    in_atom = true;
+                }
+            }
+        }
+    }
+    // Handle trailing atom
+    if depth == 0 && in_atom {
+        expr_count += 1;
+    }
+    expr_count > 1
+}
+
+/// Wrap input in `(begin ...)` if it contains multiple top-level expressions.
+fn maybe_wrap_begin(input: &str) -> String {
+    if has_multiple_expressions(input) {
+        let mut wrapped = String::with_capacity(input.len() + 8);
+        wrapped.push_str("(begin ");
+        wrapped.push_str(input);
+        wrapped.push(')');
+        wrapped
+    } else {
+        input.to_string()
+    }
+}
+
 /// Run a REPL session
 pub fn run_repl<const N: usize>() {
     let lisp: Lisp<N> = Lisp::new();
@@ -534,19 +689,22 @@ pub fn run_repl<const N: usize>() {
     let mut eval = match Evaluator::new(&lisp) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("Failed to initialize evaluator: {}", format_error(&lisp, &e));
+            eprintln!(
+                "Failed to initialize evaluator: {}",
+                format_error(&lisp, &e)
+            );
             return;
         }
     };
-    
+
     // Set output callback for display/newline to enable side effects during macro expansion
     eval.set_output_callback(Some(output_callback));
     // Set I/O provider for port operations
     eval.set_io_provider(&mut io);
-    
+
     let mut line_editor = Editor::new().expect("Failed to create line editor");
     line_editor.set_helper(Some(SchemeValidator));
-    
+
     println!("Grift Lisp");
     println!("========================");
     println!("Features: TCO, strict (call-by-value), full mutation, rich errors");
@@ -554,7 +712,7 @@ pub fn run_repl<const N: usize>() {
     println!("Type :help for commands, Ctrl+D to exit.");
     println!("Arena capacity: {} cells", N);
     println!();
-    
+
     loop {
         match line_editor.readline("Λ ") {
             Ok(line) => {
@@ -562,10 +720,10 @@ pub fn run_repl<const N: usize>() {
                 if input.is_empty() || is_only_comments_and_whitespace(input) {
                     continue;
                 }
-                
+
                 // Add to history
                 let _ = line_editor.add_history_entry(input);
-                
+
                 // Special commands
                 if input.starts_with(':') {
                     if handle_command(input, &lisp, &mut eval) {
@@ -574,9 +732,10 @@ pub fn run_repl<const N: usize>() {
                     // If handle_command returns false, it's :quit
                     break;
                 }
-                
-                // Evaluate
-                match eval.eval_str(input) {
+
+                // Evaluate (auto-wrap multiple expressions in begin)
+                let wrapped = maybe_wrap_begin(input);
+                match eval.eval_str(&wrapped) {
                     Ok(result) => {
                         // Don't print anything for void values (from define, set!, display, etc.)
                         if !matches!(lisp.get(result), Ok(Value::Void)) {
@@ -607,7 +766,7 @@ pub fn run_repl<const N: usize>() {
 /// Handle REPL commands. Returns true to continue, false to quit.
 fn handle_command<const N: usize>(input: &str, lisp: &Lisp<N>, eval: &mut Evaluator<N>) -> bool {
     let cmd = input.trim();
-    
+
     match cmd {
         ":q" | ":quit" | ":exit" => {
             println!("Goodbye!");
@@ -633,8 +792,10 @@ fn handle_command<const N: usize>(input: &str, lisp: &Lisp<N>, eval: &mut Evalua
             print_help();
         }
         ":env" => {
-            println!("Global environment has {} bindings", 
-                     count_env(lisp, eval.global_env()));
+            println!(
+                "Global environment has {} bindings",
+                count_env(lisp, eval.global_env())
+            );
         }
         _ if cmd.starts_with(":load ") => {
             let path = cmd.trim_start_matches(":load ").trim();
@@ -667,7 +828,7 @@ fn handle_command<const N: usize>(input: &str, lisp: &Lisp<N>, eval: &mut Evalua
             println!("Type :help for available commands");
         }
     }
-    
+
     true
 }
 
@@ -686,7 +847,8 @@ fn count_env<const N: usize>(lisp: &Lisp<N>, mut env: ArenaIndex) -> usize {
 }
 
 fn print_help() {
-    print!("\
+    print!(
+        "\
 Grift Lisp Help
 =================
 
@@ -777,14 +939,67 @@ Examples:
   ; Iteration with do
   (do ((i 1 (+ i 1)) (sum 0 (+ sum i)))
       ((> i 5) sum))  ; => 15
-");
+"
+    );
 }
 
 /// Evaluate a string and return the result as a string
-pub fn eval_to_string<const N: usize>(lisp: &Lisp<N>, eval: &mut Evaluator<N>, input: &str) -> Result<String, EvalError> {
+pub fn eval_to_string<const N: usize>(
+    lisp: &Lisp<N>,
+    eval: &mut Evaluator<N>,
+    input: &str,
+) -> Result<String, EvalError> {
     let result = eval.eval_str(input)?;
     // In strict evaluation, values are already fully evaluated
     Ok(value_to_string(lisp, result))
 }
 
 // ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_multiple_expressions_single() {
+        assert!(!has_multiple_expressions("(+ 1 2)"));
+        assert!(!has_multiple_expressions("42"));
+        assert!(!has_multiple_expressions("'hello"));
+        assert!(!has_multiple_expressions("(define (f x) (+ x 1))"));
+        assert!(!has_multiple_expressions("\"hello world\""));
+    }
+
+    #[test]
+    fn test_has_multiple_expressions_multiple() {
+        assert!(has_multiple_expressions("(define x 1) (define y 2)"));
+        assert!(has_multiple_expressions("(define (f x) x) (f 5)"));
+        assert!(has_multiple_expressions("42 43"));
+        assert!(has_multiple_expressions("(+ 1 2) (+ 3 4)"));
+    }
+
+    #[test]
+    fn test_has_multiple_expressions_with_comments() {
+        assert!(!has_multiple_expressions("; comment\n(+ 1 2)"));
+        assert!(has_multiple_expressions("(+ 1 2) ; comment\n(+ 3 4)"));
+    }
+
+    #[test]
+    fn test_has_multiple_expressions_with_strings() {
+        assert!(!has_multiple_expressions("(display \"hello world\")"));
+        assert!(!has_multiple_expressions("\"hello ( world\""));
+        assert!(has_multiple_expressions("(display \"hi\") (newline)"));
+    }
+
+    #[test]
+    fn test_maybe_wrap_begin_single() {
+        assert_eq!(maybe_wrap_begin("(+ 1 2)"), "(+ 1 2)");
+    }
+
+    #[test]
+    fn test_maybe_wrap_begin_multiple() {
+        assert_eq!(
+            maybe_wrap_begin("(define x 1) (define y 2)"),
+            "(begin (define x 1) (define y 2))"
+        );
+    }
+}

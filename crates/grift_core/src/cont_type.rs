@@ -223,4 +223,14 @@ pub enum ContType {
     /// between continuation steps.
     /// Data: saved_value (single value)
     BuiltinReturnValue,
+
+    /// Apply a function with pre-evaluated arguments (no re-evaluation).
+    /// Used by apply, call-with-values, and other contexts where arguments
+    /// are already evaluated values.
+    /// Data: (args_list . (env . call_expr))
+    ApplyDirect,
+
+    /// After processing quasiquote vector elements as a list, convert back to vector
+    /// Data: Nil (no data)
+    QuasiquoteVector,
 }

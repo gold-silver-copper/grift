@@ -15,7 +15,7 @@ use grift_core::{IoErrorKind, IoProvider, IoResult, PortId};
 const DYNAMIC_PORT_BASE: usize = 3;
 
 /// Maximum number of simultaneously open dynamic ports.
-const MAX_DYNAMIC_PORTS: usize = 64;
+const MAX_DYNAMIC_PORTS: usize = 1024;
 
 /// A dynamically-opened port.
 enum DynPort {

@@ -120,3 +120,22 @@ fn test_gc_control() {
     let result = eval_check(&lisp, &mut eval, "(gc-enabled?)");
     assert!(matches!(lisp.get(result), Ok(Value::True)));
 }
+
+#[test]
+fn test_import_srfi_64() {
+    let lisp: Lisp<50000> = Lisp::new();
+    let mut eval = Evaluator::new(&lisp).unwrap();
+
+    // Import SRFI-64 via the library system: (import (srfi 64))
+    eval_check(&lisp, &mut eval, "(import (srfi 64))");
+
+    // Verify test-begin is available (it should be a procedure)
+    let result = eval_check(&lisp, &mut eval, "(procedure? test-begin)");
+    assert!(matches!(lisp.get(result), Ok(Value::True)));
+    let result = eval_check(&lisp, &mut eval, "(procedure? test-end)");
+    assert!(matches!(lisp.get(result), Ok(Value::True)));
+    let result = eval_check(&lisp, &mut eval, "(procedure? test-equal)");
+    assert!(matches!(lisp.get(result), Ok(Value::True)));
+    let result = eval_check(&lisp, &mut eval, "(procedure? test-assert)");
+    assert!(matches!(lisp.get(result), Ok(Value::True)));
+}

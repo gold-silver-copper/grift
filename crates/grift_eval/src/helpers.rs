@@ -76,7 +76,7 @@ fn equal_recursive_depth<const N: usize>(
         (Value::True, Value::True) => Ok(true),
         (Value::False, Value::False) => Ok(true),
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
-        (Value::Float(x), Value::Float(y)) => Ok(x == y),
+        (Value::Float(x), Value::Float(y)) => Ok(x == y || (x.is_nan() && y.is_nan())),
         (Value::Number(x), Value::Float(y)) => Ok((x as fsize) == y),
         (Value::Float(x), Value::Number(y)) => Ok(x == (y as fsize)),
         (Value::Char(x), Value::Char(y)) => Ok(x == y),
@@ -138,6 +138,33 @@ fn equal_recursive_depth<const N: usize>(
         }
         (Value::Float(x), Value::Rational { num, denom }) => {
             Ok(x == (num as fsize / denom as fsize))
+        }
+        (Value::Complex { real: r1, imag: i1 }, Value::Complex { real: r2, imag: i2 }) => {
+            Ok(r1 == r2 && i1 == i2)
+        }
+        // BigNum comparisons
+        (Value::BigNum { len: la, .. }, Value::BigNum { len: lb, .. }) => {
+            if la != lb {
+                return Ok(false);
+            }
+            // Compare limbs
+            let (limbs_a, len_a, neg_a) = lisp.bignum_limbs(a)?;
+            let (limbs_b, len_b, neg_b) = lisp.bignum_limbs(b)?;
+            if neg_a != neg_b || len_a != len_b {
+                return Ok(false);
+            }
+            Ok(limbs_a[..len_a] == limbs_b[..len_b])
+        }
+        (Value::BigNum { .. }, Value::Number(n)) | (Value::Number(n), Value::BigNum { .. }) => {
+            let big_idx = if matches!(val_a, Value::BigNum { .. }) { a } else { b };
+            let (limbs, len, neg) = lisp.bignum_limbs(big_idx)?;
+            let mut buf = crate::bignum::BigNumBuf::zero();
+            buf.limbs[..len].copy_from_slice(&limbs[..len]);
+            buf.len = len; buf.negative = neg;
+            match buf.to_isize() {
+                Some(v) => Ok(v == n),
+                None => Ok(false),
+            }
         }
         _ => Ok(false),
     }

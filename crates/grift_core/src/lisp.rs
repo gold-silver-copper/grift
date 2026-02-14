@@ -131,19 +131,16 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a value
-    #[inline]
     pub fn alloc(&self, value: Value) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(value)
     }
     
     /// Get a value from the arena by index
-    #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<Value> {
         self.arena.get(index)
     }
     
     /// Set a value
-    #[inline]
     pub fn set(&self, index: ArenaIndex, value: Value) -> ArenaResult<()> {
         self.arena.set(index, value)
     }
@@ -151,7 +148,6 @@ impl<const N: usize> Lisp<N> {
     /// Get an arena index at a given offset from a base index.
     /// 
     /// This is useful for accessing elements in contiguous storage (strings, arrays).
-    #[inline]
     pub fn arena_index_at_offset(&self, base: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
         self.arena.index_at_offset(base, offset)
     }
@@ -159,7 +155,6 @@ impl<const N: usize> Lisp<N> {
     /// Get the pre-allocated Nil singleton (empty list)
     /// 
     /// Returns the reserved slot 0 which always contains `Value::Nil`.
-    #[inline]
     pub fn nil(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.nil_slot)
     }
@@ -168,7 +163,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Returns the reserved slot 1 which always contains `Value::Void`.
     /// Used as return value for side-effect-only forms like `define`, `set!`, `display`.
-    #[inline]
     pub fn void_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.void_slot)
     }
@@ -176,7 +170,6 @@ impl<const N: usize> Lisp<N> {
     /// Get the pre-allocated True singleton (#t)
     /// 
     /// Returns the reserved slot 2 which always contains `Value::True`.
-    #[inline]
     pub fn true_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.true_slot)
     }
@@ -184,31 +177,26 @@ impl<const N: usize> Lisp<N> {
     /// Get the pre-allocated False singleton (#f)
     /// 
     /// Returns the reserved slot 3 which always contains `Value::False`.
-    #[inline]
     pub fn false_val(&self) -> ArenaResult<ArenaIndex> {
         Ok(self.false_slot)
     }
     
     /// Allocate a boolean based on a Rust bool
-    #[inline]
     pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
         if b { self.true_val() } else { self.false_val() }
     }
     
     /// Allocate a number
-    #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Number(n))
     }
     
     /// Allocate a floating-point number
-    #[inline]
     pub fn float(&self, f: fsize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Float(f))
     }
 
     /// Allocate a rational number, reduced to lowest terms.
-    #[inline]
     pub fn rational(&self, num: isize, denom: isize) -> ArenaResult<ArenaIndex> {
         if denom == 0 {
             return Err(grift_arena::ArenaError::InvalidIndex);
@@ -225,13 +213,89 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Allocate a complex number.
-    #[inline]
     pub fn complex(&self, real: fsize, imag: fsize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Complex { real, imag })
     }
+
+    /// Allocate a bignum from u32 limbs (little-endian, base 2^32).
+    ///
+    /// Limbs are stored in contiguous arena slots as `Value::Usize`.
+    /// If the value fits in an `isize`, returns a regular `Number` instead.
+    pub fn bignum_from_limbs(&self, limbs: &[u32], negative: bool) -> ArenaResult<ArenaIndex> {
+        // Trim leading zero limbs
+        let mut len = limbs.len();
+        while len > 0 && limbs[len - 1] == 0 {
+            len -= 1;
+        }
+        if len == 0 {
+            return self.number(0);
+        }
+        // Check if it fits in isize
+        if len == 1 {
+            let v = limbs[0] as isize;
+            return self.number(if negative { -v } else { v });
+        }
+        if len == 2 {
+            let v = limbs[0] as u64 | ((limbs[1] as u64) << 32);
+            if v <= isize::MAX as u64 {
+                let sv = v as isize;
+                return self.number(if negative { -sv } else { sv });
+            }
+            // Special case: -(isize::MIN) doesn't fit in isize, but isize::MIN does
+            if negative && v == (isize::MAX as u64) + 1 {
+                return self.number(isize::MIN);
+            }
+        }
+        // Allocate contiguous limb slots
+        let data = self.arena.alloc_contiguous(len, Value::Usize(0))?;
+        for i in 0..len {
+            let limb_idx = self.arena.index_at_offset(data, i)?;
+            self.arena.set(limb_idx, Value::Usize(limbs[i] as usize))?;
+        }
+        self.alloc(Value::BigNum { len, data, negative })
+    }
+
+    /// Allocate a bignum from a single u128 value.
+    pub fn bignum_from_u128(&self, val: u128, negative: bool) -> ArenaResult<ArenaIndex> {
+        if val == 0 {
+            return self.number(0);
+        }
+        let mut limbs = [0u32; 4];
+        limbs[0] = val as u32;
+        limbs[1] = (val >> 32) as u32;
+        limbs[2] = (val >> 64) as u32;
+        limbs[3] = (val >> 96) as u32;
+        self.bignum_from_limbs(&limbs, negative)
+    }
+
+    /// Get bignum limbs as array. Returns (limbs, len, negative).
+    pub fn bignum_limbs(&self, idx: ArenaIndex) -> ArenaResult<([u32; 128], usize, bool)> {
+        match self.get(idx)? {
+            Value::BigNum { len, data, negative } => {
+                let mut limbs = [0u32; 128];
+                let n = if len > 128 { 128 } else { len };
+                for i in 0..n {
+                    let limb_idx = self.arena.index_at_offset(data, i)?;
+                    if let Value::Usize(v) = self.arena.get(limb_idx)? {
+                        limbs[i] = v as u32;
+                    }
+                }
+                Ok((limbs, n, negative))
+            }
+            Value::Number(n) => {
+                let mut limbs = [0u32; 128];
+                let negative = n < 0;
+                let abs_val = n.unsigned_abs() as u64;
+                limbs[0] = abs_val as u32;
+                limbs[1] = (abs_val >> 32) as u32;
+                let len = if limbs[1] > 0 { 2 } else { 1 };
+                Ok((limbs, len, negative))
+            }
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
     
     /// Allocate a character
-    #[inline]
     pub fn char(&self, c: char) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Char(c))
     }
@@ -240,7 +304,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// Creates a cons cell with inline car and cdr indices.
     /// No arena data slots are needed - the indices are stored directly in the Value.
-    #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Cons { car, cdr })
     }
@@ -249,7 +312,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// In Scheme R7RS, car of an empty list is an error.
     /// O(1) access - car is stored inline.
-    #[inline]
     pub fn car(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(index)? {
             Value::Cons { car, .. } => Ok(car),
@@ -262,7 +324,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// In Scheme R7RS, cdr of an empty list is an error.
     /// O(1) access - cdr is stored inline.
-    #[inline]
     pub fn cdr(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(index)? {
             Value::Cons { cdr, .. } => Ok(cdr),
@@ -275,7 +336,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// More efficient than calling car() and cdr() separately when both are needed.
     /// O(1) access - both are stored inline.
-    #[inline]
     pub fn car_cdr(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
         match self.arena.get(index)? {
             Value::Cons { car, cdr } => Ok((car, cdr)),
@@ -286,7 +346,6 @@ impl<const N: usize> Lisp<N> {
     
     /// Set car of a cons cell (mutation operation)
     /// Returns the new value on success
-    #[inline]
     pub fn set_car(&self, index: ArenaIndex, new_car: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { cdr, .. } => {
@@ -299,7 +358,6 @@ impl<const N: usize> Lisp<N> {
     
     /// Set cdr of a cons cell (mutation operation)
     /// Returns the new value on success
-    #[inline]
     pub fn set_cdr(&self, index: ArenaIndex, new_cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.get(index)? {
             Value::Cons { car, .. } => {
@@ -378,7 +436,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Look up a string in the intern table
     /// Returns Some(symbol_index) if found, None otherwise
-    fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+    pub fn intern_table_lookup(&self, string_idx: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
         self.intern_table_find(|entry_string| self.string_eq_contiguous(string_idx, entry_string))
     }
     
@@ -437,8 +495,12 @@ impl<const N: usize> Lisp<N> {
             return Ok(existing_symbol);
         }
         
-        // Cache miss - need to create a new symbol
-        let char_count = bytes.len();
+        // Decode UTF-8 bytes into chars
+        let s = match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return Err(ArenaError::InvalidIndex),
+        };
+        let char_count = s.chars().count();
         
         // Create a Value::String for the symbol name (with inline length)
         let name_str = if char_count == 0 {
@@ -449,9 +511,9 @@ impl<const N: usize> Lisp<N> {
             let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
             
             // Set characters in slots (starting at data)
-            for (i, &b) in bytes.iter().enumerate() {
+            for (i, c) in s.chars().enumerate() {
                 let char_idx = self.arena.index_at_offset(data, i)?;
-                self.arena.set(char_idx, Value::Char(b as char))?;
+                self.arena.set(char_idx, Value::Char(c))?;
             }
             
             // Create the String value with inline length
@@ -478,16 +540,26 @@ impl<const N: usize> Lisp<N> {
             return Ok(existing_symbol);
         }
         
-        // Cache miss - create new symbol with lowercased bytes
-        let char_count = bytes.len();
+        // Decode UTF-8 bytes into chars
+        let s = match core::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => return Err(ArenaError::InvalidIndex),
+        };
+        let char_count = s.chars().count();
         
         let name_str = if char_count == 0 {
             self.alloc(Value::String { len: 0, data: ArenaIndex::NIL })?
         } else {
             let data = self.arena.alloc_contiguous(char_count, Value::Nil)?;
-            for (i, &b) in bytes.iter().enumerate() {
+            for (i, c) in s.chars().enumerate() {
                 let char_idx = self.arena.index_at_offset(data, i)?;
-                self.arena.set(char_idx, Value::Char(b.to_ascii_lowercase() as char))?;
+                // Only fold ASCII case; Unicode chars are preserved as-is
+                let folded = if c.is_ascii() {
+                    c.to_ascii_lowercase()
+                } else {
+                    c
+                };
+                self.arena.set(char_idx, Value::Char(folded))?;
             }
             self.alloc(Value::String { len: char_count, data })?
         };
@@ -497,22 +569,33 @@ impl<const N: usize> Lisp<N> {
     
     /// Compare a string's content against raw bytes with case-insensitive matching.
     ///
-    /// The interned string chars are compared against `bytes[i].to_ascii_lowercase()`.
+    /// The interned string chars are compared against the UTF-8 decoded characters
+    /// from the input bytes, with ASCII case folding applied.
     fn string_matches_bytes_folded(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
         match self.arena.get(str_idx)? {
             Value::String { len, data } => {
-                if len != bytes.len() {
+                let s = match core::str::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(false),
+                };
+                let byte_char_count = s.chars().count();
+                if len != byte_char_count {
                     return Ok(false);
                 }
                 if len == 0 {
                     return Ok(bytes.is_empty());
                 }
                 let base_idx = data.raw();
-                for (i, &byte) in bytes.iter().enumerate() {
+                for (i, c) in s.chars().enumerate() {
                     let char_slot = ArenaIndex::new(base_idx + i);
                     match self.arena.get(char_slot)? {
-                        Value::Char(c) => {
-                            if c as u8 != byte.to_ascii_lowercase() {
+                        Value::Char(stored) => {
+                            let folded = if c.is_ascii() {
+                                c.to_ascii_lowercase()
+                            } else {
+                                c
+                            };
+                            if stored != folded {
                                 return Ok(false);
                             }
                         }
@@ -562,7 +645,7 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Create a new symbol with the given name string and add it to the intern table.
-    fn intern_new_symbol(&self, name_str: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub fn intern_new_symbol(&self, name_str: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let symbol = self.alloc(Value::Symbol(name_str))?;
         let binding = self.cons(name_str, symbol)?;
         let current_table = self.get_intern_table_root()?;
@@ -586,7 +669,6 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a builtin function
-    #[inline]
     pub fn builtin(&self, b: Builtin) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Builtin(b))
     }
@@ -595,7 +677,6 @@ impl<const N: usize> Lisp<N> {
     /// 
     /// StdLib functions are stored in static memory with on-demand parsing.
     /// The function body is parsed on each call.
-    #[inline]
     pub fn stdlib(&self, s: StdLib) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::StdLib(s))
     }
@@ -606,7 +687,6 @@ impl<const N: usize> Lisp<N> {
     /// The `id` is the index in the NativeRegistry.
     /// 
     /// The value is stored inline - no arena data slots needed.
-    #[inline]
     pub fn native(&self, id: usize) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Native { id })
     }
@@ -621,13 +701,11 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Allocate a port value.
-    #[inline]
     pub fn port(&self, port_id: PortId) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Port(port_id))
     }
     
     /// Allocate the EOF object.
-    #[inline]
     pub fn eof(&self) -> ArenaResult<ArenaIndex> {
         self.alloc(Value::Eof)
     }
@@ -645,7 +723,6 @@ impl<const N: usize> Lisp<N> {
     /// Extract parts from a lambda: (params, body, env)
     /// 
     /// Lambda has inline params and body_env, where body_env is a cons (body . env).
-    #[inline]
     pub fn lambda_parts(&self, index: ArenaIndex) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
         let val = self.get(index)?;
         match val {
@@ -1037,7 +1114,6 @@ impl<const N: usize> Lisp<N> {
     /// Check if two symbols are equal.
     /// 
     /// Symbols are compared by their underlying string content.
-    #[inline]
     pub fn symbol_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index means same symbol (common for interned symbols)
         if a == b {
@@ -1062,7 +1138,6 @@ impl<const N: usize> Lisp<N> {
     /// Check if two values are eqv? (Scheme eqv? predicate)
     /// 
     /// Returns true if values are identical or have the same primitive value.
-    #[inline]
     pub fn eqv(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
         // Fast path: same index
         if a == b {
@@ -1084,7 +1159,6 @@ impl<const N: usize> Lisp<N> {
     }
     
     /// Check if a symbol matches a string.
-    #[inline]
     pub fn symbol_matches(&self, sym: ArenaIndex, name: &str) -> ArenaResult<bool> {
         let val = self.get(sym)?;
         
@@ -1579,12 +1653,18 @@ impl<const N: usize> Lisp<N> {
     /// # Errors
     /// 
     /// Returns an error if the string index is invalid.
-    #[inline]
     pub fn string_matches_bytes(&self, str_idx: ArenaIndex, bytes: &[u8]) -> ArenaResult<bool> {
         match self.arena.get(str_idx)? {
             Value::String { len, data } => {
+                // Decode UTF-8 bytes into chars
+                let s = match core::str::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(false),
+                };
+                let byte_char_count = s.chars().count();
+                
                 // Quick length check (O(1) with inline len)
-                if len != bytes.len() {
+                if len != byte_char_count {
                     return Ok(false);
                 }
                 
@@ -1595,11 +1675,11 @@ impl<const N: usize> Lisp<N> {
                 
                 // Compare each character (characters start at data, no header)
                 let base_idx = data.raw();
-                for (i, &byte) in bytes.iter().enumerate() {
+                for (i, c) in s.chars().enumerate() {
                     let char_slot = ArenaIndex::new(base_idx + i);
                     match self.arena.get(char_slot)? {
-                        Value::Char(c) => {
-                            if c as u8 != byte {
+                        Value::Char(stored) => {
+                            if stored != c {
                                 return Ok(false);
                             }
                         }
@@ -1864,7 +1944,6 @@ impl<const N: usize> Lisp<N> {
     /// let dv = lisp.display(val);
     /// // write!(f, "{}", dv) or format!("{}", dv)
     /// ```
-    #[inline]
     pub fn display(&self, value: ArenaIndex) -> crate::display::DisplayValue<'_, N> {
         crate::display::DisplayValue::new(value, self)
     }

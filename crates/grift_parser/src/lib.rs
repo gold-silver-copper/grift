@@ -75,15 +75,15 @@ pub use grift_core::{
     fsize,
 };
 
-/// The combined prelude source containing all macro and function definitions.
+/// The combined base library source containing all macro and function definitions.
 ///
-/// This is the raw content of `prelude.scm`, embedded at compile time.
+/// This is the raw content of `base.scm`, embedded at compile time.
 /// The evaluator uses this to load standard macros at startup.
-pub const PRELUDE_SOURCE: &str = include_str!("prelude.scm");
+pub const PRELUDE_SOURCE: &str = include_str!("lib/scheme/base.scm");
 
-// Generate STDLIB_ALL: &[StdLib] from prelude.scm at compile time.
+// Generate STDLIB_ALL: &[StdLib] from base.scm at compile time.
 // This extracts all (define (name ...) body) forms and creates a static array.
-grift_macros::include_stdlib!("src/prelude.scm");
+grift_macros::include_stdlib!("src/lib/scheme/base.scm");
 
 pub mod libraries;
 
@@ -91,4 +91,4 @@ pub mod lexer;
 mod parser;
 
 pub use lexer::{Lexer, Token, SpannedToken, LexError, LexErrorKind};
-pub use parser::{Parser, ParseError, ParseErrorKind, SourceLoc, parse, parse_all};
+pub use parser::{Parser, ParseError, ParseErrorKind, SourceLoc, parse, parse_all, parse_single};

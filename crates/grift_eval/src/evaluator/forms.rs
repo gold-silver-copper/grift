@@ -95,9 +95,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // StdLib: Parse body and params on each call
                         self.pop_frame();
                         
-                        // Parse body and expand macros
-                        let parsed_body = parse(self.lisp, s.body())
-                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        // Parse body with GC retry and expand macros
+                        let parsed_body = self.parse_stdlib_body(s.body(), call_expr, s.name())?;
                         // Expand macros in the body
                         let body = self.expand(parsed_body)?;
                         let params = self.make_stdlib_param_list(s.params())?;
@@ -360,8 +359,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let packed = self.lisp.cons(proc, d1)?;
                     self.cont(ContType::VectorMapStep, EnvRef(cont_env)).data1(packed)?;
                     
-                    // Apply proc via ApplyForced
-                    self.cont(ContType::ApplyForced, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
+                    // Apply proc with pre-evaluated args
+                    self.cont(ContType::ApplyDirect, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
                     Ok(Some(TrampolineState::Return { val: proc }))
                 }
             }
@@ -394,8 +393,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let packed = self.lisp.cons(proc, d1)?;
                     self.cont(ContType::VectorForEachStep, EnvRef(cont_env)).data1(packed)?;
                     
-                    // Apply proc via ApplyForced
-                    self.cont(ContType::ApplyForced, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
+                    // Apply proc with pre-evaluated args
+                    self.cont(ContType::ApplyDirect, EnvRef(cont_env)).data3(args, cont_env, call_expr)?;
                     Ok(Some(TrampolineState::Return { val: proc }))
                 }
             }
@@ -470,7 +469,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let args_list = val;
                 let call_expr = self.lisp.cons(func, args_list)?;
                 self.push_frame(call_expr, func)?;
-                self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+                self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: func }))
             }
 
@@ -550,7 +549,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let call_expr = self.lisp.cons(val, args_list)?;
                 
                 self.push_frame(call_expr, val)?;
-                self.cont(ContType::ApplyForced, EnvRef(env)).data3(args_list, env, call_expr)?;
+                self.cont(ContType::ApplyDirect, EnvRef(env)).data3(args_list, env, call_expr)?;
                 Ok(Some(TrampolineState::Return { val }))
             }
 
@@ -621,19 +620,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             ContType::QuasiquoteUnquoteWrap => {
                 // val is the inner processed value - wrap with unquote
-                let unquote_sym = self.lisp.symbol("unquote")?;
-                let nil = self.lisp.nil()?;
-                let inner_list = self.lisp.cons(val, nil)?;
-                let result = self.lisp.cons(unquote_sym, inner_list)?;
+                let result = self.wrap_with_symbol(val, "unquote")?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
             ContType::QuasiquoteNestedWrap => {
                 // val is the inner processed value - wrap with quasiquote
-                let qq_sym = self.lisp.symbol("quasiquote")?;
-                let nil = self.lisp.nil()?;
-                let inner_list = self.lisp.cons(val, nil)?;
-                let result = self.lisp.cons(qq_sym, inner_list)?;
+                let result = self.wrap_with_symbol(val, "quasiquote")?;
                 Ok(Some(TrampolineState::Return { val: result }))
             }
 
@@ -653,6 +646,32 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // val is the processed cdr - append splice_val with it
                 let result = self.append_lists(splice_val, val)?;
                 Ok(Some(TrampolineState::Return { val: result }))
+            }
+
+            ContType::QuasiquoteVector => {
+                // val is the processed list - convert back to vector
+                // Count elements
+                let mut count = 0usize;
+                let mut current = val;
+                loop {
+                    match self.lisp.get(current)? {
+                        Value::Nil => break,
+                        Value::Cons { .. } => {
+                            count += 1;
+                            current = self.lisp.cdr(current)?;
+                        }
+                        _ => break,
+                    }
+                }
+                let placeholder = self.lisp.number(0)?;
+                let vec = self.lisp.make_array(count, placeholder)?;
+                current = val;
+                for i in 0..count {
+                    let elem = self.lisp.car(current)?;
+                    self.lisp.array_set(vec, i, elem)?;
+                    current = self.lisp.cdr(current)?;
+                }
+                Ok(Some(TrampolineState::Return { val: vec }))
             }
 
             ContType::LetSyntaxBody => {
@@ -722,11 +741,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                     _ => {
                         // For other callable types, use the standard apply mechanism
-                        // Create a call expression and go through ApplyForced
                         let call_expr = self.lisp.cons(val, args)?;
                         self.push_frame(call_expr, val)?;
                         let global = self.global_env;
-                        self.cont(ContType::ApplyForced, global).data3(args, global.0, call_expr)?;
+                        self.cont(ContType::ApplyDirect, global).data3(args, global.0, call_expr)?;
                         Ok(Some(TrampolineState::Return { val }))
                     }
                 }
@@ -965,22 +983,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Push frame to restore handler chain when thunk returns.
                 // continuable_flag = true means "thunk context" — always allow return
                 let true_val = self.lisp.true_val()?;
+                let nil = self.lisp.nil()?;
                 let global = self.global_env;
                 self.cont(ContType::ExceptionHandlerFrame, global)
-                    .data3(handler, saved_chain, true_val)?;
+                    .data4(nil, saved_chain, true_val, nil)?;
                 // Call the thunk (zero-arg procedure)
                 self.apply_thunk(thunk, self.global_env)
             }
             
             ContType::ExceptionHandlerFrame => {
                 // Handler or thunk completed — restore handler chain
-                // Data: (handler . (saved_handler_chain . continuable_flag))
-                let (_handler, saved_chain, _continuable_flag) = self.unpack3(data)?;
-                self.exception_handler_chain = saved_chain;
-                // Note: R7RS §6.11 says it is an error for a handler invoked by
-                // `raise` to return, but our `guard` macro relies on handler return.
-                // We permit return in all cases for compatibility.
-                Ok(Some(TrampolineState::Return { val }))
+                // Data: (handler . (saved_handler_chain . (continuable_flag . exception_obj)))
+                let (_handler, saved_chain, continuable_flag, exception_obj) = self.unpack4(data)?;
+                if !self.lisp.get(continuable_flag)?.is_nil() {
+                    // continuable_flag is #t for raise-continuable or thunk — handler may return
+                    self.exception_handler_chain = saved_chain;
+                    Ok(Some(TrampolineState::Return { val }))
+                } else {
+                    // Non-continuable raise handler returned — R7RS says "it is an error".
+                    // Re-raise original exception to next handler in chain.
+                    // exception_handler_chain still has the parent chain (set by invoke_exception_handler).
+                    if self.lisp.get(self.exception_handler_chain)?.is_nil() {
+                        // No next handler — allow return (permissive)
+                        self.exception_handler_chain = saved_chain;
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else {
+                        self.invoke_exception_handler(exception_obj, false)
+                    }
+                }
             }
             
             ContType::RaiseEval => {
@@ -994,6 +1024,59 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Discard val, return the saved value from data
                 let saved = self.unpack1(data);
                 Ok(Some(TrampolineState::Return { val: saved }))
+            }
+
+            ContType::ApplyDirect => {
+                // Data: (args_list . (env . call_expr))
+                // val is the already-evaluated function
+                // args_list contains already-evaluated argument values
+                let (args_list, _env, call_expr) = self.unpack3(data)?;
+                self.pop_frame();
+
+                match self.lisp.get(val)? {
+                    Value::Builtin(b) => {
+                        let result = self.apply_builtin_trampolined(b, args_list, call_expr)?;
+                        Ok(Some(result))
+                    }
+                    Value::Lambda { .. } => {
+                        let (params, body, closure_env) = self.lisp.lambda_parts(val)?;
+                        self.apply_direct_lambda(params, body, closure_env, args_list, call_expr)
+                    }
+                    Value::StdLib(s) => {
+                        let parsed_body = self.parse_stdlib_body(s.body(), call_expr, s.name())?;
+                        let body = self.expand(parsed_body)?;
+                        let params = self.make_stdlib_param_list(s.params())?;
+                        self.apply_direct_lambda(params, body, self.global_env.0, args_list, call_expr)
+                    }
+                    Value::Native { .. } => {
+                        let id = self.lisp.native_id(val)?;
+                        if let Some(native_fn) = self.native_registry.lookup_by_id(id) {
+                            let result = native_fn(self.lisp, args_list)?;
+                            Ok(Some(TrampolineState::Return { val: result }))
+                        } else {
+                            Err(self.make_error(ErrorKind::NotAFunction, call_expr)
+                                .with_message("native function not found"))
+                        }
+                    }
+                    Value::Continuation { .. } => {
+                        // Continuation invocation with pre-evaluated arg
+                        if self.lisp.get(args_list)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("continuation requires exactly 1 argument"));
+                        }
+                        let arg = self.lisp.car(args_list)?;
+                        let rest = self.lisp.cdr(args_list)?;
+                        if !self.lisp.get(rest)?.is_nil() {
+                            return Err(self.make_error(ErrorKind::WrongArgCount, call_expr)
+                                .with_message("continuation requires exactly 1 argument"));
+                        }
+                        self.restore_continuation(val)?;
+                        Ok(Some(TrampolineState::Return { val: arg }))
+                    }
+                    _ => {
+                        Err(self.make_error(ErrorKind::NotAFunction, call_expr))
+                    }
+                }
             }
         }
     }
@@ -1066,6 +1149,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.cont(ContType::QuasiquoteCar, env).data3(cdr, depth_encoded, env.0)?;
                 self.step_quasiquote_trampoline(car, env, depth)
             }
+            Value::Array { .. } => {
+                // Convert vector to list, process with quasiquote, then convert back
+                let len = self.lisp.array_len(template)?;
+                let mut list = self.lisp.nil()?;
+                for i in (0..len).rev() {
+                    let elem = self.lisp.array_get(template, i)?;
+                    list = self.lisp.cons(elem, list)?;
+                }
+                // Push continuation to convert result list back to vector
+                let nil = self.lisp.nil()?;
+                self.push_cont(ContType::QuasiquoteVector, nil, env.0)?;
+                // Process the list through quasiquote
+                self.step_quasiquote_trampoline(list, env, depth)
+            }
             _ => {
                 // Atoms are returned as-is
                 Ok(TrampolineState::Return { val: template })
@@ -1118,6 +1215,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             _ => Err(self.make_error(ErrorKind::TypeError, a)),
         }
+    }
+
+    /// Wrap a value in a list headed by a symbol: `(symbol val)`
+    pub(super) fn wrap_with_symbol(&self, val: ArenaIndex, name: &str) -> EvalResult {
+        let sym = self.lisp.symbol(name)?;
+        let nil = self.lisp.nil()?;
+        let inner = self.lisp.cons(val, nil)?;
+        self.lisp.cons(sym, inner).map_err(Into::into)
     }
     
     /// Capture the current continuation as a first-class value
@@ -2150,7 +2255,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         let global = self.global_env;
         self.cont(ContType::ExceptionHandlerFrame, global)
-            .data3(handler, saved_chain, continuable_flag)?;
+            .data4(handler, saved_chain, continuable_flag, obj)?;
         
         // Call the handler with the exception object
         match self.lisp.get(handler)? {
@@ -2166,7 +2271,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let call_expr = self.lisp.cons(handler, arg_list)?;
                 let global = self.global_env;
                 self.push_frame(call_expr, handler)?;
-                self.cont(ContType::ApplyForced, global)
+                self.cont(ContType::ApplyDirect, global)
                     .data3(arg_list, global.0, call_expr)?;
                 Ok(Some(TrampolineState::Return { val: handler }))
             }
@@ -2228,6 +2333,41 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
 
+        // Pre-scan pass: collect all define names from begin blocks
+        // and pre-bind them with placeholder values (like letrec).
+        // This ensures forward references between library-level defines work
+        // correctly, since lambdas capture the env at definition time.
+        let placeholder = self.lisp.void_val()?;
+        let mut current = decls;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let decl = self.lisp.car(current)?;
+            current = self.lisp.cdr(current)?;
+            if !matches!(self.lisp.get(decl)?, Value::Cons { .. }) { continue; }
+            let decl_head = self.lisp.car(decl)?;
+            let decl_body = self.lisp.cdr(decl)?;
+            if self.lisp.symbol_matches(decl_head, "begin")? {
+                let mut body = decl_body;
+                while let Value::Cons { .. } = self.lisp.get(body)? {
+                    let expr = self.lisp.car(body)?;
+                    body = self.lisp.cdr(body)?;
+                    if let Value::Cons { .. } = self.lisp.get(expr)? {
+                        let head = self.lisp.car(expr)?;
+                        if self.is_define_symbol(head) {
+                            let first = self.lisp.car(self.lisp.cdr(expr)?)?;
+                            let name = match self.lisp.get(first)? {
+                                Value::Symbol(_) => first,
+                                Value::Cons { .. } => self.lisp.car(first)?,
+                                _ => continue,
+                            };
+                            if matches!(self.lisp.get(name)?, Value::Symbol(_)) {
+                                lib_env = self.env_extend(lib_env, name, placeholder)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Second pass: evaluate begin bodies in the library environment
         // Save and restore both global_env and macro_env so that
         // define-syntax forms inside the library are captured.
@@ -2241,25 +2381,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let decl_body = self.lisp.cdr(decl)?;
 
             if self.lisp.symbol_matches(decl_head, "begin")? {
+                let saved_global = self.global_env;
+                let saved_macros = self.macro_env;
+                let saved_cont = self.current_cont;
+                let saved_depth = self.call_stack_depth;
+                self.global_env = lib_env;
+                self.macro_env = lib_macro_env;
                 let mut body = decl_body;
                 while let Value::Cons { .. } = self.lisp.get(body)? {
                     let expr = self.lisp.car(body)?;
                     body = self.lisp.cdr(body)?;
 
-                    let saved_global = self.global_env;
-                    let saved_macros = self.macro_env;
-                    let saved_cont = self.current_cont;
-                    let saved_depth = self.call_stack_depth;
-                    self.global_env = lib_env;
-                    self.macro_env = lib_macro_env;
                     let _result = self.eval(crate::continuation::ExprRef(expr))?;
-                    lib_env = self.global_env;       // capture defines
-                    lib_macro_env = self.macro_env;  // capture define-syntax
-                    self.global_env = saved_global;
-                    self.macro_env = saved_macros;
-                    self.current_cont = saved_cont;
-                    self.call_stack_depth = saved_depth;
                 }
+                lib_env = self.global_env;       // capture defines
+                lib_macro_env = self.macro_env;  // capture define-syntax
+                self.global_env = saved_global;
+                self.macro_env = saved_macros;
+                self.current_cont = saved_cont;
+                self.call_stack_depth = saved_depth;
             }
         }
 
@@ -2496,6 +2636,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
 
+    /// Apply a name transformation to both environment and macro environment.
+    ///
+    /// Calls `transform` on each binding name in `env` and `macro_env` via
+    /// [`map_env_names`]. Returns the transformed pair `(new_env, new_macro_env)`,
+    /// or propagates any error from `transform`.
+    fn map_env_pair(
+        &self,
+        env: ArenaIndex,
+        macro_env: ArenaIndex,
+        transform: &mut dyn FnMut(ArenaIndex) -> Result<ArenaIndex, EvalError>,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        let new_env = self.map_env_names(env, transform)?;
+        let new_menv = self.map_env_names(macro_env, transform)?;
+        Ok((new_env, new_menv))
+    }
+
     /// `(prefix ...)` — prefix all names with the given identifier.
     fn apply_env_prefix(
         &self,
@@ -2503,12 +2659,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         macro_env: ArenaIndex,
         prefix: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let mut transform = |name: ArenaIndex| -> Result<ArenaIndex, EvalError> {
-            self.prefix_symbol(prefix, name)
-        };
-        let new_env = self.map_env_names(env, &mut transform)?;
-        let new_menv = self.map_env_names(macro_env, &mut transform)?;
-        Ok((new_env, new_menv))
+        self.map_env_pair(env, macro_env, &mut |name| self.prefix_symbol(prefix, name))
     }
 
     /// `(rename ...)` — rename specific identifiers.
@@ -2518,7 +2669,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         macro_env: ArenaIndex,
         renames: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
-        let mut transform = |name: ArenaIndex| -> Result<ArenaIndex, EvalError> {
+        self.map_env_pair(env, macro_env, &mut |name| {
             let mut ren_list = renames;
             while let Value::Cons { .. } = self.lisp.get(ren_list)? {
                 let pair = self.lisp.car(ren_list)?;
@@ -2532,10 +2683,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             Ok(name)
-        };
-        let new_env = self.map_env_names(env, &mut transform)?;
-        let new_menv = self.map_env_names(macro_env, &mut transform)?;
-        Ok((new_env, new_menv))
+        })
     }
 
     /// Compare two library names for equality.
@@ -2682,6 +2830,69 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.cont(ContType::LambdaBindArg, eval_env).data6(rest_exprs, eval_env.0, rest_params, body, closure_env, call_expr)?;
             self.cont(ContType::LambdaFirstBind, eval_env).data1(first_param)?;
             Ok(Some(TrampolineState::Eval { expr: ExprRef(first_expr), env: eval_env }))
+        }
+    }
+
+    /// Apply a lambda/stdlib with pre-evaluated arguments (no re-evaluation).
+    /// Used by ApplyDirect, apply builtin, and call-with-values.
+    fn apply_direct_lambda(
+        &mut self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        closure_env: ArenaIndex,
+        args_list: ArenaIndex,
+        call_expr: ArenaIndex,
+    ) -> Result<Option<TrampolineState>, EvalError> {
+        // Rest-argument lambda: (lambda args body) where args is a symbol
+        if self.lisp.get(params)?.is_symbol() {
+            let extended_env = self.env_extend(EnvRef(closure_env), params, args_list)?;
+            return Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }));
+        }
+
+        // Bind params to values directly
+        let mut current_params = params;
+        let mut current_args = args_list;
+        let mut env = closure_env;
+
+        loop {
+            match (self.lisp.get(current_params)?, self.lisp.get(current_args)?) {
+                (Value::Nil, Value::Nil) => {
+                    // All params bound
+                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: EnvRef(env) }));
+                }
+                (Value::Nil, _) => {
+                    let got = self.count_list(args_list)?;
+                    let expected = self.count_list(params)?;
+                    return Err(self.arg_error(call_expr, expected, got));
+                }
+                (Value::Symbol(_), _) => {
+                    // Rest parameter: bind remaining args as list
+                    let extended_env = self.env_extend(EnvRef(env), current_params, current_args)?;
+                    return Ok(Some(TrampolineState::Eval { expr: ExprRef(body), env: extended_env }));
+                }
+                (Value::Cons { .. }, Value::Cons { .. }) => {
+                    let param = self.lisp.car(current_params)?;
+                    let arg_val = self.lisp.car(current_args)?;
+
+                    // Check for dotted pair rest parameter
+                    if self.lisp.get(param)?.is_symbol() {
+                        let extended = self.env_extend(EnvRef(env), param, arg_val)?;
+                        env = extended.0;
+                        current_params = self.lisp.cdr(current_params)?;
+                        current_args = self.lisp.cdr(current_args)?;
+                    } else {
+                        return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                    }
+                }
+                (Value::Cons { .. }, Value::Nil) => {
+                    let got = self.count_list(args_list)?;
+                    let expected = self.count_list(params)?;
+                    return Err(self.arg_error(call_expr, expected, got));
+                }
+                _ => {
+                    return Err(self.make_error(ErrorKind::TypeError, call_expr));
+                }
+            }
         }
     }
 }
