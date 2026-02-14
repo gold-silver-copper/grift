@@ -44,7 +44,11 @@ pub fn int_pow(base: isize, power: usize) -> isize {
 /// This prevents stack overflow when comparing circular structures
 /// created via `set-car!` / `set-cdr!`.  If the depth limit is
 /// exceeded the comparison returns `false` rather than diverging.
-const EQUAL_MAX_DEPTH: usize = 10_000;
+///
+/// The value is kept low enough that even when `equal?` is called
+/// from deeply-nested evaluator frames the Rust call-stack will
+/// not overflow (default thread stack is ≈8 MB).
+const EQUAL_MAX_DEPTH: usize = 1_000;
 
 /// Recursive structural equality for equal? predicate
 pub fn equal_recursive<const N: usize>(lisp: &Lisp<N>, a: ArenaIndex, b: ArenaIndex) -> Result<bool, EvalError> {
