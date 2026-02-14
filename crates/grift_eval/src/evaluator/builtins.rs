@@ -959,12 +959,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Complex { real, imag } => {
                         // sqrt of complex: use formula sqrt(r) * (cos(θ/2) + i*sin(θ/2))
                         let r = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
-                        let theta = libm::atan2(imag as f64, real as f64);
+                        // For the principal square root, use non-negative zero for imag
+                        // to ensure atan2 returns π (not -π) for negative reals with -0.0 imag.
+                        // This gives the conventional principal branch where im(sqrt(z)) >= 0
+                        // when re(sqrt(z)) ≈ 0.
+                        let imag_for_atan = if imag == 0.0 { 0.0_f64 } else { imag as f64 };
+                        let theta = libm::atan2(imag_for_atan, real as f64);
                         let sqrt_r = libm::sqrt(r);
                         let half_theta = theta / 2.0;
                         let re = sqrt_r * libm::cos(half_theta);
                         let im = sqrt_r * libm::sin(half_theta);
-                        if libm::fabs(im) < f64::EPSILON {
+                        // Clean up near-zero results from floating point imprecision
+                        let re = if libm::fabs(re) < 1e-15 { 0.0 } else { re };
+                        let im = if libm::fabs(im) < 1e-15 { 0.0 } else { im };
+                        if im == 0.0 {
                             self.lisp.float(re as fsize).map_err(Into::into)
                         } else {
                             self.lisp.complex(re as fsize, im as fsize).map_err(Into::into)

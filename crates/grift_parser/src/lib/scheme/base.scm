@@ -443,6 +443,36 @@
                        (let ((v (cadr var0)))
                          (set! var0 (car var0))
                          v)))))
+          ((define-values (var0 var1 var2 . rest) expr)
+           (identifier? (syntax rest))
+           (syntax (begin
+                     (define var0
+                       (call-with-values (lambda () expr) list))
+                     (define var1
+                       (let ((v (cadr var0)))
+                         (set-cdr! var0 (cddr var0))
+                         v))
+                     (define var2
+                       (let ((v (cadr var0)))
+                         (set-cdr! var0 (cddr var0))
+                         v))
+                     (define rest
+                       (let ((v (cdr var0)))
+                         (set! var0 (car var0))
+                         v)))))
+          ((define-values (var0 var1 . rest) expr)
+           (identifier? (syntax rest))
+           (syntax (begin
+                     (define var0
+                       (call-with-values (lambda () expr) list))
+                     (define var1
+                       (let ((v (cadr var0)))
+                         (set-cdr! var0 (cddr var0))
+                         v))
+                     (define rest
+                       (let ((v (cdr var0)))
+                         (set! var0 (car var0))
+                         v)))))
           ((define-values var expr)
            (syntax (define var
                      (call-with-values (lambda () expr) list)))))))
