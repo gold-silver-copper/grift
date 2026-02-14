@@ -980,14 +980,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         def_env: ArenaIndex,
         lex_env: ArenaIndex,
     ) -> EvalResult {
-        // 1. Check if bound locally (in lex_env but NOT in global_env) AND
-        //    if this local binding shadows a pattern variable.
+        // 1. Check if bound locally — the symbol has a lexical binding in lex_env
+        //    that shadows or differs from the global binding.
         //    Local bindings from `let`, `lambda`, etc. should shadow pattern variables.
         //    This is crucial for test 6.2: when a local `let` shadows a pattern
         //    variable, `(syntax x)` should refer to the local binding.
+        //
+        //    We detect a "local" binding by comparing the lex_env lookup result
+        //    to the global_env lookup result. If they differ (or the symbol is
+        //    only in lex_env), the symbol has a lexical binding that must be
+        //    captured via a syntax object to preserve definition-site semantics.
         let pattern_binding = self.bindings_lookup(bindings, sym)?;
-        let bound_locally = self.env_bound_anywhere(lex_env, sym)? && 
-                           !self.env_bound_anywhere(self.global_env.0, sym)?;
+        let lex_binding = self.lookup_in_env(sym, lex_env)?;
+        let global_binding = self.lookup_in_env(sym, self.global_env.0)?;
+        let bound_locally = match (&lex_binding, &global_binding) {
+            (Some(_), None) => true,
+            (Some(lb), Some(gb)) => !self.lisp.eqv(*lb, *gb)?,
+            _ => false,
+        };
         
         // Handle the case where both local and pattern bindings exist
         if bound_locally {
@@ -1024,7 +1034,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(sym);
         }
 
-        // 5. Otherwise, it's introduced by the macro - keep as-is
+        // 5. Macro-introduced identifier.
+        //    If the symbol is a recognized special-form keyword (like `let`,
+        //    `begin`, `define`, etc.), wrap it in a syntax object so the
+        //    evaluator's `step_eval_list` can bypass use-site variable
+        //    shadowing.  Non-keyword symbols are returned as-is so they
+        //    can resolve normally.
+        if self.is_special_form_keyword(sym)? {
+            let nil = self.lisp.nil()?;
+            return self.lisp.syntax_with_env(sym, nil, nil, nil).map_err(Into::into);
+        }
+
         Ok(sym)
     }
     
@@ -1069,7 +1089,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         // Check for binding forms that need special handling
         if self.is_binding_keyword(car)? {
-            return self.transcribe_binding_form(template, bindings, renames, def_env);
+            return self.transcribe_binding_form_impl(template, bindings, renames, def_env, lex_env);
+        }
+
+        // Check for define-syntax with inner syntax-rules — gensym the inner
+        // pattern variables to avoid collision with outer macro substitutions.
+        if self.lisp.symbol_matches(car, "define-syntax")? {
+            return self.transcribe_define_syntax_form(cdr, bindings, renames, def_env);
+        }
+
+        // Check for let-syntax/letrec-syntax with inner syntax-rules — gensym
+        // inner pattern variables in each binding's transformer to prevent
+        // collision with outer macro pattern variable substitutions.
+        if self.lisp.symbol_matches(car, "let-syntax")?
+            || self.lisp.symbol_matches(car, "letrec-syntax")? {
+            return self.transcribe_let_syntax_form(car, cdr, bindings, renames, def_env, lex_env);
         }
 
         // Check for begin containing defines — propagate define renames
@@ -1406,6 +1440,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
            || self.lisp.symbol_matches(sym, "define")?)
     }
 
+    /// Check if a symbol is a recognized special-form keyword.
+    ///
+    /// Used by `transcribe_symbol_with_env` to determine whether a
+    /// macro-introduced identifier should be wrapped in a syntax object to
+    /// protect it from use-site variable shadowing.  The set of keywords
+    /// must match those dispatched by `try_dispatch_special_form` and
+    /// `try_dispatch_non_core_form` in `core.rs`.
+    fn is_special_form_keyword(&self, sym: ArenaIndex) -> Result<bool, EvalError> {
+        if !matches!(self.lisp.get(sym)?, Value::Symbol(_)) {
+            return Ok(false);
+        }
+        Ok(self.lisp.symbol_matches(sym, "if")?
+           || self.lisp.symbol_matches(sym, "quote")?
+           || self.lisp.symbol_matches(sym, "lambda")?
+           || self.lisp.symbol_matches(sym, "define")?
+           || self.lisp.symbol_matches(sym, "set!")?
+           || self.lisp.symbol_matches(sym, "begin")?
+           || self.lisp.symbol_matches(sym, "let")?
+           || self.lisp.symbol_matches(sym, "let*")?
+           || self.lisp.symbol_matches(sym, "letrec")?
+           || self.lisp.symbol_matches(sym, "letrec*")?
+           || self.lisp.symbol_matches(sym, "define-syntax")?
+           || self.lisp.symbol_matches(sym, "let-syntax")?
+           || self.lisp.symbol_matches(sym, "letrec-syntax")?
+           || self.lisp.symbol_matches(sym, "syntax-case")?
+           || self.lisp.symbol_matches(sym, "syntax")?
+           || self.lisp.symbol_matches(sym, "quasiquote")?
+           || self.lisp.symbol_matches(sym, "define-record-type")?
+           || self.lisp.symbol_matches(sym, "define-library")?
+           || self.lisp.symbol_matches(sym, "import")?)
+    }
+
     /// Handle binding forms (lambda, let, etc.) with hygienic renaming
     fn transcribe_binding_form(
         &mut self,
@@ -1414,27 +1480,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
+        self.transcribe_binding_form_impl(form, bindings, renames, def_env, None)
+    }
+
+    /// Handle binding forms with optional lexical environment for hygiene.
+    ///
+    /// When `lex_env` is Some, macro-introduced keywords and body identifiers
+    /// are wrapped/resolved via the lex_env path, protecting them from
+    /// use-site variable shadowing.
+    fn transcribe_binding_form_impl(
+        &mut self,
+        form: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
         let keyword = self.lisp.car(form)?;
         let args = self.lisp.cdr(form)?;
 
         if self.lisp.symbol_matches(keyword, "lambda")? {
-            self.transcribe_lambda(args, bindings, renames, def_env)
+            let result = self.transcribe_lambda_impl(args, bindings, renames, def_env, lex_env)?;
+            return Ok(result);
         } else if self.lisp.symbol_matches(keyword, "let")?
                || self.lisp.symbol_matches(keyword, "let*")?
                || self.lisp.symbol_matches(keyword, "letrec")?
                || self.lisp.symbol_matches(keyword, "letrec*")? {
-            self.transcribe_let_form(keyword, args, bindings, renames, def_env)
+            let result = self.transcribe_let_form_impl(keyword, args, bindings, renames, def_env, lex_env)?;
+            return Ok(result);
         } else if self.lisp.symbol_matches(keyword, "define")? {
-            self.transcribe_define_form(args, bindings, renames, def_env)
-        } else {
-            let new_keyword = self.transcribe_template(
-                keyword, bindings, renames, def_env
-            )?;
-            let new_args = self.transcribe_template(
-                args, bindings, renames, def_env
-            )?;
-            self.lisp.cons(new_keyword, new_args).map_err(Into::into)
+            let result = self.transcribe_define_form_impl(args, bindings, renames, def_env, lex_env)?;
+            return Ok(result);
         }
+
+        let new_keyword = self.transcribe_template_impl(keyword, bindings, renames, def_env, lex_env)?;
+        let new_args = self.transcribe_template_impl(args, bindings, renames, def_env, lex_env)?;
+        self.lisp.cons(new_keyword, new_args).map_err(Into::into)
     }
 
     /// Transcribe a let/let*/letrec/letrec* form with hygienic renaming of binding variables
@@ -1449,6 +1530,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         bindings: ArenaIndex,
         renames: ArenaIndex,
         def_env: ArenaIndex,
+    ) -> EvalResult {
+        self.transcribe_let_form_impl(keyword, args, bindings, renames, def_env, None)
+    }
+
+    /// Transcribe a let form with optional lex_env for hygiene.
+    fn transcribe_let_form_impl(
+        &mut self,
+        keyword: ArenaIndex,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
     ) -> EvalResult {
         // args is ((var val) ... body ...)
         // First element should be the bindings list
@@ -1469,7 +1563,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let actual_bindings_template = self.lisp.car(body_template)?;
                 let actual_body_template = self.lisp.cdr(body_template)?;
 
-                let transcribed_name = self.transcribe_template(name_template, bindings, renames, def_env)?;
+                let transcribed_name = self.transcribe_template_impl(name_template, bindings, renames, def_env, lex_env)?;
                 let mut new_renames = renames;
                 // Named let loop name is always macro-introduced (it's a literal in the template)
                 if let Value::Symbol(_) = self.lisp.get(transcribed_name)? {
@@ -1478,9 +1572,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let (new_let_bindings, body_renames) = self.transcribe_let_bindings_hygiene(
                         actual_bindings_template, bindings, new_renames, def_env
                     )?;
-                    let new_body = self.transcribe_template(actual_body_template, bindings, body_renames, def_env)?;
+                    let new_body = self.transcribe_template_impl(actual_body_template, bindings, body_renames, def_env, lex_env)?;
 
-                    let new_keyword = self.transcribe_template(keyword, bindings, renames, def_env)?;
+                    let new_keyword = self.transcribe_template_impl(keyword, bindings, renames, def_env, lex_env)?;
                     let rest = self.lisp.cons(new_let_bindings, new_body)?;
                     let rest2 = self.lisp.cons(fresh, rest)?;
                     return self.lisp.cons(new_keyword, rest2).map_err(Into::into);
@@ -1495,9 +1589,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         )?;
 
         // Transcribe body with extended renames (so renamed vars are used in body)
-        let new_body = self.transcribe_template(body_template, bindings, body_renames, def_env)?;
+        let new_body = self.transcribe_template_impl(body_template, bindings, body_renames, def_env, lex_env)?;
 
-        let new_keyword = self.transcribe_template(keyword, bindings, renames, def_env)?;
+        let new_keyword = self.transcribe_template_impl(keyword, bindings, renames, def_env, lex_env)?;
         let rest = self.lisp.cons(new_let_bindings, new_body)?;
         self.lisp.cons(new_keyword, rest).map_err(Into::into)
     }
@@ -1586,24 +1680,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // User-provided via pattern variable - keep as-is
                     transcribed_var
                 } else if let Value::Symbol(_) = self.lisp.get(transcribed_var)? {
-                    // Macro-introduced - check if it clashes with any user-provided var
-                    let mut clashes = false;
-                    let mut name_cursor = user_var_names;
-                    while let Value::Cons { .. } = self.lisp.get(name_cursor)? {
-                        let name = self.lisp.car(name_cursor)?;
-                        if self.symbols_eq(transcribed_var, name)? {
-                            clashes = true;
-                            break;
-                        }
-                        name_cursor = self.lisp.cdr(name_cursor)?;
-                    }
-                    if clashes {
-                        let fresh = self.gensym_simple()?;
-                        new_renames = self.rename_extend(new_renames, transcribed_var, fresh)?;
-                        fresh
-                    } else {
-                        transcribed_var
-                    }
+                    // Macro-introduced binding variable — always rename to a
+                    // gensym to prevent capturing identifiers from the use site.
+                    // This is essential for R7RS hygiene: macro-introduced bindings
+                    // must not interfere with user-provided names.
+                    let fresh = self.gensym_simple()?;
+                    new_renames = self.rename_extend(new_renames, transcribed_var, fresh)?;
+                    fresh
                 } else {
                     transcribed_var
                 };
@@ -1630,7 +1713,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
-        let (form, _) = self.transcribe_define_form_with_renames(args, bindings, renames, def_env)?;
+        let (form, _) = self.transcribe_define_form_with_renames_impl(args, bindings, renames, def_env, None)?;
+        Ok(form)
+    }
+
+    /// Transcribe a define form with optional lex_env for hygiene.
+    fn transcribe_define_form_impl(
+        &mut self,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
+        let (form, _) = self.transcribe_define_form_with_renames_impl(args, bindings, renames, def_env, lex_env)?;
         Ok(form)
     }
 
@@ -1643,6 +1739,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
+        self.transcribe_define_form_with_renames_impl(args, bindings, renames, def_env, None)
+    }
+
+    /// Like `transcribe_define_form` but also returns the updated renames
+    /// and supports lex_env for hygiene.
+    fn transcribe_define_form_with_renames_impl(
+        &mut self,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let name_template = self.lisp.car(args)?;
         let val_template = self.lisp.cdr(args)?;
 
@@ -1653,7 +1762,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             false
         };
 
-        let transcribed_name = self.transcribe_template(name_template, bindings, renames, def_env)?;
+        let transcribed_name = self.transcribe_template_impl(name_template, bindings, renames, def_env, lex_env)?;
 
         let mut new_renames = renames;
         let final_name = if is_pattern_var {
@@ -1668,11 +1777,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             transcribed_name
         };
 
-        let new_val = self.transcribe_template(val_template, bindings, new_renames, def_env)?;
+        let new_val = self.transcribe_template_impl(val_template, bindings, new_renames, def_env, lex_env)?;
 
         let define_sym = self.lisp.symbol("define")?;
+        // Wrap define keyword in syntax object when in lex_env path
+        let final_define = if lex_env.is_some() {
+            let nil = self.lisp.nil()?;
+            self.lisp.syntax_with_env(define_sym, nil, nil, nil)?
+        } else {
+            define_sym
+        };
         let rest = self.lisp.cons(final_name, new_val)?;
-        let form = self.lisp.cons(define_sym, rest)?;
+        let form = self.lisp.cons(final_define, rest)?;
         Ok((form, new_renames))
     }
 
@@ -1712,6 +1828,73 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(ds_sym, rest).map_err(Into::into)
     }
 
+    /// Transcribe a `(let-syntax ((name transformer) ...) body ...)` form
+    /// or `(letrec-syntax ...)` in a macro template.
+    ///
+    /// For each binding whose transformer is `(syntax-rules ...)`, gensym the
+    /// inner pattern variables before transcribing to prevent collision with
+    /// outer macro pattern variable substitutions.
+    fn transcribe_let_syntax_form(
+        &mut self,
+        keyword: ArenaIndex,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
+        // args = (((name transformer) ...) body ...)
+        let bindings_template = self.lisp.car(args)?;
+        let body_template = self.lisp.cdr(args)?;
+
+        // Process each binding: gensym inner syntax-rules pattern vars
+        let nil = self.lisp.nil()?;
+        let mut new_bindings_reversed = nil;
+        let mut current = bindings_template;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let pair = self.lisp.car(current)?;
+            // pair = (name transformer)
+            if let Value::Cons { .. } = self.lisp.get(pair)? {
+                let name = self.lisp.car(pair)?;
+                let transformer_list = self.lisp.cdr(pair)?;
+                let transformer = self.lisp.car(transformer_list)?;
+
+                // Check if transformer is (syntax-rules ...)
+                let new_transformer = if let Value::Cons { .. } = self.lisp.get(transformer)? {
+                    let sr_head = self.lisp.car(transformer)?;
+                    if self.lisp.symbol_matches(sr_head, "syntax-rules")? {
+                        self.gensym_syntax_rules_pattern_vars(transformer, bindings)?
+                    } else {
+                        transformer
+                    }
+                } else {
+                    transformer
+                };
+
+                // Transcribe name and transformer individually
+                let transcribed_name = self.transcribe_template_impl(name, bindings, renames, def_env, lex_env)?;
+                let transcribed_transformer = self.transcribe_template_impl(new_transformer, bindings, renames, def_env, lex_env)?;
+                let new_transformer_list = self.lisp.cons(transcribed_transformer, nil)?;
+                let new_pair = self.lisp.cons(transcribed_name, new_transformer_list)?;
+                new_bindings_reversed = self.lisp.cons(new_pair, new_bindings_reversed)?;
+            } else {
+                let transcribed = self.transcribe_template_impl(pair, bindings, renames, def_env, lex_env)?;
+                new_bindings_reversed = self.lisp.cons(transcribed, new_bindings_reversed)?;
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        let new_bindings_list = self.reverse_list(new_bindings_reversed)?;
+
+        // Transcribe the body
+        let transcribed_body = self.transcribe_template_impl(body_template, bindings, renames, def_env, lex_env)?;
+
+        // Transcribe the keyword (may be wrapped in syntax object in lex_env path)
+        let transcribed_keyword = self.transcribe_template_impl(keyword, bindings, renames, def_env, lex_env)?;
+
+        let rest = self.lisp.cons(new_bindings_list, transcribed_body)?;
+        self.lisp.cons(transcribed_keyword, rest).map_err(Into::into)
+    }
+
     /// Rewrite a syntax-rules form by gensyming non-outer-literal identifiers
     /// in its patterns AND templates, so that inner pattern variables don't
     /// collide with identifiers substituted from the enclosing macro's
@@ -1745,14 +1928,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         };
 
-        // Collect all identifiers from patterns that are NOT `_`, `...`, or literals
+        // Collect all identifiers from patterns that are NOT `_`, `...`,
+        // the custom ellipsis (if any), or literals
         let nil = self.lisp.nil()?;
         let mut replacements = nil; // ((old . new) ...)
         let mut current = clauses;
         while let Value::Cons { .. } = self.lisp.get(current)? {
             let clause = self.lisp.car(current)?;
             let pattern = self.lisp.car(clause)?;
-            self.collect_pattern_identifiers_for_gensym(pattern, literals, &mut replacements)?;
+            self.collect_pattern_identifiers_for_gensym(pattern, literals, custom_elli, &mut replacements)?;
             current = self.lisp.cdr(current)?;
         }
 
@@ -1783,6 +1967,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         &mut self,
         pattern: ArenaIndex,
         literals: ArenaIndex,
+        custom_elli: Option<ArenaIndex>,
         replacements: &mut ArenaIndex,
     ) -> Result<(), EvalError> {
         match self.lisp.get(pattern)? {
@@ -1791,6 +1976,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if self.lisp.symbol_matches(pattern, "_")?
                     || self.lisp.symbol_matches(pattern, "...")? {
                     return Ok(());
+                }
+                // Skip custom ellipsis if any
+                if let Some(elli) = custom_elli {
+                    if self.symbols_eq(pattern, elli)? {
+                        return Ok(());
+                    }
                 }
                 // Skip if it's in the literals list
                 if self.symbol_in_list(pattern, literals)? {
@@ -1815,8 +2006,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Cons { .. } => {
                 let car = self.lisp.car(pattern)?;
                 let cdr = self.lisp.cdr(pattern)?;
-                self.collect_pattern_identifiers_for_gensym(car, literals, replacements)?;
-                self.collect_pattern_identifiers_for_gensym(cdr, literals, replacements)?;
+                self.collect_pattern_identifiers_for_gensym(car, literals, custom_elli, replacements)?;
+                self.collect_pattern_identifiers_for_gensym(cdr, literals, custom_elli, replacements)?;
                 Ok(())
             }
             _ => Ok(()),
@@ -1941,6 +2132,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
+        self.transcribe_lambda_impl(args, bindings, renames, def_env, None)
+    }
+
+    /// Transcribe a lambda form with optional lex_env for hygiene.
+    fn transcribe_lambda_impl(
+        &mut self,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+        lex_env: Option<ArenaIndex>,
+    ) -> EvalResult {
         let params_template = self.lisp.car(args)?;
         let body = self.lisp.cdr(args)?;
 
@@ -1956,12 +2159,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             params_template, transcribed_params, bindings, renames
         )?;
 
-        // Transcribe body with extended renames
-        let new_body = self.transcribe_template(body, bindings, new_renames, def_env)?;
+        // Transcribe body with extended renames — use lex_env when available
+        let new_body = self.transcribe_template_impl(body, bindings, new_renames, def_env, lex_env)?;
 
         let lambda_sym = self.lisp.symbol("lambda")?;
+        // Wrap lambda keyword in syntax object when in lex_env path
+        let final_lambda = if lex_env.is_some() {
+            let nil = self.lisp.nil()?;
+            self.lisp.syntax_with_env(lambda_sym, nil, nil, nil)?
+        } else {
+            lambda_sym
+        };
         let inner = self.lisp.cons(new_params, new_body)?;
-        self.lisp.cons(lambda_sym, inner).map_err(Into::into)
+        self.lisp.cons(final_lambda, inner).map_err(Into::into)
     }
 
     /// Identify and rename symbols in transcribed params that were introduced by the macro
@@ -2472,7 +2682,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     pub(super) fn expand_transformer_if_needed(&mut self, transformer_expr: ArenaIndex) -> EvalResult {
         if let Value::Cons { .. } = self.lisp.get(transformer_expr)? {
             let head = self.lisp.car(transformer_expr)?;
-            if self.lisp.symbol_matches(head, "lambda")? {
+            // Check for raw lambda or syntax-wrapped lambda
+            let is_lambda = self.lisp.symbol_matches(head, "lambda")?
+                || (matches!(self.lisp.get(head)?, Value::Syntax { .. })
+                    && self.lisp.symbol_matches(self.lisp.syntax_to_datum(head)?, "lambda")?);
+            if is_lambda {
                 // Already a lambda - use as-is (don't expand body)
                 Ok(transformer_expr)
             } else if self.lisp.symbol_matches(head, "syntax-rules")? {
@@ -2616,9 +2830,28 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let head = self.lisp.car(expr)?;
 
         // Check for lambda (procedural transformer)
-        if self.lisp.symbol_matches(head, "lambda")? {
+        // Also handle syntax-wrapped lambda from hygienic macro expansion
+        let is_lambda = if self.lisp.symbol_matches(head, "lambda")? {
+            true
+        } else if let Value::Syntax { .. } = self.lisp.get(head)? {
+            let datum = self.lisp.syntax_to_datum(head)?;
+            self.lisp.symbol_matches(datum, "lambda")?
+        } else {
+            false
+        };
+        
+        if is_lambda {
             // Evaluate the lambda to create a closure with the given environment
-            let lambda_result = self.eval_lambda_for_transformer_with_env(expr, env)?;
+            // Unwrap syntax object if present so eval_lambda_for_transformer_with_env
+            // can parse the standard (lambda (params) body) form.
+            let lambda_expr = if let Value::Syntax { .. } = self.lisp.get(head)? {
+                let datum = self.lisp.syntax_to_datum(head)?;
+                let rest = self.lisp.cdr(expr)?;
+                self.lisp.cons(datum, rest)?
+            } else {
+                expr
+            };
+            let lambda_result = self.eval_lambda_for_transformer_with_env(lambda_expr, env)?;
             return Ok(lambda_result);
         }
 
