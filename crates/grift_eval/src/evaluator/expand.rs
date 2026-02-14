@@ -980,14 +980,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         def_env: ArenaIndex,
         lex_env: ArenaIndex,
     ) -> EvalResult {
-        // 1. Check if bound locally (in lex_env but NOT in global_env) AND
-        //    if this local binding shadows a pattern variable.
+        // 1. Check if bound locally — the symbol has a lexical binding in lex_env
+        //    that shadows or differs from the global binding.
         //    Local bindings from `let`, `lambda`, etc. should shadow pattern variables.
         //    This is crucial for test 6.2: when a local `let` shadows a pattern
         //    variable, `(syntax x)` should refer to the local binding.
+        //
+        //    We detect a "local" binding by comparing the lex_env lookup result
+        //    to the global_env lookup result. If they differ (or the symbol is
+        //    only in lex_env), the symbol has a lexical binding that must be
+        //    captured via a syntax object to preserve definition-site semantics.
         let pattern_binding = self.bindings_lookup(bindings, sym)?;
-        let bound_locally = self.env_bound_anywhere(lex_env, sym)? && 
-                           !self.env_bound_anywhere(self.global_env.0, sym)?;
+        let lex_binding = self.lookup_in_env(sym, lex_env)?;
+        let global_binding = self.lookup_in_env(sym, self.global_env.0)?;
+        let bound_locally = match (&lex_binding, &global_binding) {
+            (Some(_), None) => true,
+            (Some(lb), Some(gb)) => !self.lisp.eqv(*lb, *gb)?,
+            _ => false,
+        };
         
         // Handle the case where both local and pattern bindings exist
         if bound_locally {
