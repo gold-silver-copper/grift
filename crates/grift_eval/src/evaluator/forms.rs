@@ -984,23 +984,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Push frame to restore handler chain when thunk returns.
                 // continuable_flag = true means "thunk context" — always allow return
                 let true_val = self.lisp.true_val()?;
+                let nil = self.lisp.nil()?;
                 let global = self.global_env;
                 self.cont(ContType::ExceptionHandlerFrame, global)
-                    .data3(handler, saved_chain, true_val)?;
+                    .data4(nil, saved_chain, true_val, nil)?;
                 // Call the thunk (zero-arg procedure)
                 self.apply_thunk(thunk, self.global_env)
             }
             
             ContType::ExceptionHandlerFrame => {
                 // Handler or thunk completed — restore handler chain
-                // Data: (handler . (saved_handler_chain . continuable_flag))
-                let (_handler, saved_chain, _continuable_flag) = self.unpack3(data)?;
-                self.exception_handler_chain = saved_chain;
-                // Note: R7RS §6.11 says it is an error for a handler invoked by
-                // `raise` to return. Proper enforcement requires distinguishing
-                // guard-installed handlers from user-installed handlers, which our
-                // implementation does not currently do. We permit return for now.
-                Ok(Some(TrampolineState::Return { val }))
+                // Data: (handler . (saved_handler_chain . (continuable_flag . exception_obj)))
+                let (_handler, saved_chain, continuable_flag, exception_obj) = self.unpack4(data)?;
+                if !self.lisp.get(continuable_flag)?.is_nil() {
+                    // continuable_flag is #t for raise-continuable or thunk — handler may return
+                    self.exception_handler_chain = saved_chain;
+                    Ok(Some(TrampolineState::Return { val }))
+                } else {
+                    // Non-continuable raise handler returned — R7RS says "it is an error".
+                    // Re-raise original exception to next handler in chain.
+                    // exception_handler_chain still has the parent chain (set by invoke_exception_handler).
+                    if self.lisp.get(self.exception_handler_chain)?.is_nil() {
+                        // No next handler — allow return (permissive)
+                        self.exception_handler_chain = saved_chain;
+                        Ok(Some(TrampolineState::Return { val }))
+                    } else {
+                        self.invoke_exception_handler(exception_obj, false)
+                    }
+                }
             }
             
             ContType::RaiseEval => {
@@ -2246,7 +2257,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         let global = self.global_env;
         self.cont(ContType::ExceptionHandlerFrame, global)
-            .data3(handler, saved_chain, continuable_flag)?;
+            .data4(handler, saved_chain, continuable_flag, obj)?;
         
         // Call the handler with the exception object
         match self.lisp.get(handler)? {

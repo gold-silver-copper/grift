@@ -115,7 +115,7 @@
 (define my-raise raise)
 (test-equal "raise-bind-to-variable"
   42
-  (with-exception-handler (lambda (e) e) (lambda () (my-raise 42))))
+  (guard (e (else e)) (my-raise 42)))
 
 (test-assert "raise-eq-identity" (eq? raise raise))
 (test-assert "raise-is-procedure" (procedure? raise))

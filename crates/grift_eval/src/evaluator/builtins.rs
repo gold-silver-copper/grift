@@ -499,9 +499,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.exception_handler_chain = self.lisp.cons(handler, saved_chain)?;
 
         let true_val = self.lisp.true_val()?;
+        let nil = self.lisp.nil()?;
         let global = self.global_env;
         self.cont(ContType::ExceptionHandlerFrame, global)
-            .data3(handler, saved_chain, true_val)?;
+            .data4(nil, saved_chain, true_val, nil)?;
 
         match self.apply_thunk(thunk, self.global_env)? {
             Some(state) => Ok(state),

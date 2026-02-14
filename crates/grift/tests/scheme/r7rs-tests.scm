@@ -1740,8 +1740,8 @@
        (+ 1 (if (> v 0) (+ v 100) (raise 'an-error)))))))
 (test-equal "r7rs-813" 106 (test-exception-handler-2 5))
 (test-equal "r7rs-814" #f something-went-wrong)
-;; FAILING: (test-equal "r7rs-815" 'caught-another-exception (test-exception-handler-2 -1))
-;; FAILING: (test-equal "r7rs-816" #t something-went-wrong)
+(test-equal "r7rs-815" 'caught-another-exception (test-exception-handler-2 -1))
+(test-equal "r7rs-816" #t something-went-wrong)
 
 ;; Based on an example from R6RS-lib section 7.1 Exceptions.
 ;; R7RS section 6.11 Exceptions has a simplified version.
