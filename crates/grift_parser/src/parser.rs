@@ -188,22 +188,23 @@ impl<'a> Parser<'a> {
             Token::BigNumLiteral { start, len, negative } => {
                 // Parse decimal digit bytes into BigNum limbs
                 let digits = self.lexer.input_slice(start, len);
-                // Convert decimal digits to base-2^32 limbs
-                let mut limbs = [0u32; 128];
+                // Convert decimal digits to base-2^LIMB_BITS limbs
+                let limb_bits: u32 = core::mem::size_of::<usize>() as u32 * 8;
+                let mut limbs = [0usize; 128];
                 let mut limb_count: usize = 0;
                 // Start with zero, multiply by 10 and add each digit
                 for &d in digits {
                     if !d.is_ascii_digit() { continue; }
-                    let digit = (d - b'0') as u32;
+                    let digit = (d - b'0') as usize;
                     // Multiply existing limbs by 10 and add digit
-                    let mut carry: u64 = digit as u64;
+                    let mut carry: u128 = digit as u128;
                     for i in 0..limb_count {
-                        let v = limbs[i] as u64 * 10 + carry;
-                        limbs[i] = v as u32;
-                        carry = v >> 32;
+                        let v = limbs[i] as u128 * 10 + carry;
+                        limbs[i] = v as usize;
+                        carry = v >> limb_bits;
                     }
                     if carry > 0 && limb_count < 128 {
-                        limbs[limb_count] = carry as u32;
+                        limbs[limb_count] = carry as usize;
                         limb_count += 1;
                     }
                     if limb_count == 0 && digit > 0 {
