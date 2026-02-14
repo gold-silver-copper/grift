@@ -4924,7 +4924,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             }
                             Ok(';') => {
                                 let _ = io_read!();
-                                let _ = self.apply_read_builtin(pid, call_expr);
+                                self.apply_read_builtin(pid, call_expr)?;
                                 continue;
                             }
                             Ok('(') => {
@@ -5086,7 +5086,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 }
                                 Ok(';') => {
                                     let _ = io_read!();
-                                    let _ = self.apply_read_builtin(pid, call_expr);
+                                    // Datum comment: skip next datum.
+                                    // Propagate errors (e.g., #;. is invalid)
+                                    self.apply_read_builtin(pid, call_expr)?;
                                 }
                                 Ok('(') => {
                                     let _ = io_read!();
