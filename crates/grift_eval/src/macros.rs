@@ -183,18 +183,94 @@ macro_rules! binary_int_cmp {
     ($self:expr, $a:expr, $b:expr, $call_expr:expr, $cmp:expr) => {{
         let val_a = $self.lisp.get($a)?;
         let val_b = $self.lisp.get($b)?;
-        let to_f = |v: Value| -> Result<$crate::fsize, _> {
-            match v {
-                Value::Number(x) => Ok(x as $crate::fsize),
-                Value::Float(x) => Ok(x),
-                Value::Rational { num, denom } => Ok(num as $crate::fsize / denom as $crate::fsize),
-                _ => Err($self.type_error($call_expr, "number", v.type_name())),
+        // For BigNum comparisons, use BigNum arithmetic when both are exact integers
+        match (&val_a, &val_b) {
+            (Value::BigNum { .. }, _) | (_, Value::BigNum { .. }) => {
+                // At least one is BigNum - convert both to BigNumBuf and compare
+                let ba = match val_a {
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = $self.lisp.bignum_limbs($a)?;
+                        let mut buf = $crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        buf
+                    }
+                    Value::Number(n) => $crate::bignum::BigNumBuf::from_isize(n),
+                    _ => {
+                        // Fall back to float comparison for mixed types
+                        let fa = match val_a {
+                            Value::Number(x) => x as $crate::fsize,
+                            Value::Float(x) => x,
+                            Value::Rational { num, denom } => num as $crate::fsize / denom as $crate::fsize,
+                            Value::BigNum { .. } => {
+                                let (limbs, len, neg) = $self.lisp.bignum_limbs($a)?;
+                                let mut buf = $crate::bignum::BigNumBuf::zero();
+                                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                                buf.len = len; buf.negative = neg;
+                                buf.to_f64() as $crate::fsize
+                            }
+                            _ => return Err($self.type_error($call_expr, "number", val_a.type_name())),
+                        };
+                        let fb = match val_b {
+                            Value::Number(x) => x as $crate::fsize,
+                            Value::Float(x) => x,
+                            Value::Rational { num, denom } => num as $crate::fsize / denom as $crate::fsize,
+                            Value::BigNum { .. } => {
+                                let (limbs, len, neg) = $self.lisp.bignum_limbs($b)?;
+                                let mut buf = $crate::bignum::BigNumBuf::zero();
+                                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                                buf.len = len; buf.negative = neg;
+                                buf.to_f64() as $crate::fsize
+                            }
+                            _ => return Err($self.type_error($call_expr, "number", val_b.type_name())),
+                        };
+                        return $self.lisp.boolean($cmp(fa, fb)).map_err(Into::into);
+                    }
+                };
+                let bb = match val_b {
+                    Value::BigNum { .. } => {
+                        let (limbs, len, neg) = $self.lisp.bignum_limbs($b)?;
+                        let mut buf = $crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        buf
+                    }
+                    Value::Number(n) => $crate::bignum::BigNumBuf::from_isize(n),
+                    _ => {
+                        // Mixed BigNum with non-integer: convert to float
+                        let fa = ba.to_f64() as $crate::fsize;
+                        let fb = match val_b {
+                            Value::Float(x) => x,
+                            Value::Rational { num, denom } => num as $crate::fsize / denom as $crate::fsize,
+                            _ => return Err($self.type_error($call_expr, "number", val_b.type_name())),
+                        };
+                        return $self.lisp.boolean($cmp(fa, fb)).map_err(Into::into);
+                    }
+                };
+                // Both are exact integers (Number or BigNum): compare using BigNum
+                let ord = ba.cmp(&bb);
+                let fa = match ord {
+                    core::cmp::Ordering::Less => -1.0 as $crate::fsize,
+                    core::cmp::Ordering::Equal => 0.0 as $crate::fsize,
+                    core::cmp::Ordering::Greater => 1.0 as $crate::fsize,
+                };
+                $self.lisp.boolean($cmp(fa, 0.0 as $crate::fsize)).map_err(Into::into)
             }
-        };
-        let fa = to_f(val_a)?;
-        let fb = to_f(val_b)?;
-        let result = $cmp(fa, fb);
-        $self.lisp.boolean(result).map_err(Into::into)
+            _ => {
+                let to_f = |v: Value| -> Result<$crate::fsize, _> {
+                    match v {
+                        Value::Number(x) => Ok(x as $crate::fsize),
+                        Value::Float(x) => Ok(x),
+                        Value::Rational { num, denom } => Ok(num as $crate::fsize / denom as $crate::fsize),
+                        _ => Err($self.type_error($call_expr, "number", v.type_name())),
+                    }
+                };
+                let fa = to_f(val_a)?;
+                let fb = to_f(val_b)?;
+                let result = $cmp(fa, fb);
+                $self.lisp.boolean(result).map_err(Into::into)
+            }
+        }
     }};
 }
 
@@ -212,10 +288,72 @@ macro_rules! binary_int_op {
                 match $int_op(x, y) {
                     Some(n) => $self.lisp.number(n).map_err(Into::into),
                     None => {
-                        // Integer overflow: promote to float
-                        $self.lisp.float($float_op(x as $crate::fsize, y as $crate::fsize)).map_err(Into::into)
+                        // Integer overflow: compute via f64 to get sign, then use BigNum
+                        let f_result = $float_op(x as f64, y as f64);
+                        let negative = f_result < 0.0;
+                        let abs_val = libm::fabs(f_result) as u128;
+                        $self.lisp.bignum_from_u128(abs_val, negative).map_err(Into::into)
                     }
                 }
+            }
+            // BigNum + Number
+            (Value::BigNum { .. }, Value::Number(y)) => {
+                let (limbs, len, neg) = $self.lisp.bignum_limbs($a)?;
+                let mut ba = $crate::bignum::BigNumBuf::zero();
+                ba.limbs[..len].copy_from_slice(&limbs[..len]);
+                ba.len = len; ba.negative = neg;
+                let bb = $crate::bignum::BigNumBuf::from_isize(y);
+                let is_add = $float_op(1.0 as $crate::fsize, 1.0 as $crate::fsize) > 0.5;
+                let result = if is_add { ba.add(&bb) } else { ba.sub(&bb) };
+                match result.to_isize() {
+                    Some(n) => $self.lisp.number(n).map_err(Into::into),
+                    None => $self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                }
+            }
+            (Value::Number(x), Value::BigNum { .. }) => {
+                let ba = $crate::bignum::BigNumBuf::from_isize(x);
+                let (limbs, len, neg) = $self.lisp.bignum_limbs($b)?;
+                let mut bb = $crate::bignum::BigNumBuf::zero();
+                bb.limbs[..len].copy_from_slice(&limbs[..len]);
+                bb.len = len; bb.negative = neg;
+                let is_add = $float_op(1.0 as $crate::fsize, 1.0 as $crate::fsize) > 0.5;
+                let result = if is_add { ba.add(&bb) } else { ba.sub(&bb) };
+                match result.to_isize() {
+                    Some(n) => $self.lisp.number(n).map_err(Into::into),
+                    None => $self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                }
+            }
+            // BigNum + BigNum
+            (Value::BigNum { .. }, Value::BigNum { .. }) => {
+                let (la, lena, nega) = $self.lisp.bignum_limbs($a)?;
+                let mut ba = $crate::bignum::BigNumBuf::zero();
+                ba.limbs[..lena].copy_from_slice(&la[..lena]);
+                ba.len = lena; ba.negative = nega;
+                let (lb, lenb, negb) = $self.lisp.bignum_limbs($b)?;
+                let mut bb = $crate::bignum::BigNumBuf::zero();
+                bb.limbs[..lenb].copy_from_slice(&lb[..lenb]);
+                bb.len = lenb; bb.negative = negb;
+                let is_add = $float_op(1.0 as $crate::fsize, 1.0 as $crate::fsize) > 0.5;
+                let result = if is_add { ba.add(&bb) } else { ba.sub(&bb) };
+                match result.to_isize() {
+                    Some(n) => $self.lisp.number(n).map_err(Into::into),
+                    None => $self.lisp.bignum_from_limbs(&result.limbs[..result.len], result.negative).map_err(Into::into),
+                }
+            }
+            // BigNum + Float / Float + BigNum
+            (Value::BigNum { .. }, Value::Float(y)) => {
+                let (limbs, len, neg) = $self.lisp.bignum_limbs($a)?;
+                let mut buf = $crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                $self.lisp.float($float_op(buf.to_f64() as $crate::fsize, y)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::BigNum { .. }) => {
+                let (limbs, len, neg) = $self.lisp.bignum_limbs($b)?;
+                let mut buf = $crate::bignum::BigNumBuf::zero();
+                buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                buf.len = len; buf.negative = neg;
+                $self.lisp.float($float_op(x, buf.to_f64() as $crate::fsize)).map_err(Into::into)
             }
             (Value::Number(x), Value::Float(y)) => {
                 $self.lisp.float($float_op(x as $crate::fsize, y)).map_err(Into::into)

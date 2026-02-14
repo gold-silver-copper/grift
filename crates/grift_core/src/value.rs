@@ -664,6 +664,19 @@ pub enum Value {
     /// Stored as real and imaginary parts (both inexact).
     Complex { real: fsize, imag: fsize },
 
+    /// Arbitrary-precision integer (bignum)
+    ///
+    /// Used when an exact integer value overflows `isize`.
+    /// Limbs are stored as contiguous `Value::Usize` slots in base 2^32.
+    /// Least-significant limb first (little-endian order).
+    ///
+    /// # Memory Layout
+    ///
+    /// - `len`: number of u32 limbs
+    /// - `data`: ArenaIndex to first contiguous limb slot
+    /// - `negative`: sign flag
+    BigNum { len: usize, data: ArenaIndex, negative: bool },
+
     /// Single character (used in strings and symbol storage)
     Char(char),
     
@@ -1026,14 +1039,14 @@ impl Value {
         !matches!(self, Value::Cons { .. })
     }
     
-    /// Check if this value is a number (integer, float, rational, or complex)
+    /// Check if this value is a number (integer, float, rational, complex, or bignum)
     pub const fn is_number(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. })
+        matches!(self, Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } | Value::BigNum { .. })
     }
     
-    /// Check if this value is an integer
+    /// Check if this value is an integer (fixnum or bignum)
     pub const fn is_integer(&self) -> bool {
-        matches!(self, Value::Number(_))
+        matches!(self, Value::Number(_) | Value::BigNum { .. })
     }
     
     /// Extract ArenaIndex from a Ref value.
@@ -1101,7 +1114,7 @@ impl Value {
             Value::Nil => "nil",
             Value::Void => "void",
             Value::True | Value::False => "boolean",
-            Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } => "number",
+            Value::Number(_) | Value::Float(_) | Value::Rational { .. } | Value::Complex { .. } | Value::BigNum { .. } => "number",
             Value::Char(_) => "char",
             Value::Cons { .. } => "pair",
             Value::Symbol(_) => "symbol",
@@ -1189,6 +1202,15 @@ impl<const N: usize> Trace<Value, N> for Value {
             | Value::Bytevector { len, data }
             | Value::String { len, data } => {
                 // For non-empty contiguous data, trace all element slots
+                if *len > 0 {
+                    let base_idx = data.raw();
+                    for i in 0..*len {
+                        tracer(ArenaIndex::new(base_idx + i));
+                    }
+                }
+            }
+            Value::BigNum { len, data, .. } => {
+                // Trace contiguous limb slots
                 if *len > 0 {
                     let base_idx = data.raw();
                     for i in 0..*len {

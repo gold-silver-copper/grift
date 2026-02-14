@@ -82,6 +82,7 @@ mod error;
 mod continuation;
 mod helpers;
 mod evaluator;
+pub mod bignum;
 
 // Macros module (must be declared before other modules that use the macros)
 #[macro_use]

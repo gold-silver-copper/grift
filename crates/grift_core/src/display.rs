@@ -157,6 +157,61 @@ fn format_value<const N: usize>(
             fmt_fsize(f, imag)?;
             f.write_str("i")
         }
+        Ok(Value::BigNum { len, data, negative }) => {
+            // Display bignum as decimal
+            if len == 0 {
+                return f.write_str("0");
+            }
+            // Collect limbs from arena
+            let mut limbs = [0u32; 128]; // max 128 limbs = 4096 bits
+            let limb_count = if len > 128 { 128 } else { len };
+            for i in 0..limb_count {
+                if let Ok(limb_idx) = lisp.arena_index_at_offset(data, i) {
+                    if let Ok(Value::Usize(v)) = lisp.get(limb_idx) {
+                        limbs[i] = v as u32;
+                    }
+                }
+            }
+            if negative {
+                f.write_str("-")?;
+            }
+            // Convert to decimal using repeated division
+            // Work with a copy of limbs
+            let mut work = [0u32; 128];
+            work[..limb_count].copy_from_slice(&limbs[..limb_count]);
+            let mut work_len = limb_count;
+            // Trim leading zeros
+            while work_len > 0 && work[work_len - 1] == 0 {
+                work_len -= 1;
+            }
+            if work_len == 0 {
+                return f.write_str("0");
+            }
+            // Collect decimal digits in reverse
+            let mut digits = [0u8; 1300]; // enough for 2^4096
+            let mut dlen = 0;
+            while work_len > 0 {
+                // Divide work by 10, get remainder
+                let mut rem: u64 = 0;
+                for i in (0..work_len).rev() {
+                    let cur = rem * (1u64 << 32) + work[i] as u64;
+                    work[i] = (cur / 10) as u32;
+                    rem = cur % 10;
+                }
+                digits[dlen] = rem as u8;
+                dlen += 1;
+                // Trim leading zeros
+                while work_len > 0 && work[work_len - 1] == 0 {
+                    work_len -= 1;
+                }
+            }
+            // Write digits in correct order (most significant first)
+            for i in (0..dlen).rev() {
+                let c = (b'0' + digits[i]) as char;
+                write!(f, "{}", c)?;
+            }
+            Ok(())
+        }
         Ok(Value::Char(c)) => {
             if display_mode {
                 // display mode: print character as-is (R7RS §6.13.3)
