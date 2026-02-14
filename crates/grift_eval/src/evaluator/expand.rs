@@ -782,11 +782,27 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Count how many elements the rest pattern needs
         let rest_len = self.pattern_min_length(rest_pattern, literals)?;
 
-        // Count expression length. If the expression is not a proper list
-        // (e.g., a symbol or atom), the ellipsis pattern can't match.
-        let expr_len = match self.list_length(expr) {
-            Ok(len) => len,
-            Err(_) => return Ok(None),
+        // Count expression length, handling both proper and improper lists.
+        // For improper lists (e.g., (a b . c)), count the number of cons cells
+        // and record the improper tail.
+        let (expr_len, _improper_tail) = {
+            let mut len = 0usize;
+            let mut cur = expr;
+            let mut tail = None;
+            loop {
+                match self.lisp.get(cur)? {
+                    Value::Nil => break,
+                    Value::Cons { .. } => {
+                        len += 1;
+                        cur = self.lisp.cdr(cur)?;
+                    }
+                    _ => {
+                        tail = Some(cur);
+                        break;
+                    }
+                }
+            }
+            (len, tail)
         };
 
         if expr_len < rest_len {
@@ -1054,6 +1070,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Check for binding forms that need special handling
         if self.is_binding_keyword(car)? {
             return self.transcribe_binding_form(template, bindings, renames, def_env);
+        }
+
+        // Check for begin containing defines — propagate define renames
+        // across sibling forms.  Only trigger when the body actually
+        // contains a `define` AND the body has no ellipsis (ellipsis
+        // bodies are handled by the regular transcription path).
+        if self.lisp.symbol_matches(car, "begin")? {
+            let has_define = self.begin_body_has_define(cdr)?;
+            let body_has_ellipsis = self.has_ellipsis(cdr)?;
+            if has_define && !body_has_ellipsis {
+                // Also check there's no ellipsis deeper (e.g., (begin x ... y))
+                let mut elli_found = false;
+                let mut scan = cdr;
+                while let Value::Cons { .. } = self.lisp.get(scan)? {
+                    let scan_cdr = self.lisp.cdr(scan)?;
+                    if self.has_ellipsis(scan_cdr)? {
+                        elli_found = true;
+                        break;
+                    }
+                    scan = scan_cdr;
+                }
+                if !elli_found {
+                    return self.transcribe_begin_body(car, cdr, bindings, renames, def_env);
+                }
+            }
         }
 
         // Regular list: transcribe each element iteratively
@@ -1589,6 +1630,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         renames: ArenaIndex,
         def_env: ArenaIndex,
     ) -> EvalResult {
+        let (form, _) = self.transcribe_define_form_with_renames(args, bindings, renames, def_env)?;
+        Ok(form)
+    }
+
+    /// Like `transcribe_define_form` but also returns the updated renames
+    /// so callers (e.g., `begin` bodies) can propagate them to siblings.
+    fn transcribe_define_form_with_renames(
+        &mut self,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+    ) -> Result<(ArenaIndex, ArenaIndex), EvalError> {
         let name_template = self.lisp.car(args)?;
         let val_template = self.lisp.cdr(args)?;
 
@@ -1618,7 +1672,261 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
         let define_sym = self.lisp.symbol("define")?;
         let rest = self.lisp.cons(final_name, new_val)?;
-        self.lisp.cons(define_sym, rest).map_err(Into::into)
+        let form = self.lisp.cons(define_sym, rest)?;
+        Ok((form, new_renames))
+    }
+
+    /// Transcribe a `(define-syntax name body)` form in a macro template.
+    fn transcribe_define_syntax_form(
+        &mut self,
+        args: ArenaIndex,
+        bindings: ArenaIndex,
+        renames: ArenaIndex,
+        def_env: ArenaIndex,
+    ) -> EvalResult {
+        let name_template = self.lisp.car(args)?;
+        let body_template = self.lisp.cdr(args)?;
+
+        // Transcribe the name (may be a pattern variable)
+        let transcribed_name = self.transcribe_template(name_template, bindings, renames, def_env)?;
+
+        // Gensym inner syntax-rules pattern vars before transcribing body
+        let body_car = self.lisp.car(body_template)?;
+        let new_body_template = if let Value::Cons { .. } = self.lisp.get(body_car)? {
+            let sr_head = self.lisp.car(body_car)?;
+            if self.lisp.symbol_matches(sr_head, "syntax-rules")? {
+                let rewritten = self.gensym_syntax_rules_pattern_vars(body_car, bindings)?;
+                let rest = self.lisp.cdr(body_template)?;
+                self.lisp.cons(rewritten, rest)?
+            } else {
+                body_template
+            }
+        } else {
+            body_template
+        };
+
+        let transcribed_body = self.transcribe_template(new_body_template, bindings, renames, def_env)?;
+
+        let ds_sym = self.lisp.symbol("define-syntax")?;
+        let rest = self.lisp.cons(transcribed_name, transcribed_body)?;
+        self.lisp.cons(ds_sym, rest).map_err(Into::into)
+    }
+
+    /// Rewrite a syntax-rules form by gensyming non-outer-literal identifiers
+    /// in its patterns AND templates, so that inner pattern variables don't
+    /// collide with identifiers substituted from the enclosing macro's
+    /// pattern variables.
+    ///
+    /// Returns the modified syntax-rules form.
+    fn gensym_syntax_rules_pattern_vars(
+        &mut self,
+        syntax_rules_form: ArenaIndex,
+        _bindings: ArenaIndex,
+    ) -> EvalResult {
+        // (syntax-rules (lit ...) ((pat tmpl) ...))
+        let sr_sym = self.lisp.car(syntax_rules_form)?;
+        let args = self.lisp.cdr(syntax_rules_form)?;
+
+        // Handle both standard and custom-ellipsis forms
+        let first = self.lisp.car(args)?;
+        let (custom_elli, literals, clauses) = match self.lisp.get(first)? {
+            Value::Symbol(_) => {
+                // Custom ellipsis: (syntax-rules elli (lit ...) clause ...)
+                let rest = self.lisp.cdr(args)?;
+                let lits = self.lisp.car(rest)?;
+                let cls = self.lisp.cdr(rest)?;
+                (Some(first), lits, cls)
+            }
+            _ => {
+                // Standard: (syntax-rules (lit ...) clause ...)
+                let lits = first;
+                let cls = self.lisp.cdr(args)?;
+                (None, lits, cls)
+            }
+        };
+
+        // Collect all identifiers from patterns that are NOT `_`, `...`, or literals
+        let nil = self.lisp.nil()?;
+        let mut replacements = nil; // ((old . new) ...)
+        let mut current = clauses;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let clause = self.lisp.car(current)?;
+            let pattern = self.lisp.car(clause)?;
+            self.collect_pattern_identifiers_for_gensym(pattern, literals, &mut replacements)?;
+            current = self.lisp.cdr(current)?;
+        }
+
+        // If no replacements needed, return original form
+        if self.lisp.get(replacements)?.is_nil() {
+            return Ok(syntax_rules_form);
+        }
+
+        // Apply replacements to the entire clauses (both patterns and templates)
+        let new_clauses = self.apply_replacements(clauses, replacements)?;
+
+        // Rebuild syntax-rules form
+        match custom_elli {
+            Some(elli) => {
+                let tail = self.lisp.cons(literals, new_clauses)?;
+                let tail2 = self.lisp.cons(elli, tail)?;
+                self.lisp.cons(sr_sym, tail2).map_err(Into::into)
+            }
+            None => {
+                let tail = self.lisp.cons(literals, new_clauses)?;
+                self.lisp.cons(sr_sym, tail).map_err(Into::into)
+            }
+        }
+    }
+
+    /// Collect identifiers from a pattern that need to be gensym'd.
+    fn collect_pattern_identifiers_for_gensym(
+        &mut self,
+        pattern: ArenaIndex,
+        literals: ArenaIndex,
+        replacements: &mut ArenaIndex,
+    ) -> Result<(), EvalError> {
+        match self.lisp.get(pattern)? {
+            Value::Symbol(_) => {
+                // Skip _ and ...
+                if self.lisp.symbol_matches(pattern, "_")?
+                    || self.lisp.symbol_matches(pattern, "...")? {
+                    return Ok(());
+                }
+                // Skip if it's in the literals list
+                if self.symbol_in_list(pattern, literals)? {
+                    return Ok(());
+                }
+                // Skip if already in replacements
+                let mut cursor = *replacements;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    let pair = self.lisp.car(cursor)?;
+                    let old = self.lisp.car(pair)?;
+                    if self.symbols_eq(old, pattern)? {
+                        return Ok(()); // Already have a replacement
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                // Generate a gensym replacement
+                let fresh = self.gensym_simple()?;
+                let pair = self.lisp.cons(pattern, fresh)?;
+                *replacements = self.lisp.cons(pair, *replacements)?;
+                Ok(())
+            }
+            Value::Cons { .. } => {
+                let car = self.lisp.car(pattern)?;
+                let cdr = self.lisp.cdr(pattern)?;
+                self.collect_pattern_identifiers_for_gensym(car, literals, replacements)?;
+                self.collect_pattern_identifiers_for_gensym(cdr, literals, replacements)?;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Apply symbol replacements throughout a tree.
+    fn apply_replacements(
+        &self,
+        tree: ArenaIndex,
+        replacements: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(tree)? {
+            Value::Symbol(_) => {
+                // Check if this symbol has a replacement
+                let mut cursor = replacements;
+                while let Value::Cons { .. } = self.lisp.get(cursor)? {
+                    let pair = self.lisp.car(cursor)?;
+                    let old = self.lisp.car(pair)?;
+                    if self.lisp.symbol_eq(old, tree)? {
+                        let new = self.lisp.cdr(pair)?;
+                        return Ok(new);
+                    }
+                    cursor = self.lisp.cdr(cursor)?;
+                }
+                Ok(tree)
+            }
+            Value::Cons { .. } => {
+                let car = self.lisp.car(tree)?;
+                let cdr = self.lisp.cdr(tree)?;
+                let new_car = self.apply_replacements(car, replacements)?;
+                let new_cdr = self.apply_replacements(cdr, replacements)?;
+                if new_car == car && new_cdr == cdr {
+                    Ok(tree) // No change
+                } else {
+                    self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+                }
+            }
+            _ => Ok(tree),
+        }
+    }
+
+    /// Check if a begin body contains at least one `define` form (not define-syntax).
+    fn begin_body_has_define(&self, body: ArenaIndex) -> Result<bool, EvalError> {
+        let mut current = body;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let form = self.lisp.car(current)?;
+            if let Value::Cons { .. } = self.lisp.get(form)? {
+                let head = self.lisp.car(form)?;
+                if self.lisp.symbol_matches(head, "define")? {
+                    return Ok(true);
+                }
+            }
+            current = self.lisp.cdr(current)?;
+        }
+        Ok(false)
+    }
+
+    /// Transcribe a begin body, propagating define renames to siblings.
+    ///
+    /// When `(begin (define x 1) (define y x) ...)` appears in a macro
+    /// template, the gensym for `x` in the first define must be used
+    /// in the second define's body, and so on for all subsequent forms.
+    fn transcribe_begin_body(
+        &mut self,
+        keyword: ArenaIndex,
+        body: ArenaIndex,
+        bindings: ArenaIndex,
+        mut renames: ArenaIndex,
+        def_env: ArenaIndex,
+    ) -> EvalResult {
+        let new_keyword = self.transcribe_template(keyword, bindings, renames, def_env)?;
+        // Transcribe body forms, propagating renames
+        let nil = self.lisp.nil()?;
+        let mut reversed = nil;
+        let mut current = body;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let form = self.lisp.car(current)?;
+            let transcribed = match self.lisp.get(form)? {
+                Value::Cons { .. } => {
+                    let form_head = self.lisp.car(form)?;
+                    let form_args = self.lisp.cdr(form)?;
+                    if self.lisp.symbol_matches(form_head, "define")? {
+                        let (t, new_r) = self.transcribe_define_form_with_renames(
+                            form_args, bindings, renames, def_env
+                        )?;
+                        renames = new_r;
+                        t
+                    } else if self.lisp.symbol_matches(form_head, "define-syntax")? {
+                        // For define-syntax, transcribe with current renames
+                        // but don't propagate new renames from it
+                        self.transcribe_binding_form(form, bindings, renames, def_env)?
+                    } else {
+                        self.transcribe_template_impl(form, bindings, renames, def_env, None)?
+                    }
+                }
+                _ => self.transcribe_template_impl(form, bindings, renames, def_env, None)?,
+            };
+            reversed = self.lisp.cons(transcribed, reversed)?;
+            current = self.lisp.cdr(current)?;
+        }
+        // Reverse to restore order
+        let mut result = nil;
+        let mut cursor = reversed;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            result = self.lisp.cons(elem, result)?;
+            cursor = self.lisp.cdr(cursor)?;
+        }
+        self.lisp.cons(new_keyword, result).map_err(Into::into)
     }
 
     /// Transcribe lambda, renaming parameters for hygiene
@@ -1933,16 +2241,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Ok(expr);
                         }
 
-                        // define-syntax is NOT processed during expansion - see step_eval_define_syntax
-                        // in forms.rs for the evaluation-time implementation that captures lexical scope.
-
-                        if self.lisp.symbol_matches(head, "let-syntax")? {
-                            return self.expand_let_syntax(args, renames);
-                        }
-
-                        if self.lisp.symbol_matches(head, "letrec-syntax")? {
-                            return self.expand_letrec_syntax(args, renames);
-                        }
+                        // define-syntax, let-syntax, and letrec-syntax are NOT processed
+                        // during expansion — they are handled at evaluation time by
+                        // step_eval_define_syntax, step_eval_let_syntax, and
+                        // step_eval_letrec_syntax in forms.rs.  Evaluation-time handling
+                        // is necessary so the transformer captures the correct lexical
+                        // environment for free variables in templates (R7RS §4.3).
 
                         // Check for macro invocation
                         if let Some(transformer) = self.lookup_macro(head)? {
@@ -2187,7 +2491,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Detect and rewrite `(syntax-rules <custom-ellipsis> (lit ...) clause ...)`
     /// into `(syntax-rules (lit ...) clause' ...)` where occurrences of
     /// `<custom-ellipsis>` in patterns/templates are replaced with `...`.
-    fn rewrite_custom_ellipsis_syntax_rules(&self, expr: ArenaIndex) -> EvalResult {
+    ///
+    /// Per R7RS §4.3.2, when the custom ellipsis identifier also appears in the
+    /// literals list, the literal takes priority and ellipsis behaviour is
+    /// effectively disabled.
+    fn rewrite_custom_ellipsis_syntax_rules(&mut self, expr: ArenaIndex) -> EvalResult {
         let args = self.lisp.cdr(expr)?; // skip 'syntax-rules'
         let first_arg = self.lisp.car(args)?;
 
@@ -2200,16 +2508,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let literals = self.lisp.car(rest)?;
                 let clauses = self.lisp.cdr(rest)?;
 
-                let ellipsis_sym = self.lisp.symbol("...")?;
+                // Check if the custom ellipsis also appears in the literals list
+                let elli_in_literals = self.symbol_in_list(custom_elli, literals)?;
 
-                // Rewrite each clause: replace custom ellipsis with ... in patterns and templates
-                let new_clauses = self.replace_sym_in_tree(clauses, custom_elli, ellipsis_sym)?;
-                let new_literals = self.replace_sym_in_tree(literals, custom_elli, ellipsis_sym)?;
+                if elli_in_literals {
+                    // R7RS §4.3.2: literal has priority over ellipsis.
+                    // Replace `...` in template positions with the escape
+                    // form `(... ...)` so that the template transcription
+                    // treats it as the literal symbol `...`.
+                    let ellipsis_sym = self.lisp.symbol("...")?;
+                    let escaped_elli = {
+                        let nil = self.lisp.nil()?;
+                        let inner = self.lisp.cons(ellipsis_sym, nil)?;
+                        self.lisp.cons(ellipsis_sym, inner)?  // (... ...)
+                    };
+                    let new_clauses = self.escape_ellipsis_in_templates(clauses, ellipsis_sym, escaped_elli)?;
+                    let sr_sym = self.lisp.car(expr)?;
+                    let tail = self.lisp.cons(literals, new_clauses)?;
+                    self.lisp.cons(sr_sym, tail).map_err(Into::into)
+                } else {
+                    let ellipsis_sym = self.lisp.symbol("...")?;
 
-                // Rebuild as standard form: (syntax-rules (lit ...) clause' ...)
-                let sr_sym = self.lisp.car(expr)?; // 'syntax-rules
-                let tail = self.lisp.cons(new_literals, new_clauses)?;
-                self.lisp.cons(sr_sym, tail).map_err(Into::into)
+                    // Rewrite each clause: replace custom ellipsis with ... in patterns and templates
+                    let new_clauses = self.replace_sym_in_tree(clauses, custom_elli, ellipsis_sym)?;
+                    let new_literals = self.replace_sym_in_tree(literals, custom_elli, ellipsis_sym)?;
+
+                    // Rebuild as standard form: (syntax-rules (lit ...) clause' ...)
+                    let sr_sym = self.lisp.car(expr)?; // 'syntax-rules
+                    let tail = self.lisp.cons(new_literals, new_clauses)?;
+                    self.lisp.cons(sr_sym, tail).map_err(Into::into)
+                }
             }
             _ => Ok(expr), // Standard form — return as-is
         }
@@ -2233,6 +2561,36 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.cons(new_car, new_cdr).map_err(Into::into)
             }
             _ => Ok(tree), // Atoms pass through unchanged
+        }
+    }
+
+    /// Walk clauses of `syntax-rules`, replacing the ellipsis symbol with its
+    /// escaped form `(... ...)` in the *template* position of each clause.
+    /// Clauses are a list of `((keyword . pattern) template)` pairs.
+    fn escape_ellipsis_in_templates(
+        &self,
+        clauses: ArenaIndex,
+        elli: ArenaIndex,
+        escaped: ArenaIndex,
+    ) -> EvalResult {
+        match self.lisp.get(clauses)? {
+            Value::Nil => Ok(clauses),
+            Value::Cons { .. } => {
+                let clause = self.lisp.car(clauses)?;
+                let rest = self.lisp.cdr(clauses)?;
+                // clause = (pattern template)
+                let pattern = self.lisp.car(clause)?;
+                let template_pair = self.lisp.cdr(clause)?;
+                let template = self.lisp.car(template_pair)?;
+                // Replace ellipsis in template only
+                let new_template = self.replace_sym_in_tree(template, elli, escaped)?;
+                let nil = self.lisp.nil()?;
+                let new_template_pair = self.lisp.cons(new_template, nil)?;
+                let new_clause = self.lisp.cons(pattern, new_template_pair)?;
+                let new_rest = self.escape_ellipsis_in_templates(rest, elli, escaped)?;
+                self.lisp.cons(new_clause, new_rest).map_err(Into::into)
+            }
+            _ => Ok(clauses),
         }
     }
 
