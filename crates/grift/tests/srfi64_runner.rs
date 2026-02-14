@@ -506,6 +506,17 @@ fn parse_srfi64_output(output: &str) -> Srfi64Output {
         }
     }
 
+    // If no SUMMARY line was found, count from the results directly
+    if passed == 0 && failed == 0 && errors == 0 && !results.is_empty() {
+        for result in &results {
+            match result {
+                TestResult::Pass(_) => passed += 1,
+                TestResult::Fail { .. } => failed += 1,
+                TestResult::Error { .. } => errors += 1,
+            }
+        }
+    }
+
     Srfi64Output {
         suite_name,
         passed,

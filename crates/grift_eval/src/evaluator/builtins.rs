@@ -2033,8 +2033,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // have circular structures.
                 let val = self.lisp.car(args)?;
                 let rest = self.lisp.cdr(args)?;
-                let pid = self.extract_output_port(rest, call_expr)?;
-                if let Some(ref mut io) = self.io {
+                let has_port = !self.lisp.get(rest)?.is_nil();
+                if has_port {
+                    // (write obj port) - write to specific port via I/O provider
+                    let pid = self.extract_output_port(rest, call_expr)?;
+                    if let Some(ref mut io) = self.io {
+                        let dv = grift_parser::DisplayValue::new(val, self.lisp);
+                        let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
+                        use core::fmt::Write;
+                        let _ = write!(writer, "{}", dv);
+                        if writer.error {
+                            return Err(self.make_error(ErrorKind::Generic, call_expr));
+                        }
+                    }
+                } else if let Some(callback) = self.output_callback {
+                    // (write obj) with callback - pass value to callback
+                    callback(self.lisp, val);
+                } else if let Some(ref mut io) = self.io {
+                    // (write obj) without callback - write to current output port
+                    let pid = self.current_output_port;
                     let dv = grift_parser::DisplayValue::new(val, self.lisp);
                     let mut writer = IoPortWriter { io: &mut **io, port: pid, error: false };
                     use core::fmt::Write;
@@ -2042,8 +2059,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     if writer.error {
                         return Err(self.make_error(ErrorKind::Generic, call_expr));
                     }
-                } else if let Some(callback) = self.output_callback {
-                    callback(self.lisp, val);
                 }
                 self.lisp.void_val().map_err(Into::into)
             }

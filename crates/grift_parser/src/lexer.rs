@@ -551,15 +551,56 @@ impl<'a> Lexer<'a> {
         };
         
         let mut value: isize = 0;
+        let mut overflowed = false;
+        let mut float_value: grift_core::fsize = 0.0;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
-                value = value.checked_mul(10)
-                    .and_then(|v| v.checked_add((c - b'0') as isize))
-                    .ok_or_else(|| self.error(LexErrorKind::NumberOverflow))?;
+                if overflowed {
+                    float_value = float_value * 10.0 + (c - b'0') as grift_core::fsize;
+                } else {
+                    match value.checked_mul(10).and_then(|v| v.checked_add((c - b'0') as isize)) {
+                        Some(v) => value = v,
+                        None => {
+                            // Overflow: switch to float accumulation
+                            float_value = value as grift_core::fsize * 10.0 + (c - b'0') as grift_core::fsize;
+                            overflowed = true;
+                        }
+                    }
+                }
             } else {
                 break;
             }
+        }
+
+        // If integer overflowed isize, produce a float token
+        if overflowed {
+            // Still check for decimal point or exponent
+            if self.peek() == Some(b'.') {
+                self.advance(); // consume '.'
+                self.parse_frac_part(&mut float_value);
+            }
+            if self.peek().map_or(false, is_exponent_marker) {
+                self.advance();
+                let exp_negative = match self.peek() {
+                    Some(b'+') => { self.advance(); false }
+                    Some(b'-') => { self.advance(); true }
+                    _ => false,
+                };
+                let mut exp: i32 = 0;
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_digit() {
+                        self.advance();
+                        exp = exp.saturating_mul(10).saturating_add((c - b'0') as i32);
+                    } else {
+                        break;
+                    }
+                }
+                if exp_negative { exp = -exp; }
+                float_value = mul_pow10(float_value, exp);
+            }
+            if negative { float_value = -float_value; }
+            return self.try_lex_complex_suffix(float_value);
         }
         
         // Check for decimal point or exponent → floating-point literal

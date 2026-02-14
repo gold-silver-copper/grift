@@ -1859,6 +1859,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             return Ok(expr);
                         }
 
+                        if self.lisp.symbol_matches(head, "syntax")?
+                            || self.lisp.symbol_matches(head, "quasisyntax")? {
+                            // Don't expand inside syntax/quasisyntax templates —
+                            // they are evaluated at runtime by step_eval_syntax
+                            return Ok(expr);
+                        }
+
+                        if self.lisp.symbol_matches(head, "syntax-case")? {
+                            // Don't expand inside syntax-case —
+                            // patterns and templates are processed at runtime
+                            return Ok(expr);
+                        }
+
                         // define-syntax is NOT processed during expansion - see step_eval_define_syntax
                         // in forms.rs for the evaluation-time implementation that captures lexical scope.
 
@@ -2097,12 +2110,68 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.lisp.symbol_matches(head, "lambda")? {
                 // Already a lambda - use as-is (don't expand body)
                 Ok(transformer_expr)
+            } else if self.lisp.symbol_matches(head, "syntax-rules")? {
+                // Check for custom ellipsis form: (syntax-rules <ellipsis> (lit ...) clause ...)
+                let rewritten = self.rewrite_custom_ellipsis_syntax_rules(transformer_expr)?;
+                self.expand(rewritten)
             } else {
                 // Not a lambda - expand it (e.g., syntax-rules call)
                 self.expand(transformer_expr)
             }
         } else {
             Ok(transformer_expr)
+        }
+    }
+
+    /// Detect and rewrite `(syntax-rules <custom-ellipsis> (lit ...) clause ...)`
+    /// into `(syntax-rules (lit ...) clause' ...)` where occurrences of
+    /// `<custom-ellipsis>` in patterns/templates are replaced with `...`.
+    fn rewrite_custom_ellipsis_syntax_rules(&self, expr: ArenaIndex) -> EvalResult {
+        let args = self.lisp.cdr(expr)?; // skip 'syntax-rules'
+        let first_arg = self.lisp.car(args)?;
+
+        // If first arg is a list (or nil), it's the standard form — no rewriting needed
+        match self.lisp.get(first_arg)? {
+            Value::Symbol(_) => {
+                // Custom ellipsis form: first arg is the ellipsis identifier
+                let custom_elli = first_arg;
+                let rest = self.lisp.cdr(args)?;
+                let literals = self.lisp.car(rest)?;
+                let clauses = self.lisp.cdr(rest)?;
+
+                let ellipsis_sym = self.lisp.symbol("...")?;
+
+                // Rewrite each clause: replace custom ellipsis with ... in patterns and templates
+                let new_clauses = self.replace_sym_in_tree(clauses, custom_elli, ellipsis_sym)?;
+                let new_literals = self.replace_sym_in_tree(literals, custom_elli, ellipsis_sym)?;
+
+                // Rebuild as standard form: (syntax-rules (lit ...) clause' ...)
+                let sr_sym = self.lisp.car(expr)?; // 'syntax-rules
+                let tail = self.lisp.cons(new_literals, new_clauses)?;
+                self.lisp.cons(sr_sym, tail).map_err(Into::into)
+            }
+            _ => Ok(expr), // Standard form — return as-is
+        }
+    }
+
+    /// Walk a syntax tree, replacing all occurrences of `from_sym` with `to_sym`.
+    fn replace_sym_in_tree(&self, tree: ArenaIndex, from_sym: ArenaIndex, to_sym: ArenaIndex) -> EvalResult {
+        match self.lisp.get(tree)? {
+            Value::Symbol(_) => {
+                if self.lisp.symbol_eq(tree, from_sym)? {
+                    Ok(to_sym)
+                } else {
+                    Ok(tree)
+                }
+            }
+            Value::Cons { .. } => {
+                let car = self.lisp.car(tree)?;
+                let cdr = self.lisp.cdr(tree)?;
+                let new_car = self.replace_sym_in_tree(car, from_sym, to_sym)?;
+                let new_cdr = self.replace_sym_in_tree(cdr, from_sym, to_sym)?;
+                self.lisp.cons(new_car, new_cdr).map_err(Into::into)
+            }
+            _ => Ok(tree), // Atoms pass through unchanged
         }
     }
 

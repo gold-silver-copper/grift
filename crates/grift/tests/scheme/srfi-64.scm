@@ -131,7 +131,7 @@
              (%srfi64-record-pass name)
              (%srfi64-record-fail name #t a)))))))
 
-(define (test-error name thunk)
+(define (%test-error-impl name thunk)
   (let ((got-error #f))
     (guard (exn
             (#t (set! got-error #t)))
@@ -139,6 +139,13 @@
     (if got-error
         (%srfi64-record-pass name)
         (%srfi64-record-fail name "error" "no error raised"))))
+
+(define-syntax test-error
+  (syntax-rules ()
+    ((_ name expr)
+     (%test-error-impl name (lambda () expr)))
+    ((_ expr)
+     (%test-error-impl "test-error" (lambda () expr)))))
 
 (define-syntax test-approximate
   (syntax-rules ()
