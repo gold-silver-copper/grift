@@ -489,8 +489,8 @@
         (syntax-case x ()
           ((_ e)
            (syntax
-             (lambda (x)
-               (syntax-case x ()
+             (lambda (stx)
+               (syntax-case stx ()
                  (id (identifier? (syntax id)) (syntax e))
                  ((id rest (... ...)) (identifier? (syntax id)) (syntax (e rest (... ...)))))))))))
 
