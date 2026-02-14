@@ -667,12 +667,12 @@ pub enum Value {
     /// Arbitrary-precision integer (bignum)
     ///
     /// Used when an exact integer value overflows `isize`.
-    /// Limbs are stored as contiguous `Value::Usize` slots in base 2^32.
+    /// Limbs are stored as contiguous `Value::Usize` slots in base 2^LIMB_BITS.
     /// Least-significant limb first (little-endian order).
     ///
     /// # Memory Layout
     ///
-    /// - `len`: number of u32 limbs
+    /// - `len`: number of usize limbs
     /// - `data`: ArenaIndex to first contiguous limb slot
     /// - `negative`: sign flag
     BigNum { len: usize, data: ArenaIndex, negative: bool },
