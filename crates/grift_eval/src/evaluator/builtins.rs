@@ -629,6 +629,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Number(n) => self.lisp.number(-n).map_err(Into::into),
                         Value::Float(f) => self.lisp.float(-f).map_err(Into::into),
                         Value::Rational { num, denom } => self.lisp.rational(-num, denom).map_err(Into::into),
+                        Value::Complex { real, imag } => self.lisp.complex(-real, -imag).map_err(Into::into),
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 } else {
@@ -668,6 +669,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Rational { num, denom } => {
                             if num == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
                             self.lisp.rational(denom, num).map_err(Into::into)
+                        }
+                        Value::Complex { real, imag } => {
+                            // 1/(a+bi) = (a-bi)/(a²+b²)
+                            let denom = real * real + imag * imag;
+                            self.lisp.complex(real / denom, -imag / denom).map_err(Into::into)
                         }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }

@@ -429,14 +429,6 @@ fn run_scheme_test(path: &Path) -> TimedSrfi64Output {
 
     // Parse the captured output
     let output = CAPTURED_OUTPUT.with(|o| o.borrow().clone());
-    // Debug: show FAIL lines for r7rs-tests.scm
-    if path.file_name().map_or(false, |f| f == "r7rs-tests.scm") {
-        for line in output.lines() {
-            if line.starts_with("SRFI64:FAIL") || line.starts_with("SRFI64:ERROR") {
-                eprintln!("  {}", line);
-            }
-        }
-    }
     let elapsed = start.elapsed();
     TimedSrfi64Output {
         output: parse_srfi64_output(&output),
