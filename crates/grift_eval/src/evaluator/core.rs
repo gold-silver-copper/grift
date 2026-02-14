@@ -513,7 +513,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             ($e:expr) => { match $e { Ok(v) => v, Err(_) => return Err(err) } }
         }
 
-        let msg_str = err.kind.as_str();
+        let msg_str = if let Some(ref pe) = err.parse_error {
+            match pe.kind {
+                ParseErrorKind::OutOfMemory => "parse error (out of memory)",
+                ParseErrorKind::UnexpectedEof => "parse error (unexpected eof)",
+                ParseErrorKind::UnmatchedParen => "parse error (unmatched paren)",
+                ParseErrorKind::UnexpectedChar(_) => "parse error (unexpected char)",
+                ParseErrorKind::NumberOverflow => "parse error (number overflow)",
+                ParseErrorKind::InvalidHashLiteral => "parse error (invalid hash literal)",
+                ParseErrorKind::InvalidCharLiteral => "parse error (invalid char literal)",
+                ParseErrorKind::InvalidEscapeSequence => "parse error (invalid escape)",
+                ParseErrorKind::UnterminatedString => "parse error (unterminated string)",
+            }
+        } else {
+            err.kind.as_str()
+        };
         let message = or_bail!(self.lisp.string(msg_str));
         let nil = or_bail!(self.lisp.nil());
 
@@ -1294,6 +1308,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
         // This is unreachable, but the compiler doesn't know that
+        Err(EvalError::new(ErrorKind::OutOfMemory))
+    }
+
+    /// Parse a stdlib body with auto-GC retry on out of memory.
+    /// Used when calling stdlib functions whose bodies are stored as source strings.
+    pub(super) fn parse_stdlib_body(&mut self, body: &str, call_expr: ArenaIndex, name: &str) -> EvalResult {
+        for attempt in 0..=Self::MAX_GC_RETRIES {
+            match parse(self.lisp, body) {
+                Ok(e) => return Ok(e),
+                Err(e) if matches!(e.kind, ParseErrorKind::OutOfMemory) => {
+                    if attempt < Self::MAX_GC_RETRIES {
+                        self.gc();
+                        continue;
+                    }
+                    return Err(self.parse_error_to_eval(e, call_expr, name));
+                }
+                Err(e) => return Err(self.parse_error_to_eval(e, call_expr, name)),
+            }
+        }
         Err(EvalError::new(ErrorKind::OutOfMemory))
     }
     

@@ -108,6 +108,100 @@ impl BigNumBuf {
         }
     }
 
+    /// Convert a finite integer f64 to its exact BigNum representation.
+    /// Returns None if the float is NaN, infinite, or has a fractional part.
+    pub fn from_f64(f: f64) -> Option<Self> {
+        if f.is_nan() || f.is_infinite() || f != libm::floor(f) {
+            return None;
+        }
+        if f == 0.0 {
+            return Some(Self::zero());
+        }
+        let negative = f < 0.0;
+        let f_abs = libm::fabs(f);
+
+        // Decompose f64: value = mantissa * 2^(exponent - 52)
+        let bits = f_abs.to_bits();
+        let raw_exp = ((bits >> 52) & 0x7FF) as i32;
+        let raw_mantissa = bits & 0x000F_FFFF_FFFF_FFFF;
+        // Normalized: mantissa has implicit leading 1
+        let mantissa = raw_mantissa | (1u64 << 52);
+        // Actual exponent (unbiased, relative to mantissa as integer)
+        let exp = raw_exp - 1023 - 52; // exponent for mantissa as 53-bit integer
+
+        // Start with mantissa as BigNum
+        let mut result = Self::zero();
+        result.limbs[0] = mantissa as u32;
+        result.limbs[1] = (mantissa >> 32) as u32;
+        result.len = if result.limbs[1] != 0 { 2 } else { 1 };
+        result.negative = negative;
+
+        if exp > 0 {
+            // Multiply by 2^exp (left shift)
+            result.shl_bits(exp as u32);
+        } else if exp < 0 {
+            // This should not happen since we checked f == floor(f),
+            // but handle it by checking the shifted-out bits are zero
+            let shift = (-exp) as u32;
+            // Check that the low bits are zero (exact integer)
+            if shift >= 64 || (mantissa & ((1u64 << shift) - 1)) != 0 {
+                return None;
+            }
+            // Right shift
+            let shifted = mantissa >> shift;
+            result = Self::zero();
+            result.limbs[0] = shifted as u32;
+            result.limbs[1] = (shifted >> 32) as u32;
+            result.len = if result.limbs[1] != 0 { 2 } else if result.limbs[0] != 0 { 1 } else { 0 };
+            result.negative = negative;
+        }
+
+        result.trim();
+        Some(result)
+    }
+
+    /// Left-shift this BigNum by `n` bits (multiply by 2^n).
+    fn shl_bits(&mut self, n: u32) {
+        if self.len == 0 || n == 0 {
+            return;
+        }
+        let word_shift = (n / 32) as usize;
+        let bit_shift = n % 32;
+
+        // Shift words first
+        if word_shift > 0 {
+            if self.len + word_shift > MAX_LIMBS {
+                return; // overflow - can't represent
+            }
+            // Move limbs up
+            let mut i = self.len;
+            while i > 0 {
+                i -= 1;
+                self.limbs[i + word_shift] = self.limbs[i];
+            }
+            for j in 0..word_shift {
+                self.limbs[j] = 0;
+            }
+            self.len += word_shift;
+        }
+
+        // Shift bits within words
+        if bit_shift > 0 {
+            let mut carry: u32 = 0;
+            for i in word_shift..self.len {
+                let val = (self.limbs[i] as u64) << bit_shift | carry as u64;
+                self.limbs[i] = val as u32;
+                carry = (val >> 32) as u32;
+            }
+            if carry != 0 {
+                if self.len < MAX_LIMBS {
+                    self.limbs[self.len] = carry;
+                    self.len += 1;
+                }
+            }
+        }
+    }
+
     /// Compare magnitudes (ignoring sign). Returns Ordering.
     pub fn cmp_magnitude(&self, other: &Self) -> core::cmp::Ordering {
         use core::cmp::Ordering;

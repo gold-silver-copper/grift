@@ -959,12 +959,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     Value::Complex { real, imag } => {
                         // sqrt of complex: use formula sqrt(r) * (cos(θ/2) + i*sin(θ/2))
                         let r = libm::sqrt((real as f64) * (real as f64) + (imag as f64) * (imag as f64));
-                        let theta = libm::atan2(imag as f64, real as f64);
+                        // For the principal square root, use non-negative zero for imag
+                        // to ensure atan2 returns π (not -π) for negative reals with -0.0 imag.
+                        // This gives the conventional principal branch where im(sqrt(z)) >= 0
+                        // when re(sqrt(z)) ≈ 0.
+                        let imag_for_atan = if imag == 0.0 { 0.0_f64 } else { imag as f64 };
+                        let theta = libm::atan2(imag_for_atan, real as f64);
                         let sqrt_r = libm::sqrt(r);
                         let half_theta = theta / 2.0;
                         let re = sqrt_r * libm::cos(half_theta);
                         let im = sqrt_r * libm::sin(half_theta);
-                        if libm::fabs(im) < f64::EPSILON {
+                        // Clean up near-zero results from floating point imprecision
+                        let re = if libm::fabs(re) < 1e-15 { 0.0 } else { re };
+                        let im = if libm::fabs(im) < 1e-15 { 0.0 } else { im };
+                        if im == 0.0 {
                             self.lisp.float(re as fsize).map_err(Into::into)
                         } else {
                             self.lisp.complex(re as fsize, im as fsize).map_err(Into::into)
@@ -4149,12 +4157,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             }
             (Value::BigNum { .. }, Value::Float(f)) | (Value::Float(f), Value::BigNum { .. }) => {
+                // For transitive =: convert float to exact BigNum and compare exactly.
+                // This avoids precision loss from BigNum→f64 conversion.
                 let big_idx = if matches!(va, Value::BigNum { .. }) { a } else { b };
                 let (limbs, len, neg) = self.lisp.bignum_limbs(big_idx)?;
-                let mut buf = crate::bignum::BigNumBuf::zero();
-                buf.limbs[..len].copy_from_slice(&limbs[..len]);
-                buf.len = len; buf.negative = neg;
-                Ok(buf.to_f64() as fsize == f)
+                match crate::bignum::BigNumBuf::from_f64(f as f64) {
+                    Some(float_as_big) => {
+                        let mut buf = crate::bignum::BigNumBuf::zero();
+                        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+                        buf.len = len; buf.negative = neg;
+                        Ok(buf.cmp(&float_as_big) == core::cmp::Ordering::Equal)
+                    }
+                    None => Ok(false), // NaN, Infinity, or non-integer float
+                }
             }
             _ => {
                 // Fall back to fsize comparison for rational vs int/float
@@ -5202,7 +5217,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         io_close_tmp!();
         match result {
             Ok(expr) => Ok(expr),
-            Err(e) => Err(EvalError::from(e)),
+            Err(e) => Err(EvalError::from_parse_error(e, call_expr)),
         }
     }
 

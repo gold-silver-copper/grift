@@ -95,9 +95,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // StdLib: Parse body and params on each call
                         self.pop_frame();
                         
-                        // Parse body and expand macros
-                        let parsed_body = parse(self.lisp, s.body())
-                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        // Parse body with GC retry and expand macros
+                        let parsed_body = self.parse_stdlib_body(s.body(), call_expr, s.name())?;
                         // Expand macros in the body
                         let body = self.expand(parsed_body)?;
                         let params = self.make_stdlib_param_list(s.params())?;
@@ -1044,8 +1043,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         self.apply_direct_lambda(params, body, closure_env, args_list, call_expr)
                     }
                     Value::StdLib(s) => {
-                        let parsed_body = parse(self.lisp, s.body())
-                            .map_err(|e| self.parse_error_to_eval(e, call_expr, s.name()))?;
+                        let parsed_body = self.parse_stdlib_body(s.body(), call_expr, s.name())?;
                         let body = self.expand(parsed_body)?;
                         let params = self.make_stdlib_param_list(s.params())?;
                         self.apply_direct_lambda(params, body, self.global_env.0, args_list, call_expr)
