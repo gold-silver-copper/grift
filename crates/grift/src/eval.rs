@@ -7,35 +7,47 @@ use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 use crate::lisp::Lisp;
 use crate::value::Value;
 
-/// Declare all built-in functions in one place.
+/// Declare all built-in functions and special forms in one place.
 ///
-/// This macro auto-assigns sequential numeric IDs (starting at 0), generates
-/// `init_builtins()` to bind each Lisp name to a `Value::Builtin(id)`,
-/// and generates `apply_builtin()` to dispatch by ID to the handler method.
+/// **Built-in functions** (section `builtins { ... }`) are registered in the
+/// global environment as `Value::Builtin(id)` with auto-assigned sequential
+/// IDs.  Their arguments are evaluated before the handler is called.
 ///
-/// Each entry maps a Lisp name to a method name on `Evaluator` that accepts
-/// an `ArenaIndex` argument list and returns `ArenaResult<ArenaIndex>`:
+/// **Special forms** (section `special_forms { ... }`) are matched by symbol
+/// name during evaluation and receive their arguments *unevaluated*.
 ///
 /// ```text
 /// define_builtins! {
-///     "+"    => builtin_add,
-///     "list" => builtin_list,
-///     "<"    => builtin_lt,
+///     builtins {
+///         "+"    => builtin_add,
+///         "list" => builtin_list,
+///     }
+///     special_forms {
+///         "if"     => eval_if,
+///         "define" => eval_define,
+///     }
 /// }
 /// ```
 macro_rules! define_builtins {
-    ( $( $name:literal => $method:ident ),* $(,)? ) => {
+    (
+        builtins {
+            $( $bname:literal => $bmethod:ident ),* $(,)?
+        }
+        special_forms {
+            $( $sname:literal => $smethod:ident ),* $(,)?
+        }
+    ) => {
         // Generate unique constant IDs for each builtin.
-        define_builtins!(@consts 0u8, $( $name, $method; )* );
+        define_builtins!(@consts 0u8, $( $bname, $bmethod; )* );
 
         impl<'a, const N: usize> Evaluator<'a, N> {
             /// Register all built-in functions in the global environment.
             fn init_builtins(&mut self) {
                 $(
                     if let (Ok(sym), Ok(val)) = (
-                        self.lisp.symbol($name),
+                        self.lisp.symbol($bname),
                         self.lisp.arena.alloc(Value::Builtin(
-                            define_builtins!(@const_name $method)
+                            define_builtins!(@const_name $bmethod)
                         )),
                     ) {
                         if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, val) {
@@ -49,9 +61,27 @@ macro_rules! define_builtins {
             #[allow(non_upper_case_globals)]
             fn apply_builtin(&mut self, id: u8, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
                 match id {
-                    $( define_builtins!(@const_name $method) => self.$method(args), )*
+                    $( define_builtins!(@const_name $bmethod) => self.$bmethod(args), )*
                     _ => Err(ArenaError::InvalidIndex),
                 }
+            }
+
+            /// Try to dispatch a special form by symbol name.
+            ///
+            /// Returns `Some(result)` if `car` matched a special form,
+            /// `None` otherwise (fall through to function application).
+            fn try_special_form(
+                &mut self,
+                car: ArenaIndex,
+                cdr: ArenaIndex,
+                env: ArenaIndex,
+            ) -> Option<ArenaResult<ArenaIndex>> {
+                $(
+                    if self.lisp.symbol_name_eq(car, $sname) {
+                        return Some(self.$smethod(cdr, env));
+                    }
+                )*
+                None
             }
         }
     };
@@ -73,27 +103,42 @@ macro_rules! define_builtins {
     (@const_name $method:ident) => { $method };
 }
 
-// Invoke the macro to generate `init_builtins` and `apply_builtin`.
+// Invoke the macro to generate `init_builtins`, `apply_builtin`,
+// and `try_special_form`.
 define_builtins! {
-    "+"        => builtin_add,
-    "-"        => builtin_sub,
-    "*"        => builtin_mul,
-    "/"        => builtin_div,
-    "="        => builtin_eq,
-    "<"        => builtin_lt,
-    ">"        => builtin_gt,
-    "<="       => builtin_le,
-    ">="       => builtin_ge,
-    "cons"     => builtin_cons,
-    "car"      => builtin_car,
-    "cdr"      => builtin_cdr,
-    "list"     => builtin_list,
-    "null?"    => builtin_nullp,
-    "not"      => builtin_not,
-    "pair?"    => builtin_pairp,
-    "number?"  => builtin_numberp,
-    "symbol?"  => builtin_symbolp,
-    "boolean?" => builtin_booleanp,
+    builtins {
+        "+"        => builtin_add,
+        "-"        => builtin_sub,
+        "*"        => builtin_mul,
+        "/"        => builtin_div,
+        "="        => builtin_eq,
+        "<"        => builtin_lt,
+        ">"        => builtin_gt,
+        "<="       => builtin_le,
+        ">="       => builtin_ge,
+        "cons"     => builtin_cons,
+        "car"      => builtin_car,
+        "cdr"      => builtin_cdr,
+        "list"     => builtin_list,
+        "null?"    => builtin_nullp,
+        "not"      => builtin_not,
+        "pair?"    => builtin_pairp,
+        "number?"  => builtin_numberp,
+        "symbol?"  => builtin_symbolp,
+        "boolean?" => builtin_booleanp,
+    }
+    special_forms {
+        "quote"  => eval_quote,
+        "if"     => eval_if,
+        "define" => eval_define,
+        "set!"   => eval_set,
+        "lambda" => eval_lambda,
+        "begin"  => eval_begin,
+        "cond"   => eval_cond,
+        "and"    => eval_and,
+        "or"     => eval_or,
+        "let"    => eval_let,
+    }
 }
 
 /// The evaluator state.
@@ -185,39 +230,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             // List → special form or function application
             Value::Cons { car, cdr } => {
-                let head = self.lisp.get(car)?;
-
-                // Check for special forms
-                if let Value::Symbol(_) = head {
-                    if self.lisp.symbol_name_eq(car, "quote") {
-                        return self.lisp.car(cdr);
-                    }
-                    if self.lisp.symbol_name_eq(car, "if") {
-                        return self.eval_if(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "define") {
-                        return self.eval_define(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "set!") {
-                        return self.eval_set(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "lambda") {
-                        return self.eval_lambda(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "begin") {
-                        return self.eval_begin(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "cond") {
-                        return self.eval_cond(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "and") {
-                        return self.eval_and(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "or") {
-                        return self.eval_or(cdr, env);
-                    }
-                    if self.lisp.symbol_name_eq(car, "let") {
-                        return self.eval_let(cdr, env);
+                // Check for special forms (dispatched via macro-generated
+                // `try_special_form`)
+                if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
+                    if let Some(result) = self.try_special_form(car, cdr, env) {
+                        return result;
                     }
                 }
 
@@ -227,6 +244,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.apply(func, args)
             }
         }
+    }
+
+    /// Evaluate `(quote expr)` — return the expression unevaluated.
+    fn eval_quote(&mut self, args: ArenaIndex, _env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.lisp.car(args)
     }
 
     /// Evaluate `(if test then else)`.
