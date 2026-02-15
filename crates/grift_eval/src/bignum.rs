@@ -489,6 +489,20 @@ impl BigNumBuf {
         }
         x
     }
+
+    /// Compute GCD of two BigNums using Euclidean algorithm.
+    pub fn gcd(&self, other: &Self) -> Self {
+        let mut a = *self;
+        a.negative = false;
+        let mut b = *other;
+        b.negative = false;
+        while !b.is_zero() {
+            let (_, r) = a.divmod(&b);
+            a = b;
+            b = r;
+        }
+        a
+    }
 }
 
 /// Add magnitudes of two BigNums (ignoring sign).

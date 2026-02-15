@@ -819,6 +819,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             if denom == 0.0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
                             self.lisp.complex(real / denom, -imag / denom).map_err(Into::into)
                         }
+                        Value::BigNum { .. } => {
+                            // 1/bignum — approximate as float
+                            let f = self.bignum_to_f64(first_idx)?;
+                            if f == 0.0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                            self.lisp.float(1.0 / f).map_err(Into::into)
+                        }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
                 } else {
@@ -831,6 +837,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         Value::Rational { num, denom } => {
                             self.rational_fold_div(rest, num, denom, call_expr)
+                        }
+                        Value::BigNum { .. } => {
+                            self.bignum_fold_div(first_idx, rest, call_expr)
                         }
                         v => Err(self.type_error(call_expr, "number", v.type_name())),
                     }
@@ -3343,14 +3352,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             // ================================================================
 
             Builtin::FloorQuotient | Builtin::FloorRemainder
-            | Builtin::TruncateQuotient | Builtin::TruncateRemainder => {
+            | Builtin::TruncateQuotient | Builtin::TruncateRemainder
+            | Builtin::CeilingQuotient | Builtin::CeilingRemainder
+            | Builtin::RoundQuotient | Builtin::RoundRemainder => {
                 let round_fn: fn(f64) -> f64 = match builtin {
                     Builtin::FloorQuotient | Builtin::FloorRemainder => libm::floor,
+                    Builtin::CeilingQuotient | Builtin::CeilingRemainder => libm::ceil,
+                    Builtin::RoundQuotient | Builtin::RoundRemainder => libm::rint,
                     _ => libm::trunc,
                 };
                 let (q, r) = self.division_op(args, call_expr, round_fn)?;
                 let val = match builtin {
-                    Builtin::FloorQuotient | Builtin::TruncateQuotient => q,
+                    Builtin::FloorQuotient | Builtin::TruncateQuotient
+                    | Builtin::CeilingQuotient | Builtin::RoundQuotient => q,
                     _ => r,
                 };
                 self.return_exact_if_both_exact(args, val, call_expr)
@@ -3358,6 +3372,22 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             Builtin::FloorDiv => self.division_values(args, call_expr, libm::floor),
             Builtin::TruncateDiv => self.division_values(args, call_expr, libm::trunc),
+            Builtin::CeilingDiv => self.division_values(args, call_expr, libm::ceil),
+            Builtin::RoundDiv => self.division_values(args, call_expr, libm::rint),
+
+            Builtin::EuclideanQuotient | Builtin::EuclideanRemainder => {
+                let (q, r) = self.euclidean_division_op(args, call_expr)?;
+                let val = if matches!(builtin, Builtin::EuclideanQuotient) { q } else { r };
+                self.return_exact_if_both_exact(args, val, call_expr)
+            }
+            Builtin::EuclideanDiv => self.euclidean_division_values(args, call_expr),
+
+            Builtin::BalancedQuotient | Builtin::BalancedRemainder => {
+                let (q, r) = self.balanced_division_op(args, call_expr)?;
+                let val = if matches!(builtin, Builtin::BalancedQuotient) { q } else { r };
+                self.return_exact_if_both_exact(args, val, call_expr)
+            }
+            Builtin::BalancedDiv => self.balanced_division_values(args, call_expr),
 
             // ================================================================
             // Rational number operations (R7RS §6.2.6)
@@ -3737,6 +3767,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     (Value::Float(x), Value::Rational { num, denom }) => {
                         self.lisp.float(x * denom as fsize / num as fsize).map_err(Into::into)
                     }
+                    // BigNum / BigNum
+                    (Value::BigNum { .. }, Value::BigNum { .. }) => {
+                        let nil = self.lisp.nil()?;
+                        let rest = self.lisp.cons(b, nil)?;
+                        self.bignum_fold_div(a, rest, call_expr)
+                    }
+                    // BigNum / Number
+                    (Value::BigNum { .. }, Value::Number(y)) => {
+                        if y == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        let nil = self.lisp.nil()?;
+                        let b_idx = self.lisp.number(y)?;
+                        let rest = self.lisp.cons(b_idx, nil)?;
+                        self.bignum_fold_div(a, rest, call_expr)
+                    }
+                    // Number / BigNum
+                    (Value::Number(_), Value::BigNum { .. }) => {
+                        let b_buf = self.load_bignum_buf(b)?;
+                        if b_buf.is_zero() { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                        // Small number / large number → rational (likely 0/n or small fraction)
+                        let nil = self.lisp.nil()?;
+                        let rest = self.lisp.cons(b, nil)?;
+                        // Convert a to bignum and use bignum_fold_div
+                        let a_val = match val_a { Value::Number(x) => x, _ => 0 };
+                        let a_buf = crate::bignum::BigNumBuf::from_isize(a_val);
+                        let a_big = self.lisp.bignum_from_limbs(&a_buf.limbs[..a_buf.len], a_buf.negative)?;
+                        self.bignum_fold_div(a_big, rest, call_expr)
+                    }
+                    // BigNum / Float or Float / BigNum
+                    (Value::BigNum { .. }, Value::Float(y)) => {
+                        let x = self.bignum_to_f64(a)?;
+                        self.lisp.float((x as fsize) / y).map_err(Into::into)
+                    }
+                    (Value::Float(x), Value::BigNum { .. }) => {
+                        let y = self.bignum_to_f64(b)?;
+                        self.lisp.float(x / (y as fsize)).map_err(Into::into)
+                    }
                     (v, _) if !v.is_number() => Err(self.type_error(call_expr, "number", v.type_name())),
                     (_, v) => Err(self.type_error(call_expr, "number", v.type_name())),
                 }
@@ -3913,10 +3979,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let a = self.lisp.car(args)?;
         let b_list = self.lisp.cdr(args)?;
         let b = self.lisp.car(b_list)?;
-        let both_exact = matches!(self.lisp.get(a)?, Value::Number(_))
-            && matches!(self.lisp.get(b)?, Value::Number(_));
+        let both_exact = matches!(self.lisp.get(a)?, Value::Number(_) | Value::BigNum { .. } | Value::Rational { .. })
+            && matches!(self.lisp.get(b)?, Value::Number(_) | Value::BigNum { .. } | Value::Rational { .. });
         if both_exact {
-            self.lisp.number(val as isize).map_err(Into::into)
+            // Check if the value fits in isize
+            let f = val as f64;
+            if f >= isize::MIN as f64 && f <= isize::MAX as f64 {
+                self.lisp.number(val as isize).map_err(Into::into)
+            } else {
+                // Value too large for isize, produce BigNum
+                match crate::bignum::BigNumBuf::from_f64(f) {
+                    Some(buf) => {
+                        match buf.to_isize() {
+                            Some(n) => self.lisp.number(n).map_err(Into::into),
+                            None => self.lisp.bignum_from_limbs(&buf.limbs[..buf.len], buf.negative).map_err(Into::into),
+                        }
+                    }
+                    None => self.lisp.float(val).map_err(Into::into),
+                }
+            }
         } else {
             self.lisp.float(val).map_err(Into::into)
         }
@@ -4852,8 +4933,99 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         call_expr: ArenaIndex,
         round_fn: fn(f64) -> f64,
     ) -> Result<(fsize, fsize), EvalError> {
-        let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
-        let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        let n_idx = self.lisp.car(args)?;
+        let d_idx = self.lisp.car(self.lisp.cdr(args)?)?;
+        let n_val = self.lisp.get(n_idx)?;
+        let d_val = self.lisp.get(d_idx)?;
+
+        // Check for BigNum arguments requiring exact BigNum division
+        let has_bignum = matches!(n_val, Value::BigNum { .. }) || matches!(d_val, Value::BigNum { .. });
+        if has_bignum {
+            // Convert both to BigNumBuf
+            let n_big = match n_val {
+                Value::BigNum { .. } => self.load_bignum_buf(n_idx)?,
+                Value::Number(n) => crate::bignum::BigNumBuf::from_isize(n),
+                _ => {
+                    let f = self.get_num_as_fsize(n_idx, call_expr)?;
+                    return self.division_op_float(f, d_idx, call_expr, round_fn);
+                }
+            };
+            let d_big = match d_val {
+                Value::BigNum { .. } => self.load_bignum_buf(d_idx)?,
+                Value::Number(n) => crate::bignum::BigNumBuf::from_isize(n),
+                _ => {
+                    let n_f = n_big.to_f64() as fsize;
+                    let d_f = self.get_num_as_fsize(d_idx, call_expr)?;
+                    if d_f == 0.0 {
+                        return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+                    }
+                    let q = round_fn(n_f as f64 / d_f as f64);
+                    let r = n_f as f64 - d_f as f64 * q;
+                    return Ok((q as fsize, r as fsize));
+                }
+            };
+            if d_big.is_zero() {
+                return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+            }
+
+            // Compute BigNum truncated division
+            let (q_trunc, r_trunc) = n_big.divmod(&d_big);
+
+            if r_trunc.is_zero() {
+                // Exact division
+                let q_f = q_trunc.to_f64() as fsize;
+                return Ok((q_f, 0.0));
+            }
+
+            // We have n = q_trunc * d + r_trunc
+            // The exact quotient is q_trunc + r_trunc/d
+            // Apply rounding to decide final quotient
+            let q_trunc_f = q_trunc.to_f64();
+            let r_f = r_trunc.to_f64();
+            let d_f = d_big.to_f64();
+            let frac = r_f / d_f;
+            let exact_q = q_trunc_f + frac;
+            let rounded_q = round_fn(exact_q);
+
+            // Compute remainder: r = n - d * rounded_q
+            // But we need to be more precise: if rounded_q == q_trunc_f, then r = r_trunc
+            // If rounded_q == q_trunc_f + 1, then r = r_trunc - d
+            // If rounded_q == q_trunc_f - 1, then r = r_trunc + d
+            let q_diff = rounded_q - q_trunc_f;
+            let r_result = if q_diff == 0.0 {
+                r_trunc.to_f64()
+            } else if q_diff == 1.0 {
+                r_trunc.to_f64() - d_big.to_f64()
+            } else if q_diff == -1.0 {
+                r_trunc.to_f64() + d_big.to_f64()
+            } else {
+                // General case
+                let n_f = n_big.to_f64();
+                n_f - d_f * rounded_q
+            };
+
+            Ok((rounded_q as fsize, r_result as fsize))
+        } else {
+            let n = self.get_num_as_fsize(n_idx, call_expr)?;
+            let d = self.get_num_as_fsize(d_idx, call_expr)?;
+            if d == 0.0 {
+                return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+            }
+            let q = round_fn((n as f64) / (d as f64));
+            let r = n as f64 - d as f64 * q;
+            Ok((q as fsize, r as fsize))
+        }
+    }
+
+    /// Helper for division_op with float arguments
+    fn division_op_float(
+        &self,
+        n: fsize,
+        d_idx: ArenaIndex,
+        call_expr: ArenaIndex,
+        round_fn: fn(f64) -> f64,
+    ) -> Result<(fsize, fsize), EvalError> {
+        let d = self.get_num_as_fsize(d_idx, call_expr)?;
         if d == 0.0 {
             return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
         }
@@ -4875,6 +5047,301 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let nil = self.lisp.nil()?;
         let tail = self.lisp.cons(rv, nil)?;
         self.lisp.cons(qv, tail).map_err(Into::into)
+    }
+
+    /// Euclidean division: remainder is always non-negative.
+    /// q = floor(n/d) if d > 0, ceil(n/d) if d < 0.
+    fn euclidean_division_op(
+        &self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+    ) -> Result<(fsize, fsize), EvalError> {
+        let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+        let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        if d == 0.0 {
+            return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+        }
+        let q = if d > 0.0 {
+            libm::floor((n as f64) / (d as f64))
+        } else {
+            libm::ceil((n as f64) / (d as f64))
+        };
+        let r = n as f64 - d as f64 * q;
+        Ok((q as fsize, r as fsize))
+    }
+
+    /// Euclidean division returning both quotient and remainder as a two-element list.
+    fn euclidean_division_values(
+        &self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+    ) -> Result<ArenaIndex, EvalError> {
+        let (q, r) = self.euclidean_division_op(args, call_expr)?;
+        let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
+        let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
+        let nil = self.lisp.nil()?;
+        let tail = self.lisp.cons(rv, nil)?;
+        self.lisp.cons(qv, tail).map_err(Into::into)
+    }
+
+    /// Balanced division: rounds to nearest, ties give negative remainder.
+    /// At half-way: ceil(n/d) when d>0, floor(n/d) when d<0.
+    fn balanced_division_op(
+        &self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+    ) -> Result<(fsize, fsize), EvalError> {
+        let n = self.get_num_as_fsize(self.lisp.car(args)?, call_expr)?;
+        let d = self.get_num_as_fsize(self.lisp.car(self.lisp.cdr(args)?)?, call_expr)?;
+        if d == 0.0 {
+            return Err(self.make_error(ErrorKind::DivisionByZero, call_expr));
+        }
+        let exact_q = (n as f64) / (d as f64);
+        let tq = libm::trunc(exact_q);
+        let r_trunc = n as f64 - d as f64 * tq;
+        let abs_r = libm::fabs(r_trunc);
+        let abs_d_half = libm::fabs(d as f64) / 2.0;
+        let q = if abs_r > abs_d_half {
+            // Remainder too large, need to adjust
+            if (d > 0.0) == (r_trunc > 0.0) { tq + 1.0 } else { tq - 1.0 }
+        } else if abs_r == abs_d_half {
+            // Exactly half: ceil when d>0, floor when d<0
+            if d > 0.0 { libm::ceil(exact_q) } else { libm::floor(exact_q) }
+        } else {
+            tq
+        };
+        let r = n as f64 - d as f64 * q;
+        Ok((q as fsize, r as fsize))
+    }
+
+    /// Balanced division returning both quotient and remainder as a two-element list.
+    fn balanced_division_values(
+        &self,
+        args: ArenaIndex,
+        call_expr: ArenaIndex,
+    ) -> Result<ArenaIndex, EvalError> {
+        let (q, r) = self.balanced_division_op(args, call_expr)?;
+        let qv = self.return_exact_if_both_exact(args, q, call_expr)?;
+        let rv = self.return_exact_if_both_exact(args, r, call_expr)?;
+        let nil = self.lisp.nil()?;
+        let tail = self.lisp.cons(rv, nil)?;
+        self.lisp.cons(qv, tail).map_err(Into::into)
+    }
+
+    /// Convert a BigNum arena value to f64.
+    fn bignum_to_f64(&self, idx: ArenaIndex) -> Result<f64, EvalError> {
+        let (limbs, len, neg) = self.lisp.bignum_limbs(idx)?;
+        let mut buf = crate::bignum::BigNumBuf::zero();
+        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+        buf.len = len;
+        buf.negative = neg;
+        Ok(buf.to_f64())
+    }
+
+    /// Load a BigNumBuf from an arena value.
+    fn load_bignum_buf(&self, idx: ArenaIndex) -> Result<crate::bignum::BigNumBuf, EvalError> {
+        let (limbs, len, neg) = self.lisp.bignum_limbs(idx)?;
+        let mut buf = crate::bignum::BigNumBuf::zero();
+        buf.limbs[..len].copy_from_slice(&limbs[..len]);
+        buf.len = len;
+        buf.negative = neg;
+        Ok(buf)
+    }
+
+    /// Store a BigNumBuf result, converting to isize if possible.
+    fn store_bignum_result(&self, buf: &crate::bignum::BigNumBuf) -> EvalResult {
+        match buf.to_isize() {
+            Some(n) => self.lisp.number(n).map_err(Into::into),
+            None => self.lisp.bignum_from_limbs(&buf.limbs[..buf.len], buf.negative).map_err(Into::into),
+        }
+    }
+
+    /// Round a tagged BigNum ratio (%bignum-ratio quotient remainder denom).
+    /// The ratio represents `quotient + remainder/denom`.
+    /// `round_fn` is the standard rounding function (floor, ceil, trunc, rint).
+    pub fn round_bignum_ratio(&self, tagged: ArenaIndex, round_fn: fn(fsize) -> fsize) -> EvalResult {
+        // Check tag
+        let tag = self.lisp.car(tagged)?;
+        if !self.lisp.symbol_matches(tag, "%bignum-ratio")? {
+            // Not a tagged ratio, fall back to type error
+            return Err(self.type_error(tagged, "number", "list"));
+        }
+        let rest = self.lisp.cdr(tagged)?;
+        let q_idx = self.lisp.car(rest)?;
+        let rest2 = self.lisp.cdr(rest)?;
+        let r_idx = self.lisp.car(rest2)?;
+        let rest3 = self.lisp.cdr(rest2)?;
+        let d_idx = self.lisp.car(rest3)?;
+
+        let r = match self.lisp.get(r_idx)? {
+            Value::Number(n) => n,
+            _ => return Err(self.type_error(tagged, "number", "?")),
+        };
+        let d = match self.lisp.get(d_idx)? {
+            Value::Number(n) => n,
+            _ => return Err(self.type_error(tagged, "number", "?")),
+        };
+
+        if r == 0 || d == 0 {
+            // No fractional part, return quotient as-is
+            return Ok(q_idx);
+        }
+
+        // Compute the rounding adjustment using the fractional part r/d
+        let frac = r as fsize / d as fsize;
+        let abs_frac = if frac < 0.0 { -frac } else { frac };
+
+        // For banker's rounding (rint), when |frac| == 0.5 we need to check
+        // the parity of the quotient, not just round the fraction alone.
+        let adjustment = if abs_frac == 0.5 {
+            // Detect banker's rounding by testing round_fn(0.5)==0 AND round_fn(1.5)==2
+            let is_bankers = round_fn(0.5 as fsize) == 0.0 && round_fn(1.5 as fsize) == 2.0;
+            if is_bankers {
+                // This is banker's rounding (rint): round 0.5 to nearest even
+                // We need to check if quotient is odd or even
+                let q_is_odd = match self.lisp.get(q_idx)? {
+                    Value::Number(n) => n % 2 != 0,
+                    Value::BigNum { .. } => {
+                        let buf = self.load_bignum_buf(q_idx)?;
+                        buf.limbs[0] % 2 != 0
+                    }
+                    _ => false,
+                };
+                if q_is_odd {
+                    // q is odd, round away from q (toward even q+1 or q-1)
+                    if frac > 0.0 { 1isize } else { -1isize }
+                } else {
+                    // q is even, stay at q
+                    0isize
+                }
+            } else {
+                // Not banker's rounding, use normal round_fn
+                round_fn(frac) as isize
+            }
+        } else {
+            round_fn(frac) as isize
+        };
+
+        if adjustment == 0 {
+            // No adjustment needed
+            Ok(q_idx)
+        } else {
+            // Add adjustment to quotient
+            match self.lisp.get(q_idx)? {
+                Value::Number(n) => {
+                    match n.checked_add(adjustment) {
+                        Some(result) => self.lisp.number(result).map_err(Into::into),
+                        None => {
+                            let buf = crate::bignum::BigNumBuf::from_isize(n)
+                                .add(&crate::bignum::BigNumBuf::from_isize(adjustment));
+                            self.store_bignum_result(&buf)
+                        }
+                    }
+                }
+                Value::BigNum { .. } => {
+                    let q_buf = self.load_bignum_buf(q_idx)?;
+                    let adj_buf = crate::bignum::BigNumBuf::from_isize(adjustment);
+                    let result = q_buf.add(&adj_buf);
+                    self.store_bignum_result(&result)
+                }
+                _ => Err(self.type_error(tagged, "number", "?")),
+            }
+        }
+    }
+
+    /// BigNum division fold: (/ bignum divisor ...) → rational or integer.
+    /// Tracks numerator and denominator as BigNumBufs, simplifies via GCD.
+    fn bignum_fold_div(&self, first_idx: ArenaIndex, rest: ArenaIndex, call_expr: ArenaIndex) -> EvalResult {
+        let mut num_big = self.load_bignum_buf(first_idx)?;
+        let mut denom_big = crate::bignum::BigNumBuf::from_isize(1);
+
+        let mut current = rest;
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let elem = self.lisp.car(current)?;
+            match self.lisp.get(elem)? {
+                Value::Number(n) => {
+                    if n == 0 { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                    let b = crate::bignum::BigNumBuf::from_isize(n);
+                    denom_big = denom_big.mul(&b);
+                }
+                Value::BigNum { .. } => {
+                    let b = self.load_bignum_buf(elem)?;
+                    if b.is_zero() { return Err(self.make_error(ErrorKind::DivisionByZero, call_expr)); }
+                    denom_big = denom_big.mul(&b);
+                }
+                Value::Float(f) => {
+                    // Fall back to float arithmetic
+                    let result = num_big.to_f64() / denom_big.to_f64() / f as f64;
+                    return self.lisp.float(result as fsize).map_err(Into::into);
+                }
+                _ => return Err(self.type_error(call_expr, "number", "?")),
+            }
+            current = self.lisp.cdr(current)?;
+        }
+
+        // Simplify num_big/denom_big via GCD
+        let g = num_big.gcd(&denom_big);
+        if !g.is_zero() && !(g.len == 1 && g.limbs[0] == 1) {
+            let (num_simplified, _) = num_big.divmod(&g);
+            let (denom_simplified, _) = denom_big.divmod(&g);
+            num_big = num_simplified;
+            denom_big = denom_simplified;
+        }
+
+        // Normalize sign: ensure denominator is positive
+        if denom_big.negative {
+            num_big = num_big.negate();
+            denom_big = denom_big.negate();
+        }
+
+        // Try to convert to isize rational
+        match (num_big.to_isize(), denom_big.to_isize()) {
+            (Some(n), Some(d)) => {
+                if d == 1 {
+                    self.lisp.number(n).map_err(Into::into)
+                } else {
+                    self.lisp.rational(n, d).map_err(Into::into)
+                }
+            }
+            (None, Some(d)) if d == 1 => {
+                // Numerator is BigNum, denominator is 1 → return BigNum
+                self.store_bignum_result(&num_big)
+            }
+            (None, Some(d)) => {
+                // Numerator is BigNum, denominator fits in isize
+                // Use BigNum divmod for precision
+                let denom_buf = crate::bignum::BigNumBuf::from_isize(d);
+                let (q_buf, r_buf) = num_big.divmod(&denom_buf);
+                if r_buf.is_zero() {
+                    // Exact division
+                    self.store_bignum_result(&q_buf)
+                } else {
+                    // Non-exact: store as tagged BigNum ratio
+                    // (%bignum-ratio quotient remainder denom)
+                    // This allows rounding operations to compute exact results
+                    let tag = self.lisp.symbol("%bignum-ratio")?;
+                    let q_val = self.store_bignum_result(&q_buf)?;
+                    let r_isize = r_buf.to_isize().unwrap_or(0);
+                    let r_val = self.lisp.number(r_isize)?;
+                    let d_val = self.lisp.number(d)?;
+                    let nil = self.lisp.nil()?;
+                    let l3 = self.lisp.cons(d_val, nil)?;
+                    let l2 = self.lisp.cons(r_val, l3)?;
+                    let l1 = self.lisp.cons(q_val, l2)?;
+                    self.lisp.cons(tag, l1).map_err(Into::into)
+                }
+            }
+            _ => {
+                // Both are BigNums too large for isize
+                let (q_buf, r_buf) = num_big.divmod(&denom_big);
+                if r_buf.is_zero() {
+                    self.store_bignum_result(&q_buf)
+                } else {
+                    let result = num_big.to_f64() / denom_big.to_f64();
+                    self.lisp.float(result as fsize).map_err(Into::into)
+                }
+            }
+        }
     }
 
     /// Extract an optional port and start/end range from argument list.

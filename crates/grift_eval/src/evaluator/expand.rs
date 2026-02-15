@@ -2429,23 +2429,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                 Value::Cons { .. } => {
                     let head = self.lisp.car(expr)?;
-                    let args = self.lisp.cdr(expr)?;
+                    let _args = self.lisp.cdr(expr)?;
 
-                    // Check for special forms that affect expansion
-                    if let Value::Symbol(_) = self.lisp.get(head)? {
-                        if self.lisp.symbol_matches(head, "quote")? {
+                    // Resolve the head symbol, unwrapping syntax if needed
+                    let (resolved_head, is_syntax_wrapped) = match self.lisp.get(head)? {
+                        Value::Syntax { .. } => {
+                            let datum = self.lisp.syntax_to_datum(head)?;
+                            if matches!(self.lisp.get(datum)?, Value::Symbol(_)) {
+                                (Some(datum), true)
+                            } else {
+                                (None, false)
+                            }
+                        }
+                        Value::Symbol(_) => (Some(head), false),
+                        _ => (None, false),
+                    };
+
+                    if let Some(sym) = resolved_head {
+                        // Check for special forms that affect expansion
+                        if self.lisp.symbol_matches(sym, "quote")? {
                             // Don't expand inside quote
                             return Ok(expr);
                         }
 
-                        if self.lisp.symbol_matches(head, "syntax")?
-                            || self.lisp.symbol_matches(head, "quasisyntax")? {
+                        if self.lisp.symbol_matches(sym, "syntax")?
+                            || self.lisp.symbol_matches(sym, "quasisyntax")? {
                             // Don't expand inside syntax/quasisyntax templates —
                             // they are evaluated at runtime by step_eval_syntax
                             return Ok(expr);
                         }
 
-                        if self.lisp.symbol_matches(head, "syntax-case")? {
+                        if self.lisp.symbol_matches(sym, "syntax-case")? {
                             // Don't expand inside syntax-case —
                             // patterns and templates are processed at runtime
                             return Ok(expr);
@@ -2459,8 +2473,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // environment for free variables in templates (R7RS §4.3).
 
                         // Check for macro invocation
-                        if let Some(transformer) = self.lookup_macro(head)? {
-                            let expanded = self.apply_macro(transformer, expr)?;
+                        if let Some(transformer) = self.lookup_macro(sym)? {
+                            // For syntax-wrapped heads, rebuild the expression
+                            // with the unwrapped symbol so the transformer receives
+                            // a normal (name args...) form.
+                            let macro_expr = if is_syntax_wrapped {
+                                self.lisp.cons(sym, self.lisp.cdr(expr)?)?
+                            } else {
+                                expr
+                            };
+                            let expanded = self.apply_macro(transformer, macro_expr)?;
                             // Re-expand the result (tail recursion - loop back)
                             expr = expanded;
                             continue;
@@ -2468,13 +2490,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
 
                     // Not a macro - expand subexpressions
-                    return self.expand_application(expr, renames);
+                    // For lambda/define forms, suppress macro expansion for bound names
+                    return self.expand_application_aware(expr, renames);
                 }
 
                 // Atoms pass through unchanged
                 _ => return Ok(expr),
             }
         }
+    }
+
+    /// Expand a function application, being aware of binding forms like lambda.
+    /// 
+    /// When the expression is `(lambda (params...) body...)`, parameters shadow
+    /// global macros in the body expansion. This prevents a global macro named
+    /// e.g. `loop` from being applied inside a lambda that binds `loop` as a
+    /// parameter (as happens with named let).
+    fn expand_application_aware(
+        &mut self,
+        expr: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        if self.lisp.get(expr)?.is_nil() {
+            return Ok(self.lisp.nil()?);
+        }
+
+        let head = self.lisp.car(expr)?;
+        
+        // Check if this is a lambda form — if so, collect parameter names
+        // and suppress macro expansion for those names in the body.
+        let is_lambda = match self.lisp.get(head)? {
+            Value::Symbol(_) => self.lisp.symbol_matches(head, "lambda")?,
+            Value::Syntax { .. } => {
+                let datum = self.lisp.syntax_to_datum(head)?;
+                matches!(self.lisp.get(datum)?, Value::Symbol(_))
+                    && self.lisp.symbol_matches(datum, "lambda")?
+            }
+            _ => false,
+        };
+        
+        if is_lambda {
+            return self.expand_lambda_body(expr, renames);
+        }
+
+        self.expand_application(expr, renames)
     }
 
     /// Expand a function application (non-macro)
@@ -2519,6 +2578,117 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(result)
     }
 
+    /// Expand a lambda form, temporarily suppressing macro expansion for
+    /// parameter names. This prevents a global macro (e.g. `loop`) from
+    /// being expanded inside a lambda body where the same name is bound
+    /// as a parameter (e.g. from named let expansion).
+    ///
+    /// `expr` is `(lambda (params...) body...)` or `(lambda rest-param body...)`
+    fn expand_lambda_body(
+        &mut self,
+        expr: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        let rest = self.lisp.cdr(expr)?;  // (params body...)
+        let params = self.lisp.car(rest)?;
+        let body = self.lisp.cdr(rest)?;
+        
+        // Collect parameter names that shadow macros
+        let saved_macro_env = self.macro_env;
+        let mut shadowed = false;
+        
+        // Walk parameter list to find names that shadow macros
+        match self.lisp.get(params)? {
+            Value::Symbol(_) => {
+                // Rest-args form: (lambda args body...)
+                if self.lookup_macro(params)?.is_some() {
+                    // Shadow this macro with a non-lambda value
+                    let false_val = self.lisp.false_val()?;
+                    let binding = self.lisp.cons(params, false_val)?;
+                    self.macro_env = EnvRef(self.lisp.cons(binding, self.macro_env.0)?);
+                    shadowed = true;
+                }
+            }
+            Value::Cons { .. } => {
+                // Regular params: (lambda (a b c) body...)
+                let mut p = params;
+                while let Value::Cons { .. } = self.lisp.get(p)? {
+                    let param = self.lisp.car(p)?;
+                    if let Value::Symbol(_) = self.lisp.get(param)? {
+                        if self.lookup_macro(param)?.is_some() {
+                            // Shadow this macro with a non-lambda value
+                            let false_val = self.lisp.false_val()?;
+                            let binding = self.lisp.cons(param, false_val)?;
+                            self.macro_env = EnvRef(self.lisp.cons(binding, self.macro_env.0)?);
+                            shadowed = true;
+                        }
+                    }
+                    p = self.lisp.cdr(p)?;
+                }
+                // Check for rest parameter in dotted pair: (a b . rest)
+                if let Value::Symbol(_) = self.lisp.get(p)? {
+                    if self.lookup_macro(p)?.is_some() {
+                        let false_val = self.lisp.false_val()?;
+                        let binding = self.lisp.cons(p, false_val)?;
+                        self.macro_env = EnvRef(self.lisp.cons(binding, self.macro_env.0)?);
+                        shadowed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        
+        // Expand body with macros shadowed
+        let expanded_body = self.expand_list(body, renames)?;
+        
+        // Restore macro environment
+        if shadowed {
+            self.macro_env = saved_macro_env;
+        }
+        
+        // Reconstruct (lambda params expanded-body...)
+        let lambda_sym = self.lisp.car(expr)?;
+        let params_and_body = self.lisp.cons(params, expanded_body)?;
+        self.lisp.cons(lambda_sym, params_and_body).map_err(Into::into)
+    }
+
+    /// Expand each element of a list
+    fn expand_list(
+        &mut self,
+        list: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        if self.lisp.get(list)?.is_nil() {
+            return Ok(self.lisp.nil()?);
+        }
+        
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
+        let mut current = list;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            nil
+        } else {
+            current
+        };
+        
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let expanded = self.expand_expr(elem, renames)?;
+            result = self.lisp.cons(expanded, result)?;
+            cursor = self.lisp.cdr(cursor)?;
+        }
+        
+        Ok(result)
+    }
+
     /// Look up macro in macro environment
     pub(super) fn lookup_macro(&self, name: ArenaIndex) -> Result<Option<ArenaIndex>, EvalError> {
         if !matches!(self.lisp.get(name)?, Value::Symbol(_)) {
@@ -2530,7 +2700,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let binding = self.lisp.car(current)?;
             let key = self.lisp.car(binding)?;
             if self.symbols_eq(key, name)? {
-                return Ok(Some(self.lisp.cdr(binding)?));
+                let val = self.lisp.cdr(binding)?;
+                // Only return if the value is actually a Lambda transformer.
+                // Non-Lambda values (e.g., #f) are used as shadow markers to
+                // suppress macro expansion for locally-bound names.
+                if matches!(self.lisp.get(val)?, Value::Lambda { .. }) {
+                    return Ok(Some(val));
+                }
+                return Ok(None);
             }
             current = self.lisp.cdr(current)?;
         }
@@ -2693,6 +2870,38 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 // Check for custom ellipsis form: (syntax-rules <ellipsis> (lit ...) clause ...)
                 let rewritten = self.rewrite_custom_ellipsis_syntax_rules(transformer_expr)?;
                 self.expand(rewritten)
+            } else if self.lisp.symbol_matches(head, "sc-macro-transformer")? {
+                // (sc-macro-transformer (lambda (exp env) body ...))
+                // Convert to (lambda (exp) (let ((env #f)) body ...))
+                let inner = self.lisp.car(self.lisp.cdr(transformer_expr)?)?;
+                let inner_head = self.lisp.car(inner)?;
+                let is_inner_lambda = self.lisp.symbol_matches(inner_head, "lambda")?;
+                if is_inner_lambda {
+                    let inner_rest = self.lisp.cdr(inner)?;
+                    let params = self.lisp.car(inner_rest)?;
+                    let body = self.lisp.cdr(inner_rest)?;
+                    // Extract exp and env parameters
+                    let exp_param = self.lisp.car(params)?;
+                    let env_param = self.lisp.car(self.lisp.cdr(params)?)?;
+                    // Build (let ((env #f)) body ...)
+                    let false_val = self.lisp.boolean(false)?;
+                    let nil = self.lisp.nil()?;
+                    let env_binding_inner = self.lisp.cons(false_val, nil)?;
+                    let env_binding = self.lisp.cons(env_param, env_binding_inner)?;
+                    let bindings = self.lisp.cons(env_binding, nil)?;
+                    let let_sym = self.lisp.symbol("let")?;
+                    let let_bindings_and_body = self.lisp.cons(bindings, body)?;
+                    let let_form = self.lisp.cons(let_sym, let_bindings_and_body)?;
+                    // Build (lambda (exp) (let ((env #f)) body ...))
+                    let lambda_sym = self.lisp.symbol("lambda")?;
+                    let new_params = self.lisp.cons(exp_param, nil)?;
+                    let let_list = self.lisp.cons(let_form, nil)?;
+                    let params_and_body = self.lisp.cons(new_params, let_list)?;
+                    let new_lambda = self.lisp.cons(lambda_sym, params_and_body)?;
+                    Ok(new_lambda)
+                } else {
+                    self.expand(transformer_expr)
+                }
             } else {
                 // Not a lambda - expand it (e.g., syntax-rules call)
                 self.expand(transformer_expr)
