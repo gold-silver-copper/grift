@@ -230,6 +230,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Push a value onto the GC root stack so it survives collection.
     #[inline]
     fn push_root(&mut self, idx: ArenaIndex) {
+        debug_assert!(
+            self.gc_root_count < MAX_GC_ROOTS,
+            "GC root stack overflow: exceeded {} roots",
+            MAX_GC_ROOTS
+        );
         if self.gc_root_count < MAX_GC_ROOTS {
             self.gc_roots[self.gc_root_count] = idx;
             self.gc_root_count += 1;
