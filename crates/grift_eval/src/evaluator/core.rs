@@ -189,6 +189,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
           (define (in-string s) (string->list s)) \
           (define (in-string-reverse s) (reverse (string->list s))))";
         self.eval_str(src)?;
+        // Define loop macro for Chibi loop compatibility
+        let loop_src = "(define-syntax loop \
+          (syntax-rules (for listing =>) \
+            ((loop ((for var1 (proc1 arg1)) (for var2 (listing var1))) => var2) \
+             (let lp ((items (proc1 arg1)) (var2 (quote ()))) \
+               (if (null? items) \
+                   (reverse var2) \
+                   (let ((var1 (car items))) \
+                     (lp (cdr items) (cons var1 var2))))))))";
+        self.eval_str(loop_src)?;
         Ok(())
     }
 

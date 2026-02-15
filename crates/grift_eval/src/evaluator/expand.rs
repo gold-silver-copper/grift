@@ -2431,21 +2431,35 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     let head = self.lisp.car(expr)?;
                     let _args = self.lisp.cdr(expr)?;
 
-                    // Check for special forms that affect expansion
-                    if let Value::Symbol(_) = self.lisp.get(head)? {
-                        if self.lisp.symbol_matches(head, "quote")? {
+                    // Resolve the head symbol, unwrapping syntax if needed
+                    let (resolved_head, is_syntax_wrapped) = match self.lisp.get(head)? {
+                        Value::Syntax { .. } => {
+                            let datum = self.lisp.syntax_to_datum(head)?;
+                            if matches!(self.lisp.get(datum)?, Value::Symbol(_)) {
+                                (Some(datum), true)
+                            } else {
+                                (None, false)
+                            }
+                        }
+                        Value::Symbol(_) => (Some(head), false),
+                        _ => (None, false),
+                    };
+
+                    if let Some(sym) = resolved_head {
+                        // Check for special forms that affect expansion
+                        if self.lisp.symbol_matches(sym, "quote")? {
                             // Don't expand inside quote
                             return Ok(expr);
                         }
 
-                        if self.lisp.symbol_matches(head, "syntax")?
-                            || self.lisp.symbol_matches(head, "quasisyntax")? {
+                        if self.lisp.symbol_matches(sym, "syntax")?
+                            || self.lisp.symbol_matches(sym, "quasisyntax")? {
                             // Don't expand inside syntax/quasisyntax templates —
                             // they are evaluated at runtime by step_eval_syntax
                             return Ok(expr);
                         }
 
-                        if self.lisp.symbol_matches(head, "syntax-case")? {
+                        if self.lisp.symbol_matches(sym, "syntax-case")? {
                             // Don't expand inside syntax-case —
                             // patterns and templates are processed at runtime
                             return Ok(expr);
@@ -2459,8 +2473,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // environment for free variables in templates (R7RS §4.3).
 
                         // Check for macro invocation
-                        if let Some(transformer) = self.lookup_macro(head)? {
-                            let expanded = self.apply_macro(transformer, expr)?;
+                        if let Some(transformer) = self.lookup_macro(sym)? {
+                            // For syntax-wrapped heads, rebuild the expression
+                            // with the unwrapped symbol so the transformer receives
+                            // a normal (name args...) form.
+                            let macro_expr = if is_syntax_wrapped {
+                                self.lisp.cons(sym, self.lisp.cdr(expr)?)?
+                            } else {
+                                expr
+                            };
+                            let expanded = self.apply_macro(transformer, macro_expr)?;
                             // Re-expand the result (tail recursion - loop back)
                             expr = expanded;
                             continue;
@@ -2678,7 +2700,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let binding = self.lisp.car(current)?;
             let key = self.lisp.car(binding)?;
             if self.symbols_eq(key, name)? {
-                return Ok(Some(self.lisp.cdr(binding)?));
+                let val = self.lisp.cdr(binding)?;
+                // Only return if the value is actually a Lambda transformer.
+                // Non-Lambda values (e.g., #f) are used as shadow markers to
+                // suppress macro expansion for locally-bound names.
+                if matches!(self.lisp.get(val)?, Value::Lambda { .. }) {
+                    return Ok(Some(val));
+                }
+                return Ok(None);
             }
             current = self.lisp.cdr(current)?;
         }
