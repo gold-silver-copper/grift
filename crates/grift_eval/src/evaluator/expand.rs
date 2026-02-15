@@ -2429,7 +2429,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                 Value::Cons { .. } => {
                     let head = self.lisp.car(expr)?;
-                    let args = self.lisp.cdr(expr)?;
+                    let _args = self.lisp.cdr(expr)?;
 
                     // Check for special forms that affect expansion
                     if let Value::Symbol(_) = self.lisp.get(head)? {
@@ -2468,13 +2468,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
 
                     // Not a macro - expand subexpressions
-                    return self.expand_application(expr, renames);
+                    // For lambda/define forms, suppress macro expansion for bound names
+                    return self.expand_application_aware(expr, renames);
                 }
 
                 // Atoms pass through unchanged
                 _ => return Ok(expr),
             }
         }
+    }
+
+    /// Expand a function application, being aware of binding forms like lambda.
+    /// 
+    /// When the expression is `(lambda (params...) body...)`, parameters shadow
+    /// global macros in the body expansion. This prevents a global macro named
+    /// e.g. `loop` from being applied inside a lambda that binds `loop` as a
+    /// parameter (as happens with named let).
+    fn expand_application_aware(
+        &mut self,
+        expr: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        if self.lisp.get(expr)?.is_nil() {
+            return Ok(self.lisp.nil()?);
+        }
+
+        let head = self.lisp.car(expr)?;
+        
+        // Check if this is a lambda form — if so, collect parameter names
+        // and suppress macro expansion for those names in the body.
+        let is_lambda = match self.lisp.get(head)? {
+            Value::Symbol(_) => self.lisp.symbol_matches(head, "lambda")?,
+            Value::Syntax { .. } => {
+                let datum = self.lisp.syntax_to_datum(head)?;
+                matches!(self.lisp.get(datum)?, Value::Symbol(_))
+                    && self.lisp.symbol_matches(datum, "lambda")?
+            }
+            _ => false,
+        };
+        
+        if is_lambda {
+            return self.expand_lambda_body(expr, renames);
+        }
+
+        self.expand_application(expr, renames)
     }
 
     /// Expand a function application (non-macro)
@@ -2505,6 +2542,117 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             nil
         } else {
             // Improper list - keep the tail as-is
+            current
+        };
+        
+        let mut cursor = collected;
+        while let Value::Cons { .. } = self.lisp.get(cursor)? {
+            let elem = self.lisp.car(cursor)?;
+            let expanded = self.expand_expr(elem, renames)?;
+            result = self.lisp.cons(expanded, result)?;
+            cursor = self.lisp.cdr(cursor)?;
+        }
+        
+        Ok(result)
+    }
+
+    /// Expand a lambda form, temporarily suppressing macro expansion for
+    /// parameter names. This prevents a global macro (e.g. `loop`) from
+    /// being expanded inside a lambda body where the same name is bound
+    /// as a parameter (e.g. from named let expansion).
+    ///
+    /// `expr` is `(lambda (params...) body...)` or `(lambda rest-param body...)`
+    fn expand_lambda_body(
+        &mut self,
+        expr: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        let rest = self.lisp.cdr(expr)?;  // (params body...)
+        let params = self.lisp.car(rest)?;
+        let body = self.lisp.cdr(rest)?;
+        
+        // Collect parameter names that shadow macros
+        let saved_macro_env = self.macro_env;
+        let mut shadowed = false;
+        
+        // Walk parameter list to find names that shadow macros
+        match self.lisp.get(params)? {
+            Value::Symbol(_) => {
+                // Rest-args form: (lambda args body...)
+                if self.lookup_macro(params)?.is_some() {
+                    // Shadow this macro with a non-lambda value
+                    let false_val = self.lisp.false_val()?;
+                    let binding = self.lisp.cons(params, false_val)?;
+                    self.macro_env = EnvRef(self.lisp.cons(binding, self.macro_env.0)?);
+                    shadowed = true;
+                }
+            }
+            Value::Cons { .. } => {
+                // Regular params: (lambda (a b c) body...)
+                let mut p = params;
+                while let Value::Cons { .. } = self.lisp.get(p)? {
+                    let param = self.lisp.car(p)?;
+                    if let Value::Symbol(_) = self.lisp.get(param)? {
+                        if self.lookup_macro(param)?.is_some() {
+                            // Shadow this macro with a non-lambda value
+                            let false_val = self.lisp.false_val()?;
+                            let binding = self.lisp.cons(param, false_val)?;
+                            self.macro_env = EnvRef(self.lisp.cons(binding, self.macro_env.0)?);
+                            shadowed = true;
+                        }
+                    }
+                    p = self.lisp.cdr(p)?;
+                }
+                // Check for rest parameter in dotted pair: (a b . rest)
+                if let Value::Symbol(_) = self.lisp.get(p)? {
+                    if self.lookup_macro(p)?.is_some() {
+                        let false_val = self.lisp.false_val()?;
+                        let binding = self.lisp.cons(p, false_val)?;
+                        self.macro_env = EnvRef(self.lisp.cons(binding, self.macro_env.0)?);
+                        shadowed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        
+        // Expand body with macros shadowed
+        let expanded_body = self.expand_list(body, renames)?;
+        
+        // Restore macro environment
+        if shadowed {
+            self.macro_env = saved_macro_env;
+        }
+        
+        // Reconstruct (lambda params expanded-body...)
+        let lambda_sym = self.lisp.car(expr)?;
+        let params_and_body = self.lisp.cons(params, expanded_body)?;
+        self.lisp.cons(lambda_sym, params_and_body).map_err(Into::into)
+    }
+
+    /// Expand each element of a list
+    fn expand_list(
+        &mut self,
+        list: ArenaIndex,
+        renames: ArenaIndex,
+    ) -> EvalResult {
+        if self.lisp.get(list)?.is_nil() {
+            return Ok(self.lisp.nil()?);
+        }
+        
+        let nil = self.lisp.nil()?;
+        let mut collected = nil;
+        let mut current = list;
+        
+        while let Value::Cons { .. } = self.lisp.get(current)? {
+            let elem = self.lisp.car(current)?;
+            collected = self.lisp.cons(elem, collected)?;
+            current = self.lisp.cdr(current)?;
+        }
+        
+        let mut result = if self.lisp.get(current)?.is_nil() {
+            nil
+        } else {
             current
         };
         
