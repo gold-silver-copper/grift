@@ -260,4 +260,18 @@ impl<const N: usize> Trace<Value, N> for Value {
             _ => {}
         }
     }
+
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &Arena<Value, N>, mut tracer: F) {
+        match *self {
+            Value::String { len, data } => {
+                // Trace all contiguous character slots, not just the first.
+                for i in 0..len {
+                    if let Ok(idx) = arena.index_at_offset(data, i) {
+                        tracer(idx);
+                    }
+                }
+            }
+            _ => <Value as Trace<Value, N>>::trace(self, tracer),
+        }
+    }
 }
