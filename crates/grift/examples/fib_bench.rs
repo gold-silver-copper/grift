@@ -27,16 +27,10 @@ fn run_benchmark() {
     let lisp: Lisp<500_000> = Lisp::new();
 
     // Iterative Fibonacci via self-application (no `define` needed).
-    // Computes fib(30) = 832040 in O(n) steps.
+    // (fib 30) crashes due to out of memory but 20 works
     let program = r#"
-        ((lambda (n)
-            ((lambda (loop)
-                (loop loop 0 1 n))
-             (lambda (self a b count)
-                (if (= count 0)
-                    a
-                    (self self b (+ a b) (- count 1))))))
-         30)
+      (begin   (define (fib n) (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+      (fib 20) )
     "#;
 
     let start = std::time::Instant::now();
@@ -45,7 +39,7 @@ fn run_benchmark() {
 
     match result {
         Ok(Value::Number(n)) => {
-            println!("fib(30) = {n}");
+            println!("fib(20) = {n}");
             println!("elapsed: {elapsed:.3?}");
         }
         Ok(other) => {
