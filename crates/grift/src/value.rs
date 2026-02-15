@@ -38,8 +38,8 @@ impl Value {
             Value::Cons { .. } => "pair",
             Value::String { .. } => "string",
             Value::Char(_) => "char",
-            Value::Lambda { .. } => "procedure",
-            Value::Builtin(_) => "procedure",
+            Value::Lambda { .. } => "lambda",
+            Value::Builtin(_) => "builtin",
         }
     }
 }
