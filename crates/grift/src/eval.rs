@@ -232,17 +232,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                 // Thunk — force it via the black-hole protocol.
                 Value::Thunk { expr, env } => {
+                    let thunk_idx = idx;
                     // Step 1: Black-hole the cell (cycle detection).
-                    self.lisp.arena.set(idx, Value::BlackHole)?;
+                    self.lisp.arena.set(thunk_idx, Value::BlackHole)?;
 
                     // Step 2: Evaluate the expression to WHNF.
                     let result = self.eval(expr, env)?;
 
-                    // Step 3: Memoize — overwrite the cell with an indirection.
-                    self.lisp.arena.set(idx, Value::Indirection(result))?;
+                    // Step 3: Follow indirections in result to detect cycles.
+                    let mut final_result = result;
+                    loop {
+                        match self.lisp.get(final_result)? {
+                            Value::Indirection(target) => {
+                                final_result = target;
+                            }
+                            Value::BlackHole => {
+                                // The result transitively points to a
+                                // black-holed thunk — circular evaluation.
+                                return Err(ArenaError::InvalidIndex);
+                            }
+                            _ => break,
+                        }
+                    }
 
-                    // Continue the loop to follow any indirections in result.
-                    idx = result;
+                    // Step 4: Memoize — overwrite the cell with an indirection.
+                    self.lisp.arena.set(thunk_idx, Value::Indirection(final_result))?;
+
+                    // Continue the loop to return the final WHNF value.
+                    idx = final_result;
                     continue;
                 }
 
@@ -285,10 +302,18 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                 // Symbol → look up in local env, then global env
                 Value::Symbol(_) => {
-                    if let Ok(binding) = env_lookup(self.lisp, env, expr) {
-                        return Ok(binding);
+                    let binding = if let Ok(b) = env_lookup(self.lisp, env, expr) {
+                        b
+                    } else {
+                        env_lookup(self.lisp, self.global_env, expr)?
+                    };
+                    // Check for BlackHole (circular evaluation).
+                    // Other value types (Thunk, Indirection, WHNF) are
+                    // returned as-is — the caller decides when to force.
+                    if matches!(self.lisp.get(binding)?, Value::BlackHole) {
+                        return Err(ArenaError::InvalidIndex);
                     }
-                    return env_lookup(self.lisp, self.global_env, expr);
+                    return Ok(binding);
                 }
 
                 // List → special form or function application
