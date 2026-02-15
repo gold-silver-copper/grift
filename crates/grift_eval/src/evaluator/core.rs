@@ -189,17 +189,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
           (define (in-string s) (string->list s)) \
           (define (in-string-reverse s) (reverse (string->list s))))";
         self.eval_str(src)?;
-        // Define loop as a procedure-based macro using syntax-case
-        let loop_src = "(define-syntax loop \
-          (lambda (x) \
-            (syntax-case x (for listing =>) \
-              ((loop ((for var1 (proc1 arg1)) (for var2 (listing var1))) => var2) \
-               (syntax (let lp ((items (proc1 arg1)) (var2 (quote ()))) \
-                 (if (null? items) \
-                     (reverse var2) \
-                     (let ((var1 (car items))) \
-                       (lp (cdr items) (cons var1 var2))))))))))";
-        self.eval_str(loop_src)?;
         Ok(())
     }
 
@@ -1009,11 +998,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let datum = self.lisp.syntax_to_datum(car)?;
             if let Value::Symbol(_) = self.lisp.get(datum)? {
                 // Check for macro (e.g., `let` is a macro in base.scm)
+                // But respect local variable bindings: if the identifier
+                // is bound as a variable in the local environment, the
+                // variable takes priority over the macro (R7RS §4.3).
                 if let Some(transformer) = self.lookup_macro(datum)? {
-                    // Rebuild the expression with the unwrapped symbol so the
-                    // transformer receives a normal (name args...) form.
-                    let unwrapped_expr = self.lisp.cons(datum, cdr)?;
-                    return self.apply_macro_trampolined(transformer, unwrapped_expr, env);
+                    if !self.is_variable_bound(env, datum)? {
+                        // Rebuild the expression with the unwrapped symbol so the
+                        // transformer receives a normal (name args...) form.
+                        let unwrapped_expr = self.lisp.cons(datum, cdr)?;
+                        return self.apply_macro_trampolined(transformer, unwrapped_expr, env);
+                    }
+                    // Variable shadows the macro — fall through to function application
                 }
                 // All special forms — bypass is_variable_bound check
                 // since the symbol was introduced by the macro, not the user.
