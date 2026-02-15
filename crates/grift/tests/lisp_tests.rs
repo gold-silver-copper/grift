@@ -620,7 +620,7 @@ fn test_infinite_ones_cdr_cdr() {
 
 #[test]
 fn test_infinite_nats() {
-    // Infinite stream of natural numbers.
+    // Infinite stream of natural numbers: test car, cadr, and caddr.
     let lisp: Lisp<50000> = Lisp::new();
     assert_eq!(
         lisp.eval(r#"
@@ -631,9 +631,8 @@ fn test_infinite_nats() {
         "#),
         Ok(Value::Number(0))
     );
-    let lisp2: Lisp<50000> = Lisp::new();
     assert_eq!(
-        lisp2.eval(r#"
+        lisp.eval(r#"
             (begin
                 (define (nats-from n) (cons n (nats-from (+ n 1))))
                 (define nats (nats-from 0))
@@ -641,9 +640,8 @@ fn test_infinite_nats() {
         "#),
         Ok(Value::Number(1))
     );
-    let lisp3: Lisp<50000> = Lisp::new();
     assert_eq!(
-        lisp3.eval(r#"
+        lisp.eval(r#"
             (begin
                 (define (nats-from n) (cons n (nats-from (+ n 1))))
                 (define nats (nats-from 0))

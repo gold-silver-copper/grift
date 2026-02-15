@@ -12,10 +12,13 @@ use crate::value::Value;
 ///
 /// **Built-in functions** (section `builtins { ... }`) are registered in the
 /// global environment as `Value::Builtin(id)` with auto-assigned sequential
-/// IDs.  Their arguments are evaluated and forced before the handler is called.
+/// IDs.  Their arguments are evaluated and forced to WHNF before the handler
+/// is called (strict evaluation).
 ///
 /// **Special forms** (section `special_forms { ... }`) are matched by symbol
 /// name during evaluation and receive their arguments *unevaluated*.
+/// Some special forms (e.g., `cons`) implement lazy semantics by wrapping
+/// arguments in thunks.
 macro_rules! define_builtins {
     (
         builtins {
