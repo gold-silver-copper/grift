@@ -25,6 +25,13 @@ pub enum Value {
     Lambda { params: ArenaIndex, body_env: ArenaIndex },
     /// A built-in function identified by index.
     Builtin(u8),
+    /// An unevaluated expression paired with the environment in which
+    /// it should be evaluated when forced.
+    Thunk { expr: ArenaIndex, env: ArenaIndex },
+    /// A thunk that is currently being forced (cycle detection).
+    BlackHole,
+    /// A forced thunk pointing to its evaluated result.
+    Indirection(ArenaIndex),
 }
 
 impl Value {
@@ -40,6 +47,9 @@ impl Value {
             Value::Char(_) => "char",
             Value::Lambda { .. } => "lambda",
             Value::Builtin(_) => "builtin",
+            Value::Thunk { .. } => "thunk",
+            Value::BlackHole => "black-hole",
+            Value::Indirection(_) => "indirection",
         }
     }
 }

@@ -1,6 +1,7 @@
-//! Lisp evaluator.
+//! Lisp evaluator with call-by-need (lazy) semantics.
 //!
-//! Evaluates arena-allocated S-expressions in an environment.
+//! Evaluates arena-allocated S-expressions in an environment using
+//! call-by-need evaluation with memoization and tail-call optimization.
 
 use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 
@@ -11,23 +12,10 @@ use crate::value::Value;
 ///
 /// **Built-in functions** (section `builtins { ... }`) are registered in the
 /// global environment as `Value::Builtin(id)` with auto-assigned sequential
-/// IDs.  Their arguments are evaluated before the handler is called.
+/// IDs.  Their arguments are evaluated and forced before the handler is called.
 ///
 /// **Special forms** (section `special_forms { ... }`) are matched by symbol
 /// name during evaluation and receive their arguments *unevaluated*.
-///
-/// ```text
-/// define_builtins! {
-///     builtins {
-///         "+"    => builtin_add,
-///         "list" => builtin_list,
-///     }
-///     special_forms {
-///         "if"     => eval_if,
-///         "define" => eval_define,
-///     }
-/// }
-/// ```
 macro_rules! define_builtins {
     (
         builtins {
@@ -66,19 +54,20 @@ macro_rules! define_builtins {
                 }
             }
 
-            /// Try to dispatch a special form by symbol name.
+            /// Try to dispatch a special form by symbol name (TCO-aware).
             ///
-            /// Returns `Some(result)` if `car` matched a special form,
+            /// Returns `Some(TailAction)` if `car` matched a special form,
             /// `None` otherwise (fall through to function application).
-            fn try_special_form(
+            fn try_special_form_tco(
                 &mut self,
                 car: ArenaIndex,
                 cdr: ArenaIndex,
-                env: ArenaIndex,
-            ) -> Option<ArenaResult<ArenaIndex>> {
+                expr: &mut ArenaIndex,
+                env: &mut ArenaIndex,
+            ) -> Option<TailAction> {
                 $(
                     if self.lisp.symbol_name_eq(car, $sname) {
-                        return Some(self.$smethod(cdr, env));
+                        return Some(self.$smethod(cdr, expr, env));
                     }
                 )*
                 None
@@ -104,7 +93,7 @@ macro_rules! define_builtins {
 }
 
 // Invoke the macro to generate `init_builtins`, `apply_builtin`,
-// and `try_special_form`.
+// and `try_special_form_tco`.
 define_builtins! {
     builtins {
         "+"        => builtin_add,
@@ -116,7 +105,6 @@ define_builtins! {
         ">"        => builtin_gt,
         "<="       => builtin_le,
         ">="       => builtin_ge,
-        "cons"     => builtin_cons,
         "car"      => builtin_car,
         "cdr"      => builtin_cdr,
         "list"     => builtin_list,
@@ -138,7 +126,16 @@ define_builtins! {
         "and"    => eval_and,
         "or"     => eval_or,
         "let"    => eval_let,
+        "cons"   => eval_cons,
     }
+}
+
+/// TCO control flow for special forms.
+enum TailAction {
+    /// Return this value immediately (non-tail position result).
+    Return(ArenaResult<ArenaIndex>),
+    /// expr and env have been updated; re-enter the eval loop.
+    Continue,
 }
 
 /// The evaluator state.
@@ -215,79 +212,280 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         eval
     }
 
-    /// Evaluate an expression in an environment.
-    pub fn eval(&mut self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.get(expr)?;
-
-        match val {
-            // Self-evaluating values
-            Value::Nil | Value::True | Value::False | Value::Number(_)
-            | Value::Char(_) | Value::String { .. }
-            | Value::Builtin(_) | Value::Lambda { .. } => Ok(expr),
-
-            // Symbol → look up in environment
-            Value::Symbol(_) => env_lookup(self.lisp, env, expr),
-
-            // List → special form or function application
-            Value::Cons { car, cdr } => {
-                // Check for special forms (dispatched via macro-generated
-                // `try_special_form`)
-                if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
-                    if let Some(result) = self.try_special_form(car, cdr, env) {
-                        return result;
-                    }
+    /// Force a value to Weak Head Normal Form (WHNF), memoizing the result.
+    pub fn force(&mut self, mut idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        loop {
+            match self.lisp.get(idx)? {
+                // WHNF — already evaluated, return immediately
+                Value::Nil | Value::True | Value::False | Value::Number(_)
+                | Value::Char(_) | Value::String { .. }
+                | Value::Cons { .. } | Value::Lambda { .. }
+                | Value::Builtin(_) | Value::Symbol(_) => {
+                    return Ok(idx);
                 }
 
-                // Function application
-                let func = self.eval(car, env)?;
-                let args = self.eval_list(cdr, env)?;
-                self.apply(func, args)
+                // Indirection — follow the pointer.
+                Value::Indirection(target) => {
+                    idx = target;
+                    continue;
+                }
+
+                // Thunk — force it via the black-hole protocol.
+                Value::Thunk { expr, env } => {
+                    // Step 1: Black-hole the cell (cycle detection).
+                    self.lisp.arena.set(idx, Value::BlackHole)?;
+
+                    // Step 2: Evaluate the expression to WHNF.
+                    let result = self.eval(expr, env)?;
+
+                    // Step 3: Memoize — overwrite the cell with an indirection.
+                    self.lisp.arena.set(idx, Value::Indirection(result))?;
+
+                    // Continue the loop to follow any indirections in result.
+                    idx = result;
+                    continue;
+                }
+
+                // Circular dependency detected.
+                Value::BlackHole => {
+                    return Err(ArenaError::InvalidIndex);
+                }
             }
         }
     }
 
-    /// Evaluate `(quote expr)` — return the expression unevaluated.
-    fn eval_quote(&mut self, args: ArenaIndex, _env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.lisp.car(args)
+    /// Evaluate an expression in an environment (with TCO).
+    pub fn eval(&mut self, mut expr: ArenaIndex, mut env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        loop {
+            let val = self.lisp.get(expr)?;
+
+            match val {
+                // Self-evaluating values
+                Value::Nil | Value::True | Value::False | Value::Number(_)
+                | Value::Char(_) | Value::String { .. }
+                | Value::Builtin(_) | Value::Lambda { .. } => {
+                    return Ok(expr);
+                }
+
+                // Thunk encountered as a bare expression — force it.
+                Value::Thunk { .. } => {
+                    return self.force(expr);
+                }
+
+                // Indirection — follow it (part of the eval loop, no stack growth)
+                Value::Indirection(target) => {
+                    expr = target;
+                    continue;
+                }
+
+                // Black hole — circular evaluation
+                Value::BlackHole => {
+                    return Err(ArenaError::InvalidIndex);
+                }
+
+                // Symbol → look up in local env, then global env
+                Value::Symbol(_) => {
+                    if let Ok(binding) = env_lookup(self.lisp, env, expr) {
+                        return Ok(binding);
+                    }
+                    return env_lookup(self.lisp, self.global_env, expr);
+                }
+
+                // List → special form or function application
+                Value::Cons { car, cdr } => {
+                    // Check for special forms
+                    if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
+                        if let Some(action) = self.try_special_form_tco(car, cdr, &mut expr, &mut env) {
+                            match action {
+                                TailAction::Return(val) => return val,
+                                TailAction::Continue => continue,
+                            }
+                        }
+                    }
+
+                    // Function application (call-by-need):
+                    // Step 1: Evaluate the operator to WHNF.
+                    let func_idx = self.eval(car, env)?;
+                    let func_whnf = self.force(func_idx)?;
+
+                    match self.lisp.get(func_whnf)? {
+                        // Builtin — strict in all arguments.
+                        Value::Builtin(id) => {
+                            let args = self.force_args(cdr, env)?;
+                            return self.apply_builtin(id, args);
+                        }
+
+                        // Lambda — lazy in arguments (call-by-need).
+                        Value::Lambda { .. } => {
+                            let (params, body, closed_env) = self.lisp.lambda_parts(func_whnf)?;
+                            env = self.bind_args_lazy(closed_env, params, cdr, env)?;
+                            expr = body;
+                            continue; // ← TCO: no Rust stack frame
+                        }
+
+                        _ => return Err(ArenaError::InvalidIndex),
+                    }
+                }
+            }
+        }
     }
 
-    /// Evaluate `(if test then else)`.
-    fn eval_if(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let test = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        let then_expr = self.lisp.car(rest)?;
+    /// Bind parameters to argument thunks (call-by-need).
+    fn bind_args_lazy(
+        &mut self,
+        mut fn_env: ArenaIndex,
+        mut params: ArenaIndex,
+        mut arg_exprs: ArenaIndex,
+        call_env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        while !params.is_nil() && !arg_exprs.is_nil() {
+            match self.lisp.get(params)? {
+                Value::Cons { car: param, cdr: rest } => {
+                    let arg_expr = self.lisp.car(arg_exprs)?;
 
-        let test_val = self.eval(test, env)?;
-        let is_false = matches!(self.lisp.get(test_val)?, Value::False);
+                    // Allocate a thunk in the arena.
+                    let thunk = self.lisp.arena.alloc(Value::Thunk {
+                        expr: arg_expr,
+                        env: call_env,
+                    })?;
 
-        if !is_false {
-            self.eval(then_expr, env)
-        } else {
-            let else_rest = self.lisp.cdr(rest)?;
-            if else_rest.is_nil() {
-                self.lisp.nil()
+                    fn_env = env_bind(self.lisp, fn_env, param, thunk)?;
+
+                    params = rest;
+                    arg_exprs = self.lisp.cdr(arg_exprs)?;
+                }
+                Value::Symbol(_) => {
+                    // Rest parameter: bind remaining args as a thunk-wrapped list
+                    // We need to evaluate the rest args lazily.
+                    // Build a list of thunks for the remaining args.
+                    let rest_thunks = self.make_thunk_list(arg_exprs, call_env)?;
+                    fn_env = env_bind(self.lisp, fn_env, params, rest_thunks)?;
+                    return Ok(fn_env);
+                }
+                _ => return Err(ArenaError::InvalidIndex),
+            }
+        }
+        Ok(fn_env)
+    }
+
+    /// Build a list of thunks from a list of expressions.
+    fn make_thunk_list(
+        &self,
+        mut exprs: ArenaIndex,
+        call_env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        if exprs.is_nil() {
+            return self.lisp.nil();
+        }
+        let arg_expr = self.lisp.car(exprs)?;
+        let thunk = self.lisp.arena.alloc(Value::Thunk {
+            expr: arg_expr,
+            env: call_env,
+        })?;
+        exprs = self.lisp.cdr(exprs)?;
+        let rest = self.make_thunk_list(exprs, call_env)?;
+        self.lisp.cons(thunk, rest)
+    }
+
+    /// Evaluate and force all arguments in a list (for strict builtins).
+    fn force_args(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        if args.is_nil() {
+            return self.lisp.nil();
+        }
+        let head_expr = self.lisp.car(args)?;
+        let head_val = self.eval(head_expr, env)?;
+        let head_forced = self.force(head_val)?;
+
+        let tail = self.lisp.cdr(args)?;
+        let tail_forced = self.force_args(tail, env)?;
+
+        self.lisp.cons(head_forced, tail_forced)
+    }
+
+    // ========================================================================
+    // Special forms (TCO-aware)
+    // ========================================================================
+
+    /// `(quote expr)` — return the expression unevaluated.
+    fn eval_quote(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        _env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(self.lisp.car(args))
+    }
+
+    /// `(if test then else)` — test is strict, branches are tail positions.
+    fn eval_if(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        let result = (|| -> ArenaResult<()> {
+            let test_expr = self.lisp.car(args)?;
+            let rest = self.lisp.cdr(args)?;
+
+            // Non-tail: evaluate and force the test
+            let test_val = self.eval(test_expr, *env)?;
+            let test_forced = self.force(test_val)?;
+            let is_false = matches!(self.lisp.get(test_forced)?, Value::False);
+
+            if !is_false {
+                *expr = self.lisp.car(rest)?;
             } else {
-                let else_expr = self.lisp.car(else_rest)?;
-                self.eval(else_expr, env)
+                let else_rest = self.lisp.cdr(rest)?;
+                *expr = if else_rest.is_nil() {
+                    self.lisp.nil()?
+                } else {
+                    self.lisp.car(else_rest)?
+                };
             }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => TailAction::Continue,
+            Err(e) => TailAction::Return(Err(e)),
         }
     }
 
-    /// Evaluate `(define name expr)` or `(define (name params...) body)`.
-    fn eval_define(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// `(define name expr)` or `(define (name params...) body)`.
+    fn eval_define(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(self.eval_define_inner(args, *env))
+    }
+
+    fn eval_define_inner(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         let first = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
 
         match self.lisp.get(first)? {
             Value::Symbol(_) => {
-                // (define name expr)
-                let expr = self.lisp.car(rest)?;
-                let val = self.eval(expr, env)?;
-                self.global_env = env_bind(self.lisp, self.global_env, first, val)?;
-                Ok(val)
+                let val_expr = self.lisp.car(rest)?;
+                // Create thunk for the RHS
+                let thunk = self.lisp.arena.alloc(Value::Thunk {
+                    expr: val_expr,
+                    env,
+                })?;
+                self.global_env = env_bind(self.lisp, self.global_env, first, thunk)?;
+                Ok(thunk)
             }
             Value::Cons { car: name, cdr: params } => {
-                // (define (name params...) body...)
+                // Function shorthand — lambda is already WHNF, no thunk needed
                 let body = self.wrap_begin(rest)?;
                 let lam = self.lisp.lambda(params, body, env)?;
                 self.global_env = env_bind(self.lisp, self.global_env, name, lam)?;
@@ -297,42 +495,102 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Evaluate `(set! name expr)`.
-    fn eval_set(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// `(set! name expr)`.
+    fn eval_set(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(self.eval_set_inner(args, *env))
+    }
+
+    fn eval_set_inner(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         let name = self.lisp.car(args)?;
         let expr = self.lisp.car(self.lisp.cdr(args)?)?;
         let val = self.eval(expr, env)?;
+        let forced = self.force(val)?;
 
         // Try local env first, then global
-        if env_set(self.lisp, env, name, val).is_ok() {
+        if env_set(self.lisp, env, name, forced).is_ok() {
             return self.lisp.nil();
         }
-        env_set(self.lisp, self.global_env, name, val)?;
+        env_set(self.lisp, self.global_env, name, forced)?;
         self.lisp.nil()
     }
 
-    /// Evaluate `(lambda (params...) body...)`.
-    fn eval_lambda(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// `(lambda (params...) body...)`.
+    fn eval_lambda(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(self.eval_lambda_inner(args, *env))
+    }
+
+    fn eval_lambda_inner(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         let params = self.lisp.car(args)?;
         let body_list = self.lisp.cdr(args)?;
         let body = self.wrap_begin(body_list)?;
         self.lisp.lambda(params, body, env)
     }
 
-    /// Evaluate `(begin expr1 expr2 ...)`.
-    fn eval_begin(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut cur = args;
-        let mut result = self.lisp.nil()?;
-        while !cur.is_nil() {
-            let expr = self.lisp.car(cur)?;
-            result = self.eval(expr, env)?;
-            cur = self.lisp.cdr(cur)?;
+    /// `(begin expr1 expr2 ...)` — all but last are non-tail, last is tail.
+    fn eval_begin(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        let result = (|| -> ArenaResult<()> {
+            let mut cur = args;
+            while !cur.is_nil() {
+                let next = self.lisp.cdr(cur)?;
+                if next.is_nil() {
+                    // Last expression — tail position
+                    *expr = self.lisp.car(cur)?;
+                    return Ok(());
+                }
+                // Non-last — evaluate (non-tail) and discard result
+                let e = self.lisp.car(cur)?;
+                self.eval(e, *env)?;
+                cur = next;
+            }
+            *expr = self.lisp.nil()?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => TailAction::Continue,
+            Err(e) => TailAction::Return(Err(e)),
         }
-        Ok(result)
     }
 
-    /// Evaluate `(cond (test expr) ...)`.
-    fn eval_cond(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// `(cond (test expr) ...)` — tests are strict, result is tail.
+    fn eval_cond(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(self.eval_cond_inner(args, expr, env))
+    }
+
+    fn eval_cond_inner(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         let mut cur = args;
         while !cur.is_nil() {
             let clause = self.lisp.car(cur)?;
@@ -340,66 +598,180 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let body = self.lisp.cdr(clause)?;
 
             // Check for `else` clause
-            let is_else = self.lisp.symbol_name_eq(test, "else");
-            if is_else {
-                return self.eval_begin(body, env);
+            if self.lisp.symbol_name_eq(test, "else") {
+                return self.eval_begin_inner(body, *env);
             }
 
-            let test_val = self.eval(test, env)?;
-            if !matches!(self.lisp.get(test_val)?, Value::False) {
-                return self.eval_begin(body, env);
+            let test_val = self.eval(test, *env)?;
+            let test_forced = self.force(test_val)?;
+            if !matches!(self.lisp.get(test_forced)?, Value::False) {
+                return self.eval_begin_inner(body, *env);
             }
             cur = self.lisp.cdr(cur)?;
         }
         self.lisp.nil()
     }
 
-    /// Evaluate `(and expr1 expr2 ...)`.
-    fn eval_and(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// Helper: evaluate a begin body without TCO (for use within cond).
+    fn eval_begin_inner(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         let mut cur = args;
-        let mut result = self.lisp.boolean(true)?;
+        let mut result = self.lisp.nil()?;
         while !cur.is_nil() {
-            let expr = self.lisp.car(cur)?;
-            result = self.eval(expr, env)?;
-            if matches!(self.lisp.get(result)?, Value::False) {
-                return Ok(result);
-            }
+            let e = self.lisp.car(cur)?;
+            result = self.eval(e, env)?;
             cur = self.lisp.cdr(cur)?;
         }
         Ok(result)
     }
 
-    /// Evaluate `(or expr1 expr2 ...)`.
-    fn eval_or(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut cur = args;
-        while !cur.is_nil() {
-            let expr = self.lisp.car(cur)?;
-            let result = self.eval(expr, env)?;
-            if !matches!(self.lisp.get(result)?, Value::False) {
-                return Ok(result);
+    /// `(and expr1 expr2 ...)` — strict on tests, last is tail.
+    fn eval_and(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        let result = (|| -> ArenaResult<()> {
+            let mut cur = args;
+            while !cur.is_nil() {
+                let next = self.lisp.cdr(cur)?;
+                if next.is_nil() {
+                    // Last expression — tail position
+                    *expr = self.lisp.car(cur)?;
+                    return Ok(());
+                }
+                let e = self.lisp.car(cur)?;
+                let result = self.eval(e, *env)?;
+                let forced = self.force(result)?;
+                if matches!(self.lisp.get(forced)?, Value::False) {
+                    // Short-circuit: need to return false directly
+                    // We set expr to the false value (self-evaluating)
+                    *expr = forced;
+                    return Ok(());
+                }
+                cur = next;
             }
-            cur = self.lisp.cdr(cur)?;
+            // (and) with no args → #t
+            *expr = self.lisp.boolean(true)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => TailAction::Continue,
+            Err(e) => TailAction::Return(Err(e)),
         }
-        self.lisp.boolean(false)
     }
 
-    /// Evaluate `(let ((name val) ...) body...)`.
-    fn eval_let(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let bindings = self.lisp.car(args)?;
-        let body_list = self.lisp.cdr(args)?;
+    /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
+    fn eval_or(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        let result = (|| -> ArenaResult<()> {
+            let mut cur = args;
+            while !cur.is_nil() {
+                let next = self.lisp.cdr(cur)?;
+                if next.is_nil() {
+                    // Last expression — tail position
+                    *expr = self.lisp.car(cur)?;
+                    return Ok(());
+                }
+                let e = self.lisp.car(cur)?;
+                let result = self.eval(e, *env)?;
+                let forced = self.force(result)?;
+                if !matches!(self.lisp.get(forced)?, Value::False) {
+                    // Short-circuit: return the truthy value
+                    *expr = forced;
+                    return Ok(());
+                }
+                cur = next;
+            }
+            // (or) with no args → #f
+            *expr = self.lisp.boolean(false)?;
+            Ok(())
+        })();
 
-        let mut local_env = env;
-        let mut cur = bindings;
-        while !cur.is_nil() {
-            let binding = self.lisp.car(cur)?;
-            let name = self.lisp.car(binding)?;
-            let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-            let val = self.eval(val_expr, env)?;
-            local_env = env_bind(self.lisp, local_env, name, val)?;
-            cur = self.lisp.cdr(cur)?;
+        match result {
+            Ok(()) => TailAction::Continue,
+            Err(e) => TailAction::Return(Err(e)),
         }
+    }
 
-        self.eval_begin(body_list, local_env)
+    /// `(let ((name val) ...) body...)` — bindings are lazy, body is tail.
+    fn eval_let(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        let result = (|| -> ArenaResult<()> {
+            let bindings = self.lisp.car(args)?;
+            let body_list = self.lisp.cdr(args)?;
+
+            let mut local_env = *env;
+            let mut cur = bindings;
+            while !cur.is_nil() {
+                let binding = self.lisp.car(cur)?;
+                let name = self.lisp.car(binding)?;
+                let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+
+                // LAZY: wrap in a thunk instead of evaluating
+                let thunk = self.lisp.arena.alloc(Value::Thunk {
+                    expr: val_expr,
+                    env: *env,
+                })?;
+                local_env = env_bind(self.lisp, local_env, name, thunk)?;
+
+                cur = self.lisp.cdr(cur)?;
+            }
+
+            *env = local_env;
+            let body = self.wrap_begin(body_list)?;
+            *expr = body;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => TailAction::Continue,
+            Err(e) => TailAction::Return(Err(e)),
+        }
+    }
+
+    /// `(cons a b)` — lazy cons: does NOT evaluate arguments.
+    fn eval_cons(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(self.eval_cons_inner(args, *env))
+    }
+
+    fn eval_cons_inner(
+        &mut self,
+        args: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let a_expr = self.lisp.car(args)?;
+        let b_expr = self.lisp.car(self.lisp.cdr(args)?)?;
+
+        // Create thunks for both arguments
+        let a_thunk = self.lisp.arena.alloc(Value::Thunk {
+            expr: a_expr,
+            env,
+        })?;
+        let b_thunk = self.lisp.arena.alloc(Value::Thunk {
+            expr: b_expr,
+            env,
+        })?;
+
+        self.lisp.cons(a_thunk, b_thunk)
     }
 
     /// Wrap a list of expressions in a `begin` form if there are multiple,
@@ -416,65 +788,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Multiple expressions, wrap in begin
         let begin_sym = self.lisp.symbol("begin")?;
         self.lisp.cons(begin_sym, exprs)
-    }
-
-    /// Evaluate each element in a list, returning a new list of results.
-    fn eval_list(&mut self, list: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if list.is_nil() {
-            return self.lisp.nil();
-        }
-        let car = self.lisp.car(list)?;
-        let cdr = self.lisp.cdr(list)?;
-        let eval_car = self.eval(car, env)?;
-        let eval_cdr = self.eval_list(cdr, env)?;
-        self.lisp.cons(eval_car, eval_cdr)
-    }
-
-    /// Apply a function to arguments.
-    fn apply(&mut self, func: ArenaIndex, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.lisp.get(func)? {
-            Value::Builtin(id) => self.apply_builtin(id, args),
-            Value::Lambda { .. } => {
-                let (params, body, closure_env) = self.lisp.lambda_parts(func)?;
-                let local_env = self.bind_params(params, args, closure_env)?;
-                self.eval(body, local_env)
-            }
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-
-    /// Bind parameter names to argument values in a new environment.
-    fn bind_params(
-        &self,
-        params: ArenaIndex,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        let mut p = params;
-        let mut a = args;
-        let mut local_env = env;
-
-        while !p.is_nil() {
-            match self.lisp.get(p)? {
-                Value::Cons { car: param, cdr: rest } => {
-                    if a.is_nil() {
-                        return Err(ArenaError::InvalidIndex);
-                    }
-                    let arg = self.lisp.car(a)?;
-                    local_env = env_bind(self.lisp, local_env, param, arg)?;
-                    p = rest;
-                    a = self.lisp.cdr(a)?;
-                }
-                Value::Symbol(_) => {
-                    // Rest parameter: bind remaining args as a list
-                    local_env = env_bind(self.lisp, local_env, p, a)?;
-                    return Ok(local_env);
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-        }
-
-        Ok(local_env)
     }
 
     // ========================================================================
@@ -621,25 +934,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Pair / list built-ins
     // ========================================================================
 
-    fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.lisp.car(args)?;
-        let b = self.lisp.car(self.lisp.cdr(args)?)?;
-        self.lisp.cons(a, b)
-    }
-
-    /// `(list ...)` — return args as-is (already evaluated into a list).
+    /// `(list ...)` — return args as-is (already forced into a list).
     fn builtin_list(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Ok(args)
     }
 
-    fn builtin_car(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    fn builtin_car(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let pair = self.lisp.car(args)?;
-        self.lisp.car(pair)
+        let car = self.lisp.car(pair)?;
+        // Force through thunks/indirections
+        self.force(car)
     }
 
-    fn builtin_cdr(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    fn builtin_cdr(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let pair = self.lisp.car(args)?;
-        self.lisp.cdr(pair)
+        let cdr = self.lisp.cdr(pair)?;
+        // Force through thunks/indirections
+        self.force(cdr)
     }
 
     // ========================================================================

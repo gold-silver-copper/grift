@@ -211,7 +211,8 @@ impl<const N: usize> Lisp<N> {
         let expr = parser.parse(self)?;
         let mut evaluator = Evaluator::new(self);
         let result_idx = evaluator.eval(expr, evaluator.global_env)?;
-        self.arena.get(result_idx)
+        let forced = evaluator.force(result_idx)?;
+        self.arena.get(forced)
     }
 
     // ========================================================================
@@ -248,6 +249,13 @@ impl<const N: usize> Trace<Value, N> for Value {
                 if !data.is_nil() {
                     tracer(data);
                 }
+            }
+            Value::Thunk { expr, env } => {
+                tracer(expr);
+                tracer(env);
+            }
+            Value::Indirection(target) => {
+                tracer(target);
             }
             _ => {}
         }
