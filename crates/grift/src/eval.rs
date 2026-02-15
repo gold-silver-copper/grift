@@ -7,26 +7,94 @@ use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 use crate::lisp::Lisp;
 use crate::value::Value;
 
-// Built-in function IDs
-const BUILTIN_ADD: u8 = 0;
-const BUILTIN_SUB: u8 = 1;
-const BUILTIN_MUL: u8 = 2;
-const BUILTIN_DIV: u8 = 3;
-const BUILTIN_EQ: u8 = 4;
-const BUILTIN_LT: u8 = 5;
-const BUILTIN_GT: u8 = 6;
-const BUILTIN_CONS: u8 = 7;
-const BUILTIN_CAR: u8 = 8;
-const BUILTIN_CDR: u8 = 9;
-const BUILTIN_LIST: u8 = 10;
-const BUILTIN_NULLP: u8 = 11;
-const BUILTIN_NOT: u8 = 12;
-const BUILTIN_PAIRP: u8 = 13;
-const BUILTIN_NUMBERP: u8 = 14;
-const BUILTIN_SYMBOLP: u8 = 15;
-const BUILTIN_BOOLEANP: u8 = 16;
-const BUILTIN_LE: u8 = 17;
-const BUILTIN_GE: u8 = 18;
+/// Declare all built-in functions in one place.
+///
+/// This macro auto-assigns sequential numeric IDs (starting at 0), generates
+/// `init_builtins()` to bind each Lisp name to a `Value::Builtin(id)`,
+/// and generates `apply_builtin()` to dispatch by ID to the handler method.
+///
+/// Each entry maps a Lisp name to a method name on `Evaluator` that accepts
+/// an `ArenaIndex` argument list and returns `ArenaResult<ArenaIndex>`:
+///
+/// ```text
+/// define_builtins! {
+///     "+"    => builtin_add,
+///     "list" => builtin_list,
+///     "<"    => builtin_lt,
+/// }
+/// ```
+macro_rules! define_builtins {
+    ( $( $name:literal => $method:ident ),* $(,)? ) => {
+        // Generate unique constant IDs for each builtin.
+        define_builtins!(@consts 0u8, $( $name, $method; )* );
+
+        impl<'a, const N: usize> Evaluator<'a, N> {
+            /// Register all built-in functions in the global environment.
+            fn init_builtins(&mut self) {
+                $(
+                    if let (Ok(sym), Ok(val)) = (
+                        self.lisp.symbol($name),
+                        self.lisp.arena.alloc(Value::Builtin(
+                            define_builtins!(@const_name $method)
+                        )),
+                    ) {
+                        if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, val) {
+                            self.global_env = new_env;
+                        }
+                    }
+                )*
+            }
+
+            /// Apply a built-in function.
+            #[allow(non_upper_case_globals)]
+            fn apply_builtin(&mut self, id: u8, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+                match id {
+                    $( define_builtins!(@const_name $method) => self.$method(args), )*
+                    _ => Err(ArenaError::InvalidIndex),
+                }
+            }
+        }
+    };
+
+    // Generate const declarations recursively with incrementing IDs.
+    (@consts $id:expr, $name:literal, $method:ident; $( $rest_name:literal, $rest_method:ident; )* ) => {
+        define_builtins!(@make_const $method, $id);
+        define_builtins!(@consts $id + 1u8, $( $rest_name, $rest_method; )* );
+    };
+    (@consts $id:expr, ) => {};
+
+    // Generate a single const with a name derived from the method name.
+    (@make_const $method:ident, $id:expr) => {
+        #[allow(non_upper_case_globals)]
+        const $method: u8 = $id;
+    };
+
+    // Reference a const by method name.
+    (@const_name $method:ident) => { $method };
+}
+
+// Invoke the macro to generate `init_builtins` and `apply_builtin`.
+define_builtins! {
+    "+"        => builtin_add,
+    "-"        => builtin_sub,
+    "*"        => builtin_mul,
+    "/"        => builtin_div,
+    "="        => builtin_eq,
+    "<"        => builtin_lt,
+    ">"        => builtin_gt,
+    "<="       => builtin_le,
+    ">="       => builtin_ge,
+    "cons"     => builtin_cons,
+    "car"      => builtin_car,
+    "cdr"      => builtin_cdr,
+    "list"     => builtin_list,
+    "null?"    => builtin_nullp,
+    "not"      => builtin_not,
+    "pair?"    => builtin_pairp,
+    "number?"  => builtin_numberp,
+    "symbol?"  => builtin_symbolp,
+    "boolean?" => builtin_booleanp,
+}
 
 /// The evaluator state.
 pub(crate) struct Evaluator<'a, const N: usize> {
@@ -100,42 +168,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         eval.init_builtins();
         eval
-    }
-
-    /// Register all built-in functions in the global environment.
-    fn init_builtins(&mut self) {
-        let builtins: &[(&str, u8)] = &[
-            ("+", BUILTIN_ADD),
-            ("-", BUILTIN_SUB),
-            ("*", BUILTIN_MUL),
-            ("/", BUILTIN_DIV),
-            ("=", BUILTIN_EQ),
-            ("<", BUILTIN_LT),
-            (">", BUILTIN_GT),
-            ("<=", BUILTIN_LE),
-            (">=", BUILTIN_GE),
-            ("cons", BUILTIN_CONS),
-            ("car", BUILTIN_CAR),
-            ("cdr", BUILTIN_CDR),
-            ("list", BUILTIN_LIST),
-            ("null?", BUILTIN_NULLP),
-            ("not", BUILTIN_NOT),
-            ("pair?", BUILTIN_PAIRP),
-            ("number?", BUILTIN_NUMBERP),
-            ("symbol?", BUILTIN_SYMBOLP),
-            ("boolean?", BUILTIN_BOOLEANP),
-        ];
-
-        for &(name, id) in builtins {
-            if let (Ok(sym), Ok(val)) = (
-                self.lisp.symbol(name),
-                self.lisp.arena.alloc(Value::Builtin(id)),
-            ) {
-                if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, val) {
-                    self.global_env = new_env;
-                }
-            }
-        }
     }
 
     /// Evaluate an expression in an environment.
@@ -423,32 +455,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(local_env)
     }
 
-    /// Apply a built-in function.
-    fn apply_builtin(&mut self, id: u8, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match id {
-            BUILTIN_ADD => self.builtin_add(args),
-            BUILTIN_SUB => self.builtin_sub(args),
-            BUILTIN_MUL => self.builtin_mul(args),
-            BUILTIN_DIV => self.builtin_div(args),
-            BUILTIN_EQ => self.builtin_eq(args),
-            BUILTIN_LT => self.builtin_cmp(args, |a, b| a < b),
-            BUILTIN_GT => self.builtin_cmp(args, |a, b| a > b),
-            BUILTIN_LE => self.builtin_cmp(args, |a, b| a <= b),
-            BUILTIN_GE => self.builtin_cmp(args, |a, b| a >= b),
-            BUILTIN_CONS => self.builtin_cons(args),
-            BUILTIN_CAR => self.builtin_car(args),
-            BUILTIN_CDR => self.builtin_cdr(args),
-            BUILTIN_LIST => Ok(args),
-            BUILTIN_NULLP => self.builtin_nullp(args),
-            BUILTIN_NOT => self.builtin_not(args),
-            BUILTIN_PAIRP => self.builtin_pairp(args),
-            BUILTIN_NUMBERP => self.builtin_numberp(args),
-            BUILTIN_SYMBOLP => self.builtin_symbolp(args),
-            BUILTIN_BOOLEANP => self.builtin_booleanp(args),
-            _ => Err(ArenaError::InvalidIndex),
-        }
-    }
-
     // ========================================================================
     // Arithmetic built-ins
     // ========================================================================
@@ -569,6 +575,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.boolean(cmp(a, b))
     }
 
+    /// `(< a b)` — less than.
+    fn builtin_lt(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.builtin_cmp(args, |a, b| a < b)
+    }
+
+    /// `(> a b)` — greater than.
+    fn builtin_gt(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.builtin_cmp(args, |a, b| a > b)
+    }
+
+    /// `(<= a b)` — less than or equal.
+    fn builtin_le(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.builtin_cmp(args, |a, b| a <= b)
+    }
+
+    /// `(>= a b)` — greater than or equal.
+    fn builtin_ge(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.builtin_cmp(args, |a, b| a >= b)
+    }
+
     // ========================================================================
     // Pair / list built-ins
     // ========================================================================
@@ -577,6 +603,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let a = self.lisp.car(args)?;
         let b = self.lisp.car(self.lisp.cdr(args)?)?;
         self.lisp.cons(a, b)
+    }
+
+    /// `(list ...)` — return args as-is (already evaluated into a list).
+    fn builtin_list(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        Ok(args)
     }
 
     fn builtin_car(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
