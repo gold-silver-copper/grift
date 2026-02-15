@@ -93,14 +93,37 @@ macro_rules! builtin_rounding_op {
         let arg = $self.lisp.car($args)?;
         match $self.lisp.get(arg)? {
             Value::Number(n) => $self.lisp.number(n).map_err(Into::into),
+            Value::BigNum { .. } => {
+                // BigNum is already an integer
+                Ok(arg)
+            }
             Value::Float(f) => {
                 let result = $float_op(f);
-                $self.lisp.float(result).map_err(Into::into)
+                let f64_result = result as f64;
+                // If the float result overflows isize, produce BigNum (exact integer)
+                if f64_result.is_finite() && (f64_result > isize::MAX as f64 || f64_result < isize::MIN as f64) {
+                    match crate::bignum::BigNumBuf::from_f64(f64_result) {
+                        Some(buf) => match buf.to_isize() {
+                            Some(n) => $self.lisp.number(n).map_err(Into::into),
+                            None => $self.lisp.bignum_from_limbs(
+                                &buf.limbs[..buf.len], buf.negative
+                            ).map_err(Into::into),
+                        },
+                        None => $self.lisp.float(result).map_err(Into::into),
+                    }
+                } else {
+                    $self.lisp.float(result).map_err(Into::into)
+                }
             }
             Value::Rational { num, denom } => {
+                // R7RS: rounding an exact rational returns an exact integer
                 let f = num as crate::fsize / denom as crate::fsize;
                 let result = $float_op(f);
-                $self.lisp.float(result).map_err(Into::into)
+                $self.lisp.number(result as isize).map_err(Into::into)
+            }
+            Value::Cons { .. } => {
+                // Check for tagged BigNum ratio: (%bignum-ratio quotient remainder denom)
+                $self.round_bignum_ratio(arg, $float_op)
             }
             v => Err($self.type_error($call_expr, "number", v.type_name())),
         }
@@ -419,18 +442,35 @@ macro_rules! binary_div_op {
                 $self.lisp.number($int_op(x, y)).map_err(Into::into)
             }
             (Value::Number(x), Value::Float(y)) => {
-                if y == 0.0 {
+                if y == 0.0 || !y.is_finite() {
                     return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
                 }
                 $self.lisp.float($float_op(x as $crate::fsize, y)).map_err(Into::into)
             }
             (Value::Float(x), Value::Number(y)) => {
-                if y == 0 {
+                if y == 0 || !x.is_finite() {
                     return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
                 }
                 $self.lisp.float($float_op(x, y as $crate::fsize)).map_err(Into::into)
             }
             (Value::Float(x), Value::Float(y)) => {
+                if y == 0.0 || !x.is_finite() || !y.is_finite() {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                $self.lisp.float($float_op(x, y)).map_err(Into::into)
+            }
+            (Value::Rational { num, denom }, Value::Float(y)) => {
+                let x = num as $crate::fsize / denom as $crate::fsize;
+                if y == 0.0 || !y.is_finite() {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                $self.lisp.float($float_op(x, y)).map_err(Into::into)
+            }
+            (Value::Float(x), Value::Rational { num, denom }) => {
+                if !x.is_finite() {
+                    return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
+                }
+                let y = num as $crate::fsize / denom as $crate::fsize;
                 if y == 0.0 {
                     return Err($self.make_error($crate::ErrorKind::DivisionByZero, $call_expr));
                 }
