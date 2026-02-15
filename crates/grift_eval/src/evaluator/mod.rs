@@ -96,4 +96,12 @@ pub struct Evaluator<'a, const N: usize> {
     /// Libraries currently being loaded — arena-based list of library names.
     /// Used for detecting circular dependencies during auto-loading.
     loading_libraries: ArenaIndex,
+    /// Cached result of `(get-environment-variables)` to avoid repeated
+    /// large allocations in the same evaluator instance.
+    cached_environment_variables: ArenaIndex,
+    /// Datum label table for `read` — arena-based alist mapping label
+    /// numbers (as Number values) to their associated datum values.
+    /// Used to implement `#n=<datum>` / `#n#` in `read` (R7RS §7.1.1).
+    /// Reset to Nil before each top-level `read` call.
+    read_labels: ArenaIndex,
 }

@@ -108,6 +108,10 @@ pub enum Token {
     /// String literal — characters are allocated in the arena.
     /// The `ArenaIndex` points to a `Value::String` in the arena.
     String(grift_arena::ArenaIndex),
+    /// `#n=` — datum label definition (label number)
+    DatumLabelDef(usize),
+    /// `#n#` — datum label reference (label number)
+    DatumLabelRef(usize),
 }
 
 /// Source location for error reporting
@@ -1284,6 +1288,30 @@ impl<'a> Lexer<'a> {
                 } else {
                     self.restore_pos(saved);
                     Err(self.error(LexErrorKind::InvalidHashLiteral))
+                }
+            }
+            Some(c) if c.is_ascii_digit() => {
+                // Datum label: #n= or #n#
+                let mut label: usize = (c - b'0') as usize;
+                self.advance();
+                while let Some(d) = self.peek() {
+                    if d.is_ascii_digit() {
+                        label = label * 10 + (d - b'0') as usize;
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                match self.peek() {
+                    Some(b'=') => {
+                        self.advance();
+                        Ok(Token::DatumLabelDef(label))
+                    }
+                    Some(b'#') => {
+                        self.advance();
+                        Ok(Token::DatumLabelRef(label))
+                    }
+                    _ => Err(self.error(LexErrorKind::InvalidHashLiteral)),
                 }
             }
             Some(_) => Err(self.error(LexErrorKind::InvalidHashLiteral)),

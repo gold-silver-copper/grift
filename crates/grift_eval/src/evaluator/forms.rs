@@ -1554,13 +1554,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
         }
 
-        // Build body expression (wrap in begin if multiple)
-        let body = if self.lisp.get(self.lisp.cdr(body_list)?)?.is_nil() {
-            self.lisp.car(body_list)?
-        } else {
-            let begin = self.lisp.symbol("begin")?;
-            self.lisp.cons(begin, body_list)?
-        };
+        // Wrap body as ((lambda () body ...)) so that internal definitions
+        // are local to the let-syntax body, per R7RS §4.3.1.
+        let lambda_sym = self.lisp.symbol("lambda")?;
+        let nil = self.lisp.nil()?;
+        // (lambda () body ...)
+        let lambda_form = self.lisp.cons(lambda_sym, self.lisp.cons(nil, body_list)?)?;
+        // ((lambda () body ...))
+        let body = self.lisp.cons(lambda_form, nil)?;
 
         self.cont(ContType::LetSyntaxBody, env).data1(saved_macro_env.0)?;
         Ok(TrampolineState::Eval { expr: ExprRef(body), env })

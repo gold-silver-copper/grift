@@ -114,6 +114,30 @@ define_builtins! {
     TruncateRemainder => "truncate-remainder",
     /// truncate/ - Returns quotient and remainder via values
     TruncateDiv => "truncate/",
+    /// ceiling-quotient - ⌈n/d⌉
+    CeilingQuotient => "ceiling-quotient",
+    /// ceiling-remainder - n - d·⌈n/d⌉
+    CeilingRemainder => "ceiling-remainder",
+    /// ceiling/ - Returns quotient and remainder via values
+    CeilingDiv => "ceiling/",
+    /// round-quotient - round(n/d)
+    RoundQuotient => "round-quotient",
+    /// round-remainder - n - d·round(n/d)
+    RoundRemainder => "round-remainder",
+    /// round/ - Returns quotient and remainder via values
+    RoundDiv => "round/",
+    /// euclidean-quotient - Euclidean division quotient
+    EuclideanQuotient => "euclidean-quotient",
+    /// euclidean-remainder - Euclidean division remainder (always non-negative)
+    EuclideanRemainder => "euclidean-remainder",
+    /// euclidean/ - Returns quotient and remainder via values
+    EuclideanDiv => "euclidean/",
+    /// balanced-quotient - Balanced division quotient
+    BalancedQuotient => "balanced-quotient",
+    /// balanced-remainder - Balanced division remainder
+    BalancedRemainder => "balanced-remainder",
+    /// balanced/ - Returns quotient and remainder via values
+    BalancedDiv => "balanced/",
 
     // Rational number operations (R7RS §6.2.6)
     /// numerator - Returns numerator of a number
@@ -667,12 +691,12 @@ pub enum Value {
     /// Arbitrary-precision integer (bignum)
     ///
     /// Used when an exact integer value overflows `isize`.
-    /// Limbs are stored as contiguous `Value::Usize` slots in base 2^32.
+    /// Limbs are stored as contiguous `Value::Usize` slots in base 2^LIMB_BITS.
     /// Least-significant limb first (little-endian order).
     ///
     /// # Memory Layout
     ///
-    /// - `len`: number of u32 limbs
+    /// - `len`: number of usize limbs
     /// - `data`: ArenaIndex to first contiguous limb slot
     /// - `negative`: sign flag
     BigNum { len: usize, data: ArenaIndex, negative: bool },

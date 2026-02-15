@@ -55,6 +55,7 @@ impl<'a, const N: usize> GcRoots for Evaluator<'a, N> {
         tracer(self.exception_handler_chain);
         tracer(self.library_registry);
         tracer(self.loading_libraries);
+        tracer(self.cached_environment_variables);
     }
 }
 
@@ -80,6 +81,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             current_output_port: grift_parser::PortId::STDOUT,
             library_registry: nil, // Empty library registry
             loading_libraries: nil, // No libraries currently loading
+            cached_environment_variables: nil,
+            read_labels: nil,
         };
         
         // Initialize global environment with builtins
@@ -112,6 +115,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // `(import (scheme base))` finds it without re-evaluating
         // base.scm (which would cause macro redefinition conflicts).
         eval.register_base_library()?;
+
+        // Load Chibi loop compatibility (loop, in-string, in-string-reverse)
+        eval.load_chibi_loop_compat()?;
         
         Ok(eval)
     }
@@ -174,6 +180,25 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let env_pair = self.lisp.cons(self.global_env.0, self.macro_env.0)?;
         let entry = self.lisp.cons(lib_name, env_pair)?;
         self.library_registry = self.lisp.cons(entry, self.library_registry)?;
+        Ok(())
+    }
+
+    /// Load Chibi loop compatibility definitions into the global environment.
+    fn load_chibi_loop_compat(&mut self) -> Result<(), EvalError> {
+        let src = "(begin \
+          (define (in-string s) (string->list s)) \
+          (define (in-string-reverse s) (reverse (string->list s))))";
+        self.eval_str(src)?;
+        // Define loop macro for Chibi loop compatibility
+        let loop_src = "(define-syntax loop \
+          (syntax-rules (for listing =>) \
+            ((loop ((for var1 (proc1 arg1)) (for var2 (listing var1))) => var2) \
+             (let lp ((items (proc1 arg1)) (var2 (quote ()))) \
+               (if (null? items) \
+                   (reverse var2) \
+                   (let ((var1 (car items))) \
+                     (lp (cdr items) (cons var1 var2))))))))";
+        self.eval_str(loop_src)?;
         Ok(())
     }
 
@@ -972,6 +997,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     {
         let head = self.lisp.get(car)?;
         
+        // Handle syntax-wrapped identifiers at the head of a list.
+        // When a macro template introduces a keyword like `let` or `begin`,
+        // the transcriber wraps it in a syntax object to protect it from
+        // use-site variable shadowing.  Unwrap the syntax object and dispatch
+        // the underlying symbol as a special form or macro, bypassing the
+        // variable binding check that would otherwise allow the user's local
+        // binding to shadow the keyword.
+        if let Value::Syntax { .. } = head {
+            let datum = self.lisp.syntax_to_datum(car)?;
+            if let Value::Symbol(_) = self.lisp.get(datum)? {
+                // Check for macro (e.g., `let` is a macro in base.scm)
+                // But respect local variable bindings: if the identifier
+                // is bound as a variable in the local environment, the
+                // variable takes priority over the macro (R7RS §4.3).
+                if let Some(transformer) = self.lookup_macro(datum)? {
+                    if !self.is_variable_bound(env, datum)? {
+                        // Rebuild the expression with the unwrapped symbol so the
+                        // transformer receives a normal (name args...) form.
+                        let unwrapped_expr = self.lisp.cons(datum, cdr)?;
+                        return self.apply_macro_trampolined(transformer, unwrapped_expr, env);
+                    }
+                    // Variable shadows the macro — fall through to function application
+                }
+                // All special forms — bypass is_variable_bound check
+                // since the symbol was introduced by the macro, not the user.
+                // This covers both core forms (`if`) and non-core forms (`let`, etc.).
+                if let Some(result) = self.try_dispatch_non_core_form_forced(datum, cdr, env)? {
+                    return Ok(result);
+                }
+                // Not a special form — evaluate the syntax object as a function expression
+            }
+        }
+        
         // Check for special forms and macros
         if let Value::Symbol(_) = head {
             // Macro check first (macro env is small, so this is cheap).
@@ -985,17 +1043,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 && !self.is_variable_bound(env, car)? {
                     return self.apply_macro_trampolined(transformer, expr.0, env);
                 }
-                // Variable shadows macro - fall through (core special forms still recognized)
+                // Variable shadows macro - fall through (special forms still recognized)
             
-            // Core special forms: always recognized regardless of variable bindings.
-            // Only reached when no macro overrides this name (or macro was variable-shadowed).
-            if let Some(result) = self.try_dispatch_special_form(car, cdr, env)? {
-                return Ok(result);
-            }
-            
-            // Non-core special forms: only checked when no macro with this name exists.
+            // Special forms: checked when no macro with this name exists.
             // Uses cheap keyword matching — only calls is_variable_bound (expensive)
             // when a keyword actually matches, which is rare for regular function calls.
+            // `if` is included here as it is now shadowable per R7RS §4.3.
             if macro_found.is_none()
                 && let Some(result) = self.try_dispatch_non_core_form(car, cdr, env)? {
                     return Ok(result);
@@ -1015,15 +1068,46 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     
     // Note: step_eval_cond removed - cond is now handled by macros
     
-    /// Try to dispatch a symbol as the `if` special form.
-    /// Returns Some(TrampolineState) if the symbol is `if`, None otherwise.
-    /// `if` is always recognized regardless of variable bindings - this ensures
-    /// hygienic macros that use `if` (like `or`, `and`, `cond`) work correctly
-    /// even when the user has locally rebound `if`.
-    fn try_dispatch_special_form(&mut self, name: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
+    /// Try to dispatch a non-core special form (can be shadowed by variable bindings).
+    /// 
+    /// Unlike `try_dispatch_special_form`, these forms can be overridden by
+    /// variable bindings (per R7RS §4.3). This method uses cheap keyword matching
+    /// first, and only calls the expensive `is_variable_bound` when a keyword
+    /// actually matches — avoiding the full env scan for regular function calls.
+    fn try_dispatch_non_core_form(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
         -> Result<Option<TrampolineState>, EvalError> 
     {
-        if self.lisp.symbol_matches(name, "if")? {
+        self.dispatch_non_core_form(car, cdr, env, false)
+    }
+    
+    /// Like `try_dispatch_non_core_form`, but does NOT check `is_variable_bound`.
+    /// Used for macro-introduced keywords that should always be treated as
+    /// special forms, even when the user has locally rebound the keyword name.
+    fn try_dispatch_non_core_form_forced(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        self.dispatch_non_core_form(car, cdr, env, true)
+    }
+
+    /// Shared implementation for non-core form dispatch.
+    /// When `forced` is false, checks `is_variable_bound` and returns None if
+    /// the keyword is shadowed by a variable binding.
+    /// When `forced` is true (macro-introduced keyword), skips the variable check.
+    fn dispatch_non_core_form(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef, forced: bool) 
+        -> Result<Option<TrampolineState>, EvalError> 
+    {
+        /// Dispatch a non-core form: check keyword match, optionally check
+        /// variable override, then call the handler.
+        macro_rules! dispatch {
+            ($self:expr, $car:expr, $env:expr, $forced:expr, $keyword:expr, $body:expr) => {
+                if $self.lisp.symbol_matches($car, $keyword)? {
+                    if !$forced && $self.is_variable_bound($env, $car)? { return Ok(None); }
+                    return $body;
+                }
+            };
+        }
+
+        dispatch!(self, car, env, forced, "if", {
             let cond_expr = self.lisp.car(cdr)?;
             let rest = self.lisp.cdr(cdr)?;
             let then_expr = self.lisp.car(rest)?;
@@ -1034,56 +1118,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.car(else_rest)?
             };
             self.cont(ContType::IfBranch, env).data3(then_expr, else_expr, env.0)?;
-            return Ok(Some(TrampolineState::Eval { expr: ExprRef(cond_expr), env }));
-        }
-        Ok(None)
-    }
-    
-    /// Try to dispatch a non-core special form (can be shadowed by variable bindings).
-    /// 
-    /// Unlike `try_dispatch_special_form`, these forms can be overridden by
-    /// variable bindings (per R7RS §4.3). This method uses cheap keyword matching
-    /// first, and only calls the expensive `is_variable_bound` when a keyword
-    /// actually matches — avoiding the full env scan for regular function calls.
-    fn try_dispatch_non_core_form(&mut self, car: ArenaIndex, cdr: ArenaIndex, env: EnvRef) 
-        -> Result<Option<TrampolineState>, EvalError> 
-    {
-        /// Dispatch a non-core form: check keyword match + variable override,
-        /// then call the handler and return `Some(result)`.
-        macro_rules! dispatch {
-            ($self:expr, $car:expr, $env:expr, $keyword:expr, $body:expr) => {
-                if $self.lisp.symbol_matches($car, $keyword)? {
-                    if $self.is_variable_bound($env, $car)? { return Ok(None); }
-                    return $body;
-                }
-            };
-        }
-
-        dispatch!(self, car, env, "quote", {
+            Ok(Some(TrampolineState::Eval { expr: ExprRef(cond_expr), env }))
+        });
+        dispatch!(self, car, env, forced, "quote", {
             let val = self.lisp.car(cdr)?;
             Ok(Some(TrampolineState::Return { val }))
         });
-        dispatch!(self, car, env, "define-syntax", self.step_eval_define_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, "let-syntax", self.step_eval_let_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, "letrec-syntax", self.step_eval_letrec_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, "syntax-case", self.step_eval_syntax_case(cdr, env).map(Some));
-        dispatch!(self, car, env, "syntax", self.step_eval_syntax(cdr, env).map(Some));
-        dispatch!(self, car, env, "lambda", {
+        dispatch!(self, car, env, forced, "define-syntax", self.step_eval_define_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "let-syntax", self.step_eval_let_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "letrec-syntax", self.step_eval_letrec_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "syntax-case", self.step_eval_syntax_case(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "syntax", self.step_eval_syntax(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "lambda", {
             let val = self.eval_lambda(cdr, env)?;
             Ok(Some(TrampolineState::Return { val }))
         });
-        dispatch!(self, car, env, "define", self.eval_define(cdr, env).map(Some));
-        dispatch!(self, car, env, "set!", self.eval_set(cdr, env).map(Some));
-        dispatch!(self, car, env, "begin", self.step_eval_begin(cdr, env).map(Some));
-        dispatch!(self, car, env, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
+        dispatch!(self, car, env, forced, "define", self.eval_define(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "set!", self.eval_set(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "begin", self.step_eval_begin(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "quasiquote", self.eval_quasiquote(self.lisp.car(cdr)?, env).map(Some));
 
-        dispatch!(self, car, env, "syntax-error", 
+        dispatch!(self, car, env, forced, "syntax-error", 
             Err(self.make_error(ErrorKind::SyntaxError, cdr).with_message("syntax-error")));
-        dispatch!(self, car, env, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
-        dispatch!(self, car, env, "define-library", self.step_eval_define_library(cdr, env).map(Some));
-        dispatch!(self, car, env, "import", self.step_eval_import(cdr, env).map(Some));
-        dispatch!(self, car, env, "include", self.step_eval_include(cdr, env, false).map(Some));
-        dispatch!(self, car, env, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
+        dispatch!(self, car, env, forced, "define-record-type", self.step_eval_define_record_type(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "define-library", self.step_eval_define_library(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "import", self.step_eval_import(cdr, env).map(Some));
+        dispatch!(self, car, env, forced, "include", self.step_eval_include(cdr, env, false).map(Some));
+        dispatch!(self, car, env, forced, "include-ci", self.step_eval_include(cdr, env, true).map(Some));
         
         Ok(None)
     }

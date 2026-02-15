@@ -9,6 +9,7 @@ use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, GcStats};
 use crate::value::{Value, Builtin, StdLib};
 use crate::fsize;
 use crate::io::PortId;
+use crate::LIMB_BITS;
 
 /// Compute the greatest common divisor (Euclidean algorithm).
 fn gcd(mut a: usize, mut b: usize) -> usize {
@@ -217,11 +218,11 @@ impl<const N: usize> Lisp<N> {
         self.alloc(Value::Complex { real, imag })
     }
 
-    /// Allocate a bignum from u32 limbs (little-endian, base 2^32).
+    /// Allocate a bignum from usize limbs (little-endian, base 2^LIMB_BITS).
     ///
     /// Limbs are stored in contiguous arena slots as `Value::Usize`.
     /// If the value fits in an `isize`, returns a regular `Number` instead.
-    pub fn bignum_from_limbs(&self, limbs: &[u32], negative: bool) -> ArenaResult<ArenaIndex> {
+    pub fn bignum_from_limbs(&self, limbs: &[usize], negative: bool) -> ArenaResult<ArenaIndex> {
         // Trim leading zero limbs
         let mut len = limbs.len();
         while len > 0 && limbs[len - 1] == 0 {
@@ -236,13 +237,13 @@ impl<const N: usize> Lisp<N> {
             return self.number(if negative { -v } else { v });
         }
         if len == 2 {
-            let v = limbs[0] as u64 | ((limbs[1] as u64) << 32);
-            if v <= isize::MAX as u64 {
+            let v = limbs[0] as u128 | ((limbs[1] as u128) << LIMB_BITS);
+            if v <= isize::MAX as u128 {
                 let sv = v as isize;
                 return self.number(if negative { -sv } else { sv });
             }
             // Special case: -(isize::MIN) doesn't fit in isize, but isize::MIN does
-            if negative && v == (isize::MAX as u64) + 1 {
+            if negative && v == (isize::MAX as u128) + 1 {
                 return self.number(isize::MIN);
             }
         }
@@ -250,7 +251,7 @@ impl<const N: usize> Lisp<N> {
         let data = self.arena.alloc_contiguous(len, Value::Usize(0))?;
         for i in 0..len {
             let limb_idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(limb_idx, Value::Usize(limbs[i] as usize))?;
+            self.arena.set(limb_idx, Value::Usize(limbs[i]))?;
         }
         self.alloc(Value::BigNum { len, data, negative })
     }
@@ -260,34 +261,38 @@ impl<const N: usize> Lisp<N> {
         if val == 0 {
             return self.number(0);
         }
-        let mut limbs = [0u32; 4];
-        limbs[0] = val as u32;
-        limbs[1] = (val >> 32) as u32;
-        limbs[2] = (val >> 64) as u32;
-        limbs[3] = (val >> 96) as u32;
-        self.bignum_from_limbs(&limbs, negative)
+        // On 64-bit: 2 limbs suffice; on 32-bit: up to 4 limbs.
+        let mut limbs = [0usize; 4];
+        let mut remaining = val;
+        let mut count = 0;
+        while remaining > 0 && count < 4 {
+            limbs[count] = remaining as usize;
+            remaining >>= LIMB_BITS;
+            count += 1;
+        }
+        self.bignum_from_limbs(&limbs[..count], negative)
     }
 
     /// Get bignum limbs as array. Returns (limbs, len, negative).
-    pub fn bignum_limbs(&self, idx: ArenaIndex) -> ArenaResult<([u32; 128], usize, bool)> {
+    pub fn bignum_limbs(&self, idx: ArenaIndex) -> ArenaResult<([usize; 128], usize, bool)> {
         match self.get(idx)? {
             Value::BigNum { len, data, negative } => {
-                let mut limbs = [0u32; 128];
+                let mut limbs = [0usize; 128];
                 let n = if len > 128 { 128 } else { len };
                 for i in 0..n {
                     let limb_idx = self.arena.index_at_offset(data, i)?;
                     if let Value::Usize(v) = self.arena.get(limb_idx)? {
-                        limbs[i] = v as u32;
+                        limbs[i] = v;
                     }
                 }
                 Ok((limbs, n, negative))
             }
             Value::Number(n) => {
-                let mut limbs = [0u32; 128];
+                let mut limbs = [0usize; 128];
                 let negative = n < 0;
-                let abs_val = n.unsigned_abs() as u64;
-                limbs[0] = abs_val as u32;
-                limbs[1] = (abs_val >> 32) as u32;
+                let abs_val = n.unsigned_abs() as u128;
+                limbs[0] = abs_val as usize;
+                limbs[1] = (abs_val >> LIMB_BITS) as usize;
                 let len = if limbs[1] > 0 { 2 } else { 1 };
                 Ok((limbs, len, negative))
             }

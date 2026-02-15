@@ -72,6 +72,10 @@
     ;; R7RS §6.2.6 numeric operations
     floor-quotient floor-remainder floor/
     truncate-quotient truncate-remainder truncate/
+    ceiling-quotient ceiling-remainder ceiling/
+    round-quotient round-remainder round/
+    euclidean-quotient euclidean-remainder euclidean/
+    balanced-quotient balanced-remainder balanced/
     numerator denominator rationalize
     exact-integer-sqrt
     exp log sin cos tan asin acos atan
@@ -128,7 +132,9 @@
     string-join string-split string-trim
     caar cadr caddr cddr cdddr cadddr cddddr
     cdaddr cddaar cddadr cdddar
-    append-two)
+    append-two
+    make-syntactic-closure sc-macro-transformer
+    in-string in-string-reverse)
   (begin
 
     ;;; ========================================================
@@ -489,8 +495,8 @@
         (syntax-case x ()
           ((_ e)
            (syntax
-             (lambda (x)
-               (syntax-case x ()
+             (lambda (stx)
+               (syntax-case stx ()
                  (id (identifier? (syntax id)) (syntax e))
                  ((id rest (... ...)) (identifier? (syntax id)) (syntax (e rest (... ...)))))))))))
 
@@ -1191,4 +1197,12 @@
           ((null? lst) '())
           ((char-whitespace? (car lst)) (drop-while-ws (cdr lst)))
           (else lst)))
-      (list->string (reverse (drop-while-ws (reverse (drop-while-ws (string->list s)))))))))
+      (list->string (reverse (drop-while-ws (reverse (drop-while-ws (string->list s)))))))
+
+    ;; Syntactic closure compatibility (simplified)
+    (define (make-syntactic-closure env free-vars expr) expr)
+    (define (sc-macro-transformer proc) proc)
+
+    ;; Chibi loop compatibility
+    (define (in-string s) (string->list s))
+    (define (in-string-reverse s) (reverse (string->list s)))))

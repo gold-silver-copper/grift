@@ -9,7 +9,7 @@
 //! This crate contains the fundamental types shared between the parser and evaluator:
 //!
 //! - [`Value`] — The core value enum representing all Lisp types
-//! - [`Builtin`] — Enum of built-in functions  
+//! - [`Builtin`] — Enum of built-in functions
 //! - [`StdLib`] — Standard library function wrapper (static string data)
 //! - [`Lisp`] — The Lisp execution context wrapping an arena
 //!
@@ -71,7 +71,15 @@
 //! - Recursive stdlib functions work via the global environment
 //! - Errors in static source strings are only caught at runtime
 
-pub use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace, GcStats};
+pub use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, GcStats, Trace};
+
+/// Number of bits per limb (depends on pointer width).
+///
+/// BigNum values are stored as arrays of `usize` limbs in base 2^LIMB_BITS.
+pub const LIMB_BITS: u32 = core::mem::size_of::<usize>() as u32 * 8;
+
+/// Maximum number of limbs supported (128 limbs = 4096 bits on 32-bit, 8192 bits on 64-bit).
+pub const MAX_LIMBS: usize = 128;
 
 /// Platform-dependent floating-point type, matching the width of `isize`/`usize`.
 ///
@@ -85,20 +93,26 @@ pub type fsize = f64;
 #[cfg(target_pointer_width = "32")]
 pub type fsize = f32;
 
+/// Platform-dependent floating-point type (32-bit variant).
+#[cfg(target_pointer_width = "16")]
+pub type fsize = f16;
+
 // Macros module (must be declared before other modules that use the macros)
 #[macro_use]
 mod macros;
 
-mod value;
-mod lisp;
-mod display;
 mod cont_type;
+mod display;
 pub mod io;
+mod lisp;
+mod value;
 
-pub use value::{Value, Builtin, StdLib, StdLibEntry};
 pub use cont_type::ContType;
+pub use value::{Builtin, StdLib, StdLibEntry, Value};
 // Note: define_builtins macro is exported at crate root via #[macro_export]
 
-pub use lisp::{Lisp, RESERVED_SLOTS};
 pub use display::DisplayValue;
-pub use io::{IoProvider, NullIoProvider, PortId, IoErrorKind, IoResult, DisplayPort, FileOpenMode};
+pub use io::{
+    DisplayPort, FileOpenMode, IoErrorKind, IoProvider, IoResult, NullIoProvider, PortId,
+};
+pub use lisp::{Lisp, RESERVED_SLOTS};

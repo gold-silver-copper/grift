@@ -6300,14 +6300,18 @@ fn test_procedural_quasiquote_macro_nested() {
     // Nested quasiquote - inner unquote should NOT evaluate
     let result = eval.eval_str("(%qq-expand (quasiquote (unquote x)) (d z))").unwrap();
     // Should produce (quasiquote (unquote x)) - a list with quasiquote symbol
+    // The quasiquote symbol may be wrapped in a syntax object from macro expansion,
+    // so unwrap it before comparing.
     
     let car = lisp.car(result).unwrap();
-    assert!(lisp.symbol_matches(car, "quasiquote").unwrap());
+    let car_datum = lisp.syntax_to_datum(car).unwrap();
+    assert!(lisp.symbol_matches(car_datum, "quasiquote").unwrap());
     
     // The inner part should be (unquote x), not 42
     let inner = lisp.car(lisp.cdr(result).unwrap()).unwrap();
     let inner_car = lisp.car(inner).unwrap();
-    assert!(lisp.symbol_matches(inner_car, "unquote").unwrap());
+    let inner_car_datum = lisp.syntax_to_datum(inner_car).unwrap();
+    assert!(lisp.symbol_matches(inner_car_datum, "unquote").unwrap());
 }
 
 /// Test that procedural quasiquote produces same results as special form

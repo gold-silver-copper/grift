@@ -21,16 +21,31 @@
 (define %srfi64-depth 0)
 (define %srfi64-test-number 0)
 (define %srfi64-section-stack '())
+(define %srfi64-group-stack '())
+
+(define (%srfi64-stack->string stack)
+  (let loop ((xs (reverse stack)) (acc ""))
+    (if (null? xs)
+        acc
+        (let ((head (car xs)))
+          (loop (cdr xs)
+                (if (string=? acc "")
+                    head
+                    (string-append acc " > " head)))))))
 
 ;; Build a qualified test name: "#N [section] name"
 (define (%srfi64-qualified-name name)
   (set! %srfi64-test-number (+ %srfi64-test-number 1))
-  (let ((section (if (null? %srfi64-section-stack)
-                     ""
-                     (car %srfi64-section-stack))))
+  (let* ((section (%srfi64-stack->string %srfi64-section-stack))
+         (group (%srfi64-stack->string %srfi64-group-stack))
+         (context (if (string=? group "")
+                      section
+                      (if (string=? section "")
+                          group
+                          (string-append section " > " group)))))
     (string-append "#"
                    (number->string %srfi64-test-number)
-                   " [" section "] "
+                   " [" context "] "
                    name)))
 
 (define (test-begin suite-name)
@@ -42,7 +57,8 @@
         (set! %srfi64-error-count 0)
         (set! %srfi64-results '())
         (set! %srfi64-test-number 0)
-        (set! %srfi64-section-stack '())))
+        (set! %srfi64-section-stack '())
+        (set! %srfi64-group-stack '())))
   (set! %srfi64-section-stack (cons suite-name %srfi64-section-stack))
   (set! %srfi64-depth (+ %srfi64-depth 1))
   (display "SRFI64:BEGIN ")
@@ -72,7 +88,9 @@
   (newline)
   (let ((saved-group %srfi64-group-name))
     (set! %srfi64-group-name name)
+    (set! %srfi64-group-stack (cons name %srfi64-group-stack))
     (thunk)
+    (set! %srfi64-group-stack (cdr %srfi64-group-stack))
     (set! %srfi64-group-name saved-group))
   (display "SRFI64:GROUP:END ")
   (display name)

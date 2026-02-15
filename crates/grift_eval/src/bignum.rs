@@ -1,15 +1,17 @@
 //! Arbitrary-precision integer arithmetic for BigNum values.
 //!
-//! All operations work on u32 limbs in little-endian order (least significant first).
-//! Base is 2^32. No heap allocation - uses fixed-size stack arrays.
+//! All operations work on usize limbs in little-endian order (least significant first).
+//! Base is 2^LIMB_BITS. No heap allocation - uses fixed-size stack arrays.
 
-/// Maximum number of limbs supported (128 limbs = 4096 bits)
-pub const MAX_LIMBS: usize = 128;
+use grift_parser::{LIMB_BITS, MAX_LIMBS};
 
-/// BigNum represented as an array of u32 limbs (little-endian, base 2^32).
+/// Maximum value that fits in a single limb.
+const LIMB_MAX: u128 = (1u128 << LIMB_BITS) - 1;
+
+/// BigNum represented as an array of usize limbs (little-endian, base 2^LIMB_BITS).
 #[derive(Clone, Copy)]
 pub struct BigNumBuf {
-    pub limbs: [u32; MAX_LIMBS],
+    pub limbs: [usize; MAX_LIMBS],
     pub len: usize,
     pub negative: bool,
 }
@@ -30,11 +32,11 @@ impl BigNumBuf {
             return Self::zero();
         }
         let negative = n < 0;
-        let abs_val = n.unsigned_abs() as u64;
+        let abs_val = n.unsigned_abs() as u128;
         let mut buf = Self::zero();
         buf.negative = negative;
-        buf.limbs[0] = abs_val as u32;
-        buf.limbs[1] = (abs_val >> 32) as u32;
+        buf.limbs[0] = abs_val as usize;
+        buf.limbs[1] = (abs_val >> LIMB_BITS) as usize;
         buf.len = if buf.limbs[1] > 0 { 2 } else { 1 };
         buf
     }
@@ -46,9 +48,11 @@ impl BigNumBuf {
         }
         let mut buf = Self::zero();
         buf.negative = negative;
-        buf.limbs[0] = n as u32;
-        buf.limbs[1] = (n >> 32) as u32;
-        buf.len = if buf.limbs[1] > 0 { 2 } else { 1 };
+        let val = n as u128;
+        buf.limbs[0] = val as usize;
+        let hi = (val >> LIMB_BITS) as usize;
+        buf.limbs[1] = hi;
+        buf.len = if hi > 0 { 2 } else { 1 };
         buf
     }
 
@@ -77,12 +81,12 @@ impl BigNumBuf {
             return Some(if self.negative { -v } else { v });
         }
         if self.len == 2 {
-            let v = self.limbs[0] as u64 | ((self.limbs[1] as u64) << 32);
-            if v <= isize::MAX as u64 {
+            let v = self.limbs[0] as u128 | ((self.limbs[1] as u128) << LIMB_BITS);
+            if v <= isize::MAX as u128 {
                 let sv = v as isize;
                 return Some(if self.negative { -sv } else { sv });
             }
-            if self.negative && v == (isize::MAX as u64) + 1 {
+            if self.negative && v == (isize::MAX as u128) + 1 {
                 return Some(isize::MIN);
             }
         }
@@ -95,7 +99,7 @@ impl BigNumBuf {
             return 0.0;
         }
         let mut result: f64 = 0.0;
-        let base: f64 = (1u64 << 32) as f64;
+        let base: f64 = (1u128 << LIMB_BITS) as f64;
         let mut multiplier: f64 = 1.0;
         for i in 0..self.len {
             result += self.limbs[i] as f64 * multiplier;
@@ -131,8 +135,9 @@ impl BigNumBuf {
 
         // Start with mantissa as BigNum
         let mut result = Self::zero();
-        result.limbs[0] = mantissa as u32;
-        result.limbs[1] = (mantissa >> 32) as u32;
+        let mantissa128 = mantissa as u128;
+        result.limbs[0] = mantissa128 as usize;
+        result.limbs[1] = (mantissa128 >> LIMB_BITS) as usize;
         result.len = if result.limbs[1] != 0 { 2 } else { 1 };
         result.negative = negative;
 
@@ -148,10 +153,10 @@ impl BigNumBuf {
                 return None;
             }
             // Right shift
-            let shifted = mantissa >> shift;
+            let shifted = (mantissa >> shift) as u128;
             result = Self::zero();
-            result.limbs[0] = shifted as u32;
-            result.limbs[1] = (shifted >> 32) as u32;
+            result.limbs[0] = shifted as usize;
+            result.limbs[1] = (shifted >> LIMB_BITS) as usize;
             result.len = if result.limbs[1] != 0 { 2 } else if result.limbs[0] != 0 { 1 } else { 0 };
             result.negative = negative;
         }
@@ -165,10 +170,8 @@ impl BigNumBuf {
         if self.len == 0 || n == 0 {
             return;
         }
-        let word_shift = (n / 32) as usize;
-        let bit_shift = n % 32;
-
-        // Shift words first
+        let word_shift = (n / LIMB_BITS) as usize;
+        let bit_shift = n % LIMB_BITS;
         if word_shift > 0 {
             if self.len + word_shift > MAX_LIMBS {
                 return; // overflow - can't represent
@@ -187,11 +190,11 @@ impl BigNumBuf {
 
         // Shift bits within words
         if bit_shift > 0 {
-            let mut carry: u32 = 0;
+            let mut carry: usize = 0;
             for i in word_shift..self.len {
-                let val = (self.limbs[i] as u64) << bit_shift | carry as u64;
-                self.limbs[i] = val as u32;
-                carry = (val >> 32) as u32;
+                let val = (self.limbs[i] as u128) << bit_shift | carry as u128;
+                self.limbs[i] = val as usize;
+                carry = (val >> LIMB_BITS) as usize;
             }
             if carry != 0 {
                 if self.len < MAX_LIMBS {
@@ -282,42 +285,48 @@ impl BigNumBuf {
         result.len = result_len;
 
         for i in 0..self.len {
-            let mut carry: u64 = 0;
+            let mut carry: u128 = 0;
             for j in 0..other.len {
                 if i + j >= MAX_LIMBS {
                     break;
                 }
-                let prod = self.limbs[i] as u64 * other.limbs[j] as u64
-                    + result.limbs[i + j] as u64
+                let prod = self.limbs[i] as u128 * other.limbs[j] as u128
+                    + result.limbs[i + j] as u128
                     + carry;
-                result.limbs[i + j] = prod as u32;
-                carry = prod >> 32;
+                result.limbs[i + j] = prod as usize;
+                carry = prod >> LIMB_BITS;
             }
             if i + other.len < MAX_LIMBS {
-                result.limbs[i + other.len] = carry as u32;
+                result.limbs[i + other.len] = carry as usize;
             }
         }
         result.trim();
         result
     }
 
-    /// Divide self by a single u32 digit. Returns (quotient, remainder).
-    pub fn div_u32(&self, divisor: u32) -> (Self, u32) {
+    /// Divide self by a single usize digit. Returns (quotient, remainder).
+    pub fn div_single(&self, divisor: usize) -> (Self, usize) {
         if divisor == 0 {
-            // Division by zero - return zero
             return (Self::zero(), 0);
         }
         let mut quotient = Self::zero();
         quotient.negative = self.negative;
         quotient.len = self.len;
-        let mut rem: u64 = 0;
+        let mut rem: u128 = 0;
         for i in (0..self.len).rev() {
-            let cur = rem * (1u64 << 32) + self.limbs[i] as u64;
-            quotient.limbs[i] = (cur / divisor as u64) as u32;
-            rem = cur % divisor as u64;
+            let cur = rem * (1u128 << LIMB_BITS) + self.limbs[i] as u128;
+            quotient.limbs[i] = (cur / divisor as u128) as usize;
+            rem = cur % divisor as u128;
         }
         quotient.trim();
-        (quotient, rem as u32)
+        (quotient, rem as usize)
+    }
+
+    /// Divide self by a single u32 digit. Returns (quotient, remainder).
+    /// Kept for backward compatibility.
+    pub fn div_u32(&self, divisor: u32) -> (Self, u32) {
+        let (q, r) = self.div_single(divisor as usize);
+        (q, r as u32)
     }
 
     /// Full bignum division: self / other. Returns (quotient, remainder).
@@ -345,7 +354,7 @@ impl BigNumBuf {
 
         // Use long division for multi-limb divisors
         if other.len == 1 {
-            let (q, r) = self.div_u32(other.limbs[0]);
+            let (q, r) = self.div_single(other.limbs[0]);
             let mut q_result = q;
             q_result.negative = self.negative != other.negative;
             let mut r_result = BigNumBuf::from_u64(r as u64, self.negative);
@@ -371,8 +380,8 @@ impl BigNumBuf {
         if self.is_zero() || n == 0 {
             return *self;
         }
-        let word_shift = (n / 32) as usize;
-        let bit_shift = n % 32;
+        let word_shift = (n / LIMB_BITS) as usize;
+        let bit_shift = n % LIMB_BITS;
         let mut result = Self::zero();
         result.negative = self.negative;
 
@@ -389,13 +398,13 @@ impl BigNumBuf {
                 }
             }
         } else {
-            let mut carry: u32 = 0;
+            let mut carry: usize = 0;
             for i in 0..self.len {
-                let shifted = ((self.limbs[i] as u64) << bit_shift) | carry as u64;
+                let shifted = ((self.limbs[i] as u128) << bit_shift) | carry as u128;
                 if i + word_shift < MAX_LIMBS {
-                    result.limbs[i + word_shift] = shifted as u32;
+                    result.limbs[i + word_shift] = shifted as usize;
                 }
-                carry = (shifted >> 32) as u32;
+                carry = (shifted >> LIMB_BITS) as usize;
             }
             if self.len + word_shift < MAX_LIMBS && carry > 0 {
                 result.limbs[self.len + word_shift] = carry;
@@ -411,8 +420,8 @@ impl BigNumBuf {
         if self.is_zero() || n == 0 {
             return *self;
         }
-        let word_shift = (n / 32) as usize;
-        let bit_shift = n % 32;
+        let word_shift = (n / LIMB_BITS) as usize;
+        let bit_shift = n % LIMB_BITS;
 
         if word_shift >= self.len {
             return Self::zero();
@@ -429,7 +438,7 @@ impl BigNumBuf {
             for i in word_shift..self.len {
                 result.limbs[i - word_shift] = self.limbs[i] >> bit_shift;
                 if i + 1 < self.len {
-                    result.limbs[i - word_shift] |= self.limbs[i + 1] << (32 - bit_shift);
+                    result.limbs[i - word_shift] |= self.limbs[i + 1] << (LIMB_BITS - bit_shift);
                 }
             }
         }
@@ -444,7 +453,7 @@ impl BigNumBuf {
             return 0;
         }
         let top = self.limbs[self.len - 1];
-        (self.len as u32 - 1) * 32 + (32 - top.leading_zeros())
+        (self.len as u32 - 1) * LIMB_BITS + (LIMB_BITS - top.leading_zeros())
     }
 
     /// Integer square root using Newton's method with BigNum arithmetic.
@@ -460,10 +469,10 @@ impl BigNumBuf {
         let bits = self.bit_length();
         let mut x = Self::zero();
         let shift_bits = (bits + 1) / 2;
-        let word_idx = (shift_bits / 32) as usize;
-        let bit_idx = shift_bits % 32;
+        let word_idx = (shift_bits / LIMB_BITS) as usize;
+        let bit_idx = shift_bits % LIMB_BITS;
         if word_idx < MAX_LIMBS {
-            x.limbs[word_idx] = 1u32 << bit_idx;
+            x.limbs[word_idx] = 1usize << bit_idx;
             x.len = word_idx + 1;
         }
 
@@ -480,23 +489,37 @@ impl BigNumBuf {
         }
         x
     }
+
+    /// Compute GCD of two BigNums using Euclidean algorithm.
+    pub fn gcd(&self, other: &Self) -> Self {
+        let mut a = *self;
+        a.negative = false;
+        let mut b = *other;
+        b.negative = false;
+        while !b.is_zero() {
+            let (_, r) = a.divmod(&b);
+            a = b;
+            b = r;
+        }
+        a
+    }
 }
 
 /// Add magnitudes of two BigNums (ignoring sign).
 fn add_magnitudes(a: &BigNumBuf, b: &BigNumBuf) -> BigNumBuf {
     let mut result = BigNumBuf::zero();
     let max_len = if a.len > b.len { a.len } else { b.len };
-    let mut carry: u64 = 0;
+    let mut carry: u128 = 0;
 
     for i in 0..max_len {
-        let av = if i < a.len { a.limbs[i] as u64 } else { 0 };
-        let bv = if i < b.len { b.limbs[i] as u64 } else { 0 };
+        let av = if i < a.len { a.limbs[i] as u128 } else { 0 };
+        let bv = if i < b.len { b.limbs[i] as u128 } else { 0 };
         let sum = av + bv + carry;
-        result.limbs[i] = sum as u32;
-        carry = sum >> 32;
+        result.limbs[i] = sum as usize;
+        carry = sum >> LIMB_BITS;
     }
     if carry > 0 && max_len < MAX_LIMBS {
-        result.limbs[max_len] = carry as u32;
+        result.limbs[max_len] = carry as usize;
         result.len = max_len + 1;
     } else {
         result.len = max_len;
@@ -507,17 +530,17 @@ fn add_magnitudes(a: &BigNumBuf, b: &BigNumBuf) -> BigNumBuf {
 /// Subtract magnitude of b from a (assumes |a| >= |b|, ignoring sign).
 fn sub_magnitudes(a: &BigNumBuf, b: &BigNumBuf) -> BigNumBuf {
     let mut result = BigNumBuf::zero();
-    let mut borrow: i64 = 0;
+    let mut borrow: i128 = 0;
 
     for i in 0..a.len {
-        let av = a.limbs[i] as i64;
-        let bv = if i < b.len { b.limbs[i] as i64 } else { 0 };
+        let av = a.limbs[i] as i128;
+        let bv = if i < b.len { b.limbs[i] as i128 } else { 0 };
         let diff = av - bv - borrow;
         if diff < 0 {
-            result.limbs[i] = (diff + (1i64 << 32)) as u32;
+            result.limbs[i] = (diff + (1i128 << LIMB_BITS)) as usize;
             borrow = 1;
         } else {
-            result.limbs[i] = diff as u32;
+            result.limbs[i] = diff as usize;
             borrow = 0;
         }
     }
@@ -540,7 +563,7 @@ fn bignum_long_division(u: &BigNumBuf, v: &BigNumBuf) -> (BigNumBuf, BigNumBuf) 
     q.len = m + 1;
 
     // Work buffer for the remainder (un padded by one extra limb)
-    let mut rem_limbs = [0u32; MAX_LIMBS + 1];
+    let mut rem_limbs = [0usize; MAX_LIMBS + 1];
     for i in 0..un.len {
         rem_limbs[i] = un.limbs[i];
     }
@@ -548,32 +571,32 @@ fn bignum_long_division(u: &BigNumBuf, v: &BigNumBuf) -> (BigNumBuf, BigNumBuf) 
 
     for j in (0..=m).rev() {
         // Estimate q_hat = (rem[j+n]*b + rem[j+n-1]) / vn[n-1]
-        let r_top = if j + n < rem_len { rem_limbs[j + n] as u64 } else { 0 };
-        let r_next = if j + n >= 1 { rem_limbs[j + n - 1] as u64 } else { 0 };
-        let divisor = vn.limbs[n - 1] as u64;
+        let r_top = if j + n < rem_len { rem_limbs[j + n] as u128 } else { 0 };
+        let r_next = if j + n >= 1 { rem_limbs[j + n - 1] as u128 } else { 0 };
+        let divisor = vn.limbs[n - 1] as u128;
 
-        let mut q_hat = if divisor == 0 {
-            u64::MAX
+        let mut q_hat: u128 = if divisor == 0 {
+            u128::MAX
         } else {
-            let num = (r_top << 32) | r_next;
+            let num = (r_top << LIMB_BITS) | r_next;
             num / divisor
         };
 
-        if q_hat > 0xFFFF_FFFF {
-            q_hat = 0xFFFF_FFFF;
+        if q_hat > LIMB_MAX {
+            q_hat = LIMB_MAX;
         }
 
         // Refine estimate
         loop {
-            let r_hat = (r_top << 32) | r_next;
+            let r_hat = (r_top << LIMB_BITS) | r_next;
             let r_hat = r_hat.wrapping_sub(q_hat * divisor);
-            if r_hat > 0xFFFF_FFFF {
+            if r_hat > LIMB_MAX {
                 break; // Will underflow
             }
             if n >= 2 {
-                let v_next = vn.limbs[n - 2] as u64;
-                let rem_next = if j + n >= 2 { rem_limbs[j + n - 2] as u64 } else { 0 };
-                if q_hat * v_next > (r_hat << 32) + rem_next {
+                let v_next = vn.limbs[n - 2] as u128;
+                let rem_next = if j + n >= 2 { rem_limbs[j + n - 2] as u128 } else { 0 };
+                if q_hat * v_next > (r_hat << LIMB_BITS) + rem_next {
                     q_hat -= 1;
                 } else {
                     break;
@@ -584,32 +607,32 @@ fn bignum_long_division(u: &BigNumBuf, v: &BigNumBuf) -> (BigNumBuf, BigNumBuf) 
         }
 
         // Multiply and subtract: rem[j..j+n] -= q_hat * vn
-        let mut borrow: i64 = 0;
+        let mut borrow: i128 = 0;
         for i in 0..n {
-            let prod = q_hat * vn.limbs[i] as u64;
-            let val = rem_limbs[j + i] as i64 - (prod as u32 as i64) - borrow;
-            rem_limbs[j + i] = val as u32;
-            borrow = (prod >> 32) as i64 - (val >> 32) as i64;
+            let prod = q_hat * vn.limbs[i] as u128;
+            let val = rem_limbs[j + i] as i128 - (prod as usize as i128) - borrow;
+            rem_limbs[j + i] = val as usize;
+            borrow = (prod >> LIMB_BITS) as i128 - (val >> LIMB_BITS) as i128;
         }
         if j + n < rem_len {
-            let val = rem_limbs[j + n] as i64 - borrow;
-            rem_limbs[j + n] = val as u32;
+            let val = rem_limbs[j + n] as i128 - borrow;
+            rem_limbs[j + n] = val as usize;
             if val < 0 {
                 // q_hat was too large, add back
                 q_hat -= 1;
-                let mut carry: u64 = 0;
+                let mut carry: u128 = 0;
                 for i in 0..n {
-                    let sum = rem_limbs[j + i] as u64 + vn.limbs[i] as u64 + carry;
-                    rem_limbs[j + i] = sum as u32;
-                    carry = sum >> 32;
+                    let sum = rem_limbs[j + i] as u128 + vn.limbs[i] as u128 + carry;
+                    rem_limbs[j + i] = sum as usize;
+                    carry = sum >> LIMB_BITS;
                 }
                 if j + n < rem_len {
-                    rem_limbs[j + n] = rem_limbs[j + n].wrapping_add(carry as u32);
+                    rem_limbs[j + n] = rem_limbs[j + n].wrapping_add(carry as usize);
                 }
             }
         }
 
-        q.limbs[j] = q_hat as u32;
+        q.limbs[j] = q_hat as usize;
     }
 
     q.negative = u.negative != v.negative;
