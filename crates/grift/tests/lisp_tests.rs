@@ -409,3 +409,279 @@ fn test_fib_self_apply() {
     "#;
     assert_eq!(lisp.eval(program), Ok(Value::Number(55)));
 }
+
+// ============================================================================
+// Call-by-Need Laziness Tests
+// ============================================================================
+
+#[test]
+fn test_laziness_unused_arg_not_evaluated() {
+    // (const x y) returns x without evaluating y.
+    // The second argument is a type error that would crash if evaluated.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        ((lambda (x y) x) 1 (+ 1 "crash"))
+    "#);
+    assert_eq!(result, Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_laziness_if_unused_branch() {
+    // The false branch contains a type error; it must not be evaluated.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(if #t 42 (+ 1 "crash"))"#),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_laziness_define_not_forced() {
+    // Defining a value that would error if forced, but never using it.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define bad (+ 1 "crash"))
+            42)
+    "#);
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_laziness_let_not_forced() {
+    // Let binding that would error, but the binding is never used.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (let ((x (+ 1 "crash")))
+            42)
+    "#);
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+// ============================================================================
+// Memoization Tests (At-Most-Once)
+// ============================================================================
+
+#[test]
+fn test_memoization_double() {
+    // (double x) uses x twice. With memoization, (+ 1 2) is evaluated once.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        ((lambda (double)
+            (double (+ 1 2)))
+         (lambda (x) (+ x x)))
+    "#);
+    assert_eq!(result, Ok(Value::Number(6)));
+}
+
+#[test]
+fn test_memoization_let_reuse() {
+    // x is used twice in let body. It should be evaluated at most once.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (let ((x (+ 10 20)))
+            (+ x x))
+    "#);
+    assert_eq!(result, Ok(Value::Number(60)));
+}
+
+#[test]
+fn test_answers_through_let_bindings() {
+    // Answers can be wrapped in pending bindings (indirections).
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (let ((x 1))
+            (let ((y 2))
+                (+ x y)))
+    "#);
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+// ============================================================================
+// Tail-Call Optimization Tests
+// ============================================================================
+
+#[test]
+fn test_tco_countdown() {
+    // Deep recursion that must not overflow the Rust stack.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define (count n)
+                (if (= n 0) 0 (count (- n 1))))
+            (count 1000))
+    "#);
+    assert_eq!(result, Ok(Value::Number(0)));
+}
+
+#[test]
+fn test_tco_mutual_recursion() {
+    // Mutual recursion in tail position.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define (my-even? n)
+                (if (= n 0) #t (my-odd? (- n 1))))
+            (define (my-odd? n)
+                (if (= n 0) #f (my-even? (- n 1))))
+            (my-even? 1000))
+    "#);
+    assert_eq!(result, Ok(Value::True));
+}
+
+#[test]
+fn test_tco_begin_tail_position() {
+    // The last expression in begin is a tail position.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define (loop n)
+                (if (= n 0) 42
+                    (begin
+                        (+ 1 2)
+                        (loop (- n 1)))))
+            (loop 1000))
+    "#);
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+// ============================================================================
+// Cycle Detection (Black-Holing) Tests
+// ============================================================================
+
+#[test]
+fn test_cycle_detection_self_reference() {
+    // (define x x) then forcing x → circular dependency error.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define x x)
+            x)
+    "#);
+    assert!(result.is_err(), "Circular reference should produce an error");
+}
+
+#[test]
+fn test_cycle_detection_indirect() {
+    // Indirect cycle: a → b → a.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define a b)
+            (define b a)
+            a)
+    "#);
+    assert!(result.is_err(), "Indirect cycle should produce an error");
+}
+
+// ============================================================================
+// Infinite Data Structures Tests
+// ============================================================================
+
+#[test]
+fn test_infinite_ones() {
+    // (define ones (cons 1 ones)) — infinite list of ones.
+    let lisp: Lisp<50000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"
+            (begin
+                (define ones (cons 1 ones))
+                (car ones))
+        "#),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_infinite_ones_cdr() {
+    let lisp: Lisp<50000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"
+            (begin
+                (define ones (cons 1 ones))
+                (car (cdr ones)))
+        "#),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_infinite_ones_cdr_cdr() {
+    let lisp: Lisp<50000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"
+            (begin
+                (define ones (cons 1 ones))
+                (car (cdr (cdr ones))))
+        "#),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_infinite_nats() {
+    // Infinite stream of natural numbers: test car, cadr, and caddr.
+    let lisp: Lisp<50000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"
+            (begin
+                (define (nats-from n) (cons n (nats-from (+ n 1))))
+                (define nats (nats-from 0))
+                (car nats))
+        "#),
+        Ok(Value::Number(0))
+    );
+    assert_eq!(
+        lisp.eval(r#"
+            (begin
+                (define (nats-from n) (cons n (nats-from (+ n 1))))
+                (define nats (nats-from 0))
+                (car (cdr nats)))
+        "#),
+        Ok(Value::Number(1))
+    );
+    assert_eq!(
+        lisp.eval(r#"
+            (begin
+                (define (nats-from n) (cons n (nats-from (+ n 1))))
+                (define nats (nats-from 0))
+                (car (cdr (cdr nats))))
+        "#),
+        Ok(Value::Number(2))
+    );
+}
+
+// ============================================================================
+// Laziness + TCO Combined Tests
+// ============================================================================
+
+#[test]
+fn test_tco_with_lazy_accumulator() {
+    // Tail-recursive sum with lazy arguments.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define (sum-to n acc)
+                (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
+            (sum-to 100 0))
+    "#);
+    assert_eq!(result, Ok(Value::Number(5050)));
+}
+
+#[test]
+fn test_tco_iterative_fib() {
+    // Iterative fib via self-application with define.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define (fib n)
+                ((lambda (loop)
+                    (loop loop 0 1 n))
+                 (lambda (self a b count)
+                    (if (= count 0)
+                        a
+                        (self self b (+ a b) (- count 1))))))
+            (fib 20))
+    "#);
+    assert_eq!(result, Ok(Value::Number(6765)));
+}
