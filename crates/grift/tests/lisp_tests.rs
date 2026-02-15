@@ -392,3 +392,20 @@ fn test_gc_stats_accuracy() {
         "GC should not increase allocations"
     );
 }
+
+
+#[test]
+fn test_fib_self_apply() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let program = r#"
+        ((lambda (fib-self n)
+            (fib-self fib-self n))
+         (lambda (self n)
+            (if (< n 2)
+                n
+                (+ (self self (- n 1))
+                   (self self (- n 2)))))
+         10)
+    "#;
+    assert_eq!(lisp.eval(program), Ok(Value::Number(55)));
+}
