@@ -27,7 +27,7 @@ fn run_benchmark() {
     let lisp: Lisp<500_000> = Lisp::new();
 
     // Iterative Fibonacci via self-application (no `define` needed).
-    // Computes fib(30) = 832 040 in O(n) steps.
+    // Computes fib(30) = 832040 in O(n) steps.
     let program = r#"
         ((lambda (n)
             ((lambda (loop)
