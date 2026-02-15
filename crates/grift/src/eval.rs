@@ -460,7 +460,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         while !cur.is_nil() {
             let val = self.lisp.car(cur)?;
             match self.lisp.get(val)? {
-                Value::Number(n) => sum = sum.wrapping_add(n),
+                Value::Number(n) => {
+                    sum = sum.checked_add(n).ok_or(ArenaError::InvalidIndex)?;
+                }
                 _ => return Err(ArenaError::InvalidIndex),
             }
             cur = self.lisp.cdr(cur)?;
@@ -488,7 +490,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         while !cur.is_nil() {
             let val = self.lisp.car(cur)?;
             match self.lisp.get(val)? {
-                Value::Number(n) => result = result.wrapping_sub(n),
+                Value::Number(n) => {
+                    result = result.checked_sub(n).ok_or(ArenaError::InvalidIndex)?;
+                }
                 _ => return Err(ArenaError::InvalidIndex),
             }
             cur = self.lisp.cdr(cur)?;
@@ -503,7 +507,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         while !cur.is_nil() {
             let val = self.lisp.car(cur)?;
             match self.lisp.get(val)? {
-                Value::Number(n) => product = product.wrapping_mul(n),
+                Value::Number(n) => {
+                    product = product.checked_mul(n).ok_or(ArenaError::InvalidIndex)?;
+                }
                 _ => return Err(ArenaError::InvalidIndex),
             }
             cur = self.lisp.cdr(cur)?;
