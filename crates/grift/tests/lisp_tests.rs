@@ -332,8 +332,8 @@ fn test_gc_stress_many_evals() {
         lisp.eval("(* 3 4)").unwrap();
         lisp.eval("(list 1 2 3)").unwrap();
 
-        // Periodic GC to prevent OOM.
-        if i % 25 == 24 {
+        // Periodic GC every 25 iterations to prevent OOM.
+        if (i + 1) % 25 == 0 {
             let _ = lisp.collect_garbage(&[]);
         }
     }
