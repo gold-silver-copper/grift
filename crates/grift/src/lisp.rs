@@ -1,6 +1,6 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 
-use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, Trace};
+use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats, Trace};
 
 use crate::value::Value;
 use crate::parse::Parser;
@@ -212,6 +212,22 @@ impl<const N: usize> Lisp<N> {
         let mut evaluator = Evaluator::new(self);
         let result_idx = evaluator.eval(expr, evaluator.global_env)?;
         self.arena.get(result_idx)
+    }
+
+    // ========================================================================
+    // Arena introspection
+    // ========================================================================
+
+    /// Return arena allocation statistics.
+    pub fn stats(&self) -> ArenaStats {
+        self.arena.stats()
+    }
+
+    /// Run mark-and-sweep garbage collection with the given roots.
+    ///
+    /// Pass `&[]` to collect all unreachable objects.
+    pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
+        self.arena.collect_garbage(roots)
     }
 }
 
