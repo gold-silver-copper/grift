@@ -60,6 +60,12 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(Value::Cons { car, cdr })
     }
 
+    /// Allocate a thunk (unevaluated expression + environment).
+    #[inline]
+    pub(crate) fn thunk(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Thunk { expr, env })
+    }
+
     /// Allocate a character.
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(c.into())
