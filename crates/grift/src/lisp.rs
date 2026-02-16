@@ -121,13 +121,12 @@ impl<const N: usize> Lisp<N> {
             })
     }
 
-    /// Get symbol name as a function that compares against a given string.
     /// Returns true if the symbol at `idx` has the given name.
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
-        self.arena.get(idx)
-            .ok()
-            .and_then(|v| v.as_symbol().ok())
-            .is_some_and(|str_idx| self.string_eq(str_idx, name))
+        matches!(
+            self.arena.get(idx).and_then(|v| v.as_symbol()),
+            Ok(str_idx) if self.string_eq(str_idx, name)
+        )
     }
 
     // — Accessors —
