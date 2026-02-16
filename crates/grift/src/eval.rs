@@ -515,34 +515,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(fn_env)
     }
 
-    /// Build a list of thunks from a list of expressions (iterative).
+    /// Build a list of thunks from a list of expressions (iterative, O(n)).
     fn make_thunk_list(
         &self,
         exprs: ArenaIndex,
         call_env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        // Count elements first.
-        let mut count = 0usize;
-        let mut tmp = exprs;
-        while !tmp.is_nil() {
-            count += 1;
-            tmp = self.lisp.cdr(tmp)?;
-        }
-        // Build right-to-left (natural for cons lists).
-        // Since we can't use Vec (no_std, no_alloc), we walk to the
-        // i-th element each iteration. O(n²) but avoids recursion
-        // and allocation — fine for typical small argument lists.
-        let mut result = ArenaIndex::NIL;
-        for i in (0..count).rev() {
-            let mut cur = exprs;
-            for _ in 0..i {
-                cur = self.lisp.cdr(cur)?;
-            }
+        // Pass 1: Build reversed list of thunks in O(n).
+        let mut reversed = ArenaIndex::NIL;
+        let mut cur = exprs;
+        while !cur.is_nil() {
             let thunk = self.lisp.arena.alloc(Value::Thunk {
                 expr: self.lisp.car(cur)?,
                 env: call_env,
             })?;
-            result = self.lisp.cons(thunk, result)?;
+            reversed = self.lisp.cons(thunk, reversed)?;
+            cur = self.lisp.cdr(cur)?;
+        }
+        // Pass 2: Reverse to restore original order in O(n).
+        let mut result = ArenaIndex::NIL;
+        while !reversed.is_nil() {
+            let head = self.lisp.car(reversed)?;
+            result = self.lisp.cons(head, result)?;
+            reversed = self.lisp.cdr(reversed)?;
         }
         Ok(result)
     }
