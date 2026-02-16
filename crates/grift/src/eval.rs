@@ -40,7 +40,7 @@ macro_rules! fold_numbers {
         let mut cur = $args;
         while !cur.is_nil() {
             let n = $self.lisp.get($self.lisp.car(cur)?)?.as_number()?;
-            acc = acc.$op(n).ok_or(ArenaError::InvalidIndex)?;
+            acc = acc.$op(n).ok_or(ArenaError::ArithmeticOverflow)?;
             cur = $self.lisp.cdr(cur)?;
         }
         $self.lisp.number(acc)
@@ -128,7 +128,7 @@ macro_rules! define_builtins {
             fn apply_builtin(&mut self, id: BuiltinId, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
                 match id {
                     $( define_builtins!(@const_name $bmethod) => self.$bmethod(args), )*
-                    _ => Err(ArenaError::InvalidIndex),
+                    _ => Err(ArenaError::NotCallable),
                 }
             }
 
@@ -228,7 +228,7 @@ pub(crate) struct Evaluator<'a, const N: usize> {
 }
 
 /// Walk an environment association list, calling `f` on each (key, binding)
-/// pair until `f` returns `Some(R)`.  Returns `Err(InvalidIndex)` when the
+/// pair until `f` returns `Some(R)`.  Returns `Err(UnboundVariable)` when the
 /// name is not found.
 #[inline]
 fn env_scan<const N: usize, R, F>(
@@ -248,7 +248,7 @@ where
         }
         cur = lisp.cdr(cur)?;
     }
-    Err(ArenaError::InvalidIndex)
+    Err(ArenaError::UnboundVariable)
 }
 
 /// Bind a name to a value in an environment, returning the new environment.
@@ -356,7 +356,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     loop {
                         match self.lisp.get(target)? {
                             Value::Indirection(t) => target = t,
-                            Value::BlackHole => return Err(ArenaError::InvalidIndex),
+                            Value::BlackHole => return Err(ArenaError::BlackHoleDetected),
                             _ => break,
                         }
                     }
@@ -367,7 +367,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
 
                 // Circular dependency detected.
-                Value::BlackHole => return Err(ArenaError::InvalidIndex),
+                Value::BlackHole => return Err(ArenaError::BlackHoleDetected),
 
                 _ => unreachable!(),
             }
@@ -430,14 +430,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
 
                 // Black hole — circular evaluation.
-                Value::BlackHole => return Err(ArenaError::InvalidIndex),
+                Value::BlackHole => return Err(ArenaError::BlackHoleDetected),
 
                 // Symbol → look up in local env, then global env.
                 Value::Symbol(_) => {
                     let binding = env_lookup(self.lisp, env, expr)
                         .or_else(|_| env_lookup(self.lisp, self.global_env, expr))?;
                     if matches!(self.lisp.get(binding)?, Value::BlackHole) {
-                        return Err(ArenaError::InvalidIndex);
+                        return Err(ArenaError::BlackHoleDetected);
                     }
                     return Ok(binding);
                 }
@@ -478,7 +478,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                         _ => {
                             self.pop_roots(2);
-                            return Err(ArenaError::InvalidIndex);
+                            return Err(ArenaError::NotCallable);
                         }
                     }
                 }
@@ -517,7 +517,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     fn_env = env_bind(self.lisp, fn_env, params, rest_thunks)?;
                     return Ok(fn_env);
                 }
-                _ => return Err(ArenaError::InvalidIndex),
+                _ => return Err(ArenaError::TypeError),
             }
         }
         Ok(fn_env)
@@ -636,7 +636,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.global_env = env_bind(self.lisp, self.global_env, name, lam)?;
                 Ok(lam)
             }
-            _ => Err(ArenaError::InvalidIndex),
+            _ => Err(ArenaError::TypeError),
         }
     }
 
@@ -856,14 +856,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(- a b ...)` — subtraction. With one arg, negates.
     fn builtin_sub(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if args.is_nil() {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::InvalidArgument);
         }
         let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
             return self
                 .lisp
-                .number(first.checked_neg().ok_or(ArenaError::InvalidIndex)?);
+                .number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
         }
         fold_numbers!(self, rest, first, checked_sub)
     }
@@ -877,7 +877,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn builtin_div(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let (a, b) = binary_nums!(self, args);
         if b == 0 {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::DivisionByZero);
         }
         self.lisp.number(a / b)
     }

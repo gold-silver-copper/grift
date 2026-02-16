@@ -169,7 +169,7 @@ impl<const N: usize> Lisp<N> {
         idx: ArenaIndex,
     ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
         let Value::Lambda { params, body_env } = self.arena.get(idx)? else {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::TypeError);
         };
         let (body, env) = self.arena.get(body_env)?.as_cons()?;
         Ok((params, body, env))

@@ -24,12 +24,12 @@ macro_rules! impl_get_contiguous {
             let base = start.raw();
             // Bounds check: last index must be < N
             if base + const_max!($($idx),+) >= N {
-                return Err(ArenaError::InvalidIndex);
+                return Err(ArenaError::IndexOutOfBounds);
             }
             $(
                 let $var = match self.slots[base + $idx].get() {
                     Slot::Occupied { value } => value,
-                    Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
+                    Slot::Free { .. } => return Err(ArenaError::IndexNotAllocated),
                 };
             )+
             Ok(( $($var),+ ))
@@ -48,12 +48,12 @@ macro_rules! impl_set_contiguous {
             let base = start.raw();
             // Bounds check: last index must be < N
             if base + const_max!($($idx),+) >= N {
-                return Err(ArenaError::InvalidIndex);
+                return Err(ArenaError::IndexOutOfBounds);
             }
             // Verify all slots are occupied first
             $(
                 if !matches!(self.slots[base + $idx].get(), Slot::Occupied { .. }) {
-                    return Err(ArenaError::InvalidIndex);
+                    return Err(ArenaError::IndexNotAllocated);
                 }
             )+
             // Set all values
