@@ -20,14 +20,16 @@ macro_rules! tail_continue {
     };
 }
 
-/// Generate a type-predicate builtin that checks the first arg against a
-/// pattern.  All six predicates (`null?`, `pair?`, `number?`, …) share the
-/// exact same shape; this macro captures it once.
+/// Generate a type-predicate builtin method that checks the first arg
+/// against a pattern.  All six predicates (`null?`, `pair?`, `number?`, …)
+/// share the exact same shape; this macro captures it once.
 macro_rules! type_predicate {
-    ($self:ident, $args:ident, $pat:pat) => {{
-        let val = $self.lisp.car($args)?;
-        $self.lisp.boolean(matches!($self.lisp.get(val)?, $pat))
-    }};
+    ($name:ident, $pat:pat) => {
+        fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+            let val = self.lisp.car(args)?;
+            self.lisp.boolean(matches!(self.lisp.get(val)?, $pat))
+        }
+    };
 }
 
 /// Fold a variadic argument list over a checked arithmetic operation,
@@ -625,9 +627,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let test_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
 
-            let test_val = self.eval_force(test_expr, *env)?;
+            let test_forced = self.eval_force(test_expr, *env)?;
 
-            if self.lisp.get(test_val)?.is_truthy() {
+            if self.lisp.get(test_forced)?.is_truthy() {
                 *expr = self.lisp.car(rest)?;
             } else {
                 let else_rest = self.lisp.cdr(rest)?;
@@ -764,8 +766,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.eval_begin_inner(body, *env);
             }
 
-            let test_val = self.eval_force(test, *env)?;
-            if self.lisp.get(test_val)?.is_truthy() {
+            let test_forced = self.eval_force(test, *env)?;
+            if self.lisp.get(test_forced)?.is_truthy() {
                 return self.eval_begin_inner(body, *env);
             }
             cur = self.lisp.cdr(cur)?;
@@ -991,27 +993,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Type predicate built-ins
     // ========================================================================
 
-    fn builtin_nullp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        type_predicate!(self, args, Value::Nil)
-    }
-
-    fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        type_predicate!(self, args, Value::False)
-    }
-
-    fn builtin_pairp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        type_predicate!(self, args, Value::Cons { .. })
-    }
-
-    fn builtin_numberp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        type_predicate!(self, args, Value::Number(_))
-    }
-
-    fn builtin_symbolp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        type_predicate!(self, args, Value::Symbol(_))
-    }
-
-    fn builtin_booleanp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        type_predicate!(self, args, Value::True | Value::False)
-    }
+    type_predicate!(builtin_nullp, Value::Nil);
+    type_predicate!(builtin_not, Value::False);
+    type_predicate!(builtin_pairp, Value::Cons { .. });
+    type_predicate!(builtin_numberp, Value::Number(_));
+    type_predicate!(builtin_symbolp, Value::Symbol(_));
+    type_predicate!(builtin_booleanp, Value::True | Value::False);
 }

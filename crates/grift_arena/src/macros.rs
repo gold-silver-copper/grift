@@ -7,6 +7,16 @@
 // Macros for generating contiguous get/set operations
 // ============================================================================
 
+/// Compile-time maximum of a list of `usize` expressions.
+macro_rules! const_max {
+    ($val:expr) => { $val };
+    ($val:expr, $($rest:expr),+) => {{
+        let a = $val;
+        let b = const_max!($($rest),+);
+        if a > b { a } else { b }
+    }};
+}
+
 /// Internal macro to generate get_contiguousN methods.
 /// Reduces ~170 lines of repetitive code to ~10 lines of macro invocations.
 macro_rules! impl_get_contiguous {
@@ -15,8 +25,7 @@ macro_rules! impl_get_contiguous {
         pub fn $fn_name(&self, start: ArenaIndex) -> ArenaResult<( $( impl_get_contiguous!(@T $var) ),+ )> {
             let base = start.raw();
             // Bounds check: last index must be < N
-            let max_offset = impl_get_contiguous!(@max $($idx),+);
-            if base + max_offset >= N {
+            if base + const_max!($($idx),+) >= N {
                 return Err(ArenaError::InvalidIndex);
             }
             $(
@@ -30,16 +39,6 @@ macro_rules! impl_get_contiguous {
     };
     // Helper to generate T for tuple type
     (@T $var:ident) => { T };
-    // Helper to get max of indices
-    (@max $first:expr $(, $rest:expr)*) => {
-        impl_get_contiguous!(@max_impl $first $(, $rest)*)
-    };
-    (@max_impl $val:expr) => { $val };
-    (@max_impl $val:expr, $($rest:expr),+) => {{
-        let a = $val;
-        let b = impl_get_contiguous!(@max_impl $($rest),+);
-        if a > b { a } else { b }
-    }};
 }
 
 /// Internal macro to generate set_contiguousN methods.
@@ -50,8 +49,7 @@ macro_rules! impl_set_contiguous {
         pub fn $fn_name(&self, start: ArenaIndex, $($var: T),+) -> ArenaResult<()> {
             let base = start.raw();
             // Bounds check: last index must be < N
-            let max_offset = impl_set_contiguous!(@max $($idx),+);
-            if base + max_offset >= N {
+            if base + const_max!($($idx),+) >= N {
                 return Err(ArenaError::InvalidIndex);
             }
             // Verify all slots are occupied first
@@ -67,18 +65,9 @@ macro_rules! impl_set_contiguous {
             Ok(())
         }
     };
-    // Helper to get max of indices (same as get)
-    (@max $first:expr $(, $rest:expr)*) => {
-        impl_set_contiguous!(@max_impl $first $(, $rest)*)
-    };
-    (@max_impl $val:expr) => { $val };
-    (@max_impl $val:expr, $($rest:expr),+) => {{
-        let a = $val;
-        let b = impl_set_contiguous!(@max_impl $($rest),+);
-        if a > b { a } else { b }
-    }};
 }
 
 // Re-export the internal macros for use in arena.rs
+pub(crate) use const_max;
 pub(crate) use impl_get_contiguous;
 pub(crate) use impl_set_contiguous;
