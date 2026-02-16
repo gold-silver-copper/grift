@@ -167,16 +167,19 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     /// Get the number of currently allocated cells.
+    #[inline]
     pub fn len(&self) -> usize {
         self.len.get()
     }
 
     /// Check if the arena is empty (no allocated cells).
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Check if the arena is full (all cells allocated).
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.len() == N
     }
