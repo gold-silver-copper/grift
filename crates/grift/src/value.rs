@@ -130,6 +130,11 @@ impl Value {
         as_symbol -> ArenaIndex, Value::Symbol(idx) => idx
     }
 
+    value_accessor! {
+        /// Extract the boolean value, or `Err(TypeError)` if not a boolean.
+        as_bool -> bool, Value::Boolean(b) => b
+    }
+
     /// Returns true only for bool true
     #[inline]
     pub fn is_truthy(self) -> bool {
