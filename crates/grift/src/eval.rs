@@ -279,6 +279,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     #[inline]
     fn pop_roots(&mut self, n: usize) {
         for _ in 0..n {
+            debug_assert!(!self.gc_roots.is_nil(), "GC root stack underflow");
             match self.lisp.cdr(self.gc_roots) {
                 Ok(rest) => self.gc_roots = rest,
                 Err(_) => break,
