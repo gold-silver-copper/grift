@@ -52,7 +52,7 @@ pub enum Value {
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
-/// returns its inner data, or `Err(InvalidIndex)` on mismatch.
+/// returns its inner data, or `Err(TypeError)` on mismatch.
 macro_rules! value_accessor {
     ($(#[$m:meta])* $name:ident -> $out:ty, $pat:pat => $expr:expr) => {
         $(#[$m])*
@@ -60,7 +60,7 @@ macro_rules! value_accessor {
         pub fn $name(self) -> Result<$out, ArenaError> {
             match self {
                 $pat => Ok($expr),
-                _ => Err(ArenaError::InvalidIndex),
+                _ => Err(ArenaError::TypeError),
             }
         }
     };
@@ -116,7 +116,7 @@ impl Value {
     }
 
     value_accessor! {
-        /// Extract the numeric value, or `Err(InvalidIndex)` if not a number.
+        /// Extract the numeric value, or `Err(TypeError)` if not a number.
         as_number -> isize, Value::Number(n) => n
     }
 

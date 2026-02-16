@@ -41,7 +41,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 self.parse_string_literal(lisp)
             }
-            b')' => Err(ArenaError::InvalidIndex),
+            b')' => Err(ArenaError::ParseError),
             _ => self.parse_atom(lisp),
         }
     }
@@ -67,7 +67,7 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
 
         if self.pos >= self.input.len() {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::ParseError);
         }
 
         if self.input[self.pos] == b')' {
@@ -77,7 +77,7 @@ impl<'a> Parser<'a> {
 
         // Check for dotted pair notation
         if self.peek_dot() {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::ParseError);
         }
 
         let car = self.parse(lisp)?;
@@ -92,7 +92,7 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 return lisp.cons(car, cdr);
             }
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::ParseError);
         }
 
         let cdr = self.parse_list(lisp)?;
@@ -127,14 +127,14 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         if self.pos >= self.input.len() {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::ParseError);
         }
         let end = self.pos;
         self.pos += 1; // skip closing quote
 
         let slice = &self.input[start..end];
         // Convert to &str (we know input is valid UTF-8)
-        let s = core::str::from_utf8(slice).map_err(|_| ArenaError::InvalidIndex)?;
+        let s = core::str::from_utf8(slice).map_err(|_| ArenaError::ParseError)?;
         lisp.alloc_string(s)
     }
 
@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
         }
 
         let token = &self.input[start..self.pos];
-        let s = core::str::from_utf8(token).map_err(|_| ArenaError::InvalidIndex)?;
+        let s = core::str::from_utf8(token).map_err(|_| ArenaError::ParseError)?;
 
         match s {
             "#t" | "#true" => lisp.boolean(true),

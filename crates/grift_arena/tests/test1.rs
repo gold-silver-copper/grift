@@ -65,7 +65,7 @@ fn test_get_invalid_index() {
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
-    assert_eq!(arena.get(invalid_idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(invalid_idx), Err(ArenaError::IndexOutOfBounds));
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_get_freed_index() {
     arena.free(idx).unwrap();
 
     // After freeing, the index is invalid
-    assert_eq!(arena.get(idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx), Err(ArenaError::IndexNotAllocated));
 }
 
 // ============================================================================
@@ -105,7 +105,7 @@ fn test_free_invalid_index() {
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
-    assert_eq!(arena.free(invalid_idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.free(invalid_idx), Err(ArenaError::IndexOutOfBounds));
 }
 
 #[test]
@@ -115,8 +115,8 @@ fn test_double_free() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    // Double free returns InvalidIndex because the slot is no longer allocated
-    assert_eq!(arena.free(idx), Err(ArenaError::InvalidIndex));
+    // Double free returns IndexNotAllocated because the slot is no longer allocated
+    assert_eq!(arena.free(idx), Err(ArenaError::IndexNotAllocated));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn test_set_invalid_index() {
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
-    assert_eq!(arena.set(invalid_idx, 42), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.set(invalid_idx, 42), Err(ArenaError::IndexOutOfBounds));
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn test_set_freed_index() {
     arena.free(idx).unwrap();
 
     // After freeing, the index is invalid
-    assert_eq!(arena.set(idx, 100), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.set(idx, 100), Err(ArenaError::IndexNotAllocated));
 }
 
 // ============================================================================
@@ -726,9 +726,9 @@ fn test_aba_problem_prevention() {
     arena.free(old_idx).unwrap();
 
     // Old index should now be invalid (slot is free)
-    assert_eq!(arena.get(old_idx), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.set(old_idx, 999), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.free(old_idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(old_idx), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.set(old_idx, 999), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.free(old_idx), Err(ArenaError::IndexNotAllocated));
 
     // Allocate new value - will reuse the same slot
     let new_idx = arena.alloc(200).unwrap();
@@ -755,7 +755,7 @@ fn test_stale_index_after_multiple_reuses() {
     }
 
     // Original stale index should still be invalid
-    assert_eq!(arena.get(stale_idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(stale_idx), Err(ArenaError::IndexNotAllocated));
 }
 
 #[test]
@@ -875,12 +875,12 @@ fn test_index_at_boundary() {
     let boundary_not_allocated = ArenaIndex::new(9);
     assert_eq!(
         arena.get(boundary_not_allocated),
-        Err(ArenaError::InvalidIndex)
+        Err(ArenaError::IndexNotAllocated)
     );
 
-    // Index one past boundary - always InvalidIndex
+    // Index one past boundary - always IndexOutOfBounds
     let past_boundary = ArenaIndex::new(10);
-    assert_eq!(arena.get(past_boundary), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(past_boundary), Err(ArenaError::IndexOutOfBounds));
 }
 
 #[test]
@@ -888,9 +888,9 @@ fn test_max_index_value() {
     let arena: Arena<isize, 10> = Arena::new(0);
 
     let huge_idx = ArenaIndex::new(usize::MAX);
-    assert_eq!(arena.get(huge_idx), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.free(huge_idx), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.set(huge_idx, 42), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(huge_idx), Err(ArenaError::IndexOutOfBounds));
+    assert_eq!(arena.free(huge_idx), Err(ArenaError::IndexOutOfBounds));
+    assert_eq!(arena.set(huge_idx, 42), Err(ArenaError::IndexOutOfBounds));
 }
 
 #[test]
@@ -998,7 +998,7 @@ fn test_interleaved_alloc_free_set() {
     arena.set(idx3, 300).unwrap();
 
     // idx2 is now invalid
-    assert_eq!(arena.get(idx2), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx2), Err(ArenaError::IndexNotAllocated));
 
     let idx4 = arena.alloc(4).unwrap();
 
@@ -1025,9 +1025,9 @@ fn test_tree_with_stale_indices() {
     arena.delete_recursive(root).unwrap();
 
     // All indices should now be stale
-    assert_eq!(arena.get(root), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(left), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(right), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(root), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(left), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(right), Err(ArenaError::IndexNotAllocated));
 }
 
 #[test]
@@ -1045,7 +1045,7 @@ fn test_copy_then_delete_original() {
     arena.delete_recursive(root).unwrap();
 
     // Original indices should be stale
-    assert_eq!(arena.get(root), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(root), Err(ArenaError::IndexNotAllocated));
 
     // Copied tree should still work
     match arena.get(copied_root).unwrap() {
@@ -1078,7 +1078,7 @@ fn test_partial_tree_delete() {
     // Root still exists but contains stale index for left branch
     match arena.get(root).unwrap() {
         Tree::Branch(l, r) => {
-            assert_eq!(arena.get(l), Err(ArenaError::InvalidIndex)); // Stale
+            assert_eq!(arena.get(l), Err(ArenaError::IndexNotAllocated)); // Stale
             assert_eq!(arena.get(r).unwrap(), Tree::Leaf(3)); // Valid
         }
         _ => panic!("Expected branch"),
@@ -1226,8 +1226,8 @@ fn test_gc_basic_collection() {
     assert_eq!(arena.get(leaf2).unwrap(), Tree::Leaf(2));
 
     // Garbage should be gone
-    assert_eq!(arena.get(garbage1), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(garbage2), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(garbage1), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(garbage2), Err(ArenaError::IndexNotAllocated));
 }
 
 #[test]
@@ -2811,7 +2811,7 @@ fn test_modify_invalid() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    assert_eq!(arena.modify(idx, |_| {}), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.modify(idx, |_| {}), Err(ArenaError::IndexNotAllocated));
 }
 
 #[test]
@@ -3002,8 +3002,8 @@ fn test_arena_error_methods() {
     assert!(ArenaError::OutOfMemory.is_out_of_memory());
     assert!(!ArenaError::OutOfMemory.is_invalid_index());
 
-    assert!(!ArenaError::InvalidIndex.is_out_of_memory());
-    assert!(ArenaError::InvalidIndex.is_invalid_index());
+    assert!(!ArenaError::IndexOutOfBounds.is_out_of_memory());
+    assert!(ArenaError::IndexOutOfBounds.is_invalid_index());
 
     assert_eq!(ArenaError::OutOfMemory.as_str(), "Arena is full");
 }
@@ -3218,10 +3218,10 @@ fn test_arena_error_kind_methods() {
     assert!(!out_of_memory.is_invalid_index());
     assert!(!out_of_memory.is_trace_error());
 
-    let invalid_index = ArenaError::InvalidIndex;
-    assert!(!invalid_index.is_out_of_memory());
-    assert!(invalid_index.is_invalid_index());
-    assert!(!invalid_index.is_trace_error());
+    let index_not_allocated = ArenaError::IndexNotAllocated;
+    assert!(!index_not_allocated.is_out_of_memory());
+    assert!(index_not_allocated.is_invalid_index());
+    assert!(!index_not_allocated.is_trace_error());
 
     let trace_error = ArenaError::TraceError;
     assert!(!trace_error.is_out_of_memory());
@@ -3230,7 +3230,7 @@ fn test_arena_error_kind_methods() {
 
     // Test as_str
     assert_eq!(out_of_memory.as_str(), "Arena is full");
-    assert_eq!(invalid_index.as_str(), "Invalid index");
+    assert_eq!(index_not_allocated.as_str(), "Index not allocated");
     assert_eq!(trace_error.as_str(), "Error during GC tracing");
 }
 
@@ -3434,7 +3434,7 @@ fn test_alloc_contiguous_zero_count() {
     let arena: Arena<isize, 100> = Arena::new(0);
 
     // Zero count should fail
-    assert_eq!(arena.alloc_contiguous(0, 0), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.alloc_contiguous(0, 0), Err(ArenaError::InvalidArgument));
 }
 
 #[test]
@@ -3589,7 +3589,7 @@ fn test_contiguous_reuse_after_free() {
     arena.free_contiguous(block1, 10).unwrap();
 
     // After freeing, block1 index should be invalid
-    assert_eq!(arena.get(block1), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(block1), Err(ArenaError::IndexNotAllocated));
 
     // Allocate another block of same size
     let block2 = arena.alloc_contiguous(10, 2).unwrap();

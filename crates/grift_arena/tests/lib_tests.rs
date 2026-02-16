@@ -45,7 +45,7 @@ fn test_invalid_index() {
     arena.free(idx).unwrap();
 
     // After freeing, the index is invalid
-    assert_eq!(arena.get(idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx), Err(ArenaError::IndexNotAllocated));
 }
 
 #[test]
@@ -97,9 +97,9 @@ fn test_clear_invalidates_all_indices() {
     arena.clear();
 
     // All old indices should be invalid
-    assert_eq!(arena.get(idx1), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(idx2), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(idx3), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx1), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(idx2), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(idx3), Err(ArenaError::IndexNotAllocated));
 
     // New allocations should work
     let new_idx = arena.alloc(42).unwrap();

@@ -82,20 +82,53 @@ impl core::fmt::Display for ArenaIndex {
 
 // — ArenaError —
 
-/// Errors that can occur during arena operations.
+/// Errors that can occur during arena and Lisp operations.
+///
+/// Each variant captures a specific failure mode, enabling precise
+/// diagnostics without heap-allocated error messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaError {
     /// Arena is full, cannot allocate more cells.
     OutOfMemory,
 
-    /// Invalid index (out of bounds or not allocated).
-    InvalidIndex,
+    /// Index exceeds the arena's capacity (>= N).
+    IndexOutOfBounds,
+
+    /// Index refers to a slot that has been freed or was never allocated.
+    IndexNotAllocated,
+
+    /// An argument to an arena operation was invalid (e.g., zero-length contiguous allocation).
+    InvalidArgument,
 
     /// An error occurred during garbage collection tracing.
     /// This can happen if the mark stack overflows or roots are invalid.
     TraceError,
-    /// Cycle detected
+
+    /// Cycle detected during structure traversal (e.g., graph traversal
+    /// or recursive data structure operations).
     Cyclic,
+
+    /// A value had the wrong type for the requested operation
+    /// (e.g., expected a Number but found a Cons).
+    TypeError,
+
+    /// A parse error occurred while reading an S-expression.
+    ParseError,
+
+    /// Checked arithmetic overflowed (e.g., addition, negation).
+    ArithmeticOverflow,
+
+    /// Division or modulo by zero.
+    DivisionByZero,
+
+    /// A variable was not found in the current or global environment.
+    UnboundVariable,
+
+    /// Attempted to call a value that is not a function (lambda or builtin).
+    NotCallable,
+
+    /// A circular dependency was detected via the black-hole protocol.
+    BlackHoleDetected,
 }
 
 impl ArenaError {
@@ -103,9 +136,18 @@ impl ArenaError {
     pub const fn as_str(&self) -> &'static str {
         match self {
             ArenaError::OutOfMemory => "Arena is full",
-            ArenaError::InvalidIndex => "Invalid index",
+            ArenaError::IndexOutOfBounds => "Index out of bounds",
+            ArenaError::IndexNotAllocated => "Index not allocated",
+            ArenaError::InvalidArgument => "Invalid argument",
             ArenaError::TraceError => "Error during GC tracing",
             ArenaError::Cyclic => "Cycle detected in evaluation",
+            ArenaError::TypeError => "Type error",
+            ArenaError::ParseError => "Parse error",
+            ArenaError::ArithmeticOverflow => "Arithmetic overflow",
+            ArenaError::DivisionByZero => "Division by zero",
+            ArenaError::UnboundVariable => "Unbound variable",
+            ArenaError::NotCallable => "Not callable",
+            ArenaError::BlackHoleDetected => "Circular dependency detected",
         }
     }
 
@@ -114,9 +156,9 @@ impl ArenaError {
         matches!(self, ArenaError::OutOfMemory)
     }
 
-    /// Check if this error indicates an invalid index.
+    /// Check if this error indicates an invalid index (out of bounds or not allocated).
     pub const fn is_invalid_index(&self) -> bool {
-        matches!(self, ArenaError::InvalidIndex)
+        matches!(self, ArenaError::IndexOutOfBounds | ArenaError::IndexNotAllocated)
     }
 
     /// Check if this error is related to garbage collection.
