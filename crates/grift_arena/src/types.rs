@@ -126,9 +126,6 @@ pub enum ArenaError {
 
     /// Attempted to call a value that is not a function (lambda or builtin).
     NotCallable,
-
-    /// A circular dependency was detected via the black-hole protocol.
-    BlackHoleDetected,
 }
 
 impl ArenaError {
@@ -147,7 +144,6 @@ impl ArenaError {
             ArenaError::DivisionByZero => "Division by zero",
             ArenaError::UnboundVariable => "Unbound variable",
             ArenaError::NotCallable => "Not callable",
-            ArenaError::BlackHoleDetected => "Circular dependency detected",
         }
     }
 
@@ -158,7 +154,10 @@ impl ArenaError {
 
     /// Check if this error indicates an invalid index (out of bounds or not allocated).
     pub const fn is_invalid_index(&self) -> bool {
-        matches!(self, ArenaError::IndexOutOfBounds | ArenaError::IndexNotAllocated)
+        matches!(
+            self,
+            ArenaError::IndexOutOfBounds | ArenaError::IndexNotAllocated
+        )
     }
 
     /// Check if this error is related to garbage collection.
