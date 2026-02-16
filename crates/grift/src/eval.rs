@@ -1,7 +1,9 @@
-//! Lisp evaluator with call-by-need (lazy) semantics.
+//! Pure lazy Lisp evaluator with call-by-need semantics.
 //!
 //! Evaluates arena-allocated S-expressions in an environment using
 //! call-by-need evaluation with memoization and tail-call optimization.
+//! The language semantics are referentially transparent — there is no
+//! `set!` or other mutation visible to Lisp programs.
 
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult};
 
@@ -197,7 +199,6 @@ define_builtins! {
         "quote"  => eval_quote,
         "if"     => eval_if,
         "define" => eval_define,
-        "set!"   => eval_set,
         "lambda" => eval_lambda,
         "begin"  => eval_begin,
         "cond"   => eval_cond,
@@ -271,20 +272,6 @@ fn env_lookup<const N: usize>(
     name: ArenaIndex,
 ) -> ArenaResult<ArenaIndex> {
     env_scan(lisp, env, name, |binding| lisp.cdr(binding))
-}
-
-/// Set a binding in an environment (mutate existing binding).
-#[inline]
-fn env_set<const N: usize>(
-    lisp: &Lisp<N>,
-    env: ArenaIndex,
-    name: ArenaIndex,
-    val: ArenaIndex,
-) -> ArenaResult<()> {
-    env_scan(lisp, env, name, |binding| {
-        let key = lisp.car(binding)?;
-        lisp.arena.set(binding, Value::Cons { car: key, cdr: val })
-    })
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -638,25 +625,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             _ => Err(ArenaError::TypeError),
         }
-    }
-
-    /// `(set! name expr)`.
-    fn eval_set(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail(self.eval_set_inner(args, *env))
-    }
-
-    fn eval_set_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let name = self.lisp.car(args)?;
-        let expr = self.lisp.car(self.lisp.cdr(args)?)?;
-        let forced = self.eval_force(expr, env)?;
-        env_set(self.lisp, env, name, forced)
-            .or_else(|_| env_set(self.lisp, self.global_env, name, forced))?;
-        self.lisp.nil()
     }
 
     /// `(lambda (params...) body...)`.
