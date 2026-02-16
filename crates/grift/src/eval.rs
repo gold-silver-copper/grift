@@ -737,7 +737,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        self.eval_short_circuit(args, expr, env, true /* short-circuit on falsy */)
+        self.eval_short_circuit(args, expr, env, true)
     }
 
     /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
@@ -747,17 +747,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        self.eval_short_circuit(args, expr, env, false /* short-circuit on truthy */)
+        self.eval_short_circuit(args, expr, env, false)
     }
 
-    /// Shared `and`/`or` implementation: short-circuits when a test's
-    /// truthiness does *not* match `continue_on_truthy`.
+    /// Shared `and`/`or` implementation.
+    ///
+    /// `continue_while_truthy`: when `true` (and), continues while tests are
+    /// truthy and short-circuits on the first falsy value; defaults to `#t`.
+    /// When `false` (or), continues while tests are falsy and short-circuits
+    /// on the first truthy value; defaults to `#f`.
     fn eval_short_circuit(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
-        short_on_truthy: bool,
+        continue_while_truthy: bool,
     ) -> TailAction {
         tail_continue!((|| -> ArenaResult<()> {
             let mut cur = args;
@@ -769,13 +773,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 let e = self.lisp.car(cur)?;
                 let forced = self.eval_force(e, *env)?;
-                if self.lisp.get(forced)?.is_truthy() != short_on_truthy {
+                if self.lisp.get(forced)?.is_truthy() != continue_while_truthy {
                     *expr = forced;
                     return Ok(());
                 }
                 cur = next;
             }
-            *expr = self.lisp.boolean(short_on_truthy)?;
+            *expr = self.lisp.boolean(continue_while_truthy)?;
             Ok(())
         })())
     }
