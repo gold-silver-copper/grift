@@ -8,6 +8,43 @@ use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 use crate::lisp::Lisp;
 use crate::value::Value;
 
+/// Convert a fallible closure into a `TailAction`: `Ok(())` → `Continue`,
+/// `Err(e)` → `Return(Err(e))`.  Eliminates the repeated match boilerplate
+/// in every TCO-aware special form.
+macro_rules! tail_continue {
+    ($body:expr) => {
+        match $body {
+            Ok(()) => TailAction::Continue,
+            Err(e) => TailAction::Return(Err(e)),
+        }
+    };
+}
+
+/// Generate a type-predicate builtin that checks the first arg against a
+/// pattern.  All six predicates (`null?`, `pair?`, `number?`, …) share the
+/// exact same shape; this macro captures it once.
+macro_rules! type_predicate {
+    ($self:ident, $args:ident, $pat:pat) => {{
+        let val = $self.lisp.car($args)?;
+        $self.lisp.boolean(matches!($self.lisp.get(val)?, $pat))
+    }};
+}
+
+/// Fold a variadic argument list over a checked arithmetic operation,
+/// starting from `$init`.  Used by `(+ ...)` and `(* ...)`.
+macro_rules! fold_numbers {
+    ($self:ident, $args:ident, $init:expr, $op:ident) => {{
+        let mut acc: isize = $init;
+        let mut cur = $args;
+        while !cur.is_nil() {
+            let n = $self.lisp.get($self.lisp.car(cur)?)?.as_number()?;
+            acc = acc.$op(n).ok_or(ArenaError::InvalidIndex)?;
+            cur = $self.lisp.cdr(cur)?;
+        }
+        $self.lisp.number(acc)
+    }};
+}
+
 /// Declare all built-in functions and special forms in one place.
 ///
 /// **Built-in functions** (section `builtins { ... }`) are registered in the
@@ -557,16 +594,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        let result = (|| -> ArenaResult<()> {
+        tail_continue!((|| -> ArenaResult<()> {
             let test_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
 
-            // Non-tail: evaluate and force the test
             let test_val = self.eval(test_expr, *env)?;
             let test_forced = self.force(test_val)?;
-            let is_false = matches!(self.lisp.get(test_forced)?, Value::False);
 
-            if !is_false {
+            if self.lisp.get(test_forced)?.is_truthy() {
                 *expr = self.lisp.car(rest)?;
             } else {
                 let else_rest = self.lisp.cdr(rest)?;
@@ -577,12 +612,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 };
             }
             Ok(())
-        })();
-
-        match result {
-            Ok(()) => TailAction::Continue,
-            Err(e) => TailAction::Return(Err(e)),
-        }
+        })())
     }
 
     /// `(define name expr)` or `(define (name params...) body)`.
@@ -681,28 +711,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        let result = (|| -> ArenaResult<()> {
+        tail_continue!((|| -> ArenaResult<()> {
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.lisp.cdr(cur)?;
                 if next.is_nil() {
-                    // Last expression — tail position
                     *expr = self.lisp.car(cur)?;
                     return Ok(());
                 }
-                // Non-last — evaluate (non-tail) and discard result
                 let e = self.lisp.car(cur)?;
                 self.eval(e, *env)?;
                 cur = next;
             }
             *expr = self.lisp.nil()?;
             Ok(())
-        })();
-
-        match result {
-            Ok(()) => TailAction::Continue,
-            Err(e) => TailAction::Return(Err(e)),
-        }
+        })())
     }
 
     /// `(cond (test expr) ...)` — tests are strict, result is tail.
@@ -727,14 +750,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let test = self.lisp.car(clause)?;
             let body = self.lisp.cdr(clause)?;
 
-            // Check for `else` clause
             if self.lisp.symbol_name_eq(test, "else") {
                 return self.eval_begin_inner(body, *env);
             }
 
             let test_val = self.eval(test, *env)?;
             let test_forced = self.force(test_val)?;
-            if !matches!(self.lisp.get(test_forced)?, Value::False) {
+            if self.lisp.get(test_forced)?.is_truthy() {
                 return self.eval_begin_inner(body, *env);
             }
             cur = self.lisp.cdr(cur)?;
@@ -765,35 +787,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        let result = (|| -> ArenaResult<()> {
+        tail_continue!((|| -> ArenaResult<()> {
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.lisp.cdr(cur)?;
                 if next.is_nil() {
-                    // Last expression — tail position
                     *expr = self.lisp.car(cur)?;
                     return Ok(());
                 }
                 let e = self.lisp.car(cur)?;
                 let result = self.eval(e, *env)?;
                 let forced = self.force(result)?;
-                if matches!(self.lisp.get(forced)?, Value::False) {
-                    // Short-circuit: need to return false directly
-                    // We set expr to the false value (self-evaluating)
+                if !self.lisp.get(forced)?.is_truthy() {
                     *expr = forced;
                     return Ok(());
                 }
                 cur = next;
             }
-            // (and) with no args → #t
             *expr = self.lisp.boolean(true)?;
             Ok(())
-        })();
-
-        match result {
-            Ok(()) => TailAction::Continue,
-            Err(e) => TailAction::Return(Err(e)),
-        }
+        })())
     }
 
     /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
@@ -803,34 +816,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        let result = (|| -> ArenaResult<()> {
+        tail_continue!((|| -> ArenaResult<()> {
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.lisp.cdr(cur)?;
                 if next.is_nil() {
-                    // Last expression — tail position
                     *expr = self.lisp.car(cur)?;
                     return Ok(());
                 }
                 let e = self.lisp.car(cur)?;
                 let result = self.eval(e, *env)?;
                 let forced = self.force(result)?;
-                if !matches!(self.lisp.get(forced)?, Value::False) {
-                    // Short-circuit: return the truthy value
+                if self.lisp.get(forced)?.is_truthy() {
                     *expr = forced;
                     return Ok(());
                 }
                 cur = next;
             }
-            // (or) with no args → #f
             *expr = self.lisp.boolean(false)?;
             Ok(())
-        })();
-
-        match result {
-            Ok(()) => TailAction::Continue,
-            Err(e) => TailAction::Return(Err(e)),
-        }
+        })())
     }
 
     /// `(let ((name val) ...) body...)` — bindings are lazy, body is tail.
@@ -840,7 +845,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        let result = (|| -> ArenaResult<()> {
+        tail_continue!((|| -> ArenaResult<()> {
             let bindings = self.lisp.car(args)?;
             let body_list = self.lisp.cdr(args)?;
 
@@ -851,7 +856,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let name = self.lisp.car(binding)?;
                 let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
 
-                // LAZY: wrap in a thunk instead of evaluating
                 let thunk = self.lisp.arena.alloc(Value::Thunk {
                     expr: val_expr,
                     env: *env,
@@ -862,15 +866,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
 
             *env = local_env;
-            let body = self.wrap_begin(body_list)?;
-            *expr = body;
+            *expr = self.wrap_begin(body_list)?;
             Ok(())
-        })();
-
-        match result {
-            Ok(()) => TailAction::Continue,
-            Err(e) => TailAction::Return(Err(e)),
-        }
+        })())
     }
 
     /// `(cons a b)` — lazy cons: does NOT evaluate arguments.
@@ -926,19 +924,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// `(+ ...)` — variadic addition.
     fn builtin_add(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut sum: isize = 0;
-        let mut cur = args;
-        while !cur.is_nil() {
-            let val = self.lisp.car(cur)?;
-            match self.lisp.get(val)? {
-                Value::Number(n) => {
-                    sum = sum.checked_add(n).ok_or(ArenaError::InvalidIndex)?;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-            cur = self.lisp.cdr(cur)?;
-        }
-        self.lisp.number(sum)
+        fold_numbers!(self, args, 0, checked_add)
     }
 
     /// `(- a b ...)` — subtraction. With one arg, negates.
@@ -946,26 +932,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if args.is_nil() {
             return Err(ArenaError::InvalidIndex);
         }
-        let first_idx = self.lisp.car(args)?;
-        let first = match self.lisp.get(first_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
+        let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            // Unary minus
             return self.lisp.number(-first);
         }
         let mut result = first;
         let mut cur = rest;
         while !cur.is_nil() {
-            let val = self.lisp.car(cur)?;
-            match self.lisp.get(val)? {
-                Value::Number(n) => {
-                    result = result.checked_sub(n).ok_or(ArenaError::InvalidIndex)?;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
+            let n = self.lisp.get(self.lisp.car(cur)?)?.as_number()?;
+            result = result.checked_sub(n).ok_or(ArenaError::InvalidIndex)?;
             cur = self.lisp.cdr(cur)?;
         }
         self.lisp.number(result)
@@ -973,33 +949,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// `(* ...)` — variadic multiplication.
     fn builtin_mul(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut product: isize = 1;
-        let mut cur = args;
-        while !cur.is_nil() {
-            let val = self.lisp.car(cur)?;
-            match self.lisp.get(val)? {
-                Value::Number(n) => {
-                    product = product.checked_mul(n).ok_or(ArenaError::InvalidIndex)?;
-                }
-                _ => return Err(ArenaError::InvalidIndex),
-            }
-            cur = self.lisp.cdr(cur)?;
-        }
-        self.lisp.number(product)
+        fold_numbers!(self, args, 1, checked_mul)
     }
 
     /// `(/ a b)` — integer division.
     fn builtin_div(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a_idx = self.lisp.car(args)?;
-        let b_idx = self.lisp.car(self.lisp.cdr(args)?)?;
-        let a = match self.lisp.get(a_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
-        let b = match self.lisp.get(b_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
+        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
+        let b = self.lisp.get(self.lisp.car(self.lisp.cdr(args)?)?)?.as_number()?;
         if b == 0 {
             return Err(ArenaError::InvalidIndex);
         }
@@ -1008,16 +964,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// `(= a b)` — numeric equality.
     fn builtin_eq(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a_idx = self.lisp.car(args)?;
-        let b_idx = self.lisp.car(self.lisp.cdr(args)?)?;
-        let a = match self.lisp.get(a_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
-        let b = match self.lisp.get(b_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
+        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
+        let b = self.lisp.get(self.lisp.car(self.lisp.cdr(args)?)?)?.as_number()?;
         self.lisp.boolean(a == b)
     }
 
@@ -1027,16 +975,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         args: ArenaIndex,
         cmp: fn(isize, isize) -> bool,
     ) -> ArenaResult<ArenaIndex> {
-        let a_idx = self.lisp.car(args)?;
-        let b_idx = self.lisp.car(self.lisp.cdr(args)?)?;
-        let a = match self.lisp.get(a_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
-        let b = match self.lisp.get(b_idx)? {
-            Value::Number(n) => n,
-            _ => return Err(ArenaError::InvalidIndex),
-        };
+        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
+        let b = self.lisp.get(self.lisp.car(self.lisp.cdr(args)?)?)?.as_number()?;
         self.lisp.boolean(cmp(a, b))
     }
 
@@ -1088,36 +1028,26 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ========================================================================
 
     fn builtin_nullp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp.boolean(matches!(self.lisp.get(val)?, Value::Nil))
+        type_predicate!(self, args, Value::Nil)
     }
 
     fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp.boolean(matches!(self.lisp.get(val)?, Value::False))
+        type_predicate!(self, args, Value::False)
     }
 
     fn builtin_pairp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp
-            .boolean(matches!(self.lisp.get(val)?, Value::Cons { .. }))
+        type_predicate!(self, args, Value::Cons { .. })
     }
 
     fn builtin_numberp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp
-            .boolean(matches!(self.lisp.get(val)?, Value::Number(_)))
+        type_predicate!(self, args, Value::Number(_))
     }
 
     fn builtin_symbolp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp
-            .boolean(matches!(self.lisp.get(val)?, Value::Symbol(_)))
+        type_predicate!(self, args, Value::Symbol(_))
     }
 
     fn builtin_booleanp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp
-            .boolean(matches!(self.lisp.get(val)?, Value::True | Value::False))
+        type_predicate!(self, args, Value::True | Value::False)
     }
 }
