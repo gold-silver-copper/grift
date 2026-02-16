@@ -198,6 +198,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let idx = arena.alloc(42).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 42);
     /// ```
+    #[inline]
     pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
         let free_head = self.free_head.get();
 
@@ -225,6 +226,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     /// Validate an index: in bounds and occupied.
+    #[inline]
     fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
         let idx = index.raw();
         if idx >= N {
@@ -241,11 +243,15 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Errors
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
+    #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
-        let idx = self.validate_index(index)?;
+        let idx = index.raw();
+        if idx >= N {
+            return Err(ArenaError::InvalidIndex);
+        }
         match self.slots[idx].get() {
             Slot::Occupied { value } => Ok(value),
-            _ => unreachable!(),
+            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
         }
     }
 
@@ -254,6 +260,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Errors
     ///
     /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
+    #[inline]
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
@@ -285,14 +292,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         F: FnOnce(&mut T),
     {
         let idx = self.validate_index(index)?;
-
-        if let Slot::Occupied { mut value } = self.slots[idx].get() {
-            f(&mut value);
-            self.slots[idx].set(Slot::Occupied { value });
-            Ok(())
-        } else {
-            Err(ArenaError::InvalidIndex)
-        }
+        // validate_index guarantees the slot is Occupied
+        let Slot::Occupied { mut value } = self.slots[idx].get() else {
+            unreachable!()
+        };
+        f(&mut value);
+        self.slots[idx].set(Slot::Occupied { value });
+        Ok(())
     }
 
     /// Get a value, returning `None` instead of an error if invalid.
@@ -328,19 +334,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn swap(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<()> {
         let idx_a = self.validate_index(a)?;
         let idx_b = self.validate_index(b)?;
-
-        if idx_a == idx_b {
-            return Ok(()); // Same slot, nothing to do
+        if idx_a != idx_b {
+            // Both validated as Occupied
+            let val_a = self.get(a)?;
+            let val_b = self.get(b)?;
+            self.slots[idx_a].set(Slot::Occupied { value: val_b });
+            self.slots[idx_b].set(Slot::Occupied { value: val_a });
         }
-
-        let (val_a, val_b) = match (self.slots[idx_a].get(), self.slots[idx_b].get()) {
-            (Slot::Occupied { value: va }, Slot::Occupied { value: vb }) => (va, vb),
-            _ => return Err(ArenaError::InvalidIndex),
-        };
-
-        self.slots[idx_a].set(Slot::Occupied { value: val_b });
-        self.slots[idx_b].set(Slot::Occupied { value: val_a });
-
         Ok(())
     }
 
@@ -351,14 +351,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// Returns an error if the index is invalid.
     pub fn replace(&self, index: ArenaIndex, value: T) -> ArenaResult<T> {
         let idx = self.validate_index(index)?;
-
-        match self.slots[idx].get() {
-            Slot::Occupied { value: old } => {
-                self.slots[idx].set(Slot::Occupied { value });
-                Ok(old)
-            }
-            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
-        }
+        let Slot::Occupied { value: old } = self.slots[idx].get() else {
+            unreachable!()
+        };
+        self.slots[idx].set(Slot::Occupied { value });
+        Ok(old)
     }
 
     /// Free a cell, making it available for reuse.
@@ -377,6 +374,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// arena.free(idx).unwrap();
     /// assert_eq!(arena.len(), 0);
     /// ```
+    #[inline]
     pub fn free(&self, index: ArenaIndex) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 

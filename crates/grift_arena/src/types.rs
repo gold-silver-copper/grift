@@ -46,11 +46,13 @@ impl ArenaIndex {
     }
 
     /// Get the raw slot index value.
+    #[inline]
     pub const fn raw(self) -> usize {
         self.0
     }
 
     /// Check if this is the NIL index (slot 0).
+    #[inline]
     pub const fn is_nil(self) -> bool {
         self.0 == 0
     }
