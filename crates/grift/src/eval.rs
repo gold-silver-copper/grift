@@ -879,7 +879,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(args)
     }
 
-    /// Extract a component from the first argument (a pair) and force it.
+    /// Extract and force a pair component from the first argument.
+    ///
+    /// Takes an accessor function (`Lisp::car` or `Lisp::cdr`) to select
+    /// which component to extract from the pair, then forces the result
+    /// to WHNF.
     fn pair_accessor(&mut self, args: ArenaIndex, f: fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>) -> ArenaResult<ArenaIndex> {
         let pair = self.lisp.car(args)?;
         self.force(f(self.lisp, pair)?)

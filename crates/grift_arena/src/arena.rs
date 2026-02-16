@@ -292,9 +292,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         F: FnOnce(&mut T),
     {
         let idx = self.validate_index(index)?;
-        // validate_index guarantees the slot is Occupied
         let Slot::Occupied { mut value } = self.slots[idx].get() else {
-            unreachable!()
+            unreachable!("validate_index guarantees slot is Occupied")
         };
         f(&mut value);
         self.slots[idx].set(Slot::Occupied { value });
@@ -352,7 +351,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn replace(&self, index: ArenaIndex, value: T) -> ArenaResult<T> {
         let idx = self.validate_index(index)?;
         let Slot::Occupied { value: old } = self.slots[idx].get() else {
-            unreachable!()
+            unreachable!("validate_index guarantees slot is Occupied")
         };
         self.slots[idx].set(Slot::Occupied { value });
         Ok(old)
