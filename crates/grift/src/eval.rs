@@ -214,6 +214,29 @@ pub(crate) struct Evaluator<'a, const N: usize> {
     gc_roots: ArenaIndex,
 }
 
+/// Walk an environment association list, calling `f` on each (key, binding)
+/// pair until `f` returns `Some(R)`.  Returns `Err(InvalidIndex)` when the
+/// name is not found.
+fn env_scan<const N: usize, R, F>(
+    lisp: &Lisp<N>,
+    env: ArenaIndex,
+    name: ArenaIndex,
+    mut f: F,
+) -> ArenaResult<R>
+where
+    F: FnMut(ArenaIndex) -> ArenaResult<R>,
+{
+    let mut cur = env;
+    while !cur.is_nil() {
+        let binding = lisp.car(cur)?;
+        if lisp.car(binding)? == name {
+            return f(binding);
+        }
+        cur = lisp.cdr(cur)?;
+    }
+    Err(ArenaError::InvalidIndex)
+}
+
 /// Bind a name to a value in an environment, returning the new environment.
 fn env_bind<const N: usize>(
     lisp: &Lisp<N>,
@@ -231,16 +254,7 @@ fn env_lookup<const N: usize>(
     env: ArenaIndex,
     name: ArenaIndex,
 ) -> ArenaResult<ArenaIndex> {
-    let mut cur = env;
-    while !cur.is_nil() {
-        let binding = lisp.car(cur)?;
-        let key = lisp.car(binding)?;
-        if key == name {
-            return lisp.cdr(binding);
-        }
-        cur = lisp.cdr(cur)?;
-    }
-    Err(ArenaError::InvalidIndex)
+    env_scan(lisp, env, name, |binding| lisp.cdr(binding))
 }
 
 /// Set a binding in an environment (mutate existing binding).
@@ -250,24 +264,10 @@ fn env_set<const N: usize>(
     name: ArenaIndex,
     val: ArenaIndex,
 ) -> ArenaResult<()> {
-    let mut cur = env;
-    while !cur.is_nil() {
-        let binding = lisp.car(cur)?;
+    env_scan(lisp, env, name, |binding| {
         let key = lisp.car(binding)?;
-        if key == name {
-            // Mutate the cdr of the binding pair
-            lisp.arena.set(
-                binding,
-                Value::Cons {
-                    car: key,
-                    cdr: val,
-                },
-            )?;
-            return Ok(());
-        }
-        cur = lisp.cdr(cur)?;
-    }
-    Err(ArenaError::InvalidIndex)
+        lisp.arena.set(binding, Value::Cons { car: key, cdr: val })
+    })
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {

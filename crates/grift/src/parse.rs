@@ -101,20 +101,9 @@ impl<'a> Parser<'a> {
 
     /// Check if current position is a dot separator (not a number like `.5`).
     fn peek_dot(&self) -> bool {
-        if self.pos >= self.input.len() {
-            return false;
-        }
-        if self.input[self.pos] != b'.' {
-            return false;
-        }
-        // A dot followed by whitespace or ')' or EOF is a dot separator
-        let next = self.pos + 1;
-        next >= self.input.len()
-            || self.input[next] == b' '
-            || self.input[next] == b'\t'
-            || self.input[next] == b'\n'
-            || self.input[next] == b'\r'
-            || self.input[next] == b')'
+        self.input.get(self.pos) == Some(&b'.')
+            && self.input.get(self.pos + 1)
+                .map_or(true, |b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b')'))
     }
 
     /// Parse `'expr` → `(quote expr)`.
@@ -163,57 +152,32 @@ impl<'a> Parser<'a> {
         let token = &self.input[start..self.pos];
         let s = core::str::from_utf8(token).map_err(|_| ArenaError::InvalidIndex)?;
 
-        // Check for booleans
-        if s == "#t" || s == "#true" {
-            return lisp.boolean(true);
+        match s {
+            "#t" | "#true" => lisp.boolean(true),
+            "#f" | "#false" => lisp.boolean(false),
+            _ => parse_integer(s)
+                .map(|n| lisp.number(n))
+                .unwrap_or_else(|| lisp.symbol(s)),
         }
-        if s == "#f" || s == "#false" {
-            return lisp.boolean(false);
-        }
-
-        // Try to parse as number
-        if let Some(n) = parse_integer(s) {
-            return lisp.number(n);
-        }
-
-        // Otherwise it's a symbol
-        lisp.symbol(s)
     }
 }
 
 /// Parse an integer from a string slice without using std.
 fn parse_integer(s: &str) -> Option<isize> {
     let bytes = s.as_bytes();
-    if bytes.is_empty() {
-        return None;
-    }
+    let (&first, rest) = bytes.split_first()?;
 
-    let (negative, start) = if bytes[0] == b'-' {
-        if bytes.len() == 1 {
-            return None; // just "-"
-        }
-        (true, 1)
-    } else if bytes[0] == b'+' {
-        if bytes.len() == 1 {
-            return None; // just "+"
-        }
-        (false, 1)
-    } else {
-        (false, 0)
+    let (negative, digits) = match first {
+        b'-' if !rest.is_empty() => (true, rest),
+        b'+' if !rest.is_empty() => (false, rest),
+        b'0'..=b'9' => (false, bytes),
+        _ => return None,
     };
 
-    let mut result: isize = 0;
-    for &b in &bytes[start..] {
-        if b < b'0' || b > b'9' {
-            return None;
-        }
-        result = result.checked_mul(10)?;
-        result = result.checked_add((b - b'0') as isize)?;
-    }
+    let magnitude = digits.iter().try_fold(0isize, |acc, &b| {
+        if !b.is_ascii_digit() { return None; }
+        acc.checked_mul(10)?.checked_add((b - b'0') as isize)
+    })?;
 
-    if negative {
-        Some(-result)
-    } else {
-        Some(result)
-    }
+    Some(if negative { -magnitude } else { magnitude })
 }
