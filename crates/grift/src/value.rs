@@ -133,7 +133,7 @@ impl Value {
     /// Returns `false` only for `Value::False`; all other values are truthy.
     #[inline]
     pub fn is_truthy(self) -> bool {
-        !matches!(self, Value::Boolean(false))
+        matches!(self, Value::Boolean(true))
     }
 }
 
