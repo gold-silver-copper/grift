@@ -67,21 +67,8 @@ pub mod gc;
 
 // — Re-exports —
 
-// Core types
 pub use types::{ArenaIndex, ArenaError, ArenaResult};
-
-// Arena struct
 pub use arena::Arena;
-
-// Traits
 pub use traits::{ArenaDelete, ArenaCopy, Trace};
-
-// Statistics
 pub use stats::{ArenaStats, GcStats};
-
-// Iterator
 pub use iter::ArenaIterator;
-
-// — Helper Macros —
-
-

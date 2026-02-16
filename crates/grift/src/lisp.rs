@@ -89,7 +89,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a string value from a `&str`.
     pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        let len = s.chars().count();
+        let len = if s.is_ascii() { s.len() } else { s.chars().count() };
 
         if len == 0 {
             return self.arena.alloc(Value::String {
@@ -98,7 +98,6 @@ impl<const N: usize> Lisp<N> {
             });
         }
 
-        // Allocate contiguous slots for characters
         let data = self.arena.alloc_contiguous(len, Value::Nil)?;
         for (i, c) in s.chars().enumerate() {
             let idx = self.arena.index_at_offset(data, i)?;
@@ -113,20 +112,23 @@ impl<const N: usize> Lisp<N> {
         let Ok(Value::String { len, data }) = self.arena.get(str_idx) else {
             return false;
         };
-        len == s.chars().count()
+        // Fast path: for ASCII strings, byte length == char count.
+        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
+        len == char_count
             && s.chars().enumerate().all(|(i, c)| {
-                self.arena.index_at_offset(data, i)
+                self.arena
+                    .index_at_offset(data, i)
                     .and_then(|idx| self.arena.get(idx))
-                    .is_ok_and(|v| v == Value::Char(c))
+                    == Ok(Value::Char(c))
             })
     }
 
     /// Returns true if the symbol at `idx` has the given name.
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
-        matches!(
-            self.arena.get(idx).and_then(|v| v.as_symbol()),
-            Ok(str_idx) if self.string_eq(str_idx, name)
-        )
+        self.arena
+            .get(idx)
+            .and_then(|v| v.as_symbol())
+            .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
     // — Accessors —

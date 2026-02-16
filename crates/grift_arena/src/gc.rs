@@ -105,10 +105,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// Returns the number of objects collected.
     fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
         (0..N)
-            .filter(|&idx| {
-                !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. })
-            })
-            .filter(|&idx| self.free(ArenaIndex::new(idx)).is_ok())
+            .filter(|&idx| !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. }))
+            .map(|idx| self.free(ArenaIndex::new(idx)))
+            .filter(|r| r.is_ok())
             .count()
     }
 
