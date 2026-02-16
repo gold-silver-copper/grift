@@ -940,16 +940,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            return self.lisp.number(-first);
+            return self.lisp.number(first.checked_neg().ok_or(ArenaError::InvalidIndex)?);
         }
-        let mut result = first;
-        let mut cur = rest;
-        while !cur.is_nil() {
-            let n = self.lisp.get(self.lisp.car(cur)?)?.as_number()?;
-            result = result.checked_sub(n).ok_or(ArenaError::InvalidIndex)?;
-            cur = self.lisp.cdr(cur)?;
-        }
-        self.lisp.number(result)
+        fold_numbers!(self, rest, first, checked_sub)
     }
 
     /// `(* ...)` — variadic multiplication.

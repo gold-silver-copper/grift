@@ -242,11 +242,11 @@ impl<const N: usize> Trace<Value, N> for Value {
         match *self {
             Value::String { len, data } => {
                 // Trace all contiguous character slots, not just the first.
-                for i in 0..len {
+                (0..len).for_each(|i| {
                     if let Ok(idx) = arena.index_at_offset(data, i) {
                         tracer(idx);
                     }
-                }
+                });
             }
             _ => <Value as Trace<Value, N>>::trace(self, tracer),
         }

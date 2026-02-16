@@ -104,18 +104,12 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// Returns the number of objects collected.
     fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
-        let mut collected = 0;
-
-        // Single-pass sweep: iterate once and free immediately
-        for (idx, &is_marked) in marked.iter().enumerate().take(N) {
-            let should_free = matches!(self.slots[idx].get(), Slot::Occupied { .. }) && !is_marked;
-
-            if should_free && self.free(ArenaIndex::new(idx)).is_ok() {
-                collected += 1;
-            }
-        }
-
-        collected
+        (0..N)
+            .filter(|&idx| {
+                !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. })
+            })
+            .filter(|&idx| self.free(ArenaIndex::new(idx)).is_ok())
+            .count()
     }
 
     /// Perform mark-and-sweep garbage collection.
@@ -254,11 +248,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(true);
-        let result = self.collect_garbage(roots);
-        self.set_gc_enabled(was_enabled);
-        result
+        self.with_gc(|| self.collect_garbage(roots))
     }
 
     /// Perform garbage collection with multiple root sets.
@@ -319,10 +309,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(true);
-        let result = self.collect_garbage_multi(root_sets);
-        self.set_gc_enabled(was_enabled);
-        result
+        self.with_gc(|| self.collect_garbage_multi(root_sets))
     }
 }
