@@ -10,7 +10,7 @@ use grift_arena::{ArenaError, ArenaIndex};
 #[repr(transparent)]
 pub struct BuiltinId(pub(crate) u8);
 
-/// A Lisp value stored in the arena.
+/// A Lisp value stored in the arena. Variants can only inline max two arenaindex sized data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// The empty list / nil.
