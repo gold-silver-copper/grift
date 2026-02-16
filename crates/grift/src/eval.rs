@@ -45,8 +45,15 @@ macro_rules! fold_numbers {
     }};
 }
 
-/// Extract two numeric arguments from an argument list.
-/// `binary_nums!(self, args)` → `(isize, isize)`.
+/// Generate a numeric comparison builtin method.
+macro_rules! cmp_builtin {
+    ($name:ident, $op:tt) => {
+        fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+            let (a, b) = binary_nums!(self, args);
+            self.lisp.boolean(a $op b)
+        }
+    };
+}
 macro_rules! binary_nums {
     ($self:ident, $args:ident) => {{
         let a = $self.lisp.get($self.lisp.car($args)?)?.as_number()?;
@@ -298,18 +305,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Pop the top value from the GC root stack.
-    #[inline]
-    fn pop_root(&mut self) {
-        if !self.gc_roots.is_nil() {
-            let rest = self.lisp.cdr(self.gc_roots);
-            debug_assert!(rest.is_ok(), "GC root list corrupted during pop");
-            if let Ok(rest) = rest {
-                self.gc_roots = rest;
-            }
-        }
-    }
-
     /// Pop `n` values from the GC root stack.
     #[inline]
     fn pop_roots(&mut self, n: usize) {
@@ -358,7 +353,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Step 2: Evaluate the expression to WHNF.
                     let result = self.eval(expr, env)?;
 
-                    self.pop_root(); // thunk_idx
+                    self.pop_roots(1); // thunk_idx
 
                     // Step 3: Follow indirections in result to detect cycles.
                     let mut final_result = result;
@@ -415,6 +410,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if len > cap * 3 / 4 {
             self.collect_garbage(expr, env);
         }
+    }
+
+    /// Evaluate an expression and immediately force the result to WHNF.
+    #[inline]
+    fn eval_force(&mut self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.eval(expr, env)?;
+        self.force(val)
     }
 
     /// Evaluate an expression in an environment (with TCO).
@@ -485,8 +487,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                     // Function application (call-by-need):
                     // Step 1: Evaluate the operator to WHNF.
-                    let func_idx = self.eval(car, env)?;
-                    let func_whnf = self.force(func_idx)?;
+                    let func_whnf = self.eval_force(car, env)?;
 
                     match self.lisp.get(func_whnf)? {
                         // Builtin — strict in all arguments.
@@ -586,8 +587,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.push_root(env);
 
         let head_expr = self.lisp.car(args)?;
-        let head_val = self.eval(head_expr, env)?;
-        let head_forced = self.force(head_val)?;
+        let head_forced = self.eval_force(head_expr, env)?;
 
         // Protect `head_forced` across the recursive force_args call.
         self.push_root(head_forced);
@@ -625,10 +625,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let test_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
 
-            let test_val = self.eval(test_expr, *env)?;
-            let test_forced = self.force(test_val)?;
+            let test_val = self.eval_force(test_expr, *env)?;
 
-            if self.lisp.get(test_forced)?.is_truthy() {
+            if self.lisp.get(test_val)?.is_truthy() {
                 *expr = self.lisp.car(rest)?;
             } else {
                 let else_rest = self.lisp.cdr(rest)?;
@@ -689,8 +688,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> ArenaResult<ArenaIndex> {
         let name = self.lisp.car(args)?;
         let expr = self.lisp.car(self.lisp.cdr(args)?)?;
-        let val = self.eval(expr, env)?;
-        let forced = self.force(val)?;
+        let forced = self.eval_force(expr, env)?;
 
         // Try local env first, then global
         if env_set(self.lisp, env, name, forced).is_ok() {
@@ -766,9 +764,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return self.eval_begin_inner(body, *env);
             }
 
-            let test_val = self.eval(test, *env)?;
-            let test_forced = self.force(test_val)?;
-            if self.lisp.get(test_forced)?.is_truthy() {
+            let test_val = self.eval_force(test, *env)?;
+            if self.lisp.get(test_val)?.is_truthy() {
                 return self.eval_begin_inner(body, *env);
             }
             cur = self.lisp.cdr(cur)?;
@@ -799,26 +796,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        tail_continue!((|| -> ArenaResult<()> {
-            let mut cur = args;
-            while !cur.is_nil() {
-                let next = self.lisp.cdr(cur)?;
-                if next.is_nil() {
-                    *expr = self.lisp.car(cur)?;
-                    return Ok(());
-                }
-                let e = self.lisp.car(cur)?;
-                let result = self.eval(e, *env)?;
-                let forced = self.force(result)?;
-                if !self.lisp.get(forced)?.is_truthy() {
-                    *expr = forced;
-                    return Ok(());
-                }
-                cur = next;
-            }
-            *expr = self.lisp.boolean(true)?;
-            Ok(())
-        })())
+        self.eval_short_circuit(args, expr, env, true)
     }
 
     /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
@@ -827,6 +805,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         args: ArenaIndex,
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.eval_short_circuit(args, expr, env, false)
+    }
+
+    /// Shared implementation for `and`/`or` short-circuit evaluation.
+    ///
+    /// When `short_on_truthy` is `true`, behaves as `and` (short-circuits on
+    /// falsy, defaults to `#t`).  When `false`, behaves as `or` (short-circuits
+    /// on truthy, defaults to `#f`).
+    fn eval_short_circuit(
+        &mut self,
+        args: ArenaIndex,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+        short_on_truthy: bool,
     ) -> TailAction {
         tail_continue!((|| -> ArenaResult<()> {
             let mut cur = args;
@@ -837,15 +830,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     return Ok(());
                 }
                 let e = self.lisp.car(cur)?;
-                let result = self.eval(e, *env)?;
-                let forced = self.force(result)?;
-                if self.lisp.get(forced)?.is_truthy() {
+                let forced = self.eval_force(e, *env)?;
+                if self.lisp.get(forced)?.is_truthy() != short_on_truthy {
                     *expr = forced;
                     return Ok(());
                 }
                 cur = next;
             }
-            *expr = self.lisp.boolean(false)?;
+            *expr = self.lisp.boolean(short_on_truthy)?;
             Ok(())
         })())
     }
@@ -967,35 +959,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.boolean(a == b)
     }
 
-    /// Numeric comparison with a given comparator.
-    fn builtin_cmp(
-        &self,
-        args: ArenaIndex,
-        cmp: fn(isize, isize) -> bool,
-    ) -> ArenaResult<ArenaIndex> {
-        let (a, b) = binary_nums!(self, args);
-        self.lisp.boolean(cmp(a, b))
-    }
-
-    /// `(< a b)` — less than.
-    fn builtin_lt(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.builtin_cmp(args, |a, b| a < b)
-    }
-
-    /// `(> a b)` — greater than.
-    fn builtin_gt(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.builtin_cmp(args, |a, b| a > b)
-    }
-
-    /// `(<= a b)` — less than or equal.
-    fn builtin_le(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.builtin_cmp(args, |a, b| a <= b)
-    }
-
-    /// `(>= a b)` — greater than or equal.
-    fn builtin_ge(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.builtin_cmp(args, |a, b| a >= b)
-    }
+    cmp_builtin!(builtin_lt, <);
+    cmp_builtin!(builtin_gt, >);
+    cmp_builtin!(builtin_le, <=);
+    cmp_builtin!(builtin_ge, >=);
 
     // ========================================================================
     // Pair / list built-ins
