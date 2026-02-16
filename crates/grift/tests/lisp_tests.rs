@@ -440,7 +440,7 @@ fn test_strict_unused_arg_evaluated() {
 }
 
 #[test]
-fn test_strict_if_unused_branch() {
+fn test_if_unused_branch_not_evaluated() {
     // The false branch contains a type error; it must not be evaluated.
     // (if still only evaluates the taken branch)
     let lisp: Lisp<20000> = Lisp::new();

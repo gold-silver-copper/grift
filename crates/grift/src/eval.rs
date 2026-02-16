@@ -660,9 +660,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let a_expr = self.lisp.car(args)?;
             let a_val = self.eval(a_expr, *env)?;
             self.push_root(a_val);
+            self.push_root(*env);
             let b_expr = self.lisp.car(self.lisp.cdr(args)?)?;
             let b_val = self.eval(b_expr, *env)?;
-            self.pop_roots(1);
+            self.pop_roots(2);
             self.lisp.cons(a_val, b_val)
         })())
     }
