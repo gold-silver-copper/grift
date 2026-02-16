@@ -2,6 +2,14 @@
 
 use grift_arena::{ArenaIndex, ArenaError};
 
+/// Type-safe identifier for built-in functions.
+///
+/// Wraps a `u8`, supporting up to 256 builtins. Generated automatically
+/// by [`define_builtins!`] and matched in [`Evaluator::apply_builtin`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct BuiltinId(pub(crate) u8);
+
 /// A Lisp value stored in the arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
@@ -24,7 +32,7 @@ pub enum Value {
     /// A lambda closure: params list and (body . env) cons cell.
     Lambda { params: ArenaIndex, body_env: ArenaIndex },
     /// A built-in function identified by index.
-    Builtin(u8),
+    Builtin(BuiltinId),
     /// An unevaluated expression paired with the environment in which
     /// it should be evaluated when forced.
     Thunk { expr: ArenaIndex, env: ArenaIndex },
@@ -66,6 +74,29 @@ impl Value {
             Value::BlackHole => "black-hole",
             Value::Indirection(_) => "indirection",
         }
+    }
+
+    /// True for values already in Weak Head Normal Form (WHNF).
+    ///
+    /// WHNF values need no further evaluation: they are fully resolved
+    /// atoms, pairs, closures, or builtins.
+    #[inline]
+    pub fn is_whnf(self) -> bool {
+        !matches!(self, Value::Thunk { .. } | Value::BlackHole | Value::Indirection(_))
+    }
+
+    /// True for self-evaluating forms (literals, closures, builtins).
+    ///
+    /// Self-evaluating values are a subset of WHNF that additionally
+    /// excludes symbols and cons cells (which require lookup / dispatch).
+    #[inline]
+    pub fn is_self_evaluating(self) -> bool {
+        matches!(
+            self,
+            Value::Nil | Value::True | Value::False | Value::Number(_)
+            | Value::Char(_) | Value::String { .. }
+            | Value::Builtin(_) | Value::Lambda { .. }
+        )
     }
 
     value_accessor! {
