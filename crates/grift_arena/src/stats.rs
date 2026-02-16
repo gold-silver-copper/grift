@@ -1,8 +1,6 @@
 //! Statistics types for arena usage monitoring.
 
-// ============================================================================
-// GcStats
-// ============================================================================
+// — GcStats —
 
 /// Statistics returned by garbage collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,9 +49,7 @@ impl GcStats {
     }
 }
 
-// ============================================================================
-// ArenaStats
-// ============================================================================
+// — ArenaStats —
 
 /// Statistics about arena usage.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

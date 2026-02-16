@@ -34,9 +34,7 @@ impl<const N: usize> Lisp<N> {
         Lisp { arena }
     }
 
-    // ========================================================================
-    // Value constructors
-    // ========================================================================
+    // — Value constructors —
 
     /// Allocate a Nil value (or return the pre-allocated one).
     pub fn nil(&self) -> ArenaResult<ArenaIndex> {
@@ -122,9 +120,7 @@ impl<const N: usize> Lisp<N> {
             .is_some_and(|str_idx| self.string_eq(str_idx, name))
     }
 
-    // ========================================================================
-    // Accessors
-    // ========================================================================
+    // — Accessors —
 
     /// Get the value at an arena index.
     pub fn get(&self, idx: ArenaIndex) -> ArenaResult<Value> {
@@ -167,9 +163,7 @@ impl<const N: usize> Lisp<N> {
         Ok((params, body, env))
     }
 
-    // ========================================================================
-    // Evaluation entry point
-    // ========================================================================
+    // — Evaluation entry point —
 
     /// Parse and evaluate a Lisp expression string.
     ///
@@ -192,9 +186,7 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(forced)
     }
 
-    // ========================================================================
-    // Arena introspection
-    // ========================================================================
+    // — Arena introspection —
 
     /// Return arena allocation statistics.
     pub fn stats(&self) -> ArenaStats {

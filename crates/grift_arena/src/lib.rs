@@ -53,9 +53,7 @@
 //! arena.free(root).unwrap();
 //! ```
 
-// ============================================================================
-// Module Declarations
-// ============================================================================
+// — Module Declarations —
 
 // Macros module (must be declared before other modules that use the macros)
 mod macros;
@@ -67,9 +65,7 @@ pub mod arena;
 pub mod iter;
 pub mod gc;
 
-// ============================================================================
-// Re-exports
-// ============================================================================
+// — Re-exports —
 
 // Core types
 pub use types::{ArenaIndex, ArenaError, ArenaResult};
@@ -86,8 +82,6 @@ pub use stats::{ArenaStats, GcStats};
 // Iterator
 pub use iter::ArenaIterator;
 
-// ============================================================================
-// Helper Macros
-// ============================================================================
+// — Helper Macros —
 
 
