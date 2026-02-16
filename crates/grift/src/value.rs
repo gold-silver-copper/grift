@@ -47,16 +47,6 @@ pub enum Value {
     },
     /// A built-in function identified by index.
     Builtin(BuiltinId),
-    /// An unevaluated expression paired with the environment in which
-    /// it should be evaluated when forced.
-    Thunk {
-        expr: ArenaIndex,
-        env: ArenaIndex,
-    },
-    /// A thunk that is currently being forced (cycle detection).
-    BlackHole,
-    /// A forced thunk pointing to its evaluated result.
-    Indirection(ArenaIndex),
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -87,31 +77,16 @@ impl Value {
             Value::Char(_) => "char",
             Value::Lambda { .. } => "lambda",
             Value::Builtin(_) => "builtin",
-            Value::Thunk { .. } => "thunk",
-            Value::BlackHole => "black-hole",
-            Value::Indirection(_) => "indirection",
         }
-    }
-
-    /// True for values already in Weak Head Normal Form (WHNF).
-    ///
-    /// WHNF values need no further evaluation: they are fully resolved
-    /// atoms, pairs, closures, or builtins.
-    #[inline]
-    pub fn is_whnf(self) -> bool {
-        !matches!(
-            self,
-            Value::Thunk { .. } | Value::BlackHole | Value::Indirection(_)
-        )
     }
 
     /// True for self-evaluating forms (literals, closures, builtins).
     ///
-    /// Self-evaluating values are a subset of WHNF that additionally
-    /// excludes symbols and cons cells (which require lookup / dispatch).
+    /// Self-evaluating values exclude symbols and cons cells
+    /// (which require lookup / dispatch).
     #[inline]
     pub fn is_self_evaluating(self) -> bool {
-        self.is_whnf() && !matches!(self, Value::Symbol(_) | Value::Cons { .. })
+        !matches!(self, Value::Symbol(_) | Value::Cons { .. })
     }
 
     value_accessor! {

@@ -423,25 +423,26 @@ fn test_fib_self_apply() {
 }
 
 // ============================================================================
-// Call-by-Need Laziness Tests
+// Call-by-Value Strictness Tests
 // ============================================================================
 
 #[test]
-fn test_laziness_unused_arg_not_evaluated() {
-    // (const x y) returns x without evaluating y.
-    // The second argument is a type error that would crash if evaluated.
+fn test_strict_unused_arg_evaluated() {
+    // In call-by-value, all arguments are evaluated even if unused.
+    // The second argument is a type error that will crash.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
         ((lambda (x y) x) 1 (+ 1 "crash"))
     "#,
     );
-    assert_eq!(result, Ok(Value::Number(1)));
+    assert!(result.is_err(), "Strict evaluation should evaluate all args");
 }
 
 #[test]
-fn test_laziness_if_unused_branch() {
+fn test_strict_if_unused_branch() {
     // The false branch contains a type error; it must not be evaluated.
+    // (if still only evaluates the taken branch)
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(if #t 42 (+ 1 "crash"))"#),
@@ -450,8 +451,8 @@ fn test_laziness_if_unused_branch() {
 }
 
 #[test]
-fn test_laziness_define_not_forced() {
-    // Defining a value that would error if forced, but never using it.
+fn test_strict_define_evaluated() {
+    // Define now evaluates immediately, so a type error is caught.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -460,12 +461,12 @@ fn test_laziness_define_not_forced() {
             42)
     "#,
     );
-    assert_eq!(result, Ok(Value::Number(42)));
+    assert!(result.is_err(), "Strict define should evaluate RHS immediately");
 }
 
 #[test]
-fn test_laziness_let_not_forced() {
-    // Let binding that would error, but the binding is never used.
+fn test_strict_let_evaluated() {
+    // Let binding now evaluates immediately, so a type error is caught.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -473,7 +474,7 @@ fn test_laziness_let_not_forced() {
             42)
     "#,
     );
-    assert_eq!(result, Ok(Value::Number(42)));
+    assert!(result.is_err(), "Strict let should evaluate bindings immediately");
 }
 
 // ============================================================================
@@ -576,42 +577,6 @@ fn test_tco_begin_tail_position() {
 }
 
 // ============================================================================
-// Cycle Detection (Black-Holing) Tests
-// ============================================================================
-
-#[test]
-fn test_cycle_detection_self_reference() {
-    // (define x x) then forcing x → circular dependency error.
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(
-        r#"
-        (begin
-            (define x x)
-            x)
-    "#,
-    );
-    assert!(
-        result.is_err(),
-        "Circular reference should produce an error"
-    );
-}
-
-#[test]
-fn test_cycle_detection_indirect() {
-    // Indirect cycle: a → b → a.
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(
-        r#"
-        (begin
-            (define a b)
-            (define b a)
-            a)
-    "#,
-    );
-    assert!(result.is_err(), "Indirect cycle should produce an error");
-}
-
-// ============================================================================
 // Purity Tests (no set!, define shadows)
 // ============================================================================
 
@@ -661,95 +626,6 @@ fn test_define_redefinition_returns_new_value() {
     "#,
     );
     assert_eq!(result, Ok(Value::Number(2)));
-}
-
-// ============================================================================
-// Infinite Data Structures Tests
-// ============================================================================
-
-#[test]
-fn test_infinite_ones() {
-    // (define ones (cons 1 ones)) — infinite list of ones.
-    let lisp: Lisp<50000> = Lisp::new();
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define ones (cons 1 ones))
-                (car ones))
-        "#
-        ),
-        Ok(Value::Number(1))
-    );
-}
-
-#[test]
-fn test_infinite_ones_cdr() {
-    let lisp: Lisp<50000> = Lisp::new();
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define ones (cons 1 ones))
-                (car (cdr ones)))
-        "#
-        ),
-        Ok(Value::Number(1))
-    );
-}
-
-#[test]
-fn test_infinite_ones_cdr_cdr() {
-    let lisp: Lisp<50000> = Lisp::new();
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define ones (cons 1 ones))
-                (car (cdr (cdr ones))))
-        "#
-        ),
-        Ok(Value::Number(1))
-    );
-}
-
-#[test]
-fn test_infinite_nats() {
-    // Infinite stream of natural numbers: test car, cadr, and caddr.
-    let lisp: Lisp<50000> = Lisp::new();
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define (nats-from n) (cons n (nats-from (+ n 1))))
-                (define nats (nats-from 0))
-                (car nats))
-        "#
-        ),
-        Ok(Value::Number(0))
-    );
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define (nats-from n) (cons n (nats-from (+ n 1))))
-                (define nats (nats-from 0))
-                (car (cdr nats)))
-        "#
-        ),
-        Ok(Value::Number(1))
-    );
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define (nats-from n) (cons n (nats-from (+ n 1))))
-                (define nats (nats-from 0))
-                (car (cdr (cdr nats))))
-        "#
-        ),
-        Ok(Value::Number(2))
-    );
 }
 
 // ============================================================================
