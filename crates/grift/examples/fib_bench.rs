@@ -24,7 +24,7 @@ fn main() {
 }
 
 fn run_benchmark() {
-    let lisp: Lisp<500_000> = Lisp::new();
+    let lisp: Lisp<100000> = Lisp::new();
 
     // Naive recursive Fibonacci.
     // GC runs automatically during evaluation when the arena is under

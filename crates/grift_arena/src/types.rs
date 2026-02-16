@@ -81,15 +81,18 @@ pub enum ArenaError {
     /// An error occurred during garbage collection tracing.
     /// This can happen if the mark stack overflows or roots are invalid.
     TraceError,
+    /// Cycle detected
+    Cyclic,
 }
 
 impl ArenaError {
     /// Get a human-readable description of the error.
     pub const fn as_str(&self) -> &'static str {
         match self {
-            ArenaError::OutOfMemory => "arena is full",
-            ArenaError::InvalidIndex => "invalid index",
-            ArenaError::TraceError => "error during GC tracing",
+            ArenaError::OutOfMemory => "Arena is full",
+            ArenaError::InvalidIndex => "Invalid index",
+            ArenaError::TraceError => "Error during GC tracing",
+            ArenaError::Cyclic => "Cycle detected in evaluation",
         }
     }
 
