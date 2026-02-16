@@ -10,7 +10,7 @@ use core::cell::Cell;
 use crate::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, ArenaDelete, ArenaCopy};
 use crate::types::{Slot, FREE_LIST_END};
 use crate::iter::ArenaIterator;
-use crate::macros::{impl_get_contiguous, impl_set_contiguous};
+use crate::macros::{const_max, impl_get_contiguous, impl_set_contiguous};
 
 /// Fixed-size arena allocator with O(1) allocation.
 ///
