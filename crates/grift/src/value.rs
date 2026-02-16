@@ -130,7 +130,7 @@ impl Value {
         as_symbol -> ArenaIndex, Value::Symbol(idx) => idx
     }
 
-    /// Returns `false` only for `Value::False`; all other values are truthy.
+    /// Returns true only for bool true
     #[inline]
     pub fn is_truthy(self) -> bool {
         matches!(self, Value::Boolean(true))
