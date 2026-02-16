@@ -56,8 +56,10 @@ macro_rules! binary_nums {
 }
 
 /// Generate a non-tail special form that delegates to a `&mut self` inner
-/// method.  Eliminates the recurring `TailAction::Return(self.inner(args, env))`
-/// wrapper that four forms share.
+/// method.  Four special forms (`define`, `set!`, `lambda`, `cons`) share
+/// the same pattern: accept the TCO `(expr, env)` pair but immediately
+/// return a result via `TailAction::Return` without modifying them.
+/// This macro captures that pattern, accepting an optional doc comment.
 macro_rules! delegate_special_form {
     ($(#[doc = $doc:expr])* $vis:vis fn $name:ident -> $inner:ident) => {
         $(#[doc = $doc])*

@@ -465,10 +465,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     fn calculate_fragmentation(&self) -> f32 {
-        let fragments = (0..N).fold((0u32, false), |(count, was_free), i| {
+        // Count free-space fragments: contiguous runs of free slots.
+        let (fragments, _) = (0..N).fold((0u32, false), |(count, was_free), i| {
             let is_free = matches!(self.slots[i].get(), Slot::Free { .. });
             (count + u32::from(is_free && !was_free), is_free)
-        }).0;
+        });
 
         if fragments == 0 { 0.0 } else { fragments as f32 / N as f32 }
     }
