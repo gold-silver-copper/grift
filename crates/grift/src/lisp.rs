@@ -60,12 +60,6 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(Value::Cons { car, cdr })
     }
 
-    /// Allocate a thunk (unevaluated expression + environment).
-    #[inline]
-    pub(crate) fn thunk(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Thunk { expr, env })
-    }
-
     /// Allocate a character.
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(c.into())
@@ -196,8 +190,7 @@ impl<const N: usize> Lisp<N> {
         let expr = parser.parse(self)?;
         let mut evaluator = Evaluator::new(self);
         let result_idx = evaluator.eval(expr, evaluator.global_env)?;
-        let forced = evaluator.force(result_idx)?;
-        self.arena.get(forced)
+        self.arena.get(result_idx)
     }
 
     // — Arena introspection —
@@ -220,14 +213,12 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }
-            | Value::Lambda { params: car, body_env: cdr }
-            | Value::Thunk { expr: car, env: cdr } => {
+            | Value::Lambda { params: car, body_env: cdr } => {
                 tracer(car);
                 tracer(cdr);
             }
             Value::Symbol(s) => tracer(s),
             Value::String { data, .. } if !data.is_nil() => tracer(data),
-            Value::Indirection(target) => tracer(target),
             _ => {}
         }
     }
