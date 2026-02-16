@@ -1,6 +1,6 @@
 //! Lisp value type.
 
-use grift_arena::ArenaIndex;
+use grift_arena::{ArenaIndex, ArenaError};
 
 /// A Lisp value stored in the arena.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,5 +51,20 @@ impl Value {
             Value::BlackHole => "black-hole",
             Value::Indirection(_) => "indirection",
         }
+    }
+
+    /// Extract the numeric value, or return `InvalidIndex` if not a number.
+    #[inline]
+    pub fn as_number(self) -> Result<isize, ArenaError> {
+        match self {
+            Value::Number(n) => Ok(n),
+            _ => Err(ArenaError::InvalidIndex),
+        }
+    }
+
+    /// Returns `false` only for `Value::False`; all other values are truthy.
+    #[inline]
+    pub fn is_truthy(self) -> bool {
+        !matches!(self, Value::False)
     }
 }
