@@ -141,20 +141,15 @@ enum TailAction {
     Continue,
 }
 
-/// Maximum number of GC root slots available to protect live values
-/// across recursive calls during evaluation.
-const MAX_GC_ROOTS: usize = 512;
-
 /// The evaluator state.
 pub(crate) struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
     pub global_env: ArenaIndex,
-    /// Shadow stack of GC roots: values that must survive garbage collection
-    /// because they are live on the Rust call stack but not reachable from
-    /// `global_env`.
-    gc_roots: [ArenaIndex; MAX_GC_ROOTS],
-    /// Number of currently pushed GC roots.
-    gc_root_count: usize,
+    /// Shadow stack of GC roots stored as a linked list of cons cells in
+    /// the arena.  Each entry is `(root_value . rest)`, with `ArenaIndex::NIL`
+    /// as the empty list.  This replaces the former fixed-size array, so all
+    /// allocation lives inside the arena.
+    gc_roots: ArenaIndex,
 }
 
 /// Bind a name to a value in an environment, returning the new environment.
@@ -220,39 +215,52 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut eval = Evaluator {
             lisp,
             global_env: env,
-            gc_roots: [ArenaIndex::NIL; MAX_GC_ROOTS],
-            gc_root_count: 0,
+            gc_roots: ArenaIndex::NIL,
         };
         eval.init_builtins();
         eval
     }
 
     /// Push a value onto the GC root stack so it survives collection.
+    ///
+    /// The root stack is a linked list of cons cells in the arena:
+    /// each entry is `(value . rest)`.
     #[inline]
     fn push_root(&mut self, idx: ArenaIndex) {
-        debug_assert!(
-            self.gc_root_count < MAX_GC_ROOTS,
-            "GC root stack overflow: exceeded {} roots",
-            MAX_GC_ROOTS
-        );
-        if self.gc_root_count < MAX_GC_ROOTS {
-            self.gc_roots[self.gc_root_count] = idx;
-            self.gc_root_count += 1;
+        if let Ok(new_roots) = self.lisp.cons(idx, self.gc_roots) {
+            self.gc_roots = new_roots;
+        } else {
+            debug_assert!(false, "GC root push failed: arena out of memory");
         }
     }
 
     /// Pop the top value from the GC root stack.
     #[inline]
     fn pop_root(&mut self) {
-        if self.gc_root_count > 0 {
-            self.gc_root_count -= 1;
+        if !self.gc_roots.is_nil() {
+            let rest = self.lisp.cdr(self.gc_roots);
+            debug_assert!(rest.is_ok(), "GC root list corrupted during pop");
+            if let Ok(rest) = rest {
+                self.gc_roots = rest;
+            }
         }
     }
 
     /// Pop `n` values from the GC root stack.
     #[inline]
     fn pop_roots(&mut self, n: usize) {
-        self.gc_root_count = self.gc_root_count.saturating_sub(n);
+        for _ in 0..n {
+            if self.gc_roots.is_nil() {
+                break;
+            }
+            let rest = self.lisp.cdr(self.gc_roots);
+            debug_assert!(rest.is_ok(), "GC root list corrupted during pop");
+            if let Ok(rest) = rest {
+                self.gc_roots = rest;
+            } else {
+                break;
+            }
+        }
     }
 
     /// Force a value to Weak Head Normal Form (WHNF), memoizing the result.
@@ -323,11 +331,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Trigger garbage collection using all known live roots.
     ///
     /// The roots include the global environment, the current expression
-    /// and environment, and any values saved on the GC root stack.
+    /// and environment, and the GC root linked list (which the arena's
+    /// mark phase will trace through automatically).
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
-        self.lisp.arena.collect_garbage_multi(&[
-            &[expr, env, self.global_env],
-            &self.gc_roots[..self.gc_root_count],
+        self.lisp.arena.collect_garbage(&[
+            expr, env, self.global_env, self.gc_roots,
         ]);
     }
 
