@@ -45,7 +45,34 @@ macro_rules! fold_numbers {
     }};
 }
 
-/// Declare all built-in functions and special forms in one place.
+/// Extract two numeric arguments from an argument list.
+/// `binary_nums!(self, args)` → `(isize, isize)`.
+macro_rules! binary_nums {
+    ($self:ident, $args:ident) => {{
+        let a = $self.lisp.get($self.lisp.car($args)?)?.as_number()?;
+        let b = $self.lisp.get($self.lisp.car($self.lisp.cdr($args)?)?)?.as_number()?;
+        (a, b)
+    }};
+}
+
+/// Generate a non-tail special form that delegates to a `&mut self` inner
+/// method.  Four special forms (`define`, `set!`, `lambda`, `cons`) share
+/// the same pattern: accept the TCO `(expr, env)` pair but immediately
+/// return a result via `TailAction::Return` without modifying them.
+/// This macro captures that pattern, accepting an optional doc comment.
+macro_rules! delegate_special_form {
+    ($(#[doc = $doc:expr])* $vis:vis fn $name:ident -> $inner:ident) => {
+        $(#[doc = $doc])*
+        $vis fn $name(
+            &mut self,
+            args: ArenaIndex,
+            _expr: &mut ArenaIndex,
+            env: &mut ArenaIndex,
+        ) -> TailAction {
+            TailAction::Return(self.$inner(args, *env))
+        }
+    };
+}
 ///
 /// **Built-in functions** (section `builtins { ... }`) are registered in the
 /// global environment as `Value::Builtin(id)` with auto-assigned sequential
@@ -189,6 +216,29 @@ pub(crate) struct Evaluator<'a, const N: usize> {
     gc_roots: ArenaIndex,
 }
 
+/// Walk an environment association list, calling `f` on each (key, binding)
+/// pair until `f` returns `Some(R)`.  Returns `Err(InvalidIndex)` when the
+/// name is not found.
+fn env_scan<const N: usize, R, F>(
+    lisp: &Lisp<N>,
+    env: ArenaIndex,
+    name: ArenaIndex,
+    mut f: F,
+) -> ArenaResult<R>
+where
+    F: FnMut(ArenaIndex) -> ArenaResult<R>,
+{
+    let mut cur = env;
+    while !cur.is_nil() {
+        let binding = lisp.car(cur)?;
+        if lisp.car(binding)? == name {
+            return f(binding);
+        }
+        cur = lisp.cdr(cur)?;
+    }
+    Err(ArenaError::InvalidIndex)
+}
+
 /// Bind a name to a value in an environment, returning the new environment.
 fn env_bind<const N: usize>(
     lisp: &Lisp<N>,
@@ -206,16 +256,7 @@ fn env_lookup<const N: usize>(
     env: ArenaIndex,
     name: ArenaIndex,
 ) -> ArenaResult<ArenaIndex> {
-    let mut cur = env;
-    while !cur.is_nil() {
-        let binding = lisp.car(cur)?;
-        let key = lisp.car(binding)?;
-        if key == name {
-            return lisp.cdr(binding);
-        }
-        cur = lisp.cdr(cur)?;
-    }
-    Err(ArenaError::InvalidIndex)
+    env_scan(lisp, env, name, |binding| lisp.cdr(binding))
 }
 
 /// Set a binding in an environment (mutate existing binding).
@@ -225,24 +266,10 @@ fn env_set<const N: usize>(
     name: ArenaIndex,
     val: ArenaIndex,
 ) -> ArenaResult<()> {
-    let mut cur = env;
-    while !cur.is_nil() {
-        let binding = lisp.car(cur)?;
+    env_scan(lisp, env, name, |binding| {
         let key = lisp.car(binding)?;
-        if key == name {
-            // Mutate the cdr of the binding pair
-            lisp.arena.set(
-                binding,
-                Value::Cons {
-                    car: key,
-                    cdr: val,
-                },
-            )?;
-            return Ok(());
-        }
-        cur = lisp.cdr(cur)?;
-    }
-    Err(ArenaError::InvalidIndex)
+        lisp.arena.set(binding, Value::Cons { car: key, cdr: val })
+    })
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -615,14 +642,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    /// `(define name expr)` or `(define (name params...) body)`.
-    fn eval_define(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        TailAction::Return(self.eval_define_inner(args, *env))
+    delegate_special_form! {
+        /// `(define name expr)` or `(define (name params...) body)`.
+        fn eval_define -> eval_define_inner
     }
 
     fn eval_define_inner(
@@ -655,14 +677,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// `(set! name expr)`.
-    fn eval_set(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        TailAction::Return(self.eval_set_inner(args, *env))
+    delegate_special_form! {
+        /// `(set! name expr)`.
+        fn eval_set -> eval_set_inner
     }
 
     fn eval_set_inner(
@@ -683,14 +700,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.nil()
     }
 
-    /// `(lambda (params...) body...)`.
-    fn eval_lambda(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        TailAction::Return(self.eval_lambda_inner(args, *env))
+    delegate_special_form! {
+        /// `(lambda (params...) body...)`.
+        fn eval_lambda -> eval_lambda_inner
     }
 
     fn eval_lambda_inner(
@@ -871,14 +883,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    /// `(cons a b)` — lazy cons: does NOT evaluate arguments.
-    fn eval_cons(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        TailAction::Return(self.eval_cons_inner(args, *env))
+    delegate_special_form! {
+        /// `(cons a b)` — lazy cons: does NOT evaluate arguments.
+        fn eval_cons -> eval_cons_inner
     }
 
     fn eval_cons_inner(
@@ -935,16 +942,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            return self.lisp.number(-first);
+            return self.lisp.number(first.checked_neg().ok_or(ArenaError::InvalidIndex)?);
         }
-        let mut result = first;
-        let mut cur = rest;
-        while !cur.is_nil() {
-            let n = self.lisp.get(self.lisp.car(cur)?)?.as_number()?;
-            result = result.checked_sub(n).ok_or(ArenaError::InvalidIndex)?;
-            cur = self.lisp.cdr(cur)?;
-        }
-        self.lisp.number(result)
+        fold_numbers!(self, rest, first, checked_sub)
     }
 
     /// `(* ...)` — variadic multiplication.
@@ -954,8 +954,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// `(/ a b)` — integer division.
     fn builtin_div(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
-        let b = self.lisp.get(self.lisp.car(self.lisp.cdr(args)?)?)?.as_number()?;
+        let (a, b) = binary_nums!(self, args);
         if b == 0 {
             return Err(ArenaError::InvalidIndex);
         }
@@ -964,8 +963,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// `(= a b)` — numeric equality.
     fn builtin_eq(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
-        let b = self.lisp.get(self.lisp.car(self.lisp.cdr(args)?)?)?.as_number()?;
+        let (a, b) = binary_nums!(self, args);
         self.lisp.boolean(a == b)
     }
 
@@ -975,8 +973,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         args: ArenaIndex,
         cmp: fn(isize, isize) -> bool,
     ) -> ArenaResult<ArenaIndex> {
-        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
-        let b = self.lisp.get(self.lisp.car(self.lisp.cdr(args)?)?)?.as_number()?;
+        let (a, b) = binary_nums!(self, args);
         self.lisp.boolean(cmp(a, b))
     }
 

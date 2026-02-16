@@ -465,28 +465,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     fn calculate_fragmentation(&self) -> f32 {
-        let mut fragments = 0;
-        let mut in_free = false;
+        // Count free-space fragments: contiguous runs of free slots.
+        let (fragments, _) = (0..N).fold((0u32, false), |(count, was_free), i| {
+            let is_free = matches!(self.slots[i].get(), Slot::Free { .. });
+            (count + u32::from(is_free && !was_free), is_free)
+        });
 
-        for i in 0..N {
-            match self.slots[i].get() {
-                Slot::Free { .. } => {
-                    if !in_free {
-                        fragments += 1;
-                        in_free = true;
-                    }
-                }
-                Slot::Occupied { .. } => {
-                    in_free = false;
-                }
-            }
-        }
-
-        if fragments == 0 {
-            0.0
-        } else {
-            fragments as f32 / N as f32
-        }
+        if fragments == 0 { 0.0 } else { fragments as f32 / N as f32 }
     }
 
     /// Validate internal consistency of the arena.
@@ -503,12 +488,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let len = self.len.get();
 
         // Count occupied slots
-        let mut occupied_count = 0;
-        for i in 0..N {
-            if matches!(self.slots[i].get(), Slot::Occupied { .. }) {
-                occupied_count += 1;
-            }
-        }
+        let occupied_count = (0..N)
+            .filter(|&i| matches!(self.slots[i].get(), Slot::Occupied { .. }))
+            .count();
         if occupied_count != len {
             return false;
         }
@@ -557,10 +539,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// This is a low-level debugging method. For normal use, prefer [`is_allocated`].
     pub fn is_slot_occupied(&self, slot_index: usize) -> bool {
-        if slot_index >= N {
-            return false;
-        }
-        matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
+        slot_index < N && matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
     }
 
     /// Get indices of all allocated slots.
@@ -588,11 +567,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnMut(ArenaIndex, &T),
     {
-        for idx in 0..N {
-            if let Slot::Occupied { value } = self.slots[idx].get() {
-                f(ArenaIndex::new(idx), &value);
-            }
-        }
+        self.iter().for_each(|(idx, val)| f(idx, &val));
     }
 
     /// Apply a mutating function to all allocated values.
@@ -613,15 +588,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        let mut count = 0;
-        for i in 0..N {
-            if let Slot::Occupied { value } = self.slots[i].get()
-                && predicate(&value)
-            {
-                count += 1;
-            }
-        }
-        count
+        self.iter().filter(|(_, v)| predicate(v)).count()
     }
 
     /// Find the first value matching a predicate.
@@ -629,15 +596,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        for idx in 0..N {
-            if let Slot::Occupied { value } = self.slots[idx].get()
-                && predicate(&value)
-            {
-                return Some((ArenaIndex::new(idx), value));
-            }
-        }
-
-        None
+        self.iter().find(|(_, v)| predicate(v))
     }
 
     /// Check if any allocated value matches a predicate.
@@ -645,7 +604,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        self.find(predicate).is_some()
+        self.iter().any(|(_, v)| predicate(&v))
     }
 
     /// Check if all allocated values match a predicate.
@@ -655,15 +614,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        for i in 0..N {
-            if let Slot::Occupied { value } = self.slots[i].get()
-                && !predicate(&value)
-            {
-                return false;
-            }
-        }
-
-        true
+        self.iter().all(|(_, v)| predicate(&v))
     }
 
     // ========================================================================
@@ -822,15 +773,14 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// assert_eq!(arena.get(idx1).unwrap(), 42);
     /// ```
     pub fn index_at_offset(&self, start: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
-        let new_idx = start.raw() + offset;
-        if new_idx >= N {
+        let index = start.offset(offset).ok_or(ArenaError::InvalidIndex)?;
+        let idx = index.raw();
+        if idx >= N {
             return Err(ArenaError::InvalidIndex);
         }
         
-        let index = ArenaIndex::new(new_idx);
-        
         // Verify the slot is actually occupied
-        match self.slots[new_idx].get() {
+        match self.slots[idx].get() {
             Slot::Occupied { .. } => Ok(index),
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
         }
@@ -865,35 +815,22 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
 
         let start_idx = start.raw();
-
-        // Validate all slots are allocated and in bounds
-        for i in 0..count {
-            let idx = start_idx + i;
-            if idx >= N {
-                return Err(ArenaError::InvalidIndex);
-            }
-            
-            // Check that slot is occupied
-            match self.slots[idx].get() {
-                Slot::Occupied { .. } => {}
-                Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
-            }
+        let end_idx = start_idx.checked_add(count).ok_or(ArenaError::InvalidIndex)?;
+        if end_idx > N {
+            return Err(ArenaError::InvalidIndex);
         }
 
-        // Free all slots and add to free list
-        let free_head = self.free_head.get();
+        // Validate all slots are occupied
+        if (start_idx..end_idx).any(|i| !matches!(self.slots[i].get(), Slot::Occupied { .. })) {
+            return Err(ArenaError::InvalidIndex);
+        }
 
-        // Link freed slots together, then link to free_head
-        // Process in reverse so the slots end up in order in the free list
+        // Free all slots: link them together then chain to the existing free list
+        let free_head = self.free_head.get();
         for i in (0..count).rev() {
             let idx = start_idx + i;
-            self.slots[idx].set(Slot::Free {
-                next_free: if i == count - 1 {
-                    free_head
-                } else {
-                    start_idx + i + 1
-                },
-            });
+            let next = if i == count - 1 { free_head } else { start_idx + i + 1 };
+            self.slots[idx].set(Slot::Free { next_free: next });
         }
 
         self.free_head.set(start_idx);

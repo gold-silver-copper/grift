@@ -56,12 +56,27 @@ impl ArenaIndex {
     pub const fn is_nil(self) -> bool {
         self.0 == 0
     }
+
+    /// Compute an index offset by `n` slots, returning `None` on overflow.
+    #[inline]
+    pub const fn offset(self, n: usize) -> Option<ArenaIndex> {
+        match self.0.checked_add(n) {
+            Some(idx) => Some(ArenaIndex(idx)),
+            None => None,
+        }
+    }
 }
 
 impl Default for ArenaIndex {
     /// Returns [`ArenaIndex::NIL`] (slot 0).
     fn default() -> Self {
         Self::NIL
+    }
+}
+
+impl core::fmt::Display for ArenaIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "@{}", self.0)
     }
 }
 
@@ -109,6 +124,12 @@ impl ArenaError {
     /// Check if this error is related to garbage collection.
     pub const fn is_trace_error(&self) -> bool {
         matches!(self, ArenaError::TraceError)
+    }
+}
+
+impl core::fmt::Display for ArenaError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

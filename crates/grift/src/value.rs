@@ -34,6 +34,21 @@ pub enum Value {
     Indirection(ArenaIndex),
 }
 
+/// Generate a `Value` accessor that pattern-matches on a variant and
+/// returns its inner data, or `Err(InvalidIndex)` on mismatch.
+macro_rules! value_accessor {
+    ($(#[$m:meta])* $name:ident -> $out:ty, $pat:pat => $expr:expr) => {
+        $(#[$m])*
+        #[inline]
+        pub fn $name(self) -> Result<$out, ArenaError> {
+            match self {
+                $pat => Ok($expr),
+                _ => Err(ArenaError::InvalidIndex),
+            }
+        }
+    };
+}
+
 impl Value {
     /// Returns the type name as a static string (for error messages).
     pub fn type_name(&self) -> &'static str {
@@ -53,18 +68,45 @@ impl Value {
         }
     }
 
-    /// Extract the numeric value, or return `InvalidIndex` if not a number.
-    #[inline]
-    pub fn as_number(self) -> Result<isize, ArenaError> {
-        match self {
-            Value::Number(n) => Ok(n),
-            _ => Err(ArenaError::InvalidIndex),
-        }
+    value_accessor! {
+        /// Extract the numeric value, or `Err(InvalidIndex)` if not a number.
+        as_number -> isize, Value::Number(n) => n
+    }
+
+    value_accessor! {
+        /// Extract the car and cdr of a cons cell.
+        as_cons -> (ArenaIndex, ArenaIndex), Value::Cons { car, cdr } => (car, cdr)
+    }
+
+    value_accessor! {
+        /// Extract the symbol's string index.
+        as_symbol -> ArenaIndex, Value::Symbol(idx) => idx
     }
 
     /// Returns `false` only for `Value::False`; all other values are truthy.
     #[inline]
     pub fn is_truthy(self) -> bool {
         !matches!(self, Value::False)
+    }
+}
+
+impl From<bool> for Value {
+    #[inline]
+    fn from(b: bool) -> Self {
+        if b { Value::True } else { Value::False }
+    }
+}
+
+impl From<isize> for Value {
+    #[inline]
+    fn from(n: isize) -> Self {
+        Value::Number(n)
+    }
+}
+
+impl From<char> for Value {
+    #[inline]
+    fn from(c: char) -> Self {
+        Value::Char(c)
     }
 }

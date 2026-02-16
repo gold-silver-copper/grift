@@ -45,12 +45,12 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a number.
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Number(n))
+        self.arena.alloc(n.into())
     }
 
     /// Allocate a boolean.
     pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(if b { Value::True } else { Value::False })
+        self.arena.alloc(b.into())
     }
 
     /// Allocate a cons cell.
@@ -60,7 +60,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a character.
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Char(c))
+        self.arena.alloc(c.into())
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
@@ -68,11 +68,8 @@ impl<const N: usize> Lisp<N> {
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
         // Search for an existing symbol with the same name
         if let Some((idx, _)) = self.arena.find(|v| {
-            if let Value::Symbol(str_idx) = v {
-                self.string_eq(*str_idx, name)
-            } else {
-                false
-            }
+            v.as_symbol()
+                .is_ok_and(|str_idx| self.string_eq(str_idx, name))
         }) {
             return Ok(idx);
         }
@@ -95,11 +92,9 @@ impl<const N: usize> Lisp<N> {
 
         // Allocate contiguous slots for characters
         let data = self.arena.alloc_contiguous(len, Value::Nil)?;
-        let mut i = 0;
-        for c in s.chars() {
+        for (i, c) in s.chars().enumerate() {
             let idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(idx, Value::Char(c))?;
-            i += 1;
+            self.arena.set(idx, c.into())?;
         }
 
         self.arena.alloc(Value::String { len, data })
@@ -110,30 +105,21 @@ impl<const N: usize> Lisp<N> {
         let Ok(Value::String { len, data }) = self.arena.get(str_idx) else {
             return false;
         };
-        if len != s.chars().count() {
-            return false;
-        }
-        for (i, c) in s.chars().enumerate() {
-            let Ok(idx) = self.arena.index_at_offset(data, i) else {
-                return false;
-            };
-            let Ok(Value::Char(ch)) = self.arena.get(idx) else {
-                return false;
-            };
-            if ch != c {
-                return false;
-            }
-        }
-        true
+        len == s.chars().count()
+            && s.chars().enumerate().all(|(i, c)| {
+                self.arena.index_at_offset(data, i)
+                    .and_then(|idx| self.arena.get(idx))
+                    .is_ok_and(|v| v == Value::Char(c))
+            })
     }
 
     /// Get symbol name as a function that compares against a given string.
     /// Returns true if the symbol at `idx` has the given name.
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
-        match self.arena.get(idx) {
-            Ok(Value::Symbol(str_idx)) => self.string_eq(str_idx, name),
-            _ => false,
-        }
+        self.arena.get(idx)
+            .ok()
+            .and_then(|v| v.as_symbol().ok())
+            .is_some_and(|str_idx| self.string_eq(str_idx, name))
     }
 
     // ========================================================================
@@ -147,18 +133,12 @@ impl<const N: usize> Lisp<N> {
 
     /// Get car of a cons cell.
     pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Cons { car, .. } => Ok(car),
-            _ => Err(ArenaError::InvalidIndex),
-        }
+        self.arena.get(idx)?.as_cons().map(|(car, _)| car)
     }
 
     /// Get cdr of a cons cell.
     pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Cons { cdr, .. } => Ok(cdr),
-            _ => Err(ArenaError::InvalidIndex),
-        }
+        self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
     }
 
     /// Allocate a lambda.
@@ -180,14 +160,11 @@ impl<const N: usize> Lisp<N> {
         &self,
         idx: ArenaIndex,
     ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
-        match self.arena.get(idx)? {
-            Value::Lambda { params, body_env } => {
-                let body = self.car(body_env)?;
-                let env = self.cdr(body_env)?;
-                Ok((params, body, env))
-            }
-            _ => Err(ArenaError::InvalidIndex),
-        }
+        let Value::Lambda { params, body_env } = self.arena.get(idx)? else {
+            return Err(ArenaError::InvalidIndex);
+        };
+        let (body, env) = self.arena.get(body_env)?.as_cons()?;
+        Ok((params, body, env))
     }
 
     // ========================================================================
@@ -265,11 +242,11 @@ impl<const N: usize> Trace<Value, N> for Value {
         match *self {
             Value::String { len, data } => {
                 // Trace all contiguous character slots, not just the first.
-                for i in 0..len {
+                (0..len).for_each(|i| {
                     if let Ok(idx) = arena.index_at_offset(data, i) {
                         tracer(idx);
                     }
-                }
+                });
             }
             _ => <Value as Trace<Value, N>>::trace(self, tracer),
         }
