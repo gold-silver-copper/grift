@@ -1,4 +1,4 @@
-use grift::{Lisp, Value};
+use grift::{ArenaError, Lisp, Value};
 
 // ============================================================================
 // Basic Arithmetic Tests
@@ -139,15 +139,22 @@ fn test_quote() {
 #[test]
 fn test_and() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(and 1 2 3)"), Ok(Value::Number(3)));
-    assert_eq!(lisp.eval("(and 1 #f 3)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(and #t #t #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(and #t #f #t)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(and #t #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(and)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(and 1 2 3)"), Err(ArenaError::TypeError));
+    assert_eq!(lisp.eval("(and 1 #f 3)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_or() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(or #f #f 3)"), Ok(Value::Number(3)));
+    assert_eq!(lisp.eval("(or #f #f #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(or #f #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #t #f)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(or)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #f #f 3)"), Err(ArenaError::TypeError));
 }
 
 // ============================================================================

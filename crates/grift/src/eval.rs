@@ -767,13 +767,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.lisp.cdr(cur)?;
-                if next.is_nil() {
-                    *expr = self.lisp.car(cur)?;
-                    return Ok(());
-                }
                 let e = self.lisp.car(cur)?;
                 let forced = self.eval_force(e, *env)?;
-                if self.lisp.get(forced)?.is_truthy() != continue_while_truthy {
+                let b = self.lisp.get(forced)?.as_bool()?;
+                if b != continue_while_truthy {
                     *expr = forced;
                     return Ok(());
                 }
