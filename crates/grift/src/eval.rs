@@ -284,10 +284,9 @@ fn env_set<const N: usize>(
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with built-in functions bound in the global environment.
     pub fn new(lisp: &'a Lisp<N>) -> Self {
-        let env = ArenaIndex::NIL;
         let mut eval = Evaluator {
             lisp,
-            global_env: env,
+            global_env: ArenaIndex::NIL,
             gc_roots: ArenaIndex::NIL,
         };
         eval.init_builtins();
@@ -664,12 +663,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = self.lisp.car(args)?;
         let expr = self.lisp.car(self.lisp.cdr(args)?)?;
         let forced = self.eval_force(expr, env)?;
-
-        // Try local env first, then global
-        if env_set(self.lisp, env, name, forced).is_ok() {
-            return self.lisp.nil();
-        }
-        env_set(self.lisp, self.global_env, name, forced)?;
+        env_set(self.lisp, env, name, forced)
+            .or_else(|_| env_set(self.lisp, self.global_env, name, forced))?;
         self.lisp.nil()
     }
 
