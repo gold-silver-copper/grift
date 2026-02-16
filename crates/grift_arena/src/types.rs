@@ -104,7 +104,8 @@ pub enum ArenaError {
     /// This can happen if the mark stack overflows or roots are invalid.
     TraceError,
 
-    /// Cycle detected during structure traversal.
+    /// Cycle detected during structure traversal (e.g., graph traversal
+    /// or recursive data structure operations).
     Cyclic,
 
     /// A value had the wrong type for the requested operation
