@@ -1,6 +1,6 @@
 //! Lisp value type.
 
-use grift_arena::{ArenaIndex, ArenaError};
+use grift_arena::{ArenaError, ArenaIndex};
 
 /// Type-safe identifier for built-in functions.
 ///
@@ -15,27 +15,36 @@ pub struct BuiltinId(pub(crate) u8);
 pub enum Value {
     /// The empty list / nil.
     Nil,
-    /// Boolean true.
-    True,
-    /// Boolean false.
-    False,
+    Boolean(bool),
     /// Integer number.
     Number(isize),
     /// A symbol, pointing to a `String` value that holds the name.
     Symbol(ArenaIndex),
     /// A cons cell (pair) with inline car and cdr.
-    Cons { car: ArenaIndex, cdr: ArenaIndex },
+    Cons {
+        car: ArenaIndex,
+        cdr: ArenaIndex,
+    },
     /// A string with inline length and pointer to character data.
-    String { len: usize, data: ArenaIndex },
+    String {
+        len: usize,
+        data: ArenaIndex,
+    },
     /// A character.
     Char(char),
     /// A lambda closure: params list and (body . env) cons cell.
-    Lambda { params: ArenaIndex, body_env: ArenaIndex },
+    Lambda {
+        params: ArenaIndex,
+        body_env: ArenaIndex,
+    },
     /// A built-in function identified by index.
     Builtin(BuiltinId),
     /// An unevaluated expression paired with the environment in which
     /// it should be evaluated when forced.
-    Thunk { expr: ArenaIndex, env: ArenaIndex },
+    Thunk {
+        expr: ArenaIndex,
+        env: ArenaIndex,
+    },
     /// A thunk that is currently being forced (cycle detection).
     BlackHole,
     /// A forced thunk pointing to its evaluated result.
@@ -62,7 +71,7 @@ impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Nil => "nil",
-            Value::True | Value::False => "boolean",
+            Value::Boolean(_) => "boolean",
             Value::Number(_) => "number",
             Value::Symbol(_) => "symbol",
             Value::Cons { .. } => "pair",
@@ -82,7 +91,10 @@ impl Value {
     /// atoms, pairs, closures, or builtins.
     #[inline]
     pub fn is_whnf(self) -> bool {
-        !matches!(self, Value::Thunk { .. } | Value::BlackHole | Value::Indirection(_))
+        !matches!(
+            self,
+            Value::Thunk { .. } | Value::BlackHole | Value::Indirection(_)
+        )
     }
 
     /// True for self-evaluating forms (literals, closures, builtins).
@@ -93,9 +105,13 @@ impl Value {
     pub fn is_self_evaluating(self) -> bool {
         matches!(
             self,
-            Value::Nil | Value::True | Value::False | Value::Number(_)
-            | Value::Char(_) | Value::String { .. }
-            | Value::Builtin(_) | Value::Lambda { .. }
+            Value::Nil
+                | Value::Boolean(_)
+                | Value::Number(_)
+                | Value::Char(_)
+                | Value::String { .. }
+                | Value::Builtin(_)
+                | Value::Lambda { .. }
         )
     }
 
@@ -117,7 +133,7 @@ impl Value {
     /// Returns `false` only for `Value::False`; all other values are truthy.
     #[inline]
     pub fn is_truthy(self) -> bool {
-        !matches!(self, Value::False)
+        !matches!(self, Value::Boolean(false))
     }
 }
 
@@ -125,8 +141,8 @@ impl core::fmt::Display for Value {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Value::Nil => f.write_str("()"),
-            Value::True => f.write_str("#t"),
-            Value::False => f.write_str("#f"),
+            Value::Boolean(true) => f.write_str("#t"),
+            Value::Boolean(false) => f.write_str("#f"),
             Value::Number(n) => write!(f, "{n}"),
             Value::Char(c) => write!(f, "#\\{c}"),
             Value::Symbol(_) => f.write_str("<symbol>"),
@@ -144,7 +160,7 @@ impl core::fmt::Display for Value {
 impl From<bool> for Value {
     #[inline]
     fn from(b: bool) -> Self {
-        if b { Value::True } else { Value::False }
+        Value::Boolean(b)
     }
 }
 

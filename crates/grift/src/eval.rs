@@ -3,10 +3,10 @@
 //! Evaluates arena-allocated S-expressions in an environment using
 //! call-by-need evaluation with memoization and tail-call optimization.
 
-use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
+use grift_arena::{ArenaError, ArenaIndex, ArenaResult};
 
 use crate::lisp::Lisp;
-use crate::value::{Value, BuiltinId};
+use crate::value::{BuiltinId, Value};
 
 /// Convert a fallible closure into a `TailAction`: `Ok(())` → `Continue`,
 /// `Err(e)` → `Return(Err(e))`.  Eliminates the repeated match boilerplate
@@ -59,7 +59,10 @@ macro_rules! cmp_builtin {
 macro_rules! binary_nums {
     ($self:ident, $args:ident) => {{
         let a = $self.lisp.get($self.lisp.car($args)?)?.as_number()?;
-        let b = $self.lisp.get($self.lisp.car($self.lisp.cdr($args)?)?)?.as_number()?;
+        let b = $self
+            .lisp
+            .get($self.lisp.car($self.lisp.cdr($args)?)?)?
+            .as_number()?;
         (a, b)
     }};
 }
@@ -374,9 +377,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// and environment, and the GC root linked list (which the arena's
     /// mark phase will trace through automatically).
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
-        self.lisp.arena.collect_garbage(&[
-            expr, env, self.global_env, self.gc_roots,
-        ]);
+        self.lisp
+            .arena
+            .collect_garbage(&[expr, env, self.global_env, self.gc_roots]);
     }
 
     /// Check arena memory pressure and collect garbage if needed.
@@ -418,7 +421,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Value::Thunk { .. } => return self.force(expr),
 
                 // Indirection — follow it (no stack growth).
-                Value::Indirection(target) => { expr = target; continue; }
+                Value::Indirection(target) => {
+                    expr = target;
+                    continue;
+                }
 
                 // Black hole — circular evaluation.
                 Value::BlackHole => return Err(ArenaError::InvalidIndex),
@@ -440,7 +446,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                     // Check for special forms.
                     if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
-                        if let Some(action) = self.try_special_form_tco(car, cdr, &mut expr, &mut env) {
+                        if let Some(action) =
+                            self.try_special_form_tco(car, cdr, &mut expr, &mut env)
+                        {
                             self.pop_roots(2);
                             match action {
                                 TailAction::Return(val) => return val,
@@ -487,7 +495,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> ArenaResult<ArenaIndex> {
         while !params.is_nil() && !arg_exprs.is_nil() {
             match self.lisp.get(params)? {
-                Value::Cons { car: param, cdr: rest } => {
+                Value::Cons {
+                    car: param,
+                    cdr: rest,
+                } => {
                     let arg_expr = self.lisp.car(arg_exprs)?;
                     let thunk = self.lisp.thunk(arg_expr, call_env)?;
                     fn_env = env_bind(self.lisp, fn_env, param, thunk)?;
@@ -510,11 +521,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Build a list of thunks from a list of expressions (iterative, O(n)).
-    fn make_thunk_list(
-        &self,
-        exprs: ArenaIndex,
-        call_env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn make_thunk_list(&self, exprs: ArenaIndex, call_env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut reversed = ArenaIndex::NIL;
         let mut cur = exprs;
         while !cur.is_nil() {
@@ -533,11 +540,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Evaluate and force all arguments in a list (for strict builtins).
-    fn force_args(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn force_args(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if args.is_nil() {
             return self.lisp.nil();
         }
@@ -603,11 +606,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         fn eval_define -> eval_define_inner
     }
 
-    fn eval_define_inner(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn eval_define_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let first = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
 
@@ -619,7 +618,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.global_env = env_bind(self.lisp, self.global_env, first, thunk)?;
                 Ok(thunk)
             }
-            Value::Cons { car: name, cdr: params } => {
+            Value::Cons {
+                car: name,
+                cdr: params,
+            } => {
                 // Function shorthand — lambda is already WHNF, no thunk needed
                 let body = self.wrap_begin(rest)?;
                 let lam = self.lisp.lambda(params, body, env)?;
@@ -635,11 +637,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         fn eval_set -> eval_set_inner
     }
 
-    fn eval_set_inner(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn eval_set_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let name = self.lisp.car(args)?;
         let expr = self.lisp.car(self.lisp.cdr(args)?)?;
         let forced = self.eval_force(expr, env)?;
@@ -653,11 +651,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         fn eval_lambda -> eval_lambda_inner
     }
 
-    fn eval_lambda_inner(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn eval_lambda_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let params = self.lisp.car(args)?;
         let body_list = self.lisp.cdr(args)?;
         let body = self.wrap_begin(body_list)?;
@@ -804,11 +798,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         fn eval_cons -> eval_cons_inner
     }
 
-    fn eval_cons_inner(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn eval_cons_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a_expr = self.lisp.car(args)?;
         let b_expr = self.lisp.car(self.lisp.cdr(args)?)?;
         let a_thunk = self.lisp.thunk(a_expr, env)?;
@@ -847,7 +837,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            return self.lisp.number(first.checked_neg().ok_or(ArenaError::InvalidIndex)?);
+            return self
+                .lisp
+                .number(first.checked_neg().ok_or(ArenaError::InvalidIndex)?);
         }
         fold_numbers!(self, rest, first, checked_sub)
     }
@@ -884,7 +876,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Takes an accessor function (`Lisp::car` or `Lisp::cdr`) to select
     /// which component to extract from the pair, then forces the result
     /// to WHNF.
-    fn pair_accessor(&mut self, args: ArenaIndex, f: fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>) -> ArenaResult<ArenaIndex> {
+    fn pair_accessor(
+        &mut self,
+        args: ArenaIndex,
+        f: fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>,
+    ) -> ArenaResult<ArenaIndex> {
         let pair = self.lisp.car(args)?;
         self.force(f(self.lisp, pair)?)
     }
@@ -902,9 +898,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // — Type predicate built-ins —
 
     type_predicate!(builtin_nullp, Value::Nil);
-    type_predicate!(builtin_not, Value::False);
+    type_predicate!(builtin_not, Value::Boolean(false));
     type_predicate!(builtin_pairp, Value::Cons { .. });
     type_predicate!(builtin_numberp, Value::Number(_));
     type_predicate!(builtin_symbolp, Value::Symbol(_));
-    type_predicate!(builtin_booleanp, Value::True | Value::False);
+    type_predicate!(builtin_booleanp, Value::Boolean(_));
 }

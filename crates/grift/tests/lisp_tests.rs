@@ -66,38 +66,38 @@ fn test_nested_arithmetic() {
 #[test]
 fn test_numeric_equality() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(= 3 3)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(= 3 4)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(= 3 3)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(= 3 4)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_less_than() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(< 1 2)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(< 2 1)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(< 1 2)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(< 2 1)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_greater_than() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(> 2 1)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(> 1 2)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(> 2 1)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(> 1 2)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_less_equal() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(<= 1 2)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(<= 2 2)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(<= 3 2)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(<= 1 2)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(<= 2 2)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(<= 3 2)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_greater_equal() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(>= 2 1)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(>= 2 2)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(>= 1 2)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(>= 2 1)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(>= 2 2)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(>= 1 2)"), Ok(Value::Boolean(false)));
 }
 
 // ============================================================================
@@ -107,8 +107,8 @@ fn test_greater_equal() {
 #[test]
 fn test_booleans() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("#t"), Ok(Value::True));
-    assert_eq!(lisp.eval("#f"), Ok(Value::False));
+    assert_eq!(lisp.eval("#t"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("#f"), Ok(Value::Boolean(false)));
 }
 
 #[test]
@@ -140,14 +140,14 @@ fn test_quote() {
 fn test_and() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(and 1 2 3)"), Ok(Value::Number(3)));
-    assert_eq!(lisp.eval("(and 1 #f 3)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(and 1 #f 3)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_or() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(or #f #f 3)"), Ok(Value::Number(3)));
-    assert_eq!(lisp.eval("(or #f #f)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(or #f #f)"), Ok(Value::Boolean(false)));
 }
 
 // ============================================================================
@@ -190,36 +190,36 @@ fn test_list() {
 #[test]
 fn test_null_predicate() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(null? '())"), Ok(Value::True));
-    assert_eq!(lisp.eval("(null? 1)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(null? '())"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(null? 1)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_not() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(not #f)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(not #t)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(not #f)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(not #t)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_pair_predicate() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(pair? (cons 1 2))"), Ok(Value::True));
-    assert_eq!(lisp.eval("(pair? 1)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(pair? (cons 1 2))"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(pair? 1)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_number_predicate() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(number? 42)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(number? #t)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(number? 42)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(number? #t)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_boolean_predicate() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(boolean? #t)"), Ok(Value::True));
-    assert_eq!(lisp.eval("(boolean? 1)"), Ok(Value::False));
+    assert_eq!(lisp.eval("(boolean? #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(boolean? 1)"), Ok(Value::Boolean(false)));
 }
 
 // ============================================================================
@@ -258,7 +258,10 @@ fn test_gc_repeated_eval_no_leak() {
     let gc = lisp.collect_garbage(&[]);
     let stats = lisp.stats();
 
-    assert!(gc.collected > 0, "GC should collect garbage from repeated evals");
+    assert!(
+        gc.collected > 0,
+        "GC should collect garbage from repeated evals"
+    );
     // After collecting, arena should be mostly empty (only nil slot remains).
     assert!(
         stats.allocated < 50,
@@ -362,7 +365,10 @@ fn test_gc_define_creates_garbage() {
 
     // After eval, the evaluators are dropped; all values are garbage.
     let gc = lisp.collect_garbage(&[]);
-    assert!(gc.collected > 0, "GC should collect after evaluators are dropped");
+    assert!(
+        gc.collected > 0,
+        "GC should collect after evaluators are dropped"
+    );
 }
 
 #[test]
@@ -393,7 +399,6 @@ fn test_gc_stats_accuracy() {
     );
 }
 
-
 #[test]
 fn test_fib_self_apply() {
     let lisp: Lisp<20000> = Lisp::new();
@@ -419,9 +424,11 @@ fn test_laziness_unused_arg_not_evaluated() {
     // (const x y) returns x without evaluating y.
     // The second argument is a type error that would crash if evaluated.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         ((lambda (x y) x) 1 (+ 1 "crash"))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(1)));
 }
 
@@ -439,11 +446,13 @@ fn test_laziness_if_unused_branch() {
 fn test_laziness_define_not_forced() {
     // Defining a value that would error if forced, but never using it.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define bad (+ 1 "crash"))
             42)
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(42)));
 }
 
@@ -451,10 +460,12 @@ fn test_laziness_define_not_forced() {
 fn test_laziness_let_not_forced() {
     // Let binding that would error, but the binding is never used.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (let ((x (+ 1 "crash")))
             42)
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(42)));
 }
 
@@ -466,11 +477,13 @@ fn test_laziness_let_not_forced() {
 fn test_memoization_double() {
     // (double x) uses x twice. With memoization, (+ 1 2) is evaluated once.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         ((lambda (double)
             (double (+ 1 2)))
          (lambda (x) (+ x x)))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(6)));
 }
 
@@ -478,10 +491,12 @@ fn test_memoization_double() {
 fn test_memoization_let_reuse() {
     // x is used twice in let body. It should be evaluated at most once.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (let ((x (+ 10 20)))
             (+ x x))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(60)));
 }
 
@@ -489,11 +504,13 @@ fn test_memoization_let_reuse() {
 fn test_answers_through_let_bindings() {
     // Answers can be wrapped in pending bindings (indirections).
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (let ((x 1))
             (let ((y 2))
                 (+ x y)))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(3)));
 }
 
@@ -505,12 +522,14 @@ fn test_answers_through_let_bindings() {
 fn test_tco_countdown() {
     // Deep recursion that must not overflow the Rust stack.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define (count n)
                 (if (= n 0) 0 (count (- n 1))))
             (count 1000))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(0)));
 }
 
@@ -518,22 +537,25 @@ fn test_tco_countdown() {
 fn test_tco_mutual_recursion() {
     // Mutual recursion in tail position.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define (my-even? n)
                 (if (= n 0) #t (my-odd? (- n 1))))
             (define (my-odd? n)
                 (if (= n 0) #f (my-even? (- n 1))))
             (my-even? 1000))
-    "#);
-    assert_eq!(result, Ok(Value::True));
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_tco_begin_tail_position() {
     // The last expression in begin is a tail position.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define (loop n)
                 (if (= n 0) 42
@@ -541,7 +563,8 @@ fn test_tco_begin_tail_position() {
                         (+ 1 2)
                         (loop (- n 1)))))
             (loop 1000))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(42)));
 }
 
@@ -553,24 +576,31 @@ fn test_tco_begin_tail_position() {
 fn test_cycle_detection_self_reference() {
     // (define x x) then forcing x → circular dependency error.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define x x)
             x)
-    "#);
-    assert!(result.is_err(), "Circular reference should produce an error");
+    "#,
+    );
+    assert!(
+        result.is_err(),
+        "Circular reference should produce an error"
+    );
 }
 
 #[test]
 fn test_cycle_detection_indirect() {
     // Indirect cycle: a → b → a.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define a b)
             (define b a)
             a)
-    "#);
+    "#,
+    );
     assert!(result.is_err(), "Indirect cycle should produce an error");
 }
 
@@ -583,11 +613,13 @@ fn test_infinite_ones() {
     // (define ones (cons 1 ones)) — infinite list of ones.
     let lisp: Lisp<50000> = Lisp::new();
     assert_eq!(
-        lisp.eval(r#"
+        lisp.eval(
+            r#"
             (begin
                 (define ones (cons 1 ones))
                 (car ones))
-        "#),
+        "#
+        ),
         Ok(Value::Number(1))
     );
 }
@@ -596,11 +628,13 @@ fn test_infinite_ones() {
 fn test_infinite_ones_cdr() {
     let lisp: Lisp<50000> = Lisp::new();
     assert_eq!(
-        lisp.eval(r#"
+        lisp.eval(
+            r#"
             (begin
                 (define ones (cons 1 ones))
                 (car (cdr ones)))
-        "#),
+        "#
+        ),
         Ok(Value::Number(1))
     );
 }
@@ -609,11 +643,13 @@ fn test_infinite_ones_cdr() {
 fn test_infinite_ones_cdr_cdr() {
     let lisp: Lisp<50000> = Lisp::new();
     assert_eq!(
-        lisp.eval(r#"
+        lisp.eval(
+            r#"
             (begin
                 (define ones (cons 1 ones))
                 (car (cdr (cdr ones))))
-        "#),
+        "#
+        ),
         Ok(Value::Number(1))
     );
 }
@@ -623,30 +659,36 @@ fn test_infinite_nats() {
     // Infinite stream of natural numbers: test car, cadr, and caddr.
     let lisp: Lisp<50000> = Lisp::new();
     assert_eq!(
-        lisp.eval(r#"
+        lisp.eval(
+            r#"
             (begin
                 (define (nats-from n) (cons n (nats-from (+ n 1))))
                 (define nats (nats-from 0))
                 (car nats))
-        "#),
+        "#
+        ),
         Ok(Value::Number(0))
     );
     assert_eq!(
-        lisp.eval(r#"
+        lisp.eval(
+            r#"
             (begin
                 (define (nats-from n) (cons n (nats-from (+ n 1))))
                 (define nats (nats-from 0))
                 (car (cdr nats)))
-        "#),
+        "#
+        ),
         Ok(Value::Number(1))
     );
     assert_eq!(
-        lisp.eval(r#"
+        lisp.eval(
+            r#"
             (begin
                 (define (nats-from n) (cons n (nats-from (+ n 1))))
                 (define nats (nats-from 0))
                 (car (cdr (cdr nats))))
-        "#),
+        "#
+        ),
         Ok(Value::Number(2))
     );
 }
@@ -659,12 +701,14 @@ fn test_infinite_nats() {
 fn test_tco_with_lazy_accumulator() {
     // Tail-recursive sum with lazy arguments.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define (sum-to n acc)
                 (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
             (sum-to 100 0))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(5050)));
 }
 
@@ -672,7 +716,8 @@ fn test_tco_with_lazy_accumulator() {
 fn test_tco_iterative_fib() {
     // Iterative fib via self-application with define.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define (fib n)
                 ((lambda (loop)
@@ -682,7 +727,8 @@ fn test_tco_iterative_fib() {
                         a
                         (self self b (+ a b) (- count 1))))))
             (fib 20))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(6765)));
 }
 
@@ -691,11 +737,13 @@ fn test_recursive_fib_30() {
     // Naive recursive fib(30) — previously crashed with OOM.
     // GC during evaluation reclaims intermediate values, allowing completion.
     let lisp: Lisp<100_000> = Lisp::new();
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (begin
             (define (fib n)
                 (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
             (fib 30))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Number(832040)));
 }
