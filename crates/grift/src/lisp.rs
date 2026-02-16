@@ -34,28 +34,36 @@ impl<const N: usize> Lisp<N> {
         Lisp { arena }
     }
 
-    // ========================================================================
-    // Value constructors
-    // ========================================================================
+    // — Value constructors —
 
     /// Allocate a Nil value (or return the pre-allocated one).
+    #[inline]
     pub fn nil(&self) -> ArenaResult<ArenaIndex> {
         Ok(ArenaIndex::NIL)
     }
 
     /// Allocate a number.
+    #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(n.into())
     }
 
     /// Allocate a boolean.
+    #[inline]
     pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(b.into())
     }
 
     /// Allocate a cons cell.
+    #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(Value::Cons { car, cdr })
+    }
+
+    /// Allocate a thunk (unevaluated expression + environment).
+    #[inline]
+    pub(crate) fn thunk(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Thunk { expr, env })
     }
 
     /// Allocate a character.
@@ -122,21 +130,22 @@ impl<const N: usize> Lisp<N> {
             .is_some_and(|str_idx| self.string_eq(str_idx, name))
     }
 
-    // ========================================================================
-    // Accessors
-    // ========================================================================
+    // — Accessors —
 
     /// Get the value at an arena index.
+    #[inline]
     pub fn get(&self, idx: ArenaIndex) -> ArenaResult<Value> {
         self.arena.get(idx)
     }
 
     /// Get car of a cons cell.
+    #[inline]
     pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.arena.get(idx)?.as_cons().map(|(car, _)| car)
     }
 
     /// Get cdr of a cons cell.
+    #[inline]
     pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
     }
@@ -167,9 +176,7 @@ impl<const N: usize> Lisp<N> {
         Ok((params, body, env))
     }
 
-    // ========================================================================
-    // Evaluation entry point
-    // ========================================================================
+    // — Evaluation entry point —
 
     /// Parse and evaluate a Lisp expression string.
     ///
@@ -192,9 +199,7 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(forced)
     }
 
-    // ========================================================================
-    // Arena introspection
-    // ========================================================================
+    // — Arena introspection —
 
     /// Return arena allocation statistics.
     pub fn stats(&self) -> ArenaStats {

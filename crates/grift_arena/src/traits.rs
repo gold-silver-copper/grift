@@ -7,9 +7,7 @@
 
 use crate::{Arena, ArenaIndex, ArenaResult};
 
-// ============================================================================
-// Recursive Deletion Support
-// ============================================================================
+// — Recursive Deletion Support —
 
 /// Trait for types that can be recursively deleted from the arena.
 ///
@@ -45,9 +43,7 @@ pub trait ArenaDelete<T: Copy, const N: usize> {
     fn delete_recursive(&self, arena: &Arena<T, N>) -> ArenaResult<()>;
 }
 
-// ============================================================================
-// Copy Support
-// ============================================================================
+// — Copy Support —
 
 /// Trait for types that can be deep-copied within the arena.
 ///
@@ -83,9 +79,7 @@ pub trait ArenaCopy<T: Copy, const N: usize> {
     fn copy_deep(&self, arena: &Arena<T, N>) -> ArenaResult<T>;
 }
 
-// ============================================================================
-// Garbage Collection Support
-// ============================================================================
+// — Garbage Collection Support —
 
 /// Trait for types that can be traced by the garbage collector.
 ///

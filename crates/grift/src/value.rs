@@ -121,6 +121,26 @@ impl Value {
     }
 }
 
+impl core::fmt::Display for Value {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Value::Nil => f.write_str("()"),
+            Value::True => f.write_str("#t"),
+            Value::False => f.write_str("#f"),
+            Value::Number(n) => write!(f, "{n}"),
+            Value::Char(c) => write!(f, "#\\{c}"),
+            Value::Symbol(_) => f.write_str("<symbol>"),
+            Value::Cons { .. } => f.write_str("<pair>"),
+            Value::String { .. } => f.write_str("<string>"),
+            Value::Lambda { .. } => f.write_str("<lambda>"),
+            Value::Builtin(_) => f.write_str("<builtin>"),
+            Value::Thunk { .. } => f.write_str("<thunk>"),
+            Value::BlackHole => f.write_str("<black-hole>"),
+            Value::Indirection(_) => f.write_str("<indirection>"),
+        }
+    }
+}
+
 impl From<bool> for Value {
     #[inline]
     fn from(b: bool) -> Self {

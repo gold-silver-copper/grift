@@ -3,9 +3,7 @@
 //! This module contains macros for:
 //! - Generating contiguous get/set operations (`impl_get_contiguous!`, `impl_set_contiguous!`)
 
-// ============================================================================
-// Macros for generating contiguous get/set operations
-// ============================================================================
+// — Macros for generating contiguous get/set operations —
 
 /// Compile-time maximum of a list of `usize` expressions.
 macro_rules! const_max {

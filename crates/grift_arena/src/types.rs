@@ -6,9 +6,7 @@
 //! - [`ArenaResult`] - Result type alias
 //! - [`Slot`] - Internal slot representation
 
-// ============================================================================
-// ArenaIndex
-// ============================================================================
+// — ArenaIndex —
 
 /// Index into the arena.
 ///
@@ -48,11 +46,13 @@ impl ArenaIndex {
     }
 
     /// Get the raw slot index value.
+    #[inline]
     pub const fn raw(self) -> usize {
         self.0
     }
 
     /// Check if this is the NIL index (slot 0).
+    #[inline]
     pub const fn is_nil(self) -> bool {
         self.0 == 0
     }
@@ -80,9 +80,7 @@ impl core::fmt::Display for ArenaIndex {
     }
 }
 
-// ============================================================================
-// ArenaError
-// ============================================================================
+// — ArenaError —
 
 /// Errors that can occur during arena operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,9 +134,7 @@ impl core::fmt::Display for ArenaError {
 /// Result type for arena operations.
 pub type ArenaResult<T> = Result<T, ArenaError>;
 
-// ============================================================================
-// Slot (Internal)
-// ============================================================================
+// — Slot (Internal) —
 
 /// Sentinel value indicating end of free list.
 pub(crate) const FREE_LIST_END: usize = usize::MAX;

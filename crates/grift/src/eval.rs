@@ -489,13 +489,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             match self.lisp.get(params)? {
                 Value::Cons { car: param, cdr: rest } => {
                     let arg_expr = self.lisp.car(arg_exprs)?;
-
-                    // Allocate a thunk in the arena.
-                    let thunk = self.lisp.arena.alloc(Value::Thunk {
-                        expr: arg_expr,
-                        env: call_env,
-                    })?;
-
+                    let thunk = self.lisp.thunk(arg_expr, call_env)?;
                     fn_env = env_bind(self.lisp, fn_env, param, thunk)?;
 
                     params = rest;
@@ -521,18 +515,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         exprs: ArenaIndex,
         call_env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        // Pass 1: Build reversed list of thunks in O(n).
         let mut reversed = ArenaIndex::NIL;
         let mut cur = exprs;
         while !cur.is_nil() {
-            let thunk = self.lisp.arena.alloc(Value::Thunk {
-                expr: self.lisp.car(cur)?,
-                env: call_env,
-            })?;
+            let thunk = self.lisp.thunk(self.lisp.car(cur)?, call_env)?;
             reversed = self.lisp.cons(thunk, reversed)?;
             cur = self.lisp.cdr(cur)?;
         }
-        // Pass 2: Reverse to restore original order in O(n).
+        // Reverse to restore original order.
         let mut result = ArenaIndex::NIL;
         while !reversed.is_nil() {
             let head = self.lisp.car(reversed)?;
@@ -569,9 +559,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(head_forced, tail_forced)
     }
 
-    // ========================================================================
-    // Special forms (TCO-aware)
-    // ========================================================================
+    // — Special forms (TCO-aware) —
 
     /// `(quote expr)` — return the expression unevaluated.
     fn eval_quote(
@@ -627,10 +615,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             Value::Symbol(_) => {
                 let val_expr = self.lisp.car(rest)?;
                 // Create thunk for the RHS
-                let thunk = self.lisp.arena.alloc(Value::Thunk {
-                    expr: val_expr,
-                    env,
-                })?;
+                let thunk = self.lisp.thunk(val_expr, env)?;
                 self.global_env = env_bind(self.lisp, self.global_env, first, thunk)?;
                 Ok(thunk)
             }
@@ -803,13 +788,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let binding = self.lisp.car(cur)?;
                 let name = self.lisp.car(binding)?;
                 let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
-
-                let thunk = self.lisp.arena.alloc(Value::Thunk {
-                    expr: val_expr,
-                    env: *env,
-                })?;
+                let thunk = self.lisp.thunk(val_expr, *env)?;
                 local_env = env_bind(self.lisp, local_env, name, thunk)?;
-
                 cur = self.lisp.cdr(cur)?;
             }
 
@@ -831,17 +811,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> ArenaResult<ArenaIndex> {
         let a_expr = self.lisp.car(args)?;
         let b_expr = self.lisp.car(self.lisp.cdr(args)?)?;
-
-        // Create thunks for both arguments
-        let a_thunk = self.lisp.arena.alloc(Value::Thunk {
-            expr: a_expr,
-            env,
-        })?;
-        let b_thunk = self.lisp.arena.alloc(Value::Thunk {
-            expr: b_expr,
-            env,
-        })?;
-
+        let a_thunk = self.lisp.thunk(a_expr, env)?;
+        let b_thunk = self.lisp.thunk(b_expr, env)?;
         self.lisp.cons(a_thunk, b_thunk)
     }
 
@@ -861,9 +832,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(begin_sym, exprs)
     }
 
-    // ========================================================================
-    // Arithmetic built-ins
-    // ========================================================================
+    // — Arithmetic built-ins —
 
     /// `(+ ...)` — variadic addition.
     fn builtin_add(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -903,30 +872,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     cmp_builtin!(builtin_le, <=);
     cmp_builtin!(builtin_ge, >=);
 
-    // ========================================================================
-    // Pair / list built-ins
-    // ========================================================================
+    // — Pair / list built-ins —
 
     /// `(list ...)` — return args as-is (already forced into a list).
     fn builtin_list(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Ok(args)
     }
 
+    /// Extract and force a pair component from the first argument.
+    ///
+    /// Takes an accessor function (`Lisp::car` or `Lisp::cdr`) to select
+    /// which component to extract from the pair, then forces the result
+    /// to WHNF.
+    fn pair_accessor(&mut self, args: ArenaIndex, f: fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>) -> ArenaResult<ArenaIndex> {
+        let pair = self.lisp.car(args)?;
+        self.force(f(self.lisp, pair)?)
+    }
+
     /// `(car pair)` — extract and force the car of a pair.
     fn builtin_car(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let pair = self.lisp.car(args)?;
-        self.force(self.lisp.car(pair)?)
+        self.pair_accessor(args, Lisp::car)
     }
 
     /// `(cdr pair)` — extract and force the cdr of a pair.
     fn builtin_cdr(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let pair = self.lisp.car(args)?;
-        self.force(self.lisp.cdr(pair)?)
+        self.pair_accessor(args, Lisp::cdr)
     }
 
-    // ========================================================================
-    // Type predicate built-ins
-    // ========================================================================
+    // — Type predicate built-ins —
 
     type_predicate!(builtin_nullp, Value::Nil);
     type_predicate!(builtin_not, Value::False);
