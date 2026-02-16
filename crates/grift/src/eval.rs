@@ -569,9 +569,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(head_forced, tail_forced)
     }
 
-    // ========================================================================
-    // Special forms (TCO-aware)
-    // ========================================================================
+    // — Special forms (TCO-aware) —
 
     /// `(quote expr)` — return the expression unevaluated.
     fn eval_quote(
@@ -861,9 +859,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.cons(begin_sym, exprs)
     }
 
-    // ========================================================================
-    // Arithmetic built-ins
-    // ========================================================================
+    // — Arithmetic built-ins —
 
     /// `(+ ...)` — variadic addition.
     fn builtin_add(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -903,30 +899,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     cmp_builtin!(builtin_le, <=);
     cmp_builtin!(builtin_ge, >=);
 
-    // ========================================================================
-    // Pair / list built-ins
-    // ========================================================================
+    // — Pair / list built-ins —
 
     /// `(list ...)` — return args as-is (already forced into a list).
     fn builtin_list(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Ok(args)
     }
 
+    /// Extract a component from the first argument (a pair) and force it.
+    fn pair_accessor(&mut self, args: ArenaIndex, f: fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>) -> ArenaResult<ArenaIndex> {
+        let pair = self.lisp.car(args)?;
+        self.force(f(self.lisp, pair)?)
+    }
+
     /// `(car pair)` — extract and force the car of a pair.
     fn builtin_car(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let pair = self.lisp.car(args)?;
-        self.force(self.lisp.car(pair)?)
+        self.pair_accessor(args, Lisp::car)
     }
 
     /// `(cdr pair)` — extract and force the cdr of a pair.
     fn builtin_cdr(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let pair = self.lisp.car(args)?;
-        self.force(self.lisp.cdr(pair)?)
+        self.pair_accessor(args, Lisp::cdr)
     }
 
-    // ========================================================================
-    // Type predicate built-ins
-    // ========================================================================
+    // — Type predicate built-ins —
 
     type_predicate!(builtin_nullp, Value::Nil);
     type_predicate!(builtin_not, Value::False);
