@@ -822,15 +822,14 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// assert_eq!(arena.get(idx1).unwrap(), 42);
     /// ```
     pub fn index_at_offset(&self, start: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
-        let new_idx = start.raw() + offset;
-        if new_idx >= N {
+        let index = start.offset(offset).ok_or(ArenaError::InvalidIndex)?;
+        let idx = index.raw();
+        if idx >= N {
             return Err(ArenaError::InvalidIndex);
         }
         
-        let index = ArenaIndex::new(new_idx);
-        
         // Verify the slot is actually occupied
-        match self.slots[new_idx].get() {
+        match self.slots[idx].get() {
             Slot::Occupied { .. } => Ok(index),
             Slot::Free { .. } => Err(ArenaError::InvalidIndex),
         }

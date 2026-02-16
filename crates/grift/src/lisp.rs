@@ -45,12 +45,12 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a number.
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Number(n))
+        self.arena.alloc(n.into())
     }
 
     /// Allocate a boolean.
     pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(if b { Value::True } else { Value::False })
+        self.arena.alloc(b.into())
     }
 
     /// Allocate a cons cell.
@@ -95,11 +95,9 @@ impl<const N: usize> Lisp<N> {
 
         // Allocate contiguous slots for characters
         let data = self.arena.alloc_contiguous(len, Value::Nil)?;
-        let mut i = 0;
-        for c in s.chars() {
+        for (i, c) in s.chars().enumerate() {
             let idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(idx, Value::Char(c))?;
-            i += 1;
+            self.arena.set(idx, c.into())?;
         }
 
         self.arena.alloc(Value::String { len, data })
@@ -147,18 +145,12 @@ impl<const N: usize> Lisp<N> {
 
     /// Get car of a cons cell.
     pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Cons { car, .. } => Ok(car),
-            _ => Err(ArenaError::InvalidIndex),
-        }
+        self.arena.get(idx)?.as_cons().map(|(car, _)| car)
     }
 
     /// Get cdr of a cons cell.
     pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Cons { cdr, .. } => Ok(cdr),
-            _ => Err(ArenaError::InvalidIndex),
-        }
+        self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
     }
 
     /// Allocate a lambda.
