@@ -337,24 +337,18 @@ fn run_benchmarks() {
         Some(Value::Number(500500)),
     ));
 
-    // ── 14. Closure / counter ────────────────────────────────────────────
+    // ── 14. Pure functional counter (accumulator) ──────────────────────
     results.push(bench(
         &lisp,
-        "closure-counter(10000)",
+        "pure-counter(10000)",
         r#"
         (begin
-          (define (make-counter)
-            (define count 0)
-            (lambda ()
-              (set! count (+ count 1))
-              count))
-          (define counter (make-counter))
-          (define (run n)
-            (if (= n 0) (counter)
-              (begin (counter) (run (- n 1)))))
-          (run 10000))
+          (define (count n acc)
+            (if (= n 0) acc
+              (count (- n 1) (+ acc 1))))
+          (count 10000 0))
         "#,
-        Some(Value::Number(10001)),
+        Some(Value::Number(10000)),
     ));
 
     // ── 15. Mutual recursion: even?/odd? ─────────────────────────────────

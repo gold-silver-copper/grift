@@ -612,6 +612,58 @@ fn test_cycle_detection_indirect() {
 }
 
 // ============================================================================
+// Purity Tests (no set!, define shadows)
+// ============================================================================
+
+#[test]
+fn test_set_bang_is_rejected() {
+    // set! has been removed; using it should fail (unbound variable).
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define x 1)
+            (set! x 2)
+            x)
+    "#,
+    );
+    assert!(result.is_err(), "set! should not be recognized");
+}
+
+#[test]
+fn test_define_shadows_not_mutates() {
+    // Redefining a name at the top level creates a new shadow binding.
+    // A lambda parameter binding is independent from a later global define.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define x 1)
+            (define get-x (lambda (x) x))
+            (define x 2)
+            (get-x 1))
+    "#,
+    );
+    // The lambda receives x=1 as a parameter, so global redefinition doesn't affect it.
+    assert_eq!(result, Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_define_redefinition_returns_new_value() {
+    // After redefining, a direct reference to x yields the latest binding.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define x 1)
+            (define x 2)
+            x)
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(2)));
+}
+
+// ============================================================================
 // Infinite Data Structures Tests
 // ============================================================================
 
