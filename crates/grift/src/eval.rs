@@ -6,7 +6,7 @@
 use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 
 use crate::lisp::Lisp;
-use crate::value::Value;
+use crate::value::{Value, BuiltinId};
 
 /// Convert a fallible closure into a `TailAction`: `Ok(())` → `Continue`,
 /// `Err(e)` → `Return(Err(e))`.  Eliminates the repeated match boilerplate
@@ -123,7 +123,7 @@ macro_rules! define_builtins {
 
             /// Apply a built-in function.
             #[allow(non_upper_case_globals)]
-            fn apply_builtin(&mut self, id: u8, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+            fn apply_builtin(&mut self, id: BuiltinId, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
                 match id {
                     $( define_builtins!(@const_name $bmethod) => self.$bmethod(args), )*
                     _ => Err(ArenaError::InvalidIndex),
@@ -161,7 +161,7 @@ macro_rules! define_builtins {
     // Generate a single const with a name derived from the method name.
     (@make_const $method:ident, $id:expr) => {
         #[allow(non_upper_case_globals)]
-        const $method: u8 = $id;
+        const $method: BuiltinId = BuiltinId($id);
     };
 
     // Reference a const by method name.
@@ -284,10 +284,9 @@ fn env_set<const N: usize>(
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with built-in functions bound in the global environment.
     pub fn new(lisp: &'a Lisp<N>) -> Self {
-        let env = ArenaIndex::NIL;
         let mut eval = Evaluator {
             lisp,
-            global_env: env,
+            global_env: ArenaIndex::NIL,
             gc_roots: ArenaIndex::NIL,
         };
         eval.init_builtins();
@@ -327,64 +326,44 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Force a value to Weak Head Normal Form (WHNF), memoizing the result.
     pub fn force(&mut self, mut idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         loop {
-            match self.lisp.get(idx)? {
-                // WHNF — already evaluated, return immediately
-                Value::Nil | Value::True | Value::False | Value::Number(_)
-                | Value::Char(_) | Value::String { .. }
-                | Value::Cons { .. } | Value::Lambda { .. }
-                | Value::Builtin(_) | Value::Symbol(_) => {
-                    return Ok(idx);
-                }
+            let val = self.lisp.get(idx)?;
 
+            if val.is_whnf() {
+                return Ok(idx);
+            }
+
+            match val {
                 // Indirection — follow the pointer.
-                Value::Indirection(target) => {
-                    idx = target;
-                    continue;
-                }
+                Value::Indirection(target) => idx = target,
 
                 // Thunk — force it via the black-hole protocol.
                 Value::Thunk { expr, env } => {
                     let thunk_idx = idx;
-                    // Step 1: Black-hole the cell (cycle detection).
                     self.lisp.arena.set(thunk_idx, Value::BlackHole)?;
-
-                    // Protect thunk_idx across the recursive eval call
-                    // so GC doesn't collect the black-holed cell.
                     self.push_root(thunk_idx);
 
-                    // Step 2: Evaluate the expression to WHNF.
                     let result = self.eval(expr, env)?;
+                    self.pop_roots(1);
 
-                    self.pop_roots(1); // thunk_idx
-
-                    // Step 3: Follow indirections in result to detect cycles.
-                    let mut final_result = result;
+                    // Follow indirections, detecting cycles via black holes.
+                    let mut target = result;
                     loop {
-                        match self.lisp.get(final_result)? {
-                            Value::Indirection(target) => {
-                                final_result = target;
-                            }
-                            Value::BlackHole => {
-                                // The result transitively points to a
-                                // black-holed thunk — circular evaluation.
-                                return Err(ArenaError::InvalidIndex);
-                            }
+                        match self.lisp.get(target)? {
+                            Value::Indirection(t) => target = t,
+                            Value::BlackHole => return Err(ArenaError::InvalidIndex),
                             _ => break,
                         }
                     }
 
-                    // Step 4: Memoize — overwrite the cell with an indirection.
-                    self.lisp.arena.set(thunk_idx, Value::Indirection(final_result))?;
-
-                    // Continue the loop to return the final WHNF value.
-                    idx = final_result;
-                    continue;
+                    // Memoize: overwrite thunk cell with indirection.
+                    self.lisp.arena.set(thunk_idx, Value::Indirection(target))?;
+                    idx = target;
                 }
 
                 // Circular dependency detected.
-                Value::BlackHole => {
-                    return Err(ArenaError::InvalidIndex);
-                }
+                Value::BlackHole => return Err(ArenaError::InvalidIndex),
+
+                _ => unreachable!(),
             }
         }
     }
@@ -429,57 +408,40 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             let val = self.lisp.get(expr)?;
 
+            // Self-evaluating: literals, closures, builtins.
+            if val.is_self_evaluating() {
+                return Ok(expr);
+            }
+
             match val {
-                // Self-evaluating values
-                Value::Nil | Value::True | Value::False | Value::Number(_)
-                | Value::Char(_) | Value::String { .. }
-                | Value::Builtin(_) | Value::Lambda { .. } => {
-                    return Ok(expr);
-                }
-
                 // Thunk encountered as a bare expression — force it.
-                Value::Thunk { .. } => {
-                    return self.force(expr);
-                }
+                Value::Thunk { .. } => return self.force(expr),
 
-                // Indirection — follow it (part of the eval loop, no stack growth)
-                Value::Indirection(target) => {
-                    expr = target;
-                    continue;
-                }
+                // Indirection — follow it (no stack growth).
+                Value::Indirection(target) => { expr = target; continue; }
 
-                // Black hole — circular evaluation
-                Value::BlackHole => {
-                    return Err(ArenaError::InvalidIndex);
-                }
+                // Black hole — circular evaluation.
+                Value::BlackHole => return Err(ArenaError::InvalidIndex),
 
-                // Symbol → look up in local env, then global env
+                // Symbol → look up in local env, then global env.
                 Value::Symbol(_) => {
-                    let binding = if let Ok(b) = env_lookup(self.lisp, env, expr) {
-                        b
-                    } else {
-                        env_lookup(self.lisp, self.global_env, expr)?
-                    };
-                    // Check for BlackHole (circular evaluation).
-                    // Other value types (Thunk, Indirection, WHNF) are
-                    // returned as-is — the caller decides when to force.
+                    let binding = env_lookup(self.lisp, env, expr)
+                        .or_else(|_| env_lookup(self.lisp, self.global_env, expr))?;
                     if matches!(self.lisp.get(binding)?, Value::BlackHole) {
                         return Err(ArenaError::InvalidIndex);
                     }
                     return Ok(binding);
                 }
 
-                // List → special form or function application
+                // List → special form or function application.
                 Value::Cons { car, cdr } => {
-                    // Protect cdr and env across any recursive eval/force calls
-                    // (both in special forms and function application).
                     self.push_root(cdr);
                     self.push_root(env);
 
-                    // Check for special forms
+                    // Check for special forms.
                     if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
                         if let Some(action) = self.try_special_form_tco(car, cdr, &mut expr, &mut env) {
-                            self.pop_roots(2); // env, cdr
+                            self.pop_roots(2);
                             match action {
                                 TailAction::Return(val) => return val,
                                 TailAction::Continue => continue,
@@ -487,33 +449,30 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
                     }
 
-                    // Function application (call-by-need):
-                    // Step 1: Evaluate the operator to WHNF.
+                    // Function application (call-by-need).
                     let func_whnf = self.eval_force(car, env)?;
 
                     match self.lisp.get(func_whnf)? {
-                        // Builtin — strict in all arguments.
                         Value::Builtin(id) => {
                             let args = self.force_args(cdr, env)?;
-                            self.pop_roots(2); // env, cdr
+                            self.pop_roots(2);
                             return self.apply_builtin(id, args);
                         }
-
-                        // Lambda — lazy in arguments (call-by-need).
                         Value::Lambda { .. } => {
                             let (params, body, closed_env) = self.lisp.lambda_parts(func_whnf)?;
                             env = self.bind_args_lazy(closed_env, params, cdr, env)?;
                             expr = body;
-                            self.pop_roots(2); // env, cdr
-                            continue; // ← TCO: no Rust stack frame
+                            self.pop_roots(2);
+                            continue; // ← TCO
                         }
-
                         _ => {
-                            self.pop_roots(2); // env, cdr
+                            self.pop_roots(2);
                             return Err(ArenaError::InvalidIndex);
                         }
                     }
                 }
+
+                _ => unreachable!(),
             }
         }
     }
@@ -556,23 +515,31 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(fn_env)
     }
 
-    /// Build a list of thunks from a list of expressions.
+    /// Build a list of thunks from a list of expressions (iterative, O(n)).
     fn make_thunk_list(
         &self,
-        mut exprs: ArenaIndex,
+        exprs: ArenaIndex,
         call_env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        if exprs.is_nil() {
-            return self.lisp.nil();
+        // Pass 1: Build reversed list of thunks in O(n).
+        let mut reversed = ArenaIndex::NIL;
+        let mut cur = exprs;
+        while !cur.is_nil() {
+            let thunk = self.lisp.arena.alloc(Value::Thunk {
+                expr: self.lisp.car(cur)?,
+                env: call_env,
+            })?;
+            reversed = self.lisp.cons(thunk, reversed)?;
+            cur = self.lisp.cdr(cur)?;
         }
-        let arg_expr = self.lisp.car(exprs)?;
-        let thunk = self.lisp.arena.alloc(Value::Thunk {
-            expr: arg_expr,
-            env: call_env,
-        })?;
-        exprs = self.lisp.cdr(exprs)?;
-        let rest = self.make_thunk_list(exprs, call_env)?;
-        self.lisp.cons(thunk, rest)
+        // Pass 2: Reverse to restore original order in O(n).
+        let mut result = ArenaIndex::NIL;
+        while !reversed.is_nil() {
+            let head = self.lisp.car(reversed)?;
+            result = self.lisp.cons(head, result)?;
+            reversed = self.lisp.cdr(reversed)?;
+        }
+        Ok(result)
     }
 
     /// Evaluate and force all arguments in a list (for strict builtins).
@@ -691,12 +658,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let name = self.lisp.car(args)?;
         let expr = self.lisp.car(self.lisp.cdr(args)?)?;
         let forced = self.eval_force(expr, env)?;
-
-        // Try local env first, then global
-        if env_set(self.lisp, env, name, forced).is_ok() {
-            return self.lisp.nil();
-        }
-        env_set(self.lisp, self.global_env, name, forced)?;
+        env_set(self.lisp, env, name, forced)
+            .or_else(|_| env_set(self.lisp, self.global_env, name, forced))?;
         self.lisp.nil()
     }
 
@@ -740,55 +703,34 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    /// `(cond (test expr) ...)` — tests are strict, result is tail.
+    /// `(cond (test expr...) ...)` — tests are strict, last body expr is tail.
     fn eval_cond(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        TailAction::Return(self.eval_cond_inner(args, expr, env))
-    }
+        tail_continue!((|| -> ArenaResult<()> {
+            let mut cur = args;
+            while !cur.is_nil() {
+                let clause = self.lisp.car(cur)?;
+                let test = self.lisp.car(clause)?;
+                let body = self.lisp.cdr(clause)?;
 
-    fn eval_cond_inner(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        let mut cur = args;
-        while !cur.is_nil() {
-            let clause = self.lisp.car(cur)?;
-            let test = self.lisp.car(clause)?;
-            let body = self.lisp.cdr(clause)?;
+                let matched = self.lisp.symbol_name_eq(test, "else") || {
+                    let test_forced = self.eval_force(test, *env)?;
+                    self.lisp.get(test_forced)?.is_truthy()
+                };
 
-            if self.lisp.symbol_name_eq(test, "else") {
-                return self.eval_begin_inner(body, *env);
+                if matched {
+                    *expr = self.wrap_begin(body)?;
+                    return Ok(());
+                }
+                cur = self.lisp.cdr(cur)?;
             }
-
-            let test_forced = self.eval_force(test, *env)?;
-            if self.lisp.get(test_forced)?.is_truthy() {
-                return self.eval_begin_inner(body, *env);
-            }
-            cur = self.lisp.cdr(cur)?;
-        }
-        self.lisp.nil()
-    }
-
-    /// Helper: evaluate a begin body without TCO (for use within cond).
-    fn eval_begin_inner(
-        &mut self,
-        args: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        let mut cur = args;
-        let mut result = self.lisp.nil()?;
-        while !cur.is_nil() {
-            let e = self.lisp.car(cur)?;
-            result = self.eval(e, env)?;
-            cur = self.lisp.cdr(cur)?;
-        }
-        Ok(result)
+            *expr = self.lisp.nil()?;
+            Ok(())
+        })())
     }
 
     /// `(and expr1 expr2 ...)` — strict on tests, last is tail.
@@ -955,12 +897,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.number(a / b)
     }
 
-    /// `(= a b)` — numeric equality.
-    fn builtin_eq(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let (a, b) = binary_nums!(self, args);
-        self.lisp.boolean(a == b)
-    }
-
+    cmp_builtin!(builtin_eq, ==);
     cmp_builtin!(builtin_lt, <);
     cmp_builtin!(builtin_gt, >);
     cmp_builtin!(builtin_le, <=);
@@ -975,18 +912,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(args)
     }
 
+    /// `(car pair)` — extract and force the car of a pair.
     fn builtin_car(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let pair = self.lisp.car(args)?;
-        let car = self.lisp.car(pair)?;
-        // Force through thunks/indirections
-        self.force(car)
+        self.force(self.lisp.car(pair)?)
     }
 
+    /// `(cdr pair)` — extract and force the cdr of a pair.
     fn builtin_cdr(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let pair = self.lisp.car(args)?;
-        let cdr = self.lisp.cdr(pair)?;
-        // Force through thunks/indirections
-        self.force(cdr)
+        self.force(self.lisp.cdr(pair)?)
     }
 
     // ========================================================================

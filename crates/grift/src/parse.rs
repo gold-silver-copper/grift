@@ -110,8 +110,7 @@ impl<'a> Parser<'a> {
     fn parse_quote<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
         let expr = self.parse(lisp)?;
         let quote_sym = lisp.symbol("quote")?;
-        let nil = lisp.nil()?;
-        let inner = lisp.cons(expr, nil)?;
+        let inner = lisp.cons(expr, ArenaIndex::NIL)?;
         lisp.cons(quote_sym, inner)
     }
 

@@ -26,6 +26,6 @@ mod lisp;
 mod parse;
 mod eval;
 
-pub use value::Value;
+pub use value::{Value, BuiltinId};
 pub use lisp::Lisp;
 pub use grift_arena::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats};
