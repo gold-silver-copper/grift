@@ -685,3 +685,17 @@ fn test_tco_iterative_fib() {
     "#);
     assert_eq!(result, Ok(Value::Number(6765)));
 }
+
+#[test]
+fn test_recursive_fib_30() {
+    // Naive recursive fib(30) — previously crashed with OOM.
+    // GC during evaluation reclaims intermediate values, allowing completion.
+    let lisp: Lisp<100_000> = Lisp::new();
+    let result = lisp.eval(r#"
+        (begin
+            (define (fib n)
+                (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+            (fib 30))
+    "#);
+    assert_eq!(result, Ok(Value::Number(832040)));
+}

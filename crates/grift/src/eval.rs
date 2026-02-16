@@ -141,10 +141,20 @@ enum TailAction {
     Continue,
 }
 
+/// Maximum number of GC root slots available to protect live values
+/// across recursive calls during evaluation.
+const MAX_GC_ROOTS: usize = 512;
+
 /// The evaluator state.
 pub(crate) struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
     pub global_env: ArenaIndex,
+    /// Shadow stack of GC roots: values that must survive garbage collection
+    /// because they are live on the Rust call stack but not reachable from
+    /// `global_env`.
+    gc_roots: [ArenaIndex; MAX_GC_ROOTS],
+    /// Number of currently pushed GC roots.
+    gc_root_count: usize,
 }
 
 /// Bind a name to a value in an environment, returning the new environment.
@@ -210,9 +220,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut eval = Evaluator {
             lisp,
             global_env: env,
+            gc_roots: [ArenaIndex::NIL; MAX_GC_ROOTS],
+            gc_root_count: 0,
         };
         eval.init_builtins();
         eval
+    }
+
+    /// Push a value onto the GC root stack so it survives collection.
+    #[inline]
+    fn push_root(&mut self, idx: ArenaIndex) {
+        debug_assert!(
+            self.gc_root_count < MAX_GC_ROOTS,
+            "GC root stack overflow: exceeded {} roots",
+            MAX_GC_ROOTS
+        );
+        if self.gc_root_count < MAX_GC_ROOTS {
+            self.gc_roots[self.gc_root_count] = idx;
+            self.gc_root_count += 1;
+        }
+    }
+
+    /// Pop the top value from the GC root stack.
+    #[inline]
+    fn pop_root(&mut self) {
+        if self.gc_root_count > 0 {
+            self.gc_root_count -= 1;
+        }
+    }
+
+    /// Pop `n` values from the GC root stack.
+    #[inline]
+    fn pop_roots(&mut self, n: usize) {
+        self.gc_root_count = self.gc_root_count.saturating_sub(n);
     }
 
     /// Force a value to Weak Head Normal Form (WHNF), memoizing the result.
@@ -239,8 +279,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     // Step 1: Black-hole the cell (cycle detection).
                     self.lisp.arena.set(thunk_idx, Value::BlackHole)?;
 
+                    // Protect thunk_idx across the recursive eval call
+                    // so GC doesn't collect the black-holed cell.
+                    self.push_root(thunk_idx);
+
                     // Step 2: Evaluate the expression to WHNF.
                     let result = self.eval(expr, env)?;
+
+                    self.pop_root(); // thunk_idx
 
                     // Step 3: Follow indirections in result to detect cycles.
                     let mut final_result = result;
@@ -274,9 +320,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
+    /// Trigger garbage collection using all known live roots.
+    ///
+    /// The roots include the global environment, the current expression
+    /// and environment, and any values saved on the GC root stack.
+    fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
+        self.lisp.arena.collect_garbage_multi(&[
+            &[expr, env, self.global_env],
+            &self.gc_roots[..self.gc_root_count],
+        ]);
+    }
+
+    /// Check arena memory pressure and collect garbage if needed.
+    ///
+    /// Triggers GC when the arena is more than 75% full, using the
+    /// provided expression and environment as additional GC roots
+    /// alongside the global environment.
+    #[inline]
+    fn maybe_collect(&self, expr: ArenaIndex, env: ArenaIndex) {
+        let len = self.lisp.arena.len();
+        let cap = self.lisp.arena.capacity();
+        if len > cap * 3 / 4 {
+            self.collect_garbage(expr, env);
+        }
+    }
+
     /// Evaluate an expression in an environment (with TCO).
     pub fn eval(&mut self, mut expr: ArenaIndex, mut env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         loop {
+            // Collect garbage when the arena is under memory pressure.
+            self.maybe_collect(expr, env);
+
             let val = self.lisp.get(expr)?;
 
             match val {
@@ -321,9 +395,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                 // List → special form or function application
                 Value::Cons { car, cdr } => {
+                    // Protect cdr and env across any recursive eval/force calls
+                    // (both in special forms and function application).
+                    self.push_root(cdr);
+                    self.push_root(env);
+
                     // Check for special forms
                     if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
                         if let Some(action) = self.try_special_form_tco(car, cdr, &mut expr, &mut env) {
+                            self.pop_roots(2); // env, cdr
                             match action {
                                 TailAction::Return(val) => return val,
                                 TailAction::Continue => continue,
@@ -340,6 +420,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         // Builtin — strict in all arguments.
                         Value::Builtin(id) => {
                             let args = self.force_args(cdr, env)?;
+                            self.pop_roots(2); // env, cdr
                             return self.apply_builtin(id, args);
                         }
 
@@ -348,10 +429,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let (params, body, closed_env) = self.lisp.lambda_parts(func_whnf)?;
                             env = self.bind_args_lazy(closed_env, params, cdr, env)?;
                             expr = body;
+                            self.pop_roots(2); // env, cdr
                             continue; // ← TCO: no Rust stack frame
                         }
 
-                        _ => return Err(ArenaError::InvalidIndex),
+                        _ => {
+                            self.pop_roots(2); // env, cdr
+                            return Err(ArenaError::InvalidIndex);
+                        }
                     }
                 }
             }
@@ -424,12 +509,21 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if args.is_nil() {
             return self.lisp.nil();
         }
+        // Protect `args` and `env` across recursive eval/force calls.
+        self.push_root(args);
+        self.push_root(env);
+
         let head_expr = self.lisp.car(args)?;
         let head_val = self.eval(head_expr, env)?;
         let head_forced = self.force(head_val)?;
 
+        // Protect `head_forced` across the recursive force_args call.
+        self.push_root(head_forced);
+
         let tail = self.lisp.cdr(args)?;
         let tail_forced = self.force_args(tail, env)?;
+
+        self.pop_roots(3); // head_forced, env, args
 
         self.lisp.cons(head_forced, tail_forced)
     }
