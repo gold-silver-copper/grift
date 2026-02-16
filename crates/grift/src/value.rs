@@ -10,6 +10,14 @@ use grift_arena::{ArenaError, ArenaIndex};
 #[repr(transparent)]
 pub struct BuiltinId(pub(crate) u8);
 
+impl core::ops::Deref for BuiltinId {
+    type Target = u8;
+    #[inline]
+    fn deref(&self) -> &u8 {
+        &self.0
+    }
+}
+
 /// A Lisp value stored in the arena. Variants can only inline max two arenaindex sized data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
@@ -103,16 +111,7 @@ impl Value {
     /// excludes symbols and cons cells (which require lookup / dispatch).
     #[inline]
     pub fn is_self_evaluating(self) -> bool {
-        matches!(
-            self,
-            Value::Nil
-                | Value::Boolean(_)
-                | Value::Number(_)
-                | Value::Char(_)
-                | Value::String { .. }
-                | Value::Builtin(_)
-                | Value::Lambda { .. }
-        )
+        self.is_whnf() && !matches!(self, Value::Symbol(_) | Value::Cons { .. })
     }
 
     value_accessor! {
@@ -150,14 +149,7 @@ impl core::fmt::Display for Value {
             Value::Boolean(false) => f.write_str("#f"),
             Value::Number(n) => write!(f, "{n}"),
             Value::Char(c) => write!(f, "#\\{c}"),
-            Value::Symbol(_) => f.write_str("<symbol>"),
-            Value::Cons { .. } => f.write_str("<pair>"),
-            Value::String { .. } => f.write_str("<string>"),
-            Value::Lambda { .. } => f.write_str("<lambda>"),
-            Value::Builtin(_) => f.write_str("<builtin>"),
-            Value::Thunk { .. } => f.write_str("<thunk>"),
-            Value::BlackHole => f.write_str("<black-hole>"),
-            Value::Indirection(_) => f.write_str("<indirection>"),
+            _ => write!(f, "<{}>", self.type_name()),
         }
     }
 }

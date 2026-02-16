@@ -105,8 +105,8 @@ macro_rules! define_builtins {
             $( $sname:literal => $smethod:ident ),* $(,)?
         }
     ) => {
-        // Generate unique constant IDs for each builtin.
-        define_builtins!(@consts 0u8, $( $bname, $bmethod; )* );
+        // Generate unique constant IDs for each builtin using index counting.
+        define_builtins!(@consts 0u8; $( $bmethod, )*);
 
         impl<'a, const N: usize> Evaluator<'a, N> {
             /// Register all built-in functions in the global environment.
@@ -114,9 +114,7 @@ macro_rules! define_builtins {
                 $(
                     if let (Ok(sym), Ok(val)) = (
                         self.lisp.symbol($bname),
-                        self.lisp.arena.alloc(Value::Builtin(
-                            define_builtins!(@const_name $bmethod)
-                        )),
+                        self.lisp.arena.alloc(Value::Builtin($bmethod)),
                     ) {
                         if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, val) {
                             self.global_env = new_env;
@@ -129,7 +127,7 @@ macro_rules! define_builtins {
             #[allow(non_upper_case_globals)]
             fn apply_builtin(&mut self, id: BuiltinId, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
                 match id {
-                    $( define_builtins!(@const_name $bmethod) => self.$bmethod(args), )*
+                    $( $bmethod => self.$bmethod(args), )*
                     _ => Err(ArenaError::NotCallable),
                 }
             }
@@ -155,21 +153,14 @@ macro_rules! define_builtins {
         }
     };
 
-    // Generate const declarations recursively with incrementing IDs.
-    (@consts $id:expr, $name:literal, $method:ident; $( $rest_name:literal, $rest_method:ident; )* ) => {
-        define_builtins!(@make_const $method, $id);
-        define_builtins!(@consts $id + 1u8, $( $rest_name, $rest_method; )* );
-    };
-    (@consts $id:expr, ) => {};
-
-    // Generate a single const with a name derived from the method name.
-    (@make_const $method:ident, $id:expr) => {
+    // Generate const declarations: base case.
+    (@consts $id:expr; ) => {};
+    // Generate const declarations: recursive case.
+    (@consts $id:expr; $method:ident, $( $rest:ident, )*) => {
         #[allow(non_upper_case_globals)]
         const $method: BuiltinId = BuiltinId($id);
+        define_builtins!(@consts $id + 1u8; $( $rest, )*);
     };
-
-    // Reference a const by method name.
-    (@const_name $method:ident) => { $method };
 }
 
 // Invoke the macro to generate `init_builtins`, `apply_builtin`,
@@ -228,24 +219,19 @@ pub(crate) struct Evaluator<'a, const N: usize> {
     gc_roots: ArenaIndex,
 }
 
-/// Walk an environment association list, calling `f` on each (key, binding)
-/// pair until `f` returns `Some(R)`.  Returns `Err(UnboundVariable)` when the
-/// name is not found.
+/// Look up a name in an environment association list.
+/// Returns `Err(UnboundVariable)` when the name is not found.
 #[inline]
-fn env_scan<const N: usize, R, F>(
+fn env_lookup<const N: usize>(
     lisp: &Lisp<N>,
     env: ArenaIndex,
     name: ArenaIndex,
-    mut f: F,
-) -> ArenaResult<R>
-where
-    F: FnMut(ArenaIndex) -> ArenaResult<R>,
-{
+) -> ArenaResult<ArenaIndex> {
     let mut cur = env;
     while !cur.is_nil() {
         let binding = lisp.car(cur)?;
         if lisp.car(binding)? == name {
-            return f(binding);
+            return lisp.cdr(binding);
         }
         cur = lisp.cdr(cur)?;
     }
@@ -262,16 +248,6 @@ fn env_bind<const N: usize>(
 ) -> ArenaResult<ArenaIndex> {
     let pair = lisp.cons(name, val)?;
     lisp.cons(pair, env)
-}
-
-/// Look up a name in an environment.
-#[inline]
-fn env_lookup<const N: usize>(
-    lisp: &Lisp<N>,
-    env: ArenaIndex,
-    name: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
-    env_scan(lisp, env, name, |binding| lisp.cdr(binding))
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
@@ -303,15 +279,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     #[inline]
     fn pop_roots(&mut self, n: usize) {
         for _ in 0..n {
-            if self.gc_roots.is_nil() {
-                break;
-            }
-            let rest = self.lisp.cdr(self.gc_roots);
-            debug_assert!(rest.is_ok(), "GC root list corrupted during pop");
-            if let Ok(rest) = rest {
-                self.gc_roots = rest;
-            } else {
-                break;
+            match self.lisp.cdr(self.gc_roots) {
+                Ok(rest) => self.gc_roots = rest,
+                Err(_) => break,
             }
         }
     }
@@ -598,33 +568,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        non_tail(self.eval_define_inner(args, *env))
-    }
+        non_tail((|| {
+            let first = self.lisp.car(args)?;
+            let rest = self.lisp.cdr(args)?;
 
-    fn eval_define_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let first = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-
-        match self.lisp.get(first)? {
-            Value::Symbol(_) => {
-                let val_expr = self.lisp.car(rest)?;
-                // Create thunk for the RHS
-                let thunk = self.lisp.thunk(val_expr, env)?;
-                self.global_env = env_bind(self.lisp, self.global_env, first, thunk)?;
-                Ok(thunk)
+            match self.lisp.get(first)? {
+                Value::Symbol(_) => {
+                    let val_expr = self.lisp.car(rest)?;
+                    let thunk = self.lisp.thunk(val_expr, *env)?;
+                    self.global_env = env_bind(self.lisp, self.global_env, first, thunk)?;
+                    Ok(thunk)
+                }
+                Value::Cons {
+                    car: name,
+                    cdr: params,
+                } => {
+                    let body = self.wrap_begin(rest)?;
+                    let lam = self.lisp.lambda(params, body, *env)?;
+                    self.global_env = env_bind(self.lisp, self.global_env, name, lam)?;
+                    Ok(lam)
+                }
+                _ => Err(ArenaError::TypeError),
             }
-            Value::Cons {
-                car: name,
-                cdr: params,
-            } => {
-                // Function shorthand — lambda is already WHNF, no thunk needed
-                let body = self.wrap_begin(rest)?;
-                let lam = self.lisp.lambda(params, body, env)?;
-                self.global_env = env_bind(self.lisp, self.global_env, name, lam)?;
-                Ok(lam)
-            }
-            _ => Err(ArenaError::TypeError),
-        }
+        })())
     }
 
     /// `(lambda (params...) body...)`.
@@ -634,14 +600,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        non_tail(self.eval_lambda_inner(args, *env))
-    }
-
-    fn eval_lambda_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let params = self.lisp.car(args)?;
-        let body_list = self.lisp.cdr(args)?;
-        let body = self.wrap_begin(body_list)?;
-        self.lisp.lambda(params, body, env)
+        non_tail((|| {
+            let params = self.lisp.car(args)?;
+            let body = self.wrap_begin(self.lisp.cdr(args)?)?;
+            self.lisp.lambda(params, body, *env)
+        })())
     }
 
     /// `(begin expr1 expr2 ...)` — all but last are non-tail, last is tail.
@@ -784,15 +747,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        non_tail(self.eval_cons_inner(args, *env))
-    }
-
-    fn eval_cons_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a_expr = self.lisp.car(args)?;
-        let b_expr = self.lisp.car(self.lisp.cdr(args)?)?;
-        let a_thunk = self.lisp.thunk(a_expr, env)?;
-        let b_thunk = self.lisp.thunk(b_expr, env)?;
-        self.lisp.cons(a_thunk, b_thunk)
+        non_tail((|| {
+            let a_thunk = self.lisp.thunk(self.lisp.car(args)?, *env)?;
+            let b_thunk = self.lisp.thunk(self.lisp.car(self.lisp.cdr(args)?)?, *env)?;
+            self.lisp.cons(a_thunk, b_thunk)
+        })())
     }
 
     /// Wrap a list of expressions in a `begin` form if there are multiple,
