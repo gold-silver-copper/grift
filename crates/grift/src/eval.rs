@@ -229,6 +229,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn push_root(&mut self, idx: ArenaIndex) {
         if let Ok(new_roots) = self.lisp.cons(idx, self.gc_roots) {
             self.gc_roots = new_roots;
+        } else {
+            debug_assert!(false, "GC root push failed: arena out of memory");
         }
     }
 
@@ -236,7 +238,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     #[inline]
     fn pop_root(&mut self) {
         if !self.gc_roots.is_nil() {
-            if let Ok(rest) = self.lisp.cdr(self.gc_roots) {
+            let rest = self.lisp.cdr(self.gc_roots);
+            debug_assert!(rest.is_ok(), "GC root list corrupted during pop");
+            if let Ok(rest) = rest {
                 self.gc_roots = rest;
             }
         }
@@ -249,7 +253,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             if self.gc_roots.is_nil() {
                 break;
             }
-            if let Ok(rest) = self.lisp.cdr(self.gc_roots) {
+            let rest = self.lisp.cdr(self.gc_roots);
+            debug_assert!(rest.is_ok(), "GC root list corrupted during pop");
+            if let Ok(rest) = rest {
                 self.gc_roots = rest;
             } else {
                 break;
