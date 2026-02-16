@@ -67,23 +67,22 @@ macro_rules! binary_nums {
     }};
 }
 
-/// Generate a non-tail special form that delegates to a `&mut self` inner
-/// method.  Four special forms (`define`, `set!`, `lambda`, `cons`) share
-/// the same pattern: accept the TCO `(expr, env)` pair but immediately
-/// return a result via `TailAction::Return` without modifying them.
-/// This macro captures that pattern, accepting an optional doc comment.
-macro_rules! delegate_special_form {
-    ($(#[doc = $doc:expr])* $vis:vis fn $name:ident -> $inner:ident) => {
-        $(#[doc = $doc])*
-        $vis fn $name(
-            &mut self,
-            args: ArenaIndex,
-            _expr: &mut ArenaIndex,
-            env: &mut ArenaIndex,
-        ) -> TailAction {
-            TailAction::Return(self.$inner(args, *env))
+/// Generate a pair-accessor builtin (`car` or `cdr`) that extracts a
+/// component from the first argument and forces the result.
+macro_rules! pair_builtin {
+    ($name:ident, $accessor:ident) => {
+        fn $name(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+            let pair = self.lisp.car(args)?;
+            self.force(self.lisp.$accessor(pair)?)
         }
     };
+}
+
+/// Non-tail special form: wrap a `(args, env) -> Result` method as a
+/// TCO `TailAction::Return`.
+#[inline]
+fn non_tail(result: ArenaResult<ArenaIndex>) -> TailAction {
+    TailAction::Return(result)
 }
 ///
 /// **Built-in functions** (section `builtins { ... }`) are registered in the
@@ -231,6 +230,7 @@ pub(crate) struct Evaluator<'a, const N: usize> {
 /// Walk an environment association list, calling `f` on each (key, binding)
 /// pair until `f` returns `Some(R)`.  Returns `Err(InvalidIndex)` when the
 /// name is not found.
+#[inline]
 fn env_scan<const N: usize, R, F>(
     lisp: &Lisp<N>,
     env: ArenaIndex,
@@ -252,6 +252,7 @@ where
 }
 
 /// Bind a name to a value in an environment, returning the new environment.
+#[inline]
 fn env_bind<const N: usize>(
     lisp: &Lisp<N>,
     env: ArenaIndex,
@@ -263,6 +264,7 @@ fn env_bind<const N: usize>(
 }
 
 /// Look up a name in an environment.
+#[inline]
 fn env_lookup<const N: usize>(
     lisp: &Lisp<N>,
     env: ArenaIndex,
@@ -272,6 +274,7 @@ fn env_lookup<const N: usize>(
 }
 
 /// Set a binding in an environment (mutate existing binding).
+#[inline]
 fn env_set<const N: usize>(
     lisp: &Lisp<N>,
     env: ArenaIndex,
@@ -601,9 +604,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    delegate_special_form! {
-        /// `(define name expr)` or `(define (name params...) body)`.
-        fn eval_define -> eval_define_inner
+    /// `(define name expr)` or `(define (name params...) body)`.
+    fn eval_define(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail(self.eval_define_inner(args, *env))
     }
 
     fn eval_define_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -632,9 +640,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    delegate_special_form! {
-        /// `(set! name expr)`.
-        fn eval_set -> eval_set_inner
+    /// `(set! name expr)`.
+    fn eval_set(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail(self.eval_set_inner(args, *env))
     }
 
     fn eval_set_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -646,9 +659,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.nil()
     }
 
-    delegate_special_form! {
-        /// `(lambda (params...) body...)`.
-        fn eval_lambda -> eval_lambda_inner
+    /// `(lambda (params...) body...)`.
+    fn eval_lambda(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail(self.eval_lambda_inner(args, *env))
     }
 
     fn eval_lambda_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -719,7 +737,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        self.eval_short_circuit(args, expr, env, true)
+        self.eval_short_circuit(args, expr, env, true /* short-circuit on falsy */)
     }
 
     /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
@@ -729,14 +747,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        self.eval_short_circuit(args, expr, env, false)
+        self.eval_short_circuit(args, expr, env, false /* short-circuit on truthy */)
     }
 
-    /// Shared implementation for `and`/`or` short-circuit evaluation.
-    ///
-    /// When `short_on_truthy` is `true`, behaves as `and` (short-circuits on
-    /// falsy, defaults to `#t`).  When `false`, behaves as `or` (short-circuits
-    /// on truthy, defaults to `#f`).
+    /// Shared `and`/`or` implementation: short-circuits when a test's
+    /// truthiness does *not* match `continue_on_truthy`.
     fn eval_short_circuit(
         &mut self,
         args: ArenaIndex,
@@ -793,9 +808,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    delegate_special_form! {
-        /// `(cons a b)` — lazy cons: does NOT evaluate arguments.
-        fn eval_cons -> eval_cons_inner
+    /// `(cons a b)` — lazy cons: does NOT evaluate arguments.
+    fn eval_cons(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail(self.eval_cons_inner(args, *env))
     }
 
     fn eval_cons_inner(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -871,29 +891,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(args)
     }
 
-    /// Extract and force a pair component from the first argument.
-    ///
-    /// Takes an accessor function (`Lisp::car` or `Lisp::cdr`) to select
-    /// which component to extract from the pair, then forces the result
-    /// to WHNF.
-    fn pair_accessor(
-        &mut self,
-        args: ArenaIndex,
-        f: fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>,
-    ) -> ArenaResult<ArenaIndex> {
-        let pair = self.lisp.car(args)?;
-        self.force(f(self.lisp, pair)?)
-    }
-
-    /// `(car pair)` — extract and force the car of a pair.
-    fn builtin_car(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.pair_accessor(args, Lisp::car)
-    }
-
-    /// `(cdr pair)` — extract and force the cdr of a pair.
-    fn builtin_cdr(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.pair_accessor(args, Lisp::cdr)
-    }
+    // `(car pair)` / `(cdr pair)` — extract and force a pair component.
+    pair_builtin!(builtin_car, car);
+    pair_builtin!(builtin_cdr, cdr);
 
     // — Type predicate built-ins —
 

@@ -113,6 +113,19 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         self.gc_enabled.set(enabled);
     }
 
+    /// Run a closure with GC temporarily set to `enabled`, restoring the
+    /// previous state afterward.
+    fn scoped_gc<F, R>(&self, enabled: bool, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let was = self.gc_enabled.get();
+        self.gc_enabled.set(enabled);
+        let result = f();
+        self.gc_enabled.set(was);
+        result
+    }
+
     /// Temporarily disable GC, run a closure, then restore the previous state.
     ///
     /// This is useful for critical sections where GC should not run.
@@ -134,11 +147,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnOnce() -> R,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(false);
-        let result = f();
-        self.set_gc_enabled(was_enabled);
-        result
+        self.scoped_gc(false, f)
     }
 
     /// Temporarily enable GC, run a closure, then restore the previous state.
@@ -149,11 +158,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnOnce() -> R,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(true);
-        let result = f();
-        self.set_gc_enabled(was_enabled);
-        result
+        self.scoped_gc(true, f)
     }
 
     /// Get the maximum capacity of this arena.
