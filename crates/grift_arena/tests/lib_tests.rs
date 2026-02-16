@@ -48,8 +48,6 @@ fn test_invalid_index() {
     assert_eq!(arena.get(idx), Err(ArenaError::InvalidIndex));
 }
 
-
-
 #[test]
 fn test_free_list_o1_allocation() {
     let arena: Arena<isize, 5> = Arena::new(0);
@@ -223,7 +221,7 @@ fn test_set() {
 fn test_trace_error() {
     // Test the new TraceError variant
     let err = ArenaError::TraceError;
-    assert_eq!(err.as_str(), "error during GC tracing");
+    assert_eq!(err.as_str(), "Error during GC tracing");
     assert!(err.is_trace_error());
     assert!(!err.is_out_of_memory());
     assert!(!err.is_invalid_index());

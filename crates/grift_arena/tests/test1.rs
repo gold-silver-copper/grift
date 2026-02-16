@@ -1,6 +1,8 @@
 // tests/arena_tests.rs
 
-use grift_arena::{Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
+use grift_arena::{
+    Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace,
+};
 
 // ============================================================================
 // Basic Functionality Tests
@@ -871,7 +873,10 @@ fn test_index_at_boundary() {
 
     // Index at boundary - slot doesn't exist
     let boundary_not_allocated = ArenaIndex::new(9);
-    assert_eq!(arena.get(boundary_not_allocated), Err(ArenaError::InvalidIndex));
+    assert_eq!(
+        arena.get(boundary_not_allocated),
+        Err(ArenaError::InvalidIndex)
+    );
 
     // Index one past boundary - always InvalidIndex
     let past_boundary = ArenaIndex::new(10);
@@ -924,9 +929,7 @@ fn test_zigzag_allocation_pattern() {
     let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate all
-    let mut indices: Vec<ArenaIndex> = (0..10)
-        .map(|i| arena.alloc(i).unwrap())
-        .collect();
+    let mut indices: Vec<ArenaIndex> = (0..10).map(|i| arena.alloc(i).unwrap()).collect();
 
     // Free odd indices
     for i in (1..10).step_by(2) {
@@ -1538,7 +1541,12 @@ fn test_gc_linked_list() {
     });
 
     // Build list: head -> n1 -> n2 -> n3 -> None
-    let n3 = arena.alloc(ListNode { value: 3, next: None }).unwrap();
+    let n3 = arena
+        .alloc(ListNode {
+            value: 3,
+            next: None,
+        })
+        .unwrap();
     let n2 = arena
         .alloc(ListNode {
             value: 2,
@@ -1559,8 +1567,18 @@ fn test_gc_linked_list() {
         .unwrap();
 
     // Garbage nodes
-    arena.alloc(ListNode { value: -1, next: None }).unwrap();
-    arena.alloc(ListNode { value: -2, next: None }).unwrap();
+    arena
+        .alloc(ListNode {
+            value: -1,
+            next: None,
+        })
+        .unwrap();
+    arena
+        .alloc(ListNode {
+            value: -2,
+            next: None,
+        })
+        .unwrap();
 
     assert_eq!(arena.len(), 6);
 
@@ -1918,7 +1936,14 @@ fn test_gc_self_referential() {
 
     // Allocate and make it point to itself
     let node = arena.alloc(SelfRef { self_ptr: None }).unwrap();
-    arena.set(node, SelfRef { self_ptr: Some(node) }).unwrap();
+    arena
+        .set(
+            node,
+            SelfRef {
+                self_ptr: Some(node),
+            },
+        )
+        .unwrap();
 
     // Add garbage
     arena.alloc(SelfRef { self_ptr: None }).unwrap();
@@ -1937,7 +1962,12 @@ fn test_gc_long_chain() {
     });
 
     // Build a very long linked list
-    let mut current = arena.alloc(ListNode { value: 0, next: None }).unwrap();
+    let mut current = arena
+        .alloc(ListNode {
+            value: 0,
+            next: None,
+        })
+        .unwrap();
     for i in 1..500 {
         let next = arena
             .alloc(ListNode {
@@ -1952,7 +1982,12 @@ fn test_gc_long_chain() {
 
     // Add garbage
     for _ in 0..100 {
-        arena.alloc(ListNode { value: -1, next: None }).unwrap();
+        arena
+            .alloc(ListNode {
+                value: -1,
+                next: None,
+            })
+            .unwrap();
     }
 
     assert_eq!(arena.len(), 600);
@@ -2126,7 +2161,11 @@ fn test_gc_stress_wide_tree() {
     for i in 0..8 {
         root_children[i] = Some(level1_nodes[i]);
     }
-    let root = arena.alloc(ManyChildNode { children: root_children }).unwrap();
+    let root = arena
+        .alloc(ManyChildNode {
+            children: root_children,
+        })
+        .unwrap();
 
     // Add garbage
     for _ in 0..100 {
@@ -2351,7 +2390,9 @@ fn test_gc_stress_fragmented_heap() {
     }
 
     // Remaining 50 slots are our "roots"
-    let roots: Vec<ArenaIndex> = indices.iter().enumerate()
+    let roots: Vec<ArenaIndex> = indices
+        .iter()
+        .enumerate()
         .filter(|(i, _)| i % 2 == 1)
         .map(|(_, &idx)| idx)
         .collect();
@@ -2413,7 +2454,10 @@ fn test_gc_stress_diamond_dag() {
         let left_idx = i % 10;
         let right_idx = (i + 1) % 10;
         let branch = arena
-            .alloc(Tree::Branch(shared_leaves[left_idx], shared_leaves[right_idx]))
+            .alloc(Tree::Branch(
+                shared_leaves[left_idx],
+                shared_leaves[right_idx],
+            ))
             .unwrap();
         roots.push(branch);
     }
@@ -2453,11 +2497,7 @@ fn test_gc_stress_complex_cycles() {
     // Create a ring of nodes
     let mut ring_nodes = Vec::new();
     for _ in 0..20 {
-        ring_nodes.push(
-            arena
-                .alloc(CycleNode { refs: [None; 4] })
-                .unwrap(),
-        );
+        ring_nodes.push(arena.alloc(CycleNode { refs: [None; 4] }).unwrap());
     }
 
     // Connect them in a ring with cross-connections
@@ -2513,12 +2553,20 @@ fn test_gc_stress_maximum_children_per_trace() {
         }
     }
 
-    let arena: Arena<Node16, 500> = Arena::new(Node16 { children: [None; 16] });
+    let arena: Arena<Node16, 500> = Arena::new(Node16 {
+        children: [None; 16],
+    });
 
     // Create leaves
     let mut leaves = Vec::new();
     for _ in 0..32 {
-        leaves.push(arena.alloc(Node16 { children: [None; 16] }).unwrap());
+        leaves.push(
+            arena
+                .alloc(Node16 {
+                    children: [None; 16],
+                })
+                .unwrap(),
+        );
     }
 
     // Create a node with exactly 16 children
@@ -2526,14 +2574,22 @@ fn test_gc_stress_maximum_children_per_trace() {
     for i in 0..16 {
         children1[i] = Some(leaves[i]);
     }
-    let node1 = arena.alloc(Node16 { children: children1 }).unwrap();
+    let node1 = arena
+        .alloc(Node16 {
+            children: children1,
+        })
+        .unwrap();
 
     // Create another node with 16 different children
     let mut children2 = [None; 16];
     for i in 0..16 {
         children2[i] = Some(leaves[16 + i]);
     }
-    let node2 = arena.alloc(Node16 { children: children2 }).unwrap();
+    let node2 = arena
+        .alloc(Node16 {
+            children: children2,
+        })
+        .unwrap();
 
     // Root points to both
     let root = arena
@@ -2541,15 +2597,31 @@ fn test_gc_stress_maximum_children_per_trace() {
             children: [
                 Some(node1),
                 Some(node2),
-                None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
             ],
         })
         .unwrap();
 
     // Add garbage
     for _ in 0..100 {
-        arena.alloc(Node16 { children: [None; 16] }).unwrap();
+        arena
+            .alloc(Node16 {
+                children: [None; 16],
+            })
+            .unwrap();
     }
 
     let stats = arena.collect_garbage(&[root]);
@@ -2739,10 +2811,7 @@ fn test_modify_invalid() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    assert_eq!(
-        arena.modify(idx, |_| {}),
-        Err(ArenaError::InvalidIndex)
-    );
+    assert_eq!(arena.modify(idx, |_| {}), Err(ArenaError::InvalidIndex));
 }
 
 #[test]
@@ -2936,7 +3005,7 @@ fn test_arena_error_methods() {
     assert!(!ArenaError::InvalidIndex.is_out_of_memory());
     assert!(ArenaError::InvalidIndex.is_invalid_index());
 
-    assert_eq!(ArenaError::OutOfMemory.as_str(), "arena is full");
+    assert_eq!(ArenaError::OutOfMemory.as_str(), "Arena is full");
 }
 
 #[test]
@@ -3011,7 +3080,7 @@ fn test_gc_cannot_help_when_all_reachable() {
     // All are roots, so GC won't help
     let stats = arena.collect_garbage(&[r1, r2, r3]);
     assert_eq!(stats.collected, 0);
-    
+
     // Still can't alloc
     let result = arena.alloc(Tree::Leaf(4));
     assert_eq!(result, Err(ArenaError::OutOfMemory));
@@ -3087,14 +3156,14 @@ fn test_gc_handles_many_children() {
 #[test]
 fn test_gc_with_null_roots() {
     let arena: Arena<Tree, 50> = Arena::new(Tree::Leaf(0));
-    
+
     // Allocate some values
     let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
-    
+
     // Use NULL indices in roots - they should be safely ignored
     let stats = arena.collect_garbage(&[ArenaIndex::NIL, idx1, ArenaIndex::NIL]);
-    
+
     // idx1 was preserved, idx2 was garbage
     assert_eq!(stats.marked, 1);
     assert_eq!(stats.collected, 1);
@@ -3105,15 +3174,15 @@ fn test_gc_with_null_roots() {
 #[test]
 fn test_gc_with_out_of_bounds_roots() {
     let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
-    
+
     let idx = arena.alloc(Tree::Leaf(42)).unwrap();
-    
+
     // Create an invalid index that's out of bounds
     let invalid_idx = ArenaIndex::new(1000);
-    
+
     // GC should safely ignore invalid indices
     let stats = arena.collect_garbage(&[invalid_idx, idx]);
-    
+
     assert_eq!(stats.marked, 1);
     assert_eq!(stats.collected, 0);
     assert_eq!(arena.len(), 1);
@@ -3123,18 +3192,18 @@ fn test_gc_with_out_of_bounds_roots() {
 #[test]
 fn test_gc_with_stale_roots() {
     let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
-    
+
     let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
-    
+
     // Free and reallocate idx1 to make the old index stale
     arena.free(idx1).unwrap();
     let idx3 = arena.alloc(Tree::Leaf(3)).unwrap();
-    
+
     // Use the stale idx1 as root - it should be ignored
     // idx2 should be collected since it's not in roots
     let stats = arena.collect_garbage(&[idx1, idx3]); // idx1 is stale
-    
+
     // Only idx3 should be marked (idx1 is stale and ignored)
     assert_eq!(stats.marked, 1);
     assert_eq!(stats.collected, 1); // idx2 is garbage
@@ -3148,35 +3217,35 @@ fn test_arena_error_kind_methods() {
     assert!(out_of_memory.is_out_of_memory());
     assert!(!out_of_memory.is_invalid_index());
     assert!(!out_of_memory.is_trace_error());
-    
+
     let invalid_index = ArenaError::InvalidIndex;
     assert!(!invalid_index.is_out_of_memory());
     assert!(invalid_index.is_invalid_index());
     assert!(!invalid_index.is_trace_error());
-    
+
     let trace_error = ArenaError::TraceError;
     assert!(!trace_error.is_out_of_memory());
     assert!(!trace_error.is_invalid_index());
     assert!(trace_error.is_trace_error());
-    
+
     // Test as_str
-    assert_eq!(out_of_memory.as_str(), "arena is full");
-    assert_eq!(invalid_index.as_str(), "invalid index");
-    assert_eq!(trace_error.as_str(), "error during GC tracing");
+    assert_eq!(out_of_memory.as_str(), "Arena is full");
+    assert_eq!(invalid_index.as_str(), "Invalid index");
+    assert_eq!(trace_error.as_str(), "Error during GC tracing");
 }
 
 /// Test GC with completely empty roots array
 #[test]
 fn test_gc_with_empty_roots() {
     let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
-    
+
     arena.alloc(Tree::Leaf(1)).unwrap();
     arena.alloc(Tree::Leaf(2)).unwrap();
     arena.alloc(Tree::Leaf(3)).unwrap();
-    
+
     // All should be garbage since no roots
     let stats = arena.collect_garbage(&[]);
-    
+
     assert_eq!(stats.marked, 0);
     assert_eq!(stats.collected, 3);
     assert_eq!(arena.len(), 0);
@@ -3186,22 +3255,22 @@ fn test_gc_with_empty_roots() {
 #[test]
 fn test_gc_multi_with_empty_root_sets() {
     let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
-    
+
     let idx = arena.alloc(Tree::Leaf(1)).unwrap();
     arena.alloc(Tree::Leaf(2)).unwrap();
-    
+
     // Some empty, some with values
     let empty: &[ArenaIndex] = &[];
     let has_root: &[ArenaIndex] = &[idx];
-    
+
     let stats = arena.collect_garbage_multi(&[empty, has_root, empty]);
-    
+
     assert_eq!(stats.marked, 1);
     assert_eq!(stats.collected, 1);
 }
 
 /// Test GC stats methods
-#[test] 
+#[test]
 fn test_gc_stats_methods_comprehensive() {
     // Test with zero objects
     let empty_stats = GcStats {
@@ -3213,7 +3282,7 @@ fn test_gc_stats_methods_comprehensive() {
     assert_eq!(empty_stats.remaining(), 0);
     assert_eq!(empty_stats.collection_ratio(), 0.0);
     assert_eq!(empty_stats.survival_ratio(), 1.0);
-    
+
     // Test with some collection
     let some_stats = GcStats {
         marked: 7,
@@ -3224,7 +3293,7 @@ fn test_gc_stats_methods_comprehensive() {
     assert_eq!(some_stats.remaining(), 7);
     assert!((some_stats.collection_ratio() - 0.3).abs() < 0.001);
     assert!((some_stats.survival_ratio() - 0.7).abs() < 0.001);
-    
+
     // Test with 100% collection
     let full_collect = GcStats {
         marked: 0,
@@ -3252,7 +3321,7 @@ fn test_arena_stats_methods_comprehensive() {
     assert_eq!(empty_stats.usage_percent(), 0.0);
     assert_eq!(empty_stats.free_percent(), 100.0);
     assert!(!empty_stats.is_fragmented(0.1));
-    
+
     // Full arena
     let full_stats = ArenaStats {
         capacity: 100,
@@ -3264,7 +3333,7 @@ fn test_arena_stats_methods_comprehensive() {
     assert!(full_stats.is_full());
     assert_eq!(full_stats.usage_percent(), 100.0);
     assert_eq!(full_stats.free_percent(), 0.0);
-    
+
     // Fragmented arena
     let fragmented = ArenaStats {
         capacity: 100,
@@ -3274,7 +3343,7 @@ fn test_arena_stats_methods_comprehensive() {
     };
     assert!(fragmented.is_fragmented(0.4));
     assert!(!fragmented.is_fragmented(0.6));
-    
+
     // Zero capacity arena (edge case)
     let zero_cap = ArenaStats {
         capacity: 0,
@@ -3289,25 +3358,25 @@ fn test_arena_stats_methods_comprehensive() {
 #[test]
 fn test_gc_at_max_capacity_boundary() {
     let arena: Arena<Tree, 5> = Arena::new(Tree::Leaf(0));
-    
+
     // Fill arena completely
     let idx0 = arena.alloc(Tree::Leaf(0)).unwrap();
     let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
     let idx3 = arena.alloc(Tree::Leaf(3)).unwrap();
     let idx4 = arena.alloc(Tree::Leaf(4)).unwrap();
-    
+
     assert!(arena.is_full());
     assert!(arena.alloc(Tree::Leaf(5)).is_err());
-    
+
     // Collect keeping only some roots
     let stats = arena.collect_garbage(&[idx0, idx2, idx4]);
-    
+
     assert_eq!(stats.marked, 3);
     assert_eq!(stats.collected, 2);
     assert_eq!(arena.len(), 3);
     assert!(!arena.is_full());
-    
+
     // Now we can allocate again
     let _new_idx = arena.alloc(Tree::Leaf(100)).unwrap();
     assert_eq!(arena.len(), 4);
@@ -3317,16 +3386,16 @@ fn test_gc_at_max_capacity_boundary() {
 #[test]
 fn test_gc_ineffective_when_all_reachable() {
     let arena: Arena<Tree, 3> = Arena::new(Tree::Leaf(0));
-    
+
     // Fill arena with all reachable values
     let idx0 = arena.alloc(Tree::Leaf(0)).unwrap();
     let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
-    
+
     // All roots, so nothing can be collected
     let stats = arena.collect_garbage(&[idx0, idx1, idx2]);
     assert_eq!(stats.collected, 0);
-    
+
     // Should still fail since GC couldn't free anything
     let result = arena.alloc(Tree::Leaf(3));
     assert_eq!(result, Err(ArenaError::OutOfMemory));
@@ -3340,19 +3409,19 @@ fn test_gc_ineffective_when_all_reachable() {
 #[test]
 fn test_alloc_contiguous_basic() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     // Allocate 5 contiguous slots
     let start = arena.alloc_contiguous(5, 0).unwrap();
-    
+
     assert_eq!(arena.len(), 5);
     assert_eq!(arena.available(), 95);
-    
+
     // All slots should be accessible and consecutive
     for i in 0..5 {
         let idx = arena.index_at_offset(start, i).unwrap();
         arena.set(idx, (i + 1) as isize).unwrap();
     }
-    
+
     // Verify values were set
     for i in 0..5 {
         let idx = arena.index_at_offset(start, i).unwrap();
@@ -3363,7 +3432,7 @@ fn test_alloc_contiguous_basic() {
 #[test]
 fn test_alloc_contiguous_zero_count() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     // Zero count should fail
     assert_eq!(arena.alloc_contiguous(0, 0), Err(ArenaError::InvalidIndex));
 }
@@ -3371,7 +3440,7 @@ fn test_alloc_contiguous_zero_count() {
 #[test]
 fn test_alloc_contiguous_exceeds_capacity() {
     let arena: Arena<isize, 10> = Arena::new(0);
-    
+
     // Asking for more than capacity should fail
     assert_eq!(arena.alloc_contiguous(11, 0), Err(ArenaError::OutOfMemory));
 }
@@ -3379,13 +3448,13 @@ fn test_alloc_contiguous_exceeds_capacity() {
 #[test]
 fn test_alloc_contiguous_fills_arena() {
     let arena: Arena<isize, 10> = Arena::new(0);
-    
+
     // Fill entire arena with one contiguous block
     let start = arena.alloc_contiguous(10, 42).unwrap();
-    
+
     assert_eq!(arena.len(), 10);
     assert!(arena.is_full());
-    
+
     // Verify all slots have the default value
     for i in 0..10 {
         let idx = arena.index_at_offset(start, i).unwrap();
@@ -3396,25 +3465,25 @@ fn test_alloc_contiguous_fills_arena() {
 #[test]
 fn test_alloc_contiguous_fragmentation() {
     let arena: Arena<isize, 10> = Arena::new(0);
-    
+
     // Allocate individual slots: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
     let mut indices = [ArenaIndex::NIL; 10];
     for i in 0..10 {
         indices[i] = arena.alloc(i as isize).unwrap();
     }
-    
+
     // Free alternating slots: now free = 0, 2, 4, 6, 8
     arena.free(indices[0]).unwrap();
     arena.free(indices[2]).unwrap();
     arena.free(indices[4]).unwrap();
     arena.free(indices[6]).unwrap();
     arena.free(indices[8]).unwrap();
-    
+
     assert_eq!(arena.len(), 5);
-    
+
     // Cannot allocate 3 contiguous because free slots are not adjacent
     assert_eq!(arena.alloc_contiguous(3, 0), Err(ArenaError::OutOfMemory));
-    
+
     // But we can allocate 1 slot contiguously
     let single = arena.alloc_contiguous(1, 99).unwrap();
     assert_eq!(arena.get(single).unwrap(), 99);
@@ -3423,30 +3492,30 @@ fn test_alloc_contiguous_fragmentation() {
 #[test]
 fn test_alloc_contiguous_finds_gap() {
     let arena: Arena<isize, 20> = Arena::new(0);
-    
+
     // Allocate first 5 slots
     for i in 0..5 {
         arena.alloc(i).unwrap();
     }
-    
+
     // Skip slots 5-9 (will be our gap)
     // Allocate slots 10-14
     let middle_block = arena.alloc_contiguous(5, 0).unwrap(); // takes 5, 6, 7, 8, 9
     for i in 0..5 {
         arena.alloc(100 + i).unwrap(); // takes 10, 11, 12, 13, 14
     }
-    
+
     assert_eq!(arena.len(), 15);
-    
+
     // Free the middle 5 slots (5-9)
     arena.free_contiguous(middle_block, 5).unwrap();
-    
+
     assert_eq!(arena.len(), 10);
-    
+
     // Now we should be able to allocate 5 contiguous slots in the gap
     let new_block = arena.alloc_contiguous(5, 999).unwrap();
     assert_eq!(arena.len(), 15);
-    
+
     // Verify they're in the gap (raw index should be 5)
     assert_eq!(new_block.raw(), 5);
 }
@@ -3454,10 +3523,10 @@ fn test_alloc_contiguous_finds_gap() {
 #[test]
 fn test_free_contiguous_basic() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     let start = arena.alloc_contiguous(10, 0).unwrap();
     assert_eq!(arena.len(), 10);
-    
+
     arena.free_contiguous(start, 10).unwrap();
     assert_eq!(arena.len(), 0);
     assert!(arena.is_empty());
@@ -3466,9 +3535,9 @@ fn test_free_contiguous_basic() {
 #[test]
 fn test_free_contiguous_zero_count() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     let start = arena.alloc_contiguous(5, 0).unwrap();
-    
+
     // Freeing zero slots should be a no-op
     arena.free_contiguous(start, 0).unwrap();
     assert_eq!(arena.len(), 5);
@@ -3477,13 +3546,13 @@ fn test_free_contiguous_zero_count() {
 #[test]
 fn test_free_contiguous_invalidates_indices() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     let start = arena.alloc_contiguous(5, 42).unwrap();
     let idx2 = arena.index_at_offset(start, 2).unwrap();
-    
+
     // Free the block
     arena.free_contiguous(start, 5).unwrap();
-    
+
     // Original indices should now be invalid
     assert!(arena.get(start).is_err());
     assert!(arena.get(idx2).is_err());
@@ -3492,14 +3561,14 @@ fn test_free_contiguous_invalidates_indices() {
 #[test]
 fn test_free_contiguous_partial() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     let start = arena.alloc_contiguous(10, 0).unwrap();
     assert_eq!(arena.len(), 10);
-    
+
     // Free only first 5 slots
     arena.free_contiguous(start, 5).unwrap();
     assert_eq!(arena.len(), 5);
-    
+
     // Remaining 5 slots should still be valid via index_at_offset
     for i in 5..10 {
         let idx = arena.index_at_offset(start, i).unwrap();
@@ -3510,24 +3579,24 @@ fn test_free_contiguous_partial() {
 #[test]
 fn test_contiguous_reuse_after_free() {
     let arena: Arena<isize, 20> = Arena::new(0);
-    
+
     // Allocate and free a contiguous block
     let block1 = arena.alloc_contiguous(10, 1).unwrap();
-    
+
     // Old block1 index should be valid now
     assert_eq!(arena.get(block1), Ok(1));
-    
+
     arena.free_contiguous(block1, 10).unwrap();
-    
+
     // After freeing, block1 index should be invalid
     assert_eq!(arena.get(block1), Err(ArenaError::InvalidIndex));
-    
+
     // Allocate another block of same size
     let block2 = arena.alloc_contiguous(10, 2).unwrap();
-    
+
     // Should reuse the same slots
     assert_eq!(block2.raw(), block1.raw());
-    
+
     // Verify values
     for i in 0..10 {
         let idx = arena.index_at_offset(block2, i).unwrap();
@@ -3538,13 +3607,13 @@ fn test_contiguous_reuse_after_free() {
 #[test]
 fn test_index_at_offset_out_of_bounds() {
     let arena: Arena<isize, 100> = Arena::new(0);
-    
+
     let start = arena.alloc_contiguous(5, 0).unwrap();
-    
+
     // Accessing within bounds should work
     assert!(arena.index_at_offset(start, 0).is_ok());
     assert!(arena.index_at_offset(start, 4).is_ok());
-    
+
     // Accessing beyond the allocated block (but within arena) should fail
     // because those slots are not allocated
     assert!(arena.index_at_offset(start, 5).is_err());
@@ -3553,24 +3622,24 @@ fn test_index_at_offset_out_of_bounds() {
 #[test]
 fn test_contiguous_mixed_with_regular_alloc() {
     let arena: Arena<isize, 20> = Arena::new(0);
-    
+
     // Mix regular and contiguous allocations
     let reg1 = arena.alloc(1).unwrap();
     let cont1 = arena.alloc_contiguous(3, 10).unwrap();
     let reg2 = arena.alloc(2).unwrap();
     let cont2 = arena.alloc_contiguous(2, 20).unwrap();
-    
+
     assert_eq!(arena.len(), 7);
-    
+
     // Verify all allocations work
     assert_eq!(arena.get(reg1).unwrap(), 1);
     assert_eq!(arena.get(reg2).unwrap(), 2);
-    
+
     for i in 0..3 {
         let idx = arena.index_at_offset(cont1, i).unwrap();
         assert_eq!(arena.get(idx).unwrap(), 10);
     }
-    
+
     for i in 0..2 {
         let idx = arena.index_at_offset(cont2, i).unwrap();
         assert_eq!(arena.get(idx).unwrap(), 20);
@@ -3580,18 +3649,18 @@ fn test_contiguous_mixed_with_regular_alloc() {
 #[test]
 fn test_contiguous_arena_validate() {
     let arena: Arena<isize, 50> = Arena::new(0);
-    
+
     // Allocate some contiguous blocks
     let _b1 = arena.alloc_contiguous(5, 0).unwrap();
     let _b2 = arena.alloc_contiguous(10, 0).unwrap();
     let _b3 = arena.alloc(99).unwrap();
-    
+
     // Arena internal state should still be valid
     assert!(arena.validate());
-    
+
     // Free a block
     arena.free_contiguous(_b1, 5).unwrap();
-    
+
     // Still valid
     assert!(arena.validate());
 }
