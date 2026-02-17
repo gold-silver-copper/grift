@@ -49,14 +49,17 @@ pub enum Value {
     Builtin(BuiltinId),
     /// A first-class environment with lexical parent chain.
     /// `bindings`: alist of (symbol . value) pairs in this frame.
-    /// `parent`: ArenaIndex to parent Environment, or NIL for top-level.
+    /// `parents`: cons-list of parent environments, or NIL for top-level.
     Environment {
         bindings: ArenaIndex,
-        parent: ArenaIndex,
+        parents: ArenaIndex,
     },
     /// The inert value, written `#inert`.
     /// Returned by combiners whose primary purpose is side-effect (e.g. `$define!`).
     Inert,
+    /// The ignore value, written `#ignore`.
+    /// Used specifically for parameter matching in formal parameter trees.
+    Ignore,
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -90,6 +93,7 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Environment { .. } => "environment",
             Value::Inert => "inert",
+            Value::Ignore => "ignore",
         }
     }
 
@@ -137,6 +141,7 @@ impl core::fmt::Display for Value {
             Value::Number(n) => write!(f, "{n}"),
             Value::Char(c) => write!(f, "#\\{c}"),
             Value::Inert => f.write_str("#inert"),
+            Value::Ignore => f.write_str("#ignore"),
             _ => write!(f, "<{}>", self.type_name()),
         }
     }

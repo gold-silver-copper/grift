@@ -151,6 +151,7 @@ impl<'a> Parser<'a> {
             "#t" | "#true" => lisp.boolean(true),
             "#f" | "#false" => lisp.boolean(false),
             "#inert" => lisp.inert(),
+            "#ignore" => lisp.ignore(),
             _ => parse_integer(s)
                 .map(|n| lisp.number(n))
                 .unwrap_or_else(|| lisp.symbol(s)),

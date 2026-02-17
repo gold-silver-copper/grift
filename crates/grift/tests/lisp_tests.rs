@@ -2226,3 +2226,271 @@ fn test_variadic_inert_predicate() {
     );
     assert_eq!(lisp.eval("(inert?)"), Ok(Value::Boolean(true)));
 }
+
+// ============================================================================
+// Ignore Type Tests (§4.8.2)
+// ============================================================================
+
+#[test]
+fn test_ignore_is_self_evaluating() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("#ignore"), Ok(Value::Ignore));
+}
+
+#[test]
+fn test_ignore_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(ignore? #ignore)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(ignore? #t)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? 42)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? '())"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? #inert)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_variadic_ignore_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(ignore? #ignore #ignore)"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(ignore? #ignore 42)"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(lisp.eval("(ignore?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_ignore_is_not_symbol() {
+    // #ignore is a distinct type, not a symbol
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(symbol? #ignore)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_ignore_eq() {
+    // #ignore is eq? to itself (single immutable value)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(eq? #ignore #ignore)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_ignore_equal() {
+    // #ignore is equal? to itself
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(equal? #ignore #ignore)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_ignore_in_define_ptree() {
+    // #ignore in $define! parameter tree ignores the value
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (a #ignore c) (list 1 2 3))
+                (+ a c))
+            "#
+        ),
+        Ok(Value::Number(4))
+    );
+}
+
+#[test]
+fn test_ignore_in_lambda_params() {
+    // #ignore can be used in lambda parameter trees
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! f (lambda (x #ignore y) (+ x y)))
+                (f 10 20 30))
+            "#
+        ),
+        Ok(Value::Number(40))
+    );
+}
+
+// ============================================================================
+// Multi-parent Environment Tests (§4.8.4)
+// ============================================================================
+
+#[test]
+fn test_make_environment_multiple_parents() {
+    // (make-environment env1 env2) creates env with both parents
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! e1 (make-environment))
+                (eval (list define! (quote x) 10) e1)
+                (define! e2 (make-environment))
+                (eval (list define! (quote y) 20) e2)
+                (define! child (make-environment e1 e2))
+                (+ (eval (quote x) child) (eval (quote y) child)))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+}
+
+#[test]
+fn test_make_environment_parent_order_matters() {
+    // When both parents define the same symbol, the first parent wins
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! e1 (make-environment))
+                (eval (list define! (quote x) 1) e1)
+                (define! e2 (make-environment))
+                (eval (list define! (quote x) 2) e2)
+                (define! child (make-environment e1 e2))
+                (eval (quote x) child))
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+    // Reversed order: e2 first, so e2's binding wins
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! e1 (make-environment))
+                (eval (list define! (quote x) 1) e1)
+                (define! e2 (make-environment))
+                (eval (list define! (quote x) 2) e2)
+                (define! child (make-environment e2 e1))
+                (eval (quote x) child))
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_make_environment_three_parents() {
+    // Three parents
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! e1 (make-environment))
+                (eval (list define! (quote a) 1) e1)
+                (define! e2 (make-environment))
+                (eval (list define! (quote b) 2) e2)
+                (define! e3 (make-environment))
+                (eval (list define! (quote c) 3) e3)
+                (define! child (make-environment e1 e2 e3))
+                (+ (eval (quote a) child)
+                   (+ (eval (quote b) child)
+                      (eval (quote c) child))))
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+}
+
+#[test]
+fn test_make_environment_validates_args_are_environments() {
+    // make-environment should only accept environments as arguments
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(make-environment 42)"),
+        Err(ArenaError::TypeError)
+    );
+}
+
+#[test]
+fn test_make_environment_copies_parent_list() {
+    // The constructed environment stores its parents independently
+    // of the original argument list (Kernel §4.8.4)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! e1 (make-environment (get-env)))
+                (define! child (make-environment e1))
+                (eval (quote (+ 1 2)) child))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
+
+#[test]
+fn test_make_environment_no_args_has_no_parents() {
+    // (make-environment) with no args creates parentless environment
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! e (make-environment))
+                (eval (quote +) e))
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_make_environment_local_bindings_shadow_parents() {
+    // Local bindings shadow parent bindings
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! parent (make-environment (get-env)))
+                (eval (list define! (quote x) 10) parent)
+                (define! child (make-environment parent))
+                (eval (list define! (quote x) 99) child)
+                (eval (quote x) child))
+            "#
+        ),
+        Ok(Value::Number(99))
+    );
+}
+
+#[test]
+fn test_depth_first_search_in_multi_parent() {
+    // Depth-first: e1 has parent gp with binding x=100
+    // child = (make-environment e1 e2) where e2 has x=200
+    // Since e1 is searched depth-first before e2, and e1's parent gp has x=100,
+    // that should be found before e2's x=200
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! gp (make-environment))
+                (eval (list define! (quote x) 100) gp)
+                (define! e1 (make-environment gp))
+                (define! e2 (make-environment))
+                (eval (list define! (quote x) 200) e2)
+                (define! child (make-environment e1 e2))
+                (eval (quote x) child))
+            "#
+        ),
+        Ok(Value::Number(100))
+    );
+}
