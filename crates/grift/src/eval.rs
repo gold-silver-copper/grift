@@ -477,8 +477,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             *expr = if self.lisp.get(test_val)?.is_truthy() {
                 self.lisp.car(rest)?
             } else {
-                self.lisp.cdr(rest)
-                    .and_then(|r| if r.is_nil() { self.lisp.nil() } else { self.lisp.car(r) })?
+                let else_rest = self.lisp.cdr(rest)?;
+                if else_rest.is_nil() { ArenaIndex::NIL } else { self.lisp.car(else_rest)? }
             };
             Ok(())
         })())
@@ -773,8 +773,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(eval expr env)` — evaluate expression in given environment.
     fn builtin_eval(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let expr_val = self.lisp.car(args)?;
-        let env_val = self.lisp.cdr(args)
-            .and_then(|rest| if rest.is_nil() { Ok(self.global_env) } else { self.lisp.car(rest) })?;
+        let rest = self.lisp.cdr(args)?;
+        let env_val = if rest.is_nil() { self.global_env } else { self.lisp.car(rest)? };
         self.eval(expr_val, env_val)
     }
 
