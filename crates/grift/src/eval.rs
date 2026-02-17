@@ -319,15 +319,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
 
                         Value::Operative { .. } => {
-                            let (params, env_param, body, closed_env) =
-                                self.lisp.vau_parts(func_val)?;
-                            let op_env = self.bind_vau_params(closed_env, params, cdr)?;
-                            if !env_param.is_nil() {
-                                self.lisp.env_define(op_env, env_param, env)?;
-                            }
+                            let (body, op_env) = self.invoke_operative(func_val, cdr, env)?;
+                            self.pop_roots(2);
                             env = op_env;
                             expr = body;
-                            self.pop_roots(2);
                             continue;
                         }
 
@@ -337,13 +332,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                             match self.lisp.get(inner)? {
                                 Value::Operative { .. } => {
-                                    let (params, env_param, body, closed_env) =
-                                        self.lisp.vau_parts(inner)?;
-                                    let op_env =
-                                        self.bind_vau_params(closed_env, params, evaled_args)?;
-                                    if !env_param.is_nil() {
-                                        self.lisp.env_define(op_env, env_param, env)?;
-                                    }
+                                    let (body, op_env) =
+                                        self.invoke_operative(inner, evaled_args, env)?;
                                     self.pop_roots(3);
                                     env = op_env;
                                     expr = body;
@@ -387,17 +377,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> ArenaResult<ArenaIndex> {
         match self.lisp.get(combiner)? {
             Value::Operative { .. } => {
-                let (params, env_param, body, closed_env) = self.lisp.vau_parts(combiner)?;
-                let op_env = self.bind_vau_params(closed_env, params, evaled_args)?;
-                if !env_param.is_nil() {
-                    self.lisp.env_define(op_env, env_param, caller_env)?;
-                }
+                let (body, op_env) = self.invoke_operative(combiner, evaled_args, caller_env)?;
                 self.eval(body, op_env)
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             _ => Err(ArenaError::NotCallable),
         }
+    }
+
+    /// Common operative invocation: destructure, bind params, optionally bind caller env.
+    /// Returns `(body, operative_env)` for tail-call or direct eval.
+    fn invoke_operative(
+        &self,
+        func: ArenaIndex,
+        args: ArenaIndex,
+        caller_env: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        let (params, env_param, body, closed_env) = self.lisp.vau_parts(func)?;
+        let op_env = self.bind_vau_params(closed_env, params, args)?;
+        if !env_param.is_nil() {
+            self.lisp.env_define(op_env, env_param, caller_env)?;
+        }
+        Ok((body, op_env))
     }
 
     /// Bind vau parameters to unevaluated argument expressions.
