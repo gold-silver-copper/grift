@@ -750,8 +750,7 @@ fn test_vau_derive_lambda() {
 
 #[test]
 fn test_lambda_as_syntactic_sugar_over_vau() {
-    // lambda still works as before — it's now a builtin operative that
-    // creates a Lambda value.
+    // lambda is syntactic sugar: wrap(vau(params, #ignore, body, env))
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -1136,4 +1135,96 @@ fn test_user_defined_when() {
     "#,
     );
     assert_eq!(result, Ok(Value::Number(3)));
+}
+
+// ============================================================================
+// $vau Syntax and Vau Calculus Examples
+// ============================================================================
+
+#[test]
+fn test_dollar_vau_syntax() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-quote ($vau (x) #ignore x))
+            (my-quote 42))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_dollar_vau_user_defined_unless() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define unless
+                ($vau (test . body) e
+                    (eval (list if test (list) (cons begin body)) e)))
+            (unless #f (+ 1 2)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_operative_predicate_on_if() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_applicative_predicate_on_plus() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_operative_predicate_on_unwrap_plus() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(operative? (unwrap +))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_applicative_predicate_on_wrap_if() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(applicative? (wrap if))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_derive_lambda_from_dollar_vau() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-lambda
+                ($vau (params . body) static-env
+                    (wrap (eval (list $vau params #ignore (cons begin body)) static-env))))
+            ((my-lambda (x) (+ x 1)) 10))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(11)));
+}
+
+#[test]
+fn test_dollar_vau_with_env_param() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-eval-add
+                ($vau (a b) e
+                    (+ (eval a e) (eval b e))))
+            (my-eval-add (+ 1 2) (+ 3 4)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(10)));
 }

@@ -52,7 +52,6 @@ impl<'a> Parser<'a> {
             match self.input[self.pos] {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
                 b';' => {
-                    // Skip line comment
                     while self.pos < self.input.len() && self.input[self.pos] != b'\n' {
                         self.pos += 1;
                     }
@@ -75,14 +74,12 @@ impl<'a> Parser<'a> {
             return lisp.nil();
         }
 
-        // Check for dotted pair notation
         if self.peek_dot() {
             return Err(ArenaError::ParseError);
         }
 
         let car = self.parse(lisp)?;
 
-        // Check for dot (improper list)
         self.skip_whitespace();
         if self.peek_dot() {
             self.pos += 1; // skip the dot
@@ -133,7 +130,6 @@ impl<'a> Parser<'a> {
         self.pos += 1; // skip closing quote
 
         let slice = &self.input[start..end];
-        // Convert to &str (we know input is valid UTF-8)
         let s = core::str::from_utf8(slice).map_err(|_| ArenaError::ParseError)?;
         lisp.alloc_string(s)
     }

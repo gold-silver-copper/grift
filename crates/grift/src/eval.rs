@@ -221,6 +221,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.bind_operative("or", op_or);
         self.bind_operative("let", op_let);
         self.bind_operative("vau", op_vau);
+        self.bind_operative("$vau", op_vau);
 
         // Applicative builtins — wrapped (receive evaluated args)
         self.bind_applicative("cons", bi_cons);
@@ -247,6 +248,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.bind_applicative("unwrap", bi_unwrap);
         self.bind_applicative("operative?", bi_operativep);
         self.bind_applicative("applicative?", bi_applicativep);
+
+        // Self-evaluating constants
+        self.bind_self_evaluating("#ignore");
     }
 
     /// Bind an operative builtin as bare `Value::Builtin` in the environment.
@@ -271,6 +275,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, wrapped) {
                     self.global_env = new_env;
                 }
+            }
+        }
+    }
+
+    /// Bind a symbol to itself so it evaluates to its own identity.
+    fn bind_self_evaluating(&mut self, name: &str) {
+        if let Ok(sym) = self.lisp.symbol(name) {
+            if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, sym) {
+                self.global_env = new_env;
             }
         }
     }
@@ -325,28 +338,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             let val = self.lisp.get(expr)?;
 
-            // Self-evaluating: literals, closures, operatives, builtins, applicatives.
             if val.is_self_evaluating() {
                 return Ok(expr);
             }
 
             match val {
-                // Symbol → look up in local env, then global env.
                 Value::Symbol(_) => {
                     return env_lookup(self.lisp, env, expr)
                         .or_else(|_| env_lookup(self.lisp, self.global_env, expr));
                 }
 
-                // List → combiner application.
                 Value::Cons { car, cdr } => {
                     self.push_root(cdr);
                     self.push_root(env);
 
-                    // Evaluate the operator position.
                     let func_val = self.eval(car, env)?;
 
                     match self.lisp.get(func_val)? {
-                        // Builtin operative: receives unevaluated args + caller env.
                         Value::Builtin(id) => {
                             let action = self.apply_operative_builtin(
                                 id, cdr, &mut expr, &mut env,
@@ -358,7 +366,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             }
                         }
 
-                        // Compound operative (vau closure): bind unevaluated args.
                         Value::Operative { .. } => {
                             let (params, env_param, body, closed_env) =
                                 self.lisp.vau_parts(func_val)?;
@@ -370,16 +377,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             env = op_env;
                             expr = body;
                             self.pop_roots(2);
-                            continue; // ← TCO
+                            continue;
                         }
 
-                        // Applicative: evaluate args, then apply inner combiner.
                         Value::Applicative(inner) => {
                             let evaled_args = self.eval_args(cdr, env)?;
                             self.push_root(evaled_args);
 
                             match self.lisp.get(inner)? {
-                                // Inner is compound operative.
                                 Value::Operative { .. } => {
                                     let (params, env_param, body, closed_env) =
                                         self.lisp.vau_parts(inner)?;
@@ -393,18 +398,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                             self.lisp, op_env, env_param, env,
                                         )?;
                                     }
-                                    self.pop_roots(3); // evaled_args + original 2
+                                    self.pop_roots(3);
                                     env = op_env;
                                     expr = body;
-                                    continue; // ← TCO
+                                    continue;
                                 }
-                                // Inner is builtin operative.
                                 Value::Builtin(id) => {
                                     self.pop_roots(3);
                                     return self.apply_builtin_pure(id, evaled_args);
                                 }
-                                // Inner is another applicative (double-wrap):
-                                // args are already evaluated, recursively apply inner.
                                 Value::Applicative(_) => {
                                     self.pop_roots(3);
                                     return self.apply_combiner(inner, evaled_args, env);
@@ -450,7 +452,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
             Value::Applicative(inner) => {
-                // Double-wrap: args are already evaluated, apply inner.
                 self.apply_combiner(inner, evaled_args, caller_env)
             }
             _ => Err(ArenaError::NotCallable),
@@ -476,7 +477,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     arg_exprs = self.lisp.cdr(arg_exprs)?;
                 }
                 Value::Symbol(_) => {
-                    // Rest parameter: bind remaining args as a list.
                     vau_env = env_bind(self.lisp, vau_env, params, arg_exprs)?;
                     return Ok(vau_env);
                 }
@@ -576,7 +576,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     // ================================================================
-    // Special-form operatives (receive unevaluated args)
+    // Operative builtin implementations (receive unevaluated args)
     // ================================================================
 
     /// `(quote expr)` — return the expression unevaluated.
@@ -639,7 +639,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     cdr: params,
                 } => {
                     let body = self.wrap_begin(rest)?;
-                    // lambda = wrap(vau(params, #ignore, body, env))
                     let lam = self.lisp.lambda(params, body, *env)?;
                     self.global_env = env_bind(self.lisp, self.global_env, name, lam)?;
                     Ok(lam)
@@ -660,7 +659,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         non_tail((|| {
             let params = self.lisp.car(args)?;
             let body = self.wrap_begin(self.lisp.cdr(args)?)?;
-            // lambda = wrap(vau(params, #ignore, body, env))
             self.lisp.lambda(params, body, *env)
         })())
     }
@@ -806,7 +804,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let env_param = self.lisp.car(rest)?;
             let body_list = self.lisp.cdr(rest)?;
             let body = self.wrap_begin(body_list)?;
-            // If env_param is the symbol `#ignore`, use NIL to signal "no binding".
             let ep = if self.lisp.symbol_name_eq(env_param, "#ignore") {
                 ArenaIndex::NIL
             } else {
@@ -911,7 +908,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let expr_val = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            // (eval expr) — evaluate in the global env
             self.eval(expr_val, self.global_env)
         } else {
             let env_val = self.lisp.car(rest)?;
