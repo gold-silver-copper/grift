@@ -224,10 +224,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Bind a builtin in the environment. If `wrap` is true, wraps it as an applicative.
     fn bind_builtin(&mut self, name: &str, id: BuiltinId, wrap: bool) {
-        let Ok(sym) = self.lisp.symbol(name) else { return };
-        let Ok(mut val) = self.lisp.arena.alloc(id.into()) else { return };
+        let Ok(sym) = self.lisp.symbol(name) else {
+            return;
+        };
+        let Ok(mut val) = self.lisp.arena.alloc(id.into()) else {
+            return;
+        };
         if wrap {
-            let Ok(wrapped) = self.lisp.wrap(val) else { return };
+            let Ok(wrapped) = self.lisp.wrap(val) else {
+                return;
+            };
             val = wrapped;
         }
         let _ = self.lisp.env_define(self.global_env, sym, val);
@@ -474,11 +480,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let test_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
             let test_val = self.eval(test_expr, *env)?;
-            *expr = if self.lisp.get(test_val)?.is_truthy() {
+            *expr = if self.lisp.get(test_val)?.as_bool()? {
                 self.lisp.car(rest)?
             } else {
                 let else_rest = self.lisp.cdr(rest)?;
-                if else_rest.is_nil() { ArenaIndex::NIL } else { self.lisp.car(else_rest)? }
+                if else_rest.is_nil() {
+                    ArenaIndex::NIL
+                } else {
+                    self.lisp.car(else_rest)?
+                }
             };
             Ok(())
         })())
@@ -571,7 +581,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                 let matched = self.lisp.symbol_name_eq(test, "else") || {
                     let test_val = self.eval(test, *env)?;
-                    self.lisp.get(test_val)?.is_truthy()
+                    self.lisp.get(test_val)?.as_bool()?
                 };
 
                 if matched {
@@ -724,7 +734,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            return self.lisp.number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
+            return self
+                .lisp
+                .number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
         }
         fold_numbers!(self, rest, first, checked_sub)
     }
@@ -774,7 +786,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn builtin_eval(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let expr_val = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
-        let env_val = if rest.is_nil() { self.global_env } else { self.lisp.car(rest)? };
+        let env_val = if rest.is_nil() {
+            self.global_env
+        } else {
+            self.lisp.car(rest)?
+        };
         self.eval(expr_val, env_val)
     }
 
@@ -790,12 +806,19 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.unwrap_applicative(app)
     }
 
-    type_predicate!(builtin_operativep, Value::Operative { .. } | Value::Builtin(_));
+    type_predicate!(
+        builtin_operativep,
+        Value::Operative { .. } | Value::Builtin(_)
+    );
     type_predicate!(builtin_applicativep, Value::Applicative(_));
 
     /// `(make-environment [parent])`.
     fn builtin_make_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let parent = if args.is_nil() { ArenaIndex::NIL } else { self.lisp.car(args)? };
+        let parent = if args.is_nil() {
+            ArenaIndex::NIL
+        } else {
+            self.lisp.car(args)?
+        };
         self.lisp.make_child_env(parent)
     }
 

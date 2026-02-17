@@ -122,12 +122,6 @@ impl Value {
         /// Extract the inner combiner of an applicative, or `Err(TypeError)`.
         as_applicative -> ArenaIndex, Value::Applicative(inner) => inner
     }
-
-    /// Returns true only for bool true
-    #[inline]
-    pub fn is_truthy(self) -> bool {
-        matches!(self, Value::Boolean(true))
-    }
 }
 
 impl core::fmt::Display for Value {
