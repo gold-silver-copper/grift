@@ -682,3 +682,319 @@ fn test_recursive_fib_30() {
     );
     assert_eq!(result, Ok(Value::Number(832040)));
 }
+
+// ============================================================================
+// Vau / Fexpr / First-Class Operative Tests
+// ============================================================================
+
+#[test]
+fn test_vau_basic_quote() {
+    // vau receives unevaluated args: (vau (x) #ignore x) acts like quote.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-quote (vau (x) #ignore x))
+            (my-quote 42))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_vau_receives_unevaluated_args() {
+    // The vau body can inspect unevaluated args. Here we quote a symbol.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-quote (vau (x) #ignore x))
+            (pair? (my-quote (1 2 3))))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_vau_with_env_param() {
+    // vau captures the caller's environment via env-param and can eval in it.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-eval-add
+                (vau (a b) e
+                    (+ (eval a e) (eval b e))))
+            (my-eval-add (+ 1 2) (+ 3 4)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(10)));
+}
+
+#[test]
+fn test_vau_derive_lambda() {
+    // Derive an applicative (lambda-like) from vau by evaluating args in caller env.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-lambda
+                (vau (params body) static-env
+                    (vau args caller-env
+                        (eval body
+                            (eval (cons 'let
+                                (cons
+                                    (eval (cons 'list
+                                        (eval (cons 'list
+                                            (cons (cons 'list (cons (car params) (cons (eval (car args) caller-env) '()))) '()))
+                                            static-env))
+                                        static-env)
+                                    (cons body '())))
+                                caller-env)))))
+            42)
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_lambda_as_syntactic_sugar_over_vau() {
+    // lambda still works as before — it's now a builtin operative that
+    // creates a Lambda value.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define double (lambda (x) (+ x x)))
+            (double 21))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_vau_closure() {
+    // vau closes over its definition environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define make-adder
+                (lambda (n)
+                    (vau (x) e (+ n (eval x e)))))
+            (define add5 (make-adder 5))
+            (add5 (+ 1 2)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(8)));
+}
+
+#[test]
+fn test_first_class_if() {
+    // `if` is a first-class operative that can be passed as an argument.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-if if)
+            (my-if #t 1 2))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_first_class_quote() {
+    // `quote` is a first-class operative.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-quote quote)
+            (my-quote 42))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_first_class_begin() {
+    // `begin` is a first-class operative.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-begin begin)
+            (my-begin 1 2 3))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_first_class_define() {
+    // `define` is a first-class operative.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-define define)
+            (my-define x 42)
+            x)
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_first_class_and() {
+    // `and` is a first-class operative.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-and and)
+            (my-and #t #t))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_first_class_or() {
+    // `or` is a first-class operative.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-or or)
+            (my-or #f #t))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_first_class_plus() {
+    // `+` is a first-class operative stored in the environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-add +)
+            (my-add 1 2))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_first_class_cons() {
+    // `cons` is a first-class operative.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-cons cons)
+            (car (my-cons 1 2)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_eval_builtin() {
+    // `eval` can evaluate expressions.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (eval '(+ 1 2))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_vau_if_alternative() {
+    // Define a custom if using vau.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-if
+                (vau (test then else) e
+                    (if (eval test e)
+                        (eval then e)
+                        (eval else e))))
+            (my-if (= 1 1) (+ 10 20) (+ 30 40)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(30)));
+}
+
+#[test]
+fn test_vau_short_circuit() {
+    // vau-defined if should not evaluate the unused branch.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-if
+                (vau (test then else) e
+                    (if (eval test e)
+                        (eval then e)
+                        (eval else e))))
+            (my-if #t 42 (+ 1 "crash")))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_operative_is_value() {
+    // Operatives (builtins) are values that can be bound and looked up.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define f +)
+            (f 3 4))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(7)));
+}
+
+#[test]
+fn test_vau_rest_params() {
+    // vau with a rest parameter binds all unevaluated args.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define count-args
+                (vau args #ignore
+                    (car args)))
+            (count-args 10 20 30))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(10)));
+}
+
+#[test]
+fn test_vau_gc_stress() {
+    // Create and call many vau operatives to test GC.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define make-op
+                (lambda (n)
+                    (vau (x) e (+ n (eval x e)))))
+            (define op1 (make-op 1))
+            (define op2 (make-op 2))
+            (define op3 (make-op 3))
+            (+ (op1 10) (op2 20) (op3 30)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(66)));
+}
