@@ -1,1 +1,5 @@
   Vau & wrap actually provide a more fundamental abstraction than lambda does, in the sense that they can be used to build lambdas and some other extra stuff. So, if the Lisp interpreter is like software's Maxwell equations, I see the vau-based interpreter as a bit like software's Schroedinger equation, with the special built-in global environment functions (like the definition of vau itself, or the define function, or the if function) filling the roles of the different fundamental particles that obey it, which can be composed to form all matter. Maybe vau expressions are like complex-valued quantum wave functions, while wraps are like the resulting probability distributions https://gliese1337.blogspot.com/2012/04/schrodingers-equation-of-software.html
+
+Axis of Eval
+
+leaving only the 25 special forms defined by Common Lisp. (Scheme manages with seven or eight, nyah nyah.)
