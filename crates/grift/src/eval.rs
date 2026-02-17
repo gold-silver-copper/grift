@@ -221,7 +221,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.bind_operative("or", op_or);
         self.bind_operative("let", op_let);
         self.bind_operative("vau", op_vau);
-        self.bind_operative("$vau", op_vau);
 
         // Applicative builtins — wrapped (receive evaluated args)
         self.bind_applicative("cons", bi_cons);
@@ -356,9 +355,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                     match self.lisp.get(func_val)? {
                         Value::Builtin(id) => {
-                            let action = self.apply_operative_builtin(
-                                id, cdr, &mut expr, &mut env,
-                            );
+                            let action = self.apply_operative_builtin(id, cdr, &mut expr, &mut env);
                             self.pop_roots(2);
                             match action {
                                 TailAction::Return(val) => return val,
@@ -369,8 +366,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         Value::Operative { .. } => {
                             let (params, env_param, body, closed_env) =
                                 self.lisp.vau_parts(func_val)?;
-                            let mut op_env =
-                                self.bind_vau_params(closed_env, params, cdr)?;
+                            let mut op_env = self.bind_vau_params(closed_env, params, cdr)?;
                             if !env_param.is_nil() {
                                 op_env = env_bind(self.lisp, op_env, env_param, env)?;
                             }
@@ -388,15 +384,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                 Value::Operative { .. } => {
                                     let (params, env_param, body, closed_env) =
                                         self.lisp.vau_parts(inner)?;
-                                    let mut op_env = self.bind_vau_params(
-                                        closed_env,
-                                        params,
-                                        evaled_args,
-                                    )?;
+                                    let mut op_env =
+                                        self.bind_vau_params(closed_env, params, evaled_args)?;
                                     if !env_param.is_nil() {
-                                        op_env = env_bind(
-                                            self.lisp, op_env, env_param, env,
-                                        )?;
+                                        op_env = env_bind(self.lisp, op_env, env_param, env)?;
                                     }
                                     self.pop_roots(3);
                                     env = op_env;
@@ -441,19 +432,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> ArenaResult<ArenaIndex> {
         match self.lisp.get(combiner)? {
             Value::Operative { .. } => {
-                let (params, env_param, body, closed_env) =
-                    self.lisp.vau_parts(combiner)?;
-                let mut op_env =
-                    self.bind_vau_params(closed_env, params, evaled_args)?;
+                let (params, env_param, body, closed_env) = self.lisp.vau_parts(combiner)?;
+                let mut op_env = self.bind_vau_params(closed_env, params, evaled_args)?;
                 if !env_param.is_nil() {
                     op_env = env_bind(self.lisp, op_env, env_param, caller_env)?;
                 }
                 self.eval(body, op_env)
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
-            Value::Applicative(inner) => {
-                self.apply_combiner(inner, evaled_args, caller_env)
-            }
+            Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             _ => Err(ArenaError::NotCallable),
         }
     }
@@ -541,11 +528,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Dispatch an applicative builtin (receives already-evaluated args).
     #[allow(non_upper_case_globals)]
-    fn apply_builtin_pure(
-        &mut self,
-        id: BuiltinId,
-        args: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn apply_builtin_pure(&mut self, id: BuiltinId, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match id {
             bi_cons => self.builtin_cons(args),
             bi_add => self.builtin_add(args),
@@ -939,9 +922,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(applicative? x)` — #t if x is an applicative.
     fn builtin_applicativep(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.lisp.car(args)?;
-        self.lisp.boolean(matches!(
-            self.lisp.get(val)?,
-            Value::Applicative(_)
-        ))
+        self.lisp
+            .boolean(matches!(self.lisp.get(val)?, Value::Applicative(_)))
     }
 }

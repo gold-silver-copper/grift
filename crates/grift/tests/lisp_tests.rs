@@ -436,7 +436,10 @@ fn test_strict_unused_arg_evaluated() {
         ((lambda (x y) x) 1 (+ 1 "crash"))
     "#,
     );
-    assert!(result.is_err(), "Strict evaluation should evaluate all args");
+    assert!(
+        result.is_err(),
+        "Strict evaluation should evaluate all args"
+    );
 }
 
 #[test]
@@ -461,7 +464,10 @@ fn test_strict_define_evaluated() {
             42)
     "#,
     );
-    assert!(result.is_err(), "Strict define should evaluate RHS immediately");
+    assert!(
+        result.is_err(),
+        "Strict define should evaluate RHS immediately"
+    );
 }
 
 #[test]
@@ -474,7 +480,10 @@ fn test_strict_let_evaluated() {
             42)
     "#,
     );
-    assert!(result.is_err(), "Strict let should evaluate bindings immediately");
+    assert!(
+        result.is_err(),
+        "Strict let should evaluate bindings immediately"
+    );
 }
 
 // ============================================================================
@@ -1040,14 +1049,8 @@ fn test_lambda_is_applicative() {
 #[test]
 fn test_plus_is_applicative() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(applicative? +)"),
-        Ok(Value::Boolean(true))
-    );
-    assert_eq!(
-        lisp.eval("(operative? +)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(operative? +)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
@@ -1063,14 +1066,8 @@ fn test_unwrap_plus() {
 #[test]
 fn test_if_is_operative() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(applicative? if)"),
-        Ok(Value::Boolean(false))
-    );
-    assert_eq!(
-        lisp.eval("(operative? if)"),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval("(applicative? if)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -1138,7 +1135,7 @@ fn test_user_defined_when() {
 }
 
 // ============================================================================
-// $vau Syntax and Vau Calculus Examples
+// vau Syntax and Vau Calculus Examples
 // ============================================================================
 
 #[test]
@@ -1147,7 +1144,7 @@ fn test_dollar_vau_syntax() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-quote ($vau (x) #ignore x))
+            (define my-quote (vau (x) #ignore x))
             (my-quote 42))
     "#,
     );
@@ -1161,7 +1158,7 @@ fn test_dollar_vau_user_defined_unless() {
         r#"
         (begin
             (define unless
-                ($vau (test . body) e
+                (vau (test . body) e
                     (eval (list if test (list) (cons begin body)) e)))
             (unless #f (+ 1 2)))
     "#,
@@ -1206,8 +1203,8 @@ fn test_derive_lambda_from_dollar_vau() {
         r#"
         (begin
             (define my-lambda
-                ($vau (params . body) static-env
-                    (wrap (eval (list $vau params #ignore (cons begin body)) static-env))))
+                (vau (params . body) static-env
+                    (wrap (eval (list vau params #ignore (cons begin body)) static-env))))
             ((my-lambda (x) (+ x 1)) 10))
     "#,
     );
@@ -1221,7 +1218,7 @@ fn test_dollar_vau_with_env_param() {
         r#"
         (begin
             (define my-eval-add
-                ($vau (a b) e
+                (vau (a b) e
                     (+ (eval a e) (eval b e))))
             (my-eval-add (+ 1 2) (+ 3 4)))
     "#,
