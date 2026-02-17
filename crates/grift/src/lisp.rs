@@ -29,7 +29,6 @@ impl<const N: usize> Lisp<N> {
     /// Slot 0 is pre-allocated as `Value::Nil`.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
-        // Pre-allocate slot 0 as Nil
         let _ = arena.alloc(Value::Nil);
         Lisp { arena }
     }
@@ -68,7 +67,6 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
     /// same name already exists, returns the existing index.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        // Search for an existing symbol with the same name
         if let Some((idx, _)) = self.arena.find(|v| {
             v.as_symbol()
                 .is_ok_and(|str_idx| self.string_eq(str_idx, name))
@@ -76,7 +74,6 @@ impl<const N: usize> Lisp<N> {
             return Ok(idx);
         }
 
-        // Allocate a new string for the symbol name
         let str_idx = self.alloc_string(name)?;
         self.arena.alloc(Value::Symbol(str_idx))
     }
@@ -241,7 +238,6 @@ impl<const N: usize> Lisp<N> {
     }
 }
 
-// Implement Trace for GC support
 impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
