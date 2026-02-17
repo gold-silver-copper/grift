@@ -989,3 +989,151 @@ fn test_vau_gc_stress() {
     );
     assert_eq!(result, Ok(Value::Number(66)));
 }
+
+// ============================================================================
+// Kernel Semantics Tests (wrap/unwrap, operative?/applicative?)
+// ============================================================================
+
+#[test]
+fn test_vau_creates_operative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(operative? (vau (x) e x))"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(applicative? (vau (x) e x))"),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_wrap_creates_applicative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(applicative? (wrap (vau (x) #ignore x)))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_unwrap_retrieves_operative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(operative? (unwrap (wrap (vau (x) #ignore x))))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_lambda_is_applicative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(applicative? (lambda (x) x))"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(operative? (unwrap (lambda (x) x)))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_plus_is_applicative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(applicative? +)"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(operative? +)"),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_unwrap_plus() {
+    // Unwrapping + gives the underlying operative (Builtin).
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(operative? (unwrap +))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_if_is_operative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(applicative? if)"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(
+        lisp.eval("(operative? if)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_wrap_unwrap_roundtrip() {
+    // wrap/unwrap round-trip on user operatives.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define my-op (vau (x) e (eval x e)))
+            (define my-app (wrap my-op))
+            (my-app (+ 1 2)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_user_defined_unless() {
+    // User-defined special form: unless
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define unless
+                (vau (test . body) caller-env
+                    (eval (list if test (list) (cons begin body))
+                          caller-env)))
+            (unless #f 1 2 3))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_user_defined_unless_true() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define unless
+                (vau (test . body) caller-env
+                    (eval (list if test (list) (cons begin body))
+                          caller-env)))
+            (unless #t 1 2 3))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Nil));
+}
+
+#[test]
+fn test_user_defined_when() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define when
+                (vau (test . body) caller-env
+                    (eval (list if test (cons begin body) (list))
+                          caller-env)))
+            (when #t (+ 1 2)))
+    "#,
+    );
+    assert_eq!(result, Ok(Value::Number(3)));
+}

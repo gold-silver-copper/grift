@@ -145,33 +145,33 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
     }
 
-    /// Allocate a lambda.
+    /// Allocate a lambda (applicative from an operative that ignores caller env).
+    /// This is sugar for: `(wrap (vau params #ignore body))` with closed env.
+    /// Produces `Applicative(Operative { ... })` in the arena.
     pub fn lambda(
         &self,
         params: ArenaIndex,
         body: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let body_env = self.cons(body, env)?;
-        self.arena.alloc(Value::Lambda {
-            params,
-            body_env,
-        })
+        let operative = self.vau(params, ArenaIndex::NIL, body, env)?;
+        self.wrap(operative)
     }
 
-    /// Extract lambda parts: (params, body, env).
-    pub fn lambda_parts(
-        &self,
-        idx: ArenaIndex,
-    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let Value::Lambda { params, body_env } = self.arena.get(idx)? else {
-            return Err(ArenaError::TypeError);
-        };
-        let (body, env) = self.arena.get(body_env)?.as_cons()?;
-        Ok((params, body, env))
+    /// Wrap a combiner in an Applicative.
+    pub fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Applicative(combiner))
     }
 
-    /// Allocate a vau (fexpr / operative closure).
+    /// Unwrap an Applicative to get the inner combiner.
+    pub fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(idx)? {
+            Value::Applicative(inner) => Ok(inner),
+            _ => Err(ArenaError::TypeError),
+        }
+    }
+
+    /// Allocate an operative (fexpr / vau closure).
     pub fn vau(
         &self,
         params: ArenaIndex,
@@ -181,18 +181,18 @@ impl<const N: usize> Lisp<N> {
     ) -> ArenaResult<ArenaIndex> {
         let params_envparam = self.cons(params, env_param)?;
         let body_env = self.cons(body, env)?;
-        self.arena.alloc(Value::Vau {
+        self.arena.alloc(Value::Operative {
             params_envparam,
             body_env,
         })
     }
 
-    /// Extract vau parts: (params, env_param, body, env).
+    /// Extract operative parts: (params, env_param, body, env).
     pub fn vau_parts(
         &self,
         idx: ArenaIndex,
     ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
-        let Value::Vau {
+        let Value::Operative {
             params_envparam,
             body_env,
         } = self.arena.get(idx)?
@@ -246,11 +246,11 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }
-            | Value::Lambda { params: car, body_env: cdr }
-            | Value::Vau { params_envparam: car, body_env: cdr } => {
+            | Value::Operative { params_envparam: car, body_env: cdr } => {
                 tracer(car);
                 tracer(cdr);
             }
+            Value::Applicative(inner) => tracer(inner),
             Value::Symbol(s) => tracer(s),
             Value::String { data, .. } if !data.is_nil() => tracer(data),
             _ => {}
