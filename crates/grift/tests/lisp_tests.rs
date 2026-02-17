@@ -1507,3 +1507,108 @@ fn test_child_env_inherits_from_parent() {
         Ok(Value::Number(3))
     );
 }
+
+// ============================================================================
+// Sandboxed / Restricted Environment Tests
+// ============================================================================
+
+#[test]
+fn test_sandboxed_eval_no_access_to_builtins() {
+    // Sandboxed eval — no access to define!, vau, eval, or anything else
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! sandbox (make-empty-environment))
+                (eval (quote (+ 1 2)) sandbox))
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_selective_exposure_arithmetic_only() {
+    // Selective exposure — only arithmetic, no metaprogramming
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! safe-env (make-empty-environment))
+                (eval (list define! (quote +) +) safe-env)
+                (eval (list define! (quote -) -) safe-env)
+                (eval (quote (+ 1 2)) safe-env))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
+
+#[test]
+fn test_selective_exposure_vau_is_unbound() {
+    // vau should be unbound in the selective environment
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! safe-env (make-empty-environment))
+                (eval (list define! (quote +) +) safe-env)
+                (eval (list define! (quote -) -) safe-env)
+                (eval (quote (vau (x) e x)) safe-env))
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_make_empty_environment_is_truly_empty() {
+    // make-empty-environment creates a truly empty scope
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! e (make-empty-environment))
+                (environment? e))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_make_environment_with_current_env_has_builtins() {
+    // Users who want builtins available write (make-environment (current-environment))
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! child (make-environment (get-env)))
+                (eval (quote (+ 1 2)) child))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
+
+#[test]
+fn test_no_global_fallback_in_eval() {
+    // Without parent chain to global, symbols in global are unreachable
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! isolated (make-environment))
+                (eval (quote +) isolated))
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
