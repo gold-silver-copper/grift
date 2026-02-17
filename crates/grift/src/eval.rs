@@ -88,65 +88,108 @@ fn non_tail(result: ArenaResult<ArenaIndex>) -> TailAction {
 }
 
 // ============================================================================
-// Builtin ID generation
+// Unified builtin registration
 // ============================================================================
 
-/// Assign unique `BuiltinId` constants to all builtins.
-macro_rules! assign_builtin_ids {
-    ( $( $method:ident ),* $(,)? ) => {
-        assign_builtin_ids!(@consts 0u8; $( $method, )*);
+/// Generate all builtin infrastructure from a single declarative table:
+/// BuiltinId constants, `init_builtins` registration, and dispatch methods.
+macro_rules! define_builtins {
+    (
+        operatives { $( $op_name:literal => $op_id:ident => $op_method:ident, )* }
+        applicatives { $( $bi_name:literal => $bi_id:ident => $bi_method:ident, )* }
+    ) => {
+        // — ID constants (single shared u8 space) —
+        define_builtins!(@ids 0u8; $($op_id,)* $($bi_id,)*);
+
+        impl<'a, const N: usize> Evaluator<'a, N> {
+            /// Register all builtins in the global environment.
+            fn init_builtins(&mut self) {
+                $( self.bind_operative($op_name, $op_id); )*
+                $( self.bind_applicative($bi_name, $bi_id); )*
+                self.bind_self_evaluating("#ignore");
+            }
+
+            /// Dispatch an operative builtin (receives unevaluated args + caller env).
+            #[allow(non_upper_case_globals)]
+            fn apply_operative_builtin(
+                &mut self,
+                id: BuiltinId,
+                args: ArenaIndex,
+                expr: &mut ArenaIndex,
+                env: &mut ArenaIndex,
+            ) -> TailAction {
+                match id {
+                    $( $op_id => self.$op_method(args, expr, env), )*
+                    _ => TailAction::Return(Err(ArenaError::NotCallable)),
+                }
+            }
+
+            /// Dispatch an applicative builtin (receives already-evaluated args).
+            #[allow(non_upper_case_globals)]
+            fn apply_builtin_pure(
+                &mut self,
+                id: BuiltinId,
+                args: ArenaIndex,
+            ) -> ArenaResult<ArenaIndex> {
+                match id {
+                    $( $bi_id => self.$bi_method(args), )*
+                    _ => Err(ArenaError::NotCallable),
+                }
+            }
+        }
     };
-    (@consts $id:expr; ) => {};
-    (@consts $id:expr; $method:ident, $( $rest:ident, )*) => {
+    // Recursive ID assignment
+    (@ids $id:expr; ) => {};
+    (@ids $id:expr; $head:ident, $($rest:ident,)*) => {
         #[allow(non_upper_case_globals)]
-        const $method: BuiltinId = BuiltinId($id);
-        assign_builtin_ids!(@consts $id + 1u8; $( $rest, )*);
+        const $head: BuiltinId = BuiltinId($id);
+        define_builtins!(@ids $id + 1u8; $($rest,)*);
     };
 }
 
-// All builtin IDs — operative builtins and applicative builtins share
-// a single ID space since they all go through `Value::Builtin`.
-assign_builtin_ids!(
-    // Operative builtins (receive unevaluated args)
-    op_quote,
-    op_if,
-    op_define,
-    op_lambda,
-    op_begin,
-    op_cond,
-    op_and,
-    op_or,
-    op_let,
-    op_vau,
-    // Applicative builtins (receive pre-evaluated args via Applicative wrapper)
-    bi_cons,
-    bi_add,
-    bi_sub,
-    bi_mul,
-    bi_div,
-    bi_eq,
-    bi_lt,
-    bi_gt,
-    bi_le,
-    bi_ge,
-    bi_car,
-    bi_cdr,
-    bi_list,
-    bi_nullp,
-    bi_not,
-    bi_pairp,
-    bi_numberp,
-    bi_symbolp,
-    bi_booleanp,
-    bi_eval,
-    bi_wrap,
-    bi_unwrap,
-    bi_operativep,
-    bi_applicativep,
-    bi_make_env,
-    bi_make_empty_env,
-    bi_environmentp,
-);
+define_builtins! {
+    operatives {
+        "quote"  => op_quote  => op_quote,
+        "if"     => op_if     => op_if,
+        "define!" => op_define => op_define,
+        "lambda" => op_lambda => op_lambda,
+        "begin"  => op_begin  => op_begin,
+        "cond"   => op_cond   => op_cond,
+        "and"    => op_and    => op_and,
+        "or"     => op_or     => op_or,
+        "let"    => op_let    => op_let,
+        "vau"    => op_vau    => op_vau,
+    }
+    applicatives {
+        "cons"   => bi_cons   => builtin_cons,
+        "+"      => bi_add    => builtin_add,
+        "-"      => bi_sub    => builtin_sub,
+        "*"      => bi_mul    => builtin_mul,
+        "/"      => bi_div    => builtin_div,
+        "="      => bi_eq     => builtin_eq,
+        "<"      => bi_lt     => builtin_lt,
+        ">"      => bi_gt     => builtin_gt,
+        "<="     => bi_le     => builtin_le,
+        ">="     => bi_ge     => builtin_ge,
+        "car"    => bi_car    => builtin_car,
+        "cdr"    => bi_cdr    => builtin_cdr,
+        "list"   => bi_list   => builtin_list,
+        "null?"  => bi_nullp  => builtin_nullp,
+        "not"    => bi_not    => builtin_not,
+        "pair?"  => bi_pairp  => builtin_pairp,
+        "number?" => bi_numberp => builtin_numberp,
+        "symbol?" => bi_symbolp => builtin_symbolp,
+        "boolean?" => bi_booleanp => builtin_booleanp,
+        "eval"   => bi_eval   => builtin_eval,
+        "wrap"   => bi_wrap   => builtin_wrap,
+        "unwrap" => bi_unwrap => builtin_unwrap,
+        "operative?" => bi_operativep => builtin_operativep,
+        "applicative?" => bi_applicativep => builtin_applicativep,
+        "make-environment" => bi_make_env => builtin_make_env,
+        "make-empty-environment" => bi_make_empty_env => builtin_make_empty_env,
+        "environment?" => bi_environmentp => builtin_environmentp,
+    }
+}
 
 /// TCO control flow for operatives.
 enum TailAction {
@@ -178,56 +221,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         eval.init_builtins();
         eval
-    }
-
-    /// Register all builtins in the global environment.
-    ///
-    /// Operative builtins are bound bare as `Value::Builtin`.
-    /// Applicative builtins are wrapped as `Value::Applicative(Value::Builtin)`.
-    fn init_builtins(&mut self) {
-        // Operative builtins — bound bare (receive unevaluated args + caller env)
-        self.bind_operative("quote", op_quote);
-        self.bind_operative("if", op_if);
-        self.bind_operative("define!", op_define);
-        self.bind_operative("lambda", op_lambda);
-        self.bind_operative("begin", op_begin);
-        self.bind_operative("cond", op_cond);
-        self.bind_operative("and", op_and);
-        self.bind_operative("or", op_or);
-        self.bind_operative("let", op_let);
-        self.bind_operative("vau", op_vau);
-
-        // Applicative builtins — wrapped (receive evaluated args)
-        self.bind_applicative("cons", bi_cons);
-        self.bind_applicative("+", bi_add);
-        self.bind_applicative("-", bi_sub);
-        self.bind_applicative("*", bi_mul);
-        self.bind_applicative("/", bi_div);
-        self.bind_applicative("=", bi_eq);
-        self.bind_applicative("<", bi_lt);
-        self.bind_applicative(">", bi_gt);
-        self.bind_applicative("<=", bi_le);
-        self.bind_applicative(">=", bi_ge);
-        self.bind_applicative("car", bi_car);
-        self.bind_applicative("cdr", bi_cdr);
-        self.bind_applicative("list", bi_list);
-        self.bind_applicative("null?", bi_nullp);
-        self.bind_applicative("not", bi_not);
-        self.bind_applicative("pair?", bi_pairp);
-        self.bind_applicative("number?", bi_numberp);
-        self.bind_applicative("symbol?", bi_symbolp);
-        self.bind_applicative("boolean?", bi_booleanp);
-        self.bind_applicative("eval", bi_eval);
-        self.bind_applicative("wrap", bi_wrap);
-        self.bind_applicative("unwrap", bi_unwrap);
-        self.bind_applicative("operative?", bi_operativep);
-        self.bind_applicative("applicative?", bi_applicativep);
-        self.bind_applicative("make-environment", bi_make_env);
-        self.bind_applicative("make-empty-environment", bi_make_empty_env);
-        self.bind_applicative("environment?", bi_environmentp);
-
-        // Self-evaluating constants
-        self.bind_self_evaluating("#ignore");
     }
 
     /// Bind an operative builtin as bare `Value::Builtin` in the environment.
@@ -465,73 +458,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.pop_roots(3);
 
         self.lisp.cons(head_val, tail_vals)
-    }
-
-    // ================================================================
-    // Operative builtin dispatch (TCO-aware, receives unevaluated args)
-    // ================================================================
-
-    /// Dispatch an operative builtin (receives unevaluated args + caller env).
-    #[allow(non_upper_case_globals)]
-    fn apply_operative_builtin(
-        &mut self,
-        id: BuiltinId,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        match id {
-            op_quote => self.op_quote(args, expr, env),
-            op_if => self.op_if(args, expr, env),
-            op_define => self.op_define(args, expr, env),
-            op_lambda => self.op_lambda(args, expr, env),
-            op_begin => self.op_begin(args, expr, env),
-            op_cond => self.op_cond(args, expr, env),
-            op_and => self.op_and(args, expr, env),
-            op_or => self.op_or(args, expr, env),
-            op_let => self.op_let(args, expr, env),
-            op_vau => self.op_vau(args, expr, env),
-            _ => TailAction::Return(Err(ArenaError::NotCallable)),
-        }
-    }
-
-    // ================================================================
-    // Applicative builtin dispatch (receives pre-evaluated args)
-    // ================================================================
-
-    /// Dispatch an applicative builtin (receives already-evaluated args).
-    #[allow(non_upper_case_globals)]
-    fn apply_builtin_pure(&mut self, id: BuiltinId, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match id {
-            bi_cons => self.builtin_cons(args),
-            bi_add => self.builtin_add(args),
-            bi_sub => self.builtin_sub(args),
-            bi_mul => self.builtin_mul(args),
-            bi_div => self.builtin_div(args),
-            bi_eq => self.builtin_eq(args),
-            bi_lt => self.builtin_lt(args),
-            bi_gt => self.builtin_gt(args),
-            bi_le => self.builtin_le(args),
-            bi_ge => self.builtin_ge(args),
-            bi_car => self.builtin_car(args),
-            bi_cdr => self.builtin_cdr(args),
-            bi_list => self.builtin_list(args),
-            bi_nullp => self.builtin_nullp(args),
-            bi_not => self.builtin_not(args),
-            bi_pairp => self.builtin_pairp(args),
-            bi_numberp => self.builtin_numberp(args),
-            bi_symbolp => self.builtin_symbolp(args),
-            bi_booleanp => self.builtin_booleanp(args),
-            bi_eval => self.builtin_eval(args),
-            bi_wrap => self.builtin_wrap(args),
-            bi_unwrap => self.builtin_unwrap(args),
-            bi_operativep => self.builtin_operativep(args),
-            bi_applicativep => self.builtin_applicativep(args),
-            bi_make_env => self.builtin_make_env(args),
-            bi_make_empty_env => self.builtin_make_empty_env(args),
-            bi_environmentp => self.builtin_environmentp(args),
-            _ => Err(ArenaError::NotCallable),
-        }
     }
 
     // ================================================================
