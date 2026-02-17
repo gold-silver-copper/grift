@@ -6,7 +6,12 @@ license.workspace = true
 description = "A simple minimalistic Lisp built on the grift_arena allocator"
 
 [features]
-std = []
+std = ["dep:rustyline"]
 
 [dependencies]
 grift_arena.workspace = true
+rustyline = { version = "17.0.2", optional = true }
+
+[[bin]]
+name = "grift"
+required-features = ["std"]
