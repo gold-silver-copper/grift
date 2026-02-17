@@ -120,7 +120,6 @@ macro_rules! define_builtins {
             fn init_builtins(&mut self) {
                 $( self.bind_builtin($op_name, $op_id, false); )*
                 $( self.bind_builtin($bi_name, $bi_id, true); )*
-                self.bind_self_evaluating("#ignore");
             }
 
             /// Dispatch an operative builtin (receives unevaluated args + caller env).
@@ -195,6 +194,7 @@ define_builtins! {
         "symbol?" => bi_symbolp => builtin_symbolp,
         "boolean?" => bi_booleanp => builtin_booleanp,
         "inert?"  => bi_inertp  => builtin_inertp,
+        "ignore?" => bi_ignorep => builtin_ignorep,
         "eq?"    => bi_eqp    => builtin_eqp,
         "equal?" => bi_equalp => builtin_equalp,
         "eval"   => bi_eval   => builtin_eval,
@@ -247,13 +247,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             val = wrapped;
         }
         let _ = self.lisp.env_define(self.global_env, sym, val);
-    }
-
-    /// Bind a symbol to itself so it evaluates to its own identity.
-    fn bind_self_evaluating(&mut self, name: &str) {
-        if let Ok(sym) = self.lisp.symbol(name) {
-            let _ = self.lisp.env_define(self.global_env, sym, sym);
-        }
     }
 
     /// Push a value onto the GC root stack so it survives collection.
@@ -449,12 +442,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Err(ArenaError::TypeError);
         }
         match self.lisp.get(ptree)? {
+            Value::Ignore => Ok(()),
             Value::Symbol(_) => {
-                if self.lisp.symbol_name_eq(ptree, "#ignore") {
-                    Ok(())
-                } else {
-                    self.lisp.env_define(env, ptree, obj)
-                }
+                self.lisp.env_define(env, ptree, obj)
             }
             Value::Cons {
                 car: ptree_car,
@@ -716,18 +706,16 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.validate_ptree(params)?;
 
             // Validate env-param: must be a symbol or #ignore.
-            let ep = if self.lisp.symbol_name_eq(env_param, "#ignore") {
-                ArenaIndex::NIL
-            } else {
-                match self.lisp.get(env_param)? {
-                    Value::Symbol(_) => {}
-                    _ => return Err(ArenaError::TypeError),
+            let ep = match self.lisp.get(env_param)? {
+                Value::Ignore => ArenaIndex::NIL,
+                Value::Symbol(_) => {
+                    // env-param symbol must not also occur in formals.
+                    if self.ptree_contains_symbol(params, env_param)? {
+                        return Err(ArenaError::InvalidArgument);
+                    }
+                    env_param
                 }
-                // env-param symbol must not also occur in formals.
-                if self.ptree_contains_symbol(params, env_param)? {
-                    return Err(ArenaError::InvalidArgument);
-                }
-                env_param
+                _ => return Err(ArenaError::TypeError),
             };
 
             self.lisp.vau(params, ep, body, *env)
@@ -737,7 +725,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Validate that `ptree` is a well-formed formal parameter tree.
     ///
     /// Per the Kernel spec (§4.9.1), a valid ptree is:
-    /// - A symbol (including `#ignore`).
+    /// - A symbol or `#ignore`.
     /// - Nil (the empty list).
     /// - A pair whose car and cdr are both valid ptrees.
     fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<()> {
@@ -745,7 +733,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(());
         }
         match self.lisp.get(ptree)? {
-            Value::Symbol(_) => Ok(()),
+            Value::Symbol(_) | Value::Ignore => Ok(()),
             Value::Cons {
                 car: ptree_car,
                 cdr: ptree_cdr,
@@ -768,10 +756,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(false);
         }
         match self.lisp.get(ptree)? {
+            Value::Ignore => Ok(false),
             Value::Symbol(_) => {
-                if self.lisp.symbol_name_eq(ptree, "#ignore") {
-                    return Ok(false);
-                }
                 Ok(ptree == sym)
             }
             Value::Cons {
@@ -917,6 +903,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         match (va, vb) {
             (Value::Nil, Value::Nil) => Ok(true),
             (Value::Inert, Value::Inert) => Ok(true),
+            (Value::Ignore, Value::Ignore) => Ok(true),
             (Value::Boolean(x), Value::Boolean(y)) => Ok(x == y),
             (Value::Number(x), Value::Number(y)) => Ok(x == y),
             (Value::Symbol(x), Value::Symbol(y)) => Ok(x == y),
@@ -995,20 +982,42 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     );
     type_predicate!(builtin_applicativep, Value::Applicative(_));
 
-    /// `(make-environment [parent])`.
+    /// `(make-environment . environments)` — create a new environment with
+    /// zero or more parent environments (Kernel §4.8.4).
+    ///
+    /// The parents list is copied so that subsequent mutation of the
+    /// argument list does not affect the constructed environment.
     fn builtin_make_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let parent = if args.is_nil() {
-            ArenaIndex::NIL
-        } else {
-            self.lisp.car(args)?
-        };
-        self.lisp.make_child_env(parent)
+        // Validate all arguments are environments.
+        let mut cur = args;
+        while !cur.is_nil() {
+            let v = self.lisp.car(cur)?;
+            if !matches!(self.lisp.get(v)?, Value::Environment { .. }) {
+                return Err(ArenaError::TypeError);
+            }
+            cur = self.lisp.cdr(cur)?;
+        }
+        // Copy the parents list so it's independent of the original.
+        let parents = self.copy_list(args)?;
+        self.lisp.make_env_with_parents(parents)
     }
 
     /// `(make-empty-environment)` — always creates a parentless environment.
     fn builtin_make_empty_env(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.lisp.make_child_env(ArenaIndex::NIL)
+        self.lisp.make_env_with_parents(ArenaIndex::NIL)
     }
 
     type_predicate!(builtin_environmentp, Value::Environment { .. });
+    type_predicate!(builtin_ignorep, Value::Ignore);
+
+    /// Copy a cons-list into fresh cons cells.
+    fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        if list.is_nil() {
+            return Ok(ArenaIndex::NIL);
+        }
+        let head = self.lisp.car(list)?;
+        let rest = self.lisp.cdr(list)?;
+        let copied_rest = self.copy_list(rest)?;
+        self.lisp.cons(head, copied_rest)
+    }
 }

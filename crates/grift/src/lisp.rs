@@ -59,6 +59,12 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(Value::Inert)
     }
 
+    /// Allocate an ignore value.
+    #[inline]
+    pub fn ignore(&self) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Ignore)
+    }
+
     /// Allocate a cons cell.
     #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -214,14 +220,34 @@ impl<const N: usize> Lisp<N> {
 
     /// Create a root (top-level) environment with no parent.
     pub(crate) fn make_root_env(&self) -> ArenaResult<ArenaIndex> {
-        self.make_child_env(ArenaIndex::NIL)
-    }
-
-    /// Create a child environment with the given parent.
-    pub(crate) fn make_child_env(&self, parent: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(Value::Environment {
             bindings: ArenaIndex::NIL,
-            parent,
+            parents: ArenaIndex::NIL,
+        })
+    }
+
+    /// Create a child environment with the given single parent.
+    pub(crate) fn make_child_env(&self, parent: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let parents = if parent.is_nil() {
+            ArenaIndex::NIL
+        } else {
+            self.cons(parent, ArenaIndex::NIL)?
+        };
+        self.arena.alloc(Value::Environment {
+            bindings: ArenaIndex::NIL,
+            parents,
+        })
+    }
+
+    /// Create a new environment with a list of parent environments.
+    /// `parents_list` is a cons-list of environment indices.
+    pub(crate) fn make_env_with_parents(
+        &self,
+        parents_list: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Environment {
+            bindings: ArenaIndex::NIL,
+            parents: parents_list,
         })
     }
 
@@ -232,7 +258,7 @@ impl<const N: usize> Lisp<N> {
         name: ArenaIndex,
         val: ArenaIndex,
     ) -> ArenaResult<()> {
-        let Value::Environment { bindings, parent } = self.arena.get(env)? else {
+        let Value::Environment { bindings, parents } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
         let pair = self.cons(name, val)?;
@@ -241,34 +267,87 @@ impl<const N: usize> Lisp<N> {
             env,
             Value::Environment {
                 bindings: new_bindings,
-                parent,
+                parents,
             },
         )
     }
 
-    /// Look up a symbol in an environment, walking the parent chain.
+    /// Look up a symbol in an environment using depth-first search
+    /// through the parent chain.  Each parent is visited at most once
+    /// (cycle detection via a visited list) so cyclic parent graphs
+    /// terminate.
     pub(crate) fn env_lookup(
         &self,
         env: ArenaIndex,
         name: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let mut cur_env = env;
-        while !cur_env.is_nil() {
-            let Value::Environment { bindings, parent } = self.arena.get(cur_env)? else {
-                return Err(ArenaError::TypeError);
-            };
-            // Search bindings alist in this frame
-            let mut cur = bindings;
-            while !cur.is_nil() {
-                let binding = self.car(cur)?;
-                if self.car(binding)? == name {
-                    return self.cdr(binding);
-                }
-                cur = self.cdr(cur)?;
-            }
-            cur_env = parent;
+        self.env_lookup_dfs(env, name, ArenaIndex::NIL)
+    }
+
+    /// Depth-first lookup with a visited-set (cons-list of env indices
+    /// already searched).
+    fn env_lookup_dfs(
+        &self,
+        env: ArenaIndex,
+        name: ArenaIndex,
+        visited: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        if env.is_nil() {
+            return Err(ArenaError::UnboundVariable);
         }
+
+        // Cycle check: skip if already visited.
+        if self.list_contains(visited, env) {
+            return Err(ArenaError::UnboundVariable);
+        }
+
+        let Value::Environment { bindings, parents } = self.arena.get(env)? else {
+            return Err(ArenaError::TypeError);
+        };
+
+        // Search local bindings.
+        let mut cur = bindings;
+        while !cur.is_nil() {
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                return self.cdr(binding);
+            }
+            cur = self.cdr(cur)?;
+        }
+
+        // Mark this env as visited.
+        let new_visited = self.cons(env, visited)?;
+
+        // Depth-first search through parents list.
+        let mut parent_cur = parents;
+        while !parent_cur.is_nil() {
+            let parent_env = self.car(parent_cur)?;
+            match self.env_lookup_dfs(parent_env, name, new_visited) {
+                Ok(val) => return Ok(val),
+                Err(ArenaError::UnboundVariable) => {}
+                Err(e) => return Err(e),
+            }
+            parent_cur = self.cdr(parent_cur)?;
+        }
+
         Err(ArenaError::UnboundVariable)
+    }
+
+    /// Check if a cons-list contains a given index (by ArenaIndex identity).
+    fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
+        let mut cur = list;
+        while !cur.is_nil() {
+            if let Ok(head) = self.car(cur) {
+                if head == target {
+                    return true;
+                }
+            }
+            match self.cdr(cur) {
+                Ok(rest) => cur = rest,
+                Err(_) => break,
+            }
+        }
+        false
     }
 
     // — Evaluation entry point —
@@ -313,7 +392,7 @@ impl<const N: usize> Trace<Value, N> for Value {
         match *self {
             Value::Cons { car, cdr }
             | Value::Operative { params_envparam: car, body_env: cdr }
-            | Value::Environment { bindings: car, parent: cdr } => {
+            | Value::Environment { bindings: car, parents: cdr } => {
                 tracer(car);
                 tracer(cdr);
             }
