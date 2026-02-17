@@ -1759,7 +1759,7 @@ fn test_define_ptree_pair_mismatch() {
 
 #[test]
 fn test_define_ptree_rest_binding() {
-    // Dotted pair captures rest of list
+    // Dotted pair captures first element and rest of list
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -1770,6 +1770,17 @@ fn test_define_ptree_rest_binding() {
             "#
         ),
         Ok(Value::Number(1))
+    );
+    // Verify rest captured (2 3) — car of rest is 2
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (a . rest) (list 1 2 3))
+                (car rest))
+            "#
+        ),
+        Ok(Value::Number(2))
     );
 }
 
