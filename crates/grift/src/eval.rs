@@ -263,7 +263,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Bind an applicative builtin as `Value::Applicative(Value::Builtin)`.
     fn bind_applicative(&mut self, name: &str, id: BuiltinId) {
-        if let (Ok(sym), Ok(prim), ) = (
+        if let (Ok(sym), Ok(prim)) = (
             self.lisp.symbol(name),
             self.lisp.arena.alloc(Value::Builtin(id)),
         ) {
@@ -404,14 +404,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                                     return self.apply_builtin_pure(id, evaled_args);
                                 }
                                 // Inner is another applicative (double-wrap):
-                                // apply inner to the already-evaluated args.
+                                // args are already evaluated, recursively apply inner.
                                 Value::Applicative(_) => {
-                                    // Build a synthetic application: (inner . evaled_args_list)
-                                    // We need to apply inner to each element of evaled_args
-                                    // as already-evaluated arguments.
-                                    // Re-enter by constructing a cons(inner, evaled_args)
-                                    // but args are already evaluated, so we need to quote them.
-                                    // Actually: just recurse through apply_combiner.
                                     self.pop_roots(3);
                                     return self.apply_combiner(inner, evaled_args, env);
                                 }
