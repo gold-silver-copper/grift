@@ -4,7 +4,7 @@
 //! higher-order functions, closures, recursion patterns, and more.
 //!
 //! ```sh
-//! cargo run -p grift --features std --example fib_bench --release
+//! cargo run -p grift --example fib_bench --release
 //! ```
 
 use grift::{Lisp, Value};

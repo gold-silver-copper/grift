@@ -33,7 +33,7 @@ This is a Rust workspace containing a LISP implementation (named "Grift") built 
 cargo build --workspace
 
 # Run the bench
-cargo run -p grift --features std --example fib_bench --release
+cargo run -p grift --example fib_bench --release
 
 # Run tests
 cargo test --workspace
