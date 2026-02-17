@@ -1601,11 +1601,23 @@ fn test_make_environment_with_current_env_has_builtins() {
 fn test_no_global_fallback_in_eval() {
     // Without parent chain to global, symbols in global are unreachable
     let lisp: Lisp<20000> = Lisp::new();
+    // make-environment with no args
     assert_eq!(
         lisp.eval(
             r#"
             (begin
                 (define! isolated (make-environment))
+                (eval (quote +) isolated))
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+    // make-empty-environment
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! isolated (make-empty-environment))
                 (eval (quote +) isolated))
             "#
         ),
