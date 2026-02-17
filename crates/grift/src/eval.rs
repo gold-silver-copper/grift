@@ -104,8 +104,8 @@ macro_rules! define_builtins {
         impl<'a, const N: usize> Evaluator<'a, N> {
             /// Register all builtins in the global environment.
             fn init_builtins(&mut self) {
-                $( self.bind_operative($op_name, $op_id); )*
-                $( self.bind_applicative($bi_name, $bi_id); )*
+                $( self.bind_builtin($op_name, $op_id, false); )*
+                $( self.bind_builtin($bi_name, $bi_id, true); )*
                 self.bind_self_evaluating("#ignore");
             }
 
@@ -223,26 +223,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         eval
     }
 
-    /// Bind an operative builtin as bare `Value::Builtin` in the environment.
-    fn bind_operative(&mut self, name: &str, id: BuiltinId) {
-        if let (Ok(sym), Ok(val)) = (
-            self.lisp.symbol(name),
-            self.lisp.arena.alloc(Value::Builtin(id)),
-        ) {
-            let _ = self.lisp.env_define(self.global_env, sym, val);
-        }
-    }
-
-    /// Bind an applicative builtin as `Value::Applicative(Value::Builtin)`.
-    fn bind_applicative(&mut self, name: &str, id: BuiltinId) {
-        if let (Ok(sym), Ok(prim)) = (
-            self.lisp.symbol(name),
-            self.lisp.arena.alloc(Value::Builtin(id)),
-        ) {
-            if let Ok(wrapped) = self.lisp.arena.alloc(Value::Applicative(prim)) {
-                let _ = self.lisp.env_define(self.global_env, sym, wrapped);
-            }
-        }
+    /// Bind a builtin in the environment. If `wrap` is true, wraps it as an applicative.
+    fn bind_builtin(&mut self, name: &str, id: BuiltinId, wrap: bool) {
+        let Ok(sym) = self.lisp.symbol(name) else { return };
+        let Ok(val) = self.lisp.arena.alloc(id.into()) else { return };
+        let val = if wrap {
+            let Ok(wrapped) = self.lisp.arena.alloc(Value::Applicative(val)) else { return };
+            wrapped
+        } else {
+            val
+        };
+        let _ = self.lisp.env_define(self.global_env, sym, val);
     }
 
     /// Bind a symbol to itself so it evaluates to its own identity.
@@ -328,15 +319,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         }
 
                         Value::Operative { .. } => {
-                            let (params, env_param, body, closed_env) =
-                                self.lisp.vau_parts(func_val)?;
-                            let op_env = self.bind_vau_params(closed_env, params, cdr)?;
-                            if !env_param.is_nil() {
-                                self.lisp.env_define(op_env, env_param, env)?;
-                            }
+                            let (body, op_env) = self.invoke_operative(func_val, cdr, env)?;
+                            self.pop_roots(2);
                             env = op_env;
                             expr = body;
-                            self.pop_roots(2);
                             continue;
                         }
 
@@ -346,13 +332,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
                             match self.lisp.get(inner)? {
                                 Value::Operative { .. } => {
-                                    let (params, env_param, body, closed_env) =
-                                        self.lisp.vau_parts(inner)?;
-                                    let op_env =
-                                        self.bind_vau_params(closed_env, params, evaled_args)?;
-                                    if !env_param.is_nil() {
-                                        self.lisp.env_define(op_env, env_param, env)?;
-                                    }
+                                    let (body, op_env) =
+                                        self.invoke_operative(inner, evaled_args, env)?;
                                     self.pop_roots(3);
                                     env = op_env;
                                     expr = body;
@@ -396,17 +377,29 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> ArenaResult<ArenaIndex> {
         match self.lisp.get(combiner)? {
             Value::Operative { .. } => {
-                let (params, env_param, body, closed_env) = self.lisp.vau_parts(combiner)?;
-                let op_env = self.bind_vau_params(closed_env, params, evaled_args)?;
-                if !env_param.is_nil() {
-                    self.lisp.env_define(op_env, env_param, caller_env)?;
-                }
+                let (body, op_env) = self.invoke_operative(combiner, evaled_args, caller_env)?;
                 self.eval(body, op_env)
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             _ => Err(ArenaError::NotCallable),
         }
+    }
+
+    /// Common operative invocation: destructure, bind params, optionally bind caller env.
+    /// Returns `(body, operative_env)` for tail-call or direct eval.
+    fn invoke_operative(
+        &self,
+        func: ArenaIndex,
+        args: ArenaIndex,
+        caller_env: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        let (params, env_param, body, closed_env) = self.lisp.vau_parts(func)?;
+        let op_env = self.bind_vau_params(closed_env, params, args)?;
+        if !env_param.is_nil() {
+            self.lisp.env_define(op_env, env_param, caller_env)?;
+        }
+        Ok((body, op_env))
     }
 
     /// Bind vau parameters to unevaluated argument expressions.
@@ -814,41 +807,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.lisp.unwrap_applicative(app)
     }
 
-    /// `(operative? x)` — #t if x is an operative (Operative or bare Builtin).
-    fn builtin_operativep(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp.boolean(matches!(
-            self.lisp.get(val)?,
-            Value::Operative { .. } | Value::Builtin(_)
-        ))
-    }
+    type_predicate!(builtin_operativep, Value::Operative { .. } | Value::Builtin(_));
+    type_predicate!(builtin_applicativep, Value::Applicative(_));
 
-    /// `(applicative? x)` — #t if x is an applicative.
-    fn builtin_applicativep(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp
-            .boolean(matches!(self.lisp.get(val)?, Value::Applicative(_)))
-    }
-
-    /// `(make-environment)` or `(make-environment parent)` — create a new environment.
+    /// `(make-environment [parent])` / `(make-empty-environment)`.
     fn builtin_make_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if args.is_nil() {
-            self.lisp.make_child_env(ArenaIndex::NIL)
+        let parent = if args.is_nil() {
+            ArenaIndex::NIL
         } else {
-            let parent = self.lisp.car(args)?;
-            self.lisp.make_child_env(parent)
-        }
+            self.lisp.car(args)?
+        };
+        self.lisp.make_child_env(parent)
     }
 
-    /// `(make-empty-environment)` — create a truly empty environment with no parent.
+    /// Alias: `(make-empty-environment)` ignores args.
     fn builtin_make_empty_env(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.lisp.make_child_env(ArenaIndex::NIL)
     }
 
-    /// `(environment? x)` — #t if x is an environment.
-    fn builtin_environmentp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.lisp.car(args)?;
-        self.lisp
-            .boolean(matches!(self.lisp.get(val)?, Value::Environment { .. }))
-    }
+    type_predicate!(builtin_environmentp, Value::Environment { .. });
 }

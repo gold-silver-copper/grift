@@ -126,6 +126,11 @@ impl Value {
         as_bool -> bool, Value::Boolean(b) => b
     }
 
+    value_accessor! {
+        /// Extract the inner combiner of an applicative, or `Err(TypeError)`.
+        as_applicative -> ArenaIndex, Value::Applicative(inner) => inner
+    }
+
     /// Returns true only for bool true
     #[inline]
     pub fn is_truthy(self) -> bool {
@@ -164,5 +169,12 @@ impl From<char> for Value {
     #[inline]
     fn from(c: char) -> Self {
         Value::Char(c)
+    }
+}
+
+impl From<BuiltinId> for Value {
+    #[inline]
+    fn from(id: BuiltinId) -> Self {
+        Value::Builtin(id)
     }
 }

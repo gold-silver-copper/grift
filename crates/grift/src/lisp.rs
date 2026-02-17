@@ -162,10 +162,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Unwrap an Applicative to get the inner combiner.
     pub fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Applicative(inner) => Ok(inner),
-            _ => Err(ArenaError::TypeError),
-        }
+        self.arena.get(idx)?.as_applicative()
     }
 
     /// Allocate an operative (fexpr / vau closure).
