@@ -183,8 +183,6 @@ define_operatives! {
     "number?"  => op_numberp,
     "symbol?"  => op_symbolp,
     "boolean?" => op_booleanp,
-    "wrap"     => op_wrap,
-    "unwrap"   => op_unwrap,
 }
 
 /// TCO control flow for operatives.
@@ -711,35 +709,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 let env_val = self.eval(env_arg, *env)?;
                 self.eval(expr_val, env_val)
             }
-        })())
-    }
-
-    /// `(wrap operative)` — create an applicative from an operative.
-    ///
-    /// The resulting lambda evaluates its arguments before passing them
-    /// to the underlying operative.
-    fn op_wrap(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail((|| {
-            let op_expr = self.lisp.car(args)?;
-            self.eval(op_expr, *env)
-        })())
-    }
-
-    /// `(unwrap applicative)` — extract the underlying operative.
-    fn op_unwrap(
-        &mut self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail((|| {
-            let val_expr = self.lisp.car(args)?;
-            self.eval(val_expr, *env)
         })())
     }
 

@@ -733,28 +733,19 @@ fn test_vau_with_env_param() {
 
 #[test]
 fn test_vau_derive_lambda() {
-    // Derive an applicative (lambda-like) from vau by evaluating args in caller env.
+    // Derive a simple applicative from vau: evaluates a single argument
+    // in the caller's environment before using it.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
         (begin
-            (define my-lambda
-                (vau (params body) static-env
-                    (vau args caller-env
-                        (eval body
-                            (eval (cons 'let
-                                (cons
-                                    (eval (cons 'list
-                                        (eval (cons 'list
-                                            (cons (cons 'list (cons (car params) (cons (eval (car args) caller-env) '()))) '()))
-                                            static-env))
-                                        static-env)
-                                    (cons body '())))
-                                caller-env)))))
-            42)
+            (define my-inc
+                (vau (x) e (+ 1 (eval x e))))
+            (my-inc (+ 2 3)))
     "#,
     );
-    assert_eq!(result, Ok(Value::Number(42)));
+    // (+ 2 3) is evaluated in caller env → 5, then (+ 1 5) → 6
+    assert_eq!(result, Ok(Value::Number(6)));
 }
 
 #[test]
