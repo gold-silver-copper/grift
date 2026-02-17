@@ -144,6 +144,7 @@ assign_builtin_ids!(
     bi_operativep,
     bi_applicativep,
     bi_make_env,
+    bi_make_empty_env,
     bi_environmentp,
 );
 
@@ -222,6 +223,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         self.bind_applicative("operative?", bi_operativep);
         self.bind_applicative("applicative?", bi_applicativep);
         self.bind_applicative("make-environment", bi_make_env);
+        self.bind_applicative("make-empty-environment", bi_make_empty_env);
         self.bind_applicative("environment?", bi_environmentp);
 
         // Self-evaluating constants
@@ -313,8 +315,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             match val {
                 Value::Symbol(_) => {
-                    return self.lisp.env_lookup(env, expr)
-                        .or_else(|_| self.lisp.env_lookup(self.global_env, expr));
+                    return self.lisp.env_lookup(env, expr);
                 }
 
                 Value::Cons { car, cdr } => {
@@ -527,6 +528,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             bi_operativep => self.builtin_operativep(args),
             bi_applicativep => self.builtin_applicativep(args),
             bi_make_env => self.builtin_make_env(args),
+            bi_make_empty_env => self.builtin_make_empty_env(args),
             bi_environmentp => self.builtin_environmentp(args),
             _ => Err(ArenaError::NotCallable),
         }
@@ -910,6 +912,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let parent = self.lisp.car(args)?;
             self.lisp.make_child_env(parent)
         }
+    }
+
+    /// `(make-empty-environment)` — create a truly empty environment with no parent.
+    fn builtin_make_empty_env(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.lisp.make_child_env(ArenaIndex::NIL)
     }
 
     /// `(environment? x)` — #t if x is an environment.
