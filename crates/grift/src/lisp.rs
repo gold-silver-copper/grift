@@ -201,6 +201,70 @@ impl<const N: usize> Lisp<N> {
         Ok((params, env_param, body, env))
     }
 
+    // — Environment operations —
+
+    /// Create a root (top-level) environment with no parent.
+    pub(crate) fn make_root_env(&self) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Environment {
+            bindings: ArenaIndex::NIL,
+            parent: ArenaIndex::NIL,
+        })
+    }
+
+    /// Create a child environment with the given parent.
+    pub(crate) fn make_child_env(&self, parent: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Environment {
+            bindings: ArenaIndex::NIL,
+            parent,
+        })
+    }
+
+    /// Define a binding in an environment (mutates in place via arena.set).
+    pub(crate) fn env_define(
+        &self,
+        env: ArenaIndex,
+        name: ArenaIndex,
+        val: ArenaIndex,
+    ) -> ArenaResult<()> {
+        let Value::Environment { bindings, parent } = self.arena.get(env)? else {
+            return Err(ArenaError::TypeError);
+        };
+        let pair = self.cons(name, val)?;
+        let new_bindings = self.cons(pair, bindings)?;
+        self.arena.set(
+            env,
+            Value::Environment {
+                bindings: new_bindings,
+                parent,
+            },
+        )
+    }
+
+    /// Look up a symbol in an environment, walking the parent chain.
+    pub(crate) fn env_lookup(
+        &self,
+        env: ArenaIndex,
+        name: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let mut cur_env = env;
+        while !cur_env.is_nil() {
+            let Value::Environment { bindings, parent } = self.arena.get(cur_env)? else {
+                return Err(ArenaError::TypeError);
+            };
+            // Search bindings alist in this frame
+            let mut cur = bindings;
+            while !cur.is_nil() {
+                let binding = self.car(cur)?;
+                if self.car(binding)? == name {
+                    return self.cdr(binding);
+                }
+                cur = self.cdr(cur)?;
+            }
+            cur_env = parent;
+        }
+        Err(ArenaError::UnboundVariable)
+    }
+
     // — Evaluation entry point —
 
     /// Parse and evaluate a Lisp expression string.
@@ -242,7 +306,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }
-            | Value::Operative { params_envparam: car, body_env: cdr } => {
+            | Value::Operative { params_envparam: car, body_env: cdr }
+            | Value::Environment { bindings: car, parent: cdr } => {
                 tracer(car);
                 tracer(cdr);
             }

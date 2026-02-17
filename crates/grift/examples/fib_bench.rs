@@ -151,7 +151,7 @@ fn run_benchmarks() {
         "fib-naive(30)",
         r#"
         (begin
-          (define (fib n)
+          (define! (fib n)
             (if (<= n 1) n
               (+ (fib (- n 1)) (fib (- n 2)))))
           (fib 30))
@@ -165,7 +165,7 @@ fn run_benchmarks() {
         "fib-tco(50)",
         r#"
         (begin
-          (define (fib-tco n a b)
+          (define! (fib-tco n a b)
             (if (= n 0) a
               (fib-tco (- n 1) b (+ a b))))
           (fib-tco 50 0 1))
@@ -179,8 +179,8 @@ fn run_benchmarks() {
         "fib-iter(50)",
         r#"
         (begin
-          (define (fib-iter n)
-            (define (loop i a b)
+          (define! (fib-iter n)
+            (define! (loop i a b)
               (if (= i 0) a
                 (loop (- i 1) b (+ a b))))
             (loop n 0 1))
@@ -195,7 +195,7 @@ fn run_benchmarks() {
         "sum-tco(10000)",
         r#"
         (begin
-          (define (sum n acc)
+          (define! (sum n acc)
             (if (= n 0) acc
               (sum (- n 1) (+ acc n))))
           (sum 10000 0))
@@ -209,7 +209,7 @@ fn run_benchmarks() {
         "countdown(100000)",
         r#"
         (begin
-          (define (countdown n)
+          (define! (countdown n)
             (if (= n 0) 0
               (countdown (- n 1))))
           (countdown 100000))
@@ -223,7 +223,7 @@ fn run_benchmarks() {
         "factorial-tco(20)",
         r#"
         (begin
-          (define (fact n acc)
+          (define! (fact n acc)
             (if (= n 0) acc
               (fact (- n 1) (* acc n))))
           (fact 20 1))
@@ -237,7 +237,7 @@ fn run_benchmarks() {
         "ackermann(3,7)",
         r#"
         (begin
-          (define (ack m n)
+          (define! (ack m n)
             (cond
               ((= m 0) (+ n 1))
               ((= n 0) (ack (- m 1) 1))
@@ -253,10 +253,10 @@ fn run_benchmarks() {
         "list-build(1000)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define lst (build 1000 (list)))
+          (define! lst (build 1000 (list)))
           (car lst))
         "#,
         Some(Value::Number(1)),
@@ -268,11 +268,11 @@ fn run_benchmarks() {
         "list-length(1000)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (length lst)
-            (define (loop l acc)
+          (define! (length lst)
+            (define! (loop l acc)
               (if (null? l) acc
                 (loop (cdr l) (+ acc 1))))
             (loop lst 0))
@@ -287,11 +287,11 @@ fn run_benchmarks() {
         "list-sum(1000)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (sum-list lst)
-            (define (loop l acc)
+          (define! (sum-list lst)
+            (define! (loop l acc)
               (if (null? l) acc
                 (loop (cdr l) (+ acc (car l)))))
             (loop lst 0))
@@ -306,14 +306,14 @@ fn run_benchmarks() {
         "map-double(500)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (map f lst)
+          (define! (map f lst)
             (if (null? lst) (list)
               (cons (f (car lst)) (map f (cdr lst)))))
-          (define (double x) (* x 2))
-          (define result (map double (build 500 (list))))
+          (define! (double x) (* x 2))
+          (define! result (map double (build 500 (list))))
           (car result))
         "#,
         Some(Value::Number(2)),
@@ -325,13 +325,13 @@ fn run_benchmarks() {
         "foldl-sum(1000)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (foldl f init lst)
+          (define! (foldl f init lst)
             (if (null? lst) init
               (foldl f (f init (car lst)) (cdr lst))))
-          (define (add a b) (+ a b))
+          (define! (add a b) (+ a b))
           (foldl add 0 (build 1000 (list))))
         "#,
         Some(Value::Number(500500)),
@@ -343,7 +343,7 @@ fn run_benchmarks() {
         "pure-counter(10000)",
         r#"
         (begin
-          (define (count n acc)
+          (define! (count n acc)
             (if (= n 0) acc
               (count (- n 1) (+ acc 1))))
           (count 10000 0))
@@ -357,10 +357,10 @@ fn run_benchmarks() {
         "mutual-recur(10000)",
         r#"
         (begin
-          (define (my-even? n)
+          (define! (my-even? n)
             (if (= n 0) #t
               (my-odd? (- n 1))))
-          (define (my-odd? n)
+          (define! (my-odd? n)
             (if (= n 0) #f
               (my-even? (- n 1))))
           (my-even? 10000))
@@ -374,13 +374,13 @@ fn run_benchmarks() {
         "nested-closures",
         r#"
         (begin
-          (define (adder x)
+          (define! (adder x)
             (lambda (y) (+ x y)))
-          (define add5 (adder 5))
-          (define add10 (adder 10))
-          (define (compose f g)
+          (define! add5 (adder 5))
+          (define! add10 (adder 10))
+          (define! (compose f g)
             (lambda (x) (f (g x))))
-          (define add15 (compose add5 add10))
+          (define! add15 (compose add5 add10))
           (add15 100))
         "#,
         Some(Value::Number(115)),
@@ -392,17 +392,17 @@ fn run_benchmarks() {
         "church-numerals",
         r#"
         (begin
-          (define (church-zero f) (lambda (x) x))
-          (define (church-succ n)
+          (define! (church-zero f) (lambda (x) x))
+          (define! (church-succ n)
             (lambda (f) (lambda (x) (f ((n f) x)))))
-          (define (church-add m n)
+          (define! (church-add m n)
             (lambda (f) (lambda (x) ((m f) ((n f) x)))))
-          (define (church->int n)
+          (define! (church->int n)
             ((n (lambda (x) (+ x 1))) 0))
-          (define c1 (church-succ church-zero))
-          (define c2 (church-succ c1))
-          (define c3 (church-succ c2))
-          (define c5 (church-add c2 c3))
+          (define! c1 (church-succ church-zero))
+          (define! c2 (church-succ c1))
+          (define! c3 (church-succ c2))
+          (define! c5 (church-add c2 c3))
           (church->int c5))
         "#,
         Some(Value::Number(5)),
@@ -414,9 +414,9 @@ fn run_benchmarks() {
         "fast-power(2^30)",
         r#"
         (begin
-          (define (mod a b) (- a (* b (/ a b))))
-          (define (even? n) (= (mod n 2) 0))
-          (define (fast-pow base exp)
+          (define! (mod a b) (- a (* b (/ a b))))
+          (define! (even? n) (= (mod n 2) 0))
+          (define! (fast-pow base exp)
             (cond
               ((= exp 0) 1)
               ((even? exp) (let ((half (fast-pow base (/ exp 2))))
@@ -433,8 +433,8 @@ fn run_benchmarks() {
         "gcd-euclid",
         r#"
         (begin
-          (define (mod a b) (- a (* b (/ a b))))
-          (define (gcd a b)
+          (define! (mod a b) (- a (* b (/ a b))))
+          (define! (gcd a b)
             (if (= b 0) a
               (gcd b (mod a b))))
           (gcd 1071 462))
@@ -448,11 +448,11 @@ fn run_benchmarks() {
         "gcd-repeat(10000)",
         r#"
         (begin
-          (define (mod a b) (- a (* b (/ a b))))
-          (define (gcd a b)
+          (define! (mod a b) (- a (* b (/ a b))))
+          (define! (gcd a b)
             (if (= b 0) a
               (gcd b (mod a b))))
-          (define (repeat n)
+          (define! (repeat n)
             (if (= n 0) (gcd 1071 462)
               (begin (gcd 1071 462) (repeat (- n 1)))))
           (repeat 10000))
@@ -466,7 +466,7 @@ fn run_benchmarks() {
         "tak(18,12,6)",
         r#"
         (begin
-          (define (tak x y z)
+          (define! (tak x y z)
             (if (>= y x) z
               (tak (tak (- x 1) y z)
                    (tak (- y 1) z x)
@@ -482,18 +482,18 @@ fn run_benchmarks() {
         "flatten-nested",
         r#"
         (begin
-          (define (append a b)
+          (define! (append a b)
             (if (null? a) b
               (cons (car a) (append (cdr a) b))))
-          (define (flatten lst)
+          (define! (flatten lst)
             (cond
               ((null? lst) (list))
               ((pair? (car lst))
                (append (flatten (car lst)) (flatten (cdr lst))))
               (#t (cons (car lst) (flatten (cdr lst))))))
-          (define nested (list (list 1 2) (list 3 (list 4 5)) (list 6)))
-          (define flat (flatten nested))
-          (define (sum-list lst)
+          (define! nested (list (list 1 2) (list 3 (list 4 5)) (list 6)))
+          (define! flat (flatten nested))
+          (define! (sum-list lst)
             (if (null? lst) 0
               (+ (car lst) (sum-list (cdr lst)))))
           (sum-list flat))
@@ -507,10 +507,10 @@ fn run_benchmarks() {
         "list-nth(5000)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (nth lst n)
+          (define! (nth lst n)
             (if (= n 0) (car lst)
               (nth (cdr lst) (- n 1))))
           (nth (build 5000 (list)) 4999))
@@ -545,14 +545,14 @@ fn run_benchmarks() {
         "cond-classify(10000)",
         r#"
         (begin
-          (define (mod a b) (- a (* b (/ a b))))
-          (define (classify n)
+          (define! (mod a b) (- a (* b (/ a b))))
+          (define! (classify n)
             (cond
               ((= (mod n 15) 0) 1)
               ((= (mod n 5)  0) 2)
               ((= (mod n 3)  0) 3)
               (#t                4)))
-          (define (run n acc)
+          (define! (run n acc)
             (if (= n 0) acc
               (run (- n 1) (+ acc (classify n)))))
           (run 10000 0))
@@ -566,14 +566,14 @@ fn run_benchmarks() {
         "let-stress",
         r#"
         (begin
-          (define (compute x)
+          (define! (compute x)
             (let ((a (+ x 1))
                   (b (* x 2))
                   (c (- x 3)))
               (let ((d (+ a b))
                     (e (* b c)))
                 (+ d e))))
-          (define (run n acc)
+          (define! (run n acc)
             (if (= n 0) acc
               (run (- n 1) (+ acc (compute n)))))
           (run 10000 0))
@@ -587,14 +587,14 @@ fn run_benchmarks() {
         "append-lists(500+500)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (append a b)
+          (define! (append a b)
             (if (null? a) b
               (cons (car a) (append (cdr a) b))))
-          (define (length lst)
-            (define (loop l acc)
+          (define! (length lst)
+            (define! (loop l acc)
               (if (null? l) acc
                 (loop (cdr l) (+ acc 1))))
             (loop lst 0))
@@ -609,11 +609,11 @@ fn run_benchmarks() {
         "reverse(2000)",
         r#"
         (begin
-          (define (build n acc)
+          (define! (build n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc))))
-          (define (reverse lst)
-            (define (loop l acc)
+          (define! (reverse lst)
+            (define! (loop l acc)
               (if (null? l) acc
                 (loop (cdr l) (cons (car l) acc))))
             (loop lst (list)))
@@ -628,9 +628,9 @@ fn run_benchmarks() {
         "collatz-len(837799)",
         r#"
         (begin
-          (define (mod a b) (- a (* b (/ a b))))
-          (define (even? n) (= (mod n 2) 0))
-          (define (collatz-len n steps)
+          (define! (mod a b) (- a (* b (/ a b))))
+          (define! (even? n) (= (mod n 2) 0))
+          (define! (collatz-len n steps)
             (if (= n 1) steps
               (if (even? n)
                 (collatz-len (/ n 2) (+ steps 1))
@@ -646,16 +646,16 @@ fn run_benchmarks() {
         "count-primes(500)",
         r#"
         (begin
-          (define (mod a b) (- a (* b (/ a b))))
-          (define (divides? d n) (= (mod n d) 0))
-          (define (prime? n)
-            (define (check d)
+          (define! (mod a b) (- a (* b (/ a b))))
+          (define! (divides? d n) (= (mod n d) 0))
+          (define! (prime? n)
+            (define! (check d)
               (cond
                 ((> (* d d) n) #t)
                 ((divides? d n) #f)
                 (#t (check (+ d 1)))))
             (if (<= n 1) #f (check 2)))
-          (define (count-primes n acc)
+          (define! (count-primes n acc)
             (if (= n 1) acc
               (count-primes (- n 1) (if (prime? n) (+ acc 1) acc))))
           (count-primes 500 0))
@@ -691,7 +691,7 @@ fn run_benchmarks() {
         "y-combinator-fib",
         r#"
         (begin
-          (define (Y-fib f n)
+          (define! (Y-fib f n)
             (if (<= n 1) n
               (+ (f f (- n 1)) (f f (- n 2)))))
           (Y-fib Y-fib 25))
@@ -705,7 +705,7 @@ fn run_benchmarks() {
         "cps-factorial(15)",
         r#"
         (begin
-          (define (fact-cps n k)
+          (define! (fact-cps n k)
             (if (= n 0) (k 1)
               (fact-cps (- n 1) (lambda (r) (k (* n r))))))
           (fact-cps 15 (lambda (x) x)))

@@ -55,6 +55,13 @@ pub enum Value {
     /// Always an operative — receives unevaluated args + caller env.
     /// Applicative primitives (like +) are (wrap (Builtin id)) at init time.
     Builtin(BuiltinId),
+    /// A first-class environment with lexical parent chain.
+    /// `bindings`: alist of (symbol . value) pairs in this frame.
+    /// `parent`: ArenaIndex to parent Environment, or NIL for top-level.
+    Environment {
+        bindings: ArenaIndex,
+        parent: ArenaIndex,
+    },
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -86,6 +93,7 @@ impl Value {
             Value::Operative { .. } => "operative",
             Value::Applicative(_) => "applicative",
             Value::Builtin(_) => "builtin",
+            Value::Environment { .. } => "environment",
         }
     }
 

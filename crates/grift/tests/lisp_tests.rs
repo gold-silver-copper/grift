@@ -460,7 +460,7 @@ fn test_strict_define_evaluated() {
     let result = lisp.eval(
         r#"
         (begin
-            (define bad (+ 1 "crash"))
+            (define! bad (+ 1 "crash"))
             42)
     "#,
     );
@@ -542,7 +542,7 @@ fn test_tco_countdown() {
     let result = lisp.eval(
         r#"
         (begin
-            (define (count n)
+            (define! (count n)
                 (if (= n 0) 0 (count (- n 1))))
             (count 1000))
     "#,
@@ -557,9 +557,9 @@ fn test_tco_mutual_recursion() {
     let result = lisp.eval(
         r#"
         (begin
-            (define (my-even? n)
+            (define! (my-even? n)
                 (if (= n 0) #t (my-odd? (- n 1))))
-            (define (my-odd? n)
+            (define! (my-odd? n)
                 (if (= n 0) #f (my-even? (- n 1))))
             (my-even? 1000))
     "#,
@@ -574,7 +574,7 @@ fn test_tco_begin_tail_position() {
     let result = lisp.eval(
         r#"
         (begin
-            (define (loop n)
+            (define! (loop n)
                 (if (= n 0) 42
                     (begin
                         (+ 1 2)
@@ -596,7 +596,7 @@ fn test_set_bang_is_rejected() {
     let result = lisp.eval(
         r#"
         (begin
-            (define x 1)
+            (define! x 1)
             (set! x 2)
             x)
     "#,
@@ -612,9 +612,9 @@ fn test_define_shadows_not_mutates() {
     let result = lisp.eval(
         r#"
         (begin
-            (define x 1)
-            (define get-x (lambda (x) x))
-            (define x 2)
+            (define! x 1)
+            (define! get-x (lambda (x) x))
+            (define! x 2)
             (get-x 1))
     "#,
     );
@@ -629,8 +629,8 @@ fn test_define_redefinition_returns_new_value() {
     let result = lisp.eval(
         r#"
         (begin
-            (define x 1)
-            (define x 2)
+            (define! x 1)
+            (define! x 2)
             x)
     "#,
     );
@@ -648,7 +648,7 @@ fn test_tco_with_lazy_accumulator() {
     let result = lisp.eval(
         r#"
         (begin
-            (define (sum-to n acc)
+            (define! (sum-to n acc)
                 (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
             (sum-to 100 0))
     "#,
@@ -663,7 +663,7 @@ fn test_tco_iterative_fib() {
     let result = lisp.eval(
         r#"
         (begin
-            (define (fib n)
+            (define! (fib n)
                 ((lambda (loop)
                     (loop loop 0 1 n))
                  (lambda (self a b count)
@@ -684,7 +684,7 @@ fn test_recursive_fib_30() {
     let result = lisp.eval(
         r#"
         (begin
-            (define (fib n)
+            (define! (fib n)
                 (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
             (fib 30))
     "#,
@@ -703,7 +703,7 @@ fn test_vau_basic_quote() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-quote (vau (x) #ignore x))
+            (define! my-quote (vau (x) #ignore x))
             (my-quote 42))
     "#,
     );
@@ -717,7 +717,7 @@ fn test_vau_receives_unevaluated_args() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-quote (vau (x) #ignore x))
+            (define! my-quote (vau (x) #ignore x))
             (pair? (my-quote (1 2 3))))
     "#,
     );
@@ -731,7 +731,7 @@ fn test_vau_with_env_param() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-eval-add
+            (define! my-eval-add
                 (vau (a b) e
                     (+ (eval a e) (eval b e))))
             (my-eval-add (+ 1 2) (+ 3 4)))
@@ -748,7 +748,7 @@ fn test_vau_derive_lambda() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-inc
+            (define! my-inc
                 (vau (x) e (+ 1 (eval x e))))
             (my-inc (+ 2 3)))
     "#,
@@ -764,7 +764,7 @@ fn test_lambda_as_syntactic_sugar_over_vau() {
     let result = lisp.eval(
         r#"
         (begin
-            (define double (lambda (x) (+ x x)))
+            (define! double (lambda (x) (+ x x)))
             (double 21))
     "#,
     );
@@ -778,10 +778,10 @@ fn test_vau_closure() {
     let result = lisp.eval(
         r#"
         (begin
-            (define make-adder
+            (define! make-adder
                 (lambda (n)
                     (vau (x) e (+ n (eval x e)))))
-            (define add5 (make-adder 5))
+            (define! add5 (make-adder 5))
             (add5 (+ 1 2)))
     "#,
     );
@@ -795,7 +795,7 @@ fn test_first_class_if() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-if if)
+            (define! my-if if)
             (my-if #t 1 2))
     "#,
     );
@@ -809,7 +809,7 @@ fn test_first_class_quote() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-quote quote)
+            (define! my-quote quote)
             (my-quote 42))
     "#,
     );
@@ -823,7 +823,7 @@ fn test_first_class_begin() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-begin begin)
+            (define! my-begin begin)
             (my-begin 1 2 3))
     "#,
     );
@@ -832,12 +832,12 @@ fn test_first_class_begin() {
 
 #[test]
 fn test_first_class_define() {
-    // `define` is a first-class operative.
+    // `define!` is a first-class operative.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
         (begin
-            (define my-define define)
+            (define! my-define define!)
             (my-define x 42)
             x)
     "#,
@@ -852,7 +852,7 @@ fn test_first_class_and() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-and and)
+            (define! my-and and)
             (my-and #t #t))
     "#,
     );
@@ -866,7 +866,7 @@ fn test_first_class_or() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-or or)
+            (define! my-or or)
             (my-or #f #t))
     "#,
     );
@@ -880,7 +880,7 @@ fn test_first_class_plus() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-add +)
+            (define! my-add +)
             (my-add 1 2))
     "#,
     );
@@ -894,7 +894,7 @@ fn test_first_class_cons() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-cons cons)
+            (define! my-cons cons)
             (car (my-cons 1 2)))
     "#,
     );
@@ -920,7 +920,7 @@ fn test_vau_if_alternative() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-if
+            (define! my-if
                 (vau (test then else) e
                     (if (eval test e)
                         (eval then e)
@@ -938,7 +938,7 @@ fn test_vau_short_circuit() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-if
+            (define! my-if
                 (vau (test then else) e
                     (if (eval test e)
                         (eval then e)
@@ -956,7 +956,7 @@ fn test_operative_is_value() {
     let result = lisp.eval(
         r#"
         (begin
-            (define f +)
+            (define! f +)
             (f 3 4))
     "#,
     );
@@ -970,7 +970,7 @@ fn test_vau_rest_params() {
     let result = lisp.eval(
         r#"
         (begin
-            (define count-args
+            (define! count-args
                 (vau args #ignore
                     (car args)))
             (count-args 10 20 30))
@@ -986,12 +986,12 @@ fn test_vau_gc_stress() {
     let result = lisp.eval(
         r#"
         (begin
-            (define make-op
+            (define! make-op
                 (lambda (n)
                     (vau (x) e (+ n (eval x e)))))
-            (define op1 (make-op 1))
-            (define op2 (make-op 2))
-            (define op3 (make-op 3))
+            (define! op1 (make-op 1))
+            (define! op2 (make-op 2))
+            (define! op3 (make-op 3))
             (+ (op1 10) (op2 20) (op3 30)))
     "#,
     );
@@ -1077,8 +1077,8 @@ fn test_wrap_unwrap_roundtrip() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-op (vau (x) e (eval x e)))
-            (define my-app (wrap my-op))
+            (define! my-op (vau (x) e (eval x e)))
+            (define! my-app (wrap my-op))
             (my-app (+ 1 2)))
     "#,
     );
@@ -1092,7 +1092,7 @@ fn test_user_defined_unless() {
     let result = lisp.eval(
         r#"
         (begin
-            (define unless
+            (define! unless
                 (vau (test . body) caller-env
                     (eval (list if test (list) (cons begin body))
                           caller-env)))
@@ -1108,7 +1108,7 @@ fn test_user_defined_unless_true() {
     let result = lisp.eval(
         r#"
         (begin
-            (define unless
+            (define! unless
                 (vau (test . body) caller-env
                     (eval (list if test (list) (cons begin body))
                           caller-env)))
@@ -1124,7 +1124,7 @@ fn test_user_defined_when() {
     let result = lisp.eval(
         r#"
         (begin
-            (define when
+            (define! when
                 (vau (test . body) caller-env
                     (eval (list if test (cons begin body) (list))
                           caller-env)))
@@ -1144,7 +1144,7 @@ fn test_dollar_vau_syntax() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-quote (vau (x) #ignore x))
+            (define! my-quote (vau (x) #ignore x))
             (my-quote 42))
     "#,
     );
@@ -1157,7 +1157,7 @@ fn test_dollar_vau_user_defined_unless() {
     let result = lisp.eval(
         r#"
         (begin
-            (define unless
+            (define! unless
                 (vau (test . body) e
                     (eval (list if test (list) (cons begin body)) e)))
             (unless #f (+ 1 2)))
@@ -1202,7 +1202,7 @@ fn test_derive_lambda_from_dollar_vau() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-lambda
+            (define! my-lambda
                 (vau (params . body) static-env
                     (wrap (eval (list vau params #ignore (cons begin body)) static-env))))
             ((my-lambda (x) (+ x 1)) 10))
@@ -1217,7 +1217,7 @@ fn test_dollar_vau_with_env_param() {
     let result = lisp.eval(
         r#"
         (begin
-            (define my-eval-add
+            (define! my-eval-add
                 (vau (a b) e
                     (+ (eval a e) (eval b e))))
             (my-eval-add (+ 1 2) (+ 3 4)))
