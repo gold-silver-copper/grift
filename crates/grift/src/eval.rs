@@ -684,6 +684,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(vau params env-param body)` — create a fexpr (operative).
+    ///
+    /// Per the Kernel spec (§4.10.3):
+    /// - `params` must be a valid formal parameter tree.
+    /// - `env-param` must be either a symbol or `#ignore`.
+    /// - If `env-param` is a symbol that also occurs in `params`, an error
+    ///   is signaled.
     fn op_vau(
         &mut self,
         args: ArenaIndex,
@@ -695,13 +701,80 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let env_param = self.lisp.cadr(args)?;
             let body_list = self.lisp.cdr(self.lisp.cdr(args)?)?;
             let body = self.wrap_begin(body_list)?;
+
+            // Validate formals parameter tree.
+            self.validate_ptree(params)?;
+
+            // Validate env-param: must be a symbol or #ignore.
             let ep = if self.lisp.symbol_name_eq(env_param, "#ignore") {
                 ArenaIndex::NIL
             } else {
+                match self.lisp.get(env_param)? {
+                    Value::Symbol(_) => {}
+                    _ => return Err(ArenaError::TypeError),
+                }
+                // env-param symbol must not also occur in formals.
+                if self.ptree_contains_symbol(params, env_param)? {
+                    return Err(ArenaError::InvalidArgument);
+                }
                 env_param
             };
+
             self.lisp.vau(params, ep, body, *env)
         })())
+    }
+
+    /// Validate that `ptree` is a well-formed formal parameter tree.
+    ///
+    /// Per the Kernel spec (§4.9.1), a valid ptree is:
+    /// - A symbol (including `#ignore`).
+    /// - Nil (the empty list).
+    /// - A pair whose car and cdr are both valid ptrees.
+    fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<()> {
+        if ptree.is_nil() {
+            return Ok(());
+        }
+        match self.lisp.get(ptree)? {
+            Value::Symbol(_) => Ok(()),
+            Value::Cons {
+                car: ptree_car,
+                cdr: ptree_cdr,
+            } => {
+                self.validate_ptree(ptree_car)?;
+                self.validate_ptree(ptree_cdr)
+            }
+            _ => Err(ArenaError::TypeError),
+        }
+    }
+
+    /// Check whether the symbol at `sym` occurs anywhere in the formal
+    /// parameter tree `ptree`.
+    fn ptree_contains_symbol(
+        &self,
+        ptree: ArenaIndex,
+        sym: ArenaIndex,
+    ) -> ArenaResult<bool> {
+        if ptree.is_nil() {
+            return Ok(false);
+        }
+        match self.lisp.get(ptree)? {
+            Value::Symbol(_) => {
+                if self.lisp.symbol_name_eq(ptree, "#ignore") {
+                    return Ok(false);
+                }
+                Ok(ptree == sym)
+            }
+            Value::Cons {
+                car: ptree_car,
+                cdr: ptree_cdr,
+            } => {
+                if self.ptree_contains_symbol(ptree_car, sym)? {
+                    return Ok(true);
+                }
+                self.ptree_contains_symbol(ptree_cdr, sym)
+            }
+            _ => Ok(false),
+        }
     }
 
     // ================================================================
