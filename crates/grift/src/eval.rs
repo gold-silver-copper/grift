@@ -225,13 +225,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Bind a builtin in the environment. If `wrap` is true, wraps it as an applicative.
     fn bind_builtin(&mut self, name: &str, id: BuiltinId, wrap: bool) {
         let Ok(sym) = self.lisp.symbol(name) else { return };
-        let Ok(val) = self.lisp.arena.alloc(id.into()) else { return };
-        let val = if wrap {
-            let Ok(wrapped) = self.lisp.arena.alloc(Value::Applicative(val)) else { return };
-            wrapped
-        } else {
-            val
-        };
+        let Ok(mut val) = self.lisp.arena.alloc(id.into()) else { return };
+        if wrap {
+            let Ok(wrapped) = self.lisp.wrap(val) else { return };
+            val = wrapped;
+        }
         let _ = self.lisp.env_define(self.global_env, sym, val);
     }
 
@@ -329,25 +327,24 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                             let evaled_args = self.eval_args(cdr, env)?;
                             self.push_root(evaled_args);
 
-                            match self.lisp.get(inner)? {
+                            let inner_val = self.lisp.get(inner)?;
+                            self.pop_roots(3);
+
+                            match inner_val {
                                 Value::Operative { .. } => {
                                     let (body, op_env) =
                                         self.invoke_operative(inner, evaled_args, env)?;
-                                    self.pop_roots(3);
                                     env = op_env;
                                     expr = body;
                                     continue;
                                 }
                                 Value::Builtin(id) => {
-                                    self.pop_roots(3);
                                     return self.apply_builtin_pure(id, evaled_args);
                                 }
                                 Value::Applicative(_) => {
-                                    self.pop_roots(3);
                                     return self.apply_combiner(inner, evaled_args, env);
                                 }
                                 _ => {
-                                    self.pop_roots(3);
                                     return Err(ArenaError::NotCallable);
                                 }
                             }
@@ -727,9 +724,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let first = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
         let rest = self.lisp.cdr(args)?;
         if rest.is_nil() {
-            return self
-                .lisp
-                .number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
+            return self.lisp.number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
         }
         fold_numbers!(self, rest, first, checked_sub)
     }
