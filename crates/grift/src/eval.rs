@@ -409,29 +409,53 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn bind_vau_params(
         &self,
         closed_env: ArenaIndex,
-        mut params: ArenaIndex,
-        mut arg_exprs: ArenaIndex,
+        params: ArenaIndex,
+        arg_exprs: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
         let child_env = self.lisp.make_child_env(closed_env)?;
-        while !params.is_nil() && !arg_exprs.is_nil() {
-            match self.lisp.get(params)? {
-                Value::Cons {
-                    car: param,
-                    cdr: rest,
-                } => {
-                    let arg_expr = self.lisp.car(arg_exprs)?;
-                    self.lisp.env_define(child_env, param, arg_expr)?;
-                    params = rest;
-                    arg_exprs = self.lisp.cdr(arg_exprs)?;
-                }
-                Value::Symbol(_) => {
-                    self.lisp.env_define(child_env, params, arg_exprs)?;
-                    return Ok(child_env);
-                }
-                _ => return Err(ArenaError::TypeError),
-            }
-        }
+        self.match_ptree(params, arg_exprs, child_env)?;
         Ok(child_env)
+    }
+
+    /// Recursively match a formal parameter tree `ptree` against a value `obj`
+    /// in environment `env`, binding each symbol in `ptree` to the
+    /// corresponding part of `obj`.
+    ///
+    /// Per the Kernel spec (§4.9.1):
+    /// - If ptree is a symbol, bind it to obj.
+    /// - If ptree is `#ignore`, do nothing.
+    /// - If ptree is nil, obj must be nil (else error).
+    /// - If ptree is a pair, obj must be a pair; match car/cdr recursively.
+    fn match_ptree(
+        &self,
+        ptree: ArenaIndex,
+        obj: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<()> {
+        if ptree.is_nil() {
+            if obj.is_nil() {
+                return Ok(());
+            }
+            return Err(ArenaError::TypeError);
+        }
+        match self.lisp.get(ptree)? {
+            Value::Symbol(_) => {
+                if self.lisp.symbol_name_eq(ptree, "#ignore") {
+                    Ok(())
+                } else {
+                    self.lisp.env_define(env, ptree, obj)
+                }
+            }
+            Value::Cons {
+                car: ptree_car,
+                cdr: ptree_cdr,
+            } => {
+                let (obj_car, obj_cdr) = self.lisp.get(obj)?.as_cons()?;
+                self.match_ptree(ptree_car, obj_car, env)?;
+                self.match_ptree(ptree_cdr, obj_cdr, env)
+            }
+            _ => Err(ArenaError::TypeError),
+        }
     }
 
     /// Evaluate all arguments in a list.
@@ -494,7 +518,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    /// `(define! name expr)` or `(define! (name params...) body)`.
+    /// `($define! definiend expression)` — Kernel §4.9.1.
+    ///
+    /// Evaluates `expression` in the dynamic environment and matches `definiend`
+    /// (a formal parameter tree) to the result, binding symbols in the dynamic
+    /// environment.  Returns `#inert`.
     fn op_define(
         &mut self,
         args: ArenaIndex,
@@ -502,27 +530,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         env: &mut ArenaIndex,
     ) -> TailAction {
         TailAction::non_tail((|| {
-            let first = self.lisp.car(args)?;
-            let rest = self.lisp.cdr(args)?;
-
-            match self.lisp.get(first)? {
-                Value::Symbol(_) => {
-                    let val_expr = self.lisp.car(rest)?;
-                    let val = self.eval(val_expr, *env)?;
-                    self.lisp.env_define(*env, first, val)?;
-                    Ok(val)
-                }
-                Value::Cons {
-                    car: name,
-                    cdr: params,
-                } => {
-                    let body = self.wrap_begin(rest)?;
-                    let lam = self.lisp.lambda(params, body, *env)?;
-                    self.lisp.env_define(*env, name, lam)?;
-                    Ok(lam)
-                }
-                _ => Err(ArenaError::TypeError),
-            }
+            let definiend = self.lisp.car(args)?;
+            let val_expr = self.lisp.cadr(args)?;
+            let val = self.eval(val_expr, *env)?;
+            self.match_ptree(definiend, val, *env)?;
+            self.lisp.inert()
         })())
     }
 

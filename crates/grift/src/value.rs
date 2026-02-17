@@ -54,6 +54,9 @@ pub enum Value {
         bindings: ArenaIndex,
         parent: ArenaIndex,
     },
+    /// The inert value, written `#inert`.
+    /// Returned by combiners whose primary purpose is side-effect (e.g. `$define!`).
+    Inert,
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -86,6 +89,7 @@ impl Value {
             Value::Applicative(_) => "applicative",
             Value::Builtin(_) => "builtin",
             Value::Environment { .. } => "environment",
+            Value::Inert => "inert",
         }
     }
 
@@ -132,6 +136,7 @@ impl core::fmt::Display for Value {
             Value::Boolean(false) => f.write_str("#f"),
             Value::Number(n) => write!(f, "{n}"),
             Value::Char(c) => write!(f, "#\\{c}"),
+            Value::Inert => f.write_str("#inert"),
             _ => write!(f, "<{}>", self.type_name()),
         }
     }
