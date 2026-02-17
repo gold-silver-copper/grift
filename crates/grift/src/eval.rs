@@ -1,9 +1,13 @@
-//! Strict Lisp evaluator with call-by-value semantics.
+//! Strict Lisp evaluator with first-class operatives (fexprs).
 //!
 //! Evaluates arena-allocated S-expressions in an environment using
 //! call-by-value evaluation with tail-call optimization.
-//! The language semantics are referentially transparent — there is no
-//! `set!` or other mutation visible to Lisp programs.
+//!
+//! All special forms and built-in functions are first-class operatives
+//! bound in the global environment, following Shutt's vau calculus.
+//! The evaluator's core application logic is a single path: look up
+//! the operative, call it with unevaluated args and the current
+//! environment, let the operative decide what to evaluate.
 
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult};
 
@@ -12,7 +16,7 @@ use crate::value::{BuiltinId, Value};
 
 /// Convert a fallible closure into a `TailAction`: `Ok(())` → `Continue`,
 /// `Err(e)` → `Return(Err(e))`.  Eliminates the repeated match boilerplate
-/// in every TCO-aware special form.
+/// in every TCO-aware operative.
 macro_rules! tail_continue {
     ($body:expr) => {
         match $body {
@@ -80,38 +84,31 @@ macro_rules! pair_builtin {
     };
 }
 
-/// Non-tail special form: wrap a `(args, env) -> Result` method as a
-/// TCO `TailAction::Return`.
+/// Non-tail operative: wrap a `(args, env) -> Result` as `TailAction::Return`.
 #[inline]
 fn non_tail(result: ArenaResult<ArenaIndex>) -> TailAction {
     TailAction::Return(result)
 }
+
+/// Register all operatives (builtins and special forms) in the global
+/// environment as `Value::Builtin(id)` with auto-assigned sequential IDs.
 ///
-/// **Built-in functions** (section `builtins { ... }`) are registered in the
-/// global environment as `Value::Builtin(id)` with auto-assigned sequential
-/// IDs.  Their arguments are evaluated before the handler is called.
-///
-/// **Special forms** (section `special_forms { ... }`) are matched by symbol
-/// name during evaluation and receive their arguments *unevaluated*.
-macro_rules! define_builtins {
-    (
-        builtins {
-            $( $bname:literal => $bmethod:ident ),* $(,)?
-        }
-        special_forms {
-            $( $sname:literal => $smethod:ident ),* $(,)?
-        }
-    ) => {
-        // Generate unique constant IDs for each builtin using index counting.
-        define_builtins!(@consts 0u8; $( $bmethod, )*);
+/// Every operative receives its arguments *unevaluated* along with the
+/// caller's environment. Applicative operatives (like `+`, `car`) evaluate
+/// their arguments internally; special-form operatives (like `if`, `define`)
+/// work directly with unevaluated forms.
+macro_rules! define_operatives {
+    ( $( $name:literal => $method:ident ),* $(,)? ) => {
+        // Generate unique constant IDs for each operative.
+        define_operatives!(@consts 0u8; $( $method, )*);
 
         impl<'a, const N: usize> Evaluator<'a, N> {
-            /// Register all built-in functions in the global environment.
+            /// Register all operatives in the global environment.
             fn init_builtins(&mut self) {
                 $(
                     if let (Ok(sym), Ok(val)) = (
-                        self.lisp.symbol($bname),
-                        self.lisp.arena.alloc(Value::Builtin($bmethod)),
+                        self.lisp.symbol($name),
+                        self.lisp.arena.alloc(Value::Builtin($method)),
                     ) {
                         if let Ok(new_env) = env_bind(self.lisp, self.global_env, sym, val) {
                             self.global_env = new_env;
@@ -120,32 +117,23 @@ macro_rules! define_builtins {
                 )*
             }
 
-            /// Apply a built-in function.
-            #[allow(non_upper_case_globals)]
-            fn apply_builtin(&mut self, id: BuiltinId, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-                match id {
-                    $( $bmethod => self.$bmethod(args), )*
-                    _ => Err(ArenaError::NotCallable),
-                }
-            }
-
-            /// Try to dispatch a special form by symbol name (TCO-aware).
+            /// Apply a built-in operative (TCO-aware).
             ///
-            /// Returns `Some(TailAction)` if `car` matched a special form,
-            /// `None` otherwise (fall through to function application).
-            fn try_special_form_tco(
+            /// The operative receives unevaluated arguments and the caller's
+            /// environment. It may evaluate arguments as needed and can return
+            /// `TailAction::Continue` for tail-call optimization.
+            #[allow(non_upper_case_globals)]
+            fn apply_operative(
                 &mut self,
-                car: ArenaIndex,
-                cdr: ArenaIndex,
+                id: BuiltinId,
+                args: ArenaIndex,
                 expr: &mut ArenaIndex,
                 env: &mut ArenaIndex,
-            ) -> Option<TailAction> {
-                $(
-                    if self.lisp.symbol_name_eq(car, $sname) {
-                        return Some(self.$smethod(cdr, expr, env));
-                    }
-                )*
-                None
+            ) -> TailAction {
+                match id {
+                    $( $method => self.$method(args, expr, env), )*
+                    _ => TailAction::Return(Err(ArenaError::NotCallable)),
+                }
             }
         }
     };
@@ -156,48 +144,50 @@ macro_rules! define_builtins {
     (@consts $id:expr; $method:ident, $( $rest:ident, )*) => {
         #[allow(non_upper_case_globals)]
         const $method: BuiltinId = BuiltinId($id);
-        define_builtins!(@consts $id + 1u8; $( $rest, )*);
+        define_operatives!(@consts $id + 1u8; $( $rest, )*);
     };
 }
 
-// Invoke the macro to generate `init_builtins`, `apply_builtin`,
-// and `try_special_form_tco`.
-define_builtins! {
-    builtins {
-        "+"        => builtin_add,
-        "-"        => builtin_sub,
-        "*"        => builtin_mul,
-        "/"        => builtin_div,
-        "="        => builtin_eq,
-        "<"        => builtin_lt,
-        ">"        => builtin_gt,
-        "<="       => builtin_le,
-        ">="       => builtin_ge,
-        "car"      => builtin_car,
-        "cdr"      => builtin_cdr,
-        "list"     => builtin_list,
-        "null?"    => builtin_nullp,
-        "not"      => builtin_not,
-        "pair?"    => builtin_pairp,
-        "number?"  => builtin_numberp,
-        "symbol?"  => builtin_symbolp,
-        "boolean?" => builtin_booleanp,
-    }
-    special_forms {
-        "quote"  => eval_quote,
-        "if"     => eval_if,
-        "define" => eval_define,
-        "lambda" => eval_lambda,
-        "begin"  => eval_begin,
-        "cond"   => eval_cond,
-        "and"    => eval_and,
-        "or"     => eval_or,
-        "let"    => eval_let,
-        "cons"   => eval_cons,
-    }
+// Register all operatives — both applicative builtins and special forms
+// are unified as first-class operatives in the global environment.
+define_operatives! {
+    // Special forms (receive unevaluated args)
+    "quote"    => op_quote,
+    "if"       => op_if,
+    "define"   => op_define,
+    "lambda"   => op_lambda,
+    "begin"    => op_begin,
+    "cond"     => op_cond,
+    "and"      => op_and,
+    "or"       => op_or,
+    "let"      => op_let,
+    "vau"      => op_vau,
+    "eval"     => op_eval,
+    // Applicative builtins (evaluate args before applying)
+    "cons"     => op_cons,
+    "+"        => op_add,
+    "-"        => op_sub,
+    "*"        => op_mul,
+    "/"        => op_div,
+    "="        => op_eq,
+    "<"        => op_lt,
+    ">"        => op_gt,
+    "<="       => op_le,
+    ">="       => op_ge,
+    "car"      => op_car,
+    "cdr"      => op_cdr,
+    "list"     => op_list,
+    "null?"    => op_nullp,
+    "not"      => op_not,
+    "pair?"    => op_pairp,
+    "number?"  => op_numberp,
+    "symbol?"  => op_symbolp,
+    "boolean?" => op_booleanp,
+    "wrap"     => op_wrap,
+    "unwrap"   => op_unwrap,
 }
 
-/// TCO control flow for special forms.
+/// TCO control flow for operatives.
 enum TailAction {
     /// Return this value immediately (non-tail position result).
     Return(ArenaResult<ArenaIndex>),
@@ -211,8 +201,7 @@ pub(crate) struct Evaluator<'a, const N: usize> {
     pub global_env: ArenaIndex,
     /// Shadow stack of GC roots stored as a linked list of cons cells in
     /// the arena.  Each entry is `(root_value . rest)`, with `ArenaIndex::NIL`
-    /// as the empty list.  This replaces the former fixed-size array, so all
-    /// allocation lives inside the arena.
+    /// as the empty list.
     gc_roots: ArenaIndex,
 }
 
@@ -248,7 +237,7 @@ fn env_bind<const N: usize>(
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
-    /// Create a new evaluator with built-in functions bound in the global environment.
+    /// Create a new evaluator with operatives bound in the global environment.
     pub fn new(lisp: &'a Lisp<N>) -> Self {
         let mut eval = Evaluator {
             lisp,
@@ -260,9 +249,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Push a value onto the GC root stack so it survives collection.
-    ///
-    /// The root stack is a linked list of cons cells in the arena:
-    /// each entry is `(value . rest)`.
     #[inline]
     fn push_root(&mut self, idx: ArenaIndex) {
         if let Ok(new_roots) = self.lisp.cons(idx, self.gc_roots) {
@@ -285,10 +271,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Trigger garbage collection using all known live roots.
-    ///
-    /// The roots include the global environment, the current expression
-    /// and environment, and the GC root linked list (which the arena's
-    /// mark phase will trace through automatically).
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
         self.lisp
             .arena
@@ -296,10 +278,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Check arena memory pressure and collect garbage if needed.
-    ///
-    /// Triggers GC when the arena is more than 75% full, using the
-    /// provided expression and environment as additional GC roots
-    /// alongside the global environment.
     #[inline]
     fn maybe_collect(&self, expr: ArenaIndex, env: ArenaIndex) {
         let len = self.lisp.arena.len();
@@ -310,14 +288,17 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Evaluate an expression in an environment (with TCO).
+    ///
+    /// The core application logic is a single path: look up the operative,
+    /// call it with unevaluated args and the current environment, let the
+    /// operative decide what to evaluate.
     pub fn eval(&mut self, mut expr: ArenaIndex, mut env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         loop {
-            // Collect garbage when the arena is under memory pressure.
             self.maybe_collect(expr, env);
 
             let val = self.lisp.get(expr)?;
 
-            // Self-evaluating: literals, closures, builtins.
+            // Self-evaluating: literals, closures, operatives, builtins.
             if val.is_self_evaluating() {
                 return Ok(expr);
             }
@@ -329,36 +310,44 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                         .or_else(|_| env_lookup(self.lisp, self.global_env, expr));
                 }
 
-                // List → special form or function application.
+                // List → operative/function application.
                 Value::Cons { car, cdr } => {
                     self.push_root(cdr);
                     self.push_root(env);
 
-                    // Check for special forms.
-                    if matches!(self.lisp.get(car)?, Value::Symbol(_)) {
-                        if let Some(action) =
-                            self.try_special_form_tco(car, cdr, &mut expr, &mut env)
-                        {
+                    // Evaluate the operator position.
+                    let func_val = self.eval(car, env)?;
+
+                    match self.lisp.get(func_val)? {
+                        // Built-in operative: pass unevaluated args + env.
+                        Value::Builtin(id) => {
+                            let action = self.apply_operative(id, cdr, &mut expr, &mut env);
                             self.pop_roots(2);
                             match action {
                                 TailAction::Return(val) => return val,
                                 TailAction::Continue => continue,
                             }
                         }
-                    }
-
-                    // Function application (call-by-value).
-                    let func_val = self.eval(car, env)?;
-
-                    match self.lisp.get(func_val)? {
-                        Value::Builtin(id) => {
-                            let args = self.eval_args(cdr, env)?;
-                            self.pop_roots(2);
-                            return self.apply_builtin(id, args);
-                        }
+                        // Lambda (applicative): evaluate args, then apply.
                         Value::Lambda { .. } => {
-                            let (params, body, closed_env) = self.lisp.lambda_parts(func_val)?;
+                            let (params, body, closed_env) =
+                                self.lisp.lambda_parts(func_val)?;
                             env = self.bind_args(closed_env, params, cdr, env)?;
+                            expr = body;
+                            self.pop_roots(2);
+                            continue; // ← TCO
+                        }
+                        // Vau (operative / fexpr): bind unevaluated args + caller env.
+                        Value::Vau { .. } => {
+                            let (params, env_param, body, closed_env) =
+                                self.lisp.vau_parts(func_val)?;
+                            // Bind the unevaluated argument list to params.
+                            let mut vau_env = self.bind_vau_params(closed_env, params, cdr)?;
+                            // Bind the caller's environment to env_param (unless #ignore).
+                            if !env_param.is_nil() {
+                                vau_env = env_bind(self.lisp, vau_env, env_param, env)?;
+                            }
+                            env = vau_env;
                             expr = body;
                             self.pop_roots(2);
                             continue; // ← TCO
@@ -373,6 +362,39 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 _ => unreachable!(),
             }
         }
+    }
+
+    /// Bind vau parameters to unevaluated argument expressions.
+    ///
+    /// Unlike `bind_args` (which evaluates each argument), this binds the
+    /// raw argument expressions directly. A symbol parameter binds all
+    /// remaining args as a list (rest parameter).
+    fn bind_vau_params(
+        &self,
+        mut vau_env: ArenaIndex,
+        mut params: ArenaIndex,
+        mut arg_exprs: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        while !params.is_nil() && !arg_exprs.is_nil() {
+            match self.lisp.get(params)? {
+                Value::Cons {
+                    car: param,
+                    cdr: rest,
+                } => {
+                    let arg_expr = self.lisp.car(arg_exprs)?;
+                    vau_env = env_bind(self.lisp, vau_env, param, arg_expr)?;
+                    params = rest;
+                    arg_exprs = self.lisp.cdr(arg_exprs)?;
+                }
+                Value::Symbol(_) => {
+                    // Rest parameter: bind remaining unevaluated args as a list.
+                    vau_env = env_bind(self.lisp, vau_env, params, arg_exprs)?;
+                    return Ok(vau_env);
+                }
+                _ => return Err(ArenaError::TypeError),
+            }
+        }
+        Ok(vau_env)
     }
 
     /// Bind parameters to evaluated argument values (call-by-value).
@@ -408,33 +430,33 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         Ok(fn_env)
     }
 
-    /// Evaluate all arguments in a list (for strict builtins and rest params).
+    /// Evaluate all arguments in a list (for applicative builtins).
     fn eval_args(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if args.is_nil() {
             return self.lisp.nil();
         }
-        // Protect `args` and `env` across recursive eval calls.
         self.push_root(args);
         self.push_root(env);
 
         let head_expr = self.lisp.car(args)?;
         let head_val = self.eval(head_expr, env)?;
 
-        // Protect `head_val` across the recursive eval_args call.
         self.push_root(head_val);
 
         let tail = self.lisp.cdr(args)?;
         let tail_vals = self.eval_args(tail, env)?;
 
-        self.pop_roots(3); // head_val, env, args
+        self.pop_roots(3);
 
         self.lisp.cons(head_val, tail_vals)
     }
 
-    // — Special forms (TCO-aware) —
+    // ================================================================
+    // Special-form operatives (receive unevaluated args)
+    // ================================================================
 
     /// `(quote expr)` — return the expression unevaluated.
-    fn eval_quote(
+    fn op_quote(
         &mut self,
         args: ArenaIndex,
         _expr: &mut ArenaIndex,
@@ -444,7 +466,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(if test then else)` — test is strict, branches are tail positions.
-    fn eval_if(
+    fn op_if(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
@@ -471,7 +493,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(define name expr)` or `(define (name params...) body)`.
-    fn eval_define(
+    fn op_define(
         &mut self,
         args: ArenaIndex,
         _expr: &mut ArenaIndex,
@@ -503,7 +525,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(lambda (params...) body...)`.
-    fn eval_lambda(
+    fn op_lambda(
         &mut self,
         args: ArenaIndex,
         _expr: &mut ArenaIndex,
@@ -517,7 +539,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(begin expr1 expr2 ...)` — all but last are non-tail, last is tail.
-    fn eval_begin(
+    fn op_begin(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
@@ -541,7 +563,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(cond (test expr...) ...)` — tests are strict, last body expr is tail.
-    fn eval_cond(
+    fn op_cond(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
@@ -571,7 +593,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(and expr1 expr2 ...)` — strict on tests, last is tail.
-    fn eval_and(
+    fn op_and(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
@@ -581,7 +603,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
-    fn eval_or(
+    fn op_or(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
@@ -591,11 +613,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Shared `and`/`or` implementation.
-    ///
-    /// `continue_while_truthy`: when `true` (and), continues while tests are
-    /// truthy and short-circuits on the first falsy value; defaults to `#t`.
-    /// When `false` (or), continues while tests are falsy and short-circuits
-    /// on the first truthy value; defaults to `#f`.
     fn eval_short_circuit(
         &mut self,
         args: ArenaIndex,
@@ -622,7 +639,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// `(let ((name val) ...) body...)` — bindings are strict, body is tail.
-    fn eval_let(
+    fn op_let(
         &mut self,
         args: ArenaIndex,
         expr: &mut ArenaIndex,
@@ -649,8 +666,89 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
+    /// `(vau params env-param body)` — create a fexpr (operative).
+    ///
+    /// The resulting operative, when called, receives its arguments
+    /// unevaluated and the caller's environment bound to `env-param`.
+    fn op_vau(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail((|| {
+            let params = self.lisp.car(args)?;
+            let rest = self.lisp.cdr(args)?;
+            let env_param = self.lisp.car(rest)?;
+            let body_list = self.lisp.cdr(rest)?;
+            let body = self.wrap_begin(body_list)?;
+            // If env_param is the symbol `#ignore`, use NIL to signal "no binding".
+            let ep = if self.lisp.symbol_name_eq(env_param, "#ignore") {
+                ArenaIndex::NIL
+            } else {
+                env_param
+            };
+            self.lisp.vau(params, ep, body, *env)
+        })())
+    }
+
+    /// `(eval expr env)` — evaluate an expression in a given environment,
+    /// or `(eval expr)` — evaluate in the current environment.
+    fn op_eval(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail((|| {
+            let expr_arg = self.lisp.car(args)?;
+            let expr_val = self.eval(expr_arg, *env)?;
+            let rest = self.lisp.cdr(args)?;
+            if rest.is_nil() {
+                self.eval(expr_val, *env)
+            } else {
+                let env_arg = self.lisp.car(rest)?;
+                let env_val = self.eval(env_arg, *env)?;
+                self.eval(expr_val, env_val)
+            }
+        })())
+    }
+
+    /// `(wrap operative)` — create an applicative from an operative.
+    ///
+    /// The resulting lambda evaluates its arguments before passing them
+    /// to the underlying operative.
+    fn op_wrap(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail((|| {
+            let op_expr = self.lisp.car(args)?;
+            self.eval(op_expr, *env)
+        })())
+    }
+
+    /// `(unwrap applicative)` — extract the underlying operative.
+    fn op_unwrap(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail((|| {
+            let val_expr = self.lisp.car(args)?;
+            self.eval(val_expr, *env)
+        })())
+    }
+
+    // ================================================================
+    // Applicative operatives (evaluate args, then apply pure function)
+    // ================================================================
+
     /// `(cons a b)` — strict cons: evaluates both arguments.
-    fn eval_cons(
+    fn op_cons(
         &mut self,
         args: ArenaIndex,
         _expr: &mut ArenaIndex,
@@ -668,6 +766,187 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
+    /// Helper: evaluate args then apply a pure function.
+    fn applicative(
+        &mut self,
+        args: ArenaIndex,
+        env: &mut ArenaIndex,
+        f: fn(&Self, ArenaIndex) -> ArenaResult<ArenaIndex>,
+    ) -> TailAction {
+        non_tail((|| {
+            let evaled = self.eval_args(args, *env)?;
+            f(self, evaled)
+        })())
+    }
+
+    // — Arithmetic —
+
+    fn op_add(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_add)
+    }
+
+    fn op_sub(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_sub)
+    }
+
+    fn op_mul(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_mul)
+    }
+
+    fn op_div(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_div)
+    }
+
+    fn op_eq(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_eq)
+    }
+
+    fn op_lt(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_lt)
+    }
+
+    fn op_gt(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_gt)
+    }
+
+    fn op_le(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_le)
+    }
+
+    fn op_ge(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_ge)
+    }
+
+    fn op_car(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_car)
+    }
+
+    fn op_cdr(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_cdr)
+    }
+
+    fn op_list(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_list)
+    }
+
+    fn op_nullp(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_nullp)
+    }
+
+    fn op_not(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_not)
+    }
+
+    fn op_pairp(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_pairp)
+    }
+
+    fn op_numberp(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_numberp)
+    }
+
+    fn op_symbolp(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_symbolp)
+    }
+
+    fn op_booleanp(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        self.applicative(args, env, Self::builtin_booleanp)
+    }
+
+    // ================================================================
+    // Utility methods
+    // ================================================================
+
     /// Wrap a list of expressions in a `begin` form if there are multiple,
     /// or return the single expression if there's only one.
     fn wrap_begin(&self, exprs: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -676,15 +955,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         let rest = self.lisp.cdr(exprs)?;
         if rest.is_nil() {
-            // Single expression, no need to wrap
             return self.lisp.car(exprs);
         }
-        // Multiple expressions, wrap in begin
         let begin_sym = self.lisp.symbol("begin")?;
         self.lisp.cons(begin_sym, exprs)
     }
 
-    // — Arithmetic built-ins —
+    // ================================================================
+    // Pure builtin implementations (operate on evaluated args)
+    // ================================================================
 
     /// `(+ ...)` — variadic addition.
     fn builtin_add(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -728,12 +1007,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     // — Pair / list built-ins —
 
-    /// `(list ...)` — return args as-is (already forced into a list).
+    /// `(list ...)` — return args as-is (already evaluated).
     fn builtin_list(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Ok(args)
     }
 
-    // `(car pair)` / `(cdr pair)` — extract and force a pair component.
     pair_builtin!(builtin_car, car);
     pair_builtin!(builtin_cdr, cdr);
 

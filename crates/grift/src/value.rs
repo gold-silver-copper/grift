@@ -40,12 +40,25 @@ pub enum Value {
     },
     /// A character.
     Char(char),
-    /// A lambda closure: params list and (body . env) cons cell.
+    /// A lambda closure (applicative): params list and (body . env) cons cell.
     Lambda {
         params: ArenaIndex,
         body_env: ArenaIndex,
     },
-    /// A built-in function identified by index.
+    /// A vau closure (operative / fexpr): (params . env_param) and (body . env).
+    ///
+    /// Created by `(vau params env-param body)`. When called, binds its
+    /// unevaluated argument list to `params`, the caller's environment to
+    /// `env-param`, and evaluates `body` in the closed-over environment
+    /// extended with those bindings.
+    Vau {
+        params_envparam: ArenaIndex,
+        body_env: ArenaIndex,
+    },
+    /// A built-in operative identified by index.
+    ///
+    /// Built-in operatives receive their arguments unevaluated along with
+    /// the caller's environment, giving them full control over evaluation.
     Builtin(BuiltinId),
 }
 
@@ -76,6 +89,7 @@ impl Value {
             Value::String { .. } => "string",
             Value::Char(_) => "char",
             Value::Lambda { .. } => "lambda",
+            Value::Vau { .. } => "operative",
             Value::Builtin(_) => "builtin",
         }
     }

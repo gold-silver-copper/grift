@@ -171,6 +171,39 @@ impl<const N: usize> Lisp<N> {
         Ok((params, body, env))
     }
 
+    /// Allocate a vau (fexpr / operative closure).
+    pub fn vau(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let params_envparam = self.cons(params, env_param)?;
+        let body_env = self.cons(body, env)?;
+        self.arena.alloc(Value::Vau {
+            params_envparam,
+            body_env,
+        })
+    }
+
+    /// Extract vau parts: (params, env_param, body, env).
+    pub fn vau_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        let Value::Vau {
+            params_envparam,
+            body_env,
+        } = self.arena.get(idx)?
+        else {
+            return Err(ArenaError::TypeError);
+        };
+        let (params, env_param) = self.arena.get(params_envparam)?.as_cons()?;
+        let (body, env) = self.arena.get(body_env)?.as_cons()?;
+        Ok((params, env_param, body, env))
+    }
+
     // — Evaluation entry point —
 
     /// Parse and evaluate a Lisp expression string.
@@ -213,7 +246,8 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }
-            | Value::Lambda { params: car, body_env: cdr } => {
+            | Value::Lambda { params: car, body_env: cdr }
+            | Value::Vau { params_envparam: car, body_env: cdr } => {
                 tracer(car);
                 tracer(cdr);
             }
