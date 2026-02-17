@@ -1905,3 +1905,324 @@ fn test_vau_valid_after_validation() {
         Ok(Value::Number(3))
     );
 }
+
+// ============================================================================
+// Kernel §4.5.1 — inert? predicate
+// ============================================================================
+
+#[test]
+fn test_inert_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(inert? #inert)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(inert? 42)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(inert? #t)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(inert? '())"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_inert_predicate_on_define_result() {
+    // $define! returns #inert per Kernel spec
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! result (define! x 42))
+                (inert? result))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+// ============================================================================
+// Kernel §4.2.1 — eq? predicate
+// ============================================================================
+
+#[test]
+fn test_eq_booleans() {
+    // Booleans: eq? iff same boolean value
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eq? #t #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(eq? #f #f)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(eq? #t #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(eq? #f #t)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_eq_symbols() {
+    // Symbols are eq? iff they have the same external representation
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (quote hello))
+                (define! b (quote hello))
+                (eq? a b))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (quote hello))
+                (define! b (quote world))
+                (eq? a b))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_eq_numbers() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eq? 42 42)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(eq? 1 2)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_eq_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eq? '() '())"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_eq_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eq? #inert #inert)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_eq_cons_different_calls() {
+    // Two different calls to cons produce non-eq? pairs (§4.6.3)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (cons 1 2))
+                (define! b (cons 1 2))
+                (eq? a b))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_eq_same_pair() {
+    // Same pair is eq? to itself
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (cons 1 2))
+                (eq? a a))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_eq_different_types() {
+    // Different types are never eq?
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eq? #t 1)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(eq? '() #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(eq? 0 #f)"), Ok(Value::Boolean(false)));
+}
+
+// ============================================================================
+// Kernel §4.3.1 — equal? predicate
+// ============================================================================
+
+#[test]
+fn test_equal_booleans() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(equal? #t #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(equal? #f #f)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(equal? #t #f)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_equal_numbers() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(equal? 42 42)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(equal? 1 2)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_equal_cons_structural() {
+    // equal? compares cons cells structurally
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (cons 1 2))
+                (define! b (cons 1 2))
+                (equal? a b))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_equal_cons_different_content() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (cons 1 2))
+                (define! b (cons 1 3))
+                (equal? a b))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_equal_nested_lists() {
+    // Deep structural equality of nested lists
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (list 1 (list 2 3) 4))
+                (define! b (list 1 (list 2 3) 4))
+                (equal? a b))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_equal_implies_by_eq() {
+    // eq? ⇒ equal? (Rule 2)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (cons 1 2))
+                (equal? a a))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_equal_different_types() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(equal? #t 1)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(equal? '() #f)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_equal_environments_identity() {
+    // Environments are equal? only when eq? (identity-based)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (make-environment))
+                (define! b (make-environment))
+                (equal? a b))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! a (make-environment))
+                (equal? a a))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+// ============================================================================
+// Variadic type predicates (§4.4.1, §4.6.1, §4.6.2, etc.)
+// ============================================================================
+
+#[test]
+fn test_variadic_boolean_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(boolean? #t #f #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(boolean? #t 1 #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(boolean?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_variadic_number_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(number? 1 2 3)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(number? 1 #t 3)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(number?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_variadic_symbol_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(symbol? (quote a) (quote b))"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(symbol? (quote a) 1)"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(lisp.eval("(symbol?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_variadic_pair_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(pair? (cons 1 2) (cons 3 4))"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(pair? (cons 1 2) 3)"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(lisp.eval("(pair?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_variadic_null_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(null? '() '())"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(null? '() 1)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(null?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_variadic_inert_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(inert? #inert #inert)"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(inert? #inert 42)"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(lisp.eval("(inert?)"), Ok(Value::Boolean(true)));
+}

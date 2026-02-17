@@ -25,13 +25,20 @@ macro_rules! tail_continue {
     };
 }
 
-/// Generate a type-predicate builtin method that checks the first arg
-/// against a pattern.
+/// Generate a variadic type-predicate builtin method.
+/// `(pred? . objects)` returns `#t` iff every object matches the pattern.
 macro_rules! type_predicate {
     ($name:ident, $pat:pat) => {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let val = self.lisp.car(args)?;
-            self.lisp.boolean(matches!(self.lisp.get(val)?, $pat))
+            let mut cur = args;
+            while !cur.is_nil() {
+                let val = self.lisp.car(cur)?;
+                if !matches!(self.lisp.get(val)?, $pat) {
+                    return self.lisp.boolean(false);
+                }
+                cur = self.lisp.cdr(cur)?;
+            }
+            self.lisp.boolean(true)
         }
     };
 }
@@ -187,6 +194,9 @@ define_builtins! {
         "number?" => bi_numberp => builtin_numberp,
         "symbol?" => bi_symbolp => builtin_symbolp,
         "boolean?" => bi_booleanp => builtin_booleanp,
+        "inert?"  => bi_inertp  => builtin_inertp,
+        "eq?"    => bi_eqp    => builtin_eqp,
+        "equal?" => bi_equalp => builtin_equalp,
         "eval"   => bi_eval   => builtin_eval,
         "wrap"   => bi_wrap   => builtin_wrap,
         "unwrap" => bi_unwrap => builtin_unwrap,
@@ -859,11 +869,99 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // — Type predicate built-ins —
 
     type_predicate!(builtin_nullp, Value::Nil);
-    type_predicate!(builtin_not, Value::Boolean(false));
     type_predicate!(builtin_pairp, Value::Cons { .. });
     type_predicate!(builtin_numberp, Value::Number(_));
     type_predicate!(builtin_symbolp, Value::Symbol(_));
     type_predicate!(builtin_booleanp, Value::Boolean(_));
+    type_predicate!(builtin_inertp, Value::Inert);
+
+    /// `(not boolean)` — boolean negation (requires exactly one boolean arg).
+    fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.lisp.car(args)?;
+        let b = self.lisp.get(val)?.as_bool()?;
+        self.lisp.boolean(!b)
+    }
+
+    /// `(eq? object1 object2)` — identity predicate (§4.2.1).
+    ///
+    /// Returns `#t` iff the two objects are effectively the same object.
+    /// For immutable, encapsulated types (booleans, nil, inert, symbols),
+    /// eq? is determined by value. For mutable/constructed objects (pairs,
+    /// environments), eq? compares arena identity.
+    fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let a = self.lisp.car(args)?;
+        let b = self.lisp.cadr(args)?;
+        self.lisp.boolean(self.is_eq(a, b)?)
+    }
+
+    /// `(equal? object1 object2)` — structural equality predicate (§4.3.1).
+    ///
+    /// Returns `#t` iff the two objects "look" the same as long as nothing
+    /// is mutated. Weaker than eq?; equal? returns true whenever eq? would.
+    fn builtin_equalp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let a = self.lisp.car(args)?;
+        let b = self.lisp.cadr(args)?;
+        self.lisp.boolean(self.is_equal(a, b)?)
+    }
+
+    /// Core `eq?` logic: identity comparison.
+    fn is_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        // Same arena slot ⇒ same object.
+        if a == b {
+            return Ok(true);
+        }
+        let va = self.lisp.get(a)?;
+        let vb = self.lisp.get(b)?;
+        // For immutable encapsulated types whose identity is determined
+        // by their value, compare structurally.
+        match (va, vb) {
+            (Value::Nil, Value::Nil) => Ok(true),
+            (Value::Inert, Value::Inert) => Ok(true),
+            (Value::Boolean(x), Value::Boolean(y)) => Ok(x == y),
+            (Value::Number(x), Value::Number(y)) => Ok(x == y),
+            (Value::Symbol(x), Value::Symbol(y)) => Ok(x == y),
+            (Value::Char(x), Value::Char(y)) => Ok(x == y),
+            // Mutable/constructed objects (pairs, environments, operatives,
+            // applicatives) are eq? only if they are the same arena slot,
+            // which was already checked above.
+            _ => Ok(false),
+        }
+    }
+
+    /// Core `equal?` logic: structural equality.
+    fn is_equal(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
+        // eq? ⇒ equal? (Rule 2).
+        if self.is_eq(a, b)? {
+            return Ok(true);
+        }
+        let va = self.lisp.get(a)?;
+        let vb = self.lisp.get(b)?;
+        match (va, vb) {
+            // Pairs: structural comparison of car and cdr.
+            (Value::Cons { car: a1, cdr: a2 }, Value::Cons { car: b1, cdr: b2 }) => {
+                Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
+            }
+            // Strings: compare character-by-character.
+            (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
+                if la != lb {
+                    return Ok(false);
+                }
+                for i in 0..la {
+                    let ia = self.lisp.arena.index_at_offset(da, i)?;
+                    let ib = self.lisp.arena.index_at_offset(db, i)?;
+                    if self.lisp.get(ia)? != self.lisp.get(ib)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            // Environments: eq? only (identity-based).
+            // Different environments are never equal? unless eq?.
+            (Value::Environment { .. }, Value::Environment { .. }) => Ok(false),
+            // Different types or non-matching values.
+            _ => Ok(false),
+        }
+    }
 
     // — Kernel combiners —
 
