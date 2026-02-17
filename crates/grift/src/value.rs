@@ -40,12 +40,20 @@ pub enum Value {
     },
     /// A character.
     Char(char),
-    /// A lambda closure: params list and (body . env) cons cell.
-    Lambda {
-        params: ArenaIndex,
+    /// Compound operative (vau closure / fexpr).
+    /// Created by `(vau params env-param body)`.
+    /// params_envparam = (params . env-param), body_env = (body . closed-env)
+    Operative {
+        params_envparam: ArenaIndex,
         body_env: ArenaIndex,
     },
-    /// A built-in function identified by index.
+    /// Applicative wrapper: evaluates arguments, then calls inner combiner.
+    /// Created by `(wrap combiner)`. The inner combiner is any callable:
+    /// Operative, Builtin, or even another Applicative.
+    Applicative(ArenaIndex),
+    /// Rust-native primitive operative.
+    /// Always an operative — receives unevaluated args + caller env.
+    /// Applicative primitives (like +) are (wrap (Builtin id)) at init time.
     Builtin(BuiltinId),
 }
 
@@ -75,7 +83,8 @@ impl Value {
             Value::Cons { .. } => "pair",
             Value::String { .. } => "string",
             Value::Char(_) => "char",
-            Value::Lambda { .. } => "lambda",
+            Value::Operative { .. } => "operative",
+            Value::Applicative(_) => "applicative",
             Value::Builtin(_) => "builtin",
         }
     }
