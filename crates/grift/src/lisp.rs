@@ -53,6 +53,12 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(b.into())
     }
 
+    /// Allocate an inert value.
+    #[inline]
+    pub fn inert(&self) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::Inert)
+    }
+
     /// Allocate a cons cell.
     #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {

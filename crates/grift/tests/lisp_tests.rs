@@ -542,8 +542,8 @@ fn test_tco_countdown() {
     let result = lisp.eval(
         r#"
         (begin
-            (define! (count n)
-                (if (= n 0) 0 (count (- n 1))))
+            (define! count (lambda (n)
+                (if (= n 0) 0 (count (- n 1)))))
             (count 1000))
     "#,
     );
@@ -557,10 +557,10 @@ fn test_tco_mutual_recursion() {
     let result = lisp.eval(
         r#"
         (begin
-            (define! (my-even? n)
-                (if (= n 0) #t (my-odd? (- n 1))))
-            (define! (my-odd? n)
-                (if (= n 0) #f (my-even? (- n 1))))
+            (define! my-even? (lambda (n)
+                (if (= n 0) #t (my-odd? (- n 1)))))
+            (define! my-odd? (lambda (n)
+                (if (= n 0) #f (my-even? (- n 1)))))
             (my-even? 1000))
     "#,
     );
@@ -574,11 +574,11 @@ fn test_tco_begin_tail_position() {
     let result = lisp.eval(
         r#"
         (begin
-            (define! (loop n)
+            (define! loop (lambda (n)
                 (if (= n 0) 42
                     (begin
                         (+ 1 2)
-                        (loop (- n 1)))))
+                        (loop (- n 1))))))
             (loop 1000))
     "#,
     );
@@ -648,8 +648,8 @@ fn test_tco_with_lazy_accumulator() {
     let result = lisp.eval(
         r#"
         (begin
-            (define! (sum-to n acc)
-                (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
+            (define! sum-to (lambda (n acc)
+                (if (= n 0) acc (sum-to (- n 1) (+ acc n)))))
             (sum-to 100 0))
     "#,
     );
@@ -663,13 +663,13 @@ fn test_tco_iterative_fib() {
     let result = lisp.eval(
         r#"
         (begin
-            (define! (fib n)
+            (define! fib (lambda (n)
                 ((lambda (loop)
                     (loop loop 0 1 n))
                  (lambda (self a b count)
                     (if (= count 0)
                         a
-                        (self self b (+ a b) (- count 1))))))
+                        (self self b (+ a b) (- count 1)))))))
             (fib 20))
     "#,
     );
@@ -684,8 +684,8 @@ fn test_recursive_fib_30() {
     let result = lisp.eval(
         r#"
         (begin
-            (define! (fib n)
-                (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+            (define! fib (lambda (n)
+                (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2))))))
             (fib 30))
     "#,
     );
@@ -1313,8 +1313,8 @@ fn test_lexical_scope_preserved() {
         lisp.eval(
             r#"
             (begin
-                (define! (make-adder n)
-                    (lambda (x) (+ x n)))
+                (define! make-adder (lambda (n)
+                    (lambda (x) (+ x n))))
                 (define! add5 (make-adder 5))
                 (define! n 999)
                 (add5 10))
@@ -1332,8 +1332,8 @@ fn test_mutual_recursion_through_shared_env() {
         lisp.eval(
             r#"
             (begin
-                (define! (even? n) (if (= n 0) #t (odd? (- n 1))))
-                (define! (odd? n) (if (= n 0) #f (even? (- n 1))))
+                (define! even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
+                (define! odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))
                 (even? 10))
             "#
         ),
@@ -1385,7 +1385,7 @@ fn test_lambda_higher_order() {
         lisp.eval(
             r#"
             (begin
-                (define! (compose f g) (lambda (x) (f (g x))))
+                (define! compose (lambda (f g) (lambda (x) (f (g x)))))
                 ((compose (lambda (x) (+ x 1)) (lambda (x) (* x 2))) 5))
             "#
         ),
@@ -1401,8 +1401,8 @@ fn test_tco_with_define_bang() {
         lisp.eval(
             r#"
             (begin
-                (define! (countdown n)
-                    (if (= n 0) 0 (countdown (- n 1))))
+                (define! countdown (lambda (n)
+                    (if (= n 0) 0 (countdown (- n 1)))))
                 (countdown 100000))
             "#
         ),
@@ -1622,5 +1622,169 @@ fn test_no_global_fallback_in_eval() {
             "#
         ),
         Err(ArenaError::UnboundVariable)
+    );
+}
+
+// ============================================================================
+// Kernel $define! Conformance Tests (§4.9.1)
+// ============================================================================
+
+#[test]
+fn test_define_returns_inert() {
+    // Per Kernel spec, $define! returns #inert
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(define! x 42)"), Ok(Value::Inert));
+}
+
+#[test]
+fn test_inert_is_self_evaluating() {
+    // #inert evaluates to itself
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("#inert"), Ok(Value::Inert));
+}
+
+#[test]
+fn test_define_ptree_symbol() {
+    // Simple symbol definiend
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! x 42)
+                x)
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_define_ptree_ignore() {
+    // #ignore definiend — value is discarded
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(define! #ignore (+ 1 2))"),
+        Ok(Value::Inert)
+    );
+}
+
+#[test]
+fn test_define_ptree_nil() {
+    // Nil definiend matches nil value
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(define! () ())"),
+        Ok(Value::Inert)
+    );
+}
+
+#[test]
+fn test_define_ptree_nil_mismatch() {
+    // Nil definiend must match nil value; non-nil causes error
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(define! () 42)").is_err());
+}
+
+#[test]
+fn test_define_ptree_pair_destructuring() {
+    // Pair definiend destructures the value
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (a . b) (cons 1 2))
+                (+ a b))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
+
+#[test]
+fn test_define_ptree_list_destructuring() {
+    // List definiend destructures a list
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (a b c) (list 10 20 30))
+                (+ a (+ b c)))
+            "#
+        ),
+        Ok(Value::Number(60))
+    );
+}
+
+#[test]
+fn test_define_ptree_nested_destructuring() {
+    // Nested pair definiend
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! ((a b) c) (list (list 1 2) 3))
+                (+ a (+ b c)))
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+}
+
+#[test]
+fn test_define_ptree_with_ignore_in_pair() {
+    // #ignore in a pair position
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (a #ignore c) (list 10 20 30))
+                (+ a c))
+            "#
+        ),
+        Ok(Value::Number(40))
+    );
+}
+
+#[test]
+fn test_define_ptree_pair_mismatch() {
+    // Pair definiend with non-pair value should error
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(define! (a . b) 42)").is_err());
+}
+
+#[test]
+fn test_define_ptree_rest_binding() {
+    // Dotted pair captures rest of list
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (a . rest) (list 1 2 3))
+                a)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_ptree_kernel_example() {
+    // Example from Kernel spec: destructuring get-list-metrics result
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (x y z) (list 100 200 300))
+                y)
+            "#
+        ),
+        Ok(Value::Number(200))
     );
 }
