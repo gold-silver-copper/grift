@@ -63,10 +63,7 @@ macro_rules! cmp_builtin {
 macro_rules! binary_nums {
     ($self:ident, $args:ident) => {{
         let a = $self.lisp.get($self.lisp.car($args)?)?.as_number()?;
-        let b = $self
-            .lisp
-            .get($self.lisp.car($self.lisp.cdr($args)?)?)?
-            .as_number()?;
+        let b = $self.lisp.get($self.lisp.cadr($args)?)?.as_number()?;
         (a, b)
     }};
 }
@@ -81,10 +78,20 @@ macro_rules! pair_builtin {
     };
 }
 
-/// Non-tail operative: wrap a `(args, env) -> Result` as `TailAction::Return`.
-#[inline]
-fn non_tail(result: ArenaResult<ArenaIndex>) -> TailAction {
-    TailAction::Return(result)
+/// TCO control flow for operatives.
+enum TailAction {
+    /// Return this value immediately (non-tail position result).
+    Return(ArenaResult<ArenaIndex>),
+    /// expr and env have been updated; re-enter the eval loop.
+    Continue,
+}
+
+impl TailAction {
+    /// Wrap a non-tail result as `TailAction::Return`.
+    #[inline]
+    fn non_tail(result: ArenaResult<ArenaIndex>) -> Self {
+        TailAction::Return(result)
+    }
 }
 
 // ============================================================================
@@ -189,14 +196,6 @@ define_builtins! {
         "make-empty-environment" => bi_make_empty_env => builtin_make_empty_env,
         "environment?" => bi_environmentp => builtin_environmentp,
     }
-}
-
-/// TCO control flow for operatives.
-enum TailAction {
-    /// Return this value immediately (non-tail position result).
-    Return(ArenaResult<ArenaIndex>),
-    /// expr and env have been updated; re-enter the eval loop.
-    Continue,
 }
 
 /// The evaluator state.
@@ -477,19 +476,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         tail_continue!((|| -> ArenaResult<()> {
             let test_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
-
             let test_val = self.eval(test_expr, *env)?;
-
-            if self.lisp.get(test_val)?.is_truthy() {
-                *expr = self.lisp.car(rest)?;
+            *expr = if self.lisp.get(test_val)?.is_truthy() {
+                self.lisp.car(rest)?
             } else {
-                let else_rest = self.lisp.cdr(rest)?;
-                *expr = if else_rest.is_nil() {
-                    self.lisp.nil()?
-                } else {
-                    self.lisp.car(else_rest)?
-                };
-            }
+                self.lisp.cdr(rest)
+                    .and_then(|r| if r.is_nil() { self.lisp.nil() } else { self.lisp.car(r) })?
+            };
             Ok(())
         })())
     }
@@ -501,7 +494,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        non_tail((|| {
+        TailAction::non_tail((|| {
             let first = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
 
@@ -534,7 +527,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        non_tail((|| {
+        TailAction::non_tail((|| {
             let params = self.lisp.car(args)?;
             let body = self.wrap_begin(self.lisp.cdr(args)?)?;
             self.lisp.lambda(params, body, *env)
@@ -658,7 +651,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             while !cur.is_nil() {
                 let binding = self.lisp.car(cur)?;
                 let name = self.lisp.car(binding)?;
-                let val_expr = self.lisp.car(self.lisp.cdr(binding)?)?;
+                let val_expr = self.lisp.cadr(binding)?;
                 let val = self.eval(val_expr, *env)?;
                 self.lisp.env_define(local_env, name, val)?;
                 cur = self.lisp.cdr(cur)?;
@@ -678,11 +671,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        non_tail((|| {
+        TailAction::non_tail((|| {
             let params = self.lisp.car(args)?;
-            let rest = self.lisp.cdr(args)?;
-            let env_param = self.lisp.car(rest)?;
-            let body_list = self.lisp.cdr(rest)?;
+            let env_param = self.lisp.cadr(args)?;
+            let body_list = self.lisp.cdr(self.lisp.cdr(args)?)?;
             let body = self.wrap_begin(body_list)?;
             let ep = if self.lisp.symbol_name_eq(env_param, "#ignore") {
                 ArenaIndex::NIL
@@ -718,7 +710,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(cons a b)` — cons cell construction.
     fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.lisp.car(args)?;
-        let b = self.lisp.car(self.lisp.cdr(args)?)?;
+        let b = self.lisp.cadr(args)?;
         self.lisp.cons(a, b)
     }
 
@@ -786,13 +778,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(eval expr env)` — evaluate expression in given environment.
     fn builtin_eval(&mut self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let expr_val = self.lisp.car(args)?;
-        let rest = self.lisp.cdr(args)?;
-        if rest.is_nil() {
-            self.eval(expr_val, self.global_env)
-        } else {
-            let env_val = self.lisp.car(rest)?;
-            self.eval(expr_val, env_val)
-        }
+        let env_val = self.lisp.cdr(args)
+            .and_then(|rest| if rest.is_nil() { Ok(self.global_env) } else { self.lisp.car(rest) })?;
+        self.eval(expr_val, env_val)
     }
 
     /// `(wrap combiner)` — wrap an operative into an applicative.
@@ -810,17 +798,13 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     type_predicate!(builtin_operativep, Value::Operative { .. } | Value::Builtin(_));
     type_predicate!(builtin_applicativep, Value::Applicative(_));
 
-    /// `(make-environment [parent])` / `(make-empty-environment)`.
+    /// `(make-environment [parent])`.
     fn builtin_make_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let parent = if args.is_nil() {
-            ArenaIndex::NIL
-        } else {
-            self.lisp.car(args)?
-        };
+        let parent = if args.is_nil() { ArenaIndex::NIL } else { self.lisp.car(args)? };
         self.lisp.make_child_env(parent)
     }
 
-    /// Alias: `(make-empty-environment)` ignores args.
+    /// `(make-empty-environment)` — always creates a parentless environment.
     fn builtin_make_empty_env(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.lisp.make_child_env(ArenaIndex::NIL)
     }

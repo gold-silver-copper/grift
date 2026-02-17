@@ -10,14 +10,6 @@ use grift_arena::{ArenaError, ArenaIndex};
 #[repr(transparent)]
 pub struct BuiltinId(pub(crate) u8);
 
-impl core::ops::Deref for BuiltinId {
-    type Target = u8;
-    #[inline]
-    fn deref(&self) -> &u8 {
-        &self.0
-    }
-}
-
 /// A Lisp value stored in the arena. Variants can only inline max two arenaindex sized data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {

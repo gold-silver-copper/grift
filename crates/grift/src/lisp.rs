@@ -142,6 +142,12 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
     }
 
+    /// Get car of cdr (second element of a list).
+    #[inline]
+    pub fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car(self.cdr(idx)?)
+    }
+
     /// Allocate a lambda (applicative from an operative that ignores caller env).
     /// This is sugar for: `(wrap (vau params #ignore body))` with closed env.
     /// Produces `Applicative(Operative { ... })` in the arena.
@@ -202,10 +208,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Create a root (top-level) environment with no parent.
     pub(crate) fn make_root_env(&self) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Environment {
-            bindings: ArenaIndex::NIL,
-            parent: ArenaIndex::NIL,
-        })
+        self.make_child_env(ArenaIndex::NIL)
     }
 
     /// Create a child environment with the given parent.
