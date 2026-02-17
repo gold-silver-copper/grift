@@ -1225,3 +1225,285 @@ fn test_dollar_vau_with_env_param() {
     );
     assert_eq!(result, Ok(Value::Number(10)));
 }
+
+// ============================================================================
+// First-Class Environment Tests
+// ============================================================================
+
+#[test]
+fn test_environment_predicate() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(environment? (make-environment))"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(environment? 42)"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(
+        lisp.eval("(environment? #t)"),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_make_environment_no_parent() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(environment? (make-environment))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_bang_mutates_environment() {
+    // define! mutates the current environment in place
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! x 1)
+                x)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_bang_redefinition() {
+    // Redefining with define! updates the same environment
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! x 1)
+                (define! x 2)
+                x)
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_let_creates_child_scope() {
+    // let creates a child scope; define! inside let is local
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let ((x 10))
+                (define! y 20)
+                (+ x y))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+}
+
+#[test]
+fn test_lexical_scope_preserved() {
+    // Closures see their definition environment, not the call site
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (make-adder n)
+                    (lambda (x) (+ x n)))
+                (define! add5 (make-adder 5))
+                (define! n 999)
+                (add5 10))
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_mutual_recursion_through_shared_env() {
+    // Mutual recursion through shared environment
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (even? n) (if (= n 0) #t (odd? (- n 1))))
+                (define! (odd? n) (if (= n 0) #f (even? (- n 1))))
+                (even? 10))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_vau_captures_caller_env_as_environment() {
+    // Vau's env-param captures the caller's environment as a first-class Environment value
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-caller-env
+                    (vau () caller-env caller-env))
+                (environment? (get-caller-env)))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_eval_in_custom_environment() {
+    // Create a fresh environment and eval in it
+    let lisp: Lisp<20000> = Lisp::new();
+    // Note: we pass current env as parent so builtins are accessible
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! e (make-environment (get-env)))
+                (eval (list define! (quote x) 42) e)
+                (eval (quote x) e))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_lambda_higher_order() {
+    // Higher-order function: compose
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (compose f g) (lambda (x) (f (g x))))
+                ((compose (lambda (x) (+ x 1)) (lambda (x) (* x 2))) 5))
+            "#
+        ),
+        Ok(Value::Number(11))
+    );
+}
+
+#[test]
+fn test_tco_with_define_bang() {
+    // TCO works with define!
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (countdown n)
+                    (if (= n 0) 0 (countdown (- n 1))))
+                (countdown 100000))
+            "#
+        ),
+        Ok(Value::Number(0))
+    );
+}
+
+#[test]
+fn test_lambda_square() {
+    // Lambda application
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("((lambda (x) (* x x)) 5)"),
+        Ok(Value::Number(25))
+    );
+}
+
+#[test]
+fn test_existing_functionality_preserved() {
+    // Arithmetic, comparisons, lists
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(+ 1 2 3)"), Ok(Value::Number(6)));
+    assert_eq!(lisp.eval("(< 1 2)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(car (list 1 2 3))"), Ok(Value::Number(1)));
+    assert_eq!(lisp.eval("(null? (list))"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_vau_custom_if() {
+    // Custom if using vau/operatives
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! my-if
+                    (vau (test then else) e
+                        (eval (if (eval test e) then else) e)))
+                (my-if #t 1 2))
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! my-if
+                    (vau (test then else) e
+                        (eval (if (eval test e) then else) e)))
+                (my-if #f 1 2))
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_make_environment_with_parent() {
+    // Child of current env can access parent bindings via eval
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! child (make-environment (get-env)))
+                (eval (list define! (quote local-var) 99) child)
+                (eval (quote local-var) child))
+            "#
+        ),
+        Ok(Value::Number(99))
+    );
+}
+
+#[test]
+fn test_child_env_inherits_from_parent() {
+    // A child env can look up bindings from its parent
+    let lisp: Lisp<20000> = Lisp::new();
+    // Verify + is accessible through parent chain (just check no error)
+    assert!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! child (make-environment (get-env)))
+                (eval (quote +) child))
+            "#
+        )
+        .is_ok()
+    );
+    // Verify child can use parent builtins
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! child (make-environment (get-env)))
+                (eval '(+ 1 2) child))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}

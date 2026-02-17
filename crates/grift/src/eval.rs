@@ -732,6 +732,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let body_list = self.lisp.cdr(args)?;
 
             let local_env = self.lisp.make_child_env(*env)?;
+            self.push_root(local_env);
             let mut cur = bindings;
             while !cur.is_nil() {
                 let binding = self.lisp.car(cur)?;
@@ -741,6 +742,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.lisp.env_define(local_env, name, val)?;
                 cur = self.lisp.cdr(cur)?;
             }
+            self.pop_roots(1);
 
             *env = local_env;
             *expr = self.wrap_begin(body_list)?;
