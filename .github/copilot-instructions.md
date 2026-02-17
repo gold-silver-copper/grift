@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a Rust workspace containing a purely functional with lazy evaluation LISP implementation (named "Grift") built on a custom arena allocator. Grift is designed to run on embedded and resource-constrained systems.
+This is a Rust workspace containing a LISP implementation (named "Grift") built on a custom arena allocator and inspired by vau calculus. Grift is designed to run on embedded and resource-constrained systems.
 
 ## Critical Requirements
 
