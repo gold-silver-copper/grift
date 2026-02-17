@@ -1799,3 +1799,109 @@ fn test_define_ptree_kernel_example() {
         Ok(Value::Number(200))
     );
 }
+
+// ============================================================================
+// vau Kernel spec conformance (§4.10.3)
+// ============================================================================
+
+#[test]
+fn test_vau_eformal_must_be_symbol_or_ignore() {
+    // eformal = #ignore is valid
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(vau (x) #ignore x)").is_ok());
+
+    // eformal = symbol is valid
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert!(lisp2.eval("(vau (x) e x)").is_ok());
+
+    // eformal = number should error
+    let lisp3: Lisp<20000> = Lisp::new();
+    assert!(lisp3.eval("(vau (x) 42 x)").is_err());
+
+    // eformal = list/pair should error
+    let lisp4: Lisp<20000> = Lisp::new();
+    assert!(lisp4.eval("(vau (x) (a b) x)").is_err());
+
+    // eformal = boolean should error
+    let lisp5: Lisp<20000> = Lisp::new();
+    assert!(lisp5.eval("(vau (x) #t x)").is_err());
+
+    // eformal = nil should error
+    let lisp6: Lisp<20000> = Lisp::new();
+    assert!(lisp6.eval("(vau (x) () x)").is_err());
+}
+
+#[test]
+fn test_vau_eformal_not_in_formals() {
+    // env-param symbol must not also appear in formals
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(vau (e) e e)").is_err());
+
+    // env-param symbol nested in formals should also be caught
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert!(lisp2.eval("(vau (a (b e)) e e)").is_err());
+
+    // env-param symbol in dotted rest position
+    let lisp3: Lisp<20000> = Lisp::new();
+    assert!(lisp3.eval("(vau (a . e) e e)").is_err());
+
+    // No conflict: different symbol names are fine
+    let lisp4: Lisp<20000> = Lisp::new();
+    assert!(lisp4.eval("(vau (a b) e e)").is_ok());
+}
+
+#[test]
+fn test_vau_formals_must_be_valid_ptree() {
+    // Valid formal parameter trees
+    let lisp: Lisp<20000> = Lisp::new();
+    // Symbol
+    assert!(lisp.eval("(vau x #ignore x)").is_ok());
+    // Nil
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert!(lisp2.eval("(vau () #ignore 42)").is_ok());
+    // Pair/list of symbols
+    let lisp3: Lisp<20000> = Lisp::new();
+    assert!(lisp3.eval("(vau (a b) #ignore a)").is_ok());
+    // Nested pairs
+    let lisp4: Lisp<20000> = Lisp::new();
+    assert!(lisp4.eval("(vau ((a b) c) #ignore a)").is_ok());
+    // #ignore in formals
+    let lisp5: Lisp<20000> = Lisp::new();
+    assert!(lisp5.eval("(vau (a #ignore) #ignore a)").is_ok());
+
+    // Invalid: number in formals
+    let lisp6: Lisp<20000> = Lisp::new();
+    assert!(lisp6.eval("(vau (42) #ignore 1)").is_err());
+
+    // Invalid: boolean in formals
+    let lisp7: Lisp<20000> = Lisp::new();
+    assert!(lisp7.eval("(vau (#t) #ignore 1)").is_err());
+}
+
+#[test]
+fn test_vau_valid_after_validation() {
+    // After validation, vau still works correctly for valid cases
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define! my-quote (vau (x) #ignore x))
+            (symbol? (my-quote hello)))
+        "#
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // vau with env param works correctly
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp2.eval(
+            r#"
+            (begin
+                (define! my-eval
+                    (wrap (vau (x) e (eval x e))))
+                (my-eval (+ 1 2)))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
