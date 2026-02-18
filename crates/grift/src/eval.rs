@@ -25,6 +25,13 @@ macro_rules! tail_continue {
     };
 }
 
+/// Wrap a fallible closure result as `TailAction::Return` (non-tail position).
+macro_rules! non_tail {
+    ($body:expr) => {
+        TailAction::Return((|| $body)())
+    };
+}
+
 /// Generate a variadic type-predicate builtin method.
 /// `(pred? . objects)` returns `#t` iff every object matches the pattern.
 macro_rules! type_predicate {
@@ -91,14 +98,6 @@ enum TailAction {
     Return(ArenaResult<ArenaIndex>),
     /// expr and env have been updated; re-enter the eval loop.
     Continue,
-}
-
-impl TailAction {
-    /// Wrap a non-tail result as `TailAction::Return`.
-    #[inline]
-    fn non_tail(result: ArenaResult<ArenaIndex>) -> Self {
-        TailAction::Return(result)
-    }
 }
 
 // ============================================================================
@@ -545,7 +544,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        TailAction::non_tail((|| {
+        non_tail!({
             // Protect the ground environment from mutation.
             if *env == self.ground_env {
                 return Err(ArenaError::ImmutableEnvironment);
@@ -556,7 +555,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let val = self.eval(val_expr, *env)?;
             self.match_ptree(definiend, val, *env)?;
             self.lisp.inert()
-        })())
+        })
     }
 
     /// `($set! exp1 formals exp2)` — Kernel §6.8.1.
@@ -573,7 +572,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        TailAction::non_tail((|| {
+        non_tail!({
             let env_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
             let definiend = self.lisp.car(rest)?;
@@ -593,7 +592,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let val = self.eval(val_expr, *env)?;
             self.match_ptree(definiend, val, target_env)?;
             self.lisp.inert()
-        })())
+        })
     }
 
     /// `(lambda (params...) body...)`.
@@ -604,11 +603,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        TailAction::non_tail((|| {
+        non_tail!({
             let params = self.lisp.car(args)?;
             let body = self.wrap_begin(self.lisp.cdr(args)?)?;
             self.lisp.lambda(params, body, *env)
-        })())
+        })
     }
 
     /// `(begin expr1 expr2 ...)` — all but last are non-tail, last is tail.
@@ -754,7 +753,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         _expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        TailAction::non_tail((|| {
+        non_tail!({
             let params = self.lisp.car(args)?;
             let env_param = self.lisp.cadr(args)?;
             let body_list = self.lisp.cdr(self.lisp.cdr(args)?)?;
@@ -777,7 +776,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             };
 
             self.lisp.vau(params, ep, body, *env)
-        })())
+        })
     }
 
     /// Validate that `ptree` is a well-formed formal parameter tree.
@@ -993,23 +992,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         if a == b {
             return Ok(true);
         }
-        let va = self.lisp.get(a)?;
-        let vb = self.lisp.get(b)?;
-        // For immutable encapsulated types whose identity is determined
-        // by their value, compare structurally.
-        match (va, vb) {
-            (Value::Nil, Value::Nil) => Ok(true),
-            (Value::Inert, Value::Inert) => Ok(true),
-            (Value::Ignore, Value::Ignore) => Ok(true),
-            (Value::Boolean(x), Value::Boolean(y)) => Ok(x == y),
-            (Value::Number(x), Value::Number(y)) => Ok(x == y),
-            (Value::Symbol(x), Value::Symbol(y)) => Ok(x == y),
-            (Value::Char(x), Value::Char(y)) => Ok(x == y),
-            // Mutable/constructed objects (pairs, environments, operatives,
-            // applicatives) are eq? only if they are the same arena slot,
-            // which was already checked above.
-            _ => Ok(false),
-        }
+        let (va, vb) = (self.lisp.get(a)?, self.lisp.get(b)?);
+        // Immutable encapsulated types: eq? is value-based.
+        // Mutable/constructed types (pairs, environments, operatives,
+        // applicatives, strings): eq? is arena identity only (checked above).
+        Ok(va.is_immutable() && va == vb)
     }
 
     /// Core `equal?` logic: structural equality.
