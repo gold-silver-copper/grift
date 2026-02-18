@@ -8,7 +8,7 @@
 //! **applicative** is a derived wrapper that evaluates arguments before
 //! delegating to the wrapped combiner.
 
-use grift_arena::{ArenaError, ArenaIndex, ArenaResult};
+use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::lisp::Lisp;
 use crate::value::{BuiltinId, Value};
@@ -199,6 +199,10 @@ define_builtins! {
         "make-environment" => bi_make_env => builtin_make_env,
         "make-empty-environment" => bi_make_empty_env => builtin_make_empty_env,
         "environment?" => bi_environmentp => builtin_environmentp,
+        "gc-collect" => bi_gc_collect => builtin_gc_collect,
+        "gc-enable"  => bi_gc_enable  => builtin_gc_enable,
+        "gc-disable" => bi_gc_disable => builtin_gc_disable,
+        "gc-enabled?" => bi_gc_enabledp => builtin_gc_enabledp,
     }
 }
 
@@ -220,10 +224,8 @@ pub(crate) struct Evaluator<'a, const N: usize> {
 impl<'a, const N: usize> Evaluator<'a, N> {
     /// Create a new evaluator with operatives bound in the ground environment.
     /// The global_env is a standard environment (child of ground).
-    pub fn new(lisp: &'a Lisp<N>) -> Self {
-        let ground_env = lisp
-            .make_env(ArenaIndex::NIL)
-            .expect("failed to allocate ground environment");
+    pub fn new(lisp: &'a Lisp<N>) -> ArenaResult<Self> {
+        let ground_env = lisp.make_env(ArenaIndex::NIL)?;
         let mut eval = Evaluator {
             lisp,
             ground_env,
@@ -232,10 +234,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         };
         eval.init_builtins();
         // Create the standard environment as a child of the ground environment.
-        eval.global_env = lisp
-            .make_child_env(ground_env)
-            .expect("failed to allocate standard environment");
-        eval
+        eval.global_env = lisp.make_child_env(ground_env)?;
+        Ok(eval)
     }
 
     /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.
@@ -257,12 +257,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Push a value onto the GC root stack so it survives collection.
     #[inline]
-    fn push_root(&mut self, idx: ArenaIndex) {
-        if let Ok(new_roots) = self.lisp.cons(idx, self.gc_roots) {
-            self.gc_roots = new_roots;
-        } else {
-            debug_assert!(false, "GC root push failed: arena out of memory");
-        }
+    fn push_root(&mut self, idx: ArenaIndex) -> ArenaResult<()> {
+        let new_roots = self.lisp.cons(idx, self.gc_roots)?;
+        self.gc_roots = new_roots;
+        Ok(())
     }
 
     /// Pop `n` values from the GC root stack.
@@ -279,22 +277,23 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Trigger garbage collection using all known live roots.
     #[cold]
-    fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
+    fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
         self.lisp.arena.collect_garbage(&[
             expr, env, self.ground_env, self.global_env, self.gc_roots,
             self.lisp.true_idx, self.lisp.false_idx,
             self.lisp.inert_idx, self.lisp.ignore_idx,
-        ]);
+        ])
     }
 
-    /// Check arena memory pressure and collect garbage if needed.
-    #[inline]
-    fn maybe_collect(&self, expr: ArenaIndex, env: ArenaIndex) {
-        let len = self.lisp.arena.len();
-        let cap = self.lisp.arena.capacity();
-        if len > cap * 3 / 4 {
-            self.collect_garbage(expr, env);
-        }
+    /// Trigger garbage collection unconditionally (ignores gc_enabled flag).
+    /// Used by the `gc-collect` builtin for explicit manual collection.
+    #[cold]
+    fn collect_garbage_unconditional(&self) -> GcStats {
+        self.lisp.arena.collect_garbage_unconditional(&[
+            self.ground_env, self.global_env, self.gc_roots,
+            self.lisp.true_idx, self.lisp.false_idx,
+            self.lisp.inert_idx, self.lisp.ignore_idx,
+        ])
     }
 
     /// Evaluate an expression in an environment (with TCO).
@@ -302,75 +301,102 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Kernel-style dispatch: three combiner types —
     /// `Operative` (compound fexpr), `Applicative` (wrapper that evals args),
     /// and `Builtin` (primitive operative).
+    ///
+    /// Garbage collection is triggered only on allocation failure (OOM):
+    /// when any operation returns `OutOfMemory`, the evaluator restores
+    /// the GC root stack, collects garbage, and retries.
     pub fn eval(&mut self, mut expr: ArenaIndex, mut env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         loop {
-            self.maybe_collect(expr, env);
-
-            match self.lisp.get(expr)? {
-                Value::Symbol(_) => {
-                    return self.lisp.env_lookup(env, expr);
+            let saved_gc_roots = self.gc_roots;
+            match self.eval_step(&mut expr, &mut env) {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => continue,
+                Err(ArenaError::OutOfMemory) => {
+                    self.gc_roots = saved_gc_roots;
+                    let stats = self.collect_garbage(expr, env);
+                    if !stats.did_collect() {
+                        return Err(ArenaError::OutOfMemory);
+                    }
+                    continue;
                 }
+                Err(e) => return Err(e),
+            }
+        }
+    }
 
-                Value::Cons { car, cdr } => {
-                    self.push_root(cdr);
-                    self.push_root(env);
+    /// One step of the eval trampoline. Returns:
+    /// - `Ok(Some(value))` — evaluation complete, return this value.
+    /// - `Ok(None)` — TCO: `expr`/`env` have been updated, re-enter the loop.
+    /// - `Err(e)` — error (including OOM).
+    fn eval_step(
+        &mut self,
+        expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> Result<Option<ArenaIndex>, ArenaError> {
+        match self.lisp.get(*expr)? {
+            Value::Symbol(_) => {
+                Ok(Some(self.lisp.env_lookup(*env, *expr)?))
+            }
 
-                    let func_val = self.eval(car, env)?;
+            Value::Cons { car, cdr } => {
+                self.push_root(cdr)?;
+                self.push_root(*env)?;
 
-                    match self.lisp.get(func_val)? {
-                        Value::Builtin(id) => {
-                            let action = self.apply_operative_builtin(id, cdr, &mut expr, &mut env);
-                            self.pop_roots(2);
-                            match action {
-                                TailAction::Return(val) => return val,
-                                TailAction::Continue => continue,
-                            }
-                        }
+                let func_val = self.eval(car, *env)?;
 
-                        Value::Operative { .. } => {
-                            let (body, op_env) = self.invoke_operative(func_val, cdr, env)?;
-                            self.pop_roots(2);
-                            env = op_env;
-                            expr = body;
-                            continue;
-                        }
-
-                        Value::Applicative(inner) => {
-                            let evaled_args = self.eval_args(cdr, env)?;
-                            self.push_root(evaled_args);
-
-                            let inner_val = self.lisp.get(inner)?;
-                            self.pop_roots(3);
-
-                            match inner_val {
-                                Value::Operative { .. } => {
-                                    let (body, op_env) =
-                                        self.invoke_operative(inner, evaled_args, env)?;
-                                    env = op_env;
-                                    expr = body;
-                                    continue;
-                                }
-                                Value::Builtin(id) => {
-                                    return self.apply_builtin_pure(id, evaled_args);
-                                }
-                                Value::Applicative(_) => {
-                                    return self.apply_combiner(inner, evaled_args, env);
-                                }
-                                _ => {
-                                    return Err(ArenaError::NotCallable);
-                                }
-                            }
-                        }
-
-                        _ => {
-                            self.pop_roots(2);
-                            return Err(ArenaError::NotCallable);
+                match self.lisp.get(func_val)? {
+                    Value::Builtin(id) => {
+                        let action = self.apply_operative_builtin(id, cdr, expr, env);
+                        self.pop_roots(2);
+                        match action {
+                            TailAction::Return(val) => val.map(Some),
+                            TailAction::Continue => Ok(None),
                         }
                     }
-                }
 
-                _ => return Ok(expr), // self-evaluating: literals, closures, builtins,
+                    Value::Operative { .. } => {
+                        let (body, op_env) = self.invoke_operative(func_val, cdr, *env)?;
+                        self.pop_roots(2);
+                        *env = op_env;
+                        *expr = body;
+                        Ok(None)
+                    }
+
+                    Value::Applicative(inner) => {
+                        let evaled_args = self.eval_args(cdr, *env)?;
+                        self.push_root(evaled_args)?;
+
+                        let inner_val = self.lisp.get(inner)?;
+                        self.pop_roots(3);
+
+                        match inner_val {
+                            Value::Operative { .. } => {
+                                let (body, op_env) =
+                                    self.invoke_operative(inner, evaled_args, *env)?;
+                                *env = op_env;
+                                *expr = body;
+                                Ok(None)
+                            }
+                            Value::Builtin(id) => {
+                                Ok(Some(self.apply_builtin_pure(id, evaled_args)?))
+                            }
+                            Value::Applicative(_) => {
+                                Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
+                            }
+                            _ => {
+                                Err(ArenaError::NotCallable)
+                            }
+                        }
+                    }
+
+                    _ => {
+                        self.pop_roots(2);
+                        Err(ArenaError::NotCallable)
+                    }
+                }
             }
+
+            _ => Ok(Some(*expr)), // self-evaluating: literals, closures, builtins,
         }
     }
 
@@ -457,9 +483,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
             let head_expr = self.lisp.car(cur)?;
-            self.push_root(reversed);
-            self.push_root(env);
-            self.push_root(cur);
+            self.push_root(reversed)?;
+            self.push_root(env)?;
+            self.push_root(cur)?;
             let head_val = self.eval(head_expr, env)?;
             self.pop_roots(3);
             reversed = self.lisp.cons(head_val, reversed)?;
@@ -715,7 +741,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let body_list = self.lisp.cdr(args)?;
 
             let local_env = self.lisp.make_child_env(*env)?;
-            self.push_root(local_env);
+            self.push_root(local_env)?;
             let mut cur = bindings;
             while !cur.is_nil() {
                 let binding = self.lisp.car(cur)?;
@@ -1043,6 +1069,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     type_predicate!(builtin_environmentp, Value::Environment { .. });
     type_predicate!(builtin_ignorep, Value::Ignore);
+
+    // ================================================================
+    // GC control builtins
+    // ================================================================
+
+    /// `(gc-collect)` — manually trigger garbage collection.
+    /// Returns the number of objects collected. Always runs unconditionally
+    /// (ignores the gc-enabled flag), since the user explicitly requested it.
+    fn builtin_gc_collect(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let stats = self.collect_garbage_unconditional();
+        self.lisp.number(stats.collected as isize)
+    }
+
+    /// `(gc-enable)` — enable automatic garbage collection on OOM.
+    fn builtin_gc_enable(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.lisp.arena.set_gc_enabled(true);
+        self.lisp.inert()
+    }
+
+    /// `(gc-disable)` — disable automatic garbage collection.
+    /// When disabled, OOM errors propagate immediately without attempting GC.
+    /// Manual `(gc-collect)` still works regardless.
+    fn builtin_gc_disable(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.lisp.arena.set_gc_enabled(false);
+        self.lisp.inert()
+    }
+
+    /// `(gc-enabled?)` — check if automatic GC is enabled.
+    fn builtin_gc_enabledp(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.lisp.boolean(self.lisp.arena.is_gc_enabled())
+    }
 
     /// Copy a cons-list into fresh cons cells (iterative).
     fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
