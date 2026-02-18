@@ -1,6 +1,6 @@
-# Grift
+# grift
 
-A `#![no_std]` Lisp interpreter implementing the vau calculus (Shutt 2010) on a fixed-size arena allocator with mark-and-sweep garbage collection.
+a `#![no_std]` lisp interpreter implementing the vau calculus (Shutt 2010) on a fixed-size arena allocator with mark-and-sweep garbage collection.
 
 ## Features
 
