@@ -100,7 +100,7 @@ impl<'a> Parser<'a> {
     fn peek_dot(&self) -> bool {
         self.input.get(self.pos) == Some(&b'.')
             && self.input.get(self.pos + 1)
-                .map_or(true, |b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b')'))
+                .is_none_or(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b')'))
     }
 
     /// Parse `'expr` → `(quote expr)`.

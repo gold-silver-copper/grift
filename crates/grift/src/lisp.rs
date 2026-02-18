@@ -23,6 +23,12 @@ pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
 }
 
+impl<const N: usize> Default for Lisp<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp interpreter with an empty arena.
     ///
@@ -362,10 +368,10 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
         let mut cur = list;
         while !cur.is_nil() {
-            if let Ok(head) = self.car(cur) {
-                if head == target {
-                    return true;
-                }
+            if let Ok(head) = self.car(cur)
+                && head == target
+            {
+                return true;
             }
             match self.cdr(cur) {
                 Ok(rest) => cur = rest,
