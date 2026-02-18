@@ -146,7 +146,7 @@ value, then match `definiend` against the value in the target environment
 and must not be the ground environment.
 
 ```lisp
-(define! e (make-environment (get-current-environment)))
+(define! e (make-empty-environment))
 (set! e x 10)  ; binds x to 10 in environment e
 ```
 
