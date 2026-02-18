@@ -2494,3 +2494,120 @@ fn test_depth_first_search_in_multi_parent() {
         Ok(Value::Number(100))
     );
 }
+
+// ============================================================================
+// Formal Parameter Tree Conformance Tests (§4.9.1)
+// ============================================================================
+
+#[test]
+fn test_define_rejects_duplicate_symbol_in_ptree() {
+    // A formal parameter tree must not contain the same symbol more than once.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(
+        lisp.eval("(define! (a a) (list 1 2))").is_err(),
+        "duplicate symbol 'a' in flat list"
+    );
+}
+
+#[test]
+fn test_define_rejects_duplicate_symbol_nested_ptree() {
+    // Duplicate detection must work across nested pairs.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(
+        lisp.eval("(define! (a (b a)) (list 1 (list 2 3)))").is_err(),
+        "duplicate symbol 'a' in nested ptree"
+    );
+}
+
+#[test]
+fn test_define_rejects_duplicate_symbol_dotted_ptree() {
+    // Duplicate in a dotted-pair ptree.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(
+        lisp.eval("(define! (a . a) (cons 1 2))").is_err(),
+        "duplicate symbol 'a' in dotted pair"
+    );
+}
+
+#[test]
+fn test_define_allows_ignore_duplicates_in_ptree() {
+    // #ignore may appear multiple times — it is not a symbol.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! (#ignore a #ignore) (list 1 2 3))
+                a)
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_vau_rejects_duplicate_symbol_in_ptree() {
+    // vau should also reject duplicate symbols in formals.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(
+        lisp.eval("(vau (a a) #ignore a)").is_err(),
+        "duplicate symbol 'a' in vau formals"
+    );
+}
+
+#[test]
+fn test_make_environment_rejects_non_environment_mixed() {
+    // Passing a mix of environments and non-environments should fail.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! e (make-environment))
+                (make-environment e #t))
+            "#
+        )
+        .is_err(),
+        "non-environment #t in parents list"
+    );
+}
+
+#[test]
+fn test_ignore_predicate_various_types() {
+    // ignore? returns #f for all non-ignore types.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(ignore? #ignore)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(ignore? #t)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? 0)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? '())"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(ignore? #inert)"), Ok(Value::Boolean(false)));
+    assert_eq!(
+        lisp.eval("(ignore? (cons 1 2))"),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(
+        lisp.eval("(ignore? (make-environment))"),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_multi_parent_first_parent_wins() {
+    // When multiple parents define the same binding, the first parent wins.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! e1 (make-environment))
+                (eval (list define! (quote x) 10) e1)
+                (define! e2 (make-environment))
+                (eval (list define! (quote x) 20) e2)
+                (define! child (make-environment e1 e2))
+                (eval (quote x) child))
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
