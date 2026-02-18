@@ -104,18 +104,36 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// Returns the number of objects collected.
     fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
-        let mut collected = 0;
+        (0..N)
+            .filter(|&idx| !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. }))
+            .map(|idx| self.free(ArenaIndex::new(idx)))
+            .filter(|r| r.is_ok())
+            .count()
+    }
 
-        // Single-pass sweep: iterate once and free immediately
-        for (idx, &is_marked) in marked.iter().enumerate().take(N) {
-            let should_free = matches!(self.slots[idx].get(), Slot::Occupied { .. }) && !is_marked;
+    /// Shared mark-and-sweep implementation. Runs the full mark-sweep cycle
+    /// on a pre-initialized mark state.
+    fn mark_and_sweep(
+        &self,
+        marked: &mut [bool; N],
+        mark_stack: &mut [usize; N],
+        stack_len: &mut usize,
+    ) -> GcStats
+    where
+        T: Trace<T, N>,
+    {
+        let total_before = self.len();
 
-            if should_free && self.free(ArenaIndex::new(idx)).is_ok() {
-                collected += 1;
-            }
+        self.process_mark_stack(marked, mark_stack, stack_len);
+
+        let marked_count = marked.iter().filter(|&&m| m).count();
+        let collected = self.sweep_unmarked(marked);
+
+        GcStats {
+            marked: marked_count,
+            collected,
+            total_before,
         }
-
-        collected
     }
 
     /// Perform mark-and-sweep garbage collection.
@@ -179,41 +197,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        let total_before = self.len();
-
-        // If GC is disabled, return immediately without collecting
-        if !self.is_gc_enabled() {
-            return GcStats {
-                marked: 0,
-                collected: 0,
-                total_before,
-            };
-        }
-
-        // Mark phase: track which slots are reachable
-        // Using fixed-size arrays instead of Vec for no-alloc compatibility
-        let mut marked = [false; N];
-
-        // Fixed-size mark stack (worst case: all N slots could be on stack)
-        let mut mark_stack = [0usize; N];
-        let mut stack_len = 0usize;
-
-        // Initialize stack with valid roots
-        self.initialize_roots(roots, &mut marked, &mut mark_stack, &mut stack_len);
-
-        // Process mark stack (depth-first traversal)
-        self.process_mark_stack(&mut marked, &mut mark_stack, &mut stack_len);
-
-        let marked_count = marked.iter().filter(|&&m| m).count();
-
-        // Sweep phase: free all unmarked but allocated slots
-        let collected = self.sweep_unmarked(&marked);
-
-        GcStats {
-            marked: marked_count,
-            collected,
-            total_before,
-        }
+        self.collect_garbage_multi(&[roots])
     }
 
     /// Perform garbage collection unconditionally, even if GC is disabled.
@@ -254,11 +238,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(true);
-        let result = self.collect_garbage(roots);
-        self.set_gc_enabled(was_enabled);
-        result
+        self.collect_garbage_multi_unconditional(&[roots])
     }
 
     /// Perform garbage collection with multiple root sets.
@@ -278,40 +258,18 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        let total_before = self.len();
-
-        // If GC is disabled, return immediately without collecting
         if !self.is_gc_enabled() {
-            return GcStats {
-                marked: 0,
-                collected: 0,
-                total_before,
-            };
+            return GcStats { marked: 0, collected: 0, total_before: self.len() };
         }
 
-        // Mark phase with multiple root sets
         let mut marked = [false; N];
         let mut mark_stack = [0usize; N];
         let mut stack_len = 0usize;
 
-        // Initialize stack with valid roots from all root sets
         for root_set in root_sets {
             self.initialize_roots(root_set, &mut marked, &mut mark_stack, &mut stack_len);
         }
-
-        // Process mark stack (depth-first traversal)
-        self.process_mark_stack(&mut marked, &mut mark_stack, &mut stack_len);
-
-        let marked_count = marked.iter().filter(|&&m| m).count();
-
-        // Sweep phase: free all unmarked but allocated slots
-        let collected = self.sweep_unmarked(&marked);
-
-        GcStats {
-            marked: marked_count,
-            collected,
-            total_before,
-        }
+        self.mark_and_sweep(&mut marked, &mut mark_stack, &mut stack_len)
     }
 
     /// Perform garbage collection unconditionally with multiple root sets, ignoring the `gc_enabled` flag.
@@ -319,10 +277,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(true);
-        let result = self.collect_garbage_multi(root_sets);
-        self.set_gc_enabled(was_enabled);
-        result
+        self.with_gc(|| self.collect_garbage_multi(root_sets))
     }
 }

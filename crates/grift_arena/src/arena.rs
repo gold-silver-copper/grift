@@ -1,16 +1,12 @@
 //! Core arena allocator implementation.
 //!
 //! This module contains the main [`Arena`] struct and its core operations.
-//!
-//! Note: The `impl_get_contiguous!` and `impl_set_contiguous!` macros have been
-//! moved to `src/macros.rs`.
 
 use core::cell::Cell;
 
 use crate::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, ArenaDelete, ArenaCopy};
 use crate::types::{Slot, FREE_LIST_END};
 use crate::iter::ArenaIterator;
-use crate::macros::{impl_get_contiguous, impl_set_contiguous};
 
 /// Fixed-size arena allocator with O(1) allocation.
 ///
@@ -113,6 +109,19 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         self.gc_enabled.set(enabled);
     }
 
+    /// Run a closure with GC temporarily set to `enabled`, restoring the
+    /// previous state afterward.
+    fn scoped_gc<F, R>(&self, enabled: bool, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let was = self.gc_enabled.get();
+        self.gc_enabled.set(enabled);
+        let result = f();
+        self.gc_enabled.set(was);
+        result
+    }
+
     /// Temporarily disable GC, run a closure, then restore the previous state.
     ///
     /// This is useful for critical sections where GC should not run.
@@ -134,11 +143,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnOnce() -> R,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(false);
-        let result = f();
-        self.set_gc_enabled(was_enabled);
-        result
+        self.scoped_gc(false, f)
     }
 
     /// Temporarily enable GC, run a closure, then restore the previous state.
@@ -149,11 +154,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnOnce() -> R,
     {
-        let was_enabled = self.is_gc_enabled();
-        self.set_gc_enabled(true);
-        let result = f();
-        self.set_gc_enabled(was_enabled);
-        result
+        self.scoped_gc(true, f)
     }
 
     /// Get the maximum capacity of this arena.
@@ -162,16 +163,19 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     /// Get the number of currently allocated cells.
+    #[inline]
     pub fn len(&self) -> usize {
         self.len.get()
     }
 
     /// Check if the arena is empty (no allocated cells).
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Check if the arena is full (all cells allocated).
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.len() == N
     }
@@ -198,6 +202,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// let idx = arena.alloc(42).unwrap();
     /// assert_eq!(arena.get(idx).unwrap(), 42);
     /// ```
+    #[inline]
     pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
         let free_head = self.free_head.get();
 
@@ -224,27 +229,16 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         Ok(ArenaIndex::new(idx))
     }
 
-    /// Check that an index is valid (in bounds).
-    /// Returns the slot index if valid.
-    /// Note: Does NOT check if the slot is occupied - caller must verify.
-    fn check_bounds(&self, index: ArenaIndex) -> ArenaResult<usize> {
-        let idx = index.raw();
-
-        if idx >= N {
-            return Err(ArenaError::InvalidIndex);
-        }
-
-        Ok(idx)
-    }
-
-    /// Validate an index and return the slot index if valid.
+    /// Validate an index: in bounds and occupied.
+    #[inline]
     fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
-        let idx = self.check_bounds(index)?;
-
-        // Check if slot is occupied
+        let idx = index.raw();
+        if idx >= N {
+            return Err(ArenaError::IndexOutOfBounds);
+        }
         match self.slots[idx].get() {
             Slot::Occupied { .. } => Ok(idx),
-            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
+            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
         }
     }
 
@@ -252,14 +246,17 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// # Errors
     ///
-    /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
+    /// Returns `ArenaError::IndexOutOfBounds` if the index is out of bounds,
+    /// or `ArenaError::IndexNotAllocated` if the slot is not allocated.
+    #[inline]
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
-        let idx = self.check_bounds(index)?;
-
-        // Check if slot is occupied and get value
+        let idx = index.raw();
+        if idx >= N {
+            return Err(ArenaError::IndexOutOfBounds);
+        }
         match self.slots[idx].get() {
             Slot::Occupied { value } => Ok(value),
-            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
+            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
         }
     }
 
@@ -267,7 +264,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// # Errors
     ///
-    /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
+    /// Returns `ArenaError::IndexOutOfBounds` or `ArenaError::IndexNotAllocated`
+    /// if the index is invalid.
+    #[inline]
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
@@ -281,7 +280,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// # Errors
     ///
-    /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
+    /// Returns `ArenaError::IndexOutOfBounds` or `ArenaError::IndexNotAllocated`
+    /// if the index is invalid.
     ///
     /// # Example
     ///
@@ -299,14 +299,12 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         F: FnOnce(&mut T),
     {
         let idx = self.validate_index(index)?;
-
-        if let Slot::Occupied { mut value } = self.slots[idx].get() {
-            f(&mut value);
-            self.slots[idx].set(Slot::Occupied { value });
-            Ok(())
-        } else {
-            Err(ArenaError::InvalidIndex)
-        }
+        let Slot::Occupied { mut value } = self.slots[idx].get() else {
+            unreachable!("validate_index guarantees slot is Occupied")
+        };
+        f(&mut value);
+        self.slots[idx].set(Slot::Occupied { value });
+        Ok(())
     }
 
     /// Get a value, returning `None` instead of an error if invalid.
@@ -317,25 +315,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn try_get(&self, index: ArenaIndex) -> Option<T> {
         self.get(index).ok()
     }
-    
-    // ========================================================================
-    // Batch read/write operations for contiguous values
-    // Generated by impl_get_contiguous! and impl_set_contiguous! macros
-    // ========================================================================
-    
-    impl_get_contiguous!(get_contiguous2, [0 => a, 1 => b]);
-    impl_get_contiguous!(get_contiguous3, [0 => a, 1 => b, 2 => c]);
-    impl_get_contiguous!(get_contiguous4, [0 => a, 1 => b, 2 => c, 3 => d]);
-    impl_get_contiguous!(get_contiguous5, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e]);
-    impl_get_contiguous!(get_contiguous6, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f]);
-    impl_get_contiguous!(get_contiguous7, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g]);
-    
-    impl_set_contiguous!(set_contiguous2, [0 => a, 1 => b]);
-    impl_set_contiguous!(set_contiguous3, [0 => a, 1 => b, 2 => c]);
-    impl_set_contiguous!(set_contiguous4, [0 => a, 1 => b, 2 => c, 3 => d]);
-    impl_set_contiguous!(set_contiguous5, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e]);
-    impl_set_contiguous!(set_contiguous6, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f]);
-    impl_set_contiguous!(set_contiguous7, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g]);
 
     /// Swap the values at two indices.
     ///
@@ -345,19 +324,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn swap(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<()> {
         let idx_a = self.validate_index(a)?;
         let idx_b = self.validate_index(b)?;
-
-        if idx_a == idx_b {
-            return Ok(()); // Same slot, nothing to do
+        if idx_a != idx_b {
+            // Both validated as Occupied
+            let val_a = self.get(a)?;
+            let val_b = self.get(b)?;
+            self.slots[idx_a].set(Slot::Occupied { value: val_b });
+            self.slots[idx_b].set(Slot::Occupied { value: val_a });
         }
-
-        let (val_a, val_b) = match (self.slots[idx_a].get(), self.slots[idx_b].get()) {
-            (Slot::Occupied { value: va }, Slot::Occupied { value: vb }) => (va, vb),
-            _ => return Err(ArenaError::InvalidIndex),
-        };
-
-        self.slots[idx_a].set(Slot::Occupied { value: val_b });
-        self.slots[idx_b].set(Slot::Occupied { value: val_a });
-
         Ok(())
     }
 
@@ -368,21 +341,19 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// Returns an error if the index is invalid.
     pub fn replace(&self, index: ArenaIndex, value: T) -> ArenaResult<T> {
         let idx = self.validate_index(index)?;
-
-        match self.slots[idx].get() {
-            Slot::Occupied { value: old } => {
-                self.slots[idx].set(Slot::Occupied { value });
-                Ok(old)
-            }
-            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
-        }
+        let Slot::Occupied { value: old } = self.slots[idx].get() else {
+            unreachable!("validate_index guarantees slot is Occupied")
+        };
+        self.slots[idx].set(Slot::Occupied { value });
+        Ok(old)
     }
 
     /// Free a cell, making it available for reuse.
     ///
     /// # Errors
     ///
-    /// Returns `ArenaError::InvalidIndex` if the index is out of bounds or not allocated.
+    /// Returns `ArenaError::IndexOutOfBounds` or `ArenaError::IndexNotAllocated`
+    /// if the index is invalid.
     ///
     /// # Example
     ///
@@ -394,6 +365,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// arena.free(idx).unwrap();
     /// assert_eq!(arena.len(), 0);
     /// ```
+    #[inline]
     pub fn free(&self, index: ArenaIndex) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
@@ -465,28 +437,13 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 
     fn calculate_fragmentation(&self) -> f32 {
-        let mut fragments = 0;
-        let mut in_free = false;
+        // Count free-space fragments: contiguous runs of free slots.
+        let (fragments, _) = (0..N).fold((0u32, false), |(count, was_free), i| {
+            let is_free = matches!(self.slots[i].get(), Slot::Free { .. });
+            (count + u32::from(is_free && !was_free), is_free)
+        });
 
-        for i in 0..N {
-            match self.slots[i].get() {
-                Slot::Free { .. } => {
-                    if !in_free {
-                        fragments += 1;
-                        in_free = true;
-                    }
-                }
-                Slot::Occupied { .. } => {
-                    in_free = false;
-                }
-            }
-        }
-
-        if fragments == 0 {
-            0.0
-        } else {
-            fragments as f32 / N as f32
-        }
+        if fragments == 0 { 0.0 } else { fragments as f32 / N as f32 }
     }
 
     /// Validate internal consistency of the arena.
@@ -503,12 +460,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         let len = self.len.get();
 
         // Count occupied slots
-        let mut occupied_count = 0;
-        for i in 0..N {
-            if matches!(self.slots[i].get(), Slot::Occupied { .. }) {
-                occupied_count += 1;
-            }
-        }
+        let occupied_count = (0..N)
+            .filter(|&i| matches!(self.slots[i].get(), Slot::Occupied { .. }))
+            .count();
         if occupied_count != len {
             return false;
         }
@@ -557,10 +511,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     ///
     /// This is a low-level debugging method. For normal use, prefer [`is_allocated`].
     pub fn is_slot_occupied(&self, slot_index: usize) -> bool {
-        if slot_index >= N {
-            return false;
-        }
-        matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
+        slot_index < N && matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
     }
 
     /// Get indices of all allocated slots.
@@ -588,11 +539,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: FnMut(ArenaIndex, &T),
     {
-        for idx in 0..N {
-            if let Slot::Occupied { value } = self.slots[idx].get() {
-                f(ArenaIndex::new(idx), &value);
-            }
-        }
+        self.iter().for_each(|(idx, val)| f(idx, &val));
     }
 
     /// Apply a mutating function to all allocated values.
@@ -613,15 +560,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        let mut count = 0;
-        for i in 0..N {
-            if let Slot::Occupied { value } = self.slots[i].get()
-                && predicate(&value)
-            {
-                count += 1;
-            }
-        }
-        count
+        self.iter().filter(|(_, v)| predicate(v)).count()
     }
 
     /// Find the first value matching a predicate.
@@ -629,15 +568,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        for idx in 0..N {
-            if let Slot::Occupied { value } = self.slots[idx].get()
-                && predicate(&value)
-            {
-                return Some((ArenaIndex::new(idx), value));
-            }
-        }
-
-        None
+        self.iter().find(|(_, v)| predicate(v))
     }
 
     /// Check if any allocated value matches a predicate.
@@ -645,7 +576,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        self.find(predicate).is_some()
+        self.iter().any(|(_, v)| predicate(&v))
     }
 
     /// Check if all allocated values match a predicate.
@@ -655,20 +586,10 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         F: Fn(&T) -> bool,
     {
-        for i in 0..N {
-            if let Slot::Occupied { value } = self.slots[i].get()
-                && !predicate(&value)
-            {
-                return false;
-            }
-        }
-
-        true
+        self.iter().all(|(_, v)| predicate(&v))
     }
 
-    // ========================================================================
-    // Contiguous Allocation
-    // ========================================================================
+    // — Contiguous Allocation —
 
     /// Find a contiguous block of `count` free slots.
     /// 
@@ -719,7 +640,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// 
     /// # Errors
     /// 
-    /// Returns `ArenaError::InvalidIndex` if `count` is 0.
+    /// Returns `ArenaError::InvalidArgument` if `count` is 0.
     /// Returns `ArenaError::OutOfMemory` if no contiguous block is available.
     /// 
     /// # Example
@@ -740,7 +661,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```
     pub fn alloc_contiguous(&self, count: usize, default: T) -> ArenaResult<ArenaIndex> {
         if count == 0 {
-            return Err(ArenaError::InvalidIndex);
+            return Err(ArenaError::InvalidArgument);
         }
 
         let start_idx = self.find_contiguous_free_slots(count)
@@ -805,8 +726,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// 
     /// # Errors
     /// 
-    /// Returns `ArenaError::InvalidIndex` if the offset goes out of bounds
-    /// or the slot is not allocated.
+    /// Returns `ArenaError::IndexOutOfBounds` if the offset goes out of bounds
+    /// or `ArenaError::IndexNotAllocated` if the slot is not allocated.
     /// 
     /// # Example
     /// 
@@ -822,17 +743,16 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// assert_eq!(arena.get(idx1).unwrap(), 42);
     /// ```
     pub fn index_at_offset(&self, start: ArenaIndex, offset: usize) -> ArenaResult<ArenaIndex> {
-        let new_idx = start.raw() + offset;
-        if new_idx >= N {
-            return Err(ArenaError::InvalidIndex);
+        let index = start.offset(offset).ok_or(ArenaError::IndexOutOfBounds)?;
+        let idx = index.raw();
+        if idx >= N {
+            return Err(ArenaError::IndexOutOfBounds);
         }
         
-        let index = ArenaIndex::new(new_idx);
-        
         // Verify the slot is actually occupied
-        match self.slots[new_idx].get() {
+        match self.slots[idx].get() {
             Slot::Occupied { .. } => Ok(index),
-            Slot::Free { .. } => Err(ArenaError::InvalidIndex),
+            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
         }
     }
 
@@ -842,8 +762,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// 
     /// # Errors
     /// 
-    /// Returns `ArenaError::InvalidIndex` if any slot is out of bounds or
-    /// not allocated.
+    /// Returns `ArenaError::IndexOutOfBounds` if any slot is out of bounds, or
+    /// `ArenaError::IndexNotAllocated` if any slot is not allocated.
     /// 
     /// # Example
     /// 
@@ -865,35 +785,22 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
 
         let start_idx = start.raw();
-
-        // Validate all slots are allocated and in bounds
-        for i in 0..count {
-            let idx = start_idx + i;
-            if idx >= N {
-                return Err(ArenaError::InvalidIndex);
-            }
-            
-            // Check that slot is occupied
-            match self.slots[idx].get() {
-                Slot::Occupied { .. } => {}
-                Slot::Free { .. } => return Err(ArenaError::InvalidIndex),
-            }
+        let end_idx = start_idx.checked_add(count).ok_or(ArenaError::IndexOutOfBounds)?;
+        if end_idx > N {
+            return Err(ArenaError::IndexOutOfBounds);
         }
 
-        // Free all slots and add to free list
-        let free_head = self.free_head.get();
+        // Validate all slots are occupied
+        if (start_idx..end_idx).any(|i| !matches!(self.slots[i].get(), Slot::Occupied { .. })) {
+            return Err(ArenaError::IndexNotAllocated);
+        }
 
-        // Link freed slots together, then link to free_head
-        // Process in reverse so the slots end up in order in the free list
+        // Free all slots: link them together then chain to the existing free list
+        let free_head = self.free_head.get();
         for i in (0..count).rev() {
             let idx = start_idx + i;
-            self.slots[idx].set(Slot::Free {
-                next_free: if i == count - 1 {
-                    free_head
-                } else {
-                    start_idx + i + 1
-                },
-            });
+            let next = if i == count - 1 { free_head } else { start_idx + i + 1 };
+            self.slots[idx].set(Slot::Free { next_free: next });
         }
 
         self.free_head.set(start_idx);
@@ -903,9 +810,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     }
 }
 
-// ============================================================================
-// Trait Implementations for Arena
-// ============================================================================
+// — Trait Implementations for Arena —
 
 impl<T: Copy, const N: usize> Arena<T, N> {
     /// Delete a value and recursively delete any children.

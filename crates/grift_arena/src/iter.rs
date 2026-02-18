@@ -12,6 +12,7 @@ pub struct ArenaIterator<'a, T: Copy, const N: usize> {
 impl<'a, T: Copy, const N: usize> Iterator for ArenaIterator<'a, T, N> {
     type Item = (ArenaIndex, T);
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         while self.current < N {
             let idx = self.current;

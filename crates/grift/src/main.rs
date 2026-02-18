@@ -1,9 +1,33 @@
-//! # Grift REPL Binary
-//!
-//! Run with: `cargo run -p grift --features std`
-//! Or after installing: `grift`
+use grift::Lisp;
+use rustyline::DefaultEditor;
+
+const PROMPT: &str = "Λ> ";
+const ARENA_SIZE: usize = 100_000;
 
 fn main() {
-    // Use a 50,000 cell arena (should be plenty for interactive use)
-    grift::run_repl::<50000>();
+    let lisp: Lisp<ARENA_SIZE> = Lisp::new();
+    let mut rl = DefaultEditor::new().expect("failed to initialize editor");
+
+    loop {
+        match rl.readline(PROMPT) {
+            Ok(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let _ = rl.add_history_entry(line);
+                match lisp.eval(line) {
+                    Ok(val) => println!("{val}"),
+                    Err(e) => eprintln!("error: {e:?}"),
+                }
+            }
+            Err(rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof) => {
+                break;
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                break;
+            }
+        }
+    }
 }

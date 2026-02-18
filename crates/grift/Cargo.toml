@@ -3,64 +3,15 @@ name = "grift"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A minimal no_std Scheme implementation with arena-based garbage collection"
-readme = "README.md"
-keywords = ["scheme", "lisp", "no_std", "embedded", "interpreter"]
-categories = ["no-std", "embedded", "development-tools"]
-repository = "https://github.com/gold-silver-copper/grift"
-documentation = "https://docs.rs/grift"
-
-[lib]
-name = "grift"
-path = "src/lib.rs"
-
-[[bin]]
-name = "grift"
-path = "src/main.rs"
-required-features = ["std"]
-doc-scrape-examples = false
-
-[[bin]]
-name = "scheme-test-runner"
-path = "src/bin/scheme-test-runner.rs"
-required-features = ["std"]
-doc-scrape-examples = false
+description = "A simple minimalistic Lisp built on the grift_arena allocator"
 
 [features]
-default = ["all-libraries"]
-std = ["dep:grift_repl", "dep:grift_std"]
-all-libraries = ["grift_parser/all-libraries"]
-scheme-base = ["grift_parser/scheme-base"]
-scheme-case-lambda = ["grift_parser/scheme-case-lambda"]
-scheme-char = ["grift_parser/scheme-char"]
-scheme-cxr = ["grift_parser/scheme-cxr"]
-scheme-eval = ["grift_parser/scheme-eval"]
-scheme-file = ["grift_parser/scheme-file"]
-scheme-inexact = ["grift_parser/scheme-inexact"]
-scheme-lazy = ["grift_parser/scheme-lazy"]
-scheme-load = ["grift_parser/scheme-load"]
-scheme-process-context = ["grift_parser/scheme-process-context"]
-scheme-read = ["grift_parser/scheme-read"]
-scheme-repl = ["grift_parser/scheme-repl"]
-scheme-time = ["grift_parser/scheme-time"]
-scheme-write = ["grift_parser/scheme-write"]
-srfi-64 = ["grift_parser/srfi-64"]
+repl = ["dep:rustyline"]
 
 [dependencies]
-grift_arena = { workspace = true }
-grift_core = { workspace = true }
-grift_parser = { workspace = true }
-grift_eval = { workspace = true }
-grift_repl = { workspace = true, optional = true }
-grift_std = { workspace = true, optional = true }
+grift_arena.workspace = true
+rustyline = { version = "17.0.2", optional = true }
 
-[dev-dependencies]
-grift_std = { workspace = true }
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
-
-[[example]]
-name = "minimal"
-doc-scrape-examples = false
+[[bin]]
+name = "grift"
+required-features = ["repl"]

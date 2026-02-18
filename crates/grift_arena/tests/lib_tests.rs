@@ -45,10 +45,8 @@ fn test_invalid_index() {
     arena.free(idx).unwrap();
 
     // After freeing, the index is invalid
-    assert_eq!(arena.get(idx), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx), Err(ArenaError::IndexNotAllocated));
 }
-
-
 
 #[test]
 fn test_free_list_o1_allocation() {
@@ -99,9 +97,9 @@ fn test_clear_invalidates_all_indices() {
     arena.clear();
 
     // All old indices should be invalid
-    assert_eq!(arena.get(idx1), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(idx2), Err(ArenaError::InvalidIndex));
-    assert_eq!(arena.get(idx3), Err(ArenaError::InvalidIndex));
+    assert_eq!(arena.get(idx1), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(idx2), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(idx3), Err(ArenaError::IndexNotAllocated));
 
     // New allocations should work
     let new_idx = arena.alloc(42).unwrap();
@@ -223,7 +221,7 @@ fn test_set() {
 fn test_trace_error() {
     // Test the new TraceError variant
     let err = ArenaError::TraceError;
-    assert_eq!(err.as_str(), "error during GC tracing");
+    assert_eq!(err.as_str(), "Error during GC tracing");
     assert!(err.is_trace_error());
     assert!(!err.is_out_of_memory());
     assert!(!err.is_invalid_index());

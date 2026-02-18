@@ -2,34 +2,18 @@
 resolver = "2"
 members = [
     "crates/grift_arena",
-    "crates/grift_macros",
-    "crates/grift_core",
-    "crates/grift_parser",
     "crates/grift_unicode",
-    "crates/grift_eval",
-    "crates/grift_repl",
-    "crates/grift_std",
+
     "crates/grift",
-    "crates/grift_arena_embedded",
-    "crates/grift_util",
 ]
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-grift_arena = { version = "1.4.0", path = "crates/grift_arena" }
-grift_macros = { version = "1.4.0", path = "crates/grift_macros" }
-grift_util = { version = "1.4.0", path = "crates/grift_util" }
-grift_core = { version = "1.4.0", path = "crates/grift_core" }
-grift_parser = { version = "1.4.0", path = "crates/grift_parser", default-features = false }
-grift_unicode = { version = "1.4.0", path = "crates/grift_unicode" }
-grift_eval = { version = "1.4.0", path = "crates/grift_eval", default-features = false }
-grift_repl = { version = "1.4.0", path = "crates/grift_repl" }
-grift_std = { version = "1.4.0", path = "crates/grift_std" }
-grift_arena_embedded = { version = "1.4.0", path = "crates/grift_arena_embedded" }
+grift_arena = { version = "1.5.0", path = "crates/grift_arena" }
 
 # Use basic optimizations in dev/test builds to prevent stack overflows
 # caused by deep recursion in the Scheme evaluator. Without optimizations,
