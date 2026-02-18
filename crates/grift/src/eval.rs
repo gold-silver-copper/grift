@@ -531,6 +531,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> TailAction {
         TailAction::non_tail((|| {
             let definiend = self.lisp.car(args)?;
+            self.validate_ptree(definiend)?;
             let val_expr = self.lisp.cadr(args)?;
             let val = self.eval(val_expr, *env)?;
             self.match_ptree(definiend, val, *env)?;
@@ -728,18 +729,48 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// - A symbol or `#ignore`.
     /// - Nil (the empty list).
     /// - A pair whose car and cdr are both valid ptrees.
+    ///
+    /// Additionally, the tree must be acyclic and no symbol may occur
+    /// more than once.
     fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<()> {
+        self.validate_ptree_inner(ptree, ArenaIndex::NIL, ArenaIndex::NIL)
+            .map(|_| ())
+    }
+
+    /// Recursive helper for `validate_ptree`.
+    ///
+    /// `visited` is a cons-list of pair nodes already traversed (cycle
+    /// detection).  `seen_syms` is a cons-list of symbol indices already
+    /// encountered (duplicate detection).  Returns the updated
+    /// `seen_syms` list on success.
+    fn validate_ptree_inner(
+        &self,
+        ptree: ArenaIndex,
+        visited: ArenaIndex,
+        seen_syms: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         if ptree.is_nil() {
-            return Ok(());
+            return Ok(seen_syms);
         }
         match self.lisp.get(ptree)? {
-            Value::Symbol(_) | Value::Ignore => Ok(()),
+            Value::Ignore => Ok(seen_syms),
+            Value::Symbol(_) => {
+                if self.lisp.list_contains(seen_syms, ptree) {
+                    return Err(ArenaError::InvalidArgument);
+                }
+                self.lisp.cons(ptree, seen_syms)
+            }
             Value::Cons {
                 car: ptree_car,
                 cdr: ptree_cdr,
             } => {
-                self.validate_ptree(ptree_car)?;
-                self.validate_ptree(ptree_cdr)
+                // Cycle detection: this pair must not have been visited.
+                if self.lisp.list_contains(visited, ptree) {
+                    return Err(ArenaError::Cyclic);
+                }
+                let new_visited = self.lisp.cons(ptree, visited)?;
+                let seen_syms = self.validate_ptree_inner(ptree_car, new_visited, seen_syms)?;
+                self.validate_ptree_inner(ptree_cdr, new_visited, seen_syms)
             }
             _ => Err(ArenaError::TypeError),
         }
