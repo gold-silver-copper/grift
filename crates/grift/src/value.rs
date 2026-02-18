@@ -106,6 +106,22 @@ impl Value {
         !matches!(self, Value::Symbol(_) | Value::Cons { .. })
     }
 
+    /// True for immutable, encapsulated types whose identity is
+    /// determined by value rather than arena slot (used by `eq?`).
+    #[inline]
+    pub fn is_immutable(self) -> bool {
+        matches!(
+            self,
+            Value::Nil
+                | Value::Boolean(_)
+                | Value::Number(_)
+                | Value::Symbol(_)
+                | Value::Char(_)
+                | Value::Inert
+                | Value::Ignore
+        )
+    }
+
     value_accessor! {
         /// Extract the numeric value, or `Err(TypeError)` if not a number.
         as_number -> isize, Value::Number(n) => n
