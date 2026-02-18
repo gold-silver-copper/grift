@@ -197,16 +197,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        if !self.is_gc_enabled() {
-            return GcStats { marked: 0, collected: 0, total_before: self.len() };
-        }
-
-        let mut marked = [false; N];
-        let mut mark_stack = [0usize; N];
-        let mut stack_len = 0usize;
-
-        self.initialize_roots(roots, &mut marked, &mut mark_stack, &mut stack_len);
-        self.mark_and_sweep(&mut marked, &mut mark_stack, &mut stack_len)
+        self.collect_garbage_multi(&[roots])
     }
 
     /// Perform garbage collection unconditionally, even if GC is disabled.
@@ -247,7 +238,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        self.with_gc(|| self.collect_garbage(roots))
+        self.collect_garbage_multi_unconditional(&[roots])
     }
 
     /// Perform garbage collection with multiple root sets.
