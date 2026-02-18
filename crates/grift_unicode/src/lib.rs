@@ -3,7 +3,7 @@
 
 //! # Grift Unicode
 //!
-//! Minimal Unicode character operations for the Grift Scheme interpreter.
+//! Minimal Unicode character operations for Grift .
 //!
 //! Provides case mapping, case folding, and character property queries
 //! without requiring `std` or `alloc`. Uses Rust's built-in Unicode-aware
@@ -35,7 +35,6 @@ impl Default for CaseMapResult {
 }
 
 impl CaseMapResult {
-
     /// Number of characters in the result.
     #[inline]
     pub fn len(&self) -> usize {
@@ -78,11 +77,7 @@ pub fn char_upcase(c: char) -> char {
     let first = iter.next().unwrap_or(c);
     // If there's a second character, this is a full (expanding) mapping.
     // For simple mapping, return the original character unchanged.
-    if iter.next().is_some() {
-        c
-    } else {
-        first
-    }
+    if iter.next().is_some() { c } else { first }
 }
 
 /// Return the simple lowercase mapping of a character.
@@ -94,11 +89,7 @@ pub fn char_upcase(c: char) -> char {
 pub fn char_downcase(c: char) -> char {
     let mut iter = c.to_lowercase();
     let first = iter.next().unwrap_or(c);
-    if iter.next().is_some() {
-        c
-    } else {
-        first
-    }
+    if iter.next().is_some() { c } else { first }
 }
 
 /// Return the simple case fold of a character.
@@ -111,7 +102,7 @@ pub fn char_foldcase(c: char) -> char {
     // Simple case folding: handles Unicode case fold mappings that differ
     // from simple lowercasing (CaseFolding.txt status 'C' and 'S').
     match c {
-        '\u{017F}' => 's',   // LATIN SMALL LETTER LONG S
+        '\u{017F}' => 's',        // LATIN SMALL LETTER LONG S
         '\u{0345}' => '\u{03B9}', // COMBINING GREEK YPOGEGRAMMENI
         '\u{03C2}' => '\u{03C3}', // GREEK SMALL LETTER FINAL SIGMA
         '\u{03D0}' => '\u{03B2}', // GREEK BETA SYMBOL

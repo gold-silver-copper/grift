@@ -602,7 +602,10 @@ fn test_set_bang_scheme_style_is_rejected() {
             x)
     "#,
     );
-    assert!(result.is_err(), "Scheme-style set! should fail (wrong syntax)");
+    assert!(
+        result.is_err(),
+        "Scheme-style set! should fail (wrong syntax). Only Kernel style is proper"
+    );
 }
 
 #[test]
@@ -1238,14 +1241,8 @@ fn test_environment_predicate() {
         lisp.eval("(environment? (make-environment))"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(environment? 42)"),
-        Ok(Value::Boolean(false))
-    );
-    assert_eq!(
-        lisp.eval("(environment? #t)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(environment? 42)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(environment? #t)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
@@ -1415,10 +1412,7 @@ fn test_tco_with_define_bang() {
 fn test_lambda_square() {
     // Lambda application
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("((lambda (x) (* x x)) 5)"),
-        Ok(Value::Number(25))
-    );
+    assert_eq!(lisp.eval("((lambda (x) (* x x)) 5)"), Ok(Value::Number(25)));
 }
 
 #[test]
@@ -1664,20 +1658,14 @@ fn test_define_ptree_symbol() {
 fn test_define_ptree_ignore() {
     // #ignore definiend — value is discarded
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(define! #ignore (+ 1 2))"),
-        Ok(Value::Inert)
-    );
+    assert_eq!(lisp.eval("(define! #ignore (+ 1 2))"), Ok(Value::Inert));
 }
 
 #[test]
 fn test_define_ptree_nil() {
     // Nil definiend matches nil value
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(define! () ())"),
-        Ok(Value::Inert)
-    );
+    assert_eq!(lisp.eval("(define! () ())"), Ok(Value::Inert));
 }
 
 #[test]
@@ -1888,7 +1876,7 @@ fn test_vau_valid_after_validation() {
         (begin
             (define! my-quote (vau (x) #ignore x))
             (symbol? (my-quote hello)))
-        "#
+        "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
 
@@ -2199,10 +2187,7 @@ fn test_variadic_pair_predicate() {
         lisp.eval("(pair? (cons 1 2) (cons 3 4))"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(pair? (cons 1 2) 3)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(pair? (cons 1 2) 3)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(pair?)"), Ok(Value::Boolean(true)));
 }
 
@@ -2221,10 +2206,7 @@ fn test_variadic_inert_predicate() {
         lisp.eval("(inert? #inert #inert)"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(inert? #inert 42)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(inert? #inert 42)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(inert?)"), Ok(Value::Boolean(true)));
 }
 
@@ -2255,10 +2237,7 @@ fn test_variadic_ignore_predicate() {
         lisp.eval("(ignore? #ignore #ignore)"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(ignore? #ignore 42)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(ignore? #ignore 42)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore?)"), Ok(Value::Boolean(true)));
 }
 
@@ -2273,10 +2252,7 @@ fn test_ignore_is_not_symbol() {
 fn test_ignore_eq() {
     // #ignore is eq? to itself (single immutable value)
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(eq? #ignore #ignore)"),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval("(eq? #ignore #ignore)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -2515,7 +2491,8 @@ fn test_define_rejects_duplicate_symbol_nested_ptree() {
     // Duplicate detection must work across nested pairs.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a (b a)) (list 1 (list 2 3)))").is_err(),
+        lisp.eval("(define! (a (b a)) (list 1 (list 2 3)))")
+            .is_err(),
         "duplicate symbol 'a' in nested ptree"
     );
 }
@@ -2583,10 +2560,7 @@ fn test_ignore_predicate_various_types() {
     assert_eq!(lisp.eval("(ignore? 0)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore? '())"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore? #inert)"), Ok(Value::Boolean(false)));
-    assert_eq!(
-        lisp.eval("(ignore? (cons 1 2))"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(ignore? (cons 1 2))"), Ok(Value::Boolean(false)));
     assert_eq!(
         lisp.eval("(ignore? (make-environment))"),
         Ok(Value::Boolean(false))
@@ -2878,10 +2852,7 @@ fn test_operative_encapsulation_no_distinction() {
         ),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(operative? if)"),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
