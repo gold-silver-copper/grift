@@ -163,30 +163,13 @@ impl core::fmt::Display for Value {
     }
 }
 
-impl From<bool> for Value {
-    #[inline]
-    fn from(b: bool) -> Self {
-        Value::Boolean(b)
-    }
+macro_rules! impl_from_value {
+    ($($ty:ty => $variant:ident),+ $(,)?) => {
+        $(impl From<$ty> for Value {
+            #[inline]
+            fn from(v: $ty) -> Self { Value::$variant(v) }
+        })+
+    };
 }
 
-impl From<isize> for Value {
-    #[inline]
-    fn from(n: isize) -> Self {
-        Value::Number(n)
-    }
-}
-
-impl From<char> for Value {
-    #[inline]
-    fn from(c: char) -> Self {
-        Value::Char(c)
-    }
-}
-
-impl From<BuiltinId> for Value {
-    #[inline]
-    fn from(id: BuiltinId) -> Self {
-        Value::Builtin(id)
-    }
-}
+impl_from_value!(bool => Boolean, isize => Number, char => Char, BuiltinId => Builtin);

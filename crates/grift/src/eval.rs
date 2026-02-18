@@ -13,12 +13,12 @@ use grift_arena::{ArenaError, ArenaIndex, ArenaResult};
 use crate::lisp::Lisp;
 use crate::value::{BuiltinId, Value};
 
-/// Convert a fallible closure into a `TailAction`: `Ok(())` → `Continue`,
-/// `Err(e)` → `Return(Err(e))`.  Eliminates the repeated match boilerplate
-/// in every TCO-aware operative.
+/// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
+/// `Err(e)` → `Return(Err(e))`.  Wraps the body in an IIFE so `?` and
+/// early `return` work naturally inside operatives.
 macro_rules! tail_continue {
     ($body:expr) => {
-        match $body {
+        match (|| -> ArenaResult<()> { $body })() {
             Ok(()) => TailAction::Continue,
             Err(e) => TailAction::Return(Err(e)),
         }
@@ -69,17 +69,11 @@ macro_rules! fold_numbers {
 macro_rules! cmp_builtin {
     ($name:ident, $op:tt) => {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let (a, b) = binary_nums!(self, args);
+            let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
+            let b = self.lisp.get(self.lisp.cadr(args)?)?.as_number()?;
             self.lisp.boolean(a $op b)
         }
     };
-}
-macro_rules! binary_nums {
-    ($self:ident, $args:ident) => {{
-        let a = $self.lisp.get($self.lisp.car($args)?)?.as_number()?;
-        let b = $self.lisp.get($self.lisp.cadr($args)?)?.as_number()?;
-        (a, b)
-    }};
 }
 
 /// Generate a pair-accessor builtin (`car` or `cdr`).
@@ -284,6 +278,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Trigger garbage collection using all known live roots.
+    #[cold]
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
         self.lisp.arena.collect_garbage(&[
             expr, env, self.ground_env, self.global_env, self.gc_roots,
@@ -475,6 +470,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     }
 
     /// Reverse a singly-linked cons-list in place by swapping cdr pointers.
+    #[inline]
     fn reverse_list(&self, mut list: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !list.is_nil() {
@@ -509,7 +505,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        tail_continue!((|| -> ArenaResult<()> {
+        tail_continue!({
             let test_expr = self.lisp.car(args)?;
             let rest = self.lisp.cdr(args)?;
             let test_val = self.eval(test_expr, *env)?;
@@ -524,7 +520,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
             };
             Ok(())
-        })())
+        })
     }
 
     /// `($define! definiend expression)` — Kernel §4.9.1.
@@ -614,7 +610,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        tail_continue!((|| -> ArenaResult<()> {
+        tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.lisp.cdr(cur)?;
@@ -628,7 +624,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             *expr = self.lisp.nil()?;
             Ok(())
-        })())
+        })
     }
 
     /// `(cond (test expr...) ...)` — tests are strict, last body expr is tail.
@@ -638,7 +634,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        tail_continue!((|| -> ArenaResult<()> {
+        tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
                 let clause = self.lisp.car(cur)?;
@@ -658,7 +654,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             *expr = self.lisp.nil()?;
             Ok(())
-        })())
+        })
     }
 
     /// `(and expr1 expr2 ...)` — strict on tests, last is tail.
@@ -689,7 +685,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         env: &mut ArenaIndex,
         continue_while_truthy: bool,
     ) -> TailAction {
-        tail_continue!((|| -> ArenaResult<()> {
+        tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.lisp.cdr(cur)?;
@@ -704,7 +700,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             *expr = self.lisp.boolean(continue_while_truthy)?;
             Ok(())
-        })())
+        })
     }
 
     /// `(let ((name val) ...) body...)` — bindings are strict, body is tail.
@@ -714,7 +710,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> TailAction {
-        tail_continue!((|| -> ArenaResult<()> {
+        tail_continue!({
             let bindings = self.lisp.car(args)?;
             let body_list = self.lisp.cdr(args)?;
 
@@ -734,7 +730,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             *env = local_env;
             *expr = self.wrap_begin(body_list)?;
             Ok(())
-        })())
+        })
     }
 
     /// `(vau params env-param body)` — create a fexpr (operative).
@@ -837,6 +833,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Wrap a list of expressions in a `begin` form if there are multiple,
     /// or return the single expression if there's only one.
+    #[inline]
     fn wrap_begin(&self, exprs: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if exprs.is_nil() {
             return self.lisp.nil();
@@ -887,7 +884,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// `(/ a b)` — integer division.
     fn builtin_div(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let (a, b) = binary_nums!(self, args);
+        let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
+        let b = self.lisp.get(self.lisp.cadr(args)?)?.as_number()?;
         if b == 0 {
             return Err(ArenaError::DivisionByZero);
         }
