@@ -228,7 +228,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// The global_env is a standard environment (child of ground).
     pub fn new(lisp: &'a Lisp<N>) -> Self {
         let ground_env = lisp
-            .make_root_env()
+            .make_env(ArenaIndex::NIL)
             .expect("failed to allocate ground environment");
         let mut eval = Evaluator {
             lisp,
@@ -412,24 +412,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         caller_env: ArenaIndex,
     ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
         let (params, env_param, body, closed_env) = self.lisp.vau_parts(func)?;
-        let op_env = self.bind_vau_params(closed_env, params, args)?;
+        let op_env = self.lisp.make_child_env(closed_env)?;
+        self.match_ptree(params, args, op_env)?;
         if !env_param.is_nil() {
             self.lisp.env_define(op_env, env_param, caller_env)?;
         }
         Ok((body, op_env))
-    }
-
-    /// Bind vau parameters to unevaluated argument expressions.
-    /// Creates a child environment of the closed-over environment.
-    fn bind_vau_params(
-        &self,
-        closed_env: ArenaIndex,
-        params: ArenaIndex,
-        arg_exprs: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        let child_env = self.lisp.make_child_env(closed_env)?;
-        self.match_ptree(params, arg_exprs, child_env)?;
-        Ok(child_env)
     }
 
     /// Recursively match a formal parameter tree `ptree` against a value `obj`
@@ -584,7 +572,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Err(ArenaError::TypeError);
             }
             // Protect the ground environment from mutation (§3.2).
-            if self.is_improper_ancestor_of_ground(target_env) {
+            if target_env == self.ground_env {
                 return Err(ArenaError::ImmutableEnvironment);
             }
 
@@ -864,15 +852,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // Utility methods
     // ================================================================
 
-    /// Check if `env` is an improper ancestor of the ground environment
-    /// (i.e., it IS the ground environment, or an ancestor of it).
-    /// Per Kernel §3.2, these environments cannot be mutated.
-    fn is_improper_ancestor_of_ground(&self, env: ArenaIndex) -> bool {
-        // The ground environment is a root environment with no parents,
-        // so its only improper ancestor is itself.
-        env == self.ground_env
-    }
-
     /// Wrap a list of expressions in a `begin` form if there are multiple,
     /// or return the single expression if there's only one.
     fn wrap_begin(&self, exprs: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -1083,12 +1062,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
         // Copy the parents list so it's independent of the original.
         let parents = self.copy_list(args)?;
-        self.lisp.make_env_with_parents(parents)
+        self.lisp.make_env(parents)
     }
 
     /// `(make-empty-environment)` — always creates a parentless environment.
     fn builtin_make_empty_env(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.lisp.make_env_with_parents(ArenaIndex::NIL)
+        self.lisp.make_env(ArenaIndex::NIL)
     }
 
     type_predicate!(builtin_environmentp, Value::Environment { .. });
@@ -1100,8 +1079,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             return Ok(ArenaIndex::NIL);
         }
         let head = self.lisp.car(list)?;
-        let rest = self.lisp.cdr(list)?;
-        let copied_rest = self.copy_list(rest)?;
-        self.lisp.cons(head, copied_rest)
+        let tail = self.copy_list(self.lisp.cdr(list)?)?;
+        self.lisp.cons(head, tail)
     }
 }
