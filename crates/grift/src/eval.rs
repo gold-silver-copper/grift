@@ -203,8 +203,6 @@ define_builtins! {
         "gc-enable"  => bi_gc_enable  => builtin_gc_enable,
         "gc-disable" => bi_gc_disable => builtin_gc_disable,
         "gc-enabled?" => bi_gc_enabledp => builtin_gc_enabledp,
-        "set-gc-frequency!" => bi_set_gc_freq => builtin_set_gc_frequency,
-        "gc-frequency" => bi_gc_freq => builtin_gc_frequency,
     }
 }
 
@@ -304,18 +302,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `Operative` (compound fexpr), `Applicative` (wrapper that evals args),
     /// and `Builtin` (primitive operative).
     ///
-    /// Garbage collection is triggered in two ways:
-    /// 1. **Proactive**: when `gc_frequency` is set and the allocation counter
-    ///    reaches the threshold, GC is run before the next eval step.
-    /// 2. **Reactive**: on allocation failure (OOM), the evaluator restores
-    ///    the GC root stack, collects garbage, and retries.
+    /// Garbage collection is triggered only on allocation failure (OOM):
+    /// when any operation returns `OutOfMemory`, the evaluator restores
+    /// the GC root stack, collects garbage, and retries.
     pub fn eval(&mut self, mut expr: ArenaIndex, mut env: ArenaIndex) -> ArenaResult<ArenaIndex> {
         loop {
-            // Proactive GC: collect if allocation counter reached the frequency threshold
-            if self.lisp.arena.should_collect() {
-                self.collect_garbage(expr, env);
-            }
-
             let saved_gc_roots = self.gc_roots;
             match self.eval_step(&mut expr, &mut env) {
                 Ok(Some(result)) => return Ok(result),
@@ -1108,23 +1099,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(gc-enabled?)` — check if automatic GC is enabled.
     fn builtin_gc_enabledp(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.lisp.boolean(self.lisp.arena.is_gc_enabled())
-    }
-
-    /// `(set-gc-frequency! n)` — set how many allocations between proactive GC runs.
-    /// A value of 0 disables proactive GC (only OOM-triggered).
-    /// Returns `#inert`.
-    fn builtin_set_gc_frequency(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let n = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
-        if n < 0 {
-            return Err(ArenaError::InvalidArgument);
-        }
-        self.lisp.arena.set_gc_frequency(n as usize);
-        self.lisp.inert()
-    }
-
-    /// `(gc-frequency)` — return the current GC frequency setting.
-    fn builtin_gc_frequency(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.lisp.number(self.lisp.arena.gc_frequency() as isize)
     }
 
     /// Copy a cons-list into fresh cons cells (iterative).
