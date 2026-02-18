@@ -401,6 +401,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Common operative invocation: destructure, bind params, optionally bind caller env.
     /// Returns `(body, operative_env)` for tail-call or direct eval.
+    #[inline]
     fn invoke_operative(
         &self,
         func: ArenaIndex,
@@ -1045,13 +1046,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     type_predicate!(builtin_environmentp, Value::Environment { .. });
     type_predicate!(builtin_ignorep, Value::Ignore);
 
-    /// Copy a cons-list into fresh cons cells.
+    /// Copy a cons-list into fresh cons cells (iterative).
     fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if list.is_nil() {
-            return Ok(ArenaIndex::NIL);
+        let mut cur = list;
+        let mut reversed = ArenaIndex::NIL;
+        while !cur.is_nil() {
+            let head = self.lisp.car(cur)?;
+            reversed = self.lisp.cons(head, reversed)?;
+            cur = self.lisp.cdr(cur)?;
         }
-        let head = self.lisp.car(list)?;
-        let tail = self.copy_list(self.lisp.cdr(list)?)?;
-        self.lisp.cons(head, tail)
+        self.reverse_list(reversed)
     }
 }
