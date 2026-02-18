@@ -145,6 +145,27 @@ impl<const N: usize> Lisp<N> {
             })
     }
 
+    /// Compare two arena-allocated `String` values by their character data.
+    pub(crate) fn strings_equal(
+        &self,
+        len_a: usize,
+        data_a: ArenaIndex,
+        len_b: usize,
+        data_b: ArenaIndex,
+    ) -> ArenaResult<bool> {
+        if len_a != len_b {
+            return Ok(false);
+        }
+        for i in 0..len_a {
+            let ia = self.arena.index_at_offset(data_a, i)?;
+            let ib = self.arena.index_at_offset(data_b, i)?;
+            if self.arena.get(ia)? != self.arena.get(ib)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Returns true if the symbol at `idx` has the given name.
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
         self.arena
