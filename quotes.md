@@ -3,3 +3,9 @@
 Axis of Eval
 
 leaving only the 25 special forms defined by Common Lisp. (Scheme manages with seven or eight, nyah nyah.)
+
+May John's Environment in Heaven have a sound beta rule reduction and he get to meet his vau the ultimate creator.
+
+Thank you for disagreeing. The relative complexity of macros vs fexpr is interesting and your reply uncovered unspoken assumptions in my thinking.
+
+First class environments being another thing sacrificed on the alter of performance decades ago.
