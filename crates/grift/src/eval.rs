@@ -165,6 +165,7 @@ define_builtins! {
         "quote"  => op_quote  => op_quote,
         "if"     => op_if     => op_if,
         "define!" => op_define => op_define,
+        "set!"   => op_set    => op_set,
         "lambda" => op_lambda => op_lambda,
         "begin"  => op_begin  => op_begin,
         "cond"   => op_cond   => op_cond,
@@ -211,6 +212,12 @@ define_builtins! {
 /// The evaluator state.
 pub(crate) struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
+    /// The ground environment containing all builtins. This environment
+    /// is immutable per Kernel §3.2: programs cannot capture or mutate
+    /// any improper ancestor of the ground environment.
+    ground_env: ArenaIndex,
+    /// The standard environment — a child of the ground environment —
+    /// where top-level expressions are evaluated (Kernel §3.2).
     pub global_env: ArenaIndex,
     /// Shadow stack of GC roots stored as a linked list of cons cells in
     /// the arena.
@@ -218,21 +225,27 @@ pub(crate) struct Evaluator<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
-    /// Create a new evaluator with operatives bound in the global environment.
+    /// Create a new evaluator with operatives bound in the ground environment.
+    /// The global_env is a standard environment (child of ground).
     pub fn new(lisp: &'a Lisp<N>) -> Self {
-        let global_env = lisp
+        let ground_env = lisp
             .make_root_env()
-            .expect("failed to allocate global environment");
+            .expect("failed to allocate ground environment");
         let mut eval = Evaluator {
             lisp,
-            global_env,
+            ground_env,
+            global_env: ArenaIndex::NIL,
             gc_roots: ArenaIndex::NIL,
         };
         eval.init_builtins();
+        // Create the standard environment as a child of the ground environment.
+        eval.global_env = lisp
+            .make_child_env(ground_env)
+            .expect("failed to allocate standard environment");
         eval
     }
 
-    /// Bind a builtin in the environment. If `wrap` is true, wraps it as an applicative.
+    /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.
     fn bind_builtin(&mut self, name: &str, id: BuiltinId, wrap: bool) {
         let Ok(sym) = self.lisp.symbol(name) else {
             return;
@@ -246,7 +259,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             };
             val = wrapped;
         }
-        let _ = self.lisp.env_define(self.global_env, sym, val);
+        let _ = self.lisp.env_define(self.ground_env, sym, val);
     }
 
     /// Push a value onto the GC root stack so it survives collection.
@@ -275,7 +288,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
         self.lisp
             .arena
-            .collect_garbage(&[expr, env, self.global_env, self.gc_roots]);
+            .collect_garbage(&[expr, env, self.ground_env, self.global_env, self.gc_roots]);
     }
 
     /// Check arena memory pressure and collect garbage if needed.
@@ -523,6 +536,9 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Evaluates `expression` in the dynamic environment and matches `definiend`
     /// (a formal parameter tree) to the result, binding symbols in the dynamic
     /// environment.  Returns `#inert`.
+    ///
+    /// Per Kernel §3.2, mutation of the ground environment or its ancestors
+    /// is forbidden.
     fn op_define(
         &mut self,
         args: ArenaIndex,
@@ -530,11 +546,50 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         env: &mut ArenaIndex,
     ) -> TailAction {
         TailAction::non_tail((|| {
+            // Protect the ground environment from mutation.
+            if *env == self.ground_env {
+                return Err(ArenaError::ImmutableEnvironment);
+            }
             let definiend = self.lisp.car(args)?;
             self.validate_ptree(definiend)?;
             let val_expr = self.lisp.cadr(args)?;
             let val = self.eval(val_expr, *env)?;
             self.match_ptree(definiend, val, *env)?;
+            self.lisp.inert()
+        })())
+    }
+
+    /// `($set! env definiend expression)` — Kernel §4.9.1.
+    ///
+    /// Evaluates `env` and `expression` in the dynamic environment, then
+    /// mutates the existing binding of each symbol in `definiend` within
+    /// the evaluated environment.  Per §3.1, this constitutes a mutation
+    /// of the environment containing the reference.  Returns `#inert`.
+    fn op_set(
+        &mut self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::non_tail((|| {
+            let env_expr = self.lisp.car(args)?;
+            let rest = self.lisp.cdr(args)?;
+            let definiend = self.lisp.car(rest)?;
+            let val_expr = self.lisp.cadr(rest)?;
+
+            let target_env = self.eval(env_expr, *env)?;
+            // Validate target is an environment.
+            if !matches!(self.lisp.get(target_env)?, Value::Environment { .. }) {
+                return Err(ArenaError::TypeError);
+            }
+            // Protect the ground environment from mutation (§3.2).
+            if self.is_improper_ancestor_of_ground(target_env) {
+                return Err(ArenaError::ImmutableEnvironment);
+            }
+
+            self.validate_ptree(definiend)?;
+            let val = self.eval(val_expr, *env)?;
+            self.set_ptree(definiend, val, target_env)?;
             self.lisp.inert()
         })())
     }
@@ -807,6 +862,47 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     // ================================================================
     // Utility methods
     // ================================================================
+
+    /// Check if `env` is an improper ancestor of the ground environment
+    /// (i.e., it IS the ground environment, or an ancestor of it).
+    /// Per Kernel §3.2, these environments cannot be mutated.
+    fn is_improper_ancestor_of_ground(&self, env: ArenaIndex) -> bool {
+        // The ground environment is a root environment with no parents,
+        // so its only improper ancestor is itself.
+        env == self.ground_env
+    }
+
+    /// Recursively match a formal parameter tree `ptree` against a value `obj`,
+    /// setting (mutating) existing bindings in the environment `env`.
+    /// Used by `$set!` (Kernel §4.9.1).
+    fn set_ptree(
+        &self,
+        ptree: ArenaIndex,
+        obj: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<()> {
+        if ptree.is_nil() {
+            if obj.is_nil() {
+                return Ok(());
+            }
+            return Err(ArenaError::TypeError);
+        }
+        match self.lisp.get(ptree)? {
+            Value::Ignore => Ok(()),
+            Value::Symbol(_) => {
+                self.lisp.env_set(env, ptree, obj, self.ground_env)
+            }
+            Value::Cons {
+                car: ptree_car,
+                cdr: ptree_cdr,
+            } => {
+                let (obj_car, obj_cdr) = self.lisp.get(obj)?.as_cons()?;
+                self.set_ptree(ptree_car, obj_car, env)?;
+                self.set_ptree(ptree_cdr, obj_cdr, env)
+            }
+            _ => Err(ArenaError::TypeError),
+        }
+    }
 
     /// Wrap a list of expressions in a `begin` form if there are multiple,
     /// or return the single expression if there's only one.

@@ -590,8 +590,9 @@ fn test_tco_begin_tail_position() {
 // ============================================================================
 
 #[test]
-fn test_set_bang_is_rejected() {
-    // set! has been removed; using it should fail (unbound variable).
+fn test_set_bang_scheme_style_is_rejected() {
+    // Scheme-style (set! x 2) is not valid Kernel syntax;
+    // Kernel's $set! requires an environment argument: (set! env definiend expr).
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -601,7 +602,7 @@ fn test_set_bang_is_rejected() {
             x)
     "#,
     );
-    assert!(result.is_err(), "set! should not be recognized");
+    assert!(result.is_err(), "Scheme-style set! should fail (wrong syntax)");
 }
 
 #[test]
@@ -2609,5 +2610,278 @@ fn test_multi_parent_first_parent_wins() {
             "#
         ),
         Ok(Value::Number(10))
+    );
+}
+
+// ============================================================================
+// Kernel §3.1 — References and Mutation ($set!)
+// ============================================================================
+
+#[test]
+fn test_set_bang_basic() {
+    // $set! mutates an existing binding in the specified environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! x 1)
+                (set! (get-env) x 2)
+                x)
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_set_bang_returns_inert() {
+    // $set! returns #inert per Kernel spec.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! x 1)
+                (inert? (set! (get-env) x 42)))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_set_bang_unbound_variable() {
+    // $set! signals an error if the variable is not bound.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define! get-env (vau () e e))
+            (set! (get-env) y 42))
+        "#,
+    );
+    assert_eq!(result, Err(ArenaError::UnboundVariable));
+}
+
+#[test]
+fn test_set_bang_in_child_env() {
+    // $set! walks up the parent chain to find the binding.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! x 1)
+                (define! update-x
+                    (lambda ()
+                        (define! get-env (vau () e e))
+                        (set! (get-env) x 2)))
+                (update-x)
+                x)
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_set_bang_mutation_visible_to_closures() {
+    // §3.1: After mutation, subsequent lookups see the new value.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! x 1)
+                (define! get-x (lambda () x))
+                (set! (get-env) x 42)
+                (get-x))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_set_bang_ptree_destructuring() {
+    // $set! supports formal parameter tree destructuring.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! a 1)
+                (define! b 2)
+                (set! (get-env) (a b) (list 10 20))
+                (+ a b))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+}
+
+#[test]
+fn test_set_bang_requires_environment() {
+    // $set! requires the first argument to evaluate to an environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define! x 1)
+            (set! 42 x 2))
+        "#,
+    );
+    assert_eq!(result, Err(ArenaError::TypeError));
+}
+
+// ============================================================================
+// Kernel §3.2 — Ground Environment Protection
+// ============================================================================
+
+#[test]
+fn test_standard_env_is_child_of_ground() {
+    // The standard environment inherits all builtins from the ground.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
+    assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_define_in_standard_env_does_not_affect_ground() {
+    // Defining in the standard env should not affect the ground env.
+    // A new standard env (fresh lisp.eval call) should not see the binding.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(begin (define! x 42) x)"), Ok(Value::Number(42)));
+    assert_eq!(lisp.eval("x"), Err(ArenaError::UnboundVariable));
+}
+
+#[test]
+fn test_set_bang_on_ground_env_rejected() {
+    // $set! should reject mutation of the ground environment.
+    // Builtins live in the ground env, so trying to mutate them
+    // via $set! should fail with ImmutableEnvironment.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(
+        r#"
+        (begin
+            (define! get-env (vau () e e))
+            (set! (get-env) + 42))
+        "#,
+    );
+    assert_eq!(result, Err(ArenaError::ImmutableEnvironment));
+}
+
+// ============================================================================
+// Kernel §3.3 — Evaluator Semantics
+// ============================================================================
+
+#[test]
+fn test_evaluator_self_evaluating() {
+    // Step 1: If o isn't a symbol and isn't a pair, return o.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("42"), Ok(Value::Number(42)));
+    assert_eq!(lisp.eval("#t"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("#f"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("#inert"), Ok(Value::Inert));
+}
+
+#[test]
+fn test_evaluator_symbol_unbound_error() {
+    // Step 2 error: If symbol is not bound, signal an error.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("nonexistent"), Err(ArenaError::UnboundVariable));
+}
+
+#[test]
+fn test_evaluator_not_callable_error() {
+    // Step 3 error: If f is neither applicative nor operative, error.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(42 1 2)"), Err(ArenaError::NotCallable));
+}
+
+// ============================================================================
+// Kernel §3.4 — Type Encapsulation
+// ============================================================================
+
+#[test]
+fn test_operative_encapsulation_no_distinction() {
+    // §3.4: operative? cannot distinguish compound from primitive operatives.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! my-op (vau (x) #ignore x))
+                (operative? my-op))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(operative? if)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_operative_static_env_not_extractable() {
+    // §3.4: No feature allows extracting the static environment
+    // of a compound operative. Closures with local state demonstrate
+    // that only the operative itself can access its closed-over env.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! make-counter
+                    (lambda ()
+                        (define! get-env (vau () e e))
+                        (define! counter-env (get-env))
+                        (define! count 0)
+                        (lambda ()
+                            (define! get-env2 (vau () e e))
+                            (set! (get-env2) count (+ count 1))
+                            count)))
+                (define! counter (make-counter))
+                (counter)
+                (counter)
+                (counter))
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
+
+#[test]
+fn test_set_bang_enables_mutable_state() {
+    // §3.1: References can be set after creation, enabling mutable state.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! make-box
+                    (lambda (init)
+                        (define! val init)
+                        (define! get-env (vau () e e))
+                        (define! env (get-env))
+                        (list
+                            (lambda () val)
+                            (lambda (new-val)
+                                (set! env val new-val)))))
+                (define! box (make-box 0))
+                (define! get-val (car box))
+                (define! set-val (car (cdr box)))
+                (set-val 42)
+                (get-val))
+            "#
+        ),
+        Ok(Value::Number(42))
     );
 }

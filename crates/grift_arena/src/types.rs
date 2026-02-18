@@ -126,6 +126,9 @@ pub enum ArenaError {
 
     /// Attempted to call a value that is not a function (lambda or builtin).
     NotCallable,
+
+    /// Attempted to mutate an immutable environment (e.g., the ground environment).
+    ImmutableEnvironment,
 }
 
 impl ArenaError {
@@ -144,6 +147,7 @@ impl ArenaError {
             ArenaError::DivisionByZero => "Division by zero",
             ArenaError::UnboundVariable => "Unbound variable",
             ArenaError::NotCallable => "Not callable",
+            ArenaError::ImmutableEnvironment => "Attempt to mutate immutable environment",
         }
     }
 
