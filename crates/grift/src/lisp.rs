@@ -218,11 +218,12 @@ impl<const N: usize> Lisp<N> {
 
     // — Environment operations —
 
-    /// Create a root (top-level) environment with no parent.
-    pub(crate) fn make_root_env(&self) -> ArenaResult<ArenaIndex> {
+    /// Create a new environment with a parents list (cons-list of parent
+    /// environments, or NIL for a root environment).
+    pub(crate) fn make_env(&self, parents: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(Value::Environment {
             bindings: ArenaIndex::NIL,
-            parents: ArenaIndex::NIL,
+            parents,
         })
     }
 
@@ -233,22 +234,7 @@ impl<const N: usize> Lisp<N> {
         } else {
             self.cons(parent, ArenaIndex::NIL)?
         };
-        self.arena.alloc(Value::Environment {
-            bindings: ArenaIndex::NIL,
-            parents,
-        })
-    }
-
-    /// Create a new environment with a list of parent environments.
-    /// `parents_list` is a cons-list of environment indices.
-    pub(crate) fn make_env_with_parents(
-        &self,
-        parents_list: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Environment {
-            bindings: ArenaIndex::NIL,
-            parents: parents_list,
-        })
+        self.make_env(parents)
     }
 
     /// Define a binding in an environment (mutates in place via arena.set).

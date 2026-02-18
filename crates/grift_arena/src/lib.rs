@@ -55,9 +55,6 @@
 
 // — Module Declarations —
 
-// Macros module (must be declared before other modules that use the macros)
-mod macros;
-
 pub mod types;
 pub mod traits;
 pub mod stats;

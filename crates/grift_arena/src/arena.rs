@@ -1,16 +1,12 @@
 //! Core arena allocator implementation.
 //!
 //! This module contains the main [`Arena`] struct and its core operations.
-//!
-//! Note: The `impl_get_contiguous!` and `impl_set_contiguous!` macros have been
-//! moved to `src/macros.rs`.
 
 use core::cell::Cell;
 
 use crate::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, ArenaDelete, ArenaCopy};
 use crate::types::{Slot, FREE_LIST_END};
 use crate::iter::ArenaIterator;
-use crate::macros::{const_max, impl_get_contiguous, impl_set_contiguous};
 
 /// Fixed-size arena allocator with O(1) allocation.
 ///
@@ -319,22 +315,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     pub fn try_get(&self, index: ArenaIndex) -> Option<T> {
         self.get(index).ok()
     }
-    
-    // — Batch read/write operations for contiguous values —
-    
-    impl_get_contiguous!(get_contiguous2, [0 => a, 1 => b]);
-    impl_get_contiguous!(get_contiguous3, [0 => a, 1 => b, 2 => c]);
-    impl_get_contiguous!(get_contiguous4, [0 => a, 1 => b, 2 => c, 3 => d]);
-    impl_get_contiguous!(get_contiguous5, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e]);
-    impl_get_contiguous!(get_contiguous6, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f]);
-    impl_get_contiguous!(get_contiguous7, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g]);
-    
-    impl_set_contiguous!(set_contiguous2, [0 => a, 1 => b]);
-    impl_set_contiguous!(set_contiguous3, [0 => a, 1 => b, 2 => c]);
-    impl_set_contiguous!(set_contiguous4, [0 => a, 1 => b, 2 => c, 3 => d]);
-    impl_set_contiguous!(set_contiguous5, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e]);
-    impl_set_contiguous!(set_contiguous6, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f]);
-    impl_set_contiguous!(set_contiguous7, [0 => a, 1 => b, 2 => c, 3 => d, 4 => e, 5 => f, 6 => g]);
 
     /// Swap the values at two indices.
     ///
