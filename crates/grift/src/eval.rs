@@ -285,9 +285,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Trigger garbage collection using all known live roots.
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
-        self.lisp
-            .arena
-            .collect_garbage(&[expr, env, self.ground_env, self.global_env, self.gc_roots]);
+        self.lisp.arena.collect_garbage(&[
+            expr, env, self.ground_env, self.global_env, self.gc_roots,
+            self.lisp.true_idx, self.lisp.false_idx,
+            self.lisp.inert_idx, self.lisp.ignore_idx,
+        ]);
     }
 
     /// Check arena memory pressure and collect garbage if needed.
@@ -309,13 +311,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         loop {
             self.maybe_collect(expr, env);
 
-            let val = self.lisp.get(expr)?;
-
-            if val.is_self_evaluating() {
-                return Ok(expr);
-            }
-
-            match val {
+            match self.lisp.get(expr)? {
                 Value::Symbol(_) => {
                     return self.lisp.env_lookup(env, expr);
                 }
@@ -378,7 +374,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                     }
                 }
 
-                _ => unreachable!(),
+                _ => return Ok(expr), // self-evaluating: literals, closures, builtins,
             }
         }
     }
@@ -405,6 +401,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Common operative invocation: destructure, bind params, optionally bind caller env.
     /// Returns `(body, operative_env)` for tail-call or direct eval.
+    #[inline]
     fn invoke_operative(
         &self,
         func: ArenaIndex,
@@ -458,25 +455,37 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         }
     }
 
-    /// Evaluate all arguments in a list.
+    /// Evaluate all arguments in a list (iterative with in-place reversal).
     fn eval_args(&mut self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if args.is_nil() {
-            return self.lisp.nil();
+        // Build result in reverse order to avoid O(n) Rust stack depth.
+        let mut cur = args;
+        let mut reversed = ArenaIndex::NIL;
+        while !cur.is_nil() {
+            let head_expr = self.lisp.car(cur)?;
+            self.push_root(reversed);
+            self.push_root(env);
+            self.push_root(cur);
+            let head_val = self.eval(head_expr, env)?;
+            self.pop_roots(3);
+            reversed = self.lisp.cons(head_val, reversed)?;
+            cur = self.lisp.cdr(cur)?;
         }
-        self.push_root(args);
-        self.push_root(env);
+        // Reverse in place — all cons cells are freshly allocated by us.
+        self.reverse_list(reversed)
+    }
 
-        let head_expr = self.lisp.car(args)?;
-        let head_val = self.eval(head_expr, env)?;
-
-        self.push_root(head_val);
-
-        let tail = self.lisp.cdr(args)?;
-        let tail_vals = self.eval_args(tail, env)?;
-
-        self.pop_roots(3);
-
-        self.lisp.cons(head_val, tail_vals)
+    /// Reverse a singly-linked cons-list in place by swapping cdr pointers.
+    fn reverse_list(&self, mut list: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let mut prev = ArenaIndex::NIL;
+        while !list.is_nil() {
+            let Value::Cons { car, cdr } = self.lisp.get(list)? else {
+                return Err(ArenaError::TypeError);
+            };
+            self.lisp.arena.set(list, Value::Cons { car, cdr: prev })?;
+            prev = list;
+            list = cdr;
+        }
+        Ok(prev)
     }
 
     // ================================================================
@@ -747,15 +756,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let body_list = self.lisp.cdr(self.lisp.cdr(args)?)?;
             let body = self.wrap_begin(body_list)?;
 
-            // Validate formals parameter tree.
-            self.validate_ptree(params)?;
+            // Validate formals parameter tree and collect seen symbols.
+            let seen_syms = self.validate_ptree(params)?;
 
             // Validate env-param: must be a symbol or #ignore.
             let ep = match self.lisp.get(env_param)? {
                 Value::Ignore => ArenaIndex::NIL,
                 Value::Symbol(_) => {
                     // env-param symbol must not also occur in formals.
-                    if self.ptree_contains_symbol(params, env_param)? {
+                    if self.lisp.list_contains(seen_syms, env_param) {
                         return Err(ArenaError::InvalidArgument);
                     }
                     env_param
@@ -776,9 +785,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ///
     /// Additionally, the tree must be acyclic and no symbol may occur
     /// more than once.
-    fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<()> {
+    ///
+    /// Returns the cons-list of symbols found in the tree (for use by
+    /// callers that need to check membership, e.g. `op_vau`).
+    fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.validate_ptree_inner(ptree, ArenaIndex::NIL, ArenaIndex::NIL)
-            .map(|_| ())
     }
 
     /// Recursive helper for `validate_ptree`.
@@ -817,34 +828,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.validate_ptree_inner(ptree_cdr, new_visited, seen_syms)
             }
             _ => Err(ArenaError::TypeError),
-        }
-    }
-
-    /// Check whether the symbol at `sym` occurs anywhere in the formal
-    /// parameter tree `ptree`.
-    fn ptree_contains_symbol(
-        &self,
-        ptree: ArenaIndex,
-        sym: ArenaIndex,
-    ) -> ArenaResult<bool> {
-        if ptree.is_nil() {
-            return Ok(false);
-        }
-        match self.lisp.get(ptree)? {
-            Value::Ignore => Ok(false),
-            Value::Symbol(_) => {
-                Ok(ptree == sym)
-            }
-            Value::Cons {
-                car: ptree_car,
-                cdr: ptree_cdr,
-            } => {
-                if self.ptree_contains_symbol(ptree_car, sym)? {
-                    return Ok(true);
-                }
-                self.ptree_contains_symbol(ptree_cdr, sym)
-            }
-            _ => Ok(false),
         }
     }
 
@@ -993,17 +976,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             }
             // Strings: compare character-by-character.
             (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
-                if la != lb {
-                    return Ok(false);
-                }
-                for i in 0..la {
-                    let ia = self.lisp.arena.index_at_offset(da, i)?;
-                    let ib = self.lisp.arena.index_at_offset(db, i)?;
-                    if self.lisp.get(ia)? != self.lisp.get(ib)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+                self.lisp.strings_equal(la, da, lb, db)
             }
             // Environments: eq? only (identity-based).
             // Different environments are never equal? unless eq?.
@@ -1073,13 +1046,15 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     type_predicate!(builtin_environmentp, Value::Environment { .. });
     type_predicate!(builtin_ignorep, Value::Ignore);
 
-    /// Copy a cons-list into fresh cons cells.
+    /// Copy a cons-list into fresh cons cells (iterative).
     fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if list.is_nil() {
-            return Ok(ArenaIndex::NIL);
+        let mut cur = list;
+        let mut reversed = ArenaIndex::NIL;
+        while !cur.is_nil() {
+            let head = self.lisp.car(cur)?;
+            reversed = self.lisp.cons(head, reversed)?;
+            cur = self.lisp.cdr(cur)?;
         }
-        let head = self.lisp.car(list)?;
-        let tail = self.copy_list(self.lisp.cdr(list)?)?;
-        self.lisp.cons(head, tail)
+        self.reverse_list(reversed)
     }
 }
