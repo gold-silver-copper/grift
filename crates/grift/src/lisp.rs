@@ -272,20 +272,52 @@ impl<const N: usize> Lisp<N> {
         )
     }
 
-    /// Look up a symbol in an environment using depth-first search
-    /// through the parent chain.  Each parent is visited at most once
-    /// (cycle detection via a visited list) so cyclic parent graphs
-    /// terminate.
+    /// Look up a symbol in an environment.
+    ///
+    /// Fast path: walks single-parent chains with zero arena allocation.
+    /// Falls back to DFS with cycle detection only for multi-parent
+    /// environments (created by `make-environment`).
+    #[inline]
     pub(crate) fn env_lookup(
         &self,
         env: ArenaIndex,
         name: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        self.env_lookup_dfs(env, name, ArenaIndex::NIL)
+        let mut cur = env;
+        while !cur.is_nil() {
+            let Value::Environment { bindings, parents } = self.arena.get(cur)? else {
+                return Err(ArenaError::TypeError);
+            };
+
+            // Search local bindings.
+            let mut b = bindings;
+            while !b.is_nil() {
+                let binding = self.car(b)?;
+                if self.car(binding)? == name {
+                    return self.cdr(binding);
+                }
+                b = self.cdr(b)?;
+            }
+
+            // Single parent → follow directly (no allocation needed).
+            if parents.is_nil() {
+                break;
+            }
+            let first_parent = self.car(parents)?;
+            let rest = self.cdr(parents)?;
+            if rest.is_nil() {
+                cur = first_parent;
+                continue;
+            }
+
+            // Multi-parent: fall back to DFS with cycle detection.
+            return self.env_lookup_dfs_parents(parents, name, ArenaIndex::NIL);
+        }
+        Err(ArenaError::UnboundVariable)
     }
 
     /// Depth-first lookup with a visited-set (cons-list of env indices
-    /// already searched).
+    /// already searched).  Only used for multi-parent environments.
     fn env_lookup_dfs(
         &self,
         env: ArenaIndex,
@@ -315,21 +347,28 @@ impl<const N: usize> Lisp<N> {
             cur = self.cdr(cur)?;
         }
 
-        // Mark this env as visited.
+        // Mark this env as visited, then search parents.
         let new_visited = self.cons(env, visited)?;
+        self.env_lookup_dfs_parents(parents, name, new_visited)
+    }
 
-        // Depth-first search through parents list.
+    /// Search a list of parent environments via DFS.
+    fn env_lookup_dfs_parents(
+        &self,
+        parents: ArenaIndex,
+        name: ArenaIndex,
+        visited: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         let mut parent_cur = parents;
         while !parent_cur.is_nil() {
             let parent_env = self.car(parent_cur)?;
-            match self.env_lookup_dfs(parent_env, name, new_visited) {
+            match self.env_lookup_dfs(parent_env, name, visited) {
                 Ok(val) => return Ok(val),
                 Err(ArenaError::UnboundVariable) => {}
                 Err(e) => return Err(e),
             }
             parent_cur = self.cdr(parent_cur)?;
         }
-
         Err(ArenaError::UnboundVariable)
     }
 
