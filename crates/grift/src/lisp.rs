@@ -432,7 +432,19 @@ impl<const N: usize> Lisp<N> {
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
         let mut parser = Parser::new(input);
         let expr = parser.parse(self)?;
-        let mut evaluator = Evaluator::new(self);
+        let mut evaluator = match Evaluator::new(self) {
+            Ok(e) => e,
+            Err(ArenaError::OutOfMemory) => {
+                // Collect garbage keeping only singletons and the parsed expression,
+                // then retry evaluator creation.
+                self.arena.collect_garbage(&[
+                    self.true_idx, self.false_idx,
+                    self.inert_idx, self.ignore_idx, expr,
+                ]);
+                Evaluator::new(self)?
+            }
+            Err(e) => return Err(e),
+        };
         let result_idx = evaluator.eval(expr, evaluator.global_env)?;
         self.arena.get(result_idx)
     }

@@ -2911,3 +2911,106 @@ fn test_set_bang_enables_mutable_state() {
         Ok(Value::Number(42))
     );
 }
+
+// ============================================================================
+// GC Control Builtin Tests
+// ============================================================================
+
+#[test]
+fn test_gc_collect_returns_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval("(gc-collect)");
+    // gc-collect returns the number of objects collected
+    match result {
+        Ok(Value::Number(n)) => assert!(n >= 0, "gc-collect should return non-negative number"),
+        other => panic!("gc-collect should return a number, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_gc_enabled_default() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(gc-enabled?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_gc_disable_then_check() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(begin (gc-disable) (gc-enabled?))"),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_gc_enable_after_disable() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(begin (gc-disable) (gc-enable) (gc-enabled?))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_gc_disable_returns_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(gc-disable)"), Ok(Value::Inert));
+}
+
+#[test]
+fn test_gc_enable_returns_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(gc-enable)"), Ok(Value::Inert));
+}
+
+#[test]
+fn test_gc_collect_with_garbage() {
+    // Create garbage by allocating values that become unreachable,
+    // then verify gc-collect reclaims them.
+    let lisp: Lisp<20000> = Lisp::new();
+    // First eval creates garbage (evaluator, builtins, etc.)
+    lisp.eval("(+ 1 2)").unwrap();
+    // gc-collect should reclaim at least something from the previous eval
+    let result = lisp.eval("(gc-collect)");
+    match result {
+        Ok(Value::Number(n)) => assert!(n > 0, "gc-collect should reclaim garbage, collected: {}", n),
+        other => panic!("gc-collect should return a number, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_gc_disable_persists_across_evals() {
+    // gc-disable modifies the arena state, which persists across eval calls
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.eval("(gc-disable)").unwrap();
+    assert_eq!(lisp.eval("(gc-enabled?)"), Ok(Value::Boolean(false)));
+    // Re-enable for cleanup
+    lisp.eval("(gc-enable)").unwrap();
+    assert_eq!(lisp.eval("(gc-enabled?)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_gc_collect_manual_always_works() {
+    // gc-collect should work even when automatic GC is disabled
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.eval("(+ 1 2)").unwrap(); // create some garbage
+    let result = lisp.eval("(begin (gc-disable) (gc-collect))");
+    match result {
+        Ok(Value::Number(n)) => assert!(n >= 0, "manual gc-collect should work when disabled"),
+        other => panic!("gc-collect should return a number, got: {:?}", other),
+    }
+    // Re-enable
+    lisp.eval("(gc-enable)").unwrap();
+}
+
+#[test]
+fn test_gc_oom_triggers_collection() {
+    // Use a small arena so OOM-triggered GC is exercised.
+    // Repeated evaluations should succeed because GC reclaims garbage on OOM.
+    let lisp: Lisp<5000> = Lisp::new();
+    for i in 0..30 {
+        let result = lisp.eval("(+ 1 2)");
+        assert_eq!(result, Ok(Value::Number(3)),
+            "eval iteration {} should succeed (OOM-triggered GC should reclaim garbage)", i);
+    }
+}
