@@ -285,9 +285,11 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
     /// Trigger garbage collection using all known live roots.
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) {
-        self.lisp
-            .arena
-            .collect_garbage(&[expr, env, self.ground_env, self.global_env, self.gc_roots]);
+        self.lisp.arena.collect_garbage(&[
+            expr, env, self.ground_env, self.global_env, self.gc_roots,
+            self.lisp.true_idx, self.lisp.false_idx,
+            self.lisp.inert_idx, self.lisp.ignore_idx,
+        ]);
     }
 
     /// Check arena memory pressure and collect garbage if needed.

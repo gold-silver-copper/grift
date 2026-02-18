@@ -21,6 +21,14 @@ use crate::eval::Evaluator;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
+    /// Pre-allocated `#t` — avoids a fresh allocation on every boolean result.
+    pub(crate) true_idx: ArenaIndex,
+    /// Pre-allocated `#f`.
+    pub(crate) false_idx: ArenaIndex,
+    /// Pre-allocated `#inert`.
+    pub(crate) inert_idx: ArenaIndex,
+    /// Pre-allocated `#ignore`.
+    pub(crate) ignore_idx: ArenaIndex,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -32,11 +40,16 @@ impl<const N: usize> Default for Lisp<N> {
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp interpreter with an empty arena.
     ///
-    /// Slot 0 is pre-allocated as `Value::Nil`.
+    /// Slots 0–4 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`, and
+    /// `#ignore` so that returning these common values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let _ = arena.alloc(Value::Nil);
-        Lisp { arena }
+        let true_idx = arena.alloc(Value::Boolean(true)).expect("arena too small for singletons");
+        let false_idx = arena.alloc(Value::Boolean(false)).expect("arena too small for singletons");
+        let inert_idx = arena.alloc(Value::Inert).expect("arena too small for singletons");
+        let ignore_idx = arena.alloc(Value::Ignore).expect("arena too small for singletons");
+        Lisp { arena, true_idx, false_idx, inert_idx, ignore_idx }
     }
 
     // — Value constructors —
@@ -53,22 +66,22 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(n.into())
     }
 
-    /// Allocate a boolean.
+    /// Return the pre-allocated boolean index (zero allocation).
     #[inline]
     pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(b.into())
+        Ok(if b { self.true_idx } else { self.false_idx })
     }
 
-    /// Allocate an inert value.
+    /// Return the pre-allocated inert index (zero allocation).
     #[inline]
     pub fn inert(&self) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Inert)
+        Ok(self.inert_idx)
     }
 
-    /// Allocate an ignore value.
+    /// Return the pre-allocated ignore index (zero allocation).
     #[inline]
     pub fn ignore(&self) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Ignore)
+        Ok(self.ignore_idx)
     }
 
     /// Allocate a cons cell.
