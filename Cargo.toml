@@ -8,12 +8,12 @@ members = [
 ]
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-grift_arena = { version = "1.4.0", path = "crates/grift_arena" }
+grift_arena = { version = "1.5.0", path = "crates/grift_arena" }
 
 # Use basic optimizations in dev/test builds to prevent stack overflows
 # caused by deep recursion in the Scheme evaluator. Without optimizations,
