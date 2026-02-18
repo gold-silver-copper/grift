@@ -334,7 +334,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Check if a cons-list contains a given index (by ArenaIndex identity).
-    fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
+    pub(crate) fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
         let mut cur = list;
         while !cur.is_nil() {
             if let Ok(head) = self.car(cur) {
