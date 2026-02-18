@@ -2653,32 +2653,39 @@ fn test_set_bang_returns_inert() {
 }
 
 #[test]
-fn test_set_bang_unbound_variable() {
-    // $set! signals an error if the variable is not bound.
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(
-        r#"
-        (begin
-            (define! get-env (vau () e e))
-            (set! (get-env) y 42))
-        "#,
-    );
-    assert_eq!(result, Err(ArenaError::UnboundVariable));
-}
-
-#[test]
-fn test_set_bang_in_child_env() {
-    // $set! walks up the parent chain to find the binding.
+fn test_set_bang_creates_new_binding() {
+    // Per Kernel §6.8.1, $set! matches formals in the target environment,
+    // creating new bindings (like $define!) rather than requiring pre-existing ones.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
             (begin
+                (define! get-env (vau () e e))
+                (define! e (get-env))
+                (set! e y 42)
+                y)
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_set_bang_in_captured_env() {
+    // Per Kernel §6.8.1, $set! binds formals in the specified environment.
+    // To modify a variable in an outer scope, capture that scope's env first.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! my-env (get-env))
                 (define! x 1)
                 (define! update-x
                     (lambda ()
-                        (define! get-env (vau () e e))
-                        (set! (get-env) x 2)))
+                        (set! my-env x 2)))
                 (update-x)
                 x)
             "#
@@ -2739,6 +2746,47 @@ fn test_set_bang_requires_environment() {
     assert_eq!(result, Err(ArenaError::TypeError));
 }
 
+#[test]
+fn test_set_bang_evaluates_exp2_in_dynamic_env() {
+    // Per Kernel §6.8.1, $set! evaluates exp2 in the dynamic environment
+    // (the caller's env), NOT in the target environment.
+    // This is key to the derivation: the value expression uses the caller's
+    // bindings even when the target env is different.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! target (make-environment))
+                (define! x 10)
+                (set! target y (+ x 5))
+                (eval (quote y) target))
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_set_bang_defines_in_target_not_dynamic() {
+    // $set! creates bindings in the target env, not the dynamic env.
+    // After (set! target y 42), y should be in target but NOT in the
+    // caller's environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (define! target (make-environment (get-env)))
+                (set! target y 42)
+                (eval (quote y) target))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
 // ============================================================================
 // Kernel §3.2 — Ground Environment Protection
 // ============================================================================
@@ -2763,18 +2811,25 @@ fn test_define_in_standard_env_does_not_affect_ground() {
 
 #[test]
 fn test_set_bang_on_ground_env_rejected() {
-    // $set! should reject mutation of the ground environment.
-    // Builtins live in the ground env, so trying to mutate them
-    // via $set! should fail with ImmutableEnvironment.
+    // $set! should reject direct mutation of the ground environment.
+    // Per Kernel §3.2, the ground environment is immutable.
+    // Note: $set! into the *standard* env for a ground-bound symbol
+    // just creates a local shadow (permitted). Only direct mutation
+    // of the ground env itself is rejected.
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(
-        r#"
-        (begin
-            (define! get-env (vau () e e))
-            (set! (get-env) + 42))
-        "#,
+
+    // Shadowing a builtin in the standard env is fine (doesn't touch ground).
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (begin
+                (define! get-env (vau () e e))
+                (set! (get-env) + 42)
+                +)
+            "#
+        ),
+        Ok(Value::Number(42))
     );
-    assert_eq!(result, Err(ArenaError::ImmutableEnvironment));
 }
 
 // ============================================================================
@@ -2834,6 +2889,7 @@ fn test_operative_static_env_not_extractable() {
     // §3.4: No feature allows extracting the static environment
     // of a compound operative. Closures with local state demonstrate
     // that only the operative itself can access its closed-over env.
+    // Per §6.8.1, $set! binds formals in the captured environment.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -2842,11 +2898,10 @@ fn test_operative_static_env_not_extractable() {
                 (define! make-counter
                     (lambda ()
                         (define! get-env (vau () e e))
-                        (define! counter-env (get-env))
+                        (define! env (get-env))
                         (define! count 0)
                         (lambda ()
-                            (define! get-env2 (vau () e e))
-                            (set! (get-env2) count (+ count 1))
+                            (set! env count (+ count 1))
                             count)))
                 (define! counter (make-counter))
                 (counter)

@@ -559,12 +559,14 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         })())
     }
 
-    /// `($set! env definiend expression)` — Kernel §4.9.1.
+    /// `($set! exp1 formals exp2)` — Kernel §6.8.1.
     ///
-    /// Evaluates `env` and `expression` in the dynamic environment, then
-    /// mutates the existing binding of each symbol in `definiend` within
-    /// the evaluated environment.  Per §3.1, this constitutes a mutation
-    /// of the environment containing the reference.  Returns `#inert`.
+    /// Evaluates `exp1` and `exp2` in the dynamic environment; call the
+    /// results `env` and `obj`.  If `env` is not an environment, an error
+    /// is signaled.  Then the operative matches `formals` to `obj` in
+    /// environment `env` — i.e., the symbols of `formals` are bound in
+    /// `env` to the corresponding parts of `obj` (exactly as `$define!`
+    /// would).  Returns `#inert`.
     fn op_set(
         &mut self,
         args: ArenaIndex,
@@ -589,7 +591,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
 
             self.validate_ptree(definiend)?;
             let val = self.eval(val_expr, *env)?;
-            self.set_ptree(definiend, val, target_env)?;
+            self.match_ptree(definiend, val, target_env)?;
             self.lisp.inert()
         })())
     }
@@ -870,38 +872,6 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // The ground environment is a root environment with no parents,
         // so its only improper ancestor is itself.
         env == self.ground_env
-    }
-
-    /// Recursively match a formal parameter tree `ptree` against a value `obj`,
-    /// setting (mutating) existing bindings in the environment `env`.
-    /// Used by `$set!` (Kernel §4.9.1).
-    fn set_ptree(
-        &self,
-        ptree: ArenaIndex,
-        obj: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<()> {
-        if ptree.is_nil() {
-            if obj.is_nil() {
-                return Ok(());
-            }
-            return Err(ArenaError::TypeError);
-        }
-        match self.lisp.get(ptree)? {
-            Value::Ignore => Ok(()),
-            Value::Symbol(_) => {
-                self.lisp.env_set(env, ptree, obj, self.ground_env)
-            }
-            Value::Cons {
-                car: ptree_car,
-                cdr: ptree_cdr,
-            } => {
-                let (obj_car, obj_cdr) = self.lisp.get(obj)?.as_cons()?;
-                self.set_ptree(ptree_car, obj_car, env)?;
-                self.set_ptree(ptree_cdr, obj_cdr, env)
-            }
-            _ => Err(ArenaError::TypeError),
-        }
     }
 
     /// Wrap a list of expressions in a `begin` form if there are multiple,
