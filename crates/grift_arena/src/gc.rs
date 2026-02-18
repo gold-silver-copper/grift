@@ -4,7 +4,7 @@
 //! for the arena allocator.
 
 use crate::{Arena, ArenaIndex, GcStats};
-use crate::types::{Slot, FREE_LIST_END};
+use crate::types::Slot;
 use crate::traits::Trace;
 
 impl<T: Copy, const N: usize> Arena<T, N> {
@@ -100,46 +100,15 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
     }
 
-    /// Sweep phase: rebuild the free list in a single pass.
-    ///
-    /// Instead of calling `free()` on each unmarked slot individually
-    /// (which validates occupancy redundantly), this rebuilds the entire
-    /// free list in one forward pass. All unmarked occupied slots are freed,
-    /// and both previously-free and newly-freed slots are linked together.
+    /// Sweep phase: free all unmarked but allocated slots in a single pass.
     ///
     /// Returns the number of objects collected.
     fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
-        let mut collected = 0usize;
-        let mut new_free_head = FREE_LIST_END;
-        let mut new_len = 0usize;
-
-        // Walk slots in reverse so that lower indices end up at the head
-        // of the free list, improving locality for subsequent allocations.
-        for idx in (0..N).rev() {
-            match self.slots[idx].get() {
-                Slot::Occupied { .. } => {
-                    if marked[idx] {
-                        new_len += 1;
-                    } else {
-                        // Unmarked occupied → free it
-                        self.slots[idx].set(Slot::Free { next_free: new_free_head });
-                        new_free_head = idx;
-                        collected += 1;
-                    }
-                }
-                Slot::Free { .. } => {
-                    // Already free → re-link into the new free list
-                    self.slots[idx].set(Slot::Free { next_free: new_free_head });
-                    new_free_head = idx;
-                }
-            }
-        }
-
-        self.free_head.set(new_free_head);
-        self.len.set(new_len);
-        self.alloc_counter.set(0);
-
-        collected
+        (0..N)
+            .filter(|&idx| !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. }))
+            .map(|idx| self.free(ArenaIndex::new(idx)))
+            .filter(|r| r.is_ok())
+            .count()
     }
 
     /// Shared mark-and-sweep implementation. Runs the full mark-sweep cycle
