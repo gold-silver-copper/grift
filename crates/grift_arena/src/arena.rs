@@ -43,6 +43,8 @@ pub struct Arena<T: Copy, const N: usize> {
     pub(crate) free_head: Cell<usize>,
     pub(crate) len: Cell<usize>,
     pub(crate) gc_enabled: Cell<bool>,
+    pub(crate) gc_frequency: Cell<usize>,
+    pub(crate) alloc_counter: Cell<usize>,
 }
 
 impl<T: Copy, const N: usize> Arena<T, N> {
@@ -71,6 +73,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             free_head: Cell::new(if N > 0 { 0 } else { FREE_LIST_END }),
             len: Cell::new(0),
             gc_enabled: Cell::new(true), // GC enabled by default
+            gc_frequency: Cell::new(0),  // 0 = no proactive GC (only on OOM)
+            alloc_counter: Cell::new(0),
         }
     }
 
@@ -107,6 +111,53 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// ```
     pub fn set_gc_enabled(&self, enabled: bool) {
         self.gc_enabled.set(enabled);
+    }
+
+    /// Get the current GC frequency (allocations between collections).
+    ///
+    /// A value of 0 means proactive GC is disabled (only OOM-triggered).
+    pub fn gc_frequency(&self) -> usize {
+        self.gc_frequency.get()
+    }
+
+    /// Set the GC frequency: how many allocations between proactive collections.
+    ///
+    /// - `0` disables proactive GC (only OOM-triggered, the default).
+    /// - Any positive value `n` means GC will be triggered every `n` allocations
+    ///   when `gc_enabled` is true.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift_arena::Arena;
+    ///
+    /// let arena: Arena<isize, 100> = Arena::new(0);
+    /// arena.set_gc_frequency(500);
+    /// assert_eq!(arena.gc_frequency(), 500);
+    /// ```
+    pub fn set_gc_frequency(&self, frequency: usize) {
+        self.gc_frequency.set(frequency);
+    }
+
+    /// Get the number of allocations since the last GC collection (or reset).
+    pub fn alloc_count(&self) -> usize {
+        self.alloc_counter.get()
+    }
+
+    /// Reset the allocation counter to zero.
+    pub fn reset_alloc_counter(&self) {
+        self.alloc_counter.set(0);
+    }
+
+    /// Check if a proactive GC collection should be triggered.
+    ///
+    /// Returns `true` when all of these conditions hold:
+    /// - GC is enabled
+    /// - GC frequency is non-zero
+    /// - The allocation counter has reached or exceeded the frequency
+    pub fn should_collect(&self) -> bool {
+        let freq = self.gc_frequency.get();
+        freq > 0 && self.gc_enabled.get() && self.alloc_counter.get() >= freq
     }
 
     /// Run a closure with GC temporarily set to `enabled`, restoring the
@@ -225,6 +276,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         // Increment allocated count
         self.len.set(self.len.get() + 1);
+        self.alloc_counter.set(self.alloc_counter.get() + 1);
 
         Ok(ArenaIndex::new(idx))
     }
@@ -400,6 +452,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         self.free_head.set(if N > 0 { 0 } else { FREE_LIST_END });
         self.len.set(0);
+        self.alloc_counter.set(0);
     }
 
     /// Iterate over all allocated indices and values.
@@ -716,6 +769,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         // Update length
         self.len.set(self.len.get() + count);
+        self.alloc_counter.set(self.alloc_counter.get() + count);
 
         Ok(ArenaIndex::new(start_idx))
     }

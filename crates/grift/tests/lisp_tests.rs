@@ -3014,3 +3014,55 @@ fn test_gc_oom_triggers_collection() {
             "eval iteration {} should succeed (OOM-triggered GC should reclaim garbage)", i);
     }
 }
+
+// ============================================================================
+// GC Frequency Tests
+// ============================================================================
+
+#[test]
+fn test_gc_frequency_default() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(gc-frequency)"), Ok(Value::Number(0)));
+}
+
+#[test]
+fn test_set_gc_frequency() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(set-gc-frequency! 500)"), Ok(Value::Inert));
+    assert_eq!(lisp.eval("(gc-frequency)"), Ok(Value::Number(500)));
+}
+
+#[test]
+fn test_set_gc_frequency_zero_disables() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.eval("(set-gc-frequency! 100)").unwrap();
+    assert_eq!(lisp.eval("(gc-frequency)"), Ok(Value::Number(100)));
+    lisp.eval("(set-gc-frequency! 0)").unwrap();
+    assert_eq!(lisp.eval("(gc-frequency)"), Ok(Value::Number(0)));
+}
+
+#[test]
+fn test_set_gc_frequency_negative_rejected() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(set-gc-frequency! -1)"), Err(ArenaError::InvalidArgument));
+}
+
+#[test]
+fn test_gc_frequency_with_computation() {
+    // With a small arena and gc-frequency, proactive GC should keep things running
+    let lisp: Lisp<5000> = Lisp::new();
+    lisp.eval("(set-gc-frequency! 100)").unwrap();
+    for i in 0..50 {
+        let result = lisp.eval("(+ 1 2)");
+        assert_eq!(result, Ok(Value::Number(3)),
+            "eval iteration {} should succeed with proactive GC", i);
+    }
+}
+
+#[test]
+fn test_gc_frequency_persists_across_evals() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.eval("(set-gc-frequency! 200)").unwrap();
+    lisp.eval("(+ 1 2)").unwrap();
+    assert_eq!(lisp.eval("(gc-frequency)"), Ok(Value::Number(200)));
+}
