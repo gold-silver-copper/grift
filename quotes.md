@@ -9,3 +9,7 @@ May John's Environment in Heaven have a sound beta rule reduction and he get to 
 Thank you for disagreeing. The relative complexity of macros vs fexpr is interesting and your reply uncovered unspoken assumptions in my thinking.
 
 First class environments being another thing sacrificed on the alter of performance decades ago.
+
+Every single time this argument comes up, the hygiene zealots wind up falling back on arguments about what other programmers can't possibly reason about (in spite of historic evidence that they can) and about what power other programmer's don't need (in spite of historic evidence that they do) and Scheme continues its slow death spiral into a bondage and discipline language of the soft that could only be loved by a "fascist with a read only mind".
+
+All this is not the dream of a "fascist with a read-only mind" or even the result of a bondage & discipline fetish. I seek simplicity and freedom through liberating constraints. They don't even need to be 'in-your-face' constraints - I favor an 'incentives' based approach: working with a lower-layer where feasible (aka 'Principle of Least Expression') is not enforced, but is encouraged by improved modularity, reusability, security, safety, and performance.
