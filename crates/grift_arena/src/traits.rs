@@ -7,30 +7,6 @@
 
 use crate::{Arena, ArenaIndex, ArenaResult};
 
-// — Free-list integration —
-
-/// Trait for types that can self-represent free/occupied state,
-/// eliminating the need for a separate `Slot` wrapper.
-///
-/// Types that implement `Slotted` embed free-list metadata directly
-/// in their representation (typically via a dedicated enum variant).
-/// This allows the arena to store values without an extra layer of
-/// indirection.
-pub trait Slotted: Copy {
-    /// Returns `true` if this value represents a free slot.
-    fn is_free(&self) -> bool;
-
-    /// Returns the index of the next free slot.
-    ///
-    /// # Panics
-    ///
-    /// May panic or return garbage if `is_free()` is false.
-    fn next_free(&self) -> usize;
-
-    /// Construct a free-slot sentinel pointing to `next`.
-    fn make_free(next: usize) -> Self;
-}
-
 // — Recursive Deletion Support —
 
 /// Trait for types that can be recursively deleted from the arena.
@@ -41,25 +17,18 @@ pub trait Slotted: Copy {
 /// # Example
 ///
 /// ```rust
-/// use grift_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult, Slotted};
+/// use grift_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
-///     Free(usize),
 ///     Leaf(isize),
 ///     Branch(ArenaIndex, ArenaIndex),
-/// }
-///
-/// impl Slotted for Tree {
-///     fn is_free(&self) -> bool { matches!(self, Tree::Free(_)) }
-///     fn next_free(&self) -> usize { match self { Tree::Free(n) => *n, _ => unreachable!() } }
-///     fn make_free(next: usize) -> Self { Tree::Free(next) }
 /// }
 ///
 /// impl ArenaDelete<Tree, 100> for Tree {
 ///     fn delete_recursive(&self, arena: &Arena<Tree, 100>) -> ArenaResult<()> {
 ///         match *self {
-///             Tree::Leaf(_) | Tree::Free(_) => Ok(()),
+///             Tree::Leaf(_) => Ok(()),
 ///             Tree::Branch(left, right) => {
 ///                 arena.delete_recursive(left)?;
 ///                 arena.delete_recursive(right)?;
@@ -69,7 +38,7 @@ pub trait Slotted: Copy {
 ///     }
 /// }
 /// ```
-pub trait ArenaDelete<T: Slotted, const N: usize> {
+pub trait ArenaDelete<T: Copy, const N: usize> {
     /// Recursively delete this value and any children from the arena.
     fn delete_recursive(&self, arena: &Arena<T, N>) -> ArenaResult<()>;
 }
@@ -84,25 +53,17 @@ pub trait ArenaDelete<T: Slotted, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use grift_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult, Slotted};
+/// use grift_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
-///     Free(usize),
 ///     Leaf(isize),
 ///     Branch(ArenaIndex, ArenaIndex),
-/// }
-///
-/// impl Slotted for Tree {
-///     fn is_free(&self) -> bool { matches!(self, Tree::Free(_)) }
-///     fn next_free(&self) -> usize { match self { Tree::Free(n) => *n, _ => unreachable!() } }
-///     fn make_free(next: usize) -> Self { Tree::Free(next) }
 /// }
 ///
 /// impl ArenaCopy<Tree, 100> for Tree {
 ///     fn copy_deep(&self, arena: &Arena<Tree, 100>) -> ArenaResult<Tree> {
 ///         match *self {
-///             Tree::Free(n) => Ok(Tree::Free(n)),
 ///             Tree::Leaf(n) => Ok(Tree::Leaf(n)),
 ///             Tree::Branch(left, right) => {
 ///                 let new_left = arena.copy_deep(left)?;
@@ -113,7 +74,7 @@ pub trait ArenaDelete<T: Slotted, const N: usize> {
 ///     }
 /// }
 /// ```
-pub trait ArenaCopy<T: Slotted, const N: usize> {
+pub trait ArenaCopy<T: Copy, const N: usize> {
     /// Create a deep copy of this value in the arena.
     fn copy_deep(&self, arena: &Arena<T, N>) -> ArenaResult<T>;
 }
@@ -128,25 +89,18 @@ pub trait ArenaCopy<T: Slotted, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use grift_arena::{Arena, ArenaIndex, Trace, Slotted};
+/// use grift_arena::{Arena, ArenaIndex, Trace};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
-///     Free(usize),
 ///     Leaf(isize),
 ///     Branch(ArenaIndex, ArenaIndex),
-/// }
-///
-/// impl Slotted for Tree {
-///     fn is_free(&self) -> bool { matches!(self, Tree::Free(_)) }
-///     fn next_free(&self) -> usize { match self { Tree::Free(n) => *n, _ => unreachable!() } }
-///     fn make_free(next: usize) -> Self { Tree::Free(next) }
 /// }
 ///
 /// impl<const N: usize> Trace<Tree, N> for Tree {
 ///     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
 ///         match *self {
-///             Tree::Leaf(_) | Tree::Free(_) => {} // No references to trace
+///             Tree::Leaf(_) => {} // No references to trace
 ///             Tree::Branch(left, right) => {
 ///                 tracer(left);
 ///                 tracer(right);
@@ -155,7 +109,7 @@ pub trait ArenaCopy<T: Slotted, const N: usize> {
 ///     }
 /// }
 ///
-/// let arena: Arena<Tree, 100> = Arena::new();
+/// let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 ///
 /// // Build a tree
 /// let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -174,7 +128,7 @@ pub trait ArenaCopy<T: Slotted, const N: usize> {
 /// assert_eq!(stats.collected, 2); // garbage1 and garbage2 were freed
 /// assert_eq!(arena.len(), 3);     // root, leaf1, leaf2 remain
 /// ```
-pub trait Trace<T: Slotted, const N: usize> {
+pub trait Trace<T: Copy, const N: usize> {
     /// Trace all `ArenaIndex` references contained in this value.
     ///
     /// Call `tracer` once for each `ArenaIndex` field in this value.

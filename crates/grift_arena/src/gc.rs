@@ -4,9 +4,10 @@
 //! for the arena allocator.
 
 use crate::traits::Trace;
-use crate::{Arena, ArenaIndex, GcStats, Slotted};
+use crate::types::Slot;
+use crate::{Arena, ArenaIndex, GcStats};
 
-impl<T: Slotted, const N: usize> Arena<T, N> {
+impl<T: Copy, const N: usize> Arena<T, N> {
     /// Initialize roots into the mark stack.
     ///
     /// For each valid root, mark it and push to the stack.
@@ -49,8 +50,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
             *stack_len -= 1;
             let current_idx = mark_stack[*stack_len];
 
-            let value = self.slots[current_idx].get();
-            if !value.is_free() {
+            if let Slot::Occupied { value } = self.slots[current_idx].get() {
                 // Use iterative batching to process all children
                 // This fixes the overflow bug by continuing to batch until all children are processed
                 loop {
@@ -105,7 +105,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// Returns the number of objects collected.
     fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
         (0..N)
-            .filter(|&idx| !marked[idx] && !self.slots[idx].get().is_free())
+            .filter(|&idx| !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. }))
             .map(|idx| self.free(ArenaIndex::new(idx)))
             .filter(|r| r.is_ok())
             .count()
@@ -161,37 +161,31 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, ArenaIndex, Trace, Slotted};
+    /// use grift_arena::{Arena, ArenaIndex, Trace};
     ///
     /// #[derive(Clone, Copy)]
-    /// enum Node {
-    ///     Free(usize),
-    ///     Val { value: isize, next: Option<ArenaIndex> },
-    /// }
-    ///
-    /// impl Slotted for Node {
-    ///     fn is_free(&self) -> bool { matches!(self, Node::Free(_)) }
-    ///     fn next_free(&self) -> usize { match self { Node::Free(n) => *n, _ => unreachable!() } }
-    ///     fn make_free(next: usize) -> Self { Node::Free(next) }
+    /// struct Node {
+    ///     value: isize,
+    ///     next: Option<ArenaIndex>,
     /// }
     ///
     /// impl<const N: usize> Trace<Node, N> for Node {
     ///     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-    ///         if let Node::Val { next: Some(next), .. } = self {
-    ///             tracer(*next);
+    ///         if let Some(next) = self.next {
+    ///             tracer(next);
     ///         }
     ///     }
     /// }
     ///
-    /// let arena: Arena<Node, 10> = Arena::new();
+    /// let arena: Arena<Node, 10> = Arena::new(Node { value: 0, next: None });
     ///
     /// // Create a linked list: root -> n1 -> n2
-    /// let n2 = arena.alloc(Node::Val { value: 3, next: None }).unwrap();
-    /// let n1 = arena.alloc(Node::Val { value: 2, next: Some(n2) }).unwrap();
-    /// let root = arena.alloc(Node::Val { value: 1, next: Some(n1) }).unwrap();
+    /// let n2 = arena.alloc(Node { value: 3, next: None }).unwrap();
+    /// let n1 = arena.alloc(Node { value: 2, next: Some(n2) }).unwrap();
+    /// let root = arena.alloc(Node { value: 1, next: Some(n1) }).unwrap();
     ///
     /// // Create some garbage
-    /// let _garbage = arena.alloc(Node::Val { value: -1, next: None }).unwrap();
+    /// let _garbage = arena.alloc(Node { value: -1, next: None }).unwrap();
     ///
     /// // Collect with root as the only GC root
     /// let stats = arena.collect_garbage(&[root]);
