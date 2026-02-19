@@ -3090,3 +3090,519 @@ fn test_write_value_list_with_string() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(display(&lisp, r#"(cons 1 (cons "hi" '()))"#), r#"(1 "hi")"#);
 }
+
+// ============================================================================
+// Feature 1: set! Errors on Nonexistent Bindings
+// ============================================================================
+
+#[test]
+fn test_set_bang_modifies_existing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (set! (current-environment) x 2)
+            x
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_set_bang_errors_on_nonexistent() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(set! (current-environment) y 1)"),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_set_bang_does_not_walk_parents() {
+    // x exists in the parent env, but not in e's own frame.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! e (make-environment (current-environment)))
+            (set! e x 1)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_set_bang_closures_see_change() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! env (current-environment))
+            (define! (get-x) x)
+            (set! env x 99)
+            (get-x)
+            "#
+        ),
+        Ok(Value::Number(99))
+    );
+}
+
+#[test]
+fn test_set_bang_empty_env() {
+    // Cannot set! in an env with no bindings
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp
+        .eval("(set! (make-environment) x 1)")
+        .is_err());
+}
+
+#[test]
+fn test_set_bang_only_supports_single_symbol() {
+    // set! no longer supports ptree destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp
+        .eval(
+            r#"
+            (define! a 1)
+            (define! b 2)
+            (set! (current-environment) (a b) (list 10 20))
+            "#
+        )
+        .is_err());
+}
+
+// ============================================================================
+// Feature 2: define! Overwrites Existing Bindings
+// ============================================================================
+
+#[test]
+fn test_define_overwrites_in_same_frame() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! x 2)
+            x
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_define_overwrite_does_not_affect_child_scopes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (let ((y x))
+              y)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_overwrite_function_in_repl() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (double n) (+ n n))
+            (double 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (double n) (* n 2))
+            (double 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+// ============================================================================
+// Feature 3: current-environment
+// ============================================================================
+
+#[test]
+fn test_current_environment_returns_environment() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(environment? (current-environment))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_current_environment_captures_frame() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! e (current-environment))
+            (define! x 42)
+            (eval (quote x) e)
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_current_environment_different_scopes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! outer (current-environment))
+            (let ()
+              (define! inner (current-environment))
+              (eq? outer inner))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_current_environment_with_set() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! e (current-environment))
+            (set! e x 2)
+            x
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_current_environment_in_closures() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (make-cell val)
+              (define! env (current-environment))
+              (list
+                (lambda () val)
+                (lambda (new-val) (set! env val new-val))))
+            (define! cell (make-cell 0))
+            ((car cell))
+            "#
+        ),
+        Ok(Value::Number(0))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (make-cell val)
+              (define! env (current-environment))
+              (list
+                (lambda () val)
+                (lambda (new-val) (set! env val new-val))))
+            (define! cell (make-cell 0))
+            ((car (cdr cell)) 42)
+            ((car cell))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+// ============================================================================
+// Feature 4: Named let
+// ============================================================================
+
+#[test]
+fn test_named_let_basic_loop() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let loop ((i 0))
+              (if (< i 10) (loop (+ i 1)) i))
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+#[test]
+fn test_named_let_factorial() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let fact ((n 5) (acc 1))
+              (if (= n 0) acc
+                (fact (- n 1) (* acc n))))
+            "#
+        ),
+        Ok(Value::Number(120))
+    );
+}
+
+#[test]
+fn test_named_let_fibonacci() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let fib ((n 10) (a 0) (b 1))
+              (if (= n 0) a
+                (fib (- n 1) b (+ a b))))
+            "#
+        ),
+        Ok(Value::Number(55))
+    );
+}
+
+#[test]
+fn test_named_let_name_not_visible_outside() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.eval(
+        r#"
+        (let loop ((i 0))
+          (if (< i 5) (loop (+ i 1)) i))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(lisp.eval("loop"), Err(ArenaError::UnboundVariable));
+}
+
+#[test]
+fn test_named_let_inits_in_outer_scope() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 10)
+            (let loop ((i x))
+              (if (< i 15) (loop (+ i 1)) i))
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_named_let_tco() {
+    // Should not stack overflow with TCO
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let loop ((i 0))
+              (if (< i 100000) (loop (+ i 1)) i))
+            "#
+        ),
+        Ok(Value::Number(100000))
+    );
+}
+
+#[test]
+fn test_named_let_zero_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(let loop () 42)"),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_regular_let_still_works() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let ((x 10) (y 20))
+              (+ x y))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+}
+
+// ============================================================================
+// Feature 5: define! Function Shorthand
+// ============================================================================
+
+#[test]
+fn test_define_function_shorthand_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (double n) (+ n n))
+            (double 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_multi_body() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (do-stuff x)
+              (define! y (+ x 1))
+              (* y 2))
+            (do-stuff 5)
+            "#
+        ),
+        Ok(Value::Number(12))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_variadic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (first . args) (car args))
+            (first 1 2 3)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_zero_params() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Verify it returns a string value
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (greeting) "hello")
+            (pair? (greeting))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_recursive() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (factorial n)
+              (if (= n 0) 1 (* n (factorial (- n 1)))))
+            (factorial 10)
+            "#
+        ),
+        Ok(Value::Number(3628800))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_mutual_recursion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (even? n) (if (= n 0) #t (odd? (- n 1))))
+            (define! (odd? n)  (if (= n 0) #f (even? (- n 1))))
+            (even? 10)
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(odd? 7)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_overwrite() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (f x) (+ x 1))
+            (f 5)
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (f x) (* x 2))
+            (f 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_closure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (make-adder n)
+              (lambda (x) (+ x n)))
+            (define! add5 (make-adder 5))
+            (add5 10)
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_inside_let() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let ()
+              (define! (helper x) (+ x 1))
+              (helper 41))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_define_destructuring_still_works_non_symbol_car() {
+    // Ptree destructuring works when car of definiend is NOT a symbol
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! ((a b) c) (list (list 1 2) 3))
+            (+ a (+ b c))
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+}

@@ -122,31 +122,58 @@ must evaluate to a boolean.
 
 ```
 (define! definiend expression)
+(define! (name params...) body...)
 ```
 
-Evaluate `expression` in the current environment, then match `definiend`
-(a formal parameter tree) against the result, binding symbols in the current
-environment. Returns `#inert`. Mutating the ground environment is forbidden.
+**Simple binding:** Evaluate `expression` in the current environment, then match
+`definiend` (a formal parameter tree) against the result, binding symbols in the
+current environment. Returns `#inert`. Mutating the ground environment is
+forbidden. If a binding for the symbol already exists in the current frame, the
+value is overwritten in place rather than creating a duplicate.
+
+**Function shorthand:** When `definiend` is a pair whose car is a symbol, it is
+treated as function definition sugar. `(define! (name params...) body...)`
+desugars to `(define! name (lambda (params...) body...))`.
+
+**Ptree destructuring:** When `definiend` is a pair whose car is NOT a symbol
+(e.g., `#ignore`, a pair, or nil), standard parameter tree matching applies.
 
 ```lisp
-(define! x 42)                 ; binds x to 42
-(define! (a b) (list 1 2))     ; binds a to 1, b to 2
+(define! x 42)                     ; simple binding
+(define! x 99)                     ; overwrites x (same frame)
+(define! (double n) (+ n n))       ; function shorthand
+(double 5)                         ; → 10
+(define! (first . args) (car args)); variadic function shorthand
+(first 1 2 3)                      ; → 1
+(define! ((a b) c) (list (list 1 2) 3)) ; ptree destructuring
 ```
 
 ### `set!`
 
 ```
-(set! env-expr definiend expression)
+(set! env-expr symbol expression)
 ```
 
 Evaluate `env-expr` to get a target environment and `expression` to get a
-value, then match `definiend` against the value in the target environment
-(binding symbols there). Returns `#inert`. The target must be an environment
-and must not be the ground environment.
+value, then update the existing binding of `symbol` in the target environment's
+own frame. Returns `#inert`.
+
+**Important constraints:**
+- The `symbol` must already exist as a binding in the target environment's own
+  frame. `set!` does **not** walk the parent chain and does **not** create new
+  bindings. If the symbol is not found, `UnboundVariable` is signaled.
+- Only single symbol formals are supported (no parameter tree destructuring).
+- The target must be an environment and must not be the ground environment.
 
 ```lisp
-(define! e (make-empty-environment))
-(set! e x 10)  ; binds x to 10 in environment e
+(define! x 1)
+(set! (current-environment) x 2)
+x                                  ; → 2
+
+(set! (current-environment) y 1)   ; error: UnboundVariable
+
+(define! e (make-environment (current-environment)))
+(set! e x 1)                       ; error: UnboundVariable (x is in parent, not e)
 ```
 
 ### `lambda`
@@ -258,15 +285,46 @@ With no arguments, returns `#f`.
 
 ```
 (let ((name1 val1) (name2 val2) ...) body ...)
+(let name ((param1 init1) (param2 init2) ...) body ...)
 ```
 
-Create a child environment, evaluate each `valN` in the **outer** environment,
-bind each `nameN` in the child environment, then evaluate the body expressions
-in the child environment (last in tail position).
+**Regular let:** Create a child environment, evaluate each `valN` in the
+**outer** environment, bind each `nameN` in the child environment, then
+evaluate the body expressions in the child environment (last in tail position).
+
+**Named let:** When the first argument is a symbol, it is treated as a named
+let. `(let name ((param init) ...) body...)` creates a recursive function
+`name` with the given parameters, evaluates the init expressions in the
+**outer** environment, then calls the function with the evaluated init values.
+The `name` is visible within the body for recursion, but not outside the `let`.
+This is equivalent to:
 
 ```lisp
+(let ()
+  (define! (name param ...) body...)
+  (name init ...))
+```
+
+Named let supports tail-call optimization for the recursive calls.
+
+```lisp
+;; Regular let
 (let ((x 10) (y 20))
-  (+ x y))  ; → 30
+  (+ x y))                        ; → 30
+
+;; Named let: loop
+(let loop ((i 0))
+  (if (< i 10) (loop (+ i 1)) i)) ; → 10
+
+;; Named let: factorial
+(let fact ((n 5) (acc 1))
+  (if (= n 0) acc
+    (fact (- n 1) (* acc n))))     ; → 120
+
+;; Named let: fibonacci
+(let fib ((n 10) (a 0) (b 1))
+  (if (= n 0) a
+    (fib (- n 1) b (+ a b))))     ; → 55
 ```
 
 ## Primitive Applicatives
@@ -394,9 +452,36 @@ if every argument matches the type.
 |------|-----------|----------|
 | `make-environment` | `(make-environment . envs)` | Create a new environment with the given parents. All arguments must be environments. |
 | `make-empty-environment` | `(make-empty-environment)` | Create a new environment with no parents. |
+| `current-environment` | `(current-environment)` | Return the caller's dynamic environment. This is an operative (not applicative) because it needs the caller's environment, not evaluated arguments. |
+
+`current-environment` is essential for obtaining a reference to the environment
+that can be passed to `set!` for mutation.
 
 ```lisp
-(environment? (make-empty-environment))  ; → #t
+(environment? (current-environment))  ; → #t
+
+;; Capture environment for mutation
+(define! x 1)
+(define! e (current-environment))
+(set! e x 2)
+x                                     ; → 2
+
+;; Different scopes give different environments
+(define! outer (current-environment))
+(let ()
+  (define! inner (current-environment))
+  (eq? outer inner))                   ; → #f
+
+;; Mutable cells using current-environment and set!
+(define! (make-cell val)
+  (define! env (current-environment))
+  (list
+    (lambda () val)
+    (lambda (new-val) (set! env val new-val))))
+(define! cell (make-cell 0))
+((car cell))                           ; → 0
+((car (cdr cell)) 42)
+((car cell))                           ; → 42
 ```
 
 ## Error Conditions
