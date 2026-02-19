@@ -531,7 +531,7 @@ impl<const N: usize> Lisp<N> {
     /// Function shorthand: `(define! (fn name params...) body...)` desugars to
     /// `(define! name (lambda (params...) body...))`.  The `fn` marker is a
     /// syntactic keyword recognized only in this position — it is never
-    /// evaluated or looked up.
+    /// evaluated or looked up as a variable binding.
     ///
     /// Per Kernel §3.2, mutation of the ground environment or its ancestors
     /// is forbidden.
