@@ -837,9 +837,16 @@ impl<const N: usize> Lisp<N> {
     // ================================================================
 
     /// `(cons a b)` — cons cell construction.
+    /// When `a` is a single-character string (CharPair with cdr=NIL),
+    /// produces a CharPair node instead, so `(cons #\h "ello")` → `"hello"`.
     fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.car(args)?;
         let b = self.cadr(args)?;
+        if let Value::CharPair { ch, cdr } = self.get(a)? {
+            if cdr.is_nil() {
+                return self.arena.alloc(Value::CharPair { ch, cdr: b });
+            }
+        }
         self.cons(a, b)
     }
 
@@ -895,7 +902,7 @@ impl<const N: usize> Lisp<N> {
     // — Type predicate built-ins —
 
     type_predicate!(builtin_nullp, Value::Nil);
-    type_predicate!(builtin_pairp, Value::Cons { .. });
+    type_predicate!(builtin_pairp, Value::Cons { .. } | Value::CharPair { .. });
     type_predicate!(builtin_numberp, Value::Number(_));
     type_predicate!(builtin_symbolp, Value::Symbol(_));
     type_predicate!(builtin_booleanp, Value::Boolean(_));
@@ -957,7 +964,7 @@ impl<const N: usize> Lisp<N> {
                 Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
             }
             // Strings: compare character-by-character.
-            (Value::String { data: da }, Value::String { data: db }) => self.strings_equal(da, db),
+            (Value::CharPair { .. }, Value::CharPair { .. }) => self.strings_equal(a, b),
             // Environments: eq? only (identity-based).
             // Different environments are never equal? unless eq?.
             (Value::Environment { .. }, Value::Environment { .. }) => Ok(false),
