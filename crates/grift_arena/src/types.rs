@@ -203,19 +203,5 @@ impl core::fmt::Display for ArenaError {
 /// Result type for arena operations.
 pub type ArenaResult<T> = Result<T, ArenaError>;
 
-// — Slot (Internal) —
-
 /// Sentinel value indicating end of free list.
-pub(crate) const FREE_LIST_END: usize = usize::MAX;
-
-/// Internal slot representation for free-list based allocation.
-///
-/// Each slot is either free (storing the next free slot index) or
-/// occupied (storing the actual value).
-#[derive(Clone, Copy)]
-pub(crate) enum Slot<T: Copy> {
-    /// Free slot containing index of the next free slot (or FREE_LIST_END).
-    Free { next_free: usize },
-    /// Occupied slot containing the stored value.
-    Occupied { value: T },
-}
+pub const FREE_LIST_END: usize = usize::MAX;

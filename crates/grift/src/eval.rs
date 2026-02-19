@@ -956,8 +956,10 @@ impl<const N: usize> Lisp<N> {
             (Value::Cons { car: a1, cdr: a2 }, Value::Cons { car: b1, cdr: b2 }) => {
                 Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
             }
-            // Strings: compare character-by-character.
-            (Value::String { data: da }, Value::String { data: db }) => self.strings_equal(da, db),
+            // Chars (string nodes): compare character and rest of list.
+            (Value::Char { ch: ca, cdr: cdr_a }, Value::Char { ch: cb, cdr: cdr_b }) => {
+                Ok(ca == cb && self.is_equal(cdr_a, cdr_b)?)
+            }
             // Environments: eq? only (identity-based).
             // Different environments are never equal? unless eq?.
             (Value::Environment { .. }, Value::Environment { .. }) => Ok(false),
