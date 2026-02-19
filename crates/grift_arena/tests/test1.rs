@@ -1,21 +1,8 @@
 // tests/arena_tests.rs
 
 use grift_arena::{
-    Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Slotted, Trace,
+    Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace,
 };
-
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Val {
-    Free(usize),
-    V(isize),
-}
-
-impl Slotted for Val {
-    fn is_free(&self) -> bool { matches!(self, Val::Free(_)) }
-    fn next_free(&self) -> usize { match self { Val::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { Val::Free(next) }
-}
 
 // ============================================================================
 // Basic Functionality Tests
@@ -23,7 +10,7 @@ impl Slotted for Val {
 
 #[test]
 fn test_new_arena_is_empty() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
     assert_eq!(arena.len(), 0);
     assert!(arena.is_empty());
     assert!(!arena.is_full());
@@ -33,26 +20,26 @@ fn test_new_arena_is_empty() {
 
 #[test]
 fn test_basic_allocation() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(42)).unwrap();
-    let idx2 = arena.alloc(Val::V(43)).unwrap();
-    let idx3 = arena.alloc(Val::V(44)).unwrap();
+    let idx1 = arena.alloc(42).unwrap();
+    let idx2 = arena.alloc(43).unwrap();
+    let idx3 = arena.alloc(44).unwrap();
 
-    assert_eq!(arena.get(idx1).unwrap(), Val::V(42));
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(43));
-    assert_eq!(arena.get(idx3).unwrap(), Val::V(44));
+    assert_eq!(arena.get(idx1).unwrap(), 42);
+    assert_eq!(arena.get(idx2).unwrap(), 43);
+    assert_eq!(arena.get(idx3).unwrap(), 44);
     assert_eq!(arena.len(), 3);
     assert_eq!(arena.available(), 7);
 }
 
 #[test]
 fn test_alloc_returns_different_indices() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(1)).unwrap();
-    let idx2 = arena.alloc(Val::V(2)).unwrap();
-    let idx3 = arena.alloc(Val::V(3)).unwrap();
+    let idx1 = arena.alloc(1).unwrap();
+    let idx2 = arena.alloc(2).unwrap();
+    let idx3 = arena.alloc(3).unwrap();
 
     assert_ne!(idx1, idx2);
     assert_ne!(idx2, idx3);
@@ -61,20 +48,20 @@ fn test_alloc_returns_different_indices() {
 
 #[test]
 fn test_out_of_memory() {
-    let arena: Arena<Val, 3> = Arena::new();
+    let arena: Arena<isize, 3> = Arena::new(0);
 
-    assert!(arena.alloc(Val::V(1)).is_ok());
-    assert!(arena.alloc(Val::V(2)).is_ok());
-    assert!(arena.alloc(Val::V(3)).is_ok());
+    assert!(arena.alloc(1).is_ok());
+    assert!(arena.alloc(2).is_ok());
+    assert!(arena.alloc(3).is_ok());
 
-    assert_eq!(arena.alloc(Val::V(4)), Err(ArenaError::OutOfMemory));
+    assert_eq!(arena.alloc(4), Err(ArenaError::OutOfMemory));
     assert!(arena.is_full());
     assert_eq!(arena.available(), 0);
 }
 
 #[test]
 fn test_get_invalid_index() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -83,9 +70,9 @@ fn test_get_invalid_index() {
 
 #[test]
 fn test_get_freed_index() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
     // After freeing, the index is invalid
@@ -98,23 +85,23 @@ fn test_get_freed_index() {
 
 #[test]
 fn test_free_and_reuse() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(42)).unwrap();
+    let idx1 = arena.alloc(42).unwrap();
     assert_eq!(arena.len(), 1);
 
     arena.free(idx1).unwrap();
     assert_eq!(arena.len(), 0);
     assert!(arena.is_empty());
 
-    let idx2 = arena.alloc(Val::V(43)).unwrap();
+    let idx2 = arena.alloc(43).unwrap();
     assert_eq!(arena.len(), 1);
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(43));
+    assert_eq!(arena.get(idx2).unwrap(), 43);
 }
 
 #[test]
 fn test_free_invalid_index() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -123,9 +110,9 @@ fn test_free_invalid_index() {
 
 #[test]
 fn test_double_free() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
     // Double free returns IndexNotAllocated because the slot is no longer allocated
@@ -134,14 +121,14 @@ fn test_double_free() {
 
 #[test]
 fn test_fragmentation_and_reuse() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate 5 items
-    let idx1 = arena.alloc(Val::V(1)).unwrap();
-    let idx2 = arena.alloc(Val::V(2)).unwrap();
-    let idx3 = arena.alloc(Val::V(3)).unwrap();
-    let idx4 = arena.alloc(Val::V(4)).unwrap();
-    let idx5 = arena.alloc(Val::V(5)).unwrap();
+    let idx1 = arena.alloc(1).unwrap();
+    let idx2 = arena.alloc(2).unwrap();
+    let idx3 = arena.alloc(3).unwrap();
+    let idx4 = arena.alloc(4).unwrap();
+    let idx5 = arena.alloc(5).unwrap();
 
     // Free every other one
     arena.free(idx2).unwrap();
@@ -151,12 +138,12 @@ fn test_fragmentation_and_reuse() {
     assert_eq!(arena.available(), 7);
 
     // Should be able to reuse freed slots
-    let idx6 = arena.alloc(Val::V(6)).unwrap();
-    let idx7 = arena.alloc(Val::V(7)).unwrap();
+    let idx6 = arena.alloc(6).unwrap();
+    let idx7 = arena.alloc(7).unwrap();
 
     assert_eq!(arena.len(), 5);
-    assert_eq!(arena.get(idx6).unwrap(), Val::V(6));
-    assert_eq!(arena.get(idx7).unwrap(), Val::V(7));
+    assert_eq!(arena.get(idx6).unwrap(), 6);
+    assert_eq!(arena.get(idx7).unwrap(), 7);
 }
 
 // ============================================================================
@@ -165,39 +152,39 @@ fn test_fragmentation_and_reuse() {
 
 #[test]
 fn test_set_value() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
-    assert_eq!(arena.get(idx).unwrap(), Val::V(42));
+    let idx = arena.alloc(42).unwrap();
+    assert_eq!(arena.get(idx).unwrap(), 42);
 
-    arena.set(idx, Val::V(100)).unwrap();
-    assert_eq!(arena.get(idx).unwrap(), Val::V(100));
+    arena.set(idx, 100).unwrap();
+    assert_eq!(arena.get(idx).unwrap(), 100);
 
-    arena.set(idx, Val::V(-50)).unwrap();
-    assert_eq!(arena.get(idx).unwrap(), Val::V(-50));
+    arena.set(idx, -50).unwrap();
+    assert_eq!(arena.get(idx).unwrap(), -50);
 }
 
 #[test]
 fn test_set_invalid_index() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
     assert_eq!(
-        arena.set(invalid_idx, Val::V(42)),
+        arena.set(invalid_idx, 42),
         Err(ArenaError::IndexOutOfBounds)
     );
 }
 
 #[test]
 fn test_set_freed_index() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
     // After freeing, the index is invalid
-    assert_eq!(arena.set(idx, Val::V(100)), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.set(idx, 100), Err(ArenaError::IndexNotAllocated));
 }
 
 // ============================================================================
@@ -206,11 +193,11 @@ fn test_set_freed_index() {
 
 #[test]
 fn test_clear() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(3)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(3).unwrap();
 
     assert_eq!(arena.len(), 3);
 
@@ -223,11 +210,11 @@ fn test_clear() {
 
 #[test]
 fn test_clear_allows_full_reuse() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Fill the arena
     for i in 0..5 {
-        arena.alloc(Val::V(i)).unwrap();
+        arena.alloc(i).unwrap();
     }
     assert!(arena.is_full());
 
@@ -235,7 +222,7 @@ fn test_clear_allows_full_reuse() {
 
     // Should be able to allocate again
     for i in 0..5 {
-        assert!(arena.alloc(Val::V(i * 10)).is_ok());
+        assert!(arena.alloc(i * 10).is_ok());
     }
     assert!(arena.is_full());
 }
@@ -246,33 +233,33 @@ fn test_clear_allows_full_reuse() {
 
 #[test]
 fn test_iter_empty() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
     let count = arena.iter().count();
     assert_eq!(count, 0);
 }
 
 #[test]
 fn test_iter_values() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(3)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(3).unwrap();
 
-    let values: Vec<Val> = arena.iter().map(|(_, v)| v).collect();
+    let values: Vec<isize> = arena.iter().map(|(_, v)| v).collect();
     assert_eq!(values.len(), 3);
-    assert!(values.contains(&Val::V(1)));
-    assert!(values.contains(&Val::V(2)));
-    assert!(values.contains(&Val::V(3)));
+    assert!(values.contains(&1));
+    assert!(values.contains(&2));
+    assert!(values.contains(&3));
 }
 
 #[test]
 fn test_iter_indices() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(10)).unwrap();
-    let idx2 = arena.alloc(Val::V(20)).unwrap();
-    let idx3 = arena.alloc(Val::V(30)).unwrap();
+    let idx1 = arena.alloc(10).unwrap();
+    let idx2 = arena.alloc(20).unwrap();
+    let idx3 = arena.alloc(30).unwrap();
 
     let indices: Vec<ArenaIndex> = arena.iter().map(|(i, _)| i).collect();
     assert_eq!(indices.len(), 3);
@@ -283,23 +270,23 @@ fn test_iter_indices() {
 
 #[test]
 fn test_iter_with_gaps() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(1)).unwrap();
-    let idx2 = arena.alloc(Val::V(2)).unwrap();
-    let idx3 = arena.alloc(Val::V(3)).unwrap();
-    let idx4 = arena.alloc(Val::V(4)).unwrap();
+    let idx1 = arena.alloc(1).unwrap();
+    let idx2 = arena.alloc(2).unwrap();
+    let idx3 = arena.alloc(3).unwrap();
+    let idx4 = arena.alloc(4).unwrap();
 
     // Free middle items
     arena.free(idx2).unwrap();
     arena.free(idx3).unwrap();
 
-    let values: Vec<Val> = arena.iter().map(|(_, v)| v).collect();
+    let values: Vec<isize> = arena.iter().map(|(_, v)| v).collect();
     assert_eq!(values.len(), 2);
-    assert!(values.contains(&Val::V(1)));
-    assert!(values.contains(&Val::V(4)));
-    assert!(!values.contains(&Val::V(2)));
-    assert!(!values.contains(&Val::V(3)));
+    assert!(values.contains(&1));
+    assert!(values.contains(&4));
+    assert!(!values.contains(&2));
+    assert!(!values.contains(&3));
 }
 
 // ============================================================================
@@ -308,7 +295,7 @@ fn test_iter_with_gaps() {
 
 #[test]
 fn test_stats_empty() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
     let stats = arena.stats();
 
     assert_eq!(stats.capacity, 10);
@@ -319,10 +306,10 @@ fn test_stats_empty() {
 
 #[test]
 fn test_stats_partial() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
 
     let stats = arena.stats();
     assert_eq!(stats.capacity, 10);
@@ -333,10 +320,10 @@ fn test_stats_partial() {
 
 #[test]
 fn test_stats_full() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     for i in 0..5 {
-        arena.alloc(Val::V(i)).unwrap();
+        arena.alloc(i).unwrap();
     }
 
     let stats = arena.stats();
@@ -352,9 +339,9 @@ fn test_stats_full() {
 
 #[test]
 fn test_is_allocated() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let idx = arena.alloc(42).unwrap();
     assert!(arena.is_allocated(idx));
 
     arena.free(idx).unwrap();
@@ -363,7 +350,7 @@ fn test_is_allocated() {
 
 #[test]
 fn test_is_allocated_invalid_index() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
@@ -374,47 +361,29 @@ fn test_is_allocated_invalid_index() {
 // Type Tests (different types)
 // ============================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Fval {
-    Free(usize),
-    V(f64),
-}
-
-impl Slotted for Fval {
-    fn is_free(&self) -> bool { matches!(self, Fval::Free(_)) }
-    fn next_free(&self) -> usize { match self { Fval::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { Fval::Free(next) }
-}
-
 #[test]
 fn test_arena_with_floats() {
-    let arena: Arena<Fval, 10> = Arena::new();
+    let arena: Arena<f64, 10> = Arena::new(0.0);
 
-    let idx1 = arena.alloc(Fval::V(3.14)).unwrap();
-    let idx2 = arena.alloc(Fval::V(2.71828)).unwrap();
+    let idx1 = arena.alloc(3.14).unwrap();
+    let idx2 = arena.alloc(2.71828).unwrap();
 
-    assert_eq!(arena.get(idx1).unwrap(), Fval::V(3.14));
-    assert_eq!(arena.get(idx2).unwrap(), Fval::V(2.71828));
+    assert_eq!(arena.get(idx1).unwrap(), 3.14);
+    assert_eq!(arena.get(idx2).unwrap(), 2.71828);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum PointSlot {
-    Free(usize),
-    P { x: isize, y: isize },
-}
-
-impl Slotted for PointSlot {
-    fn is_free(&self) -> bool { matches!(self, PointSlot::Free(_)) }
-    fn next_free(&self) -> usize { match self { PointSlot::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { PointSlot::Free(next) }
+struct Point {
+    x: isize,
+    y: isize,
 }
 
 #[test]
 fn test_arena_with_struct() {
-    let arena: Arena<PointSlot, 10> = Arena::new();
+    let arena: Arena<Point, 10> = Arena::new(Point { x: 0, y: 0 });
 
-    let p1 = PointSlot::P { x: 10, y: 20 };
-    let p2 = PointSlot::P { x: 30, y: 40 };
+    let p1 = Point { x: 10, y: 20 };
+    let p2 = Point { x: 30, y: 40 };
 
     let idx1 = arena.alloc(p1).unwrap();
     let idx2 = arena.alloc(p2).unwrap();
@@ -425,22 +394,15 @@ fn test_arena_with_struct() {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Color {
-    Free(usize),
     Red,
     Green,
     Blue,
     RGB(u8, u8, u8),
 }
 
-impl Slotted for Color {
-    fn is_free(&self) -> bool { matches!(self, Color::Free(_)) }
-    fn next_free(&self) -> usize { match self { Color::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { Color::Free(next) }
-}
-
 #[test]
 fn test_arena_with_enum() {
-    let arena: Arena<Color, 10> = Arena::new();
+    let arena: Arena<Color, 10> = Arena::new(Color::Red);
 
     let idx1 = arena.alloc(Color::Green).unwrap();
     let idx2 = arena.alloc(Color::RGB(128, 255, 64)).unwrap();
@@ -455,21 +417,14 @@ fn test_arena_with_enum() {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tree {
-    Free(usize),
     Leaf(isize),
     Branch(ArenaIndex, ArenaIndex),
-}
-
-impl Slotted for Tree {
-    fn is_free(&self) -> bool { matches!(self, Tree::Free(_)) }
-    fn next_free(&self) -> usize { match self { Tree::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { Tree::Free(next) }
 }
 
 impl ArenaDelete<Tree, 100> for Tree {
     fn delete_recursive(&self, arena: &Arena<Tree, 100>) -> ArenaResult<()> {
         match *self {
-            Tree::Free(_) | Tree::Leaf(_) => Ok(()),
+            Tree::Leaf(_) => Ok(()),
             Tree::Branch(left, right) => {
                 arena.delete_recursive(left)?;
                 arena.delete_recursive(right)?;
@@ -482,7 +437,6 @@ impl ArenaDelete<Tree, 100> for Tree {
 impl ArenaCopy<Tree, 100> for Tree {
     fn copy_deep(&self, arena: &Arena<Tree, 100>) -> ArenaResult<Tree> {
         match *self {
-            Tree::Free(n) => Ok(Tree::Free(n)),
             Tree::Leaf(n) => Ok(Tree::Leaf(n)),
             Tree::Branch(left, right) => {
                 let new_left = arena.copy_deep(left)?;
@@ -495,7 +449,7 @@ impl ArenaCopy<Tree, 100> for Tree {
 
 #[test]
 fn test_simple_tree() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -512,7 +466,7 @@ fn test_simple_tree() {
 
 #[test]
 fn test_recursive_delete_leaf() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let leaf = arena.alloc(Tree::Leaf(42)).unwrap();
     assert_eq!(arena.len(), 1);
@@ -523,7 +477,7 @@ fn test_recursive_delete_leaf() {
 
 #[test]
 fn test_recursive_delete_simple_tree() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -538,7 +492,7 @@ fn test_recursive_delete_simple_tree() {
 
 #[test]
 fn test_recursive_delete_complex_tree() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Build tree: ((1, 2), (3, 4))
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -562,7 +516,7 @@ fn test_recursive_delete_complex_tree() {
 
 #[test]
 fn test_deep_copy_leaf() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let leaf = arena.alloc(Tree::Leaf(42)).unwrap();
     let copied = arena.copy_deep(leaf).unwrap();
@@ -574,7 +528,7 @@ fn test_deep_copy_leaf() {
 
 #[test]
 fn test_deep_copy_simple_tree() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -600,7 +554,7 @@ fn test_deep_copy_simple_tree() {
 
 #[test]
 fn test_deep_copy_complex_tree() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Build tree: ((1, 2), (3, 4))
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -650,29 +604,29 @@ fn test_deep_copy_complex_tree() {
 
 #[test]
 fn test_single_cell_arena() {
-    let arena: Arena<Val, 1> = Arena::new();
+    let arena: Arena<isize, 1> = Arena::new(0);
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let idx = arena.alloc(42).unwrap();
     assert!(arena.is_full());
-    assert_eq!(arena.alloc(Val::V(43)), Err(ArenaError::OutOfMemory));
+    assert_eq!(arena.alloc(43), Err(ArenaError::OutOfMemory));
 
-    assert_eq!(arena.get(idx).unwrap(), Val::V(42));
+    assert_eq!(arena.get(idx).unwrap(), 42);
 
     arena.free(idx).unwrap();
     assert!(arena.is_empty());
 
-    let idx2 = arena.alloc(Val::V(100)).unwrap();
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(100));
+    let idx2 = arena.alloc(100).unwrap();
+    assert_eq!(arena.get(idx2).unwrap(), 100);
 }
 
 #[test]
 fn test_alternating_alloc_free() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     for i in 0..100 {
-        let idx = arena.alloc(Val::V(i)).unwrap();
+        let idx = arena.alloc(i).unwrap();
         assert_eq!(arena.len(), 1);
-        assert_eq!(arena.get(idx).unwrap(), Val::V(i));
+        assert_eq!(arena.get(idx).unwrap(), i);
         arena.free(idx).unwrap();
         assert_eq!(arena.len(), 0);
     }
@@ -680,14 +634,14 @@ fn test_alternating_alloc_free() {
 
 #[test]
 fn test_fill_and_empty_repeatedly() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     for round in 0..10 {
         let mut indices = Vec::new();
 
         // Fill arena
         for i in 0..5 {
-            let idx = arena.alloc(Val::V(round * 10 + i)).unwrap();
+            let idx = arena.alloc(round * 10 + i).unwrap();
             indices.push(idx);
         }
         assert!(arena.is_full());
@@ -702,23 +656,23 @@ fn test_fill_and_empty_repeatedly() {
 
 #[test]
 fn test_index_consistency() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(100)).unwrap();
-    let idx2 = arena.alloc(Val::V(200)).unwrap();
-    let idx3 = arena.alloc(Val::V(300)).unwrap();
+    let idx1 = arena.alloc(100).unwrap();
+    let idx2 = arena.alloc(200).unwrap();
+    let idx3 = arena.alloc(300).unwrap();
 
     // Indices should remain valid and consistent
-    assert_eq!(arena.get(idx1).unwrap(), Val::V(100));
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(200));
-    assert_eq!(arena.get(idx3).unwrap(), Val::V(300));
+    assert_eq!(arena.get(idx1).unwrap(), 100);
+    assert_eq!(arena.get(idx2).unwrap(), 200);
+    assert_eq!(arena.get(idx3).unwrap(), 300);
 
     // Even after modifying other values
-    arena.set(idx2, Val::V(250)).unwrap();
+    arena.set(idx2, 250).unwrap();
 
-    assert_eq!(arena.get(idx1).unwrap(), Val::V(100));
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(250));
-    assert_eq!(arena.get(idx3).unwrap(), Val::V(300));
+    assert_eq!(arena.get(idx1).unwrap(), 100);
+    assert_eq!(arena.get(idx2).unwrap(), 250);
+    assert_eq!(arena.get(idx3).unwrap(), 300);
 }
 
 #[test]
@@ -733,12 +687,12 @@ fn test_arena_index_api() {
 
 #[test]
 fn test_large_arena() {
-    let arena: Arena<Val, 1000> = Arena::new();
+    let arena: Arena<isize, 1000> = Arena::new(0);
 
     // Allocate many items
     let mut indices = Vec::new();
     for i in 0..500 {
-        let idx = arena.alloc(Val::V(i)).unwrap();
+        let idx = arena.alloc(i).unwrap();
         indices.push(idx);
     }
 
@@ -747,7 +701,7 @@ fn test_large_arena() {
 
     // Verify all values
     for (i, &idx) in indices.iter().enumerate() {
-        assert_eq!(arena.get(idx).unwrap(), Val::V(i as isize));
+        assert_eq!(arena.get(idx).unwrap(), i as isize);
     }
 
     // Free half
@@ -765,10 +719,10 @@ fn test_large_arena() {
 
 #[test]
 fn test_aba_problem_prevention() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate slot
-    let old_idx = arena.alloc(Val::V(100)).unwrap();
+    let old_idx = arena.alloc(100).unwrap();
     let old_raw = old_idx.raw();
 
     // Free it
@@ -776,30 +730,30 @@ fn test_aba_problem_prevention() {
 
     // Old index should now be invalid (slot is free)
     assert_eq!(arena.get(old_idx), Err(ArenaError::IndexNotAllocated));
-    assert_eq!(arena.set(old_idx, Val::V(999)), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.set(old_idx, 999), Err(ArenaError::IndexNotAllocated));
     assert_eq!(arena.free(old_idx), Err(ArenaError::IndexNotAllocated));
 
     // Allocate new value - will reuse the same slot
-    let new_idx = arena.alloc(Val::V(200)).unwrap();
+    let new_idx = arena.alloc(200).unwrap();
 
     // Verify same slot is reused (free-list LIFO)
     assert_eq!(new_idx.raw(), old_raw);
 
     // New index should work
-    assert_eq!(arena.get(new_idx).unwrap(), Val::V(200));
+    assert_eq!(arena.get(new_idx).unwrap(), 200);
 }
 
 #[test]
 fn test_stale_index_after_multiple_reuses() {
-    let arena: Arena<Val, 3> = Arena::new();
+    let arena: Arena<isize, 3> = Arena::new(0);
 
     // Get initial index
-    let stale_idx = arena.alloc(Val::V(1)).unwrap();
+    let stale_idx = arena.alloc(1).unwrap();
     arena.free(stale_idx).unwrap();
 
     // Reuse slot multiple times
     for i in 0..10 {
-        let idx = arena.alloc(Val::V(i * 100)).unwrap();
+        let idx = arena.alloc(i * 100).unwrap();
         arena.free(idx).unwrap();
     }
 
@@ -809,17 +763,17 @@ fn test_stale_index_after_multiple_reuses() {
 
 #[test]
 fn test_iterator_indices_after_free_realloc() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(10)).unwrap();
-    let idx2 = arena.alloc(Val::V(20)).unwrap();
-    let idx3 = arena.alloc(Val::V(30)).unwrap();
+    let idx1 = arena.alloc(10).unwrap();
+    let idx2 = arena.alloc(20).unwrap();
+    let idx3 = arena.alloc(30).unwrap();
 
     // Free middle one
     arena.free(idx2).unwrap();
 
     // Reallocate
-    let idx4 = arena.alloc(Val::V(40)).unwrap();
+    let idx4 = arena.alloc(40).unwrap();
 
     // Iterator should return current valid indices
     let iter_indices: Vec<ArenaIndex> = arena.iter().map(|(i, _)| i).collect();
@@ -837,14 +791,14 @@ fn test_iterator_indices_after_free_realloc() {
 
 #[test]
 fn test_free_list_lifo_order() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Allocate all slots
-    let idx0 = arena.alloc(Val::V(0)).unwrap();
-    let idx1 = arena.alloc(Val::V(1)).unwrap();
-    let idx2 = arena.alloc(Val::V(2)).unwrap();
-    let idx3 = arena.alloc(Val::V(3)).unwrap();
-    let idx4 = arena.alloc(Val::V(4)).unwrap();
+    let idx0 = arena.alloc(0).unwrap();
+    let idx1 = arena.alloc(1).unwrap();
+    let idx2 = arena.alloc(2).unwrap();
+    let idx3 = arena.alloc(3).unwrap();
+    let idx4 = arena.alloc(4).unwrap();
 
     // Free in order: 1, 3, 0
     arena.free(idx1).unwrap();
@@ -852,9 +806,9 @@ fn test_free_list_lifo_order() {
     arena.free(idx0).unwrap();
 
     // Reallocate - should come back in LIFO order: 0, 3, 1
-    let new1 = arena.alloc(Val::V(100)).unwrap();
-    let new2 = arena.alloc(Val::V(200)).unwrap();
-    let new3 = arena.alloc(Val::V(300)).unwrap();
+    let new1 = arena.alloc(100).unwrap();
+    let new2 = arena.alloc(200).unwrap();
+    let new3 = arena.alloc(300).unwrap();
 
     assert_eq!(new1.raw(), idx0.raw()); // Last freed, first allocated
     assert_eq!(new2.raw(), idx3.raw());
@@ -863,22 +817,22 @@ fn test_free_list_lifo_order() {
 
 #[test]
 fn test_free_list_integrity_after_clear() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
     // Allocate some
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(3)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(3).unwrap();
 
     arena.clear();
 
     // After clear, free list should be rebuilt
     // Should be able to allocate all slots in order 0, 1, 2, 3, 4
-    let idx0 = arena.alloc(Val::V(10)).unwrap();
-    let idx1 = arena.alloc(Val::V(20)).unwrap();
-    let idx2 = arena.alloc(Val::V(30)).unwrap();
-    let idx3 = arena.alloc(Val::V(40)).unwrap();
-    let idx4 = arena.alloc(Val::V(50)).unwrap();
+    let idx0 = arena.alloc(10).unwrap();
+    let idx1 = arena.alloc(20).unwrap();
+    let idx2 = arena.alloc(30).unwrap();
+    let idx3 = arena.alloc(40).unwrap();
+    let idx4 = arena.alloc(50).unwrap();
 
     assert_eq!(idx0.raw(), 0);
     assert_eq!(idx1.raw(), 1);
@@ -889,11 +843,11 @@ fn test_free_list_integrity_after_clear() {
 
 #[test]
 fn test_free_list_no_corruption_on_partial_free() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let mut indices = Vec::new();
     for i in 0..10 {
-        indices.push(arena.alloc(Val::V(i)).unwrap());
+        indices.push(arena.alloc(i).unwrap());
     }
 
     // Free every other slot
@@ -905,11 +859,11 @@ fn test_free_list_no_corruption_on_partial_free() {
 
     // Allocate 5 more - should fill exactly
     for i in 0..5 {
-        assert!(arena.alloc(Val::V(100 + i)).is_ok());
+        assert!(arena.alloc(100 + i).is_ok());
     }
 
     assert!(arena.is_full());
-    assert_eq!(arena.alloc(Val::V(999)), Err(ArenaError::OutOfMemory));
+    assert_eq!(arena.alloc(999), Err(ArenaError::OutOfMemory));
 }
 
 // ============================================================================
@@ -918,7 +872,7 @@ fn test_free_list_no_corruption_on_partial_free() {
 
 #[test]
 fn test_index_at_boundary() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Index at boundary - slot doesn't exist
     let boundary_not_allocated = ArenaIndex::new(9);
@@ -934,12 +888,12 @@ fn test_index_at_boundary() {
 
 #[test]
 fn test_max_index_value() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     let huge_idx = ArenaIndex::new(usize::MAX);
     assert_eq!(arena.get(huge_idx), Err(ArenaError::IndexOutOfBounds));
     assert_eq!(arena.free(huge_idx), Err(ArenaError::IndexOutOfBounds));
-    assert_eq!(arena.set(huge_idx, Val::V(42)), Err(ArenaError::IndexOutOfBounds));
+    assert_eq!(arena.set(huge_idx, 42), Err(ArenaError::IndexOutOfBounds));
 }
 
 #[test]
@@ -975,10 +929,10 @@ fn test_arena_index_hash() {
 
 #[test]
 fn test_zigzag_allocation_pattern() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Allocate all
-    let mut indices: Vec<ArenaIndex> = (0..10).map(|i| arena.alloc(Val::V(i)).unwrap()).collect();
+    let mut indices: Vec<ArenaIndex> = (0..10).map(|i| arena.alloc(i).unwrap()).collect();
 
     // Free odd indices
     for i in (1..10).step_by(2) {
@@ -993,19 +947,19 @@ fn test_zigzag_allocation_pattern() {
     assert!(arena.is_empty());
 
     // Reallocate all - should work
-    indices = (0..10).map(|i| arena.alloc(Val::V(i * 10)).unwrap()).collect();
+    indices = (0..10).map(|i| arena.alloc(i * 10).unwrap()).collect();
 
     assert!(arena.is_full());
 
     // Verify all values
     for (i, &idx) in indices.iter().enumerate() {
-        assert_eq!(arena.get(idx).unwrap(), Val::V((i * 10) as isize));
+        assert_eq!(arena.get(idx).unwrap(), (i * 10) as isize);
     }
 }
 
 #[test]
 fn test_random_like_access_pattern() {
-    let arena: Arena<Val, 20> = Arena::new();
+    let arena: Arena<isize, 20> = Arena::new(0);
 
     let mut active_indices: Vec<ArenaIndex> = Vec::new();
 
@@ -1017,7 +971,7 @@ fn test_random_like_access_pattern() {
             arena.free(idx).unwrap();
         } else if arena.available() > 0 {
             // Allocate
-            let idx = arena.alloc(Val::V(i)).unwrap();
+            let idx = arena.alloc(i).unwrap();
             active_indices.push(idx);
         }
     }
@@ -1033,27 +987,27 @@ fn test_random_like_access_pattern() {
 
 #[test]
 fn test_interleaved_alloc_free_set() {
-    let arena: Arena<Val, 5> = Arena::new();
+    let arena: Arena<isize, 5> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(1)).unwrap();
-    let idx2 = arena.alloc(Val::V(2)).unwrap();
+    let idx1 = arena.alloc(1).unwrap();
+    let idx2 = arena.alloc(2).unwrap();
 
-    arena.set(idx1, Val::V(10)).unwrap();
+    arena.set(idx1, 10).unwrap();
 
-    let idx3 = arena.alloc(Val::V(3)).unwrap();
+    let idx3 = arena.alloc(3).unwrap();
 
     arena.free(idx2).unwrap();
-    arena.set(idx1, Val::V(100)).unwrap();
-    arena.set(idx3, Val::V(300)).unwrap();
+    arena.set(idx1, 100).unwrap();
+    arena.set(idx3, 300).unwrap();
 
     // idx2 is now invalid
     assert_eq!(arena.get(idx2), Err(ArenaError::IndexNotAllocated));
 
-    let idx4 = arena.alloc(Val::V(4)).unwrap();
+    let idx4 = arena.alloc(4).unwrap();
 
-    assert_eq!(arena.get(idx1).unwrap(), Val::V(100));
-    assert_eq!(arena.get(idx3).unwrap(), Val::V(300));
-    assert_eq!(arena.get(idx4).unwrap(), Val::V(4));
+    assert_eq!(arena.get(idx1).unwrap(), 100);
+    assert_eq!(arena.get(idx3).unwrap(), 300);
+    assert_eq!(arena.get(idx4).unwrap(), 4);
     // Without generations, idx4 reuses idx2's slot, so idx2 == idx4
     assert_eq!(idx2, idx4);
 }
@@ -1064,7 +1018,7 @@ fn test_interleaved_alloc_free_set() {
 
 #[test]
 fn test_tree_with_stale_indices() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -1081,7 +1035,7 @@ fn test_tree_with_stale_indices() {
 
 #[test]
 fn test_copy_then_delete_original() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -1108,7 +1062,7 @@ fn test_copy_then_delete_original() {
 
 #[test]
 fn test_partial_tree_delete() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Build tree: Branch(Branch(1, 2), Leaf(3))
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1140,10 +1094,10 @@ fn test_partial_tree_delete() {
 
 #[test]
 fn test_fragmentation_after_free_realloc() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     // Fill arena
-    let indices: Vec<_> = (0..10).map(|i| arena.alloc(Val::V(i)).unwrap()).collect();
+    let indices: Vec<_> = (0..10).map(|i| arena.alloc(i).unwrap()).collect();
 
     // Create fragmentation by freeing every other slot
     for i in (0..10).step_by(2) {
@@ -1157,7 +1111,7 @@ fn test_fragmentation_after_free_realloc() {
 
     // Reallocate to fill gaps
     for _ in 0..5 {
-        arena.alloc(Val::V(99)).unwrap();
+        arena.alloc(99).unwrap();
     }
 
     let stats_after = arena.stats();
@@ -1171,7 +1125,7 @@ fn test_fragmentation_after_free_realloc() {
 
 #[test]
 fn test_stress_rapid_alloc_free() {
-    let arena: Arena<Val, 100> = Arena::new();
+    let arena: Arena<isize, 100> = Arena::new(0);
 
     for _ in 0..1000 {
         let mut indices = Vec::new();
@@ -1179,7 +1133,7 @@ fn test_stress_rapid_alloc_free() {
         // Allocate random amount (up to half capacity)
         let count = 50;
         for i in 0..count {
-            indices.push(arena.alloc(Val::V(i)).unwrap());
+            indices.push(arena.alloc(i).unwrap());
         }
 
         // Free all
@@ -1193,7 +1147,7 @@ fn test_stress_rapid_alloc_free() {
 
 #[test]
 fn test_stress_mixed_operations() {
-    let arena: Arena<Val, 50> = Arena::new();
+    let arena: Arena<isize, 50> = Arena::new(0);
 
     let mut valid_indices: Vec<ArenaIndex> = Vec::new();
 
@@ -1201,7 +1155,7 @@ fn test_stress_mixed_operations() {
         match i % 5 {
             0 | 1 | 2 => {
                 // Allocate
-                if let Ok(idx) = arena.alloc(Val::V(i as isize)) {
+                if let Ok(idx) = arena.alloc(i as isize) {
                     valid_indices.push(idx);
                 }
             }
@@ -1216,7 +1170,7 @@ fn test_stress_mixed_operations() {
                 // Set random valid index
                 if !valid_indices.is_empty() {
                     let idx = valid_indices[i % valid_indices.len()];
-                    arena.set(idx, Val::V(i as isize * 10)).unwrap();
+                    arena.set(idx, i as isize * 10).unwrap();
                 }
             }
             _ => unreachable!(),
@@ -1235,7 +1189,7 @@ fn test_stress_mixed_operations() {
 impl<const N: usize> Trace<Tree, N> for Tree {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
-            Tree::Free(_) | Tree::Leaf(_) => {} // No references
+            Tree::Leaf(_) => {} // No references
             Tree::Branch(left, right) => {
                 tracer(left);
                 tracer(right);
@@ -1246,7 +1200,7 @@ impl<const N: usize> Trace<Tree, N> for Tree {
 
 #[test]
 fn test_gc_basic_collection() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Build a tree: root -> (leaf1, leaf2)
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1281,7 +1235,7 @@ fn test_gc_basic_collection() {
 
 #[test]
 fn test_gc_no_garbage() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let leaf2 = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -1297,7 +1251,7 @@ fn test_gc_no_garbage() {
 
 #[test]
 fn test_gc_all_garbage() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Allocate objects but don't keep any roots
     arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1316,7 +1270,7 @@ fn test_gc_all_garbage() {
 
 #[test]
 fn test_gc_multiple_roots() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Two separate trees
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1342,38 +1296,39 @@ fn test_gc_multiple_roots() {
 fn test_gc_handles_cycles() {
     // Create a structure that could contain cycles
     #[derive(Clone, Copy)]
-    enum Node {
-        Free(usize),
-        N { value: isize, left: Option<ArenaIndex>, right: Option<ArenaIndex> },
-    }
-
-    impl Slotted for Node {
-        fn is_free(&self) -> bool { matches!(self, Node::Free(_)) }
-        fn next_free(&self) -> usize { match self { Node::Free(n) => *n, _ => unreachable!() } }
-        fn make_free(next: usize) -> Self { Node::Free(next) }
+    struct Node {
+        value: isize,
+        left: Option<ArenaIndex>,
+        right: Option<ArenaIndex>,
     }
 
     impl<const N: usize> Trace<Node, N> for Node {
         fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-            if let Node::N { left, right, .. } = self {
-                if let Some(l) = left { tracer(*l); }
-                if let Some(r) = right { tracer(*r); }
+            if let Some(left) = self.left {
+                tracer(left);
+            }
+            if let Some(right) = self.right {
+                tracer(right);
             }
         }
     }
 
-    let arena: Arena<Node, 100> = Arena::new();
+    let arena: Arena<Node, 100> = Arena::new(Node {
+        value: 0,
+        left: None,
+        right: None,
+    });
 
     // Create nodes
     let a = arena
-        .alloc(Node::N {
+        .alloc(Node {
             value: 1,
             left: None,
             right: None,
         })
         .unwrap();
     let b = arena
-        .alloc(Node::N {
+        .alloc(Node {
             value: 2,
             left: None,
             right: None,
@@ -1384,7 +1339,7 @@ fn test_gc_handles_cycles() {
     arena
         .set(
             a,
-            Node::N {
+            Node {
                 value: 1,
                 left: Some(b),
                 right: None,
@@ -1394,7 +1349,7 @@ fn test_gc_handles_cycles() {
     arena
         .set(
             b,
-            Node::N {
+            Node {
                 value: 2,
                 left: Some(a),
                 right: None,
@@ -1404,7 +1359,7 @@ fn test_gc_handles_cycles() {
 
     // Add garbage
     arena
-        .alloc(Node::N {
+        .alloc(Node {
             value: 999,
             left: None,
             right: None,
@@ -1423,7 +1378,7 @@ fn test_gc_handles_cycles() {
 
 #[test]
 fn test_gc_deep_tree() {
-    let arena: Arena<Tree, 1000> = Arena::new();
+    let arena: Arena<Tree, 1000> = Arena::new(Tree::Leaf(0));
 
     // Build a deep left-leaning tree
     let mut current = arena.alloc(Tree::Leaf(0)).unwrap();
@@ -1450,7 +1405,7 @@ fn test_gc_deep_tree() {
 
 #[test]
 fn test_gc_with_shared_references() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Create a shared leaf
     let shared_leaf = arena.alloc(Tree::Leaf(42)).unwrap();
@@ -1474,7 +1429,7 @@ fn test_gc_with_shared_references() {
 
 #[test]
 fn test_gc_invalid_roots_ignored() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let valid_root = arena.alloc(Tree::Leaf(1)).unwrap();
     arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
@@ -1491,7 +1446,7 @@ fn test_gc_invalid_roots_ignored() {
 
 #[test]
 fn test_gc_empty_arena() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let stats = arena.collect_garbage(&[]);
 
@@ -1502,7 +1457,7 @@ fn test_gc_empty_arena() {
 
 #[test]
 fn test_gc_stats() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     for i in 0..10 {
         arena.alloc(Tree::Leaf(i)).unwrap();
@@ -1524,7 +1479,7 @@ fn test_gc_stats() {
 
 #[test]
 fn test_gc_collect_garbage_multi() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let root1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let root2 = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -1543,7 +1498,7 @@ fn test_gc_collect_garbage_multi() {
 
 #[test]
 fn test_gc_repeated_collections() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let mut root = arena.alloc(Tree::Leaf(0)).unwrap();
 
@@ -1568,50 +1523,47 @@ fn test_gc_repeated_collections() {
 
 // Linked list for GC tests
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum ListNode {
-    Free(usize),
-    N { value: isize, next: Option<ArenaIndex> },
-}
-
-impl Slotted for ListNode {
-    fn is_free(&self) -> bool { matches!(self, ListNode::Free(_)) }
-    fn next_free(&self) -> usize { match self { ListNode::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { ListNode::Free(next) }
+struct ListNode {
+    value: isize,
+    next: Option<ArenaIndex>,
 }
 
 impl<const N: usize> Trace<ListNode, N> for ListNode {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-        if let ListNode::N { next: Some(n), .. } = self {
-            tracer(*n);
+        if let Some(next) = self.next {
+            tracer(next);
         }
     }
 }
 
 #[test]
 fn test_gc_linked_list() {
-    let arena: Arena<ListNode, 100> = Arena::new();
+    let arena: Arena<ListNode, 100> = Arena::new(ListNode {
+        value: 0,
+        next: None,
+    });
 
     // Build list: head -> n1 -> n2 -> n3 -> None
     let n3 = arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: 3,
             next: None,
         })
         .unwrap();
     let n2 = arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: 2,
             next: Some(n3),
         })
         .unwrap();
     let n1 = arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: 1,
             next: Some(n2),
         })
         .unwrap();
     let head = arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: 0,
             next: Some(n1),
         })
@@ -1619,13 +1571,13 @@ fn test_gc_linked_list() {
 
     // Garbage nodes
     arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: -1,
             next: None,
         })
         .unwrap();
     arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: -2,
             next: None,
         })
@@ -1641,27 +1593,19 @@ fn test_gc_linked_list() {
 
     // Verify list is intact
     let h = arena.get(head).unwrap();
-    if let ListNode::N { value, next } = h {
-        assert_eq!(value, 0);
-        let node1 = arena.get(next.unwrap()).unwrap();
-        if let ListNode::N { value: v1, next: n1 } = node1 {
-            assert_eq!(v1, 1);
-            let node2 = arena.get(n1.unwrap()).unwrap();
-            if let ListNode::N { value: v2, next: n2 } = node2 {
-                assert_eq!(v2, 2);
-                let node3 = arena.get(n2.unwrap()).unwrap();
-                if let ListNode::N { value: v3, next: n3 } = node3 {
-                    assert_eq!(v3, 3);
-                    assert!(n3.is_none());
-                } else { panic!("Expected ListNode::N"); }
-            } else { panic!("Expected ListNode::N"); }
-        } else { panic!("Expected ListNode::N"); }
-    } else { panic!("Expected ListNode::N"); }
+    assert_eq!(h.value, 0);
+    let node1 = arena.get(h.next.unwrap()).unwrap();
+    assert_eq!(node1.value, 1);
+    let node2 = arena.get(node1.next.unwrap()).unwrap();
+    assert_eq!(node2.value, 2);
+    let node3 = arena.get(node2.next.unwrap()).unwrap();
+    assert_eq!(node3.value, 3);
+    assert!(node3.next.is_none());
 }
 
 #[test]
 fn test_gc_stress() {
-    let arena: Arena<Tree, 1000> = Arena::new();
+    let arena: Arena<Tree, 1000> = Arena::new(Tree::Leaf(0));
 
     let mut roots: Vec<ArenaIndex> = Vec::new();
 
@@ -1715,40 +1659,33 @@ fn test_gc_stress() {
 fn test_gc_self_referential() {
     // A node that points to itself
     #[derive(Clone, Copy)]
-    enum SelfRef {
-        Free(usize),
-        N { self_ptr: Option<ArenaIndex> },
-    }
-
-    impl Slotted for SelfRef {
-        fn is_free(&self) -> bool { matches!(self, SelfRef::Free(_)) }
-        fn next_free(&self) -> usize { match self { SelfRef::Free(n) => *n, _ => unreachable!() } }
-        fn make_free(next: usize) -> Self { SelfRef::Free(next) }
+    struct SelfRef {
+        self_ptr: Option<ArenaIndex>,
     }
 
     impl<const N: usize> Trace<SelfRef, N> for SelfRef {
         fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-            if let SelfRef::N { self_ptr: Some(ptr) } = self {
-                tracer(*ptr);
+            if let Some(ptr) = self.self_ptr {
+                tracer(ptr);
             }
         }
     }
 
-    let arena: Arena<SelfRef, 100> = Arena::new();
+    let arena: Arena<SelfRef, 100> = Arena::new(SelfRef { self_ptr: None });
 
     // Allocate and make it point to itself
-    let node = arena.alloc(SelfRef::N { self_ptr: None }).unwrap();
+    let node = arena.alloc(SelfRef { self_ptr: None }).unwrap();
     arena
         .set(
             node,
-            SelfRef::N {
+            SelfRef {
                 self_ptr: Some(node),
             },
         )
         .unwrap();
 
     // Add garbage
-    arena.alloc(SelfRef::N { self_ptr: None }).unwrap();
+    arena.alloc(SelfRef { self_ptr: None }).unwrap();
 
     let stats = arena.collect_garbage(&[node]);
 
@@ -1758,19 +1695,22 @@ fn test_gc_self_referential() {
 
 #[test]
 fn test_gc_long_chain() {
-    let arena: Arena<ListNode, 1000> = Arena::new();
+    let arena: Arena<ListNode, 1000> = Arena::new(ListNode {
+        value: 0,
+        next: None,
+    });
 
     // Build a very long linked list
     let mut current = arena
-        .alloc(ListNode::N {
+        .alloc(ListNode {
             value: 0,
             next: None,
         })
         .unwrap();
     for i in 1..500 {
         let next = arena
-            .alloc(ListNode::N {
-            value: i,
+            .alloc(ListNode {
+                value: i,
                 next: Some(current),
             })
             .unwrap();
@@ -1782,8 +1722,8 @@ fn test_gc_long_chain() {
     // Add garbage
     for _ in 0..100 {
         arena
-            .alloc(ListNode::N {
-            value: -1,
+            .alloc(ListNode {
+                value: -1,
                 next: None,
             })
             .unwrap();
@@ -1802,40 +1742,31 @@ fn test_gc_long_chain() {
 fn test_gc_dense_graph() {
     // Create a structure where many nodes point to the same targets
     #[derive(Clone, Copy)]
-    enum MultiRef {
-        Free(usize),
-        N { refs: [Option<ArenaIndex>; 4] },
-    }
-
-    impl Slotted for MultiRef {
-        fn is_free(&self) -> bool { matches!(self, MultiRef::Free(_)) }
-        fn next_free(&self) -> usize { match self { MultiRef::Free(n) => *n, _ => unreachable!() } }
-        fn make_free(next: usize) -> Self { MultiRef::Free(next) }
+    struct MultiRef {
+        refs: [Option<ArenaIndex>; 4],
     }
 
     impl<const N: usize> Trace<MultiRef, N> for MultiRef {
         fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-            if let MultiRef::N { refs } = self {
-                for r in refs {
-                    if let Some(idx) = r {
-                        tracer(*idx);
-                    }
+            for r in &self.refs {
+                if let Some(idx) = r {
+                    tracer(*idx);
                 }
             }
         }
     }
 
-    let arena: Arena<MultiRef, 100> = Arena::new();
+    let arena: Arena<MultiRef, 100> = Arena::new(MultiRef { refs: [None; 4] });
 
     // Create some shared nodes
-    let shared1 = arena.alloc(MultiRef::N { refs: [None; 4] }).unwrap();
-    let shared2 = arena.alloc(MultiRef::N { refs: [None; 4] }).unwrap();
+    let shared1 = arena.alloc(MultiRef { refs: [None; 4] }).unwrap();
+    let shared2 = arena.alloc(MultiRef { refs: [None; 4] }).unwrap();
 
     // Create nodes that all point to the shared nodes
     let mut roots = Vec::new();
     for _ in 0..10 {
         let node = arena
-            .alloc(MultiRef::N {
+            .alloc(MultiRef {
                 refs: [Some(shared1), Some(shared2), Some(shared1), Some(shared2)],
             })
             .unwrap();
@@ -1844,7 +1775,7 @@ fn test_gc_dense_graph() {
 
     // Add garbage
     for _ in 0..20 {
-        arena.alloc(MultiRef::N { refs: [None; 4] }).unwrap();
+        arena.alloc(MultiRef { refs: [None; 4] }).unwrap();
     }
 
     assert_eq!(arena.len(), 32); // 2 shared + 10 roots + 20 garbage
@@ -1857,7 +1788,7 @@ fn test_gc_dense_graph() {
 
 #[test]
 fn test_gc_interleaved_alloc_collect() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let mut root = arena.alloc(Tree::Leaf(0)).unwrap();
 
@@ -1888,7 +1819,7 @@ fn test_gc_interleaved_alloc_collect() {
 
 #[test]
 fn test_gc_stats_accuracy() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Create exactly known structure
     let l1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -1918,24 +1849,15 @@ fn test_gc_stats_accuracy() {
 
 /// Node with many children to test the 16-child buffer limit in GC
 #[derive(Clone, Copy)]
-enum ManyChildNode {
-    Free(usize),
-    N { children: [Option<ArenaIndex>; 8] },
-}
-
-impl Slotted for ManyChildNode {
-    fn is_free(&self) -> bool { matches!(self, ManyChildNode::Free(_)) }
-    fn next_free(&self) -> usize { match self { ManyChildNode::Free(n) => *n, _ => unreachable!() } }
-    fn make_free(next: usize) -> Self { ManyChildNode::Free(next) }
+struct ManyChildNode {
+    children: [Option<ArenaIndex>; 8],
 }
 
 impl<const N: usize> Trace<ManyChildNode, N> for ManyChildNode {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-        if let ManyChildNode::N { children } = self {
-            for child in children {
-                if let Some(idx) = child {
-                    tracer(*idx);
-                }
+        for child in &self.children {
+            if let Some(idx) = child {
+                tracer(*idx);
             }
         }
     }
@@ -1944,7 +1866,9 @@ impl<const N: usize> Trace<ManyChildNode, N> for ManyChildNode {
 #[test]
 fn test_gc_stress_wide_tree() {
     // Test tree where each node has many children
-    let arena: Arena<ManyChildNode, 1000> = Arena::new();
+    let arena: Arena<ManyChildNode, 1000> = Arena::new(ManyChildNode {
+        children: [None; 8],
+    });
 
     // Create a wide tree with 8 children per node, 3 levels deep
     // Level 0: 1 root
@@ -1955,7 +1879,7 @@ fn test_gc_stress_wide_tree() {
     let mut level2_nodes = Vec::new();
     for _ in 0..64 {
         let node = arena
-            .alloc(ManyChildNode::N {
+            .alloc(ManyChildNode {
                 children: [None; 8],
             })
             .unwrap();
@@ -1968,7 +1892,7 @@ fn test_gc_stress_wide_tree() {
         for j in 0..8 {
             children[j] = Some(level2_nodes[i * 8 + j]);
         }
-        let node = arena.alloc(ManyChildNode::N { children }).unwrap();
+        let node = arena.alloc(ManyChildNode { children }).unwrap();
         level1_nodes.push(node);
     }
 
@@ -1977,7 +1901,7 @@ fn test_gc_stress_wide_tree() {
         root_children[i] = Some(level1_nodes[i]);
     }
     let root = arena
-        .alloc(ManyChildNode::N {
+        .alloc(ManyChildNode {
             children: root_children,
         })
         .unwrap();
@@ -1985,7 +1909,7 @@ fn test_gc_stress_wide_tree() {
     // Add garbage
     for _ in 0..100 {
         arena
-            .alloc(ManyChildNode::N {
+            .alloc(ManyChildNode {
                 children: [None; 8],
             })
             .unwrap();
@@ -2002,7 +1926,7 @@ fn test_gc_stress_wide_tree() {
 
 #[test]
 fn test_gc_stress_very_deep_tree() {
-    let arena: Arena<Tree, 2000> = Arena::new();
+    let arena: Arena<Tree, 2000> = Arena::new(Tree::Leaf(0));
 
     // Build an extremely deep tree (500 levels to leave room for garbage)
     // 1 initial + 499 iterations * 2 = 999 nodes
@@ -2033,7 +1957,7 @@ fn test_gc_stress_very_deep_tree() {
 
 #[test]
 fn test_gc_stress_full_arena_all_garbage() {
-    let arena: Arena<Tree, 500> = Arena::new();
+    let arena: Arena<Tree, 500> = Arena::new(Tree::Leaf(0));
 
     // Fill the entire arena with garbage (no roots)
     for i in 0..500 {
@@ -2052,7 +1976,7 @@ fn test_gc_stress_full_arena_all_garbage() {
 
 #[test]
 fn test_gc_stress_full_arena_all_reachable() {
-    let arena: Arena<Tree, 500> = Arena::new();
+    let arena: Arena<Tree, 500> = Arena::new(Tree::Leaf(0));
 
     // Build a tree that uses all 500 slots
     // Binary tree: n leaves need n-1 internal nodes, so ~250 leaves + 249 internal = 499
@@ -2079,7 +2003,7 @@ fn test_gc_stress_full_arena_all_reachable() {
 
 #[test]
 fn test_gc_stress_rapid_cycles() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let mut root = arena.alloc(Tree::Leaf(0)).unwrap();
 
@@ -2112,7 +2036,7 @@ fn test_gc_stress_rapid_cycles() {
 
 #[test]
 fn test_gc_stress_alternating_patterns() {
-    let arena: Arena<Tree, 300> = Arena::new();
+    let arena: Arena<Tree, 300> = Arena::new(Tree::Leaf(0));
 
     for pattern in 0..10 {
         // Clear previous
@@ -2191,7 +2115,7 @@ fn test_gc_stress_alternating_patterns() {
 
 #[test]
 fn test_gc_stress_fragmented_heap() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     // Create highly fragmented heap
     let mut indices = Vec::new();
@@ -2229,7 +2153,7 @@ fn test_gc_stress_fragmented_heap() {
 
 #[test]
 fn test_gc_stress_many_roots() {
-    let arena: Arena<Tree, 1000> = Arena::new();
+    let arena: Arena<Tree, 1000> = Arena::new(Tree::Leaf(0));
 
     // Create 500 individual roots (each a single leaf)
     let mut roots = Vec::new();
@@ -2255,7 +2179,7 @@ fn test_gc_stress_many_roots() {
 #[test]
 fn test_gc_stress_diamond_dag() {
     // Create a DAG where many nodes share the same children
-    let arena: Arena<Tree, 500> = Arena::new();
+    let arena: Arena<Tree, 500> = Arena::new(Tree::Leaf(0));
 
     // Create shared leaves
     let mut shared_leaves = Vec::new();
@@ -2293,35 +2217,26 @@ fn test_gc_stress_diamond_dag() {
 fn test_gc_stress_complex_cycles() {
     // Create a structure with multiple interconnected cycles
     #[derive(Clone, Copy)]
-    enum CycleNode {
-        Free(usize),
-        N { refs: [Option<ArenaIndex>; 4] },
-    }
-
-    impl Slotted for CycleNode {
-        fn is_free(&self) -> bool { matches!(self, CycleNode::Free(_)) }
-        fn next_free(&self) -> usize { match self { CycleNode::Free(n) => *n, _ => unreachable!() } }
-        fn make_free(next: usize) -> Self { CycleNode::Free(next) }
+    struct CycleNode {
+        refs: [Option<ArenaIndex>; 4],
     }
 
     impl<const N: usize> Trace<CycleNode, N> for CycleNode {
         fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-            if let CycleNode::N { refs } = self {
-                for r in refs {
-                    if let Some(idx) = r {
-                        tracer(*idx);
-                    }
+            for r in &self.refs {
+                if let Some(idx) = r {
+                    tracer(*idx);
                 }
             }
         }
     }
 
-    let arena: Arena<CycleNode, 100> = Arena::new();
+    let arena: Arena<CycleNode, 100> = Arena::new(CycleNode { refs: [None; 4] });
 
     // Create a ring of nodes
     let mut ring_nodes = Vec::new();
     for _ in 0..20 {
-        ring_nodes.push(arena.alloc(CycleNode::N { refs: [None; 4] }).unwrap());
+        ring_nodes.push(arena.alloc(CycleNode { refs: [None; 4] }).unwrap());
     }
 
     // Connect them in a ring with cross-connections
@@ -2333,7 +2248,7 @@ fn test_gc_stress_complex_cycles() {
         arena
             .set(
                 ring_nodes[i],
-                CycleNode::N {
+                CycleNode {
                     refs: [
                         Some(ring_nodes[next]),
                         Some(ring_nodes[cross1]),
@@ -2347,7 +2262,7 @@ fn test_gc_stress_complex_cycles() {
 
     // Add garbage nodes
     for _ in 0..50 {
-        arena.alloc(CycleNode::N { refs: [None; 4] }).unwrap();
+        arena.alloc(CycleNode { refs: [None; 4] }).unwrap();
     }
 
     // Use first ring node as root
@@ -2363,37 +2278,30 @@ fn test_gc_stress_maximum_children_per_trace() {
     // traced in rapid succession
 
     #[derive(Clone, Copy)]
-    enum Node16 {
-        Free(usize),
-        N { children: [Option<ArenaIndex>; 16] },
-    }
-
-    impl Slotted for Node16 {
-        fn is_free(&self) -> bool { matches!(self, Node16::Free(_)) }
-        fn next_free(&self) -> usize { match self { Node16::Free(n) => *n, _ => unreachable!() } }
-        fn make_free(next: usize) -> Self { Node16::Free(next) }
+    struct Node16 {
+        children: [Option<ArenaIndex>; 16],
     }
 
     impl<const N: usize> Trace<Node16, N> for Node16 {
         fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-            if let Node16::N { children } = self {
-                for child in children {
-                    if let Some(idx) = child {
-                        tracer(*idx);
-                    }
+            for child in &self.children {
+                if let Some(idx) = child {
+                    tracer(*idx);
                 }
             }
         }
     }
 
-    let arena: Arena<Node16, 500> = Arena::new();
+    let arena: Arena<Node16, 500> = Arena::new(Node16 {
+        children: [None; 16],
+    });
 
     // Create leaves
     let mut leaves = Vec::new();
     for _ in 0..32 {
         leaves.push(
             arena
-                .alloc(Node16::N {
+                .alloc(Node16 {
                     children: [None; 16],
                 })
                 .unwrap(),
@@ -2406,7 +2314,7 @@ fn test_gc_stress_maximum_children_per_trace() {
         children1[i] = Some(leaves[i]);
     }
     let node1 = arena
-        .alloc(Node16::N {
+        .alloc(Node16 {
             children: children1,
         })
         .unwrap();
@@ -2417,14 +2325,14 @@ fn test_gc_stress_maximum_children_per_trace() {
         children2[i] = Some(leaves[16 + i]);
     }
     let node2 = arena
-        .alloc(Node16::N {
+        .alloc(Node16 {
             children: children2,
         })
         .unwrap();
 
     // Root points to both
     let root = arena
-        .alloc(Node16::N {
+        .alloc(Node16 {
             children: [
                 Some(node1),
                 Some(node2),
@@ -2449,7 +2357,7 @@ fn test_gc_stress_maximum_children_per_trace() {
     // Add garbage
     for _ in 0..100 {
         arena
-            .alloc(Node16::N {
+            .alloc(Node16 {
                 children: [None; 16],
             })
             .unwrap();
@@ -2464,7 +2372,7 @@ fn test_gc_stress_maximum_children_per_trace() {
 
 #[test]
 fn test_gc_stress_repeated_collect_same_roots() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let leaf2 = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -2493,7 +2401,7 @@ fn test_gc_stress_repeated_collect_same_roots() {
 
 #[test]
 fn test_gc_stress_collect_after_mutations() {
-    let arena: Arena<Tree, 100> = Arena::new();
+    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
     let mut leaf = arena.alloc(Tree::Leaf(0)).unwrap();
 
@@ -2523,7 +2431,7 @@ fn test_gc_stress_collect_after_mutations() {
 fn test_gc_stress_worst_case_mark_stack() {
     // Create a structure that maximizes mark stack usage
     // A long chain where each node must be pushed to the stack
-    let arena: Arena<Tree, 500> = Arena::new();
+    let arena: Arena<Tree, 500> = Arena::new(Tree::Leaf(0));
 
     // Build a right-leaning tree (worst case for stack depth)
     let mut current = arena.alloc(Tree::Leaf(0)).unwrap();
@@ -2549,7 +2457,7 @@ fn test_gc_stress_worst_case_mark_stack() {
 
 #[test]
 fn test_gc_stress_incremental_tree_building() {
-    let arena: Arena<Tree, 500> = Arena::new();
+    let arena: Arena<Tree, 500> = Arena::new(Tree::Leaf(0));
 
     let mut root = arena.alloc(Tree::Leaf(0)).unwrap();
 
@@ -2595,20 +2503,20 @@ fn test_arena_index_null() {
 
 #[test]
 fn test_modify() {
-    let arena: Arena<Val, 10> = Arena::new();
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let arena: Arena<isize, 10> = Arena::new(0);
+    let idx = arena.alloc(42).unwrap();
 
-    arena.modify(idx, |v| if let Val::V(n) = v { *n += 10 }).unwrap();
-    assert_eq!(arena.get(idx).unwrap(), Val::V(52));
+    arena.modify(idx, |v| *v += 10).unwrap();
+    assert_eq!(arena.get(idx).unwrap(), 52);
 
-    arena.modify(idx, |v| if let Val::V(n) = v { *n *= 2 }).unwrap();
-    assert_eq!(arena.get(idx).unwrap(), Val::V(104));
+    arena.modify(idx, |v| *v *= 2).unwrap();
+    assert_eq!(arena.get(idx).unwrap(), 104);
 }
 
 #[test]
 fn test_modify_invalid() {
-    let arena: Arena<Val, 10> = Arena::new();
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let arena: Arena<isize, 10> = Arena::new(0);
+    let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
     assert_eq!(
@@ -2619,10 +2527,10 @@ fn test_modify_invalid() {
 
 #[test]
 fn test_try_get() {
-    let arena: Arena<Val, 10> = Arena::new();
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let arena: Arena<isize, 10> = Arena::new(0);
+    let idx = arena.alloc(42).unwrap();
 
-    assert_eq!(arena.try_get(idx), Some(Val::V(42)));
+    assert_eq!(arena.try_get(idx), Some(42));
 
     arena.free(idx).unwrap();
     assert_eq!(arena.try_get(idx), None);
@@ -2634,49 +2542,49 @@ fn test_try_get() {
 
 #[test]
 fn test_swap() {
-    let arena: Arena<Val, 10> = Arena::new();
-    let idx1 = arena.alloc(Val::V(100)).unwrap();
-    let idx2 = arena.alloc(Val::V(200)).unwrap();
+    let arena: Arena<isize, 10> = Arena::new(0);
+    let idx1 = arena.alloc(100).unwrap();
+    let idx2 = arena.alloc(200).unwrap();
 
-    assert_eq!(arena.get(idx1).unwrap(), Val::V(100));
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(200));
+    assert_eq!(arena.get(idx1).unwrap(), 100);
+    assert_eq!(arena.get(idx2).unwrap(), 200);
 
     arena.swap(idx1, idx2).unwrap();
 
-    assert_eq!(arena.get(idx1).unwrap(), Val::V(200));
-    assert_eq!(arena.get(idx2).unwrap(), Val::V(100));
+    assert_eq!(arena.get(idx1).unwrap(), 200);
+    assert_eq!(arena.get(idx2).unwrap(), 100);
 }
 
 #[test]
 fn test_swap_same_index() {
-    let arena: Arena<Val, 10> = Arena::new();
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let arena: Arena<isize, 10> = Arena::new(0);
+    let idx = arena.alloc(42).unwrap();
 
     // Swapping with self should be a no-op
     arena.swap(idx, idx).unwrap();
-    assert_eq!(arena.get(idx).unwrap(), Val::V(42));
+    assert_eq!(arena.get(idx).unwrap(), 42);
 }
 
 #[test]
 fn test_replace() {
-    let arena: Arena<Val, 10> = Arena::new();
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let arena: Arena<isize, 10> = Arena::new(0);
+    let idx = arena.alloc(42).unwrap();
 
-    let old = arena.replace(idx, Val::V(100)).unwrap();
-    assert_eq!(old, Val::V(42));
-    assert_eq!(arena.get(idx).unwrap(), Val::V(100));
+    let old = arena.replace(idx, 100).unwrap();
+    assert_eq!(old, 42);
+    assert_eq!(arena.get(idx).unwrap(), 100);
 }
 
 #[test]
 fn test_validate() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
     assert!(arena.validate());
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
     assert!(arena.validate());
 
-    let idx = arena.alloc(Val::V(3)).unwrap();
+    let idx = arena.alloc(3).unwrap();
     arena.free(idx).unwrap();
     assert!(arena.validate());
 
@@ -2686,11 +2594,11 @@ fn test_validate() {
 
 #[test]
 fn test_is_slot_occupied() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
     assert!(!arena.is_slot_occupied(0));
 
-    let idx = arena.alloc(Val::V(42)).unwrap();
+    let idx = arena.alloc(42).unwrap();
     assert!(arena.is_slot_occupied(idx.raw()));
 
     arena.free(idx).unwrap();
@@ -2699,11 +2607,11 @@ fn test_is_slot_occupied() {
 
 #[test]
 fn test_allocated_indices() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(1)).unwrap();
-    let idx2 = arena.alloc(Val::V(2)).unwrap();
-    let idx3 = arena.alloc(Val::V(3)).unwrap();
+    let idx1 = arena.alloc(1).unwrap();
+    let idx2 = arena.alloc(2).unwrap();
+    let idx3 = arena.alloc(3).unwrap();
 
     let indices = arena.allocated_indices();
 
@@ -2720,82 +2628,82 @@ fn test_allocated_indices() {
 
 #[test]
 fn test_for_each() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(3)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(3).unwrap();
 
     let mut sum = 0;
-    arena.for_each(|_, v| if let Val::V(n) = v { sum += n });
+    arena.for_each(|_, v| sum += v);
     assert_eq!(sum, 6);
 }
 
 #[test]
 fn test_for_each_mut() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(3)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(3).unwrap();
 
-    arena.for_each_mut(|_, v| if let Val::V(n) = v { *n *= 10 });
+    arena.for_each_mut(|_, v| *v *= 10);
 
     let mut sum = 0;
-    arena.for_each(|_, v| if let Val::V(n) = v { sum += n });
+    arena.for_each(|_, v| sum += v);
     assert_eq!(sum, 60);
 }
 
 #[test]
 fn test_count_where() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(1)).unwrap();
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(3)).unwrap();
-    arena.alloc(Val::V(4)).unwrap();
-    arena.alloc(Val::V(5)).unwrap();
+    arena.alloc(1).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(3).unwrap();
+    arena.alloc(4).unwrap();
+    arena.alloc(5).unwrap();
 
-    assert_eq!(arena.count_where(|v| matches!(v, Val::V(n) if n % 2 == 0)), 2); // 2, 4
-    assert_eq!(arena.count_where(|v| matches!(v, Val::V(n) if *n > 3)), 2); // 4, 5
-    assert_eq!(arena.count_where(|v| matches!(v, Val::V(n) if *n > 10)), 0);
+    assert_eq!(arena.count_where(|&v| v % 2 == 0), 2); // 2, 4
+    assert_eq!(arena.count_where(|&v| v > 3), 2); // 4, 5
+    assert_eq!(arena.count_where(|&v| v > 10), 0);
 }
 
 #[test]
 fn test_find() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    let idx1 = arena.alloc(Val::V(10)).unwrap();
-    arena.alloc(Val::V(20)).unwrap();
-    arena.alloc(Val::V(30)).unwrap();
+    let idx1 = arena.alloc(10).unwrap();
+    arena.alloc(20).unwrap();
+    arena.alloc(30).unwrap();
 
-    let found = arena.find(|v| matches!(v, Val::V(10)));
+    let found = arena.find(|&v| v == 10);
     assert!(found.is_some());
     let (idx, val) = found.unwrap();
     assert_eq!(idx, idx1);
-    assert_eq!(val, Val::V(10));
+    assert_eq!(val, 10);
 
-    assert!(arena.find(|v| matches!(v, Val::V(999))).is_none());
+    assert!(arena.find(|&v| v == 999).is_none());
 }
 
 #[test]
 fn test_any_all() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
 
-    arena.alloc(Val::V(2)).unwrap();
-    arena.alloc(Val::V(4)).unwrap();
-    arena.alloc(Val::V(6)).unwrap();
+    arena.alloc(2).unwrap();
+    arena.alloc(4).unwrap();
+    arena.alloc(6).unwrap();
 
-    assert!(arena.any(|v| matches!(v, Val::V(4))));
-    assert!(!arena.any(|v| matches!(v, Val::V(5))));
+    assert!(arena.any(|&v| v == 4));
+    assert!(!arena.any(|&v| v == 5));
 
-    assert!(arena.all(|v| matches!(v, Val::V(n) if n % 2 == 0))); // All even
-    assert!(!arena.all(|v| matches!(v, Val::V(n) if *n > 3))); // Not all > 3
+    assert!(arena.all(|&v| v % 2 == 0)); // All even
+    assert!(!arena.all(|&v| v > 3)); // Not all > 3
 }
 
 #[test]
 fn test_all_empty() {
-    let arena: Arena<Val, 10> = Arena::new();
+    let arena: Arena<isize, 10> = Arena::new(0);
     // all() on empty returns true (vacuously true)
     assert!(arena.all(|_| false));
 }
@@ -2848,7 +2756,7 @@ fn test_arena_stats_methods() {
 
 #[test]
 fn test_alloc_then_gc_then_alloc() {
-    let arena: Arena<Tree, 5> = Arena::new();
+    let arena: Arena<Tree, 5> = Arena::new(Tree::Leaf(0));
 
     let root = arena.alloc(Tree::Leaf(1)).unwrap();
     arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
@@ -2873,7 +2781,7 @@ fn test_alloc_then_gc_then_alloc() {
 
 #[test]
 fn test_gc_cannot_help_when_all_reachable() {
-    let arena: Arena<Tree, 3> = Arena::new();
+    let arena: Arena<Tree, 3> = Arena::new(Tree::Leaf(0));
 
     // Fill with non-garbage
     let r1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -2893,36 +2801,29 @@ fn test_gc_cannot_help_when_all_reachable() {
 fn test_gc_handles_many_children() {
     // Test that GC correctly handles nodes with >16 children
     #[derive(Clone, Copy)]
-    enum BigNode {
-        Free(usize),
-        N { children: [Option<ArenaIndex>; 20] }, // More than 16!
-    }
-
-    impl Slotted for BigNode {
-        fn is_free(&self) -> bool { matches!(self, BigNode::Free(_)) }
-        fn next_free(&self) -> usize { match self { BigNode::Free(n) => *n, _ => unreachable!() } }
-        fn make_free(next: usize) -> Self { BigNode::Free(next) }
+    struct BigNode {
+        children: [Option<ArenaIndex>; 20], // More than 16!
     }
 
     impl<const N: usize> Trace<BigNode, N> for BigNode {
         fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-            if let BigNode::N { children } = self {
-                for child in children {
-                    if let Some(idx) = child {
-                        tracer(*idx);
-                    }
+            for child in &self.children {
+                if let Some(idx) = child {
+                    tracer(*idx);
                 }
             }
         }
     }
 
-    let arena: Arena<BigNode, 100> = Arena::new();
+    let arena: Arena<BigNode, 100> = Arena::new(BigNode {
+        children: [None; 20],
+    });
 
     // Create 20 leaf nodes
     let mut leaves = [ArenaIndex::NIL; 20];
     for i in 0..20 {
         leaves[i] = arena
-            .alloc(BigNode::N {
+            .alloc(BigNode {
                 children: [None; 20],
             })
             .unwrap();
@@ -2934,7 +2835,7 @@ fn test_gc_handles_many_children() {
         root_children[i] = Some(leaves[i]);
     }
     let root = arena
-        .alloc(BigNode::N {
+        .alloc(BigNode {
             children: root_children,
         })
         .unwrap();
@@ -2942,7 +2843,7 @@ fn test_gc_handles_many_children() {
     // Add garbage
     for _ in 0..30 {
         arena
-            .alloc(BigNode::N {
+            .alloc(BigNode {
                 children: [None; 20],
             })
             .unwrap();
@@ -2965,7 +2866,7 @@ fn test_gc_handles_many_children() {
 /// Test that collecting garbage with NULL indices in roots is handled safely
 #[test]
 fn test_gc_with_null_roots() {
-    let arena: Arena<Tree, 50> = Arena::new();
+    let arena: Arena<Tree, 50> = Arena::new(Tree::Leaf(0));
 
     // Allocate some values
     let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
@@ -2983,7 +2884,7 @@ fn test_gc_with_null_roots() {
 /// Test GC with out-of-bounds roots
 #[test]
 fn test_gc_with_out_of_bounds_roots() {
-    let arena: Arena<Tree, 10> = Arena::new();
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
 
     let idx = arena.alloc(Tree::Leaf(42)).unwrap();
 
@@ -3001,7 +2902,7 @@ fn test_gc_with_out_of_bounds_roots() {
 /// Test GC with stale generation roots
 #[test]
 fn test_gc_with_stale_roots() {
-    let arena: Arena<Tree, 10> = Arena::new();
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
 
     let idx1 = arena.alloc(Tree::Leaf(1)).unwrap();
     let idx2 = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -3047,7 +2948,7 @@ fn test_arena_error_kind_methods() {
 /// Test GC with completely empty roots array
 #[test]
 fn test_gc_with_empty_roots() {
-    let arena: Arena<Tree, 10> = Arena::new();
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
 
     arena.alloc(Tree::Leaf(1)).unwrap();
     arena.alloc(Tree::Leaf(2)).unwrap();
@@ -3064,7 +2965,7 @@ fn test_gc_with_empty_roots() {
 /// Test GC multi with empty root sets
 #[test]
 fn test_gc_multi_with_empty_root_sets() {
-    let arena: Arena<Tree, 10> = Arena::new();
+    let arena: Arena<Tree, 10> = Arena::new(Tree::Leaf(0));
 
     let idx = arena.alloc(Tree::Leaf(1)).unwrap();
     arena.alloc(Tree::Leaf(2)).unwrap();
@@ -3167,7 +3068,7 @@ fn test_arena_stats_methods_comprehensive() {
 /// Test that GC handles arena at maximum capacity correctly
 #[test]
 fn test_gc_at_max_capacity_boundary() {
-    let arena: Arena<Tree, 5> = Arena::new();
+    let arena: Arena<Tree, 5> = Arena::new(Tree::Leaf(0));
 
     // Fill arena completely
     let idx0 = arena.alloc(Tree::Leaf(0)).unwrap();
@@ -3195,7 +3096,7 @@ fn test_gc_at_max_capacity_boundary() {
 /// Test GC boundary: GC doesn't help when all reachable
 #[test]
 fn test_gc_ineffective_when_all_reachable() {
-    let arena: Arena<Tree, 3> = Arena::new();
+    let arena: Arena<Tree, 3> = Arena::new(Tree::Leaf(0));
 
     // Fill arena with all reachable values
     let idx0 = arena.alloc(Tree::Leaf(0)).unwrap();

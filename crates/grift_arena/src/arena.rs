@@ -5,70 +5,64 @@
 use core::cell::Cell;
 
 use crate::iter::ArenaIterator;
-use crate::types::FREE_LIST_END;
-use crate::{ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, Slotted};
+use crate::types::{FREE_LIST_END, Slot};
+use crate::{ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats};
 
 /// Fixed-size arena allocator with O(1) allocation.
 ///
 /// # Type Parameters
 ///
-/// - `T`: The type of values stored (must implement `Slotted` + `Copy`)
+/// - `T`: The type of values stored (must be `Copy` for array initialization)
 /// - `N`: Maximum number of cells (const generic)
 ///
 /// # Memory Layout
 ///
-/// - `slots`: Array of `Cell<T>` where free slots contain `T::make_free(next)` values
+/// - `slots`: Array of `Cell<Slot<T>>` (either free with next pointer, or occupied with value)
 /// - `free_head`: Head of the free list
 /// - `len`: Number of currently allocated slots
+/// - `gc_enabled`: Whether garbage collection is enabled
 ///
 /// # O(1) Allocation
 ///
 /// Uses a free-list for constant-time allocation and deallocation instead of
-/// scanning a bitmap. Free-list metadata is embedded directly in the value
-/// type via the `Slotted` trait.
+/// scanning a bitmap.
 ///
 /// # Garbage Collection
 ///
 /// The arena supports mark-and-sweep garbage collection via the [`Trace`] trait.
+/// GC can be enabled or disabled at runtime using [`Arena::set_gc_enabled`].
+/// When disabled, [`Arena::collect_garbage`] returns immediately without collecting.
 ///
 /// # Performance
 ///
 /// Uses `Cell` instead of `RefCell` for interior mutability. This eliminates
 /// runtime borrow checking overhead and the risk of borrow panics, while
 /// still maintaining safe Rust guarantees.
-pub struct Arena<T: Slotted, const N: usize> {
-    pub(crate) slots: [Cell<T>; N],
+pub struct Arena<T: Copy, const N: usize> {
+    pub(crate) slots: [Cell<Slot<T>>; N],
     pub(crate) free_head: Cell<usize>,
     pub(crate) len: Cell<usize>,
 }
 
-impl<T: Slotted, const N: usize> Arena<T, N> {
+impl<T: Copy, const N: usize> Arena<T, N> {
     /// Create a new arena.
     ///
     /// All slots start as free, linked together in a free list.
-    /// Free-list metadata is embedded in the values via the `Slotted` trait.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, Slotted};
+    /// use grift_arena::Arena;
     ///
-    /// #[derive(Clone, Copy, Debug, PartialEq)]
-    /// enum Val { Free(usize), Num(isize) }
-    ///
-    /// impl Slotted for Val {
-    ///     fn is_free(&self) -> bool { matches!(self, Val::Free(_)) }
-    ///     fn next_free(&self) -> usize { match self { Val::Free(n) => *n, _ => unreachable!() } }
-    ///     fn make_free(next: usize) -> Self { Val::Free(next) }
-    /// }
-    ///
-    /// let arena: Arena<Val, 100> = Arena::new();
+    /// let arena: Arena<isize, 100> = Arena::new(0);
     /// ```
-    pub fn new() -> Self {
+    pub fn new(_default_value: T) -> Self {
         // Initialize all slots as free, linked together
         // Slot 0 -> 1 -> 2 -> ... -> N-1 -> FREE_LIST_END
-        let slots: [Cell<T>; N] = core::array::from_fn(|i| {
-            Cell::new(T::make_free(if i + 1 < N { i + 1 } else { FREE_LIST_END }))
+        let slots: [Cell<Slot<T>>; N] = core::array::from_fn(|i| {
+            Cell::new(Slot::Free {
+                next_free: if i + 1 < N { i + 1 } else { FREE_LIST_END },
+            })
         });
 
         Arena {
@@ -117,20 +111,11 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, Slotted};
+    /// use grift_arena::Arena;
     ///
-    /// #[derive(Clone, Copy, Debug, PartialEq)]
-    /// enum Val { Free(usize), Num(isize) }
-    ///
-    /// impl Slotted for Val {
-    ///     fn is_free(&self) -> bool { matches!(self, Val::Free(_)) }
-    ///     fn next_free(&self) -> usize { match self { Val::Free(n) => *n, _ => unreachable!() } }
-    ///     fn make_free(next: usize) -> Self { Val::Free(next) }
-    /// }
-    ///
-    /// let arena: Arena<Val, 10> = Arena::new();
-    /// let idx = arena.alloc(Val::Num(42)).unwrap();
-    /// assert_eq!(arena.get(idx).unwrap(), Val::Num(42));
+    /// let arena: Arena<isize, 10> = Arena::new(0);
+    /// let idx = arena.alloc(42).unwrap();
+    /// assert_eq!(arena.get(idx).unwrap(), 42);
     /// ```
     #[inline]
     pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
@@ -144,12 +129,13 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
         let idx = free_head;
 
         // Pop from free list
-        let slot = self.slots[idx].get();
-        debug_assert!(slot.is_free(), "free_head pointed to occupied slot");
-        let next_free = slot.next_free();
+        let next_free = match self.slots[idx].get() {
+            Slot::Free { next_free } => next_free,
+            Slot::Occupied { .. } => unreachable!("free_head pointed to occupied slot"),
+        };
 
         // Mark as occupied
-        self.slots[idx].set(value);
+        self.slots[idx].set(Slot::Occupied { value });
         self.free_head.set(next_free);
 
         // Increment allocated count
@@ -165,10 +151,9 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
         if idx >= N {
             return Err(ArenaError::IndexOutOfBounds);
         }
-        if self.slots[idx].get().is_free() {
-            Err(ArenaError::IndexNotAllocated)
-        } else {
-            Ok(idx)
+        match self.slots[idx].get() {
+            Slot::Occupied { .. } => Ok(idx),
+            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
         }
     }
 
@@ -184,11 +169,9 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
         if idx >= N {
             return Err(ArenaError::IndexOutOfBounds);
         }
-        let slot = self.slots[idx].get();
-        if slot.is_free() {
-            Err(ArenaError::IndexNotAllocated)
-        } else {
-            Ok(slot)
+        match self.slots[idx].get() {
+            Slot::Occupied { value } => Ok(value),
+            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
         }
     }
 
@@ -202,7 +185,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
         let idx = self.validate_index(index)?;
 
-        self.slots[idx].set(value);
+        self.slots[idx].set(Slot::Occupied { value });
         Ok(())
     }
 
@@ -218,33 +201,24 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, Slotted};
+    /// use grift_arena::Arena;
     ///
-    /// #[derive(Clone, Copy, Debug, PartialEq)]
-    /// enum Val { Free(usize), Num(isize) }
+    /// let arena: Arena<isize, 10> = Arena::new(0);
+    /// let idx = arena.alloc(42).unwrap();
     ///
-    /// impl Slotted for Val {
-    ///     fn is_free(&self) -> bool { matches!(self, Val::Free(_)) }
-    ///     fn next_free(&self) -> usize { match self { Val::Free(n) => *n, _ => unreachable!() } }
-    ///     fn make_free(next: usize) -> Self { Val::Free(next) }
-    /// }
-    ///
-    /// let arena: Arena<Val, 10> = Arena::new();
-    /// let idx = arena.alloc(Val::Num(42)).unwrap();
-    ///
-    /// arena.modify(idx, |v| {
-    ///     if let Val::Num(n) = v { *n += 10; }
-    /// }).unwrap();
-    /// assert_eq!(arena.get(idx).unwrap(), Val::Num(52));
+    /// arena.modify(idx, |v| *v += 10).unwrap();
+    /// assert_eq!(arena.get(idx).unwrap(), 52);
     /// ```
     pub fn modify<F>(&self, index: ArenaIndex, f: F) -> ArenaResult<()>
     where
         F: FnOnce(&mut T),
     {
         let idx = self.validate_index(index)?;
-        let mut value = self.slots[idx].get();
+        let Slot::Occupied { mut value } = self.slots[idx].get() else {
+            unreachable!("validate_index guarantees slot is Occupied")
+        };
         f(&mut value);
-        self.slots[idx].set(value);
+        self.slots[idx].set(Slot::Occupied { value });
         Ok(())
     }
 
@@ -266,10 +240,11 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
         let idx_a = self.validate_index(a)?;
         let idx_b = self.validate_index(b)?;
         if idx_a != idx_b {
-            let val_a = self.slots[idx_a].get();
-            let val_b = self.slots[idx_b].get();
-            self.slots[idx_a].set(val_b);
-            self.slots[idx_b].set(val_a);
+            // Both validated as Occupied
+            let val_a = self.get(a)?;
+            let val_b = self.get(b)?;
+            self.slots[idx_a].set(Slot::Occupied { value: val_b });
+            self.slots[idx_b].set(Slot::Occupied { value: val_a });
         }
         Ok(())
     }
@@ -281,8 +256,10 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// Returns an error if the index is invalid.
     pub fn replace(&self, index: ArenaIndex, value: T) -> ArenaResult<T> {
         let idx = self.validate_index(index)?;
-        let old = self.slots[idx].get();
-        self.slots[idx].set(value);
+        let Slot::Occupied { value: old } = self.slots[idx].get() else {
+            unreachable!("validate_index guarantees slot is Occupied")
+        };
+        self.slots[idx].set(Slot::Occupied { value });
         Ok(old)
     }
 
@@ -296,19 +273,10 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, Slotted};
+    /// use grift_arena::Arena;
     ///
-    /// #[derive(Clone, Copy, Debug, PartialEq)]
-    /// enum Val { Free(usize), Num(isize) }
-    ///
-    /// impl Slotted for Val {
-    ///     fn is_free(&self) -> bool { matches!(self, Val::Free(_)) }
-    ///     fn next_free(&self) -> usize { match self { Val::Free(n) => *n, _ => unreachable!() } }
-    ///     fn make_free(next: usize) -> Self { Val::Free(next) }
-    /// }
-    ///
-    /// let arena: Arena<Val, 10> = Arena::new();
-    /// let idx = arena.alloc(Val::Num(42)).unwrap();
+    /// let arena: Arena<isize, 10> = Arena::new(0);
+    /// let idx = arena.alloc(42).unwrap();
     /// arena.free(idx).unwrap();
     /// assert_eq!(arena.len(), 0);
     /// ```
@@ -318,7 +286,9 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
 
         // Push onto free list
         let free_head = self.free_head.get();
-        self.slots[idx].set(T::make_free(free_head));
+        self.slots[idx].set(Slot::Free {
+            next_free: free_head,
+        });
         self.free_head.set(idx);
 
         // Decrement allocated count
@@ -340,7 +310,9 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     pub fn clear(&self) {
         // Rebuild free list
         for i in 0..N {
-            self.slots[i].set(T::make_free(if i + 1 < N { i + 1 } else { FREE_LIST_END }));
+            self.slots[i].set(Slot::Free {
+                next_free: if i + 1 < N { i + 1 } else { FREE_LIST_END },
+            });
         }
 
         self.free_head.set(if N > 0 { 0 } else { FREE_LIST_END });
@@ -352,23 +324,15 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, ArenaIndex, Slotted};
+    /// use grift_arena::Arena;
     ///
-    /// #[derive(Clone, Copy, Debug)]
-    /// enum Val { Free(usize), V(isize) }
-    /// impl Slotted for Val {
-    ///     fn is_free(&self) -> bool { matches!(self, Val::Free(_)) }
-    ///     fn next_free(&self) -> usize { match self { Val::Free(n) => *n, _ => unreachable!() } }
-    ///     fn make_free(next: usize) -> Self { Val::Free(next) }
-    /// }
-    ///
-    /// let arena: Arena<Val, 10> = Arena::new();
-    /// arena.alloc(Val::V(1)).unwrap();
-    /// arena.alloc(Val::V(2)).unwrap();
-    /// arena.alloc(Val::V(3)).unwrap();
+    /// let arena: Arena<isize, 10> = Arena::new(0);
+    /// arena.alloc(1).unwrap();
+    /// arena.alloc(2).unwrap();
+    /// arena.alloc(3).unwrap();
     ///
     /// for (idx, value) in arena.iter() {
-    ///     println!("Index {:?}: {:?}", idx, value);
+    ///     println!("Index {:?}: {}", idx, value);
     /// }
     /// ```
     pub fn iter(&self) -> ArenaIterator<'_, T, N> {
@@ -392,7 +356,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     fn calculate_fragmentation(&self) -> f32 {
         // Count free-space fragments: contiguous runs of free slots.
         let (fragments, _) = (0..N).fold((0u32, false), |(count, was_free), i| {
-            let is_free = self.slots[i].get().is_free();
+            let is_free = matches!(self.slots[i].get(), Slot::Free { .. });
             (count + u32::from(is_free && !was_free), is_free)
         });
 
@@ -418,7 +382,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
 
         // Count occupied slots
         let occupied_count = (0..N)
-            .filter(|&i| !self.slots[i].get().is_free())
+            .filter(|&i| matches!(self.slots[i].get(), Slot::Occupied { .. }))
             .count();
         if occupied_count != len {
             return false;
@@ -438,12 +402,14 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
             }
             visited[current] = true;
 
-            let slot = self.slots[current].get();
-            if slot.is_free() {
-                free_count += 1;
-                current = slot.next_free();
-            } else {
-                return false; // Free list points to occupied slot
+            match self.slots[current].get() {
+                Slot::Free { next_free } => {
+                    free_count += 1;
+                    current = next_free;
+                }
+                Slot::Occupied { .. } => {
+                    return false; // Free list points to occupied slot
+                }
             }
         }
 
@@ -454,7 +420,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
 
         // Check all free slots are in the free list
         for (i, &was_visited) in visited.iter().enumerate().take(N) {
-            if self.slots[i].get().is_free() && !was_visited {
+            if matches!(self.slots[i].get(), Slot::Free { .. }) && !was_visited {
                 return false; // Free slot not in free list
             }
         }
@@ -466,7 +432,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
     ///
     /// This is a low-level debugging method. For normal use, prefer [`is_allocated`].
     pub fn is_slot_occupied(&self, slot_index: usize) -> bool {
-        slot_index < N && !self.slots[slot_index].get().is_free()
+        slot_index < N && matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
     }
 
     /// Get indices of all allocated slots.
@@ -478,7 +444,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
         let mut count = 0;
 
         for idx in 0..N {
-            if !self.slots[idx].get().is_free() {
+            if let Slot::Occupied { .. } = self.slots[idx].get() {
                 result[count] = ArenaIndex::new(idx);
                 count += 1;
             }
@@ -503,11 +469,9 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
         F: FnMut(ArenaIndex, &mut T),
     {
         for idx in 0..N {
-            let value = self.slots[idx].get();
-            if !value.is_free() {
-                let mut value = value;
+            if let Slot::Occupied { mut value } = self.slots[idx].get() {
                 f(ArenaIndex::new(idx), &mut value);
-                self.slots[idx].set(value);
+                self.slots[idx].set(Slot::Occupied { value });
             }
         }
     }
@@ -549,7 +513,7 @@ impl<T: Slotted, const N: usize> Arena<T, N> {
 
 // — Trait Implementations for Arena —
 
-impl<T: Slotted, const N: usize> Arena<T, N> {
+impl<T: Copy, const N: usize> Arena<T, N> {
     /// Delete a value and recursively delete any children.
     ///
     /// This requires `T: ArenaDelete<T, N>`.
