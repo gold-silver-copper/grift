@@ -200,9 +200,7 @@ define_builtins! {
         "make-empty-environment" => bi_make_empty_env => builtin_make_empty_env,
         "environment?" => bi_environmentp => builtin_environmentp,
         "gc-collect" => bi_gc_collect => builtin_gc_collect,
-        "gc-enable"  => bi_gc_enable  => builtin_gc_enable,
-        "gc-disable" => bi_gc_disable => builtin_gc_disable,
-        "gc-enabled?" => bi_gc_enabledp => builtin_gc_enabledp,
+
     }
 }
 
@@ -240,7 +238,10 @@ impl<const N: usize> Lisp<N> {
     fn set_gc_roots_head(&self, head: ArenaIndex) {
         let _ = self.arena.set(
             ArenaIndex::GC_ROOTS,
-            Value::Cons { car: head, cdr: ArenaIndex::NIL },
+            Value::Cons {
+                car: head,
+                cdr: ArenaIndex::NIL,
+            },
         );
     }
 
@@ -270,10 +271,14 @@ impl<const N: usize> Lisp<N> {
     #[cold]
     fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
         self.arena.collect_garbage(&[
-            expr, env,
-            ArenaIndex::TRUE, ArenaIndex::FALSE,
-            ArenaIndex::INERT, ArenaIndex::IGNORE,
-            ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
+            expr,
+            env,
+            ArenaIndex::TRUE,
+            ArenaIndex::FALSE,
+            ArenaIndex::INERT,
+            ArenaIndex::IGNORE,
+            ArenaIndex::GROUND_ENV,
+            ArenaIndex::GLOBAL_ENV,
             ArenaIndex::GC_ROOTS,
         ])
     }
@@ -282,10 +287,13 @@ impl<const N: usize> Lisp<N> {
     /// Used by the `gc-collect` builtin for explicit manual collection.
     #[cold]
     fn eval_collect_garbage_unconditional(&self) -> GcStats {
-        self.arena.collect_garbage_unconditional(&[
-            ArenaIndex::TRUE, ArenaIndex::FALSE,
-            ArenaIndex::INERT, ArenaIndex::IGNORE,
-            ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
+        self.arena.collect_garbage(&[
+            ArenaIndex::TRUE,
+            ArenaIndex::FALSE,
+            ArenaIndex::INERT,
+            ArenaIndex::IGNORE,
+            ArenaIndex::GROUND_ENV,
+            ArenaIndex::GLOBAL_ENV,
             ArenaIndex::GC_ROOTS,
         ])
     }
@@ -299,7 +307,11 @@ impl<const N: usize> Lisp<N> {
     /// Garbage collection is triggered only on allocation failure (OOM):
     /// when any operation returns `OutOfMemory`, the evaluator restores
     /// the GC root stack, collects garbage, and retries.
-    pub(crate) fn eval_expr(&self, mut expr: ArenaIndex, mut env: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn eval_expr(
+        &self,
+        mut expr: ArenaIndex,
+        mut env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
         loop {
             let saved_gc_roots = self.gc_roots_head();
             match self.eval_step(&mut expr, &mut env) {
@@ -328,9 +340,7 @@ impl<const N: usize> Lisp<N> {
         env: &mut ArenaIndex,
     ) -> Result<Option<ArenaIndex>, ArenaError> {
         match self.get(*expr)? {
-            Value::Symbol(_) => {
-                Ok(Some(self.env_lookup(*env, *expr)?))
-            }
+            Value::Symbol(_) => Ok(Some(self.env_lookup(*env, *expr)?)),
 
             Value::Cons { car, cdr } => {
                 self.push_root(cdr)?;
@@ -377,9 +387,7 @@ impl<const N: usize> Lisp<N> {
                             Value::Applicative(_) => {
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
-                            _ => {
-                                Err(ArenaError::NotCallable)
-                            }
+                            _ => Err(ArenaError::NotCallable),
                         }
                     }
 
@@ -441,12 +449,7 @@ impl<const N: usize> Lisp<N> {
     /// - If ptree is `#ignore`, do nothing.
     /// - If ptree is nil, obj must be nil (else error).
     /// - If ptree is a pair, obj must be a pair; match car/cdr recursively.
-    fn match_ptree(
-        &self,
-        ptree: ArenaIndex,
-        obj: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<()> {
+    fn match_ptree(&self, ptree: ArenaIndex, obj: ArenaIndex, env: ArenaIndex) -> ArenaResult<()> {
         if ptree.is_nil() {
             if obj.is_nil() {
                 return Ok(());
@@ -455,9 +458,7 @@ impl<const N: usize> Lisp<N> {
         }
         match self.get(ptree)? {
             Value::Ignore => Ok(()),
-            Value::Symbol(_) => {
-                self.env_define(env, ptree, obj)
-            }
+            Value::Symbol(_) => self.env_define(env, ptree, obj),
             Value::Cons {
                 car: ptree_car,
                 cdr: ptree_cdr,
@@ -519,12 +520,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(if test then else)` — test is strict, branches are tail positions.
-    fn op_if(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_if(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         tail_continue!({
             let test_expr = self.car(args)?;
             let rest = self.cdr(args)?;
@@ -579,12 +575,7 @@ impl<const N: usize> Lisp<N> {
     /// environment `env` — i.e., the symbols of `formals` are bound in
     /// `env` to the corresponding parts of `obj` (exactly as `$define!`
     /// would).  Returns `#inert`.
-    fn op_set(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_set(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
             let env_expr = self.car(args)?;
             let rest = self.cdr(args)?;
@@ -648,12 +639,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(cond (test expr...) ...)` — tests are strict, last body expr is tail.
-    fn op_cond(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_cond(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
@@ -678,22 +664,12 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(and expr1 expr2 ...)` — strict on tests, last is tail.
-    fn op_and(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_and(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         self.eval_short_circuit(args, expr, env, true)
     }
 
     /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
-    fn op_or(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_or(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         self.eval_short_circuit(args, expr, env, false)
     }
 
@@ -724,12 +700,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(let ((name val) ...) body...)` — bindings are strict, body is tail.
-    fn op_let(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_let(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         tail_continue!({
             let bindings = self.car(args)?;
             let body_list = self.cdr(args)?;
@@ -760,12 +731,7 @@ impl<const N: usize> Lisp<N> {
     /// - `env-param` must be either a symbol or `#ignore`.
     /// - If `env-param` is a symbol that also occurs in `params`, an error
     ///   is signaled.
-    fn op_vau(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
+    fn op_vau(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
             let params = self.car(args)?;
             let env_param = self.cadr(args)?;
@@ -890,8 +856,7 @@ impl<const N: usize> Lisp<N> {
         let first = self.get(self.car(args)?)?.as_number()?;
         let rest = self.cdr(args)?;
         if rest.is_nil() {
-            return self
-                .number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
+            return self.number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
         }
         fold_numbers!(self, rest, first, checked_sub)
     }
@@ -992,9 +957,7 @@ impl<const N: usize> Lisp<N> {
                 Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
             }
             // Strings: compare character-by-character.
-            (Value::String { data: da }, Value::String { data: db }) => {
-                self.strings_equal(da, db)
-            }
+            (Value::String { data: da }, Value::String { data: db }) => self.strings_equal(da, db),
             // Environments: eq? only (identity-based).
             // Different environments are never equal? unless eq?.
             (Value::Environment { .. }, Value::Environment { .. }) => Ok(false),
@@ -1076,23 +1039,12 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(gc-enable)` — enable automatic garbage collection on OOM.
-    fn builtin_gc_enable(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.set_gc_enabled(true);
-        Ok(ArenaIndex::INERT)
-    }
 
     /// `(gc-disable)` — disable automatic garbage collection.
     /// When disabled, OOM errors propagate immediately without attempting GC.
     /// Manual `(gc-collect)` still works regardless.
-    fn builtin_gc_disable(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.set_gc_enabled(false);
-        Ok(ArenaIndex::INERT)
-    }
 
     /// `(gc-enabled?)` — check if automatic GC is enabled.
-    fn builtin_gc_enabledp(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        Ok(ArenaIndex::from_bool(self.arena.is_gc_enabled()))
-    }
 
     /// Copy a cons-list into fresh cons cells (iterative).
     fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {

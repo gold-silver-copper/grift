@@ -4,9 +4,9 @@
 
 use core::cell::Cell;
 
-use crate::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, ArenaDelete, ArenaCopy};
-use crate::types::{Slot, FREE_LIST_END};
 use crate::iter::ArenaIterator;
+use crate::types::{FREE_LIST_END, Slot};
+use crate::{ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats};
 
 /// Fixed-size arena allocator with O(1) allocation.
 ///
@@ -42,7 +42,6 @@ pub struct Arena<T: Copy, const N: usize> {
     pub(crate) slots: [Cell<Slot<T>>; N],
     pub(crate) free_head: Cell<usize>,
     pub(crate) len: Cell<usize>,
-    pub(crate) gc_enabled: Cell<bool>,
 }
 
 impl<T: Copy, const N: usize> Arena<T, N> {
@@ -70,91 +69,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             slots,
             free_head: Cell::new(if N > 0 { 0 } else { FREE_LIST_END }),
             len: Cell::new(0),
-            gc_enabled: Cell::new(true), // GC enabled by default
         }
-    }
-
-    /// Check if garbage collection is enabled.
-    ///
-    /// When disabled, [`Arena::collect_garbage`] returns immediately without
-    /// performing any collection.
-    pub fn is_gc_enabled(&self) -> bool {
-        self.gc_enabled.get()
-    }
-
-    /// Enable or disable garbage collection.
-    ///
-    /// When disabled, [`Arena::collect_garbage`] returns immediately with
-    /// zero marked/collected stats. This can be useful for:
-    /// - Performance-critical sections where you want to defer GC
-    /// - Debugging to isolate GC-related issues
-    /// - Temporarily pausing GC during batch operations
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift_arena::Arena;
-    ///
-    /// let arena: Arena<isize, 100> = Arena::new(0);
-    ///
-    /// // Disable GC for a batch operation
-    /// arena.set_gc_enabled(false);
-    ///
-    /// // ... perform many allocations ...
-    ///
-    /// // Re-enable and collect
-    /// arena.set_gc_enabled(true);
-    /// ```
-    pub fn set_gc_enabled(&self, enabled: bool) {
-        self.gc_enabled.set(enabled);
-    }
-
-    /// Run a closure with GC temporarily set to `enabled`, restoring the
-    /// previous state afterward.
-    fn scoped_gc<F, R>(&self, enabled: bool, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let was = self.gc_enabled.get();
-        self.gc_enabled.set(enabled);
-        let result = f();
-        self.gc_enabled.set(was);
-        result
-    }
-
-    /// Temporarily disable GC, run a closure, then restore the previous state.
-    ///
-    /// This is useful for critical sections where GC should not run.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift_arena::Arena;
-    ///
-    /// let arena: Arena<isize, 100> = Arena::new(0);
-    ///
-    /// let result = arena.without_gc(|| {
-    ///     // GC is disabled in here
-    ///     arena.alloc(42).unwrap()
-    /// });
-    /// // GC is re-enabled here
-    /// ```
-    pub fn without_gc<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        self.scoped_gc(false, f)
-    }
-
-    /// Temporarily enable GC, run a closure, then restore the previous state.
-    ///
-    /// This is useful when GC is normally disabled but you want to force
-    /// a collection in a specific section.
-    pub fn with_gc<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        self.scoped_gc(true, f)
     }
 
     /// Get the maximum capacity of this arena.
@@ -371,7 +286,9 @@ impl<T: Copy, const N: usize> Arena<T, N> {
 
         // Push onto free list
         let free_head = self.free_head.get();
-        self.slots[idx].set(Slot::Free { next_free: free_head });
+        self.slots[idx].set(Slot::Free {
+            next_free: free_head,
+        });
         self.free_head.set(idx);
 
         // Decrement allocated count
@@ -443,7 +360,11 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             (count + u32::from(is_free && !was_free), is_free)
         });
 
-        if fragments == 0 { 0.0 } else { fragments as f32 / N as f32 }
+        if fragments == 0 {
+            0.0
+        } else {
+            fragments as f32 / N as f32
+        }
     }
 
     /// Validate internal consistency of the arena.
@@ -588,7 +509,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     {
         self.iter().all(|(_, v)| predicate(&v))
     }
-
 }
 
 // — Trait Implementations for Arena —

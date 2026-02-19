@@ -3,9 +3,9 @@
 //! This module contains the mark-and-sweep garbage collection logic
 //! for the arena allocator.
 
-use crate::{Arena, ArenaIndex, GcStats};
-use crate::types::Slot;
 use crate::traits::Trace;
+use crate::types::Slot;
+use crate::{Arena, ArenaIndex, GcStats};
 
 impl<T: Copy, const N: usize> Arena<T, N> {
     /// Initialize roots into the mark stack.
@@ -200,47 +200,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         self.collect_garbage_multi(&[roots])
     }
 
-    /// Perform garbage collection unconditionally, even if GC is disabled.
-    ///
-    /// This ignores the `gc_enabled` flag and always performs collection.
-    /// Useful when you need to collect garbage regardless of the current
-    /// GC state.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift_arena::{Arena, ArenaIndex, Trace};
-    ///
-    /// #[derive(Clone, Copy)]
-    /// struct Leaf(isize);
-    ///
-    /// impl<const N: usize> Trace<Leaf, N> for Leaf {
-    ///     fn trace<F: FnMut(ArenaIndex)>(&self, _tracer: F) {}
-    /// }
-    ///
-    /// let arena: Arena<Leaf, 10> = Arena::new(Leaf(0));
-    /// arena.set_gc_enabled(false);
-    ///
-    /// arena.alloc(Leaf(1)).unwrap();
-    /// arena.alloc(Leaf(2)).unwrap(); // garbage
-    ///
-    /// let root = arena.alloc(Leaf(3)).unwrap();
-    ///
-    /// // This will NOT collect (GC disabled)
-    /// let stats = arena.collect_garbage(&[root]);
-    /// assert_eq!(stats.collected, 0);
-    ///
-    /// // This WILL collect (unconditionally)
-    /// let stats = arena.collect_garbage_unconditional(&[root]);
-    /// assert_eq!(stats.collected, 2);
-    /// ```
-    pub fn collect_garbage_unconditional(&self, roots: &[ArenaIndex]) -> GcStats
-    where
-        T: Trace<T, N>,
-    {
-        self.collect_garbage_multi_unconditional(&[roots])
-    }
-
     /// Perform garbage collection with multiple root sets.
     ///
     /// This iterates through all provided root sets and marks objects
@@ -258,10 +217,6 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     where
         T: Trace<T, N>,
     {
-        if !self.is_gc_enabled() {
-            return GcStats { marked: 0, collected: 0, total_before: self.len() };
-        }
-
         let mut marked = [false; N];
         let mut mark_stack = [0usize; N];
         let mut stack_len = 0usize;
@@ -270,13 +225,5 @@ impl<T: Copy, const N: usize> Arena<T, N> {
             self.initialize_roots(root_set, &mut marked, &mut mark_stack, &mut stack_len);
         }
         self.mark_and_sweep(&mut marked, &mut mark_stack, &mut stack_len)
-    }
-
-    /// Perform garbage collection unconditionally with multiple root sets, ignoring the `gc_enabled` flag.
-    pub fn collect_garbage_multi_unconditional(&self, root_sets: &[&[ArenaIndex]]) -> GcStats
-    where
-        T: Trace<T, N>,
-    {
-        self.with_gc(|| self.collect_garbage_multi(root_sets))
     }
 }

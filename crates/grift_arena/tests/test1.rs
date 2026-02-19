@@ -170,7 +170,10 @@ fn test_set_invalid_index() {
 
     // Out of bounds index
     let invalid_idx = ArenaIndex::new(100);
-    assert_eq!(arena.set(invalid_idx, 42), Err(ArenaError::IndexOutOfBounds));
+    assert_eq!(
+        arena.set(invalid_idx, 42),
+        Err(ArenaError::IndexOutOfBounds)
+    );
 }
 
 #[test]
@@ -1639,283 +1642,19 @@ fn test_gc_stress() {
 // ============================================================================
 
 #[test]
-fn test_gc_enabled_by_default() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-    assert!(arena.is_gc_enabled());
-}
-
 #[test]
-fn test_gc_can_be_disabled() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    arena.set_gc_enabled(false);
-    assert!(!arena.is_gc_enabled());
-
-    arena.set_gc_enabled(true);
-    assert!(arena.is_gc_enabled());
-}
-
 #[test]
-fn test_gc_disabled_no_collection() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let root = arena.alloc(Tree::Leaf(1)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-    arena.alloc(Tree::Leaf(888)).unwrap(); // garbage
-
-    assert_eq!(arena.len(), 3);
-
-    // Disable GC
-    arena.set_gc_enabled(false);
-
-    // Collection should be a no-op
-    let stats = arena.collect_garbage(&[root]);
-
-    assert_eq!(stats.marked, 0);
-    assert_eq!(stats.collected, 0);
-    assert_eq!(stats.total_before, 3);
-
-    // Garbage should still be there
-    assert_eq!(arena.len(), 3);
-}
-
 #[test]
-fn test_gc_reenable_collects() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let root = arena.alloc(Tree::Leaf(1)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-    arena.alloc(Tree::Leaf(888)).unwrap(); // garbage
-
-    // Disable, try to collect (nothing happens)
-    arena.set_gc_enabled(false);
-    arena.collect_garbage(&[root]);
-    assert_eq!(arena.len(), 3);
-
-    // Re-enable and collect
-    arena.set_gc_enabled(true);
-    let stats = arena.collect_garbage(&[root]);
-
-    assert_eq!(stats.marked, 1);
-    assert_eq!(stats.collected, 2);
-    assert_eq!(arena.len(), 1);
-}
-
 #[test]
-fn test_gc_unconditional_ignores_disabled() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let root = arena.alloc(Tree::Leaf(1)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-
-    arena.set_gc_enabled(false);
-    assert!(!arena.is_gc_enabled());
-
-    // Unconditional collection should work even when disabled
-    let stats = arena.collect_garbage_unconditional(&[root]);
-
-    assert_eq!(stats.collected, 1);
-    assert_eq!(arena.len(), 1);
-
-    // GC should still be disabled after unconditional collection
-    assert!(!arena.is_gc_enabled());
-}
-
 #[test]
-fn test_gc_without_gc_closure() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    assert!(arena.is_gc_enabled());
-
-    let root = arena.without_gc(|| {
-        // GC should be disabled inside the closure
-        assert!(!arena.is_gc_enabled());
-
-        let leaf = arena.alloc(Tree::Leaf(1)).unwrap();
-        arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-
-        // This should not collect anything
-        let stats = arena.collect_garbage(&[leaf]);
-        assert_eq!(stats.collected, 0);
-
-        leaf
-    });
-
-    // GC should be re-enabled after the closure
-    assert!(arena.is_gc_enabled());
-
-    // Now collection should work
-    let stats = arena.collect_garbage(&[root]);
-    assert_eq!(stats.collected, 1);
-}
-
 #[test]
-fn test_gc_with_gc_closure() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    // Start with GC disabled
-    arena.set_gc_enabled(false);
-    assert!(!arena.is_gc_enabled());
-
-    let root = arena.alloc(Tree::Leaf(1)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-
-    arena.with_gc(|| {
-        // GC should be enabled inside the closure
-        assert!(arena.is_gc_enabled());
-
-        let stats = arena.collect_garbage(&[root]);
-        assert_eq!(stats.collected, 1);
-    });
-
-    // GC should be disabled again after the closure
-    assert!(!arena.is_gc_enabled());
-}
-
 #[test]
-fn test_gc_nested_without_gc() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    assert!(arena.is_gc_enabled());
-
-    arena.without_gc(|| {
-        assert!(!arena.is_gc_enabled());
-
-        arena.without_gc(|| {
-            assert!(!arena.is_gc_enabled());
-        });
-
-        // Still disabled after inner closure
-        assert!(!arena.is_gc_enabled());
-    });
-
-    // Re-enabled after outer closure
-    assert!(arena.is_gc_enabled());
-}
-
 #[test]
-fn test_gc_multi_disabled() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let root1 = arena.alloc(Tree::Leaf(1)).unwrap();
-    let root2 = arena.alloc(Tree::Leaf(2)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-
-    arena.set_gc_enabled(false);
-
-    // Multi should also respect disabled flag
-    let stats = arena.collect_garbage_multi(&[&[root1], &[root2]]);
-    assert_eq!(stats.collected, 0);
-    assert_eq!(arena.len(), 3);
-}
-
 #[test]
-fn test_gc_multi_unconditional() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let root1 = arena.alloc(Tree::Leaf(1)).unwrap();
-    let root2 = arena.alloc(Tree::Leaf(2)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage
-
-    arena.set_gc_enabled(false);
-
-    // Unconditional multi should ignore disabled flag
-    let stats = arena.collect_garbage_multi_unconditional(&[&[root1], &[root2]]);
-    assert_eq!(stats.collected, 1);
-    assert_eq!(arena.len(), 2);
-
-    // Should still be disabled
-    assert!(!arena.is_gc_enabled());
-}
-
 #[test]
-fn test_gc_toggle_during_operations() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let mut roots = Vec::new();
-
-    for i in 0..10 {
-        // Alternate GC on/off each iteration
-        if i % 2 == 0 {
-            arena.set_gc_enabled(false);
-        } else {
-            arena.set_gc_enabled(true);
-        }
-
-        let leaf = arena.alloc(Tree::Leaf(i)).unwrap();
-        roots.push(leaf);
-
-        // Add some garbage
-        arena.alloc(Tree::Leaf(100 + i)).unwrap();
-
-        // Try to collect
-        arena.collect_garbage(&roots);
-    }
-
-    // Final state depends on when GC ran
-    // GC ran on iterations 1, 3, 5, 7, 9 (odd iterations)
-    // Each time it collected the garbage from that iteration and previous uncollected
-    // This is a complex scenario, just verify roots are still valid
-    for root in &roots {
-        assert!(arena.is_allocated(*root));
-    }
-}
-
-#[test]
-fn test_gc_disabled_preserves_all_objects() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    arena.set_gc_enabled(false);
-
-    // Allocate a bunch of "garbage" (no roots)
-    let mut all_indices = Vec::new();
-    for i in 0..20 {
-        all_indices.push(arena.alloc(Tree::Leaf(i)).unwrap());
-    }
-
-    // Try to collect with empty roots - nothing should be collected
-    let stats = arena.collect_garbage(&[]);
-    assert_eq!(stats.collected, 0);
-    assert_eq!(arena.len(), 20);
-
-    // All indices should still be valid
-    for (i, &idx) in all_indices.iter().enumerate() {
-        assert_eq!(arena.get(idx).unwrap(), Tree::Leaf(i as isize));
-    }
-}
-
-#[test]
-fn test_gc_unconditional_then_normal() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-
-    let root = arena.alloc(Tree::Leaf(1)).unwrap();
-    arena.alloc(Tree::Leaf(999)).unwrap(); // garbage1
-    arena.alloc(Tree::Leaf(888)).unwrap(); // garbage2
-
-    arena.set_gc_enabled(false);
-
-    // Unconditional collect once
-    let stats1 = arena.collect_garbage_unconditional(&[root]);
-    assert_eq!(stats1.collected, 2);
-
-    // Add more garbage
-    arena.alloc(Tree::Leaf(777)).unwrap();
-
-    // Normal collect should not work (still disabled)
-    let stats2 = arena.collect_garbage(&[root]);
-    assert_eq!(stats2.collected, 0);
-    assert_eq!(arena.len(), 2); // root + new garbage
-
-    // Unconditional collect again
-    let stats3 = arena.collect_garbage_unconditional(&[root]);
-    assert_eq!(stats3.collected, 1);
-    assert_eq!(arena.len(), 1);
-}
-
 // ============================================================================
 // Additional GC Edge Case Tests
 // ============================================================================
-
 #[test]
 fn test_gc_self_referential() {
     // A node that points to itself
@@ -2688,38 +2427,7 @@ fn test_gc_stress_collect_after_mutations() {
 }
 
 #[test]
-fn test_gc_stress_enabled_disabled_cycles() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
 
-    let root = arena.alloc(Tree::Leaf(0)).unwrap();
-
-    for round in 0..100 {
-        // Add garbage
-        arena.alloc(Tree::Leaf(round * 100)).unwrap();
-
-        // Alternate enabled/disabled
-        arena.set_gc_enabled(round % 2 == 0);
-
-        let stats = arena.collect_garbage(&[root]);
-
-        if round % 2 == 0 {
-            // GC was enabled, should have collected
-            assert!(stats.collected >= 1 || arena.len() == 1);
-        } else {
-            // GC was disabled, nothing collected
-            assert_eq!(stats.collected, 0);
-        }
-    }
-
-    // Enable and final collect
-    arena.set_gc_enabled(true);
-    let final_stats = arena.collect_garbage(&[root]);
-
-    // Should collect any remaining garbage
-    assert_eq!(arena.len(), 1);
-}
-
-#[test]
 fn test_gc_stress_worst_case_mark_stack() {
     // Create a structure that maximizes mark stack usage
     // A long chain where each node must be pushed to the stack
@@ -2811,7 +2519,10 @@ fn test_modify_invalid() {
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
 
-    assert_eq!(arena.modify(idx, |_| {}), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(
+        arena.modify(idx, |_| {}),
+        Err(ArenaError::IndexNotAllocated)
+    );
 }
 
 #[test]
