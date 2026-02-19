@@ -45,6 +45,20 @@ impl ArenaIndex {
     /// The IGNORE index - points to slot 4 where `Value::Ignore` is pre-allocated.
     pub const IGNORE: ArenaIndex = ArenaIndex(4);
 
+    /// The GROUND_ENV index - points to slot 5 where the ground (builtin)
+    /// environment is pre-allocated.
+    pub const GROUND_ENV: ArenaIndex = ArenaIndex(5);
+
+    /// The GLOBAL_ENV index - points to slot 7 where the global/standard
+    /// environment (child of ground) is pre-allocated.  Slot 6 holds the
+    /// parents cons cell linking ground to global.
+    pub const GLOBAL_ENV: ArenaIndex = ArenaIndex(7);
+
+    /// The GC_ROOTS index - points to slot 8 where the GC root stack head
+    /// is stored.  This is a cons cell whose `car` holds the current head
+    /// of the GC roots linked list and whose `cdr` is always NIL.
+    pub const GC_ROOTS: ArenaIndex = ArenaIndex(8);
+
     /// Return `ArenaIndex::TRUE` if `b` is true, `ArenaIndex::FALSE` otherwise.
     #[inline]
     pub const fn from_bool(b: bool) -> ArenaIndex {
