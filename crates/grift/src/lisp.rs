@@ -31,10 +31,10 @@ impl<const N: usize> Default for Lisp<N> {
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp interpreter with an empty arena.
     ///
-    /// Slots 0–8 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
+    /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
     /// `#ignore`, the ground environment, a parents cell, the global
-    /// environment, and the GC root stack so that returning these common
-    /// values is allocation-free.
+    /// environment, the GC root stack, and the symbol intern list so
+    /// that returning these common values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena.alloc(Value::Nil).expect("arena too small for singletons");
@@ -74,6 +74,14 @@ impl<const N: usize> Lisp<N> {
         }).expect("arena too small for gc_roots");
         assert!(gc_roots_idx == ArenaIndex::GC_ROOTS, "GC_ROOTS must be slot 8");
 
+        // Pre-allocate symbol intern list at a fixed slot.
+        // car = head of the intern alist (initially NIL = empty).
+        let intern_idx = lisp.arena.alloc(Value::Cons {
+            car: ArenaIndex::NIL,
+            cdr: ArenaIndex::NIL,
+        }).expect("arena too small for intern_list");
+        assert!(intern_idx == ArenaIndex::INTERN_LIST, "INTERN_LIST must be slot 9");
+
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
@@ -100,17 +108,34 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
-    /// same name already exists, returns the existing index.
+    /// same name already exists in the intern list, returns the existing index.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        if let Some((idx, _)) = self.arena.find(|v| {
-            v.as_symbol()
-                .is_ok_and(|char_head| self.string_eq(char_head, name))
-        }) {
-            return Ok(idx);
+        // Walk the intern alist
+        let intern_head = self.car_cons(ArenaIndex::INTERN_LIST)?;
+        let mut cur = intern_head;
+        while !cur.is_nil() {
+            let sym = self.car_cons(cur)?;
+            if self.symbol_name_eq(sym, name) {
+                return Ok(sym);
+            }
+            cur = self.cdr_cons(cur)?;
         }
 
+        // Not found — allocate new symbol and prepend to intern list
         let char_head = self.alloc_string(name)?;
-        self.arena.alloc(Value::Symbol(char_head))
+        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let new_head = self.cons(sym_idx, intern_head)?;
+
+        // Update the intern list head in place
+        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
+            unreachable!();
+        };
+        self.arena.set(ArenaIndex::INTERN_LIST, Value::Cons {
+            car: new_head,
+            cdr,
+        })?;
+
+        Ok(sym_idx)
     }
 
     /// Allocate a string value from a `&str`.
@@ -197,7 +222,7 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)
     }
 
-    /// Get car of a cons cell or CharPair.
+    /// Get car of a cons cell or CharPair (user-facing).
     /// For CharPair, allocates a fresh one-element string.
     #[inline]
     pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -210,7 +235,7 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Get cdr of a cons cell or CharPair.
+    /// Get cdr of a cons cell or CharPair (user-facing).
     #[inline]
     pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(idx)? {
@@ -219,10 +244,34 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Get car of cdr (second element of a list).
+    /// Get car of cdr (second element of a list, user-facing).
     #[inline]
     pub fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.car(self.cdr(idx)?)
+    }
+
+    /// Get car of a Cons cell only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn car_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons { car, .. } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(car)
+    }
+
+    /// Get cdr of a Cons cell only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn cdr_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons { cdr, .. } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(cdr)
+    }
+
+    /// Get car of cdr of Cons cells only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn cadr_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_cons(self.cdr_cons(idx)?)
     }
 
     /// Allocate a lambda (applicative from an operative that ignores caller env).
@@ -343,19 +392,19 @@ impl<const N: usize> Lisp<N> {
             // Search local bindings.
             let mut b = bindings;
             while !b.is_nil() {
-                let binding = self.car(b)?;
-                if self.car(binding)? == name {
-                    return self.cdr(binding);
+                let binding = self.car_cons(b)?;
+                if self.car_cons(binding)? == name {
+                    return self.cdr_cons(binding);
                 }
-                b = self.cdr(b)?;
+                b = self.cdr_cons(b)?;
             }
 
             // Single parent → follow directly (no allocation needed).
             if parents.is_nil() {
                 break;
             }
-            let first_parent = self.car(parents)?;
-            let rest = self.cdr(parents)?;
+            let first_parent = self.car_cons(parents)?;
+            let rest = self.cdr_cons(parents)?;
             if rest.is_nil() {
                 cur = first_parent;
                 continue;
@@ -391,11 +440,11 @@ impl<const N: usize> Lisp<N> {
         // Search local bindings.
         let mut cur = bindings;
         while !cur.is_nil() {
-            let binding = self.car(cur)?;
-            if self.car(binding)? == name {
-                return self.cdr(binding);
+            let binding = self.car_cons(cur)?;
+            if self.car_cons(binding)? == name {
+                return self.cdr_cons(binding);
             }
-            cur = self.cdr(cur)?;
+            cur = self.cdr_cons(cur)?;
         }
 
         // Mark this env as visited, then search parents.
@@ -412,13 +461,13 @@ impl<const N: usize> Lisp<N> {
     ) -> ArenaResult<ArenaIndex> {
         let mut parent_cur = parents;
         while !parent_cur.is_nil() {
-            let parent_env = self.car(parent_cur)?;
+            let parent_env = self.car_cons(parent_cur)?;
             match self.env_lookup_dfs(parent_env, name, visited) {
                 Ok(val) => return Ok(val),
                 Err(ArenaError::UnboundVariable) => {}
                 Err(e) => return Err(e),
             }
-            parent_cur = self.cdr(parent_cur)?;
+            parent_cur = self.cdr_cons(parent_cur)?;
         }
         Err(ArenaError::UnboundVariable)
     }
@@ -427,12 +476,12 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
         let mut cur = list;
         while !cur.is_nil() {
-            if let Ok(head) = self.car(cur)
+            if let Ok(head) = self.car_cons(cur)
                 && head == target
             {
                 return true;
             }
-            match self.cdr(cur) {
+            match self.cdr_cons(cur) {
                 Ok(rest) => cur = rest,
                 Err(_) => break,
             }
@@ -487,7 +536,7 @@ impl<const N: usize> Lisp<N> {
                 ArenaIndex::NIL, ArenaIndex::TRUE, ArenaIndex::FALSE,
                 ArenaIndex::INERT, ArenaIndex::IGNORE,
                 ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
-                ArenaIndex::GC_ROOTS,
+                ArenaIndex::GC_ROOTS, ArenaIndex::INTERN_LIST,
             ],
         ])
     }
