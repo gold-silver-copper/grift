@@ -999,8 +999,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
             }
             // Strings: compare character-by-character.
-            (Value::String { len: la, data: da }, Value::String { len: lb, data: db }) => {
-                self.lisp.strings_equal(la, da, lb, db)
+            (Value::String { data: da }, Value::String { data: db }) => {
+                self.lisp.strings_equal(da, db)
             }
             // Environments: eq? only (identity-based).
             // Different environments are never equal? unless eq?.

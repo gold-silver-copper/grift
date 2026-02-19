@@ -25,13 +25,15 @@ pub enum Value {
         car: ArenaIndex,
         cdr: ArenaIndex,
     },
-    /// A string with inline length and pointer to character data.
+    /// A string: pointer to the first character in a linked list.
     String {
-        len: usize,
         data: ArenaIndex,
     },
-    /// A character.
-    Char(char),
+    /// A character with inline cdr pointer forming a linked list for strings.
+    Char {
+        ch: char,
+        cdr: ArenaIndex,
+    },
     /// Compound operative (vau closure / fexpr).
     /// Created by `(vau params env-param body)`.
     /// params_envparam = (params . env-param), body_env = (body . closed-env)
@@ -87,7 +89,7 @@ impl Value {
             Value::Symbol(_) => "symbol",
             Value::Cons { .. } => "pair",
             Value::String { .. } => "string",
-            Value::Char(_) => "char",
+            Value::Char { .. } => "char",
             Value::Operative { .. } => "operative",
             Value::Applicative(_) => "applicative",
             Value::Builtin(_) => "builtin",
@@ -116,7 +118,7 @@ impl Value {
                 | Value::Boolean(_)
                 | Value::Number(_)
                 | Value::Symbol(_)
-                | Value::Char(_)
+                | Value::Char { .. }
                 | Value::Inert
                 | Value::Ignore
         )
@@ -155,7 +157,7 @@ impl core::fmt::Display for Value {
             Value::Boolean(true) => f.write_str("#t"),
             Value::Boolean(false) => f.write_str("#f"),
             Value::Number(n) => write!(f, "{n}"),
-            Value::Char(c) => write!(f, "#\\{c}"),
+            Value::Char { ch, .. } => write!(f, "#\\{ch}"),
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
             _ => write!(f, "<{}>", self.type_name()),
@@ -172,4 +174,11 @@ macro_rules! impl_from_value {
     };
 }
 
-impl_from_value!(bool => Boolean, isize => Number, char => Char, BuiltinId => Builtin);
+impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin);
+
+impl From<char> for Value {
+    #[inline]
+    fn from(v: char) -> Self {
+        Value::Char { ch: v, cdr: ArenaIndex::NIL }
+    }
+}

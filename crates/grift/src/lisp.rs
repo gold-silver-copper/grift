@@ -65,7 +65,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a character.
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(c.into())
+        self.arena.alloc(Value::Char { ch: c, cdr: ArenaIndex::NIL })
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
@@ -83,60 +83,74 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Allocate a string value from a `&str`.
+    ///
+    /// Strings are stored as a linked list of `Char` nodes.
+    /// Each `Char { ch, cdr }` points to the next character,
+    /// with the final character's `cdr` pointing to `NIL`.
     pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        let len = if s.is_ascii() { s.len() } else { s.chars().count() };
-
-        if len == 0 {
-            return self.arena.alloc(Value::String {
-                len: 0,
-                data: ArenaIndex::NIL,
-            });
+        // Pre-check: ensure enough free slots for all chars + the String header.
+        // This avoids orphaned Char nodes if allocation fails partway through.
+        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
+        if self.arena.available() < char_count + 1 {
+            return Err(ArenaError::OutOfMemory);
         }
 
-        let data = self.arena.alloc_contiguous(len, Value::Nil)?;
-        for (i, c) in s.chars().enumerate() {
-            let idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(idx, c.into())?;
+        let mut data = ArenaIndex::NIL;
+
+        // Build the linked list in reverse so the first char is at the head.
+        for c in s.chars().rev() {
+            let node = self.arena.alloc(Value::Char { ch: c, cdr: data })?;
+            data = node;
         }
 
-        self.arena.alloc(Value::String { len, data })
+        self.arena.alloc(Value::String { data })
     }
 
     /// Compare a `Value::String` at the given index with a `&str`.
     fn string_eq(&self, str_idx: ArenaIndex, s: &str) -> bool {
-        let Ok(Value::String { len, data }) = self.arena.get(str_idx) else {
+        let Ok(Value::String { data }) = self.arena.get(str_idx) else {
             return false;
         };
-        // Fast path: for ASCII strings, byte length == char count.
-        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
-        len == char_count
-            && s.chars().enumerate().all(|(i, c)| {
-                self.arena
-                    .index_at_offset(data, i)
-                    .and_then(|idx| self.arena.get(idx))
-                    == Ok(Value::Char(c))
-            })
+        let mut cur = data;
+        for c in s.chars() {
+            let Ok(Value::Char { ch, cdr }) = self.arena.get(cur) else {
+                return false;
+            };
+            if ch != c {
+                return false;
+            }
+            cur = cdr;
+        }
+        // The string must be fully consumed (cur should be NIL).
+        cur.is_nil()
     }
 
     /// Compare two arena-allocated `String` values by their character data.
     pub(crate) fn strings_equal(
         &self,
-        len_a: usize,
         data_a: ArenaIndex,
-        len_b: usize,
         data_b: ArenaIndex,
     ) -> ArenaResult<bool> {
-        if len_a != len_b {
-            return Ok(false);
-        }
-        for i in 0..len_a {
-            let ia = self.arena.index_at_offset(data_a, i)?;
-            let ib = self.arena.index_at_offset(data_b, i)?;
-            if self.arena.get(ia)? != self.arena.get(ib)? {
+        let mut cur_a = data_a;
+        let mut cur_b = data_b;
+        loop {
+            match (cur_a.is_nil(), cur_b.is_nil()) {
+                (true, true) => return Ok(true),
+                (true, false) | (false, true) => return Ok(false),
+                _ => {}
+            }
+            let Value::Char { ch: ca, cdr: next_a } = self.arena.get(cur_a)? else {
+                return Err(ArenaError::TypeError);
+            };
+            let Value::Char { ch: cb, cdr: next_b } = self.arena.get(cur_b)? else {
+                return Err(ArenaError::TypeError);
+            };
+            if ca != cb {
                 return Ok(false);
             }
+            cur_a = next_a;
+            cur_b = next_b;
         }
-        Ok(true)
     }
 
     /// Returns true if the symbol at `idx` has the given name.
@@ -433,7 +447,15 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Pass `&[]` to collect all unreachable objects.
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
-        self.arena.collect_garbage(roots)
+        // Always protect the pre-allocated singletons (NIL, TRUE, FALSE,
+        // INERT, IGNORE) so they remain valid after collection.
+        self.arena.collect_garbage_multi(&[
+            roots,
+            &[
+                ArenaIndex::NIL, ArenaIndex::TRUE, ArenaIndex::FALSE,
+                ArenaIndex::INERT, ArenaIndex::IGNORE,
+            ],
+        ])
     }
 }
 
@@ -446,23 +468,11 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(car);
                 tracer(cdr);
             }
+            Value::Char { cdr, .. } if !cdr.is_nil() => tracer(cdr),
             Value::Applicative(inner) => tracer(inner),
             Value::Symbol(s) => tracer(s),
-            Value::String { data, .. } if !data.is_nil() => tracer(data),
+            Value::String { data } if !data.is_nil() => tracer(data),
             _ => {}
-        }
-    }
-
-    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &Arena<Value, N>, mut tracer: F) {
-        match *self {
-            Value::String { len, data } => {
-                (0..len).for_each(|i| {
-                    if let Ok(idx) = arena.index_at_offset(data, i) {
-                        tracer(idx);
-                    }
-                });
-            }
-            _ => <Value as Trace<Value, N>>::trace(self, tracer),
         }
     }
 }

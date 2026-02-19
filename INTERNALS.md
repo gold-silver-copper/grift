@@ -11,7 +11,7 @@ hot paths, the macro system, arena allocation patterns, and GC interaction.
 src/
 ├── lib.rs       Re-exports and module declarations
 ├── types.rs     ArenaIndex, ArenaError, ArenaResult, Slot (internal)
-├── arena.rs     Arena<T, N> — alloc, free, get, set, contiguous allocation
+├── arena.rs     Arena<T, N> — alloc, free, get, set
 ├── traits.rs    ArenaDelete, ArenaCopy, Trace
 ├── gc.rs        Mark-and-sweep: initialize_roots, process_mark_stack, sweep_unmarked
 ├── iter.rs      ArenaIterator
@@ -225,19 +225,19 @@ fields.
 
 ### String storage
 
-Strings are stored as a header slot plus contiguous character slots:
+Strings are stored as a header slot pointing to a linked list of character slots:
 
 ```
-String { len: 5, data: @100 }
-  @100: Char('h')
-  @101: Char('e')
-  @102: Char('l')
-  @103: Char('l')
-  @104: Char('o')
+String { data: @100 }
+  @100: Char { ch: 'h', cdr: @101 }
+  @101: Char { ch: 'e', cdr: @102 }
+  @102: Char { ch: 'l', cdr: @103 }
+  @103: Char { ch: 'l', cdr: @104 }
+  @104: Char { ch: 'o', cdr: NIL }
 ```
 
-The `alloc_contiguous` method finds a run of consecutive free slots. Character
-access is O(1) via `index_at_offset`.
+Each `Char` node inlines a `cdr` pointer to the next character.
+The final character's `cdr` points to `NIL`.
 
 ### Alist environments
 

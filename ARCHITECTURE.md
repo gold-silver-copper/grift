@@ -54,13 +54,12 @@ copies values in and out rather than lending references. This eliminates runtime
 borrow checking overhead and the possibility of borrow panics, at the cost of
 requiring all stored types to implement `Copy`.
 
-### Contiguous Allocation
+### Linked-List String Storage
 
-Strings require contiguous storage for their character data. The arena provides
-`alloc_contiguous(count, default)` which performs a linear scan for `count`
-consecutive free slots, removes them from the free list in a single pass, and
-marks them occupied. This is O(N) in the worst case but is only used for string
-allocation.
+Strings are stored as a linked list of `Char` nodes. Each `Char` inlines a
+`cdr` pointer to the next character, with the final character pointing to `NIL`.
+The `String` header stores a pointer to the first character. This avoids the
+need for contiguous allocation and eliminates fragmentation issues.
 
 ### Index Design
 
@@ -80,10 +79,10 @@ enum Value {
     Nil,                                    // the empty list
     Boolean(bool),                          // #t, #f
     Number(isize),                          // integer
-    Char(char),                             // Unicode character
+    Char { ch: char, cdr: ArenaIndex },    // Unicode char with linked-list pointer
     Symbol(ArenaIndex),                     // -> String value holding the name
     Cons { car: ArenaIndex, cdr: ArenaIndex },
-    String { len: usize, data: ArenaIndex },// -> contiguous Char slots
+    String { data: ArenaIndex },            // -> linked list of Char nodes
     Operative { params_envparam: ArenaIndex, body_env: ArenaIndex },
     Applicative(ArenaIndex),                // -> inner combiner
     Builtin(BuiltinId),                     // Rust-native primitive (u8 id)
@@ -114,8 +113,9 @@ returns an existing one if the name matches, or allocates a new one.
 backbone of all compound data: lists, parameter trees, environment bindings,
 and the AST itself.
 
-**String** — A length plus a pointer to contiguously allocated `Char` slots.
-Strings are not interned (symbols are).
+**String** — A pointer to a linked list of `Char` nodes. Each `Char { ch, cdr }`
+holds a character and a pointer to the next character. The final character's
+`cdr` is `NIL`. Strings are not interned (symbols are).
 
 **Operative** — The fundamental combiner type (fexpr). Packs four fields into
 two `ArenaIndex` values via cons cells: `params_envparam` is `(params . env-param)`
@@ -319,12 +319,10 @@ operations or debugging.
 
 ### String Tracing
 
-Strings require special GC treatment because their character data is stored in
-contiguous slots that must all be marked. The `Trace` implementation for `Value`
-overrides `trace_with_arena` to read the string's `len` field from the arena and
-trace each character slot individually. The basic `trace` method only traces the
-`data` pointer (the first character slot), which is sufficient for the basic
-reference-following but not for keeping all character slots alive.
+Strings are traced through the linked list of `Char` nodes. The `String` value
+traces its `data` pointer (the first character). Each `Char` traces its `cdr`
+pointer (the next character), naturally following the linked list during the
+mark phase. No special `trace_with_arena` override is needed.
 
 ## Data Flow
 

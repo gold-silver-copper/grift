@@ -5,7 +5,7 @@ a lisp interpreter implementing vau calculus, suitable for bare metal devices an
 ## Features
 
 - `no_std`, `no_alloc`, `#![forbid(unsafe_code)]`
-- Fixed-size arena with free-list allocation and contiguous string storage
+- Fixed-size arena with free-list allocation and linked-list string storage
 - Vau calculus: first-class operatives (fexprs) subsume both functions and macros
 - First-class mutable environments with lexical parent chains
 - Applicative/operative combiner distinction (Kernel-style)
