@@ -25,7 +25,7 @@ impl<'a> Parser<'a> {
     pub fn parse<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
         self.skip_whitespace();
         if self.pos >= self.input.len() {
-            return lisp.nil();
+            return Ok(ArenaIndex::NIL);
         }
 
         match self.input[self.pos] {
@@ -71,7 +71,7 @@ impl<'a> Parser<'a> {
 
         if self.input[self.pos] == b')' {
             self.pos += 1;
-            return lisp.nil();
+            return Ok(ArenaIndex::NIL);
         }
 
         if self.peek_dot() {
@@ -148,10 +148,10 @@ impl<'a> Parser<'a> {
         let s = core::str::from_utf8(token).map_err(|_| ArenaError::ParseError)?;
 
         match s {
-            "#t" | "#true" => lisp.boolean(true),
-            "#f" | "#false" => lisp.boolean(false),
-            "#inert" => lisp.inert(),
-            "#ignore" => lisp.ignore(),
+            "#t" | "#true" => Ok(ArenaIndex::TRUE),
+            "#f" | "#false" => Ok(ArenaIndex::FALSE),
+            "#inert" => Ok(ArenaIndex::INERT),
+            "#ignore" => Ok(ArenaIndex::IGNORE),
             _ => parse_integer(s)
                 .map(|n| lisp.number(n))
                 .unwrap_or_else(|| lisp.symbol(s)),
