@@ -571,22 +571,15 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Pass `&[]` to collect all unreachable objects.
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
-        // Always protect the pre-allocated singletons (NIL, TRUE, FALSE,
-        // INERT, IGNORE), the ground/global environments, and the GC root
-        // stack so they remain valid after collection.
+        self.collect_with_roots(roots)
+    }
+
+    /// Collect garbage, always protecting the macro-generated singleton
+    /// root set plus any caller-supplied `extra_roots`.
+    pub(crate) fn collect_with_roots(&self, extra_roots: &[ArenaIndex]) -> GcStats {
         self.arena.collect_garbage_multi(&[
-            roots,
-            &[
-                ArenaIndex::NIL,
-                ArenaIndex::TRUE,
-                ArenaIndex::FALSE,
-                ArenaIndex::INERT,
-                ArenaIndex::IGNORE,
-                ArenaIndex::GROUND_ENV,
-                ArenaIndex::GLOBAL_ENV,
-                ArenaIndex::GC_ROOTS,
-                ArenaIndex::INTERN_LIST,
-            ],
+            ArenaIndex::ROOTS,
+            extra_roots,
         ])
     }
 }
