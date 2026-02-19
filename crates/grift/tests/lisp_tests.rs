@@ -2858,3 +2858,156 @@ fn test_gc_oom_triggers_collection() {
         );
     }
 }
+
+// ============================================================================
+// String as Linked List (CharPair) Tests
+// ============================================================================
+
+#[test]
+fn test_car_of_string() {
+    // (car "hello") => a one-element string "h"
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"(car "hello")"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "car of string should return CharPair with first char, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_cdr_of_string() {
+    // (cdr "hello") => "ello", check via (car (cdr "hello")) => "e"
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"(car (cdr "hello"))"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'e', .. }),
+        "car of cdr of string should be 'e', got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_null_of_empty_string() {
+    // (null? "") => #t (empty string is NIL)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(null? "")"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_pair_of_nonempty_string() {
+    // (pair? "hello") => #t (non-empty string is a CharPair)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(pair? "hello")"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_pair_of_empty_string() {
+    // (pair? "") => #f (empty string is NIL)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(pair? "")"#), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_string_traversal() {
+    // Walk through a string using car/cdr until null
+    let lisp: Lisp<20000> = Lisp::new();
+    // cdr of a single-char string should be NIL
+    assert_eq!(
+        lisp.eval(r#"(null? (cdr "x"))"#),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_char_literal_parsing() {
+    // #\h should parse as a CharPair
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"#\h"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "char literal should be CharPair, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_char_literal_named() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"#\space"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: ' ', .. }),
+        "named char literal should be space, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_cons_char_onto_string() {
+    // (cons #\h "ello") should produce a string "hello"
+    let lisp: Lisp<20000> = Lisp::new();
+    // Verify by checking car/cdr of the result
+    let result = lisp.eval(r#"(car (cons #\h "ello"))"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "car of cons char onto string should be 'h', got: {:?}",
+        result
+    );
+    let result2 = lisp.eval(r#"(car (cdr (cons #\h "ello")))"#).unwrap();
+    assert!(
+        matches!(result2, Value::CharPair { ch: 'e', .. }),
+        "second char of cons'd string should be 'e', got: {:?}",
+        result2
+    );
+}
+
+#[test]
+fn test_cons_char_onto_nil() {
+    // (cons #\h ()) should produce a one-element string
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"(car (cons #\h '()))"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "cons char onto nil should produce single-char string, got: {:?}",
+        result
+    );
+    assert_eq!(
+        lisp.eval(r#"(null? (cdr (cons #\h '())))"#),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_equal_strings() {
+    // Two separately allocated strings with same content should be equal?
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(equal? "hello" "hello")"#),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(r#"(equal? "hello" "world")"#),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_equal_empty_strings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(equal? "" "")"#),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_string_is_self_evaluating() {
+    // Strings are self-evaluating
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#""hello""#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "string should self-evaluate to its head CharPair, got: {:?}",
+        result
+    );
+}
