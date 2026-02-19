@@ -223,6 +223,9 @@ impl<const N: usize> Lisp<N> {
         data_a: ArenaIndex,
         data_b: ArenaIndex,
     ) -> ArenaResult<bool> {
+        if data_a == data_b {
+            return Ok(true);
+        }
         let mut cur_a = data_a;
         let mut cur_b = data_b;
         loop {
@@ -399,6 +402,20 @@ impl<const N: usize> Lisp<N> {
         self.make_env(parents)
     }
 
+    /// Search an alist for a binding whose car equals `name`.
+    /// Returns `Some(binding_cons_index)` if found, `None` otherwise.
+    fn find_binding(&self, bindings: ArenaIndex, name: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+        let mut cur = bindings;
+        while !cur.is_nil() {
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                return Ok(Some(binding));
+            }
+            cur = self.cdr(cur)?;
+        }
+        Ok(None)
+    }
+
     /// Define a binding in an environment (mutates in place via arena.set).
     /// If a binding for `name` already exists in this frame, overwrite it.
     pub(crate) fn env_define(
@@ -410,17 +427,8 @@ impl<const N: usize> Lisp<N> {
         let Value::Environment { bindings, parents } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
-        // Check if binding already exists in THIS frame
-        let mut cur = bindings;
-        while !cur.is_nil() {
-            let binding = self.car(cur)?;
-            if self.car(binding)? == name {
-                // Overwrite in place
-                self.arena
-                    .set(binding, Value::Cons { car: name, cdr: val })?;
-                return Ok(());
-            }
-            cur = self.cdr(cur)?;
+        if let Some(binding) = self.find_binding(bindings, name)? {
+            return self.arena.set(binding, Value::Cons { car: name, cdr: val });
         }
         // Not found — create new binding
         let pair = self.cons(name, val)?;
@@ -445,18 +453,10 @@ impl<const N: usize> Lisp<N> {
         let Value::Environment { bindings, .. } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
-        let mut cur = bindings;
-        while !cur.is_nil() {
-            let binding = self.car(cur)?;
-            if self.car(binding)? == name {
-                // Overwrite the binding's value in place
-                self.arena
-                    .set(binding, Value::Cons { car: name, cdr: val })?;
-                return Ok(());
-            }
-            cur = self.cdr(cur)?;
+        match self.find_binding(bindings, name)? {
+            Some(binding) => self.arena.set(binding, Value::Cons { car: name, cdr: val }),
+            None => Err(ArenaError::UnboundVariable),
         }
-        Err(ArenaError::UnboundVariable)
     }
 
     /// Look up a symbol in an environment.
@@ -644,10 +644,17 @@ impl<const N: usize> Lisp<N> {
             Ok(Value::Boolean(true)) => w.write_str("#t"),
             Ok(Value::Boolean(false)) => w.write_str("#f"),
             Ok(Value::Number(n)) => write!(w, "{n}"),
-            Ok(Value::Symbol(char_head)) => self.write_char_chain(char_head, w),
+            Ok(Value::Symbol(char_head)) => self.walk_chars(char_head, w, |ch, w| w.write_char(ch)),
             Ok(Value::CharPair { .. }) => {
                 w.write_char('"')?;
-                self.write_string_chars(idx, w)?;
+                self.walk_chars(idx, w, |ch, w| match ch {
+                    '"' => w.write_str("\\\""),
+                    '\\' => w.write_str("\\\\"),
+                    '\n' => w.write_str("\\n"),
+                    '\t' => w.write_str("\\t"),
+                    '\r' => w.write_str("\\r"),
+                    c => w.write_char(c),
+                })?;
                 w.write_char('"')
             }
             Ok(Value::Cons { car, cdr }) => {
@@ -663,41 +670,17 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Write a CharPair chain as raw characters (for symbol names).
-    fn write_char_chain(
+    /// Walk a CharPair chain, emitting each character via a closure.
+    fn walk_chars<W: core::fmt::Write>(
         &self,
         mut idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut W,
+        mut emit: impl FnMut(char, &mut W) -> core::fmt::Result,
     ) -> core::fmt::Result {
         while !idx.is_nil() {
             match self.arena.get(idx) {
                 Ok(Value::CharPair { ch, cdr }) => {
-                    w.write_char(ch)?;
-                    idx = cdr;
-                }
-                _ => break,
-            }
-        }
-        Ok(())
-    }
-
-    /// Write a CharPair chain with string escaping (for string literals).
-    fn write_string_chars(
-        &self,
-        mut idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
-    ) -> core::fmt::Result {
-        while !idx.is_nil() {
-            match self.arena.get(idx) {
-                Ok(Value::CharPair { ch, cdr }) => {
-                    match ch {
-                        '"' => w.write_str("\\\"")?,
-                        '\\' => w.write_str("\\\\")?,
-                        '\n' => w.write_str("\\n")?,
-                        '\t' => w.write_str("\\t")?,
-                        '\r' => w.write_str("\\r")?,
-                        c => w.write_char(c)?,
-                    }
+                    emit(ch, w)?;
                     idx = cdr;
                 }
                 _ => break,

@@ -728,8 +728,8 @@ impl<const N: usize> Lisp<N> {
                 let bindings = self.car(rest)?;
                 let body_list = self.cdr(rest)?;
 
-                let params = self.map_car(bindings)?;
-                let inits = self.map_cadr(bindings)?;
+                let params = self.map_list(bindings, Self::car)?;
+                let inits = self.map_list(bindings, Self::cadr)?;
 
                 let local_env = self.make_child_env(*env)?;
                 self.push_root(local_env)?;
@@ -892,27 +892,18 @@ impl<const N: usize> Lisp<N> {
         self.cons(begin_sym, exprs)
     }
 
-    /// Map `car` over a list: `((a b) (c d) ...) → (a c ...)`.
-    fn map_car(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// Map a function over a cons-list, building a new list of results.
+    fn map_list(
+        &self,
+        list: ArenaIndex,
+        f: impl Fn(&Self, ArenaIndex) -> ArenaResult<ArenaIndex>,
+    ) -> ArenaResult<ArenaIndex> {
         let mut cur = list;
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
             let head = self.car(cur)?;
-            let first = self.car(head)?;
-            reversed = self.cons(first, reversed)?;
-            cur = self.cdr(cur)?;
-        }
-        self.reverse_list(reversed)
-    }
-
-    /// Map `cadr` over a list: `((a b) (c d) ...) → (b d ...)`.
-    fn map_cadr(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut cur = list;
-        let mut reversed = ArenaIndex::NIL;
-        while !cur.is_nil() {
-            let head = self.car(cur)?;
-            let second = self.cadr(head)?;
-            reversed = self.cons(second, reversed)?;
+            let val = f(self, head)?;
+            reversed = self.cons(val, reversed)?;
             cur = self.cdr(cur)?;
         }
         self.reverse_list(reversed)
@@ -1131,23 +1122,8 @@ impl<const N: usize> Lisp<N> {
         self.number(stats.collected as isize)
     }
 
-    /// `(gc-enable)` — enable automatic garbage collection on OOM.
-
-    /// `(gc-disable)` — disable automatic garbage collection.
-    /// When disabled, OOM errors propagate immediately without attempting GC.
-    /// Manual `(gc-collect)` still works regardless.
-
-    /// `(gc-enabled?)` — check if automatic GC is enabled.
-
     /// Copy a cons-list into fresh cons cells (iterative).
     fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut cur = list;
-        let mut reversed = ArenaIndex::NIL;
-        while !cur.is_nil() {
-            let head = self.car(cur)?;
-            reversed = self.cons(head, reversed)?;
-            cur = self.cdr(cur)?;
-        }
-        self.reverse_list(reversed)
+        self.map_list(list, |_, h| Ok(h))
     }
 }
