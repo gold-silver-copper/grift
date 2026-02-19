@@ -543,9 +543,8 @@ impl<const N: usize> Lisp<N> {
     ) -> TailAction {
         non_tail!({
             // Protect the ground environment from mutation.
-            if *env == ArenaIndex::GROUND_ENV {
-                return Err(ArenaError::ImmutableEnvironment);
-            }
+            debug_assert!(*env != ArenaIndex::GROUND_ENV, "define! in ground env");
+
             let definiend = self.car(args)?;
 
             // Function shorthand: (define! (fn name params...) body...)
@@ -590,10 +589,11 @@ impl<const N: usize> Lisp<N> {
             if !matches!(self.get(target_env)?, Value::Environment { .. }) {
                 return Err(ArenaError::TypeError);
             }
-            // Protect the ground environment from mutation (§3.2).
-            if target_env == ArenaIndex::GROUND_ENV {
-                return Err(ArenaError::ImmutableEnvironment);
-            }
+
+            debug_assert!(
+                target_env != ArenaIndex::GROUND_ENV,
+                "define! in ground env"
+            );
 
             let val = self.eval_expr(val_expr, *env)?;
             // set! only supports a single symbol formal.
