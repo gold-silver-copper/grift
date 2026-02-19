@@ -31,10 +31,10 @@ impl<const N: usize> Default for Lisp<N> {
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp interpreter with an empty arena.
     ///
-    /// Slots 0–8 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
+    /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
     /// `#ignore`, the ground environment, a parents cell, the global
-    /// environment, and the GC root stack so that returning these common
-    /// values is allocation-free.
+    /// environment, the GC root stack, and the symbol intern list so
+    /// that returning these common values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena.alloc(Value::Nil).expect("arena too small for singletons");
@@ -74,6 +74,14 @@ impl<const N: usize> Lisp<N> {
         }).expect("arena too small for gc_roots");
         assert!(gc_roots_idx == ArenaIndex::GC_ROOTS, "GC_ROOTS must be slot 8");
 
+        // Pre-allocate symbol intern list at a fixed slot.
+        // car = head of the intern alist (initially NIL = empty).
+        let intern_idx = lisp.arena.alloc(Value::Cons {
+            car: ArenaIndex::NIL,
+            cdr: ArenaIndex::NIL,
+        }).expect("arena too small for intern_list");
+        assert!(intern_idx == ArenaIndex::INTERN_LIST, "INTERN_LIST must be slot 9");
+
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
@@ -100,17 +108,34 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
-    /// same name already exists, returns the existing index.
+    /// same name already exists in the intern list, returns the existing index.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        if let Some((idx, _)) = self.arena.find(|v| {
-            v.as_symbol()
-                .is_ok_and(|char_head| self.string_eq(char_head, name))
-        }) {
-            return Ok(idx);
+        // Walk the intern alist
+        let intern_head = self.car_cons(ArenaIndex::INTERN_LIST)?;
+        let mut cur = intern_head;
+        while !cur.is_nil() {
+            let sym = self.car_cons(cur)?;
+            if self.symbol_name_eq(sym, name) {
+                return Ok(sym);
+            }
+            cur = self.cdr_cons(cur)?;
         }
 
+        // Not found — allocate new symbol and prepend to intern list
         let char_head = self.alloc_string(name)?;
-        self.arena.alloc(Value::Symbol(char_head))
+        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let new_head = self.cons(sym_idx, intern_head)?;
+
+        // Update the intern list head in place
+        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
+            unreachable!();
+        };
+        self.arena.set(ArenaIndex::INTERN_LIST, Value::Cons {
+            car: new_head,
+            cdr,
+        })?;
+
+        Ok(sym_idx)
     }
 
     /// Allocate a string value from a `&str`.
@@ -511,7 +536,7 @@ impl<const N: usize> Lisp<N> {
                 ArenaIndex::NIL, ArenaIndex::TRUE, ArenaIndex::FALSE,
                 ArenaIndex::INERT, ArenaIndex::IGNORE,
                 ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
-                ArenaIndex::GC_ROOTS,
+                ArenaIndex::GC_ROOTS, ArenaIndex::INTERN_LIST,
             ],
         ])
     }

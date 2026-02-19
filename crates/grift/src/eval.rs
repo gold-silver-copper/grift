@@ -280,6 +280,7 @@ impl<const N: usize> Lisp<N> {
             ArenaIndex::GROUND_ENV,
             ArenaIndex::GLOBAL_ENV,
             ArenaIndex::GC_ROOTS,
+            ArenaIndex::INTERN_LIST,
         ])
     }
 
@@ -295,6 +296,7 @@ impl<const N: usize> Lisp<N> {
             ArenaIndex::GROUND_ENV,
             ArenaIndex::GLOBAL_ENV,
             ArenaIndex::GC_ROOTS,
+            ArenaIndex::INTERN_LIST,
         ])
     }
 

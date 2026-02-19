@@ -59,6 +59,11 @@ impl ArenaIndex {
     /// of the GC roots linked list and whose `cdr` is always NIL.
     pub const GC_ROOTS: ArenaIndex = ArenaIndex(8);
 
+    /// The INTERN_LIST index - points to slot 9 where the symbol intern
+    /// alist head is stored.  This is a cons cell whose `car` holds the
+    /// current head of the intern list and whose `cdr` is always NIL.
+    pub const INTERN_LIST: ArenaIndex = ArenaIndex(9);
+
     /// Return `ArenaIndex::TRUE` if `b` is true, `ArenaIndex::FALSE` otherwise.
     #[inline]
     pub const fn from_bool(b: bool) -> ArenaIndex {
