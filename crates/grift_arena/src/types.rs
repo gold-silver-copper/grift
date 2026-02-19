@@ -75,14 +75,6 @@ impl ArenaIndex {
         self.0 == 0
     }
 
-    /// Compute an index offset by `n` slots, returning `None` on overflow.
-    #[inline]
-    pub const fn offset(self, n: usize) -> Option<ArenaIndex> {
-        match self.0.checked_add(n) {
-            Some(idx) => Some(ArenaIndex(idx)),
-            None => None,
-        }
-    }
 }
 
 impl Default for ArenaIndex {
