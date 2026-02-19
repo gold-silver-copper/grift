@@ -1,4 +1,4 @@
-use grift::{ArenaError, Lisp, Value};
+use grift::{ArenaError, ArenaIndex, Lisp, Value};
 
 // ============================================================================
 // Basic Arithmetic Tests
@@ -2857,4 +2857,114 @@ fn test_gc_oom_triggers_collection() {
             i
         );
     }
+}
+
+// ============================================================================
+// String / Char linked list tests
+// ============================================================================
+
+#[test]
+fn test_string_is_char_linked_list() {
+    // Strings are now just Char linked lists (no String wrapper).
+    // alloc_string returns the first Char index directly.
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval("\"hello\"");
+    // The result should be a Char value (first char of the string)
+    match result {
+        Ok(Value::Char { ch: 'h', .. }) => {}
+        other => panic!("Expected Char 'h', got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_car_on_string_gives_first_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval("(car \"hello\")");
+    assert!(
+        matches!(result, Ok(Value::Char { ch: 'h', cdr }) if cdr == ArenaIndex::NIL),
+        "Expected standalone Char 'h' with cdr=NIL, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_cdr_on_string_gives_rest() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // cdr of "hello" gives the rest of the string starting at 'e'
+    let result = lisp.eval("(car (cdr \"hello\"))");
+    assert!(
+        matches!(result, Ok(Value::Char { ch: 'e', cdr }) if cdr == ArenaIndex::NIL),
+        "Expected standalone Char 'e' with cdr=NIL, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_car_cdr_chain_on_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Walk through "abc" using car/cdr
+    let r1 = lisp.eval("(car \"abc\")");
+    assert!(matches!(r1, Ok(Value::Char { ch: 'a', .. })));
+
+    let r2 = lisp.eval("(car (cdr \"abc\"))");
+    assert!(matches!(r2, Ok(Value::Char { ch: 'b', .. })));
+
+    let r3 = lisp.eval("(car (cdr (cdr \"abc\")))");
+    assert!(matches!(r3, Ok(Value::Char { ch: 'c', .. })));
+}
+
+#[test]
+fn test_cdr_of_last_char_is_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // cdr of last char in a single-char string should be nil
+    let result = lisp.eval("(cdr \"x\")");
+    assert_eq!(result, Ok(Value::Nil));
+}
+
+#[test]
+fn test_null_on_cdr_of_last_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // cdr of last char is nil, so null? should be true
+    let result = lisp.eval("(null? (cdr \"x\"))");
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_equal_strings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Two strings with same content should be equal?
+    let result = lisp.eval("(equal? \"abc\" \"abc\")");
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_equal_strings_different() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval("(equal? \"abc\" \"xyz\")");
+    assert_eq!(result, Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_equal_strings_different_length() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval("(equal? \"ab\" \"abc\")");
+    assert_eq!(result, Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_empty_string_is_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Empty string should be nil (no chars)
+    let result = lisp.eval("\"\"");
+    assert_eq!(result, Ok(Value::Nil));
+}
+
+#[test]
+fn test_free_variant_not_accessible() {
+    // The Free variant is internal to arena management;
+    // it should never appear as a Lisp value.
+    let lisp: Lisp<20000> = Lisp::new();
+    // Evaluating normal expressions should never produce Free values
+    let result = lisp.eval("(+ 1 2)");
+    assert_eq!(result, Ok(Value::Number(3)));
 }

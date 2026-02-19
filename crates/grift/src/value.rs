@@ -1,6 +1,6 @@
 //! Lisp value type.
 
-use grift_arena::{ArenaError, ArenaIndex};
+use grift_arena::{ArenaError, ArenaIndex, Slotted, FREE_LIST_END};
 
 /// Type-safe identifier for built-in functions.
 ///
@@ -13,23 +13,23 @@ pub struct BuiltinId(pub(crate) u8);
 /// A Lisp value stored in the arena. Variants can only inline max two arenaindex sized data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
+    /// Free slot in the arena's free list, storing the next free index.
+    Free { next_free: usize },
     /// The empty list / nil.
     Nil,
     Boolean(bool),
     /// Integer number.
     Number(isize),
-    /// A symbol, pointing to a `String` value that holds the name.
+    /// A symbol, pointing to the first `Char` in the name's linked list.
     Symbol(ArenaIndex),
     /// A cons cell (pair) with inline car and cdr.
     Cons {
         car: ArenaIndex,
         cdr: ArenaIndex,
     },
-    /// A string: pointer to the first character in a linked list.
-    String {
-        data: ArenaIndex,
-    },
     /// A character with inline cdr pointer forming a linked list for strings.
+    /// Strings are simply Char linked lists — no separate String wrapper.
+    /// `car`/`cdr` work natively on Char values.
     Char {
         ch: char,
         cdr: ArenaIndex,
@@ -79,16 +79,36 @@ macro_rules! value_accessor {
     };
 }
 
+impl Slotted for Value {
+    #[inline]
+    fn is_free(&self) -> bool {
+        matches!(self, Value::Free { .. })
+    }
+
+    #[inline]
+    fn next_free(&self) -> usize {
+        match self {
+            Value::Free { next_free } => *next_free,
+            _ => FREE_LIST_END,
+        }
+    }
+
+    #[inline]
+    fn make_free(next: usize) -> Self {
+        Value::Free { next_free: next }
+    }
+}
+
 impl Value {
     /// Returns the type name as a static string (for error messages).
     pub fn type_name(&self) -> &'static str {
         match self {
+            Value::Free { .. } => "free",
             Value::Nil => "nil",
             Value::Boolean(_) => "boolean",
             Value::Number(_) => "number",
             Value::Symbol(_) => "symbol",
             Value::Cons { .. } => "pair",
-            Value::String { .. } => "string",
             Value::Char { .. } => "char",
             Value::Operative { .. } => "operative",
             Value::Applicative(_) => "applicative",

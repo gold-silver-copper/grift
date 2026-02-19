@@ -1,15 +1,14 @@
 //! Iterator support for the arena.
 
-use crate::{Arena, ArenaIndex};
-use crate::types::Slot;
+use crate::{Arena, ArenaIndex, Slotted};
 
 /// Iterator over allocated cells in the arena.
-pub struct ArenaIterator<'a, T: Copy, const N: usize> {
+pub struct ArenaIterator<'a, T: Slotted, const N: usize> {
     pub(crate) arena: &'a Arena<T, N>,
     pub(crate) current: usize,
 }
 
-impl<'a, T: Copy, const N: usize> Iterator for ArenaIterator<'a, T, N> {
+impl<'a, T: Slotted, const N: usize> Iterator for ArenaIterator<'a, T, N> {
     type Item = (ArenaIndex, T);
 
     #[inline]
@@ -18,7 +17,8 @@ impl<'a, T: Copy, const N: usize> Iterator for ArenaIterator<'a, T, N> {
             let idx = self.current;
             self.current += 1;
 
-            if let Slot::Occupied { value } = self.arena.slots[idx].get() {
+            let value = self.arena.slots[idx].get();
+            if !value.is_free() {
                 return Some((ArenaIndex::new(idx), value));
             }
         }

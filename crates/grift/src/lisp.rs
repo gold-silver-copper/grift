@@ -36,7 +36,7 @@ impl<const N: usize> Lisp<N> {
     /// environment, and the GC root stack so that returning these common
     /// values is allocation-free.
     pub fn new() -> Self {
-        let arena = Arena::new(Value::Nil);
+        let arena = Arena::new();
         let nil_idx = arena.alloc(Value::Nil).expect("arena too small for singletons");
         let true_idx = arena.alloc(Value::Boolean(true)).expect("arena too small for singletons");
         let false_idx = arena.alloc(Value::Boolean(false)).expect("arena too small for singletons");
@@ -118,11 +118,13 @@ impl<const N: usize> Lisp<N> {
     /// Strings are stored as a linked list of `Char` nodes.
     /// Each `Char { ch, cdr }` points to the next character,
     /// with the final character's `cdr` pointing to `NIL`.
+    /// Returns the `ArenaIndex` of the first `Char` node directly
+    /// (empty strings return `ArenaIndex::NIL`).
     pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        // Pre-check: ensure enough free slots for all chars + the String header.
+        // Pre-check: ensure enough free slots for all chars.
         // This avoids orphaned Char nodes if allocation fails partway through.
         let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
-        if self.arena.available() < char_count + 1 {
+        if self.arena.available() < char_count {
             return Err(ArenaError::OutOfMemory);
         }
 
@@ -134,15 +136,12 @@ impl<const N: usize> Lisp<N> {
             data = node;
         }
 
-        self.arena.alloc(Value::String { data })
+        Ok(data)
     }
 
-    /// Compare a `Value::String` at the given index with a `&str`.
+    /// Compare a Char linked list starting at `str_idx` with a `&str`.
     fn string_eq(&self, str_idx: ArenaIndex, s: &str) -> bool {
-        let Ok(Value::String { data }) = self.arena.get(str_idx) else {
-            return false;
-        };
-        let mut cur = data;
+        let mut cur = str_idx;
         for c in s.chars() {
             let Ok(Value::Char { ch, cdr }) = self.arena.get(cur) else {
                 return false;
@@ -154,34 +153,6 @@ impl<const N: usize> Lisp<N> {
         }
         // The string must be fully consumed (cur should be NIL).
         cur.is_nil()
-    }
-
-    /// Compare two arena-allocated `String` values by their character data.
-    pub(crate) fn strings_equal(
-        &self,
-        data_a: ArenaIndex,
-        data_b: ArenaIndex,
-    ) -> ArenaResult<bool> {
-        let mut cur_a = data_a;
-        let mut cur_b = data_b;
-        loop {
-            match (cur_a.is_nil(), cur_b.is_nil()) {
-                (true, true) => return Ok(true),
-                (true, false) | (false, true) => return Ok(false),
-                _ => {}
-            }
-            let Value::Char { ch: ca, cdr: next_a } = self.arena.get(cur_a)? else {
-                return Err(ArenaError::TypeError);
-            };
-            let Value::Char { ch: cb, cdr: next_b } = self.arena.get(cur_b)? else {
-                return Err(ArenaError::TypeError);
-            };
-            if ca != cb {
-                return Ok(false);
-            }
-            cur_a = next_a;
-            cur_b = next_b;
-        }
     }
 
     /// Returns true if the symbol at `idx` has the given name.
@@ -200,16 +171,29 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)
     }
 
-    /// Get car of a cons cell.
+    /// Get car of a cons cell or first character of a Char linked list.
+    ///
+    /// For `Cons { car, cdr }`, returns `car`.
+    /// For `Char { ch, cdr }`, allocates a standalone `Char` with `cdr: NIL`.
     #[inline]
     pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(idx)?.as_cons().map(|(car, _)| car)
+        match self.arena.get(idx)? {
+            Value::Cons { car, .. } => Ok(car),
+            Value::Char { ch, .. } => self.arena.alloc(Value::Char { ch, cdr: ArenaIndex::NIL }),
+            _ => Err(ArenaError::TypeError),
+        }
     }
 
-    /// Get cdr of a cons cell.
+    /// Get cdr of a cons cell or rest of a Char linked list.
+    ///
+    /// For `Cons { car, cdr }`, returns `cdr`.
+    /// For `Char { ch, cdr }`, returns `cdr` (next Char or NIL).
     #[inline]
     pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
+        match self.arena.get(idx)? {
+            Value::Cons { cdr, .. } | Value::Char { cdr, .. } => Ok(cdr),
+            _ => Err(ArenaError::TypeError),
+        }
     }
 
     /// Get car of cdr (second element of a list).
@@ -498,7 +482,6 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Char { cdr, .. } if !cdr.is_nil() => tracer(cdr),
             Value::Applicative(inner) => tracer(inner),
             Value::Symbol(s) => tracer(s),
-            Value::String { data } if !data.is_nil() => tracer(data),
             _ => {}
         }
     }

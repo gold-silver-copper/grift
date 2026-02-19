@@ -28,4 +28,4 @@ mod eval;
 
 pub use value::{Value, BuiltinId};
 pub use lisp::Lisp;
-pub use grift_arena::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats};
+pub use grift_arena::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats, Slotted};
