@@ -1,6 +1,6 @@
 # grift
 
-a `#![no_std]` lisp interpreter implementing the vau calculus (Shutt 2010) on a fixed-size arena allocator with mark-and-sweep garbage collection.
+a lisp interpreter implementing vau calculus, suitable for bare metal devices and embedded use
 
 ## Features
 
@@ -10,7 +10,7 @@ a `#![no_std]` lisp interpreter implementing the vau calculus (Shutt 2010) on a 
 - First-class mutable environments with lexical parent chains
 - Applicative/operative combiner distinction (Kernel-style)
 - Tail-call optimization via trampoline
-- Mark-and-sweep garbage collection with shadow root stack
+- Mark-and-sweep garbage collection 
 - Immutable pairs, call-by-value evaluation
 - Symbol interning
 - Checked integer arithmetic
@@ -86,7 +86,8 @@ cargo run -p grift --features repl
 ```
 
 ## Documentation
-
+- [Kernel Spec](05-07.pdf) -- Kernel lang Specification
+- [$vau the ultimate](jshutt.pdf) -- Kernel lang Specification
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- System architecture, arena design, GC, TCO
 - [LANGUAGE.md](LANGUAGE.md) -- Language reference: types, primitives, evaluation rules
 - [INTERNALS.md](INTERNALS.md) -- Contributor guide: module structure, adding builtins
