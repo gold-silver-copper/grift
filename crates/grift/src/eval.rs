@@ -528,8 +528,10 @@ impl<const N: usize> Lisp<N> {
     /// (a formal parameter tree) to the result, binding symbols in the dynamic
     /// environment.  Returns `#inert`.
     ///
-    /// Function shorthand: `(define! (name params...) body...)` desugars to
-    /// `(define! name (lambda (params...) body...))`.
+    /// Function shorthand: `(define! (fn name params...) body...)` desugars to
+    /// `(define! name (lambda (params...) body...))`.  The `fn` marker is a
+    /// syntactic keyword recognized only in this position — it is never
+    /// evaluated or looked up as a variable binding.
     ///
     /// Per Kernel §3.2, mutation of the ground environment or its ancestors
     /// is forbidden.
@@ -546,11 +548,11 @@ impl<const N: usize> Lisp<N> {
             }
             let definiend = self.car(args)?;
 
-            // Function shorthand: (define! (name params...) body...)
+            // Function shorthand: (define! (fn name params...) body...)
             if let Value::Cons { car, cdr } = self.get(definiend)? {
-                if matches!(self.get(car)?, Value::Symbol(_)) {
-                    let name = car;
-                    let params = cdr;
+                if self.symbol_name_eq(car, "fn") {
+                    let name = self.car(cdr)?;
+                    let params = self.cdr(cdr)?;
                     let body_list = self.cdr(args)?;
                     let body = self.wrap_begin(body_list)?;
                     let func = self.lambda(params, body, *env)?;

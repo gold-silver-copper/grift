@@ -1618,11 +1618,9 @@ fn test_define_ptree_nil_mismatch() {
 
 #[test]
 fn test_define_ptree_pair_destructuring() {
-    // With function shorthand, (define! (a . b) expr) defines function 'a'
-    // with rest-params 'b'. Pair ptree destructuring only applies when the
-    // car of the definiend is NOT a symbol.
+    // Without the fn marker, (define! (a . b) expr) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
-    // (#ignore . b) has a non-symbol car, so it's ptree destructuring
+    // (#ignore . b) — ptree destructuring
     assert_eq!(
         lisp.eval(
             r#"
@@ -1636,8 +1634,7 @@ fn test_define_ptree_pair_destructuring() {
 
 #[test]
 fn test_define_ptree_list_destructuring() {
-    // With function shorthand, (define! (a b c) ...) defines function 'a'.
-    // Ptree list destructuring uses non-symbol-headed pairs.
+    // Without the fn marker, (define! (a b c) ...) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -1689,13 +1686,13 @@ fn test_define_ptree_pair_mismatch() {
 
 #[test]
 fn test_define_ptree_rest_binding() {
-    // With function shorthand, (define! (a . rest) ...) defines function 'a'
-    // with variadic rest args. Test that it works correctly.
+    // With fn marker, (define! (fn a . rest) ...) defines function 'a'
+    // with variadic rest args.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (first . args) (car args))
+            (define! (fn first . args) (car args))
             (first 1 2 3)
             "#
         ),
@@ -1705,8 +1702,8 @@ fn test_define_ptree_rest_binding() {
 
 #[test]
 fn test_define_ptree_kernel_example() {
-    // With function shorthand, (define! (x y z) ...) defines function 'x'.
-    // Kernel-style destructuring still works with non-symbol-headed pairs.
+    // Without fn marker, (define! (x y z) ...) is ptree destructuring.
+    // Kernel-style destructuring works for all pair-headed definiends.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3143,7 +3140,7 @@ fn test_set_bang_closures_see_change() {
             r#"
             (define! x 1)
             (define! env (current-environment))
-            (define! (get-x) x)
+            (define! (fn get-x) x)
             (set! env x 99)
             (get-x)
             "#
@@ -3216,7 +3213,7 @@ fn test_define_overwrite_function_in_repl() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (double n) (+ n n))
+            (define! (fn double n) (+ n n))
             (double 5)
             "#
         ),
@@ -3225,7 +3222,7 @@ fn test_define_overwrite_function_in_repl() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (double n) (* n 2))
+            (define! (fn double n) (* n 2))
             (double 5)
             "#
         ),
@@ -3299,7 +3296,7 @@ fn test_current_environment_in_closures() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (make-cell val)
+            (define! (fn make-cell val)
               (define! env (current-environment))
               (list
                 (lambda () val)
@@ -3313,7 +3310,7 @@ fn test_current_environment_in_closures() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (make-cell val)
+            (define! (fn make-cell val)
               (define! env (current-environment))
               (list
                 (lambda () val)
@@ -3442,7 +3439,7 @@ fn test_regular_let_still_works() {
 }
 
 // ============================================================================
-// Feature 5: define! Function Shorthand
+// Feature 5: define! Function Shorthand (fn marker)
 // ============================================================================
 
 #[test]
@@ -3451,7 +3448,7 @@ fn test_define_function_shorthand_basic() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (double n) (+ n n))
+            (define! (fn double n) (+ n n))
             (double 5)
             "#
         ),
@@ -3465,7 +3462,7 @@ fn test_define_function_shorthand_multi_body() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (do-stuff x)
+            (define! (fn do-stuff x)
               (define! y (+ x 1))
               (* y 2))
             (do-stuff 5)
@@ -3481,7 +3478,7 @@ fn test_define_function_shorthand_variadic() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (first . args) (car args))
+            (define! (fn first . args) (car args))
             (first 1 2 3)
             "#
         ),
@@ -3496,7 +3493,7 @@ fn test_define_function_shorthand_zero_params() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (greeting) "hello")
+            (define! (fn greeting) "hello")
             (pair? (greeting))
             "#
         ),
@@ -3510,7 +3507,7 @@ fn test_define_function_shorthand_recursive() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (factorial n)
+            (define! (fn factorial n)
               (if (= n 0) 1 (* n (factorial (- n 1)))))
             (factorial 10)
             "#
@@ -3525,8 +3522,8 @@ fn test_define_function_shorthand_mutual_recursion() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (even? n) (if (= n 0) #t (odd? (- n 1))))
-            (define! (odd? n)  (if (= n 0) #f (even? (- n 1))))
+            (define! (fn even? n) (if (= n 0) #t (odd? (- n 1))))
+            (define! (fn odd? n)  (if (= n 0) #f (even? (- n 1))))
             (even? 10)
             "#
         ),
@@ -3544,7 +3541,7 @@ fn test_define_function_shorthand_overwrite() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (f x) (+ x 1))
+            (define! (fn f x) (+ x 1))
             (f 5)
             "#
         ),
@@ -3553,7 +3550,7 @@ fn test_define_function_shorthand_overwrite() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (f x) (* x 2))
+            (define! (fn f x) (* x 2))
             (f 5)
             "#
         ),
@@ -3567,7 +3564,7 @@ fn test_define_function_shorthand_closure() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (make-adder n)
+            (define! (fn make-adder n)
               (lambda (x) (+ x n)))
             (define! add5 (make-adder 5))
             (add5 10)
@@ -3584,7 +3581,7 @@ fn test_define_function_shorthand_inside_let() {
         lisp.eval(
             r#"
             (let ()
-              (define! (helper x) (+ x 1))
+              (define! (fn helper x) (+ x 1))
               (helper 41))
             "#
         ),
@@ -3601,6 +3598,111 @@ fn test_define_destructuring_still_works_non_symbol_car() {
             r#"
             (define! ((a b) c) (list (list 1 2) 3))
             (+ a (+ b c))
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+}
+
+// ============================================================================
+// Feature 5b: fn marker disambiguation
+// ============================================================================
+
+#[test]
+fn test_define_fn_disambiguation_destructuring_vs_function() {
+    // Without fn: destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (x y) (list 10 20))
+            x
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+    assert_eq!(lisp.eval("y"), Ok(Value::Number(20)));
+}
+
+#[test]
+fn test_define_fn_disambiguation_function_def() {
+    // With fn: function definition
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn x y) (list 10 20))
+            (pair? (x 99))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_fn_destructuring_pair() {
+    // Without fn: (a b) is ptree destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (a b) (list 1 2))
+            a
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+    assert_eq!(lisp.eval("b"), Ok(Value::Number(2)));
+}
+
+#[test]
+fn test_define_fn_destructuring_dotted() {
+    // Without fn: (x . y) is ptree destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (x . y) (cons 1 (list 2 3)))
+            x
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_fn_destructuring_with_ignore() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (a #ignore) (list 1 2))
+            a
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_fn_as_variable_name() {
+    // fn can be used as a regular variable name
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(define! fn 42) fn"),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_define_fn_function_named_fn() {
+    // Defining a function named fn using fn marker
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn fn x) (+ x 1))
+            (fn 5)
             "#
         ),
         Ok(Value::Number(6))
