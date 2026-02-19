@@ -550,6 +550,15 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
     /// ```
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
+        let idx = self.eval_to_index(input)?;
+        self.arena.get(idx)
+    }
+
+    /// Parse and evaluate Lisp expression(s), returning the arena index.
+    ///
+    /// Use with [`write_value`](Self::write_value) to properly display the
+    /// result, including walking symbol names, string contents, and lists.
+    pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut parser = Parser::new(input);
 
         let mut result_idx = ArenaIndex::INERT;
@@ -557,7 +566,7 @@ impl<const N: usize> Lisp<N> {
             let expr = parser.parse(self)?;
             result_idx = self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)?;
         }
-        self.arena.get(result_idx)
+        Ok(result_idx)
     }
 
     // — Arena introspection —
@@ -581,6 +590,104 @@ impl<const N: usize> Lisp<N> {
             ArenaIndex::ROOTS,
             extra_roots,
         ])
+    }
+
+    // — Value formatting —
+
+    /// Write a human-readable representation of the value at `idx`.
+    ///
+    /// Unlike `Value::Display`, this method has arena access and can walk
+    /// `CharPair` chains to display full symbol names and string contents,
+    /// and `Cons` chains to display proper/improper lists.
+    pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+        match self.arena.get(idx) {
+            Ok(Value::Nil) => w.write_str("()"),
+            Ok(Value::Boolean(true)) => w.write_str("#t"),
+            Ok(Value::Boolean(false)) => w.write_str("#f"),
+            Ok(Value::Number(n)) => write!(w, "{n}"),
+            Ok(Value::Symbol(char_head)) => self.write_char_chain(char_head, w),
+            Ok(Value::CharPair { .. }) => {
+                w.write_char('"')?;
+                self.write_string_chars(idx, w)?;
+                w.write_char('"')
+            }
+            Ok(Value::Cons { car, cdr }) => {
+                w.write_char('(')?;
+                self.write_value(car, w)?;
+                self.write_list_tail(cdr, w)?;
+                w.write_char(')')
+            }
+            Ok(Value::Inert) => w.write_str("#inert"),
+            Ok(Value::Ignore) => w.write_str("#ignore"),
+            Ok(val) => write!(w, "<{}>", val.type_name()),
+            Err(_) => w.write_str("<error>"),
+        }
+    }
+
+    /// Write a CharPair chain as raw characters (for symbol names).
+    fn write_char_chain(
+        &self,
+        mut idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+    ) -> core::fmt::Result {
+        while !idx.is_nil() {
+            match self.arena.get(idx) {
+                Ok(Value::CharPair { ch, cdr }) => {
+                    w.write_char(ch)?;
+                    idx = cdr;
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Write a CharPair chain with string escaping (for string literals).
+    fn write_string_chars(
+        &self,
+        mut idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+    ) -> core::fmt::Result {
+        while !idx.is_nil() {
+            match self.arena.get(idx) {
+                Ok(Value::CharPair { ch, cdr }) => {
+                    match ch {
+                        '"' => w.write_str("\\\"")?,
+                        '\\' => w.write_str("\\\\")?,
+                        '\n' => w.write_str("\\n")?,
+                        '\t' => w.write_str("\\t")?,
+                        '\r' => w.write_str("\\r")?,
+                        c => w.write_char(c)?,
+                    }
+                    idx = cdr;
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the tail of a list (elements after the first, with separators).
+    fn write_list_tail(
+        &self,
+        mut idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+    ) -> core::fmt::Result {
+        while !idx.is_nil() {
+            match self.arena.get(idx) {
+                Ok(Value::Cons { car, cdr }) => {
+                    w.write_char(' ')?;
+                    self.write_value(car, w)?;
+                    idx = cdr;
+                }
+                _ => {
+                    w.write_str(" . ")?;
+                    self.write_value(idx, w)?;
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

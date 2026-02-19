@@ -16,8 +16,12 @@ fn main() {
                     continue;
                 }
                 let _ = rl.add_history_entry(line);
-                match lisp.eval(line) {
-                    Ok(val) => println!("{val}"),
+                match lisp.eval_to_index(line) {
+                    Ok(idx) => {
+                        let mut buf = String::new();
+                        let _ = lisp.write_value(idx, &mut buf);
+                        println!("{buf}");
+                    }
                     Err(e) => eprintln!("error: {e:?}"),
                 }
             }
