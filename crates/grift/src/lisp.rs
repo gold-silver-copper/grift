@@ -4,7 +4,6 @@ use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStat
 
 use crate::value::Value;
 use crate::parse::Parser;
-use crate::eval::Evaluator;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
@@ -32,9 +31,10 @@ impl<const N: usize> Default for Lisp<N> {
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp interpreter with an empty arena.
     ///
-    /// Slots 0–7 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
-    /// `#ignore`, the ground environment, a parents cell, and the global
-    /// environment so that returning these common values is allocation-free.
+    /// Slots 0–8 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
+    /// `#ignore`, the ground environment, a parents cell, the global
+    /// environment, and the GC root stack so that returning these common
+    /// values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena.alloc(Value::Nil).expect("arena too small for singletons");
@@ -66,9 +66,16 @@ impl<const N: usize> Lisp<N> {
         }).expect("arena too small for environments");
         assert!(global_idx == ArenaIndex::GLOBAL_ENV, "GLOBAL_ENV must be slot 7");
 
+        // Pre-allocate GC root stack at a fixed slot.
+        // car = head of the gc roots linked list (initially NIL = empty).
+        let gc_roots_idx = lisp.arena.alloc(Value::Cons {
+            car: ArenaIndex::NIL,
+            cdr: ArenaIndex::NIL,
+        }).expect("arena too small for gc_roots");
+        assert!(gc_roots_idx == ArenaIndex::GC_ROOTS, "GC_ROOTS must be slot 8");
+
         // Initialize builtins into the ground environment.
-        let mut evaluator = Evaluator::new(&lisp);
-        evaluator.init_builtins();
+        lisp.init_builtins();
 
         lisp
     }
@@ -444,12 +451,11 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
         let mut parser = Parser::new(input);
-        let mut evaluator = Evaluator::new(self);
 
         let mut result_idx = ArenaIndex::INERT;
         while parser.has_more() {
             let expr = parser.parse(self)?;
-            result_idx = evaluator.eval(expr, ArenaIndex::GLOBAL_ENV)?;
+            result_idx = self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)?;
         }
         self.arena.get(result_idx)
     }
@@ -466,14 +472,15 @@ impl<const N: usize> Lisp<N> {
     /// Pass `&[]` to collect all unreachable objects.
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
         // Always protect the pre-allocated singletons (NIL, TRUE, FALSE,
-        // INERT, IGNORE) and the ground/global environments so they
-        // remain valid after collection.
+        // INERT, IGNORE), the ground/global environments, and the GC root
+        // stack so they remain valid after collection.
         self.arena.collect_garbage_multi(&[
             roots,
             &[
                 ArenaIndex::NIL, ArenaIndex::TRUE, ArenaIndex::FALSE,
                 ArenaIndex::INERT, ArenaIndex::IGNORE,
                 ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
+                ArenaIndex::GC_ROOTS,
             ],
         ])
     }
