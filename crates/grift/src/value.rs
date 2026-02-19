@@ -155,7 +155,7 @@ impl core::fmt::Display for Value {
             Value::Boolean(true) => f.write_str("#t"),
             Value::Boolean(false) => f.write_str("#f"),
             Value::Number(n) => write!(f, "{n}"),
-            Value::CharPair { ch, .. } => write!(f, "#\\{ch}"),
+            Value::CharPair { .. } => f.write_str("<string>"),
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
             _ => write!(f, "<{}>", self.type_name()),

@@ -2920,40 +2920,17 @@ fn test_string_traversal() {
 }
 
 #[test]
-fn test_char_literal_parsing() {
-    // #\h should parse as a CharPair
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"#\h"#).unwrap();
-    assert!(
-        matches!(result, Value::CharPair { ch: 'h', .. }),
-        "char literal should be CharPair, got: {:?}",
-        result
-    );
-}
-
-#[test]
-fn test_char_literal_named() {
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"#\space"#).unwrap();
-    assert!(
-        matches!(result, Value::CharPair { ch: ' ', .. }),
-        "named char literal should be space, got: {:?}",
-        result
-    );
-}
-
-#[test]
 fn test_cons_char_onto_string() {
-    // (cons #\h "ello") should produce a string "hello"
+    // (cons (car "h") "ello") should produce a string "hello"
     let lisp: Lisp<20000> = Lisp::new();
     // Verify by checking car/cdr of the result
-    let result = lisp.eval(r#"(car (cons #\h "ello"))"#).unwrap();
+    let result = lisp.eval(r#"(car (cons (car "h") "ello"))"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
         "car of cons char onto string should be 'h', got: {:?}",
         result
     );
-    let result2 = lisp.eval(r#"(car (cdr (cons #\h "ello")))"#).unwrap();
+    let result2 = lisp.eval(r#"(car (cdr (cons (car "h") "ello")))"#).unwrap();
     assert!(
         matches!(result2, Value::CharPair { ch: 'e', .. }),
         "second char of cons'd string should be 'e', got: {:?}",
@@ -2963,16 +2940,16 @@ fn test_cons_char_onto_string() {
 
 #[test]
 fn test_cons_char_onto_nil() {
-    // (cons #\h ()) should produce a one-element string
+    // (cons (car "h") ()) should produce a one-element string
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"(car (cons #\h '()))"#).unwrap();
+    let result = lisp.eval(r#"(car (cons (car "h") '()))"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
         "cons char onto nil should produce single-char string, got: {:?}",
         result
     );
     assert_eq!(
-        lisp.eval(r#"(null? (cdr (cons #\h '())))"#),
+        lisp.eval(r#"(null? (cdr (cons (car "h") '())))"#),
         Ok(Value::Boolean(true))
     );
 }
@@ -3010,4 +2987,108 @@ fn test_string_is_self_evaluating() {
         "string should self-evaluate to its head CharPair, got: {:?}",
         result
     );
+}
+
+// ============================================================================
+// write_value Display Tests
+// ============================================================================
+
+/// Helper: evaluate and format via write_value.
+fn display(lisp: &Lisp<20000>, input: &str) -> String {
+    let idx = lisp.eval_to_index(input).unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    buf
+}
+
+#[test]
+fn test_write_value_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "42"), "42");
+    assert_eq!(display(&lisp, "-7"), "-7");
+}
+
+#[test]
+fn test_write_value_boolean() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "#t"), "#t");
+    assert_eq!(display(&lisp, "#f"), "#f");
+}
+
+#[test]
+fn test_write_value_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'()"), "()");
+}
+
+#[test]
+fn test_write_value_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#""hello""#), r#""hello""#);
+    assert_eq!(display(&lisp, r#""""#), "()"); // empty string is NIL
+}
+
+#[test]
+fn test_write_value_string_single_char() {
+    // car of a string is a one-element string
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"(car "hello")"#), r#""h""#);
+}
+
+#[test]
+fn test_write_value_string_cdr() {
+    // cdr of a string is the rest of the string
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"(cdr "hello")"#), r#""ello""#);
+}
+
+#[test]
+fn test_write_value_symbol() {
+    // quote returns the symbol itself
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'foo"), "foo");
+    assert_eq!(display(&lisp, "'define!"), "define!");
+}
+
+#[test]
+fn test_write_value_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'(1 2 3)"), "(1 2 3)");
+    assert_eq!(display(&lisp, "'(1)"), "(1)");
+}
+
+#[test]
+fn test_write_value_nested_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'(1 (2 3) 4)"), "(1 (2 3) 4)");
+}
+
+#[test]
+fn test_write_value_dotted_pair() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "(cons 1 2)"), "(1 . 2)");
+}
+
+#[test]
+fn test_write_value_improper_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "(cons 1 (cons 2 3))"), "(1 2 . 3)");
+}
+
+#[test]
+fn test_write_value_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "#inert"), "#inert");
+}
+
+#[test]
+fn test_write_value_ignore() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "#ignore"), "#ignore");
+}
+
+#[test]
+fn test_write_value_list_with_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"(cons 1 (cons "hi" '()))"#), r#"(1 "hi")"#);
 }

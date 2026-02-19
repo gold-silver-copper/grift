@@ -820,7 +820,7 @@ impl<const N: usize> Lisp<N> {
 
     /// `(cons a b)` — cons cell construction.
     /// When `a` is a single-character string (CharPair with cdr=NIL),
-    /// produces a CharPair node instead, so `(cons #\h "ello")` → `"hello"`.
+    /// produces a CharPair node instead, so `(cons (car "h") "ello")` → `"hello"`.
     fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.car_char(args)?;
         let b = self.cadr_char(args)?;
