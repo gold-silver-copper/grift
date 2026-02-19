@@ -21,6 +21,12 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Returns `true` if there is remaining input to parse.
+    pub fn has_more(&mut self) -> bool {
+        self.skip_whitespace();
+        self.pos < self.input.len()
+    }
+
     /// Parse one expression.
     pub fn parse<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
         self.skip_whitespace();

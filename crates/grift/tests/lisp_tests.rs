@@ -269,9 +269,10 @@ fn test_gc_repeated_eval_no_leak() {
         gc.collected > 0,
         "GC should collect garbage from repeated evals"
     );
-    // After collecting, arena should be mostly empty (only nil slot remains).
+    // After collecting, arena should contain only the persistent evaluator
+    // state (ground env, builtins, global env) plus singletons.
     assert!(
-        stats.allocated < 50,
+        stats.allocated < 600,
         "Arena should not keep growing without roots: allocated = {}",
         stats.allocated
     );
@@ -326,7 +327,7 @@ fn test_gc_list_operations_no_leak() {
 
     assert!(gc.collected > 0, "GC should collect list garbage");
     assert!(
-        stats.allocated < 100,
+        stats.allocated < 600,
         "Arena should not grow unbounded: allocated = {}",
         stats.allocated
     );
@@ -351,9 +352,9 @@ fn test_gc_stress_many_evals() {
     let _gc = lisp.collect_garbage(&[]);
     let final_stats = lisp.stats();
 
-    // After full GC, arena should be mostly empty.
+    // After full GC, arena should contain only persistent evaluator state.
     assert!(
-        final_stats.allocated < 200,
+        final_stats.allocated < 600,
         "Arena should be mostly empty after GC: allocated = {}",
         final_stats.allocated
     );
@@ -361,20 +362,19 @@ fn test_gc_stress_many_evals() {
 
 #[test]
 fn test_gc_define_creates_garbage() {
-    // Each call to lisp.eval() creates a fresh Evaluator, so defines don't
-    // persist across calls. This test verifies that GC collects the garbage
-    // from evaluator setup (builtins, symbols, etc.).
+    // The evaluator state persists across calls, but temporary values
+    // (lambdas, intermediate results) become garbage after evaluation.
     let lisp: Lisp<5000> = Lisp::new();
 
     // Evaluate several expressions that create lambdas and intermediate values.
     lisp.eval("((lambda (x) (+ x 1)) 5)").unwrap();
     lisp.eval("((lambda (a b) (* a b)) 3 7)").unwrap();
 
-    // After eval, the evaluators are dropped; all values are garbage.
+    // After eval, temporary values are garbage.
     let gc = lisp.collect_garbage(&[]);
     assert!(
         gc.collected > 0,
-        "GC should collect after evaluators are dropped"
+        "GC should collect temporary values"
     );
 }
 
@@ -2776,11 +2776,15 @@ fn test_standard_env_is_child_of_ground() {
 
 #[test]
 fn test_define_in_standard_env_does_not_affect_ground() {
-    // Defining in the standard env should not affect the ground env.
-    // A new standard env (fresh lisp.eval call) should not see the binding.
+    // Defining in the standard env persists across calls but should not
+    // affect a separate Lisp instance (different ground/standard envs).
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(begin (define! x 42) x)"), Ok(Value::Number(42)));
-    assert_eq!(lisp.eval("x"), Err(ArenaError::UnboundVariable));
+    assert_eq!(lisp.eval("(define! x 42) x"), Ok(Value::Number(42)));
+    // The binding persists in the same instance.
+    assert_eq!(lisp.eval("x"), Ok(Value::Number(42)));
+    // A fresh Lisp instance does not see the binding.
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp2.eval("x"), Err(ArenaError::UnboundVariable));
 }
 
 #[test]

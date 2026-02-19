@@ -212,7 +212,7 @@ pub(crate) struct Evaluator<'a, const N: usize> {
     /// The ground environment containing all builtins. This environment
     /// is immutable per Kernel §3.2: programs cannot capture or mutate
     /// any improper ancestor of the ground environment.
-    ground_env: ArenaIndex,
+    pub(crate) ground_env: ArenaIndex,
     /// The standard environment — a child of the ground environment —
     /// where top-level expressions are evaluated (Kernel §3.2).
     pub global_env: ArenaIndex,
@@ -236,6 +236,20 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         // Create the standard environment as a child of the ground environment.
         eval.global_env = lisp.make_child_env(ground_env)?;
         Ok(eval)
+    }
+
+    /// Restore an evaluator from previously persisted environments.
+    pub fn with_envs(
+        lisp: &'a Lisp<N>,
+        ground_env: ArenaIndex,
+        global_env: ArenaIndex,
+    ) -> Self {
+        Evaluator {
+            lisp,
+            ground_env,
+            global_env,
+            gc_roots: ArenaIndex::NIL,
+        }
     }
 
     /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.

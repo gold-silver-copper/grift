@@ -2,6 +2,8 @@
 
 use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats, Trace};
 
+use core::cell::Cell;
+
 use crate::value::Value;
 use crate::parse::Parser;
 use crate::eval::Evaluator;
@@ -21,6 +23,10 @@ use crate::eval::Evaluator;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
+    /// Persisted ground environment (immutable after init, contains builtins).
+    ground_env: Cell<ArenaIndex>,
+    /// Persisted global/standard environment (child of ground, accumulates bindings).
+    global_env: Cell<ArenaIndex>,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -46,7 +52,11 @@ impl<const N: usize> Lisp<N> {
         assert!(false_idx == ArenaIndex::FALSE, "FALSE must be slot 2");
         assert!(inert_idx == ArenaIndex::INERT, "INERT must be slot 3");
         assert!(ignore_idx == ArenaIndex::IGNORE, "IGNORE must be slot 4");
-        Lisp { arena }
+        Lisp {
+            arena,
+            ground_env: Cell::new(ArenaIndex::NIL),
+            global_env: Cell::new(ArenaIndex::NIL),
+        }
     }
 
     // — Value constructors —
@@ -404,9 +414,11 @@ impl<const N: usize> Lisp<N> {
 
     // — Evaluation entry point —
 
-    /// Parse and evaluate a Lisp expression string.
+    /// Parse and evaluate Lisp expression(s) in a string.
     ///
-    /// Returns the resulting `Value`.
+    /// Multiple expressions are evaluated in sequence and the result of the
+    /// last one is returned.  The evaluator state (global environment) persists
+    /// across calls so that bindings made by `define!` survive.
     ///
     /// # Example
     ///
@@ -418,21 +430,36 @@ impl<const N: usize> Lisp<N> {
     /// ```
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
         let mut parser = Parser::new(input);
-        let expr = parser.parse(self)?;
-        let mut evaluator = match Evaluator::new(self) {
-            Ok(e) => e,
-            Err(ArenaError::OutOfMemory) => {
-                // Collect garbage keeping only singletons and the parsed expression,
-                // then retry evaluator creation.
-                self.arena.collect_garbage(&[
-                    ArenaIndex::TRUE, ArenaIndex::FALSE,
-                    ArenaIndex::INERT, ArenaIndex::IGNORE, expr,
-                ]);
-                Evaluator::new(self)?
+
+        // Restore or create the evaluator.
+        let mut evaluator = if self.ground_env.get().is_nil() {
+            match Evaluator::new(self) {
+                Ok(e) => {
+                    self.ground_env.set(e.ground_env);
+                    self.global_env.set(e.global_env);
+                    e
+                }
+                Err(ArenaError::OutOfMemory) => {
+                    self.arena.collect_garbage(&[
+                        ArenaIndex::TRUE, ArenaIndex::FALSE,
+                        ArenaIndex::INERT, ArenaIndex::IGNORE,
+                    ]);
+                    let e = Evaluator::new(self)?;
+                    self.ground_env.set(e.ground_env);
+                    self.global_env.set(e.global_env);
+                    e
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
+        } else {
+            Evaluator::with_envs(self, self.ground_env.get(), self.global_env.get())
         };
-        let result_idx = evaluator.eval(expr, evaluator.global_env)?;
+
+        let mut result_idx = ArenaIndex::INERT;
+        while parser.has_more() {
+            let expr = parser.parse(self)?;
+            result_idx = evaluator.eval(expr, evaluator.global_env)?;
+        }
         self.arena.get(result_idx)
     }
 
@@ -448,12 +475,16 @@ impl<const N: usize> Lisp<N> {
     /// Pass `&[]` to collect all unreachable objects.
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
         // Always protect the pre-allocated singletons (NIL, TRUE, FALSE,
-        // INERT, IGNORE) so they remain valid after collection.
+        // INERT, IGNORE) and persisted evaluator environments so they
+        // remain valid after collection.
+        let ground = self.ground_env.get();
+        let global = self.global_env.get();
         self.arena.collect_garbage_multi(&[
             roots,
             &[
                 ArenaIndex::NIL, ArenaIndex::TRUE, ArenaIndex::FALSE,
                 ArenaIndex::INERT, ArenaIndex::IGNORE,
+                ground, global,
             ],
         ])
     }
