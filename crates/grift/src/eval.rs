@@ -688,6 +688,14 @@ impl<const N: usize> Lisp<N> {
         continue_while_truthy: bool,
     ) -> TailAction {
         tail_continue!({
+            if args.is_nil() {
+                return Err(ArenaError::InvalidArgument);
+            }
+            let second = self.cdr(args)?;
+            if second.is_nil() {
+                return Err(ArenaError::InvalidArgument);
+            }
+
             let mut cur = args;
             while !cur.is_nil() {
                 let next = self.cdr(cur)?;
