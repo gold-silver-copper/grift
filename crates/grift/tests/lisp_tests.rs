@@ -2685,13 +2685,14 @@ fn test_set_bang_on_ground_env_rejected() {
 
     // set! cannot modify ground-env inherited bindings through the standard env
     // because they don't exist in the standard env's own frame.
-    assert!(lisp
-        .eval(
+    assert!(
+        lisp.eval(
             r#"
             (set! (current-environment) + 42)
             "#
         )
-        .is_err());
+        .is_err()
+    );
 
     // Shadowing via define! still works (creates a new binding in standard env).
     assert_eq!(
@@ -2908,10 +2909,7 @@ fn test_string_traversal() {
     // Walk through a string using car/cdr until null
     let lisp: Lisp<20000> = Lisp::new();
     // cdr of a single-char string should be NIL
-    assert_eq!(
-        lisp.eval(r#"(null? (cdr "x"))"#),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval(r#"(null? (cdr "x"))"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -2966,10 +2964,7 @@ fn test_equal_strings() {
 #[test]
 fn test_equal_empty_strings() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval(r#"(equal? "" "")"#),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval(r#"(equal? "" "")"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -3153,24 +3148,23 @@ fn test_set_bang_closures_see_change() {
 fn test_set_bang_empty_env() {
     // Cannot set! in an env with no bindings
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp
-        .eval("(set! (make-environment) x 1)")
-        .is_err());
+    assert!(lisp.eval("(set! (make-environment) x 1)").is_err());
 }
 
 #[test]
 fn test_set_bang_only_supports_single_symbol() {
     // set! no longer supports ptree destructuring
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp
-        .eval(
+    assert!(
+        lisp.eval(
             r#"
             (define! a 1)
             (define! b 2)
             (set! (current-environment) (a b) (list 10 20))
             "#
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 // ============================================================================
@@ -3204,6 +3198,20 @@ fn test_define_overwrite_does_not_affect_child_scopes() {
             "#
         ),
         Ok(Value::Number(1))
+    );
+}
+#[test]
+fn test_define_different_frames() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn f x)
+                  (current-environment))
+                (eq? (f 1) (f 2))
+            "#
+        ),
+        Ok(Value::Boolean(false))
     );
 }
 
@@ -3418,10 +3426,7 @@ fn test_named_let_tco() {
 #[test]
 fn test_named_let_zero_bindings() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(let loop () 42)"),
-        Ok(Value::Number(42))
-    );
+    assert_eq!(lisp.eval("(let loop () 42)"), Ok(Value::Number(42)));
 }
 
 #[test]
@@ -3529,10 +3534,7 @@ fn test_define_function_shorthand_mutual_recursion() {
         ),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(odd? 7)"),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval("(odd? 7)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -3688,10 +3690,7 @@ fn test_define_fn_destructuring_with_ignore() {
 fn test_define_fn_as_variable_name() {
     // fn can be used as a regular variable name
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(define! fn 42) fn"),
-        Ok(Value::Number(42))
-    );
+    assert_eq!(lisp.eval("(define! fn 42) fn"), Ok(Value::Number(42)));
 }
 
 #[test]
