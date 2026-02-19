@@ -267,7 +267,7 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Trigger garbage collection using all known live roots.
+    /// Trigger garbage collection using all known live roots. Used for OOM collections.
     #[cold]
     fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
         self.collect_with_roots(&[expr, env])
