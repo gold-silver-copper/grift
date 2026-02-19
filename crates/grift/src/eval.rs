@@ -109,8 +109,8 @@ macro_rules! define_builtins {
         define_builtins!(@ids 0u8; $($op_id,)* $($bi_id,)*);
 
         impl<'a, const N: usize> Evaluator<'a, N> {
-            /// Register all builtins in the global environment.
-            fn init_builtins(&mut self) {
+            /// Register all builtins in the ground environment.
+            pub(crate) fn init_builtins(&mut self) {
                 $( self.bind_builtin($op_name, $op_id, false); )*
                 $( self.bind_builtin($bi_name, $bi_id, true); )*
             }
@@ -209,45 +209,18 @@ define_builtins! {
 /// The evaluator state.
 pub(crate) struct Evaluator<'a, const N: usize> {
     lisp: &'a Lisp<N>,
-    /// The ground environment containing all builtins. This environment
-    /// is immutable per Kernel §3.2: programs cannot capture or mutate
-    /// any improper ancestor of the ground environment.
-    pub(crate) ground_env: ArenaIndex,
-    /// The standard environment — a child of the ground environment —
-    /// where top-level expressions are evaluated (Kernel §3.2).
-    pub global_env: ArenaIndex,
     /// Shadow stack of GC roots stored as a linked list of cons cells in
     /// the arena.
     gc_roots: ArenaIndex,
 }
 
 impl<'a, const N: usize> Evaluator<'a, N> {
-    /// Create a new evaluator with operatives bound in the ground environment.
-    /// The global_env is a standard environment (child of ground).
-    pub fn new(lisp: &'a Lisp<N>) -> ArenaResult<Self> {
-        let ground_env = lisp.make_env(ArenaIndex::NIL)?;
-        let mut eval = Evaluator {
-            lisp,
-            ground_env,
-            global_env: ArenaIndex::NIL,
-            gc_roots: ArenaIndex::NIL,
-        };
-        eval.init_builtins();
-        // Create the standard environment as a child of the ground environment.
-        eval.global_env = lisp.make_child_env(ground_env)?;
-        Ok(eval)
-    }
-
-    /// Restore an evaluator from previously persisted environments.
-    pub fn with_envs(
-        lisp: &'a Lisp<N>,
-        ground_env: ArenaIndex,
-        global_env: ArenaIndex,
-    ) -> Self {
+    /// Create a new evaluator. The ground and global environments are
+    /// pre-allocated at fixed arena slots (`ArenaIndex::GROUND_ENV` and
+    /// `ArenaIndex::GLOBAL_ENV`).
+    pub fn new(lisp: &'a Lisp<N>) -> Self {
         Evaluator {
             lisp,
-            ground_env,
-            global_env,
             gc_roots: ArenaIndex::NIL,
         }
     }
@@ -266,7 +239,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             };
             val = wrapped;
         }
-        let _ = self.lisp.env_define(self.ground_env, sym, val);
+        let _ = self.lisp.env_define(ArenaIndex::GROUND_ENV, sym, val);
     }
 
     /// Push a value onto the GC root stack so it survives collection.
@@ -293,9 +266,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     #[cold]
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
         self.lisp.arena.collect_garbage(&[
-            expr, env, self.ground_env, self.global_env, self.gc_roots,
+            expr, env, self.gc_roots,
             ArenaIndex::TRUE, ArenaIndex::FALSE,
             ArenaIndex::INERT, ArenaIndex::IGNORE,
+            ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
         ])
     }
 
@@ -304,9 +278,10 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     #[cold]
     fn collect_garbage_unconditional(&self) -> GcStats {
         self.lisp.arena.collect_garbage_unconditional(&[
-            self.ground_env, self.global_env, self.gc_roots,
+            self.gc_roots,
             ArenaIndex::TRUE, ArenaIndex::FALSE,
             ArenaIndex::INERT, ArenaIndex::IGNORE,
+            ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
         ])
     }
 
@@ -579,7 +554,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     ) -> TailAction {
         non_tail!({
             // Protect the ground environment from mutation.
-            if *env == self.ground_env {
+            if *env == ArenaIndex::GROUND_ENV {
                 return Err(ArenaError::ImmutableEnvironment);
             }
             let definiend = self.lisp.car(args)?;
@@ -617,7 +592,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 return Err(ArenaError::TypeError);
             }
             // Protect the ground environment from mutation (§3.2).
-            if target_env == self.ground_env {
+            if target_env == ArenaIndex::GROUND_ENV {
                 return Err(ArenaError::ImmutableEnvironment);
             }
 
@@ -1031,7 +1006,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
         let expr_val = self.lisp.car(args)?;
         let rest = self.lisp.cdr(args)?;
         let env_val = if rest.is_nil() {
-            self.global_env
+            ArenaIndex::GLOBAL_ENV
         } else {
             self.lisp.car(rest)?
         };
