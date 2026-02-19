@@ -197,7 +197,7 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)
     }
 
-    /// Get car of a cons cell or CharPair.
+    /// Get car of a cons cell or CharPair (user-facing).
     /// For CharPair, allocates a fresh one-element string.
     #[inline]
     pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -210,7 +210,7 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Get cdr of a cons cell or CharPair.
+    /// Get cdr of a cons cell or CharPair (user-facing).
     #[inline]
     pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(idx)? {
@@ -219,10 +219,34 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Get car of cdr (second element of a list).
+    /// Get car of cdr (second element of a list, user-facing).
     #[inline]
     pub fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.car(self.cdr(idx)?)
+    }
+
+    /// Get car of a Cons cell only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn car_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons { car, .. } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(car)
+    }
+
+    /// Get cdr of a Cons cell only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn cdr_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons { cdr, .. } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(cdr)
+    }
+
+    /// Get car of cdr of Cons cells only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn cadr_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_cons(self.cdr_cons(idx)?)
     }
 
     /// Allocate a lambda (applicative from an operative that ignores caller env).
@@ -343,19 +367,19 @@ impl<const N: usize> Lisp<N> {
             // Search local bindings.
             let mut b = bindings;
             while !b.is_nil() {
-                let binding = self.car(b)?;
-                if self.car(binding)? == name {
-                    return self.cdr(binding);
+                let binding = self.car_cons(b)?;
+                if self.car_cons(binding)? == name {
+                    return self.cdr_cons(binding);
                 }
-                b = self.cdr(b)?;
+                b = self.cdr_cons(b)?;
             }
 
             // Single parent → follow directly (no allocation needed).
             if parents.is_nil() {
                 break;
             }
-            let first_parent = self.car(parents)?;
-            let rest = self.cdr(parents)?;
+            let first_parent = self.car_cons(parents)?;
+            let rest = self.cdr_cons(parents)?;
             if rest.is_nil() {
                 cur = first_parent;
                 continue;
@@ -391,11 +415,11 @@ impl<const N: usize> Lisp<N> {
         // Search local bindings.
         let mut cur = bindings;
         while !cur.is_nil() {
-            let binding = self.car(cur)?;
-            if self.car(binding)? == name {
-                return self.cdr(binding);
+            let binding = self.car_cons(cur)?;
+            if self.car_cons(binding)? == name {
+                return self.cdr_cons(binding);
             }
-            cur = self.cdr(cur)?;
+            cur = self.cdr_cons(cur)?;
         }
 
         // Mark this env as visited, then search parents.
@@ -412,13 +436,13 @@ impl<const N: usize> Lisp<N> {
     ) -> ArenaResult<ArenaIndex> {
         let mut parent_cur = parents;
         while !parent_cur.is_nil() {
-            let parent_env = self.car(parent_cur)?;
+            let parent_env = self.car_cons(parent_cur)?;
             match self.env_lookup_dfs(parent_env, name, visited) {
                 Ok(val) => return Ok(val),
                 Err(ArenaError::UnboundVariable) => {}
                 Err(e) => return Err(e),
             }
-            parent_cur = self.cdr(parent_cur)?;
+            parent_cur = self.cdr_cons(parent_cur)?;
         }
         Err(ArenaError::UnboundVariable)
     }
@@ -427,12 +451,12 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
         let mut cur = list;
         while !cur.is_nil() {
-            if let Ok(head) = self.car(cur)
+            if let Ok(head) = self.car_cons(cur)
                 && head == target
             {
                 return true;
             }
-            match self.cdr(cur) {
+            match self.cdr_cons(cur) {
                 Ok(rest) => cur = rest,
                 Err(_) => break,
             }
