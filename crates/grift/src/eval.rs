@@ -166,6 +166,7 @@ define_builtins! {
         "or"     => op_or     => op_or,
         "let"    => op_let    => op_let,
         "vau"    => op_vau    => op_vau,
+        "current-environment" => op_current_env => op_current_env,
     }
     applicatives {
         "cons"   => bi_cons   => builtin_cons,
@@ -527,6 +528,9 @@ impl<const N: usize> Lisp<N> {
     /// (a formal parameter tree) to the result, binding symbols in the dynamic
     /// environment.  Returns `#inert`.
     ///
+    /// Function shorthand: `(define! (name params...) body...)` desugars to
+    /// `(define! name (lambda (params...) body...))`.
+    ///
     /// Per Kernel §3.2, mutation of the ground environment or its ancestors
     /// is forbidden.
     fn op_define(
@@ -541,6 +545,21 @@ impl<const N: usize> Lisp<N> {
                 return Err(ArenaError::ImmutableEnvironment);
             }
             let definiend = self.car(args)?;
+
+            // Function shorthand: (define! (name params...) body...)
+            if let Value::Cons { car, cdr } = self.get(definiend)? {
+                if matches!(self.get(car)?, Value::Symbol(_)) {
+                    let name = car;
+                    let params = cdr;
+                    let body_list = self.cdr(args)?;
+                    let body = self.wrap_begin(body_list)?;
+                    let func = self.lambda(params, body, *env)?;
+                    self.env_define(*env, name, func)?;
+                    return Ok(ArenaIndex::INERT);
+                }
+            }
+
+            // Regular define! with ptree matching
             self.validate_ptree(definiend)?;
             let val_expr = self.cadr(args)?;
             let val = self.eval_expr(val_expr, *env)?;
@@ -553,10 +572,10 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Evaluates `exp1` and `exp2` in the dynamic environment; call the
     /// results `env` and `obj`.  If `env` is not an environment, an error
-    /// is signaled.  Then the operative matches `formals` to `obj` in
-    /// environment `env` — i.e., the symbols of `formals` are bound in
-    /// `env` to the corresponding parts of `obj` (exactly as `$define!`
-    /// would).  Returns `#inert`.
+    /// is signaled.  Then the operative updates an existing binding of
+    /// `formals` (a single symbol) in environment `env`.  The symbol must
+    /// already exist in `env`'s own frame — parents are not walked, and a
+    /// new binding is never created.  Returns `#inert`.
     fn op_set(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
             let env_expr = self.car(args)?;
@@ -574,9 +593,12 @@ impl<const N: usize> Lisp<N> {
                 return Err(ArenaError::ImmutableEnvironment);
             }
 
-            self.validate_ptree(definiend)?;
             let val = self.eval_expr(val_expr, *env)?;
-            self.match_ptree(definiend, val, target_env)?;
+            // set! only supports a single symbol formal.
+            if !matches!(self.get(definiend)?, Value::Symbol(_)) {
+                return Err(ArenaError::TypeError);
+            }
+            self.env_set(target_env, definiend, val)?;
             Ok(ArenaIndex::INERT)
         })
     }
@@ -682,27 +704,63 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(let ((name val) ...) body...)` — bindings are strict, body is tail.
+    ///
+    /// Named let: `(let name ((param init) ...) body...)` desugars to a
+    /// recursive function `name` with params bound to evaluated inits.
     fn op_let(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         tail_continue!({
-            let bindings = self.car(args)?;
-            let body_list = self.cdr(args)?;
+            let first = self.car(args)?;
 
-            let local_env = self.make_child_env(*env)?;
-            self.push_root(local_env)?;
-            let mut cur = bindings;
-            while !cur.is_nil() {
-                let binding = self.car(cur)?;
-                let name = self.car(binding)?;
-                let val_expr = self.cadr(binding)?;
-                let val = self.eval_expr(val_expr, *env)?;
-                self.env_define(local_env, name, val)?;
-                cur = self.cdr(cur)?;
+            if matches!(self.get(first)?, Value::Symbol(_)) {
+                // Named let
+                let name = first;
+                let rest = self.cdr(args)?;
+                let bindings = self.car(rest)?;
+                let body_list = self.cdr(rest)?;
+
+                let params = self.map_car(bindings)?;
+                let inits = self.map_cadr(bindings)?;
+
+                let local_env = self.make_child_env(*env)?;
+                self.push_root(local_env)?;
+
+                // Evaluate init values in the OUTER env
+                let evaled_inits = self.eval_args(inits, *env)?;
+                self.push_root(evaled_inits)?;
+
+                // Create the recursive function in the local env
+                let body = self.wrap_begin(body_list)?;
+                let func = self.lambda(params, body, local_env)?;
+                self.env_define(local_env, name, func)?;
+
+                self.pop_roots(2);
+
+                // Tail call: apply func to evaluated inits
+                *env = local_env;
+                *expr = self.cons(name, evaled_inits)?;
+                Ok(())
+            } else {
+                // Regular let
+                let bindings = first;
+                let body_list = self.cdr(args)?;
+
+                let local_env = self.make_child_env(*env)?;
+                self.push_root(local_env)?;
+                let mut cur = bindings;
+                while !cur.is_nil() {
+                    let binding = self.car(cur)?;
+                    let name = self.car(binding)?;
+                    let val_expr = self.cadr(binding)?;
+                    let val = self.eval_expr(val_expr, *env)?;
+                    self.env_define(local_env, name, val)?;
+                    cur = self.cdr(cur)?;
+                }
+                self.pop_roots(1);
+
+                *env = local_env;
+                *expr = self.wrap_begin(body_list)?;
+                Ok(())
             }
-            self.pop_roots(1);
-
-            *env = local_env;
-            *expr = self.wrap_begin(body_list)?;
-            Ok(())
         })
     }
 
@@ -738,6 +796,16 @@ impl<const N: usize> Lisp<N> {
 
             self.vau(params, ep, body, *env)
         })
+    }
+
+    /// `(current-environment)` — return the caller's environment.
+    fn op_current_env(
+        &self,
+        _args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        TailAction::Return(Ok(*env))
     }
 
     /// Validate that `ptree` is a well-formed formal parameter tree.
@@ -812,6 +880,32 @@ impl<const N: usize> Lisp<N> {
         }
         let begin_sym = self.symbol("begin")?;
         self.cons(begin_sym, exprs)
+    }
+
+    /// Map `car` over a list: `((a b) (c d) ...) → (a c ...)`.
+    fn map_car(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let mut cur = list;
+        let mut reversed = ArenaIndex::NIL;
+        while !cur.is_nil() {
+            let head = self.car(cur)?;
+            let first = self.car(head)?;
+            reversed = self.cons(first, reversed)?;
+            cur = self.cdr(cur)?;
+        }
+        self.reverse_list(reversed)
+    }
+
+    /// Map `cadr` over a list: `((a b) (c d) ...) → (b d ...)`.
+    fn map_cadr(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let mut cur = list;
+        let mut reversed = ArenaIndex::NIL;
+        while !cur.is_nil() {
+            let head = self.car(cur)?;
+            let second = self.cadr(head)?;
+            reversed = self.cons(second, reversed)?;
+            cur = self.cdr(cur)?;
+        }
+        self.reverse_list(reversed)
     }
 
     // ================================================================

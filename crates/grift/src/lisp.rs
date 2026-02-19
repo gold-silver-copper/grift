@@ -400,6 +400,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Define a binding in an environment (mutates in place via arena.set).
+    /// If a binding for `name` already exists in this frame, overwrite it.
     pub(crate) fn env_define(
         &self,
         env: ArenaIndex,
@@ -409,6 +410,19 @@ impl<const N: usize> Lisp<N> {
         let Value::Environment { bindings, parents } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
+        // Check if binding already exists in THIS frame
+        let mut cur = bindings;
+        while !cur.is_nil() {
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                // Overwrite in place
+                self.arena
+                    .set(binding, Value::Cons { car: name, cdr: val })?;
+                return Ok(());
+            }
+            cur = self.cdr(cur)?;
+        }
+        // Not found — create new binding
         let pair = self.cons(name, val)?;
         let new_bindings = self.cons(pair, bindings)?;
         self.arena.set(
@@ -418,6 +432,31 @@ impl<const N: usize> Lisp<N> {
                 parents,
             },
         )
+    }
+
+    /// Set an existing binding in an environment's own frame.
+    /// Does NOT walk parents. Returns `UnboundVariable` if not found.
+    pub(crate) fn env_set(
+        &self,
+        env: ArenaIndex,
+        name: ArenaIndex,
+        val: ArenaIndex,
+    ) -> ArenaResult<()> {
+        let Value::Environment { bindings, .. } = self.arena.get(env)? else {
+            return Err(ArenaError::TypeError);
+        };
+        let mut cur = bindings;
+        while !cur.is_nil() {
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                // Overwrite the binding's value in place
+                self.arena
+                    .set(binding, Value::Cons { car: name, cdr: val })?;
+                return Ok(());
+            }
+            cur = self.cdr(cur)?;
+        }
+        Err(ArenaError::UnboundVariable)
     }
 
     /// Look up a symbol in an environment.

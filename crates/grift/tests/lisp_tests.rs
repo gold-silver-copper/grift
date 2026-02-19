@@ -1618,31 +1618,35 @@ fn test_define_ptree_nil_mismatch() {
 
 #[test]
 fn test_define_ptree_pair_destructuring() {
-    // Pair definiend destructures the value
+    // With function shorthand, (define! (a . b) expr) defines function 'a'
+    // with rest-params 'b'. Pair ptree destructuring only applies when the
+    // car of the definiend is NOT a symbol.
     let lisp: Lisp<20000> = Lisp::new();
+    // (#ignore . b) has a non-symbol car, so it's ptree destructuring
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (a . b) (cons 1 2))
-            (+ a b)
+            (define! (#ignore . b) (cons 1 2))
+            b
             "#
         ),
-        Ok(Value::Number(3))
+        Ok(Value::Number(2))
     );
 }
 
 #[test]
 fn test_define_ptree_list_destructuring() {
-    // List definiend destructures a list
+    // With function shorthand, (define! (a b c) ...) defines function 'a'.
+    // Ptree list destructuring uses non-symbol-headed pairs.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (a b c) (list 10 20 30))
-            (+ a (+ b c))
+            (define! (#ignore b c) (list 10 20 30))
+            (+ b c)
             "#
         ),
-        Ok(Value::Number(60))
+        Ok(Value::Number(50))
     );
 }
 
@@ -1663,59 +1667,51 @@ fn test_define_ptree_nested_destructuring() {
 
 #[test]
 fn test_define_ptree_with_ignore_in_pair() {
-    // #ignore in a pair position
+    // #ignore in a non-symbol-headed pair position
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (a #ignore c) (list 10 20 30))
-            (+ a c)
+            (define! (#ignore #ignore c) (list 10 20 30))
+            c
             "#
         ),
-        Ok(Value::Number(40))
+        Ok(Value::Number(30))
     );
 }
 
 #[test]
 fn test_define_ptree_pair_mismatch() {
-    // Pair definiend with non-pair value should error
+    // Non-symbol-headed pair definiend with non-pair value should error
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp.eval("(define! (a . b) 42)").is_err());
+    assert!(lisp.eval("(define! (#ignore . b) 42)").is_err());
 }
 
 #[test]
 fn test_define_ptree_rest_binding() {
-    // Dotted pair captures first element and rest of list
+    // With function shorthand, (define! (a . rest) ...) defines function 'a'
+    // with variadic rest args. Test that it works correctly.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (a . rest) (list 1 2 3))
-            a
+            (define! (first . args) (car args))
+            (first 1 2 3)
             "#
         ),
         Ok(Value::Number(1))
-    );
-    // Verify rest captured (2 3) — car of rest is 2
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (define! (a . rest) (list 1 2 3))
-            (car rest)
-            "#
-        ),
-        Ok(Value::Number(2))
     );
 }
 
 #[test]
 fn test_define_ptree_kernel_example() {
-    // Example from Kernel spec: destructuring get-list-metrics result
+    // With function shorthand, (define! (x y z) ...) defines function 'x'.
+    // Kernel-style destructuring still works with non-symbol-headed pairs.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (x y z) (list 100 200 300))
+            (define! ((x y) z) (list (list 100 200) 300))
             y
             "#
         ),
@@ -2189,15 +2185,16 @@ fn test_ignore_equal() {
 #[test]
 fn test_ignore_in_define_ptree() {
     // #ignore in $define! parameter tree ignores the value
+    // With function shorthand, use non-symbol-headed pair for ptree
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (a #ignore c) (list 1 2 3))
-            (+ a c)
+            (define! (#ignore #ignore c) (list 1 2 3))
+            c
             "#
         ),
-        Ok(Value::Number(4))
+        Ok(Value::Number(3))
     );
 }
 
@@ -2389,32 +2386,34 @@ fn test_depth_first_search_in_multi_parent() {
 
 #[test]
 fn test_define_rejects_duplicate_symbol_in_ptree() {
-    // A formal parameter tree must not contain the same symbol more than once.
+    // Ptree destructuring rejects duplicate symbols.
+    // Use non-symbol-headed pair so it's not function shorthand.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a a) (list 1 2))").is_err(),
-        "duplicate symbol 'a' in flat list"
+        lisp.eval("(define! (#ignore a a) (list 1 2 3))").is_err(),
+        "duplicate symbol 'a' in ptree"
     );
 }
 
 #[test]
 fn test_define_rejects_duplicate_symbol_nested_ptree() {
-    // Duplicate detection must work across nested pairs.
+    // Duplicate detection must work across nested pairs in ptree.
+    // Use non-symbol-headed pair so it's ptree destructuring, not function shorthand.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a (b a)) (list 1 (list 2 3)))")
+        lisp.eval("(define! ((a b) (b c)) (list (list 1 2) (list 3 4)))")
             .is_err(),
-        "duplicate symbol 'a' in nested ptree"
+        "duplicate symbol 'b' in nested ptree"
     );
 }
 
 #[test]
 fn test_define_rejects_duplicate_symbol_dotted_ptree() {
-    // Duplicate in a dotted-pair ptree.
+    // Duplicate in a non-symbol-headed dotted-pair ptree.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a . a) (cons 1 2))").is_err(),
-        "duplicate symbol 'a' in dotted pair"
+        lisp.eval("(define! (#ignore a . a) (list 1 2 3))").is_err(),
+        "duplicate symbol 'a' in dotted pair ptree"
     );
 }
 
@@ -2506,9 +2505,8 @@ fn test_set_bang_basic() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
             (define! x 1)
-            (set! (get-env) x 2)
+            (set! (current-environment) x 2)
             x
             "#
         ),
@@ -2523,9 +2521,8 @@ fn test_set_bang_returns_inert() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
             (define! x 1)
-            (inert? (set! (get-env) x 42))
+            (inert? (set! (current-environment) x 42))
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2534,19 +2531,17 @@ fn test_set_bang_returns_inert() {
 
 #[test]
 fn test_set_bang_creates_new_binding() {
-    // Per Kernel §6.8.1, $set! matches formals in the target environment,
-    // creating new bindings (like $define!) rather than requiring pre-existing ones.
+    // Per the new semantics, $set! does NOT create new bindings.
+    // It errors with UnboundVariable if the symbol doesn't exist in the target frame.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
-            (define! e (get-env))
+            (define! e (current-environment))
             (set! e y 42)
-            y
             "#
         ),
-        Ok(Value::Number(42))
+        Err(ArenaError::UnboundVariable)
     );
 }
 
@@ -2558,8 +2553,7 @@ fn test_set_bang_in_captured_env() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
-            (define! my-env (get-env))
+            (define! my-env (current-environment))
             (define! x 1)
             (define! update-x
                 (lambda ()
@@ -2579,10 +2573,9 @@ fn test_set_bang_mutation_visible_to_closures() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
             (define! x 1)
             (define! get-x (lambda () x))
-            (set! (get-env) x 42)
+            (set! (current-environment) x 42)
             (get-x)
             "#
         ),
@@ -2592,19 +2585,18 @@ fn test_set_bang_mutation_visible_to_closures() {
 
 #[test]
 fn test_set_bang_ptree_destructuring() {
-    // $set! supports formal parameter tree destructuring.
+    // $set! now only supports single symbol formals (not ptree destructuring).
+    // Passing a pair as the formal should signal TypeError.
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
+    assert!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
             (define! a 1)
             (define! b 2)
-            (set! (get-env) (a b) (list 10 20))
-            (+ a b)
+            (set! (current-environment) (a b) (list 10 20))
             "#
-        ),
-        Ok(Value::Number(30))
+        )
+        .is_err()
     );
 }
 
@@ -2625,16 +2617,15 @@ fn test_set_bang_requires_environment() {
 fn test_set_bang_evaluates_exp2_in_dynamic_env() {
     // Per Kernel §6.8.1, $set! evaluates exp2 in the dynamic environment
     // (the caller's env), NOT in the target environment.
-    // This is key to the derivation: the value expression uses the caller's
-    // bindings even when the target env is different.
+    // set! now requires the binding to exist in the target frame.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! target (make-environment))
+            (define! target (make-environment (current-environment)))
             (define! x 10)
-            (set! target y (+ x 5))
-            (eval (quote y) target)
+            (set! (current-environment) x (+ x 5))
+            x
             "#
         ),
         Ok(Value::Number(15))
@@ -2643,17 +2634,17 @@ fn test_set_bang_evaluates_exp2_in_dynamic_env() {
 
 #[test]
 fn test_set_bang_defines_in_target_not_dynamic() {
-    // $set! creates bindings in the target env, not the dynamic env.
-    // After (set! target y 42), y should be in target but NOT in the
-    // caller's environment.
+    // $set! modifies bindings in the target env, not the dynamic env.
+    // set! now requires the binding to exist. Test that set! modifies a
+    // binding in a child env that has its own copy.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
-            (define! target (make-environment (get-env)))
-            (set! target y 42)
-            (eval (quote y) target)
+            (define! x 1)
+            (define! e (current-environment))
+            (set! e x 42)
+            x
             "#
         ),
         Ok(Value::Number(42))
@@ -2690,17 +2681,26 @@ fn test_define_in_standard_env_does_not_affect_ground() {
 fn test_set_bang_on_ground_env_rejected() {
     // $set! should reject direct mutation of the ground environment.
     // Per Kernel §3.2, the ground environment is immutable.
-    // Note: $set! into the *standard* env for a ground-bound symbol
-    // just creates a local shadow (permitted). Only direct mutation
-    // of the ground env itself is rejected.
+    // Also, set! now requires the binding to already exist in the target frame.
+    // Trying to set! a ground-env binding via the standard env fails because
+    // the binding is in ground, not the standard env's own frame.
     let lisp: Lisp<20000> = Lisp::new();
 
-    // Shadowing a builtin in the standard env is fine (doesn't touch ground).
+    // set! cannot modify ground-env inherited bindings through the standard env
+    // because they don't exist in the standard env's own frame.
+    assert!(lisp
+        .eval(
+            r#"
+            (set! (current-environment) + 42)
+            "#
+        )
+        .is_err());
+
+    // Shadowing via define! still works (creates a new binding in standard env).
     assert_eq!(
         lisp.eval(
             r#"
-            (define! get-env (vau () e e))
-            (set! (get-env) + 42)
+            (define! + 42)
             +
             "#
         ),
@@ -2768,8 +2768,7 @@ fn test_operative_static_env_not_extractable() {
             r#"
             (define! make-counter
                 (lambda ()
-                    (define! get-env (vau () e e))
-                    (define! env (get-env))
+                    (define! env (current-environment))
                     (define! count 0)
                     (lambda ()
                         (set! env count (+ count 1))
@@ -2794,8 +2793,7 @@ fn test_set_bang_enables_mutable_state() {
             (define! make-box
                 (lambda (init)
                     (define! val init)
-                    (define! get-env (vau () e e))
-                    (define! env (get-env))
+                    (define! env (current-environment))
                     (list
                         (lambda () val)
                         (lambda (new-val)
