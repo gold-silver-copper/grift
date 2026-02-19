@@ -1,9 +1,9 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 
-use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats, Trace};
+use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::value::Value;
 use crate::parse::Parser;
+use crate::value::Value;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
@@ -37,11 +37,21 @@ impl<const N: usize> Lisp<N> {
     /// that returning these common values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
-        let nil_idx = arena.alloc(Value::Nil).expect("arena too small for singletons");
-        let true_idx = arena.alloc(Value::Boolean(true)).expect("arena too small for singletons");
-        let false_idx = arena.alloc(Value::Boolean(false)).expect("arena too small for singletons");
-        let inert_idx = arena.alloc(Value::Inert).expect("arena too small for singletons");
-        let ignore_idx = arena.alloc(Value::Ignore).expect("arena too small for singletons");
+        let nil_idx = arena
+            .alloc(Value::Nil)
+            .expect("arena too small for singletons");
+        let true_idx = arena
+            .alloc(Value::Boolean(true))
+            .expect("arena too small for singletons");
+        let false_idx = arena
+            .alloc(Value::Boolean(false))
+            .expect("arena too small for singletons");
+        let inert_idx = arena
+            .alloc(Value::Inert)
+            .expect("arena too small for singletons");
+        let ignore_idx = arena
+            .alloc(Value::Ignore)
+            .expect("arena too small for singletons");
         assert!(nil_idx == ArenaIndex::NIL, "NIL must be slot 0");
         assert!(true_idx == ArenaIndex::TRUE, "TRUE must be slot 1");
         assert!(false_idx == ArenaIndex::FALSE, "FALSE must be slot 2");
@@ -49,38 +59,62 @@ impl<const N: usize> Lisp<N> {
         assert!(ignore_idx == ArenaIndex::IGNORE, "IGNORE must be slot 4");
 
         // Pre-allocate ground and global environments at fixed slots.
-        let ground_idx = arena.alloc(Value::Environment {
-            bindings: ArenaIndex::NIL,
-            parents: ArenaIndex::NIL,
-        }).expect("arena too small for environments");
-        assert!(ground_idx == ArenaIndex::GROUND_ENV, "GROUND_ENV must be slot 5");
+        let ground_idx = arena
+            .alloc(Value::Environment {
+                bindings: ArenaIndex::NIL,
+                parents: ArenaIndex::NIL,
+            })
+            .expect("arena too small for environments");
+        assert!(
+            ground_idx == ArenaIndex::GROUND_ENV,
+            "GROUND_ENV must be slot 5"
+        );
 
         let lisp = Lisp { arena };
 
         // Global env is a child of the ground env.
-        let parents = lisp.cons(ArenaIndex::GROUND_ENV, ArenaIndex::NIL)
+        let parents = lisp
+            .cons(ArenaIndex::GROUND_ENV, ArenaIndex::NIL)
             .expect("arena too small for environments");
-        let global_idx = lisp.arena.alloc(Value::Environment {
-            bindings: ArenaIndex::NIL,
-            parents,
-        }).expect("arena too small for environments");
-        assert!(global_idx == ArenaIndex::GLOBAL_ENV, "GLOBAL_ENV must be slot 7");
+        let global_idx = lisp
+            .arena
+            .alloc(Value::Environment {
+                bindings: ArenaIndex::NIL,
+                parents,
+            })
+            .expect("arena too small for environments");
+        assert!(
+            global_idx == ArenaIndex::GLOBAL_ENV,
+            "GLOBAL_ENV must be slot 7"
+        );
 
         // Pre-allocate GC root stack at a fixed slot.
         // car = head of the gc roots linked list (initially NIL = empty).
-        let gc_roots_idx = lisp.arena.alloc(Value::Cons {
-            car: ArenaIndex::NIL,
-            cdr: ArenaIndex::NIL,
-        }).expect("arena too small for gc_roots");
-        assert!(gc_roots_idx == ArenaIndex::GC_ROOTS, "GC_ROOTS must be slot 8");
+        let gc_roots_idx = lisp
+            .arena
+            .alloc(Value::Cons {
+                car: ArenaIndex::NIL,
+                cdr: ArenaIndex::NIL,
+            })
+            .expect("arena too small for gc_roots");
+        assert!(
+            gc_roots_idx == ArenaIndex::GC_ROOTS,
+            "GC_ROOTS must be slot 8"
+        );
 
         // Pre-allocate symbol intern list at a fixed slot.
         // car = head of the intern alist (initially NIL = empty).
-        let intern_idx = lisp.arena.alloc(Value::Cons {
-            car: ArenaIndex::NIL,
-            cdr: ArenaIndex::NIL,
-        }).expect("arena too small for intern_list");
-        assert!(intern_idx == ArenaIndex::INTERN_LIST, "INTERN_LIST must be slot 9");
+        let intern_idx = lisp
+            .arena
+            .alloc(Value::Cons {
+                car: ArenaIndex::NIL,
+                cdr: ArenaIndex::NIL,
+            })
+            .expect("arena too small for intern_list");
+        assert!(
+            intern_idx == ArenaIndex::INTERN_LIST,
+            "INTERN_LIST must be slot 9"
+        );
 
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
@@ -104,21 +138,24 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a character (one-element string).
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair { ch: c, cdr: ArenaIndex::NIL })
+        self.arena.alloc(Value::CharPair {
+            ch: c,
+            cdr: ArenaIndex::NIL,
+        })
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
     /// same name already exists in the intern list, returns the existing index.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
         // Walk the intern alist
-        let intern_head = self.car_cons(ArenaIndex::INTERN_LIST)?;
+        let intern_head = self.car(ArenaIndex::INTERN_LIST)?;
         let mut cur = intern_head;
         while !cur.is_nil() {
-            let sym = self.car_cons(cur)?;
+            let sym = self.car(cur)?;
             if self.symbol_name_eq(sym, name) {
                 return Ok(sym);
             }
-            cur = self.cdr_cons(cur)?;
+            cur = self.cdr(cur)?;
         }
 
         // Not found — allocate new symbol and prepend to intern list
@@ -130,10 +167,8 @@ impl<const N: usize> Lisp<N> {
         let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
             unreachable!();
         };
-        self.arena.set(ArenaIndex::INTERN_LIST, Value::Cons {
-            car: new_head,
-            cdr,
-        })?;
+        self.arena
+            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
 
         Ok(sym_idx)
     }
@@ -146,7 +181,11 @@ impl<const N: usize> Lisp<N> {
     /// An empty string is represented as `NIL`.
     pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         // Pre-check: ensure enough free slots for all chars.
-        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
+        let char_count = if s.is_ascii() {
+            s.len()
+        } else {
+            s.chars().count()
+        };
         if self.arena.available() < char_count {
             return Err(ArenaError::OutOfMemory);
         }
@@ -192,10 +231,18 @@ impl<const N: usize> Lisp<N> {
                 (true, false) | (false, true) => return Ok(false),
                 _ => {}
             }
-            let Value::CharPair { ch: ca, cdr: next_a } = self.arena.get(cur_a)? else {
+            let Value::CharPair {
+                ch: ca,
+                cdr: next_a,
+            } = self.arena.get(cur_a)?
+            else {
                 return Err(ArenaError::TypeError);
             };
-            let Value::CharPair { ch: cb, cdr: next_b } = self.arena.get(cur_b)? else {
+            let Value::CharPair {
+                ch: cb,
+                cdr: next_b,
+            } = self.arena.get(cur_b)?
+            else {
                 return Err(ArenaError::TypeError);
             };
             if ca != cb {
@@ -225,19 +272,20 @@ impl<const N: usize> Lisp<N> {
     /// Get car of a cons cell or CharPair (user-facing).
     /// For CharPair, allocates a fresh one-element string.
     #[inline]
-    pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(idx)? {
             Value::Cons { car, .. } => Ok(car),
-            Value::CharPair { ch, .. } => {
-                self.arena.alloc(Value::CharPair { ch, cdr: ArenaIndex::NIL })
-            }
+            Value::CharPair { ch, .. } => self.arena.alloc(Value::CharPair {
+                ch,
+                cdr: ArenaIndex::NIL,
+            }),
             _ => Err(ArenaError::TypeError),
         }
     }
 
     /// Get cdr of a cons cell or CharPair (user-facing).
     #[inline]
-    pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(idx)? {
             Value::Cons { cdr, .. } | Value::CharPair { cdr, .. } => Ok(cdr),
             _ => Err(ArenaError::TypeError),
@@ -246,13 +294,13 @@ impl<const N: usize> Lisp<N> {
 
     /// Get car of cdr (second element of a list, user-facing).
     #[inline]
-    pub fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.car(self.cdr(idx)?)
+    pub fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(self.cdr_char(idx)?)
     }
 
     /// Get car of a Cons cell only (internal hot-path accessor).
     #[inline(always)]
-    pub(crate) fn car_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let Value::Cons { car, .. } = self.arena.get(idx)? else {
             return Err(ArenaError::TypeError);
         };
@@ -261,7 +309,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Get cdr of a Cons cell only (internal hot-path accessor).
     #[inline(always)]
-    pub(crate) fn cdr_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let Value::Cons { cdr, .. } = self.arena.get(idx)? else {
             return Err(ArenaError::TypeError);
         };
@@ -270,8 +318,8 @@ impl<const N: usize> Lisp<N> {
 
     /// Get car of cdr of Cons cells only (internal hot-path accessor).
     #[inline(always)]
-    pub(crate) fn cadr_cons(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.car_cons(self.cdr_cons(idx)?)
+    pub(crate) fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car(self.cdr(idx)?)
     }
 
     /// Allocate a lambda (applicative from an operative that ignores caller env).
@@ -378,11 +426,7 @@ impl<const N: usize> Lisp<N> {
     /// Falls back to DFS with cycle detection only for multi-parent
     /// environments (created by `make-environment`).
     #[inline]
-    pub(crate) fn env_lookup(
-        &self,
-        env: ArenaIndex,
-        name: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut cur = env;
         while !cur.is_nil() {
             let Value::Environment { bindings, parents } = self.arena.get(cur)? else {
@@ -392,19 +436,19 @@ impl<const N: usize> Lisp<N> {
             // Search local bindings.
             let mut b = bindings;
             while !b.is_nil() {
-                let binding = self.car_cons(b)?;
-                if self.car_cons(binding)? == name {
-                    return self.cdr_cons(binding);
+                let binding = self.car(b)?;
+                if self.car(binding)? == name {
+                    return self.cdr(binding);
                 }
-                b = self.cdr_cons(b)?;
+                b = self.cdr(b)?;
             }
 
             // Single parent → follow directly (no allocation needed).
             if parents.is_nil() {
                 break;
             }
-            let first_parent = self.car_cons(parents)?;
-            let rest = self.cdr_cons(parents)?;
+            let first_parent = self.car(parents)?;
+            let rest = self.cdr(parents)?;
             if rest.is_nil() {
                 cur = first_parent;
                 continue;
@@ -440,11 +484,11 @@ impl<const N: usize> Lisp<N> {
         // Search local bindings.
         let mut cur = bindings;
         while !cur.is_nil() {
-            let binding = self.car_cons(cur)?;
-            if self.car_cons(binding)? == name {
-                return self.cdr_cons(binding);
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                return self.cdr(binding);
             }
-            cur = self.cdr_cons(cur)?;
+            cur = self.cdr(cur)?;
         }
 
         // Mark this env as visited, then search parents.
@@ -461,13 +505,13 @@ impl<const N: usize> Lisp<N> {
     ) -> ArenaResult<ArenaIndex> {
         let mut parent_cur = parents;
         while !parent_cur.is_nil() {
-            let parent_env = self.car_cons(parent_cur)?;
+            let parent_env = self.car(parent_cur)?;
             match self.env_lookup_dfs(parent_env, name, visited) {
                 Ok(val) => return Ok(val),
                 Err(ArenaError::UnboundVariable) => {}
                 Err(e) => return Err(e),
             }
-            parent_cur = self.cdr_cons(parent_cur)?;
+            parent_cur = self.cdr(parent_cur)?;
         }
         Err(ArenaError::UnboundVariable)
     }
@@ -476,12 +520,12 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn list_contains(&self, list: ArenaIndex, target: ArenaIndex) -> bool {
         let mut cur = list;
         while !cur.is_nil() {
-            if let Ok(head) = self.car_cons(cur)
+            if let Ok(head) = self.car(cur)
                 && head == target
             {
                 return true;
             }
-            match self.cdr_cons(cur) {
+            match self.cdr(cur) {
                 Ok(rest) => cur = rest,
                 Err(_) => break,
             }
@@ -533,10 +577,15 @@ impl<const N: usize> Lisp<N> {
         self.arena.collect_garbage_multi(&[
             roots,
             &[
-                ArenaIndex::NIL, ArenaIndex::TRUE, ArenaIndex::FALSE,
-                ArenaIndex::INERT, ArenaIndex::IGNORE,
-                ArenaIndex::GROUND_ENV, ArenaIndex::GLOBAL_ENV,
-                ArenaIndex::GC_ROOTS, ArenaIndex::INTERN_LIST,
+                ArenaIndex::NIL,
+                ArenaIndex::TRUE,
+                ArenaIndex::FALSE,
+                ArenaIndex::INERT,
+                ArenaIndex::IGNORE,
+                ArenaIndex::GROUND_ENV,
+                ArenaIndex::GLOBAL_ENV,
+                ArenaIndex::GC_ROOTS,
+                ArenaIndex::INTERN_LIST,
             ],
         ])
     }
@@ -546,8 +595,14 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }
-            | Value::Operative { params_envparam: car, body_env: cdr }
-            | Value::Environment { bindings: car, parents: cdr } => {
+            | Value::Operative {
+                params_envparam: car,
+                body_env: cdr,
+            }
+            | Value::Environment {
+                bindings: car,
+                parents: cdr,
+            } => {
                 tracer(car);
                 tracer(cdr);
             }

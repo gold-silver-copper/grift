@@ -39,11 +39,11 @@ macro_rules! type_predicate {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
             let mut cur = args;
             while !cur.is_nil() {
-                let val = self.car_cons(cur)?;
+                let val = self.car(cur)?;
                 if !matches!(self.get(val)?, $pat) {
                     return Ok(ArenaIndex::FALSE);
                 }
-                cur = self.cdr_cons(cur)?;
+                cur = self.cdr(cur)?;
             }
             Ok(ArenaIndex::TRUE)
         }
@@ -57,9 +57,9 @@ macro_rules! fold_numbers {
         let mut acc: isize = $init;
         let mut cur = $args;
         while !cur.is_nil() {
-            let n = $self.get($self.car_cons(cur)?)?.as_number()?;
+            let n = $self.get($self.car(cur)?)?.as_number()?;
             acc = acc.$op(n).ok_or(ArenaError::ArithmeticOverflow)?;
-            cur = $self.cdr_cons(cur)?;
+            cur = $self.cdr(cur)?;
         }
         $self.number(acc)
     }};
@@ -69,8 +69,8 @@ macro_rules! fold_numbers {
 macro_rules! cmp_builtin {
     ($name:ident, $op:tt) => {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let a = self.get(self.car_cons(args)?)?.as_number()?;
-            let b = self.get(self.cadr_cons(args)?)?.as_number()?;
+            let a = self.get(self.car(args)?)?.as_number()?;
+            let b = self.get(self.cadr(args)?)?.as_number()?;
             Ok(ArenaIndex::from_bool(a $op b))
         }
     };
@@ -80,7 +80,7 @@ macro_rules! cmp_builtin {
 macro_rules! pair_builtin {
     ($name:ident, $accessor:ident) => {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let pair = self.car(args)?;
+            let pair = self.car_char(args)?;
             self.$accessor(pair)
         }
     };
@@ -260,7 +260,7 @@ impl<const N: usize> Lisp<N> {
         for _ in 0..n {
             let head = self.gc_roots_head();
             debug_assert!(!head.is_nil(), "GC root stack underflow");
-            match self.cdr_cons(head) {
+            match self.cdr(head) {
                 Ok(rest) => self.set_gc_roots_head(rest),
                 Err(_) => break,
             }
@@ -479,14 +479,14 @@ impl<const N: usize> Lisp<N> {
         let mut cur = args;
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
-            let head_expr = self.car_cons(cur)?;
+            let head_expr = self.car(cur)?;
             self.push_root(reversed)?;
             self.push_root(env)?;
             self.push_root(cur)?;
             let head_val = self.eval_expr(head_expr, env)?;
             self.pop_roots(3);
             reversed = self.cons(head_val, reversed)?;
-            cur = self.cdr_cons(cur)?;
+            cur = self.cdr(cur)?;
         }
         // Reverse in place — all cons cells are freshly allocated by us.
         self.reverse_list(reversed)
@@ -518,23 +518,23 @@ impl<const N: usize> Lisp<N> {
         _expr: &mut ArenaIndex,
         _env: &mut ArenaIndex,
     ) -> TailAction {
-        TailAction::Return(self.car_cons(args))
+        TailAction::Return(self.car(args))
     }
 
     /// `(if test then else)` — test is strict, branches are tail positions.
     fn op_if(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         tail_continue!({
-            let test_expr = self.car_cons(args)?;
-            let rest = self.cdr_cons(args)?;
+            let test_expr = self.car(args)?;
+            let rest = self.cdr(args)?;
             let test_val = self.eval_expr(test_expr, *env)?;
             *expr = if self.get(test_val)?.as_bool()? {
-                self.car_cons(rest)?
+                self.car(rest)?
             } else {
-                let else_rest = self.cdr_cons(rest)?;
+                let else_rest = self.cdr(rest)?;
                 if else_rest.is_nil() {
                     ArenaIndex::NIL
                 } else {
-                    self.car_cons(else_rest)?
+                    self.car(else_rest)?
                 }
             };
             Ok(())
@@ -560,9 +560,9 @@ impl<const N: usize> Lisp<N> {
             if *env == ArenaIndex::GROUND_ENV {
                 return Err(ArenaError::ImmutableEnvironment);
             }
-            let definiend = self.car_cons(args)?;
+            let definiend = self.car(args)?;
             self.validate_ptree(definiend)?;
-            let val_expr = self.cadr_cons(args)?;
+            let val_expr = self.cadr(args)?;
             let val = self.eval_expr(val_expr, *env)?;
             self.match_ptree(definiend, val, *env)?;
             Ok(ArenaIndex::INERT)
@@ -579,10 +579,10 @@ impl<const N: usize> Lisp<N> {
     /// would).  Returns `#inert`.
     fn op_set(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
-            let env_expr = self.car_cons(args)?;
-            let rest = self.cdr_cons(args)?;
-            let definiend = self.car_cons(rest)?;
-            let val_expr = self.cadr_cons(rest)?;
+            let env_expr = self.car(args)?;
+            let rest = self.cdr(args)?;
+            let definiend = self.car(rest)?;
+            let val_expr = self.cadr(rest)?;
 
             let target_env = self.eval_expr(env_expr, *env)?;
             // Validate target is an environment.
@@ -610,8 +610,8 @@ impl<const N: usize> Lisp<N> {
         env: &mut ArenaIndex,
     ) -> TailAction {
         non_tail!({
-            let params = self.car_cons(args)?;
-            let body = self.wrap_begin(self.cdr_cons(args)?)?;
+            let params = self.car(args)?;
+            let body = self.wrap_begin(self.cdr(args)?)?;
             self.lambda(params, body, *env)
         })
     }
@@ -626,12 +626,12 @@ impl<const N: usize> Lisp<N> {
         tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
-                let next = self.cdr_cons(cur)?;
+                let next = self.cdr(cur)?;
                 if next.is_nil() {
-                    *expr = self.car_cons(cur)?;
+                    *expr = self.car(cur)?;
                     return Ok(());
                 }
-                let e = self.car_cons(cur)?;
+                let e = self.car(cur)?;
                 self.eval_expr(e, *env)?;
                 cur = next;
             }
@@ -645,9 +645,9 @@ impl<const N: usize> Lisp<N> {
         tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
-                let clause = self.car_cons(cur)?;
-                let test = self.car_cons(clause)?;
-                let body = self.cdr_cons(clause)?;
+                let clause = self.car(cur)?;
+                let test = self.car(clause)?;
+                let body = self.cdr(clause)?;
 
                 let matched = self.symbol_name_eq(test, "else") || {
                     let test_val = self.eval_expr(test, *env)?;
@@ -658,7 +658,7 @@ impl<const N: usize> Lisp<N> {
                     *expr = self.wrap_begin(body)?;
                     return Ok(());
                 }
-                cur = self.cdr_cons(cur)?;
+                cur = self.cdr(cur)?;
             }
             *expr = ArenaIndex::NIL;
             Ok(())
@@ -686,8 +686,8 @@ impl<const N: usize> Lisp<N> {
         tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
-                let next = self.cdr_cons(cur)?;
-                let e = self.car_cons(cur)?;
+                let next = self.cdr(cur)?;
+                let e = self.car(cur)?;
                 let val = self.eval_expr(e, *env)?;
                 let b = self.get(val)?.as_bool()?;
                 if b != continue_while_truthy {
@@ -704,19 +704,19 @@ impl<const N: usize> Lisp<N> {
     /// `(let ((name val) ...) body...)` — bindings are strict, body is tail.
     fn op_let(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         tail_continue!({
-            let bindings = self.car_cons(args)?;
-            let body_list = self.cdr_cons(args)?;
+            let bindings = self.car(args)?;
+            let body_list = self.cdr(args)?;
 
             let local_env = self.make_child_env(*env)?;
             self.push_root(local_env)?;
             let mut cur = bindings;
             while !cur.is_nil() {
-                let binding = self.car_cons(cur)?;
-                let name = self.car_cons(binding)?;
-                let val_expr = self.cadr_cons(binding)?;
+                let binding = self.car(cur)?;
+                let name = self.car(binding)?;
+                let val_expr = self.cadr(binding)?;
                 let val = self.eval_expr(val_expr, *env)?;
                 self.env_define(local_env, name, val)?;
-                cur = self.cdr_cons(cur)?;
+                cur = self.cdr(cur)?;
             }
             self.pop_roots(1);
 
@@ -735,9 +735,9 @@ impl<const N: usize> Lisp<N> {
     ///   is signaled.
     fn op_vau(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
-            let params = self.car_cons(args)?;
-            let env_param = self.cadr_cons(args)?;
-            let body_list = self.cdr_cons(self.cdr_cons(args)?)?;
+            let params = self.car(args)?;
+            let env_param = self.cadr(args)?;
+            let body_list = self.cdr(self.cdr(args)?)?;
             let body = self.wrap_begin(body_list)?;
 
             // Validate formals parameter tree and collect seen symbols.
@@ -826,9 +826,9 @@ impl<const N: usize> Lisp<N> {
         if exprs.is_nil() {
             return Ok(ArenaIndex::NIL);
         }
-        let rest = self.cdr_cons(exprs)?;
+        let rest = self.cdr(exprs)?;
         if rest.is_nil() {
-            return self.car_cons(exprs);
+            return self.car(exprs);
         }
         let begin_sym = self.symbol("begin")?;
         self.cons(begin_sym, exprs)
@@ -842,8 +842,8 @@ impl<const N: usize> Lisp<N> {
     /// When `a` is a single-character string (CharPair with cdr=NIL),
     /// produces a CharPair node instead, so `(cons #\h "ello")` → `"hello"`.
     fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car(args)?;
-        let b = self.cadr(args)?;
+        let a = self.car_char(args)?;
+        let b = self.cadr_char(args)?;
         if let Value::CharPair { ch, cdr } = self.get(a)? {
             if cdr.is_nil() {
                 return self.arena.alloc(Value::CharPair { ch, cdr: b });
@@ -862,8 +862,8 @@ impl<const N: usize> Lisp<N> {
         if args.is_nil() {
             return Err(ArenaError::InvalidArgument);
         }
-        let first = self.get(self.car_cons(args)?)?.as_number()?;
-        let rest = self.cdr_cons(args)?;
+        let first = self.get(self.car(args)?)?.as_number()?;
+        let rest = self.cdr(args)?;
         if rest.is_nil() {
             return self.number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
         }
@@ -877,8 +877,8 @@ impl<const N: usize> Lisp<N> {
 
     /// `(/ a b)` — integer division.
     fn builtin_div(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.get(self.car_cons(args)?)?.as_number()?;
-        let b = self.get(self.cadr_cons(args)?)?.as_number()?;
+        let a = self.get(self.car(args)?)?.as_number()?;
+        let b = self.get(self.cadr(args)?)?.as_number()?;
         if b == 0 {
             return Err(ArenaError::DivisionByZero);
         }
@@ -898,8 +898,8 @@ impl<const N: usize> Lisp<N> {
         Ok(args)
     }
 
-    pair_builtin!(builtin_car, car);
-    pair_builtin!(builtin_cdr, cdr);
+    pair_builtin!(builtin_car, car_char);
+    pair_builtin!(builtin_cdr, cdr_char);
 
     // — Type predicate built-ins —
 
@@ -912,7 +912,7 @@ impl<const N: usize> Lisp<N> {
 
     /// `(not boolean)` — boolean negation (requires exactly one boolean arg).
     fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.car_cons(args)?;
+        let val = self.car(args)?;
         let b = self.get(val)?.as_bool()?;
         Ok(ArenaIndex::from_bool(!b))
     }
@@ -924,8 +924,8 @@ impl<const N: usize> Lisp<N> {
     /// eq? is determined by value. For mutable/constructed objects (pairs,
     /// environments), eq? compares arena identity.
     fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car_cons(args)?;
-        let b = self.cadr_cons(args)?;
+        let a = self.car(args)?;
+        let b = self.cadr(args)?;
         Ok(ArenaIndex::from_bool(self.is_eq(a, b)?))
     }
 
@@ -934,8 +934,8 @@ impl<const N: usize> Lisp<N> {
     /// Returns `#t` iff the two objects "look" the same as long as nothing
     /// is mutated. Weaker than eq?; equal? returns true whenever eq? would.
     fn builtin_equalp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car_cons(args)?;
-        let b = self.cadr_cons(args)?;
+        let a = self.car(args)?;
+        let b = self.cadr(args)?;
         Ok(ArenaIndex::from_bool(self.is_equal(a, b)?))
     }
 
@@ -979,25 +979,25 @@ impl<const N: usize> Lisp<N> {
 
     /// `(eval expr env)` — evaluate expression in given environment.
     fn builtin_eval(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let expr_val = self.car_cons(args)?;
-        let rest = self.cdr_cons(args)?;
+        let expr_val = self.car(args)?;
+        let rest = self.cdr(args)?;
         let env_val = if rest.is_nil() {
             ArenaIndex::GLOBAL_ENV
         } else {
-            self.car_cons(rest)?
+            self.car(rest)?
         };
         self.eval_expr(expr_val, env_val)
     }
 
     /// `(wrap combiner)` — wrap an operative into an applicative.
     fn builtin_wrap(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let combiner = self.car_cons(args)?;
+        let combiner = self.car(args)?;
         self.wrap(combiner)
     }
 
     /// `(unwrap applicative)` — extract the underlying combiner.
     fn builtin_unwrap(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let app = self.car_cons(args)?;
+        let app = self.car(args)?;
         self.unwrap_applicative(app)
     }
 
@@ -1016,11 +1016,11 @@ impl<const N: usize> Lisp<N> {
         // Validate all arguments are environments.
         let mut cur = args;
         while !cur.is_nil() {
-            let v = self.car_cons(cur)?;
+            let v = self.car(cur)?;
             if !matches!(self.get(v)?, Value::Environment { .. }) {
                 return Err(ArenaError::TypeError);
             }
-            cur = self.cdr_cons(cur)?;
+            cur = self.cdr(cur)?;
         }
         // Copy the parents list so it's independent of the original.
         let parents = self.copy_list(args)?;
@@ -1060,9 +1060,9 @@ impl<const N: usize> Lisp<N> {
         let mut cur = list;
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
-            let head = self.car_cons(cur)?;
+            let head = self.car(cur)?;
             reversed = self.cons(head, reversed)?;
-            cur = self.cdr_cons(cur)?;
+            cur = self.cdr(cur)?;
         }
         self.reverse_list(reversed)
     }
