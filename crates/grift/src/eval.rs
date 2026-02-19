@@ -270,34 +270,14 @@ impl<const N: usize> Lisp<N> {
     /// Trigger garbage collection using all known live roots.
     #[cold]
     fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
-        self.arena.collect_garbage(&[
-            expr,
-            env,
-            ArenaIndex::TRUE,
-            ArenaIndex::FALSE,
-            ArenaIndex::INERT,
-            ArenaIndex::IGNORE,
-            ArenaIndex::GROUND_ENV,
-            ArenaIndex::GLOBAL_ENV,
-            ArenaIndex::GC_ROOTS,
-            ArenaIndex::INTERN_LIST,
-        ])
+        self.collect_with_roots(&[expr, env])
     }
 
     /// Trigger garbage collection unconditionally (ignores gc_enabled flag).
     /// Used by the `gc-collect` builtin for explicit manual collection.
     #[cold]
     fn eval_collect_garbage_unconditional(&self) -> GcStats {
-        self.arena.collect_garbage(&[
-            ArenaIndex::TRUE,
-            ArenaIndex::FALSE,
-            ArenaIndex::INERT,
-            ArenaIndex::IGNORE,
-            ArenaIndex::GROUND_ENV,
-            ArenaIndex::GLOBAL_ENV,
-            ArenaIndex::GC_ROOTS,
-            ArenaIndex::INTERN_LIST,
-        ])
+        self.collect_with_roots(&[])
     }
 
     /// Evaluate an expression in an environment (with TCO).
