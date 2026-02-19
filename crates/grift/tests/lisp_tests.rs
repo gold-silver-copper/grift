@@ -2920,40 +2920,17 @@ fn test_string_traversal() {
 }
 
 #[test]
-fn test_char_literal_parsing() {
-    // #\h should parse as a CharPair
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"#\h"#).unwrap();
-    assert!(
-        matches!(result, Value::CharPair { ch: 'h', .. }),
-        "char literal should be CharPair, got: {:?}",
-        result
-    );
-}
-
-#[test]
-fn test_char_literal_named() {
-    let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"#\space"#).unwrap();
-    assert!(
-        matches!(result, Value::CharPair { ch: ' ', .. }),
-        "named char literal should be space, got: {:?}",
-        result
-    );
-}
-
-#[test]
 fn test_cons_char_onto_string() {
-    // (cons #\h "ello") should produce a string "hello"
+    // (cons (car "h") "ello") should produce a string "hello"
     let lisp: Lisp<20000> = Lisp::new();
     // Verify by checking car/cdr of the result
-    let result = lisp.eval(r#"(car (cons #\h "ello"))"#).unwrap();
+    let result = lisp.eval(r#"(car (cons (car "h") "ello"))"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
         "car of cons char onto string should be 'h', got: {:?}",
         result
     );
-    let result2 = lisp.eval(r#"(car (cdr (cons #\h "ello")))"#).unwrap();
+    let result2 = lisp.eval(r#"(car (cdr (cons (car "h") "ello")))"#).unwrap();
     assert!(
         matches!(result2, Value::CharPair { ch: 'e', .. }),
         "second char of cons'd string should be 'e', got: {:?}",
@@ -2963,16 +2940,16 @@ fn test_cons_char_onto_string() {
 
 #[test]
 fn test_cons_char_onto_nil() {
-    // (cons #\h ()) should produce a one-element string
+    // (cons (car "h") ()) should produce a one-element string
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"(car (cons #\h '()))"#).unwrap();
+    let result = lisp.eval(r#"(car (cons (car "h") '()))"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
         "cons char onto nil should produce single-char string, got: {:?}",
         result
     );
     assert_eq!(
-        lisp.eval(r#"(null? (cdr (cons #\h '())))"#),
+        lisp.eval(r#"(null? (cdr (cons (car "h") '())))"#),
         Ok(Value::Boolean(true))
     );
 }

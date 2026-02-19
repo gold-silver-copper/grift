@@ -158,23 +158,6 @@ impl<'a> Parser<'a> {
             "#f" | "#false" => Ok(ArenaIndex::FALSE),
             "#inert" => Ok(ArenaIndex::INERT),
             "#ignore" => Ok(ArenaIndex::IGNORE),
-            _ if s.starts_with("#\\") => {
-                let ch_str = &s[2..];
-                let ch = match ch_str {
-                    "space" => ' ',
-                    "newline" => '\n',
-                    "tab" => '\t',
-                    _ => {
-                        let mut chars = ch_str.chars();
-                        let c = chars.next().ok_or(ArenaError::ParseError)?;
-                        if chars.next().is_some() {
-                            return Err(ArenaError::ParseError);
-                        }
-                        c
-                    }
-                };
-                lisp.char_val(ch)
-            }
             _ => parse_integer(s)
                 .map(|n| lisp.number(n))
                 .unwrap_or_else(|| lisp.symbol(s)),

@@ -12,7 +12,6 @@ evaluator from scratch.
 | Nil | `()` | yes | no | value |
 | Boolean | `#t`, `#f`, `#true`, `#false` | yes | no | value |
 | Number | `42`, `-7`, `+3` | yes | no | value |
-| Character | `#\a`, `#\Z` | yes | no | value |
 | Symbol | `foo`, `define!`, `+` | no (triggers lookup) | no | value |
 | Pair | `(1 . 2)`, `(a b c)` | no (triggers combination) | no | identity |
 | String | `"hello"` | yes | no | identity |
@@ -32,7 +31,7 @@ identity — two structurally identical pairs at different slots are not `eq?`.
 ### Self-Evaluating Forms
 
 Everything except symbols and pairs evaluates to itself. Numbers, booleans,
-strings, characters, nil, inert, ignore, operatives, applicatives, builtins,
+strings, nil, inert, ignore, operatives, applicatives, builtins,
 and environments all return themselves when evaluated.
 
 ### Symbol Lookup
@@ -365,7 +364,7 @@ if every argument matches the type.
 
 | Name | Signature | Behavior |
 |------|-----------|----------|
-| `eq?` | `(eq? a b)` | Identity equality. For immutable scalar types (nil, booleans, numbers, symbols, chars, inert, ignore), compares by value. For mutable/constructed types (pairs, strings, environments, combiners), compares by arena identity. |
+| `eq?` | `(eq? a b)` | Identity equality. For immutable scalar types (nil, booleans, numbers, symbols, inert, ignore), compares by value. For mutable/constructed types (pairs, strings, environments, combiners), compares by arena identity. |
 | `equal?` | `(equal? a b)` | Structural equality. Returns `#t` whenever `eq?` would. Additionally compares pairs structurally (recursive car/cdr) and strings character-by-character. Different environments are never `equal?` unless `eq?`. |
 
 ```lisp
