@@ -21,14 +21,6 @@ use crate::eval::Evaluator;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
-    /// Pre-allocated `#t` — avoids a fresh allocation on every boolean result.
-    pub(crate) true_idx: ArenaIndex,
-    /// Pre-allocated `#f`.
-    pub(crate) false_idx: ArenaIndex,
-    /// Pre-allocated `#inert`.
-    pub(crate) inert_idx: ArenaIndex,
-    /// Pre-allocated `#ignore`.
-    pub(crate) ignore_idx: ArenaIndex,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -44,44 +36,25 @@ impl<const N: usize> Lisp<N> {
     /// `#ignore` so that returning these common values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
-        let _ = arena.alloc(Value::Nil);
+        let nil_idx = arena.alloc(Value::Nil).expect("arena too small for singletons");
         let true_idx = arena.alloc(Value::Boolean(true)).expect("arena too small for singletons");
         let false_idx = arena.alloc(Value::Boolean(false)).expect("arena too small for singletons");
         let inert_idx = arena.alloc(Value::Inert).expect("arena too small for singletons");
         let ignore_idx = arena.alloc(Value::Ignore).expect("arena too small for singletons");
-        Lisp { arena, true_idx, false_idx, inert_idx, ignore_idx }
+        assert!(nil_idx == ArenaIndex::NIL, "NIL must be slot 0");
+        assert!(true_idx == ArenaIndex::TRUE, "TRUE must be slot 1");
+        assert!(false_idx == ArenaIndex::FALSE, "FALSE must be slot 2");
+        assert!(inert_idx == ArenaIndex::INERT, "INERT must be slot 3");
+        assert!(ignore_idx == ArenaIndex::IGNORE, "IGNORE must be slot 4");
+        Lisp { arena }
     }
 
     // — Value constructors —
-
-    /// Allocate a Nil value (or return the pre-allocated one).
-    #[inline]
-    pub fn nil(&self) -> ArenaResult<ArenaIndex> {
-        Ok(ArenaIndex::NIL)
-    }
 
     /// Allocate a number.
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(n.into())
-    }
-
-    /// Return the pre-allocated boolean index (zero allocation).
-    #[inline]
-    pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
-        Ok(if b { self.true_idx } else { self.false_idx })
-    }
-
-    /// Return the pre-allocated inert index (zero allocation).
-    #[inline]
-    pub fn inert(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.inert_idx)
-    }
-
-    /// Return the pre-allocated ignore index (zero allocation).
-    #[inline]
-    pub fn ignore(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.ignore_idx)
     }
 
     /// Allocate a cons cell.
@@ -438,8 +411,8 @@ impl<const N: usize> Lisp<N> {
                 // Collect garbage keeping only singletons and the parsed expression,
                 // then retry evaluator creation.
                 self.arena.collect_garbage(&[
-                    self.true_idx, self.false_idx,
-                    self.inert_idx, self.ignore_idx, expr,
+                    ArenaIndex::TRUE, ArenaIndex::FALSE,
+                    ArenaIndex::INERT, ArenaIndex::IGNORE, expr,
                 ]);
                 Evaluator::new(self)?
             }

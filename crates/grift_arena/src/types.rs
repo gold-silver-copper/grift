@@ -33,6 +33,24 @@ impl ArenaIndex {
     /// `lisp.get(ArenaIndex::NIL)` returns `Value::Nil`.
     pub const NIL: ArenaIndex = ArenaIndex(0);
 
+    /// The TRUE index - points to slot 1 where `Value::Boolean(true)` is pre-allocated.
+    pub const TRUE: ArenaIndex = ArenaIndex(1);
+
+    /// The FALSE index - points to slot 2 where `Value::Boolean(false)` is pre-allocated.
+    pub const FALSE: ArenaIndex = ArenaIndex(2);
+
+    /// The INERT index - points to slot 3 where `Value::Inert` is pre-allocated.
+    pub const INERT: ArenaIndex = ArenaIndex(3);
+
+    /// The IGNORE index - points to slot 4 where `Value::Ignore` is pre-allocated.
+    pub const IGNORE: ArenaIndex = ArenaIndex(4);
+
+    /// Return `ArenaIndex::TRUE` if `b` is true, `ArenaIndex::FALSE` otherwise.
+    #[inline]
+    pub const fn from_bool(b: bool) -> ArenaIndex {
+        if b { Self::TRUE } else { Self::FALSE }
+    }
+
     /// Create a new arena index with the given slot index.
     ///
     /// # Warning

@@ -41,11 +41,11 @@ macro_rules! type_predicate {
             while !cur.is_nil() {
                 let val = self.lisp.car(cur)?;
                 if !matches!(self.lisp.get(val)?, $pat) {
-                    return self.lisp.boolean(false);
+                    return Ok(ArenaIndex::FALSE);
                 }
                 cur = self.lisp.cdr(cur)?;
             }
-            self.lisp.boolean(true)
+            Ok(ArenaIndex::TRUE)
         }
     };
 }
@@ -71,7 +71,7 @@ macro_rules! cmp_builtin {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
             let a = self.lisp.get(self.lisp.car(args)?)?.as_number()?;
             let b = self.lisp.get(self.lisp.cadr(args)?)?.as_number()?;
-            self.lisp.boolean(a $op b)
+            Ok(ArenaIndex::from_bool(a $op b))
         }
     };
 }
@@ -280,8 +280,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
         self.lisp.arena.collect_garbage(&[
             expr, env, self.ground_env, self.global_env, self.gc_roots,
-            self.lisp.true_idx, self.lisp.false_idx,
-            self.lisp.inert_idx, self.lisp.ignore_idx,
+            ArenaIndex::TRUE, ArenaIndex::FALSE,
+            ArenaIndex::INERT, ArenaIndex::IGNORE,
         ])
     }
 
@@ -291,8 +291,8 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn collect_garbage_unconditional(&self) -> GcStats {
         self.lisp.arena.collect_garbage_unconditional(&[
             self.ground_env, self.global_env, self.gc_roots,
-            self.lisp.true_idx, self.lisp.false_idx,
-            self.lisp.inert_idx, self.lisp.ignore_idx,
+            ArenaIndex::TRUE, ArenaIndex::FALSE,
+            ArenaIndex::INERT, ArenaIndex::IGNORE,
         ])
     }
 
@@ -573,7 +573,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             let val_expr = self.lisp.cadr(args)?;
             let val = self.eval(val_expr, *env)?;
             self.match_ptree(definiend, val, *env)?;
-            self.lisp.inert()
+            Ok(ArenaIndex::INERT)
         })
     }
 
@@ -610,7 +610,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
             self.validate_ptree(definiend)?;
             let val = self.eval(val_expr, *env)?;
             self.match_ptree(definiend, val, target_env)?;
-            self.lisp.inert()
+            Ok(ArenaIndex::INERT)
         })
     }
 
@@ -648,7 +648,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 self.eval(e, *env)?;
                 cur = next;
             }
-            *expr = self.lisp.nil()?;
+            *expr = ArenaIndex::NIL;
             Ok(())
         })
     }
@@ -678,7 +678,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 cur = self.lisp.cdr(cur)?;
             }
-            *expr = self.lisp.nil()?;
+            *expr = ArenaIndex::NIL;
             Ok(())
         })
     }
@@ -724,7 +724,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
                 }
                 cur = next;
             }
-            *expr = self.lisp.boolean(continue_while_truthy)?;
+            *expr = ArenaIndex::from_bool(continue_while_truthy);
             Ok(())
         })
     }
@@ -862,7 +862,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     #[inline]
     fn wrap_begin(&self, exprs: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if exprs.is_nil() {
-            return self.lisp.nil();
+            return Ok(ArenaIndex::NIL);
         }
         let rest = self.lisp.cdr(exprs)?;
         if rest.is_nil() {
@@ -947,7 +947,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.lisp.car(args)?;
         let b = self.lisp.get(val)?.as_bool()?;
-        self.lisp.boolean(!b)
+        Ok(ArenaIndex::from_bool(!b))
     }
 
     /// `(eq? object1 object2)` — identity predicate (§4.2.1).
@@ -959,7 +959,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.lisp.car(args)?;
         let b = self.lisp.cadr(args)?;
-        self.lisp.boolean(self.is_eq(a, b)?)
+        Ok(ArenaIndex::from_bool(self.is_eq(a, b)?))
     }
 
     /// `(equal? object1 object2)` — structural equality predicate (§4.3.1).
@@ -969,7 +969,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     fn builtin_equalp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.lisp.car(args)?;
         let b = self.lisp.cadr(args)?;
-        self.lisp.boolean(self.is_equal(a, b)?)
+        Ok(ArenaIndex::from_bool(self.is_equal(a, b)?))
     }
 
     /// Core `eq?` logic: identity comparison.
@@ -1085,7 +1085,7 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// `(gc-enable)` — enable automatic garbage collection on OOM.
     fn builtin_gc_enable(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.lisp.arena.set_gc_enabled(true);
-        self.lisp.inert()
+        Ok(ArenaIndex::INERT)
     }
 
     /// `(gc-disable)` — disable automatic garbage collection.
@@ -1093,12 +1093,12 @@ impl<'a, const N: usize> Evaluator<'a, N> {
     /// Manual `(gc-collect)` still works regardless.
     fn builtin_gc_disable(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.lisp.arena.set_gc_enabled(false);
-        self.lisp.inert()
+        Ok(ArenaIndex::INERT)
     }
 
     /// `(gc-enabled?)` — check if automatic GC is enabled.
     fn builtin_gc_enabledp(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.lisp.boolean(self.lisp.arena.is_gc_enabled())
+        Ok(ArenaIndex::from_bool(self.lisp.arena.is_gc_enabled()))
     }
 
     /// Copy a cons-list into fresh cons cells (iterative).

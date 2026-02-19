@@ -300,7 +300,7 @@ When GC triggers, the root set includes:
 - The current `expr` and `env`
 - `ground_env` and `global_env`
 - The `gc_roots` shadow stack
-- Pre-allocated singleton indices (`true_idx`, `false_idx`, `inert_idx`, `ignore_idx`)
+- Pre-allocated singleton indices (`ArenaIndex::TRUE`, `ArenaIndex::FALSE`, `ArenaIndex::INERT`, `ArenaIndex::IGNORE`)
 
 ### GC Trigger
 
@@ -367,16 +367,16 @@ self-evaluating.
 
 ## Pre-allocated Singletons
 
-To avoid allocation on every boolean or nil result, the `Lisp` struct
-pre-allocates five values at startup:
+To avoid allocation on every boolean or nil result, the arena
+pre-allocates five values at startup as compile-time constants on `ArenaIndex`:
 
-| Slot | Value | Field |
-|------|-------|-------|
-| 0 | `Nil` | `ArenaIndex::NIL` (constant) |
-| 1 | `Boolean(true)` | `true_idx` |
-| 2 | `Boolean(false)` | `false_idx` |
-| 3 | `Inert` | `inert_idx` |
-| 4 | `Ignore` | `ignore_idx` |
+| Slot | Value | Constant |
+|------|-------|----------|
+| 0 | `Nil` | `ArenaIndex::NIL` |
+| 1 | `Boolean(true)` | `ArenaIndex::TRUE` |
+| 2 | `Boolean(false)` | `ArenaIndex::FALSE` |
+| 3 | `Inert` | `ArenaIndex::INERT` |
+| 4 | `Ignore` | `ArenaIndex::IGNORE` |
 
-Returning these common values is then a matter of returning the stored index
-with no arena allocation.
+Returning these common values is then a matter of using the constant index
+with no field access and no arena allocation.
