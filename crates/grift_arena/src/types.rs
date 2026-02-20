@@ -21,7 +21,41 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ArenaIndex(usize);
 
-impl ArenaIndex {
+/// Single source of truth for every well-known arena slot.
+///
+/// Generates [`ArenaIndex`] constants, the singleton root set
+/// ([`ArenaIndex::ROOTS`]), and [`ArenaIndex::FIRST_FREE`] marking
+/// the first user-allocatable slot.
+macro_rules! define_singletons {
+    (
+        $(
+            $(#[$meta:meta])*
+            $name:ident = $idx:expr,
+        )*
+        ; FIRST_FREE = $first_free:expr
+    ) => {
+        impl ArenaIndex {
+            $(
+                $(#[$meta])*
+                pub const $name: ArenaIndex = ArenaIndex($idx);
+            )*
+
+            /// The first slot available for user allocation.
+            ///
+            /// Singletons occupy slots `0..FIRST_FREE`.  A future compaction
+            /// pass must never move slots below this boundary because their
+            /// [`ArenaIndex`] values are compile-time constants.
+            pub const FIRST_FREE: ArenaIndex = ArenaIndex($first_free);
+
+            /// All singleton slots that must survive every GC cycle.
+            pub const ROOTS: &'static [ArenaIndex] = &[
+                $(ArenaIndex($idx),)*
+            ];
+        }
+    };
+}
+
+define_singletons! {
     /// The NIL index - points to slot 0 where `Value::Nil` is pre-allocated.
     ///
     /// This constant is useful as:
@@ -31,7 +65,48 @@ impl ArenaIndex {
     ///
     /// Since slot 0 always contains `Value::Nil`, accessing this index via
     /// `lisp.get(ArenaIndex::NIL)` returns `Value::Nil`.
-    pub const NIL: ArenaIndex = ArenaIndex(0);
+    NIL = 0,
+
+    /// The TRUE index - points to slot 1 where `Value::Boolean(true)` is pre-allocated.
+    TRUE = 1,
+
+    /// The FALSE index - points to slot 2 where `Value::Boolean(false)` is pre-allocated.
+    FALSE = 2,
+
+    /// The INERT index - points to slot 3 where `Value::Inert` is pre-allocated.
+    INERT = 3,
+
+    /// The IGNORE index - points to slot 4 where `Value::Ignore` is pre-allocated.
+    IGNORE = 4,
+
+    /// The GROUND_ENV index - points to slot 5 where the ground (builtin)
+    /// environment is pre-allocated.
+    GROUND_ENV = 5,
+
+    /// The GLOBAL_ENV index - points to slot 7 where the global/standard
+    /// environment (child of ground) is pre-allocated.  Slot 6 holds the
+    /// parents cons cell linking ground to global.
+    GLOBAL_ENV = 7,
+
+    /// The GC_ROOTS index - points to slot 8 where the GC root stack head
+    /// is stored.  This is a cons cell whose `car` holds the current head
+    /// of the GC roots linked list and whose `cdr` is always NIL.
+    GC_ROOTS = 8,
+
+    /// The INTERN_LIST index - points to slot 9 where the symbol intern
+    /// alist head is stored.  This is a cons cell whose `car` holds the
+    /// current head of the intern list and whose `cdr` is always NIL.
+    INTERN_LIST = 9,
+    ;
+    FIRST_FREE = 10
+}
+
+impl ArenaIndex {
+    /// Return `ArenaIndex::TRUE` if `b` is true, `ArenaIndex::FALSE` otherwise.
+    #[inline]
+    pub const fn from_bool(b: bool) -> ArenaIndex {
+        if b { Self::TRUE } else { Self::FALSE }
+    }
 
     /// Create a new arena index with the given slot index.
     ///
@@ -57,14 +132,6 @@ impl ArenaIndex {
         self.0 == 0
     }
 
-    /// Compute an index offset by `n` slots, returning `None` on overflow.
-    #[inline]
-    pub const fn offset(self, n: usize) -> Option<ArenaIndex> {
-        match self.0.checked_add(n) {
-            Some(idx) => Some(ArenaIndex(idx)),
-            None => None,
-        }
-    }
 }
 
 impl Default for ArenaIndex {

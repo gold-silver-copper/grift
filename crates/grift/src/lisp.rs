@@ -1,10 +1,9 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 
-use grift_arena::{Arena, ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats, Trace};
+use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::value::Value;
 use crate::parse::Parser;
-use crate::eval::Evaluator;
+use crate::value::Value;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
@@ -21,14 +20,6 @@ use crate::eval::Evaluator;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
-    /// Pre-allocated `#t` — avoids a fresh allocation on every boolean result.
-    pub(crate) true_idx: ArenaIndex,
-    /// Pre-allocated `#f`.
-    pub(crate) false_idx: ArenaIndex,
-    /// Pre-allocated `#inert`.
-    pub(crate) inert_idx: ArenaIndex,
-    /// Pre-allocated `#ignore`.
-    pub(crate) ignore_idx: ArenaIndex,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -40,48 +31,103 @@ impl<const N: usize> Default for Lisp<N> {
 impl<const N: usize> Lisp<N> {
     /// Create a new Lisp interpreter with an empty arena.
     ///
-    /// Slots 0–4 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`, and
-    /// `#ignore` so that returning these common values is allocation-free.
+    /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
+    /// `#ignore`, the ground environment, a parents cell, the global
+    /// environment, the GC root stack, and the symbol intern list so
+    /// that returning these common values is allocation-free.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
-        let _ = arena.alloc(Value::Nil);
-        let true_idx = arena.alloc(Value::Boolean(true)).expect("arena too small for singletons");
-        let false_idx = arena.alloc(Value::Boolean(false)).expect("arena too small for singletons");
-        let inert_idx = arena.alloc(Value::Inert).expect("arena too small for singletons");
-        let ignore_idx = arena.alloc(Value::Ignore).expect("arena too small for singletons");
-        Lisp { arena, true_idx, false_idx, inert_idx, ignore_idx }
+        let nil_idx = arena
+            .alloc(Value::Nil)
+            .expect("arena too small for singletons");
+        let true_idx = arena
+            .alloc(Value::Boolean(true))
+            .expect("arena too small for singletons");
+        let false_idx = arena
+            .alloc(Value::Boolean(false))
+            .expect("arena too small for singletons");
+        let inert_idx = arena
+            .alloc(Value::Inert)
+            .expect("arena too small for singletons");
+        let ignore_idx = arena
+            .alloc(Value::Ignore)
+            .expect("arena too small for singletons");
+        assert!(nil_idx == ArenaIndex::NIL, "NIL must be slot 0");
+        assert!(true_idx == ArenaIndex::TRUE, "TRUE must be slot 1");
+        assert!(false_idx == ArenaIndex::FALSE, "FALSE must be slot 2");
+        assert!(inert_idx == ArenaIndex::INERT, "INERT must be slot 3");
+        assert!(ignore_idx == ArenaIndex::IGNORE, "IGNORE must be slot 4");
+
+        // Pre-allocate ground and global environments at fixed slots.
+        let ground_idx = arena
+            .alloc(Value::Environment {
+                bindings: ArenaIndex::NIL,
+                parents: ArenaIndex::NIL,
+            })
+            .expect("arena too small for environments");
+        assert!(
+            ground_idx == ArenaIndex::GROUND_ENV,
+            "GROUND_ENV must be slot 5"
+        );
+
+        let lisp = Lisp { arena };
+
+        // Global env is a child of the ground env.
+        let parents = lisp
+            .cons(ArenaIndex::GROUND_ENV, ArenaIndex::NIL)
+            .expect("arena too small for environments");
+        let global_idx = lisp
+            .arena
+            .alloc(Value::Environment {
+                bindings: ArenaIndex::NIL,
+                parents,
+            })
+            .expect("arena too small for environments");
+        assert!(
+            global_idx == ArenaIndex::GLOBAL_ENV,
+            "GLOBAL_ENV must be slot 7"
+        );
+
+        // Pre-allocate GC root stack at a fixed slot.
+        // car = head of the gc roots linked list (initially NIL = empty).
+        let gc_roots_idx = lisp
+            .arena
+            .alloc(Value::Cons {
+                car: ArenaIndex::NIL,
+                cdr: ArenaIndex::NIL,
+            })
+            .expect("arena too small for gc_roots");
+        assert!(
+            gc_roots_idx == ArenaIndex::GC_ROOTS,
+            "GC_ROOTS must be slot 8"
+        );
+
+        // Pre-allocate symbol intern list at a fixed slot.
+        // car = head of the intern alist (initially NIL = empty).
+        let intern_idx = lisp
+            .arena
+            .alloc(Value::Cons {
+                car: ArenaIndex::NIL,
+                cdr: ArenaIndex::NIL,
+            })
+            .expect("arena too small for intern_list");
+        assert!(
+            intern_idx == ArenaIndex::INTERN_LIST,
+            "INTERN_LIST must be slot 9"
+        );
+
+        // Initialize builtins into the ground environment.
+        lisp.init_builtins();
+
+        lisp
     }
 
     // — Value constructors —
-
-    /// Allocate a Nil value (or return the pre-allocated one).
-    #[inline]
-    pub fn nil(&self) -> ArenaResult<ArenaIndex> {
-        Ok(ArenaIndex::NIL)
-    }
 
     /// Allocate a number.
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(n.into())
-    }
-
-    /// Return the pre-allocated boolean index (zero allocation).
-    #[inline]
-    pub fn boolean(&self, b: bool) -> ArenaResult<ArenaIndex> {
-        Ok(if b { self.true_idx } else { self.false_idx })
-    }
-
-    /// Return the pre-allocated inert index (zero allocation).
-    #[inline]
-    pub fn inert(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.inert_idx)
-    }
-
-    /// Return the pre-allocated ignore index (zero allocation).
-    #[inline]
-    pub fn ignore(&self) -> ArenaResult<ArenaIndex> {
-        Ok(self.ignore_idx)
     }
 
     /// Allocate a cons cell.
@@ -90,80 +136,124 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(Value::Cons { car, cdr })
     }
 
-    /// Allocate a character.
+    /// Allocate a character (one-element string).
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(c.into())
+        self.arena.alloc(Value::CharPair {
+            ch: c,
+            cdr: ArenaIndex::NIL,
+        })
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
-    /// same name already exists, returns the existing index.
+    /// same name already exists in the intern list, returns the existing index.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        if let Some((idx, _)) = self.arena.find(|v| {
-            v.as_symbol()
-                .is_ok_and(|str_idx| self.string_eq(str_idx, name))
-        }) {
-            return Ok(idx);
+        // Walk the intern alist
+        let intern_head = self.car(ArenaIndex::INTERN_LIST)?;
+        let mut cur = intern_head;
+        while !cur.is_nil() {
+            let sym = self.car(cur)?;
+            if self.symbol_name_eq(sym, name) {
+                return Ok(sym);
+            }
+            cur = self.cdr(cur)?;
         }
 
-        let str_idx = self.alloc_string(name)?;
-        self.arena.alloc(Value::Symbol(str_idx))
+        // Not found — allocate new symbol and prepend to intern list
+        let char_head = self.alloc_string(name)?;
+        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let new_head = self.cons(sym_idx, intern_head)?;
+
+        // Update the intern list head in place
+        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
+            unreachable!();
+        };
+        self.arena
+            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
+
+        Ok(sym_idx)
     }
 
     /// Allocate a string value from a `&str`.
+    ///
+    /// Strings are stored as a linked list of `CharPair` nodes.
+    /// Each `CharPair { ch, cdr }` points to the next character,
+    /// with the final character's `cdr` pointing to `NIL`.
+    /// An empty string is represented as `NIL`.
     pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        let len = if s.is_ascii() { s.len() } else { s.chars().count() };
-
-        if len == 0 {
-            return self.arena.alloc(Value::String {
-                len: 0,
-                data: ArenaIndex::NIL,
-            });
-        }
-
-        let data = self.arena.alloc_contiguous(len, Value::Nil)?;
-        for (i, c) in s.chars().enumerate() {
-            let idx = self.arena.index_at_offset(data, i)?;
-            self.arena.set(idx, c.into())?;
-        }
-
-        self.arena.alloc(Value::String { len, data })
-    }
-
-    /// Compare a `Value::String` at the given index with a `&str`.
-    fn string_eq(&self, str_idx: ArenaIndex, s: &str) -> bool {
-        let Ok(Value::String { len, data }) = self.arena.get(str_idx) else {
-            return false;
+        // Pre-check: ensure enough free slots for all chars.
+        let char_count = if s.is_ascii() {
+            s.len()
+        } else {
+            s.chars().count()
         };
-        // Fast path: for ASCII strings, byte length == char count.
-        let char_count = if s.is_ascii() { s.len() } else { s.chars().count() };
-        len == char_count
-            && s.chars().enumerate().all(|(i, c)| {
-                self.arena
-                    .index_at_offset(data, i)
-                    .and_then(|idx| self.arena.get(idx))
-                    == Ok(Value::Char(c))
-            })
+        if self.arena.available() < char_count {
+            return Err(ArenaError::OutOfMemory);
+        }
+
+        let mut data = ArenaIndex::NIL;
+
+        // Build the linked list in reverse so the first char is at the head.
+        for c in s.chars().rev() {
+            let node = self.arena.alloc(Value::CharPair { ch: c, cdr: data })?;
+            data = node;
+        }
+
+        Ok(data)
     }
 
-    /// Compare two arena-allocated `String` values by their character data.
+    /// Compare a `CharPair` linked list starting at `char_head` with a `&str`.
+    fn string_eq(&self, char_head: ArenaIndex, s: &str) -> bool {
+        let mut cur = char_head;
+        for c in s.chars() {
+            let Ok(Value::CharPair { ch, cdr }) = self.arena.get(cur) else {
+                return false;
+            };
+            if ch != c {
+                return false;
+            }
+            cur = cdr;
+        }
+        // The string must be fully consumed (cur should be NIL).
+        cur.is_nil()
+    }
+
+    /// Compare two arena-allocated strings by their `CharPair` chains.
     pub(crate) fn strings_equal(
         &self,
-        len_a: usize,
         data_a: ArenaIndex,
-        len_b: usize,
         data_b: ArenaIndex,
     ) -> ArenaResult<bool> {
-        if len_a != len_b {
-            return Ok(false);
+        if data_a == data_b {
+            return Ok(true);
         }
-        for i in 0..len_a {
-            let ia = self.arena.index_at_offset(data_a, i)?;
-            let ib = self.arena.index_at_offset(data_b, i)?;
-            if self.arena.get(ia)? != self.arena.get(ib)? {
+        let mut cur_a = data_a;
+        let mut cur_b = data_b;
+        loop {
+            match (cur_a.is_nil(), cur_b.is_nil()) {
+                (true, true) => return Ok(true),
+                (true, false) | (false, true) => return Ok(false),
+                _ => {}
+            }
+            let Value::CharPair {
+                ch: ca,
+                cdr: next_a,
+            } = self.arena.get(cur_a)?
+            else {
+                return Err(ArenaError::TypeError);
+            };
+            let Value::CharPair {
+                ch: cb,
+                cdr: next_b,
+            } = self.arena.get(cur_b)?
+            else {
+                return Err(ArenaError::TypeError);
+            };
+            if ca != cb {
                 return Ok(false);
             }
+            cur_a = next_a;
+            cur_b = next_b;
         }
-        Ok(true)
     }
 
     /// Returns true if the symbol at `idx` has the given name.
@@ -182,21 +272,56 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)
     }
 
-    /// Get car of a cons cell.
+    /// Get car of a cons cell or CharPair (user-facing).
+    /// For CharPair, allocates a fresh one-element string.
     #[inline]
-    pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(idx)?.as_cons().map(|(car, _)| car)
+    pub fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(idx)? {
+            Value::Cons { car, .. } => Ok(car),
+            Value::CharPair { ch, .. } => self.arena.alloc(Value::CharPair {
+                ch,
+                cdr: ArenaIndex::NIL,
+            }),
+            _ => Err(ArenaError::TypeError),
+        }
     }
 
-    /// Get cdr of a cons cell.
+    /// Get cdr of a cons cell or CharPair (user-facing).
     #[inline]
-    pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.get(idx)?.as_cons().map(|(_, cdr)| cdr)
+    pub fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match self.arena.get(idx)? {
+            Value::Cons { cdr, .. } | Value::CharPair { cdr, .. } => Ok(cdr),
+            _ => Err(ArenaError::TypeError),
+        }
     }
 
-    /// Get car of cdr (second element of a list).
+    /// Get car of cdr (second element of a list, user-facing).
     #[inline]
-    pub fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(self.cdr_char(idx)?)
+    }
+
+    /// Get car of a Cons cell only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons { car, .. } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(car)
+    }
+
+    /// Get cdr of a Cons cell only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons { cdr, .. } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(cdr)
+    }
+
+    /// Get car of cdr of Cons cells only (internal hot-path accessor).
+    #[inline(always)]
+    pub(crate) fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.car(self.cdr(idx)?)
     }
 
@@ -277,7 +402,22 @@ impl<const N: usize> Lisp<N> {
         self.make_env(parents)
     }
 
+    /// Search an alist for a binding whose car equals `name`.
+    /// Returns `Some(binding_cons_index)` if found, `None` otherwise.
+    fn find_binding(&self, bindings: ArenaIndex, name: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+        let mut cur = bindings;
+        while !cur.is_nil() {
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                return Ok(Some(binding));
+            }
+            cur = self.cdr(cur)?;
+        }
+        Ok(None)
+    }
+
     /// Define a binding in an environment (mutates in place via arena.set).
+    /// If a binding for `name` already exists in this frame, overwrite it.
     pub(crate) fn env_define(
         &self,
         env: ArenaIndex,
@@ -287,6 +427,10 @@ impl<const N: usize> Lisp<N> {
         let Value::Environment { bindings, parents } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
+        if let Some(binding) = self.find_binding(bindings, name)? {
+            return self.arena.set(binding, Value::Cons { car: name, cdr: val });
+        }
+        // Not found — create new binding
         let pair = self.cons(name, val)?;
         let new_bindings = self.cons(pair, bindings)?;
         self.arena.set(
@@ -298,17 +442,30 @@ impl<const N: usize> Lisp<N> {
         )
     }
 
+    /// Set an existing binding in an environment's own frame.
+    /// Does NOT walk parents. Returns `UnboundVariable` if not found.
+    pub(crate) fn env_set(
+        &self,
+        env: ArenaIndex,
+        name: ArenaIndex,
+        val: ArenaIndex,
+    ) -> ArenaResult<()> {
+        let Value::Environment { bindings, .. } = self.arena.get(env)? else {
+            return Err(ArenaError::TypeError);
+        };
+        match self.find_binding(bindings, name)? {
+            Some(binding) => self.arena.set(binding, Value::Cons { car: name, cdr: val }),
+            None => Err(ArenaError::UnboundVariable),
+        }
+    }
+
     /// Look up a symbol in an environment.
     ///
     /// Fast path: walks single-parent chains with zero arena allocation.
     /// Falls back to DFS with cycle detection only for multi-parent
     /// environments (created by `make-environment`).
     #[inline]
-    pub(crate) fn env_lookup(
-        &self,
-        env: ArenaIndex,
-        name: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn env_lookup(&self, env: ArenaIndex, name: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut cur = env;
         while !cur.is_nil() {
             let Value::Environment { bindings, parents } = self.arena.get(cur)? else {
@@ -417,9 +574,11 @@ impl<const N: usize> Lisp<N> {
 
     // — Evaluation entry point —
 
-    /// Parse and evaluate a Lisp expression string.
+    /// Parse and evaluate Lisp expression(s) in a string.
     ///
-    /// Returns the resulting `Value`.
+    /// Multiple expressions are evaluated in sequence and the result of the
+    /// last one is returned.  The global environment persists across calls
+    /// so that bindings made by `define!` survive.
     ///
     /// # Example
     ///
@@ -430,11 +589,23 @@ impl<const N: usize> Lisp<N> {
     /// assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
     /// ```
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
+        let idx = self.eval_to_index(input)?;
+        self.arena.get(idx)
+    }
+
+    /// Parse and evaluate Lisp expression(s), returning the arena index.
+    ///
+    /// Use with [`write_value`](Self::write_value) to properly display the
+    /// result, including walking symbol names, string contents, and lists.
+    pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut parser = Parser::new(input);
-        let expr = parser.parse(self)?;
-        let mut evaluator = Evaluator::new(self);
-        let result_idx = evaluator.eval(expr, evaluator.global_env)?;
-        self.arena.get(result_idx)
+
+        let mut result_idx = ArenaIndex::INERT;
+        while parser.has_more() {
+            let expr = parser.parse(self)?;
+            result_idx = self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)?;
+        }
+        Ok(result_idx)
     }
 
     // — Arena introspection —
@@ -448,7 +619,97 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Pass `&[]` to collect all unreachable objects.
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
-        self.arena.collect_garbage(roots)
+        self.collect_with_roots(roots)
+    }
+
+    /// Collect garbage, always protecting the macro-generated singleton
+    /// root set plus any caller-supplied `extra_roots`.
+    pub(crate) fn collect_with_roots(&self, extra_roots: &[ArenaIndex]) -> GcStats {
+        self.arena.collect_garbage_multi(&[
+            ArenaIndex::ROOTS,
+            extra_roots,
+        ])
+    }
+
+    // — Value formatting —
+
+    /// Write a human-readable representation of the value at `idx`.
+    ///
+    /// Unlike `Value::Display`, this method has arena access and can walk
+    /// `CharPair` chains to display full symbol names and string contents,
+    /// and `Cons` chains to display proper/improper lists.
+    pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+        match self.arena.get(idx) {
+            Ok(Value::Nil) => w.write_str("()"),
+            Ok(Value::Boolean(true)) => w.write_str("#t"),
+            Ok(Value::Boolean(false)) => w.write_str("#f"),
+            Ok(Value::Number(n)) => write!(w, "{n}"),
+            Ok(Value::Symbol(char_head)) => self.walk_chars(char_head, w, |ch, w| w.write_char(ch)),
+            Ok(Value::CharPair { .. }) => {
+                w.write_char('"')?;
+                self.walk_chars(idx, w, |ch, w| match ch {
+                    '"' => w.write_str("\\\""),
+                    '\\' => w.write_str("\\\\"),
+                    '\n' => w.write_str("\\n"),
+                    '\t' => w.write_str("\\t"),
+                    '\r' => w.write_str("\\r"),
+                    c => w.write_char(c),
+                })?;
+                w.write_char('"')
+            }
+            Ok(Value::Cons { car, cdr }) => {
+                w.write_char('(')?;
+                self.write_value(car, w)?;
+                self.write_list_tail(cdr, w)?;
+                w.write_char(')')
+            }
+            Ok(Value::Inert) => w.write_str("#inert"),
+            Ok(Value::Ignore) => w.write_str("#ignore"),
+            Ok(val) => write!(w, "<{}>", val.type_name()),
+            Err(_) => w.write_str("<error>"),
+        }
+    }
+
+    /// Walk a CharPair chain, emitting each character via a closure.
+    fn walk_chars<W: core::fmt::Write>(
+        &self,
+        mut idx: ArenaIndex,
+        w: &mut W,
+        mut emit: impl FnMut(char, &mut W) -> core::fmt::Result,
+    ) -> core::fmt::Result {
+        while !idx.is_nil() {
+            match self.arena.get(idx) {
+                Ok(Value::CharPair { ch, cdr }) => {
+                    emit(ch, w)?;
+                    idx = cdr;
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the tail of a list (elements after the first, with separators).
+    fn write_list_tail(
+        &self,
+        mut idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+    ) -> core::fmt::Result {
+        while !idx.is_nil() {
+            match self.arena.get(idx) {
+                Ok(Value::Cons { car, cdr }) => {
+                    w.write_char(' ')?;
+                    self.write_value(car, w)?;
+                    idx = cdr;
+                }
+                _ => {
+                    w.write_str(" . ")?;
+                    self.write_value(idx, w)?;
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -456,28 +717,21 @@ impl<const N: usize> Trace<Value, N> for Value {
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }
-            | Value::Operative { params_envparam: car, body_env: cdr }
-            | Value::Environment { bindings: car, parents: cdr } => {
+            | Value::Operative {
+                params_envparam: car,
+                body_env: cdr,
+            }
+            | Value::Environment {
+                bindings: car,
+                parents: cdr,
+            } => {
                 tracer(car);
                 tracer(cdr);
             }
+            Value::CharPair { cdr, .. } if !cdr.is_nil() => tracer(cdr),
             Value::Applicative(inner) => tracer(inner),
             Value::Symbol(s) => tracer(s),
-            Value::String { data, .. } if !data.is_nil() => tracer(data),
             _ => {}
-        }
-    }
-
-    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, arena: &Arena<Value, N>, mut tracer: F) {
-        match *self {
-            Value::String { len, data } => {
-                (0..len).for_each(|i| {
-                    if let Ok(idx) = arena.index_at_offset(data, i) {
-                        tracer(idx);
-                    }
-                });
-            }
-            _ => <Value as Trace<Value, N>>::trace(self, tracer),
         }
     }
 }

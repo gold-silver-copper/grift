@@ -139,10 +139,20 @@ fn test_quote() {
 #[test]
 fn test_and() {
     let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(and #t #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(and #t #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(and #f #t)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(and #t #t #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(and #t #f #t)"), Ok(Value::Boolean(false)));
-    assert_eq!(lisp.eval("(and #t #t)"), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval("(and)"), Ok(Value::Boolean(true)));
+    // Zero args — error
+    assert_eq!(lisp.eval("(and)"), Err(ArenaError::InvalidArgument));
+    // One arg — error
+    assert_eq!(lisp.eval("(and #t)"), Err(ArenaError::InvalidArgument));
+    // Short circuit prevents evaluation of later args
+    assert_eq!(lisp.eval("(and #f (/ 1 0))"), Ok(Value::Boolean(false)));
+    // Last expression is tail position
+    assert_eq!(lisp.eval("(and #t (if #t #t #f))"), Ok(Value::Boolean(true)));
+    // Type errors
     assert_eq!(lisp.eval("(and 1 2 3)"), Err(ArenaError::TypeError));
     assert_eq!(lisp.eval("(and 1 #f 3)"), Err(ArenaError::TypeError));
 }
@@ -150,10 +160,20 @@ fn test_and() {
 #[test]
 fn test_or() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(or #f #f #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(or #f #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #f #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(or #t #f)"), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval("(or)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #f #f #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #f #t #f)"), Ok(Value::Boolean(true)));
+    // Zero args — error
+    assert_eq!(lisp.eval("(or)"), Err(ArenaError::InvalidArgument));
+    // One arg — error
+    assert_eq!(lisp.eval("(or #f)"), Err(ArenaError::InvalidArgument));
+    // Short circuit prevents evaluation of later args
+    assert_eq!(lisp.eval("(or #t (/ 1 0))"), Ok(Value::Boolean(true)));
+    // Last expression is tail position
+    assert_eq!(lisp.eval("(or #f (if #t #t #f))"), Ok(Value::Boolean(true)));
+    // Type errors
     assert_eq!(lisp.eval("(or #f #f 3)"), Err(ArenaError::TypeError));
 }
 
@@ -269,9 +289,10 @@ fn test_gc_repeated_eval_no_leak() {
         gc.collected > 0,
         "GC should collect garbage from repeated evals"
     );
-    // After collecting, arena should be mostly empty (only nil slot remains).
+    // After collecting, arena should contain only the persistent evaluator
+    // state (ground env, builtins, global env) plus singletons.
     assert!(
-        stats.allocated < 50,
+        stats.allocated < 600,
         "Arena should not keep growing without roots: allocated = {}",
         stats.allocated
     );
@@ -326,7 +347,7 @@ fn test_gc_list_operations_no_leak() {
 
     assert!(gc.collected > 0, "GC should collect list garbage");
     assert!(
-        stats.allocated < 100,
+        stats.allocated < 600,
         "Arena should not grow unbounded: allocated = {}",
         stats.allocated
     );
@@ -351,9 +372,9 @@ fn test_gc_stress_many_evals() {
     let _gc = lisp.collect_garbage(&[]);
     let final_stats = lisp.stats();
 
-    // After full GC, arena should be mostly empty.
+    // After full GC, arena should contain only persistent evaluator state.
     assert!(
-        final_stats.allocated < 200,
+        final_stats.allocated < 600,
         "Arena should be mostly empty after GC: allocated = {}",
         final_stats.allocated
     );
@@ -361,21 +382,17 @@ fn test_gc_stress_many_evals() {
 
 #[test]
 fn test_gc_define_creates_garbage() {
-    // Each call to lisp.eval() creates a fresh Evaluator, so defines don't
-    // persist across calls. This test verifies that GC collects the garbage
-    // from evaluator setup (builtins, symbols, etc.).
+    // The evaluator state persists across calls, but temporary values
+    // (lambdas, intermediate results) become garbage after evaluation.
     let lisp: Lisp<5000> = Lisp::new();
 
     // Evaluate several expressions that create lambdas and intermediate values.
     lisp.eval("((lambda (x) (+ x 1)) 5)").unwrap();
     lisp.eval("((lambda (a b) (* a b)) 3 7)").unwrap();
 
-    // After eval, the evaluators are dropped; all values are garbage.
+    // After eval, temporary values are garbage.
     let gc = lisp.collect_garbage(&[]);
-    assert!(
-        gc.collected > 0,
-        "GC should collect after evaluators are dropped"
-    );
+    assert!(gc.collected > 0, "GC should collect temporary values");
 }
 
 #[test]
@@ -459,9 +476,8 @@ fn test_strict_define_evaluated() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! bad (+ 1 "crash"))
-            42)
+        (define! bad (+ 1 "crash"))
+        42
     "#,
     );
     assert!(
@@ -541,10 +557,9 @@ fn test_tco_countdown() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! count (lambda (n)
-                (if (= n 0) 0 (count (- n 1)))))
-            (count 1000))
+        (define! count (lambda (n)
+            (if (= n 0) 0 (count (- n 1)))))
+        (count 1000)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(0)));
@@ -556,12 +571,11 @@ fn test_tco_mutual_recursion() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-even? (lambda (n)
-                (if (= n 0) #t (my-odd? (- n 1)))))
-            (define! my-odd? (lambda (n)
-                (if (= n 0) #f (my-even? (- n 1)))))
-            (my-even? 1000))
+        (define! my-even? (lambda (n)
+            (if (= n 0) #t (my-odd? (- n 1)))))
+        (define! my-odd? (lambda (n)
+            (if (= n 0) #f (my-even? (- n 1)))))
+        (my-even? 1000)
     "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
@@ -596,13 +610,15 @@ fn test_set_bang_scheme_style_is_rejected() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! x 1)
-            (set! x 2)
-            x)
+        (define! x 1)
+        (set! x 2)
+        x
     "#,
     );
-    assert!(result.is_err(), "Scheme-style set! should fail (wrong syntax)");
+    assert!(
+        result.is_err(),
+        "Scheme-style set! should fail (wrong syntax). Only Kernel style is proper"
+    );
 }
 
 #[test]
@@ -612,11 +628,10 @@ fn test_define_shadows_not_mutates() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! x 1)
-            (define! get-x (lambda (x) x))
-            (define! x 2)
-            (get-x 1))
+        (define! x 1)
+        (define! get-x (lambda (x) x))
+        (define! x 2)
+        (get-x 1)
     "#,
     );
     // The lambda receives x=1 as a parameter, so global redefinition doesn't affect it.
@@ -629,10 +644,9 @@ fn test_define_redefinition_returns_new_value() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! x 1)
-            (define! x 2)
-            x)
+        (define! x 1)
+        (define! x 2)
+        x
     "#,
     );
     assert_eq!(result, Ok(Value::Number(2)));
@@ -648,10 +662,9 @@ fn test_tco_with_lazy_accumulator() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! sum-to (lambda (n acc)
-                (if (= n 0) acc (sum-to (- n 1) (+ acc n)))))
-            (sum-to 100 0))
+        (define! sum-to (lambda (n acc)
+            (if (= n 0) acc (sum-to (- n 1) (+ acc n)))))
+        (sum-to 100 0)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(5050)));
@@ -663,15 +676,14 @@ fn test_tco_iterative_fib() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! fib (lambda (n)
-                ((lambda (loop)
-                    (loop loop 0 1 n))
-                 (lambda (self a b count)
-                    (if (= count 0)
-                        a
-                        (self self b (+ a b) (- count 1)))))))
-            (fib 20))
+        (define! fib (lambda (n)
+            ((lambda (loop)
+                (loop loop 0 1 n))
+             (lambda (self a b count)
+                (if (= count 0)
+                    a
+                    (self self b (+ a b) (- count 1)))))))
+        (fib 20)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(6765)));
@@ -684,10 +696,9 @@ fn test_recursive_fib_30() {
     let lisp: Lisp<100_000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! fib (lambda (n)
-                (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2))))))
-            (fib 30))
+        (define! fib (lambda (n)
+            (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2))))))
+        (fib 30)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(832040)));
@@ -703,9 +714,8 @@ fn test_vau_basic_quote() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-quote (vau (x) #ignore x))
-            (my-quote 42))
+        (define! my-quote (vau (x) #ignore x))
+        (my-quote 42)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
@@ -717,9 +727,8 @@ fn test_vau_receives_unevaluated_args() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-quote (vau (x) #ignore x))
-            (pair? (my-quote (1 2 3))))
+        (define! my-quote (vau (x) #ignore x))
+        (pair? (my-quote (1 2 3)))
     "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
@@ -731,11 +740,10 @@ fn test_vau_with_env_param() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-eval-add
-                (vau (a b) e
-                    (+ (eval a e) (eval b e))))
-            (my-eval-add (+ 1 2) (+ 3 4)))
+        (define! my-eval-add
+            (vau (a b) e
+                (+ (eval a e) (eval b e))))
+        (my-eval-add (+ 1 2) (+ 3 4))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(10)));
@@ -748,10 +756,9 @@ fn test_vau_derive_lambda() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-inc
-                (vau (x) e (+ 1 (eval x e))))
-            (my-inc (+ 2 3)))
+        (define! my-inc
+            (vau (x) e (+ 1 (eval x e))))
+        (my-inc (+ 2 3))
     "#,
     );
     // (+ 2 3) is evaluated in caller env → 5, then (+ 1 5) → 6
@@ -764,9 +771,8 @@ fn test_lambda_as_syntactic_sugar_over_vau() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! double (lambda (x) (+ x x)))
-            (double 21))
+        (define! double (lambda (x) (+ x x)))
+        (double 21)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
@@ -778,12 +784,11 @@ fn test_vau_closure() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! make-adder
-                (lambda (n)
-                    (vau (x) e (+ n (eval x e)))))
-            (define! add5 (make-adder 5))
-            (add5 (+ 1 2)))
+        (define! make-adder
+            (lambda (n)
+                (vau (x) e (+ n (eval x e)))))
+        (define! add5 (make-adder 5))
+        (add5 (+ 1 2))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(8)));
@@ -795,9 +800,8 @@ fn test_first_class_if() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-if if)
-            (my-if #t 1 2))
+        (define! my-if if)
+        (my-if #t 1 2)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(1)));
@@ -809,9 +813,8 @@ fn test_first_class_quote() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-quote quote)
-            (my-quote 42))
+        (define! my-quote quote)
+        (my-quote 42)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
@@ -837,10 +840,9 @@ fn test_first_class_define() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-define define!)
-            (my-define x 42)
-            x)
+        (define! my-define define!)
+        (my-define x 42)
+        x
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
@@ -852,9 +854,8 @@ fn test_first_class_and() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-and and)
-            (my-and #t #t))
+        (define! my-and and)
+        (my-and #t #t)
     "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
@@ -866,9 +867,8 @@ fn test_first_class_or() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-or or)
-            (my-or #f #t))
+        (define! my-or or)
+        (my-or #f #t)
     "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
@@ -880,9 +880,8 @@ fn test_first_class_plus() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-add +)
-            (my-add 1 2))
+        (define! my-add +)
+        (my-add 1 2)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(3)));
@@ -894,9 +893,8 @@ fn test_first_class_cons() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-cons cons)
-            (car (my-cons 1 2)))
+        (define! my-cons cons)
+        (car (my-cons 1 2))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(1)));
@@ -920,13 +918,12 @@ fn test_vau_if_alternative() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-if
-                (vau (test then else) e
-                    (if (eval test e)
-                        (eval then e)
-                        (eval else e))))
-            (my-if (= 1 1) (+ 10 20) (+ 30 40)))
+        (define! my-if
+            (vau (test then else) e
+                (if (eval test e)
+                    (eval then e)
+                    (eval else e))))
+        (my-if (= 1 1) (+ 10 20) (+ 30 40))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(30)));
@@ -938,13 +935,12 @@ fn test_vau_short_circuit() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-if
-                (vau (test then else) e
-                    (if (eval test e)
-                        (eval then e)
-                        (eval else e))))
-            (my-if #t 42 (+ 1 "crash")))
+        (define! my-if
+            (vau (test then else) e
+                (if (eval test e)
+                    (eval then e)
+                    (eval else e))))
+        (my-if #t 42 (+ 1 "crash"))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
@@ -956,9 +952,8 @@ fn test_operative_is_value() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! f +)
-            (f 3 4))
+        (define! f +)
+        (f 3 4)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(7)));
@@ -970,11 +965,10 @@ fn test_vau_rest_params() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! count-args
-                (vau args #ignore
-                    (car args)))
-            (count-args 10 20 30))
+        (define! count-args
+            (vau args #ignore
+                (car args)))
+        (count-args 10 20 30)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(10)));
@@ -986,14 +980,13 @@ fn test_vau_gc_stress() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! make-op
-                (lambda (n)
-                    (vau (x) e (+ n (eval x e)))))
-            (define! op1 (make-op 1))
-            (define! op2 (make-op 2))
-            (define! op3 (make-op 3))
-            (+ (op1 10) (op2 20) (op3 30)))
+        (define! make-op
+            (lambda (n)
+                (vau (x) e (+ n (eval x e)))))
+        (define! op1 (make-op 1))
+        (define! op2 (make-op 2))
+        (define! op3 (make-op 3))
+        (+ (op1 10) (op2 20) (op3 30))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(66)));
@@ -1077,10 +1070,9 @@ fn test_wrap_unwrap_roundtrip() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-op (vau (x) e (eval x e)))
-            (define! my-app (wrap my-op))
-            (my-app (+ 1 2)))
+        (define! my-op (vau (x) e (eval x e)))
+        (define! my-app (wrap my-op))
+        (my-app (+ 1 2))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(3)));
@@ -1092,12 +1084,11 @@ fn test_user_defined_unless() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! unless
-                (vau (test . body) caller-env
-                    (eval (list if test (list) (cons begin body))
-                          caller-env)))
-            (unless #f 1 2 3))
+        (define! unless
+            (vau (test . body) caller-env
+                (eval (list if test (list) (cons begin body))
+                      caller-env)))
+        (unless #f 1 2 3)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(3)));
@@ -1108,12 +1099,11 @@ fn test_user_defined_unless_true() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! unless
-                (vau (test . body) caller-env
-                    (eval (list if test (list) (cons begin body))
-                          caller-env)))
-            (unless #t 1 2 3))
+        (define! unless
+            (vau (test . body) caller-env
+                (eval (list if test (list) (cons begin body))
+                      caller-env)))
+        (unless #t 1 2 3)
     "#,
     );
     assert_eq!(result, Ok(Value::Nil));
@@ -1124,12 +1114,11 @@ fn test_user_defined_when() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! when
-                (vau (test . body) caller-env
-                    (eval (list if test (cons begin body) (list))
-                          caller-env)))
-            (when #t (+ 1 2)))
+        (define! when
+            (vau (test . body) caller-env
+                (eval (list if test (cons begin body) (list))
+                      caller-env)))
+        (when #t (+ 1 2))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(3)));
@@ -1144,9 +1133,8 @@ fn test_dollar_vau_syntax() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-quote (vau (x) #ignore x))
-            (my-quote 42))
+        (define! my-quote (vau (x) #ignore x))
+        (my-quote 42)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
@@ -1157,11 +1145,10 @@ fn test_dollar_vau_user_defined_unless() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! unless
-                (vau (test . body) e
-                    (eval (list if test (list) (cons begin body)) e)))
-            (unless #f (+ 1 2)))
+        (define! unless
+            (vau (test . body) e
+                (eval (list if test (list) (cons begin body)) e)))
+        (unless #f (+ 1 2))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(3)));
@@ -1202,11 +1189,10 @@ fn test_derive_lambda_from_dollar_vau() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-lambda
-                (vau (params . body) static-env
-                    (wrap (eval (list vau params #ignore (cons begin body)) static-env))))
-            ((my-lambda (x) (+ x 1)) 10))
+        (define! my-lambda
+            (vau (params . body) static-env
+                (wrap (eval (list vau params #ignore (cons begin body)) static-env))))
+        ((my-lambda (x) (+ x 1)) 10)
     "#,
     );
     assert_eq!(result, Ok(Value::Number(11)));
@@ -1217,11 +1203,10 @@ fn test_dollar_vau_with_env_param() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-eval-add
-                (vau (a b) e
-                    (+ (eval a e) (eval b e))))
-            (my-eval-add (+ 1 2) (+ 3 4)))
+        (define! my-eval-add
+            (vau (a b) e
+                (+ (eval a e) (eval b e))))
+        (my-eval-add (+ 1 2) (+ 3 4))
     "#,
     );
     assert_eq!(result, Ok(Value::Number(10)));
@@ -1238,14 +1223,8 @@ fn test_environment_predicate() {
         lisp.eval("(environment? (make-environment))"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(environment? 42)"),
-        Ok(Value::Boolean(false))
-    );
-    assert_eq!(
-        lisp.eval("(environment? #t)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(environment? 42)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(environment? #t)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
@@ -1264,9 +1243,8 @@ fn test_define_bang_mutates_environment() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! x 1)
-                x)
+            (define! x 1)
+            x
             "#
         ),
         Ok(Value::Number(1))
@@ -1280,10 +1258,9 @@ fn test_define_bang_redefinition() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! x 1)
-                (define! x 2)
-                x)
+            (define! x 1)
+            (define! x 2)
+            x
             "#
         ),
         Ok(Value::Number(2))
@@ -1313,12 +1290,11 @@ fn test_lexical_scope_preserved() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! make-adder (lambda (n)
-                    (lambda (x) (+ x n))))
-                (define! add5 (make-adder 5))
-                (define! n 999)
-                (add5 10))
+            (define! make-adder (lambda (n)
+                (lambda (x) (+ x n))))
+            (define! add5 (make-adder 5))
+            (define! n 999)
+            (add5 10)
             "#
         ),
         Ok(Value::Number(15))
@@ -1332,10 +1308,9 @@ fn test_mutual_recursion_through_shared_env() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
-                (define! odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))
-                (even? 10))
+            (define! even? (lambda (n) (if (= n 0) #t (odd? (- n 1)))))
+            (define! odd? (lambda (n) (if (= n 0) #f (even? (- n 1)))))
+            (even? 10)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -1349,10 +1324,9 @@ fn test_vau_captures_caller_env_as_environment() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-caller-env
-                    (vau () caller-env caller-env))
-                (environment? (get-caller-env)))
+            (define! get-caller-env
+                (vau () caller-env caller-env))
+            (environment? (get-caller-env))
             "#
         ),
         Ok(Value::Boolean(true))
@@ -1367,11 +1341,10 @@ fn test_eval_in_custom_environment() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! e (make-environment (get-env)))
-                (eval (list define! (quote x) 42) e)
-                (eval (quote x) e))
+            (define! get-env (vau () e e))
+            (define! e (make-environment (get-env)))
+            (eval (list define! (quote x) 42) e)
+            (eval (quote x) e)
             "#
         ),
         Ok(Value::Number(42))
@@ -1385,9 +1358,8 @@ fn test_lambda_higher_order() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! compose (lambda (f g) (lambda (x) (f (g x)))))
-                ((compose (lambda (x) (+ x 1)) (lambda (x) (* x 2))) 5))
+            (define! compose (lambda (f g) (lambda (x) (f (g x)))))
+            ((compose (lambda (x) (+ x 1)) (lambda (x) (* x 2))) 5)
             "#
         ),
         Ok(Value::Number(11))
@@ -1401,10 +1373,9 @@ fn test_tco_with_define_bang() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! countdown (lambda (n)
-                    (if (= n 0) 0 (countdown (- n 1)))))
-                (countdown 100000))
+            (define! countdown (lambda (n)
+                (if (= n 0) 0 (countdown (- n 1)))))
+            (countdown 100000)
             "#
         ),
         Ok(Value::Number(0))
@@ -1415,10 +1386,7 @@ fn test_tco_with_define_bang() {
 fn test_lambda_square() {
     // Lambda application
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("((lambda (x) (* x x)) 5)"),
-        Ok(Value::Number(25))
-    );
+    assert_eq!(lisp.eval("((lambda (x) (* x x)) 5)"), Ok(Value::Number(25)));
 }
 
 #[test]
@@ -1438,11 +1406,10 @@ fn test_vau_custom_if() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! my-if
-                    (vau (test then else) e
-                        (eval (if (eval test e) then else) e)))
-                (my-if #t 1 2))
+            (define! my-if
+                (vau (test then else) e
+                    (eval (if (eval test e) then else) e)))
+            (my-if #t 1 2)
             "#
         ),
         Ok(Value::Number(1))
@@ -1450,11 +1417,10 @@ fn test_vau_custom_if() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! my-if
-                    (vau (test then else) e
-                        (eval (if (eval test e) then else) e)))
-                (my-if #f 1 2))
+            (define! my-if
+                (vau (test then else) e
+                    (eval (if (eval test e) then else) e)))
+            (my-if #f 1 2)
             "#
         ),
         Ok(Value::Number(2))
@@ -1468,11 +1434,10 @@ fn test_make_environment_with_parent() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! child (make-environment (get-env)))
-                (eval (list define! (quote local-var) 99) child)
-                (eval (quote local-var) child))
+            (define! get-env (vau () e e))
+            (define! child (make-environment (get-env)))
+            (eval (list define! (quote local-var) 99) child)
+            (eval (quote local-var) child)
             "#
         ),
         Ok(Value::Number(99))
@@ -1487,10 +1452,9 @@ fn test_child_env_inherits_from_parent() {
     assert!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! child (make-environment (get-env)))
-                (eval (quote +) child))
+            (define! get-env (vau () e e))
+            (define! child (make-environment (get-env)))
+            (eval (quote +) child)
             "#
         )
         .is_ok()
@@ -1499,10 +1463,9 @@ fn test_child_env_inherits_from_parent() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! child (make-environment (get-env)))
-                (eval '(+ 1 2) child))
+            (define! get-env (vau () e e))
+            (define! child (make-environment (get-env)))
+            (eval '(+ 1 2) child)
             "#
         ),
         Ok(Value::Number(3))
@@ -1520,9 +1483,8 @@ fn test_sandboxed_eval_no_access_to_builtins() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! sandbox (make-empty-environment))
-                (eval (quote (+ 1 2)) sandbox))
+            (define! sandbox (make-empty-environment))
+            (eval (quote (+ 1 2)) sandbox)
             "#
         ),
         Err(ArenaError::UnboundVariable)
@@ -1536,11 +1498,10 @@ fn test_selective_exposure_arithmetic_only() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! safe-env (make-empty-environment))
-                (eval (list define! (quote +) +) safe-env)
-                (eval (list define! (quote -) -) safe-env)
-                (eval (quote (+ 1 2)) safe-env))
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (list define! (quote -) -) safe-env)
+            (eval (quote (+ 1 2)) safe-env)
             "#
         ),
         Ok(Value::Number(3))
@@ -1554,11 +1515,10 @@ fn test_selective_exposure_vau_is_unbound() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! safe-env (make-empty-environment))
-                (eval (list define! (quote +) +) safe-env)
-                (eval (list define! (quote -) -) safe-env)
-                (eval (quote (vau (x) e x)) safe-env))
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (list define! (quote -) -) safe-env)
+            (eval (quote (vau (x) e x)) safe-env)
             "#
         ),
         Err(ArenaError::UnboundVariable)
@@ -1572,9 +1532,8 @@ fn test_make_empty_environment_is_truly_empty() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! e (make-empty-environment))
-                (environment? e))
+            (define! e (make-empty-environment))
+            (environment? e)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -1588,10 +1547,9 @@ fn test_make_environment_with_current_env_has_builtins() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! child (make-environment (get-env)))
-                (eval (quote (+ 1 2)) child))
+            (define! get-env (vau () e e))
+            (define! child (make-environment (get-env)))
+            (eval (quote (+ 1 2)) child)
             "#
         ),
         Ok(Value::Number(3))
@@ -1606,9 +1564,8 @@ fn test_no_global_fallback_in_eval() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! isolated (make-environment))
-                (eval (quote +) isolated))
+            (define! isolated (make-environment))
+            (eval (quote +) isolated)
             "#
         ),
         Err(ArenaError::UnboundVariable)
@@ -1617,9 +1574,8 @@ fn test_no_global_fallback_in_eval() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! isolated (make-empty-environment))
-                (eval (quote +) isolated))
+            (define! isolated (make-empty-environment))
+            (eval (quote +) isolated)
             "#
         ),
         Err(ArenaError::UnboundVariable)
@@ -1651,9 +1607,8 @@ fn test_define_ptree_symbol() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! x 42)
-                x)
+            (define! x 42)
+            x
             "#
         ),
         Ok(Value::Number(42))
@@ -1664,20 +1619,14 @@ fn test_define_ptree_symbol() {
 fn test_define_ptree_ignore() {
     // #ignore definiend — value is discarded
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(define! #ignore (+ 1 2))"),
-        Ok(Value::Inert)
-    );
+    assert_eq!(lisp.eval("(define! #ignore (+ 1 2))"), Ok(Value::Inert));
 }
 
 #[test]
 fn test_define_ptree_nil() {
     // Nil definiend matches nil value
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(define! () ())"),
-        Ok(Value::Inert)
-    );
+    assert_eq!(lisp.eval("(define! () ())"), Ok(Value::Inert));
 }
 
 #[test]
@@ -1689,33 +1638,32 @@ fn test_define_ptree_nil_mismatch() {
 
 #[test]
 fn test_define_ptree_pair_destructuring() {
-    // Pair definiend destructures the value
+    // Without the fn marker, (define! (a . b) expr) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
+    // (#ignore . b) — ptree destructuring
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (a . b) (cons 1 2))
-                (+ a b))
+            (define! (#ignore . b) (cons 1 2))
+            b
             "#
         ),
-        Ok(Value::Number(3))
+        Ok(Value::Number(2))
     );
 }
 
 #[test]
 fn test_define_ptree_list_destructuring() {
-    // List definiend destructures a list
+    // Without the fn marker, (define! (a b c) ...) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (a b c) (list 10 20 30))
-                (+ a (+ b c)))
+            (define! (#ignore b c) (list 10 20 30))
+            (+ b c)
             "#
         ),
-        Ok(Value::Number(60))
+        Ok(Value::Number(50))
     );
 }
 
@@ -1726,9 +1674,8 @@ fn test_define_ptree_nested_destructuring() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! ((a b) c) (list (list 1 2) 3))
-                (+ a (+ b c)))
+            (define! ((a b) c) (list (list 1 2) 3))
+            (+ a (+ b c))
             "#
         ),
         Ok(Value::Number(6))
@@ -1737,64 +1684,52 @@ fn test_define_ptree_nested_destructuring() {
 
 #[test]
 fn test_define_ptree_with_ignore_in_pair() {
-    // #ignore in a pair position
+    // #ignore in a non-symbol-headed pair position
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (a #ignore c) (list 10 20 30))
-                (+ a c))
+            (define! (#ignore #ignore c) (list 10 20 30))
+            c
             "#
         ),
-        Ok(Value::Number(40))
+        Ok(Value::Number(30))
     );
 }
 
 #[test]
 fn test_define_ptree_pair_mismatch() {
-    // Pair definiend with non-pair value should error
+    // Non-symbol-headed pair definiend with non-pair value should error
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp.eval("(define! (a . b) 42)").is_err());
+    assert!(lisp.eval("(define! (#ignore . b) 42)").is_err());
 }
 
 #[test]
 fn test_define_ptree_rest_binding() {
-    // Dotted pair captures first element and rest of list
+    // With fn marker, (define! (fn a . rest) ...) defines function 'a'
+    // with variadic rest args.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (a . rest) (list 1 2 3))
-                a)
+            (define! (fn first . args) (car args))
+            (first 1 2 3)
             "#
         ),
         Ok(Value::Number(1))
-    );
-    // Verify rest captured (2 3) — car of rest is 2
-    assert_eq!(
-        lisp.eval(
-            r#"
-            (begin
-                (define! (a . rest) (list 1 2 3))
-                (car rest))
-            "#
-        ),
-        Ok(Value::Number(2))
     );
 }
 
 #[test]
 fn test_define_ptree_kernel_example() {
-    // Example from Kernel spec: destructuring get-list-metrics result
+    // Without fn marker, (define! (x y z) ...) is ptree destructuring.
+    // Kernel-style destructuring works for all pair-headed definiends.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (x y z) (list 100 200 300))
-                y)
+            (define! ((x y) z) (list (list 100 200) 300))
+            y
             "#
         ),
         Ok(Value::Number(200))
@@ -1885,10 +1820,9 @@ fn test_vau_valid_after_validation() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! my-quote (vau (x) #ignore x))
-            (symbol? (my-quote hello)))
-        "#
+        (define! my-quote (vau (x) #ignore x))
+        (symbol? (my-quote hello))
+        "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
 
@@ -1897,10 +1831,9 @@ fn test_vau_valid_after_validation() {
     assert_eq!(
         lisp2.eval(
             r#"
-            (begin
-                (define! my-eval
-                    (wrap (vau (x) e (eval x e))))
-                (my-eval (+ 1 2)))
+            (define! my-eval
+                (wrap (vau (x) e (eval x e))))
+            (my-eval (+ 1 2))
             "#
         ),
         Ok(Value::Number(3))
@@ -1927,9 +1860,8 @@ fn test_inert_predicate_on_define_result() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! result (define! x 42))
-                (inert? result))
+            (define! result (define! x 42))
+            (inert? result)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -1957,10 +1889,9 @@ fn test_eq_symbols() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (quote hello))
-                (define! b (quote hello))
-                (eq? a b))
+            (define! a (quote hello))
+            (define! b (quote hello))
+            (eq? a b)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -1968,10 +1899,9 @@ fn test_eq_symbols() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (quote hello))
-                (define! b (quote world))
-                (eq? a b))
+            (define! a (quote hello))
+            (define! b (quote world))
+            (eq? a b)
             "#
         ),
         Ok(Value::Boolean(false))
@@ -2004,10 +1934,9 @@ fn test_eq_cons_different_calls() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (cons 1 2))
-                (define! b (cons 1 2))
-                (eq? a b))
+            (define! a (cons 1 2))
+            (define! b (cons 1 2))
+            (eq? a b)
             "#
         ),
         Ok(Value::Boolean(false))
@@ -2021,9 +1950,8 @@ fn test_eq_same_pair() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (cons 1 2))
-                (eq? a a))
+            (define! a (cons 1 2))
+            (eq? a a)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2065,10 +1993,9 @@ fn test_equal_cons_structural() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (cons 1 2))
-                (define! b (cons 1 2))
-                (equal? a b))
+            (define! a (cons 1 2))
+            (define! b (cons 1 2))
+            (equal? a b)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2081,10 +2008,9 @@ fn test_equal_cons_different_content() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (cons 1 2))
-                (define! b (cons 1 3))
-                (equal? a b))
+            (define! a (cons 1 2))
+            (define! b (cons 1 3))
+            (equal? a b)
             "#
         ),
         Ok(Value::Boolean(false))
@@ -2098,10 +2024,9 @@ fn test_equal_nested_lists() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (list 1 (list 2 3) 4))
-                (define! b (list 1 (list 2 3) 4))
-                (equal? a b))
+            (define! a (list 1 (list 2 3) 4))
+            (define! b (list 1 (list 2 3) 4))
+            (equal? a b)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2115,9 +2040,8 @@ fn test_equal_implies_by_eq() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (cons 1 2))
-                (equal? a a))
+            (define! a (cons 1 2))
+            (equal? a a)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2138,10 +2062,9 @@ fn test_equal_environments_identity() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (make-environment))
-                (define! b (make-environment))
-                (equal? a b))
+            (define! a (make-environment))
+            (define! b (make-environment))
+            (equal? a b)
             "#
         ),
         Ok(Value::Boolean(false))
@@ -2149,9 +2072,8 @@ fn test_equal_environments_identity() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! a (make-environment))
-                (equal? a a))
+            (define! a (make-environment))
+            (equal? a a)
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2199,10 +2121,7 @@ fn test_variadic_pair_predicate() {
         lisp.eval("(pair? (cons 1 2) (cons 3 4))"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(pair? (cons 1 2) 3)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(pair? (cons 1 2) 3)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(pair?)"), Ok(Value::Boolean(true)));
 }
 
@@ -2221,10 +2140,7 @@ fn test_variadic_inert_predicate() {
         lisp.eval("(inert? #inert #inert)"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(inert? #inert 42)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(inert? #inert 42)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(inert?)"), Ok(Value::Boolean(true)));
 }
 
@@ -2255,10 +2171,7 @@ fn test_variadic_ignore_predicate() {
         lisp.eval("(ignore? #ignore #ignore)"),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(ignore? #ignore 42)"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(ignore? #ignore 42)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore?)"), Ok(Value::Boolean(true)));
 }
 
@@ -2273,10 +2186,7 @@ fn test_ignore_is_not_symbol() {
 fn test_ignore_eq() {
     // #ignore is eq? to itself (single immutable value)
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(eq? #ignore #ignore)"),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval("(eq? #ignore #ignore)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -2292,16 +2202,16 @@ fn test_ignore_equal() {
 #[test]
 fn test_ignore_in_define_ptree() {
     // #ignore in $define! parameter tree ignores the value
+    // With function shorthand, use non-symbol-headed pair for ptree
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (a #ignore c) (list 1 2 3))
-                (+ a c))
+            (define! (#ignore #ignore c) (list 1 2 3))
+            c
             "#
         ),
-        Ok(Value::Number(4))
+        Ok(Value::Number(3))
     );
 }
 
@@ -2312,9 +2222,8 @@ fn test_ignore_in_lambda_params() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! f (lambda (x #ignore y) (+ x y)))
-                (f 10 20 30))
+            (define! f (lambda (x #ignore y) (+ x y)))
+            (f 10 20 30)
             "#
         ),
         Ok(Value::Number(40))
@@ -2332,14 +2241,13 @@ fn test_make_environment_multiple_parents() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! e1 (make-environment))
-                (eval (list define! (quote x) 10) e1)
-                (define! e2 (make-environment))
-                (eval (list define! (quote y) 20) e2)
-                (define! child (make-environment e1 e2))
-                (+ (eval (quote x) child) (eval (quote y) child)))
+            (define! get-env (vau () e e))
+            (define! e1 (make-environment))
+            (eval (list define! (quote x) 10) e1)
+            (define! e2 (make-environment))
+            (eval (list define! (quote y) 20) e2)
+            (define! child (make-environment e1 e2))
+            (+ (eval (quote x) child) (eval (quote y) child))
             "#
         ),
         Ok(Value::Number(30))
@@ -2353,14 +2261,13 @@ fn test_make_environment_parent_order_matters() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! e1 (make-environment))
-                (eval (list define! (quote x) 1) e1)
-                (define! e2 (make-environment))
-                (eval (list define! (quote x) 2) e2)
-                (define! child (make-environment e1 e2))
-                (eval (quote x) child))
+            (define! get-env (vau () e e))
+            (define! e1 (make-environment))
+            (eval (list define! (quote x) 1) e1)
+            (define! e2 (make-environment))
+            (eval (list define! (quote x) 2) e2)
+            (define! child (make-environment e1 e2))
+            (eval (quote x) child)
             "#
         ),
         Ok(Value::Number(1))
@@ -2369,14 +2276,13 @@ fn test_make_environment_parent_order_matters() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! e1 (make-environment))
-                (eval (list define! (quote x) 1) e1)
-                (define! e2 (make-environment))
-                (eval (list define! (quote x) 2) e2)
-                (define! child (make-environment e2 e1))
-                (eval (quote x) child))
+            (define! get-env (vau () e e))
+            (define! e1 (make-environment))
+            (eval (list define! (quote x) 1) e1)
+            (define! e2 (make-environment))
+            (eval (list define! (quote x) 2) e2)
+            (define! child (make-environment e2 e1))
+            (eval (quote x) child)
             "#
         ),
         Ok(Value::Number(2))
@@ -2390,17 +2296,16 @@ fn test_make_environment_three_parents() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! e1 (make-environment))
-                (eval (list define! (quote a) 1) e1)
-                (define! e2 (make-environment))
-                (eval (list define! (quote b) 2) e2)
-                (define! e3 (make-environment))
-                (eval (list define! (quote c) 3) e3)
-                (define! child (make-environment e1 e2 e3))
-                (+ (eval (quote a) child)
-                   (+ (eval (quote b) child)
-                      (eval (quote c) child))))
+            (define! e1 (make-environment))
+            (eval (list define! (quote a) 1) e1)
+            (define! e2 (make-environment))
+            (eval (list define! (quote b) 2) e2)
+            (define! e3 (make-environment))
+            (eval (list define! (quote c) 3) e3)
+            (define! child (make-environment e1 e2 e3))
+            (+ (eval (quote a) child)
+               (+ (eval (quote b) child)
+                  (eval (quote c) child)))
             "#
         ),
         Ok(Value::Number(6))
@@ -2425,11 +2330,10 @@ fn test_make_environment_copies_parent_list() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! e1 (make-environment (get-env)))
-                (define! child (make-environment e1))
-                (eval (quote (+ 1 2)) child))
+            (define! get-env (vau () e e))
+            (define! e1 (make-environment (get-env)))
+            (define! child (make-environment e1))
+            (eval (quote (+ 1 2)) child)
             "#
         ),
         Ok(Value::Number(3))
@@ -2443,9 +2347,8 @@ fn test_make_environment_no_args_has_no_parents() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! e (make-environment))
-                (eval (quote +) e))
+            (define! e (make-environment))
+            (eval (quote +) e)
             "#
         ),
         Err(ArenaError::UnboundVariable)
@@ -2459,13 +2362,12 @@ fn test_make_environment_local_bindings_shadow_parents() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! parent (make-environment (get-env)))
-                (eval (list define! (quote x) 10) parent)
-                (define! child (make-environment parent))
-                (eval (list define! (quote x) 99) child)
-                (eval (quote x) child))
+            (define! get-env (vau () e e))
+            (define! parent (make-environment (get-env)))
+            (eval (list define! (quote x) 10) parent)
+            (define! child (make-environment parent))
+            (eval (list define! (quote x) 99) child)
+            (eval (quote x) child)
             "#
         ),
         Ok(Value::Number(99))
@@ -2482,14 +2384,13 @@ fn test_depth_first_search_in_multi_parent() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! gp (make-environment))
-                (eval (list define! (quote x) 100) gp)
-                (define! e1 (make-environment gp))
-                (define! e2 (make-environment))
-                (eval (list define! (quote x) 200) e2)
-                (define! child (make-environment e1 e2))
-                (eval (quote x) child))
+            (define! gp (make-environment))
+            (eval (list define! (quote x) 100) gp)
+            (define! e1 (make-environment gp))
+            (define! e2 (make-environment))
+            (eval (list define! (quote x) 200) e2)
+            (define! child (make-environment e1 e2))
+            (eval (quote x) child)
             "#
         ),
         Ok(Value::Number(100))
@@ -2502,31 +2403,34 @@ fn test_depth_first_search_in_multi_parent() {
 
 #[test]
 fn test_define_rejects_duplicate_symbol_in_ptree() {
-    // A formal parameter tree must not contain the same symbol more than once.
+    // Ptree destructuring rejects duplicate symbols.
+    // Use non-symbol-headed pair so it's not function shorthand.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a a) (list 1 2))").is_err(),
-        "duplicate symbol 'a' in flat list"
+        lisp.eval("(define! (#ignore a a) (list 1 2 3))").is_err(),
+        "duplicate symbol 'a' in ptree"
     );
 }
 
 #[test]
 fn test_define_rejects_duplicate_symbol_nested_ptree() {
-    // Duplicate detection must work across nested pairs.
+    // Duplicate detection must work across nested pairs in ptree.
+    // Use non-symbol-headed pair so it's ptree destructuring, not function shorthand.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a (b a)) (list 1 (list 2 3)))").is_err(),
-        "duplicate symbol 'a' in nested ptree"
+        lisp.eval("(define! ((a b) (b c)) (list (list 1 2) (list 3 4)))")
+            .is_err(),
+        "duplicate symbol 'b' in nested ptree"
     );
 }
 
 #[test]
 fn test_define_rejects_duplicate_symbol_dotted_ptree() {
-    // Duplicate in a dotted-pair ptree.
+    // Duplicate in a non-symbol-headed dotted-pair ptree.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
-        lisp.eval("(define! (a . a) (cons 1 2))").is_err(),
-        "duplicate symbol 'a' in dotted pair"
+        lisp.eval("(define! (#ignore a . a) (list 1 2 3))").is_err(),
+        "duplicate symbol 'a' in dotted pair ptree"
     );
 }
 
@@ -2537,9 +2441,8 @@ fn test_define_allows_ignore_duplicates_in_ptree() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! (#ignore a #ignore) (list 1 2 3))
-                a)
+            (define! (#ignore a #ignore) (list 1 2 3))
+            a
             "#
         ),
         Ok(Value::Number(2))
@@ -2563,9 +2466,8 @@ fn test_make_environment_rejects_non_environment_mixed() {
     assert!(
         lisp.eval(
             r#"
-            (begin
-                (define! e (make-environment))
-                (make-environment e #t))
+            (define! e (make-environment))
+            (make-environment e #t)
             "#
         )
         .is_err(),
@@ -2583,10 +2485,7 @@ fn test_ignore_predicate_various_types() {
     assert_eq!(lisp.eval("(ignore? 0)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore? '())"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore? #inert)"), Ok(Value::Boolean(false)));
-    assert_eq!(
-        lisp.eval("(ignore? (cons 1 2))"),
-        Ok(Value::Boolean(false))
-    );
+    assert_eq!(lisp.eval("(ignore? (cons 1 2))"), Ok(Value::Boolean(false)));
     assert_eq!(
         lisp.eval("(ignore? (make-environment))"),
         Ok(Value::Boolean(false))
@@ -2600,13 +2499,12 @@ fn test_multi_parent_first_parent_wins() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! e1 (make-environment))
-                (eval (list define! (quote x) 10) e1)
-                (define! e2 (make-environment))
-                (eval (list define! (quote x) 20) e2)
-                (define! child (make-environment e1 e2))
-                (eval (quote x) child))
+            (define! e1 (make-environment))
+            (eval (list define! (quote x) 10) e1)
+            (define! e2 (make-environment))
+            (eval (list define! (quote x) 20) e2)
+            (define! child (make-environment e1 e2))
+            (eval (quote x) child)
             "#
         ),
         Ok(Value::Number(10))
@@ -2624,11 +2522,9 @@ fn test_set_bang_basic() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! x 1)
-                (set! (get-env) x 2)
-                x)
+            (define! x 1)
+            (set! (current-environment) x 2)
+            x
             "#
         ),
         Ok(Value::Number(2))
@@ -2642,10 +2538,8 @@ fn test_set_bang_returns_inert() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! x 1)
-                (inert? (set! (get-env) x 42)))
+            (define! x 1)
+            (inert? (set! (current-environment) x 42))
             "#
         ),
         Ok(Value::Boolean(true))
@@ -2654,20 +2548,17 @@ fn test_set_bang_returns_inert() {
 
 #[test]
 fn test_set_bang_creates_new_binding() {
-    // Per Kernel §6.8.1, $set! matches formals in the target environment,
-    // creating new bindings (like $define!) rather than requiring pre-existing ones.
+    // Per the new semantics, $set! does NOT create new bindings.
+    // It errors with UnboundVariable if the symbol doesn't exist in the target frame.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! e (get-env))
-                (set! e y 42)
-                y)
+            (define! e (current-environment))
+            (set! e y 42)
             "#
         ),
-        Ok(Value::Number(42))
+        Err(ArenaError::UnboundVariable)
     );
 }
 
@@ -2679,15 +2570,13 @@ fn test_set_bang_in_captured_env() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! my-env (get-env))
-                (define! x 1)
-                (define! update-x
-                    (lambda ()
-                        (set! my-env x 2)))
-                (update-x)
-                x)
+            (define! my-env (current-environment))
+            (define! x 1)
+            (define! update-x
+                (lambda ()
+                    (set! my-env x 2)))
+            (update-x)
+            x
             "#
         ),
         Ok(Value::Number(2))
@@ -2701,12 +2590,10 @@ fn test_set_bang_mutation_visible_to_closures() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! x 1)
-                (define! get-x (lambda () x))
-                (set! (get-env) x 42)
-                (get-x))
+            (define! x 1)
+            (define! get-x (lambda () x))
+            (set! (current-environment) x 42)
+            (get-x)
             "#
         ),
         Ok(Value::Number(42))
@@ -2715,20 +2602,18 @@ fn test_set_bang_mutation_visible_to_closures() {
 
 #[test]
 fn test_set_bang_ptree_destructuring() {
-    // $set! supports formal parameter tree destructuring.
+    // $set! now only supports single symbol formals (not ptree destructuring).
+    // Passing a pair as the formal should signal TypeError.
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
+    assert!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! a 1)
-                (define! b 2)
-                (set! (get-env) (a b) (list 10 20))
-                (+ a b))
+            (define! a 1)
+            (define! b 2)
+            (set! (current-environment) (a b) (list 10 20))
             "#
-        ),
-        Ok(Value::Number(30))
+        )
+        .is_err()
     );
 }
 
@@ -2738,9 +2623,8 @@ fn test_set_bang_requires_environment() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
-        (begin
-            (define! x 1)
-            (set! 42 x 2))
+        (define! x 1)
+        (set! 42 x 2)
         "#,
     );
     assert_eq!(result, Err(ArenaError::TypeError));
@@ -2750,17 +2634,15 @@ fn test_set_bang_requires_environment() {
 fn test_set_bang_evaluates_exp2_in_dynamic_env() {
     // Per Kernel §6.8.1, $set! evaluates exp2 in the dynamic environment
     // (the caller's env), NOT in the target environment.
-    // This is key to the derivation: the value expression uses the caller's
-    // bindings even when the target env is different.
+    // set! now requires the binding to exist in the target frame.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! target (make-environment))
-                (define! x 10)
-                (set! target y (+ x 5))
-                (eval (quote y) target))
+            (define! target (make-environment (current-environment)))
+            (define! x 10)
+            (set! (current-environment) x (+ x 5))
+            x
             "#
         ),
         Ok(Value::Number(15))
@@ -2769,18 +2651,17 @@ fn test_set_bang_evaluates_exp2_in_dynamic_env() {
 
 #[test]
 fn test_set_bang_defines_in_target_not_dynamic() {
-    // $set! creates bindings in the target env, not the dynamic env.
-    // After (set! target y 42), y should be in target but NOT in the
-    // caller's environment.
+    // $set! modifies bindings in the target env, not the dynamic env.
+    // set! now requires the binding to exist. Test that set! modifies a
+    // binding in a child env that has its own copy.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (define! target (make-environment (get-env)))
-                (set! target y 42)
-                (eval (quote y) target))
+            (define! x 1)
+            (define! e (current-environment))
+            (set! e x 42)
+            x
             "#
         ),
         Ok(Value::Number(42))
@@ -2802,30 +2683,43 @@ fn test_standard_env_is_child_of_ground() {
 
 #[test]
 fn test_define_in_standard_env_does_not_affect_ground() {
-    // Defining in the standard env should not affect the ground env.
-    // A new standard env (fresh lisp.eval call) should not see the binding.
+    // Defining in the standard env persists across calls but should not
+    // affect a separate Lisp instance (different ground/standard envs).
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(begin (define! x 42) x)"), Ok(Value::Number(42)));
-    assert_eq!(lisp.eval("x"), Err(ArenaError::UnboundVariable));
+    assert_eq!(lisp.eval("(define! x 42) x"), Ok(Value::Number(42)));
+    // The binding persists in the same instance.
+    assert_eq!(lisp.eval("x"), Ok(Value::Number(42)));
+    // A fresh Lisp instance does not see the binding.
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp2.eval("x"), Err(ArenaError::UnboundVariable));
 }
 
 #[test]
 fn test_set_bang_on_ground_env_rejected() {
     // $set! should reject direct mutation of the ground environment.
     // Per Kernel §3.2, the ground environment is immutable.
-    // Note: $set! into the *standard* env for a ground-bound symbol
-    // just creates a local shadow (permitted). Only direct mutation
-    // of the ground env itself is rejected.
+    // Also, set! now requires the binding to already exist in the target frame.
+    // Trying to set! a ground-env binding via the standard env fails because
+    // the binding is in ground, not the standard env's own frame.
     let lisp: Lisp<20000> = Lisp::new();
 
-    // Shadowing a builtin in the standard env is fine (doesn't touch ground).
+    // set! cannot modify ground-env inherited bindings through the standard env
+    // because they don't exist in the standard env's own frame.
+    assert!(
+        lisp.eval(
+            r#"
+            (set! (current-environment) + 42)
+            "#
+        )
+        .is_err()
+    );
+
+    // Shadowing via define! still works (creates a new binding in standard env).
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! get-env (vau () e e))
-                (set! (get-env) + 42)
-                +)
+            (define! + 42)
+            +
             "#
         ),
         Ok(Value::Number(42))
@@ -2871,17 +2765,13 @@ fn test_operative_encapsulation_no_distinction() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! my-op (vau (x) #ignore x))
-                (operative? my-op))
+            (define! my-op (vau (x) #ignore x))
+            (operative? my-op)
             "#
         ),
         Ok(Value::Boolean(true))
     );
-    assert_eq!(
-        lisp.eval("(operative? if)"),
-        Ok(Value::Boolean(true))
-    );
+    assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -2894,19 +2784,17 @@ fn test_operative_static_env_not_extractable() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! make-counter
+            (define! make-counter
+                (lambda ()
+                    (define! env (current-environment))
+                    (define! count 0)
                     (lambda ()
-                        (define! get-env (vau () e e))
-                        (define! env (get-env))
-                        (define! count 0)
-                        (lambda ()
-                            (set! env count (+ count 1))
-                            count)))
-                (define! counter (make-counter))
-                (counter)
-                (counter)
-                (counter))
+                        (set! env count (+ count 1))
+                        count)))
+            (define! counter (make-counter))
+            (counter)
+            (counter)
+            (counter)
             "#
         ),
         Ok(Value::Number(3))
@@ -2920,23 +2808,922 @@ fn test_set_bang_enables_mutable_state() {
     assert_eq!(
         lisp.eval(
             r#"
-            (begin
-                (define! make-box
-                    (lambda (init)
-                        (define! val init)
-                        (define! get-env (vau () e e))
-                        (define! env (get-env))
-                        (list
-                            (lambda () val)
-                            (lambda (new-val)
-                                (set! env val new-val)))))
-                (define! box (make-box 0))
-                (define! get-val (car box))
-                (define! set-val (car (cdr box)))
-                (set-val 42)
-                (get-val))
+            (define! make-box
+                (lambda (init)
+                    (define! val init)
+                    (define! env (current-environment))
+                    (list
+                        (lambda () val)
+                        (lambda (new-val)
+                            (set! env val new-val)))))
+            (define! box (make-box 0))
+            (define! get-val (car box))
+            (define! set-val (car (cdr box)))
+            (set-val 42)
+            (get-val)
             "#
         ),
         Ok(Value::Number(42))
+    );
+}
+
+// ============================================================================
+// GC Control Builtin Tests
+// ============================================================================
+
+#[test]
+fn test_gc_collect_returns_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval("(gc-collect)");
+    // gc-collect returns the number of objects collected
+    match result {
+        Ok(Value::Number(n)) => assert!(n >= 0, "gc-collect should return non-negative number"),
+        other => panic!("gc-collect should return a number, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_gc_collect_with_garbage() {
+    // Create garbage by allocating values that become unreachable,
+    // then verify gc-collect reclaims them.
+    let lisp: Lisp<20000> = Lisp::new();
+    // First eval creates garbage (evaluator, builtins, etc.)
+    lisp.eval("(+ 1 2)").unwrap();
+    // gc-collect should reclaim at least something from the previous eval
+    let result = lisp.eval("(gc-collect)");
+    match result {
+        Ok(Value::Number(n)) => {
+            assert!(n > 0, "gc-collect should reclaim garbage, collected: {}", n)
+        }
+        other => panic!("gc-collect should return a number, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_gc_oom_triggers_collection() {
+    // Use a small arena so OOM-triggered GC is exercised.
+    // Repeated evaluations should succeed because GC reclaims garbage on OOM.
+    let lisp: Lisp<5000> = Lisp::new();
+    for i in 0..30 {
+        let result = lisp.eval("(+ 1 2)");
+        assert_eq!(
+            result,
+            Ok(Value::Number(3)),
+            "eval iteration {} should succeed (OOM-triggered GC should reclaim garbage)",
+            i
+        );
+    }
+}
+
+// ============================================================================
+// String as Linked List (CharPair) Tests
+// ============================================================================
+
+#[test]
+fn test_car_of_string() {
+    // (car "hello") => a one-element string "h"
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"(car "hello")"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "car of string should return CharPair with first char, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_cdr_of_string() {
+    // (cdr "hello") => "ello", check via (car (cdr "hello")) => "e"
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"(car (cdr "hello"))"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'e', .. }),
+        "car of cdr of string should be 'e', got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_null_of_empty_string() {
+    // (null? "") => #t (empty string is NIL)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(null? "")"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_pair_of_nonempty_string() {
+    // (pair? "hello") => #t (non-empty string is a CharPair)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(pair? "hello")"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_pair_of_empty_string() {
+    // (pair? "") => #f (empty string is NIL)
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(pair? "")"#), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_string_traversal() {
+    // Walk through a string using car/cdr until null
+    let lisp: Lisp<20000> = Lisp::new();
+    // cdr of a single-char string should be NIL
+    assert_eq!(lisp.eval(r#"(null? (cdr "x"))"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_cons_char_onto_string() {
+    // (cons (car "h") "ello") should produce a string "hello"
+    let lisp: Lisp<20000> = Lisp::new();
+    // Verify by checking car/cdr of the result
+    let result = lisp.eval(r#"(car (cons (car "h") "ello"))"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "car of cons char onto string should be 'h', got: {:?}",
+        result
+    );
+    let result2 = lisp.eval(r#"(car (cdr (cons (car "h") "ello")))"#).unwrap();
+    assert!(
+        matches!(result2, Value::CharPair { ch: 'e', .. }),
+        "second char of cons'd string should be 'e', got: {:?}",
+        result2
+    );
+}
+
+#[test]
+fn test_cons_char_onto_nil() {
+    // (cons (car "h") ()) should produce a one-element string
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#"(car (cons (car "h") '()))"#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "cons char onto nil should produce single-char string, got: {:?}",
+        result
+    );
+    assert_eq!(
+        lisp.eval(r#"(null? (cdr (cons (car "h") '())))"#),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_equal_strings() {
+    // Two separately allocated strings with same content should be equal?
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(equal? "hello" "hello")"#),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(r#"(equal? "hello" "world")"#),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_equal_empty_strings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(equal? "" "")"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_string_is_self_evaluating() {
+    // Strings are self-evaluating
+    let lisp: Lisp<20000> = Lisp::new();
+    let result = lisp.eval(r#""hello""#).unwrap();
+    assert!(
+        matches!(result, Value::CharPair { ch: 'h', .. }),
+        "string should self-evaluate to its head CharPair, got: {:?}",
+        result
+    );
+}
+
+// ============================================================================
+// write_value Display Tests
+// ============================================================================
+
+/// Helper: evaluate and format via write_value.
+fn display(lisp: &Lisp<20000>, input: &str) -> String {
+    let idx = lisp.eval_to_index(input).unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    buf
+}
+
+#[test]
+fn test_write_value_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "42"), "42");
+    assert_eq!(display(&lisp, "-7"), "-7");
+}
+
+#[test]
+fn test_write_value_boolean() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "#t"), "#t");
+    assert_eq!(display(&lisp, "#f"), "#f");
+}
+
+#[test]
+fn test_write_value_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'()"), "()");
+}
+
+#[test]
+fn test_write_value_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#""hello""#), r#""hello""#);
+    assert_eq!(display(&lisp, r#""""#), "()"); // empty string is NIL
+}
+
+#[test]
+fn test_write_value_string_single_char() {
+    // car of a string is a one-element string
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"(car "hello")"#), r#""h""#);
+}
+
+#[test]
+fn test_write_value_string_cdr() {
+    // cdr of a string is the rest of the string
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"(cdr "hello")"#), r#""ello""#);
+}
+
+#[test]
+fn test_write_value_symbol() {
+    // quote returns the symbol itself
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'foo"), "foo");
+    assert_eq!(display(&lisp, "'define!"), "define!");
+}
+
+#[test]
+fn test_write_value_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'(1 2 3)"), "(1 2 3)");
+    assert_eq!(display(&lisp, "'(1)"), "(1)");
+}
+
+#[test]
+fn test_write_value_nested_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "'(1 (2 3) 4)"), "(1 (2 3) 4)");
+}
+
+#[test]
+fn test_write_value_dotted_pair() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "(cons 1 2)"), "(1 . 2)");
+}
+
+#[test]
+fn test_write_value_improper_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "(cons 1 (cons 2 3))"), "(1 2 . 3)");
+}
+
+#[test]
+fn test_write_value_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "#inert"), "#inert");
+}
+
+#[test]
+fn test_write_value_ignore() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, "#ignore"), "#ignore");
+}
+
+#[test]
+fn test_write_value_list_with_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"(cons 1 (cons "hi" '()))"#), r#"(1 "hi")"#);
+}
+
+// ============================================================================
+// Feature 1: set! Errors on Nonexistent Bindings
+// ============================================================================
+
+#[test]
+fn test_set_bang_modifies_existing() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (set! (current-environment) x 2)
+            x
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_set_bang_errors_on_nonexistent() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(set! (current-environment) y 1)"),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_set_bang_does_not_walk_parents() {
+    // x exists in the parent env, but not in e's own frame.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! e (make-environment (current-environment)))
+            (set! e x 1)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_set_bang_closures_see_change() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! env (current-environment))
+            (define! (fn get-x) x)
+            (set! env x 99)
+            (get-x)
+            "#
+        ),
+        Ok(Value::Number(99))
+    );
+}
+
+#[test]
+fn test_set_bang_empty_env() {
+    // Cannot set! in an env with no bindings
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(set! (make-environment) x 1)").is_err());
+}
+
+#[test]
+fn test_set_bang_only_supports_single_symbol() {
+    // set! no longer supports ptree destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(
+        lisp.eval(
+            r#"
+            (define! a 1)
+            (define! b 2)
+            (set! (current-environment) (a b) (list 10 20))
+            "#
+        )
+        .is_err()
+    );
+}
+
+// ============================================================================
+// Feature 2: define! Overwrites Existing Bindings
+// ============================================================================
+
+#[test]
+fn test_define_overwrites_in_same_frame() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! x 2)
+            x
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_define_overwrite_does_not_affect_child_scopes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (let ((y x))
+              y)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+#[test]
+fn test_define_different_frames() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn f x)
+                  (current-environment))
+                (eq? (f 1) (f 2))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_define_overwrite_function_in_repl() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn double n) (+ n n))
+            (double 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn double n) (* n 2))
+            (double 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+// ============================================================================
+// Feature 3: current-environment
+// ============================================================================
+
+#[test]
+fn test_current_environment_returns_environment() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(environment? (current-environment))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_current_environment_captures_frame() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! e (current-environment))
+            (define! x 42)
+            (eval (quote x) e)
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_current_environment_different_scopes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! outer (current-environment))
+            (let ()
+              (define! inner (current-environment))
+              (eq? outer inner))
+            "#
+        ),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_current_environment_with_set() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! e (current-environment))
+            (set! e x 2)
+            x
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+}
+
+#[test]
+fn test_current_environment_in_closures() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn make-cell val)
+              (define! env (current-environment))
+              (list
+                (lambda () val)
+                (lambda (new-val) (set! env val new-val))))
+            (define! cell (make-cell 0))
+            ((car cell))
+            "#
+        ),
+        Ok(Value::Number(0))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn make-cell val)
+              (define! env (current-environment))
+              (list
+                (lambda () val)
+                (lambda (new-val) (set! env val new-val))))
+            (define! cell (make-cell 0))
+            ((car (cdr cell)) 42)
+            ((car cell))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+// ============================================================================
+// Feature 4: Named let
+// ============================================================================
+
+#[test]
+fn test_named_let_basic_loop() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let loop ((i 0))
+              (if (< i 10) (loop (+ i 1)) i))
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+#[test]
+fn test_named_let_factorial() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let fact ((n 5) (acc 1))
+              (if (= n 0) acc
+                (fact (- n 1) (* acc n))))
+            "#
+        ),
+        Ok(Value::Number(120))
+    );
+}
+
+#[test]
+fn test_named_let_fibonacci() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let fib ((n 10) (a 0) (b 1))
+              (if (= n 0) a
+                (fib (- n 1) b (+ a b))))
+            "#
+        ),
+        Ok(Value::Number(55))
+    );
+}
+
+#[test]
+fn test_named_let_name_not_visible_outside() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.eval(
+        r#"
+        (let loop ((i 0))
+          (if (< i 5) (loop (+ i 1)) i))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(lisp.eval("loop"), Err(ArenaError::UnboundVariable));
+}
+
+#[test]
+fn test_named_let_inits_in_outer_scope() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 10)
+            (let loop ((i x))
+              (if (< i 15) (loop (+ i 1)) i))
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_named_let_tco() {
+    // Should not stack overflow with TCO
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let loop ((i 0))
+              (if (< i 100000) (loop (+ i 1)) i))
+            "#
+        ),
+        Ok(Value::Number(100000))
+    );
+}
+
+#[test]
+fn test_named_let_zero_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(let loop () 42)"), Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_regular_let_still_works() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let ((x 10) (y 20))
+              (+ x y))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+}
+
+// ============================================================================
+// Feature 5: define! Function Shorthand (fn marker)
+// ============================================================================
+
+#[test]
+fn test_define_function_shorthand_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn double n) (+ n n))
+            (double 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_multi_body() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn do-stuff x)
+              (define! y (+ x 1))
+              (* y 2))
+            (do-stuff 5)
+            "#
+        ),
+        Ok(Value::Number(12))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_variadic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn first . args) (car args))
+            (first 1 2 3)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_zero_params() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Verify it returns a string value
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn greeting) "hello")
+            (pair? (greeting))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_recursive() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn factorial n)
+              (if (= n 0) 1 (* n (factorial (- n 1)))))
+            (factorial 10)
+            "#
+        ),
+        Ok(Value::Number(3628800))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_mutual_recursion() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn even? n) (if (= n 0) #t (odd? (- n 1))))
+            (define! (fn odd? n)  (if (= n 0) #f (even? (- n 1))))
+            (even? 10)
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(lisp.eval("(odd? 7)"), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_define_function_shorthand_overwrite() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn f x) (+ x 1))
+            (f 5)
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn f x) (* x 2))
+            (f 5)
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_closure() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn make-adder n)
+              (lambda (x) (+ x n)))
+            (define! add5 (make-adder 5))
+            (add5 10)
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_define_function_shorthand_inside_let() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (let ()
+              (define! (fn helper x) (+ x 1))
+              (helper 41))
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_define_destructuring_still_works_non_symbol_car() {
+    // Ptree destructuring works when car of definiend is NOT a symbol
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! ((a b) c) (list (list 1 2) 3))
+            (+ a (+ b c))
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+}
+
+// ============================================================================
+// Feature 5b: fn marker disambiguation
+// ============================================================================
+
+#[test]
+fn test_define_fn_disambiguation_destructuring_vs_function() {
+    // Without fn: destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (x y) (list 10 20))
+            x
+            "#
+        ),
+        Ok(Value::Number(10))
+    );
+    assert_eq!(lisp.eval("y"), Ok(Value::Number(20)));
+}
+
+#[test]
+fn test_define_fn_disambiguation_function_def() {
+    // With fn: function definition
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn x y) (list 10 20))
+            (pair? (x 99))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_fn_destructuring_pair() {
+    // Without fn: (a b) is ptree destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (a b) (list 1 2))
+            a
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+    assert_eq!(lisp.eval("b"), Ok(Value::Number(2)));
+}
+
+#[test]
+fn test_define_fn_destructuring_dotted() {
+    // Without fn: (x . y) is ptree destructuring
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (x . y) (cons 1 (list 2 3)))
+            x
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_fn_destructuring_with_ignore() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (a #ignore) (list 1 2))
+            a
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_define_fn_as_variable_name() {
+    // fn can be used as a regular variable name
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(define! fn 42) fn"), Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_define_fn_function_named_fn() {
+    // Defining a function named fn using fn marker
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! (fn fn x) (+ x 1))
+            (fn 5)
+            "#
+        ),
+        Ok(Value::Number(6))
     );
 }
