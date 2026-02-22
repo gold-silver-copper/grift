@@ -3727,3 +3727,83 @@ fn test_define_fn_function_named_fn() {
         Ok(Value::Number(6))
     );
 }
+
+// ============================================================================
+// New Builtin Tests (display, newline, error, apply)
+// ============================================================================
+
+#[test]
+fn test_display_returns_value() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(display 42)"), Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_display_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // display returns its argument
+    let result = lisp.eval_to_index(r#"(display "hello")"#);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_newline_returns_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(newline)"), Ok(Value::Inert));
+}
+
+#[test]
+fn test_error_signals_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(error "test error")"#),
+        Err(ArenaError::InvalidArgument)
+    );
+}
+
+#[test]
+fn test_apply_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(apply + (list 1 2 3))"),
+        Ok(Value::Number(6))
+    );
+}
+
+#[test]
+fn test_apply_lambda() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(apply (lambda (a b) (+ a b)) (list 3 4))"),
+        Ok(Value::Number(7))
+    );
+}
+
+#[test]
+fn test_apply_empty_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(apply + ())"),
+        Ok(Value::Number(0))
+    );
+}
+
+// ============================================================================
+// Prelude Test
+// ============================================================================
+
+#[test]
+fn test_prelude_loads() {
+    let builder = std::thread::Builder::new()
+        .name("prelude".into())
+        .stack_size(64 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let lisp: Lisp<500_000> = Lisp::new();
+            let prelude = include_str!("../prelude.grift");
+            let result = lisp.eval_to_index(prelude);
+            assert!(result.is_ok(), "prelude failed to load: {:?}", result.err());
+        })
+        .expect("failed to spawn thread");
+    handler.join().expect("prelude thread panicked");
+}

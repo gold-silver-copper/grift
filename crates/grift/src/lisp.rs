@@ -670,6 +670,48 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
+    /// Human-readable output (like Scheme `display`).
+    ///
+    /// Same as [`write_value`](Self::write_value) except strings are printed
+    /// without surrounding quotes or escape sequences.
+    pub fn display_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+        match self.arena.get(idx) {
+            Ok(Value::CharPair { .. }) => {
+                self.walk_chars(idx, w, |ch, w| w.write_char(ch))
+            }
+            Ok(Value::Cons { car, cdr }) => {
+                w.write_char('(')?;
+                self.display_value(car, w)?;
+                self.display_list_tail(cdr, w)?;
+                w.write_char(')')
+            }
+            _ => self.write_value(idx, w),
+        }
+    }
+
+    /// Display-mode list tail (no quoting on strings).
+    fn display_list_tail(
+        &self,
+        mut idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+    ) -> core::fmt::Result {
+        while !idx.is_nil() {
+            match self.arena.get(idx) {
+                Ok(Value::Cons { car, cdr }) => {
+                    w.write_char(' ')?;
+                    self.display_value(car, w)?;
+                    idx = cdr;
+                }
+                _ => {
+                    w.write_str(" . ")?;
+                    self.display_value(idx, w)?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Walk a CharPair chain, emitting each character via a closure.
     fn walk_chars<W: core::fmt::Write>(
         &self,

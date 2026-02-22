@@ -8,6 +8,9 @@
 //! **applicative** is a derived wrapper that evaluates arguments before
 //! delegating to the wrapped combiner.
 
+#[cfg(feature = "std")]
+extern crate std;
+
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::lisp::Lisp;
@@ -201,6 +204,10 @@ define_builtins! {
         "make-empty-environment" => bi_make_empty_env => builtin_make_empty_env,
         "environment?" => bi_environmentp => builtin_environmentp,
         "gc-collect" => bi_gc_collect => builtin_gc_collect,
+        "display"  => bi_display  => builtin_display,
+        "newline"  => bi_newline  => builtin_newline,
+        "error"    => bi_error    => builtin_error,
+        "apply"    => bi_apply    => builtin_apply,
 
     }
 }
@@ -745,9 +752,12 @@ impl<const N: usize> Lisp<N> {
 
                 self.pop_roots(2);
 
-                // Tail call: apply func to evaluated inits
-                *env = local_env;
-                *expr = self.cons(name, evaled_inits)?;
+                // Directly invoke the function with already-evaluated inits
+                // (avoids re-evaluation which would treat list values as calls)
+                let inner = self.unwrap_applicative(func)?;
+                let (body_expr, op_env) = self.invoke_operative(inner, evaled_inits, local_env)?;
+                *env = op_env;
+                *expr = body_expr;
                 Ok(())
             } else {
                 // Regular let
@@ -1125,5 +1135,46 @@ impl<const N: usize> Lisp<N> {
     /// Copy a cons-list into fresh cons cells (iterative).
     fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.map_list(list, |_, h| Ok(h))
+    }
+
+    /// `(display obj)` — write a human-readable representation of obj to stdout.
+    /// In `no_std` mode this is a no-op that simply returns its argument.
+    fn builtin_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.car(args)?;
+        #[cfg(feature = "std")]
+        {
+            let mut buf = std::string::String::new();
+            let _ = self.display_value(val, &mut buf);
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), buf.as_bytes());
+        }
+        Ok(val)
+    }
+
+    /// `(newline)` — write a newline character to stdout.
+    fn builtin_newline(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        #[cfg(feature = "std")]
+        {
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\n");
+        }
+        Ok(ArenaIndex::INERT)
+    }
+
+    /// `(error msg)` — signal an error.
+    fn builtin_error(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        Err(ArenaError::InvalidArgument)
+    }
+
+    /// `(apply combiner args)` — apply a combiner to a list of arguments.
+    fn builtin_apply(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let combiner = self.car(args)?;
+        let rest1 = self.cdr(args)?;
+        let arg_list = self.car(rest1)?;
+        let rest2 = self.cdr(rest1)?;
+        let env = if rest2.is_nil() {
+            ArenaIndex::GLOBAL_ENV
+        } else {
+            self.car(rest2)?
+        };
+        self.apply_combiner(combiner, arg_list, env)
     }
 }
