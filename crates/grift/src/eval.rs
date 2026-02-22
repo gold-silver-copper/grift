@@ -752,8 +752,13 @@ impl<const N: usize> Lisp<N> {
 
                 self.pop_roots(2);
 
-                // Directly invoke the function with already-evaluated inits
-                // (avoids re-evaluation which would treat list values as calls)
+                // Invoke the operative directly with pre-evaluated init values,
+                // bypassing the normal eval loop.  The previous approach built
+                // `(name val1 val2 …)` and fed it back through `eval_expr`,
+                // which would re-evaluate the already-evaluated values.  That
+                // is harmless for self-evaluating types (numbers, booleans) but
+                // breaks when an init value is a list—`eval` would interpret
+                // the list as a function call, producing a NotCallable error.
                 let inner = self.unwrap_applicative(func)?;
                 let (body_expr, op_env) = self.invoke_operative(inner, evaled_inits, local_env)?;
                 *env = op_env;
