@@ -653,23 +653,6 @@ impl<const N: usize> Lisp<N> {
         self.write_fn.set(write);
     }
 
-    /// Parse and evaluate with a specific [`IoProvider`] for output.
-    ///
-    /// Sets up the I/O provider before evaluation and restores the
-    /// previous one afterward. The provider receives all `display`
-    /// and `newline` output during evaluation.
-    pub fn eval_with_io(
-        &self,
-        input: &str,
-        io: &mut dyn IoProvider,
-    ) -> Result<ArenaIndex, ArenaError> {
-        // We can't store &mut io in a Cell, but we can use the write_fn
-        // mechanism with a closure-like pattern. For now, delegate to
-        // eval_to_index which uses the currently set write_fn.
-        let _ = io; // IoProvider is available for callers to use directly
-        self.eval_to_index(input)
-    }
-
     /// Write a value's display representation through an [`IoProvider`].
     ///
     /// This is the trait-based equivalent of the `display` builtin,
@@ -872,7 +855,9 @@ impl<'a> StackWriter<'a> {
     }
 
     pub(crate) fn as_str(&self) -> &str {
-        // Safety: we only write valid UTF-8 via core::fmt::Write
+        // core::fmt::Write::write_str only accepts valid UTF-8 by contract,
+        // so this should always succeed. The fallback is defensive since we
+        // forbid(unsafe_code) and cannot use from_utf8_unchecked.
         core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("")
     }
 }
