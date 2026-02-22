@@ -3789,6 +3789,81 @@ fn test_apply_empty_args() {
 }
 
 // ============================================================================
+// I/O Trait Tests
+// ============================================================================
+
+#[test]
+fn test_io_null_provider() {
+    use grift::{IoProvider, NullIoProvider, io::PortId};
+    let mut io = NullIoProvider;
+    assert!(io.write_str(PortId::STDOUT, "hello").is_ok());
+}
+
+#[test]
+fn test_io_set_write_fn() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use grift::io::PortId;
+    static CALLED: AtomicBool = AtomicBool::new(false);
+
+    fn test_write(_port: PortId, _s: &str) {
+        CALLED.store(true, Ordering::SeqCst);
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.set_io(test_write);
+    CALLED.store(false, Ordering::SeqCst);
+    let _ = lisp.eval("(display 42)");
+    assert!(CALLED.load(Ordering::SeqCst), "write function should have been called");
+}
+
+#[test]
+fn test_io_display_to_io() {
+    use grift::{IoProvider, io::{PortId, IoResult}};
+
+    struct CaptureIo {
+        output: String,
+    }
+    impl IoProvider for CaptureIo {
+        fn write_str(&mut self, _port: PortId, s: &str) -> IoResult<()> {
+            self.output.push_str(s);
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    let idx = lisp.eval_to_index("42").unwrap();
+    let mut io = CaptureIo { output: String::new() };
+    lisp.display_to_io(idx, PortId::STDOUT, &mut io).unwrap();
+    assert_eq!(io.output, "42");
+}
+
+#[test]
+fn test_io_write_to_io() {
+    use grift::{IoProvider, io::{PortId, IoResult}};
+
+    struct CaptureIo {
+        output: String,
+    }
+    impl IoProvider for CaptureIo {
+        fn write_str(&mut self, _port: PortId, s: &str) -> IoResult<()> {
+            self.output.push_str(s);
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    let idx = lisp.eval_to_index(r#""hello""#).unwrap();
+    let mut io = CaptureIo { output: String::new() };
+    lisp.write_to_io(idx, PortId::STDOUT, &mut io).unwrap();
+    assert_eq!(io.output, r#""hello""#);
+
+    // display_to_io should print without quotes
+    let mut io2 = CaptureIo { output: String::new() };
+    lisp.display_to_io(idx, PortId::STDOUT, &mut io2).unwrap();
+    assert_eq!(io2.output, "hello");
+}
+
+// ============================================================================
 // Prelude Test
 // ============================================================================
 

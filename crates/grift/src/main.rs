@@ -1,11 +1,27 @@
 use grift::Lisp;
+use grift::io::StdIoProvider;
+use grift::IoProvider;
+use grift::io::PortId;
 use rustyline::DefaultEditor;
 
 const PROMPT: &str = "Λ> ";
 const ARENA_SIZE: usize = 100_000;
 
+/// Write function for the Lisp interpreter that routes output to stdout/stderr.
+fn std_write(port: PortId, s: &str) {
+    use std::io::Write;
+    match port {
+        PortId::STDOUT => { let _ = std::io::stdout().write_all(s.as_bytes()); }
+        PortId::STDERR => { let _ = std::io::stderr().write_all(s.as_bytes()); }
+        _ => {}
+    }
+}
+
 fn main() {
     let lisp: Lisp<ARENA_SIZE> = Lisp::new();
+
+    // Configure I/O: route display/newline output to stdout
+    lisp.set_io(std_write);
 
     // Load prelude if bundled
     let prelude = include_str!("../prelude.grift");

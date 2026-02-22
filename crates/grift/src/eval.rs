@@ -8,9 +8,6 @@
 //! **applicative** is a derived wrapper that evaluates arguments before
 //! delegating to the wrapped combiner.
 
-#[cfg(feature = "std")]
-extern crate std;
-
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::lisp::Lisp;
@@ -1142,25 +1139,26 @@ impl<const N: usize> Lisp<N> {
         self.map_list(list, |_, h| Ok(h))
     }
 
-    /// `(display obj)` — write a human-readable representation of obj to stdout.
-    /// In `no_std` mode this is a no-op that simply returns its argument.
+    /// `(display obj)` — write a human-readable representation of obj.
+    ///
+    /// Output is routed through the [`IoProvider`](crate::io::IoProvider)
+    /// configured via [`set_io`](Self::set_io).  When no provider is set,
+    /// output is silently discarded.
     fn builtin_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
-        #[cfg(feature = "std")]
-        {
-            let mut buf = std::string::String::new();
-            let _ = self.display_value(val, &mut buf);
-            let _ = std::io::Write::write_all(&mut std::io::stdout(), buf.as_bytes());
-        }
+        let mut buf = [0u8; 256];
+        let mut writer = crate::lisp::StackWriter::new(&mut buf);
+        let _ = self.display_value(val, &mut writer);
+        self.io_write(crate::io::PortId::STDOUT, writer.as_str());
         Ok(val)
     }
 
-    /// `(newline)` — write a newline character to stdout.
+    /// `(newline)` — write a newline character.
+    ///
+    /// Output is routed through the [`IoProvider`](crate::io::IoProvider)
+    /// configured via [`set_io`](Self::set_io).
     fn builtin_newline(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        #[cfg(feature = "std")]
-        {
-            let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\n");
-        }
+        self.io_write(crate::io::PortId::STDOUT, "\n");
         Ok(ArenaIndex::INERT)
     }
 
