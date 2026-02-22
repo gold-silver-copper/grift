@@ -30,11 +30,6 @@
       acc
       (loop (cdr l) (cons (car l) acc)))))
 
-(assert! "reverse basic" (list 3 2 1) (reverse (list 1 2 3)))
-(assert! "reverse empty" () (reverse ()))
-(assert! "reverse single" (list 1) (reverse (list 1)))
-(assert! "reverse two" (list 2 1) (reverse (list 1 2)))
-
 ;; -- map --
 ;; Tail-recursive map using accumulator + reverse.
 (define! (fn map f lst)
@@ -42,11 +37,6 @@
     (if (null? l)
       (reverse acc)
       (loop (cdr l) (cons (f (car l)) acc)))))
-
-(assert! "map double" (list 2 4 6) (map (lambda (x) (* x 2)) (list 1 2 3)))
-(assert! "map empty" () (map (lambda (x) x) ()))
-(assert! "map single" (list 10) (map (lambda (x) (* x 10)) (list 1)))
-(assert! "map identity" (list 1 2 3) (map (lambda (x) x) (list 1 2 3)))
 
 ;; -- filter --
 ;; Tail-recursive filter using accumulator + reverse.
@@ -58,11 +48,6 @@
         (loop (cdr l) (cons (car l) acc))
         (loop (cdr l) acc)))))
 
-(assert! "filter even" (list 2 4) (filter (lambda (x) (= 0 (- x (* (/ x 2) 2)))) (list 1 2 3 4 5)))
-(assert! "filter empty" () (filter (lambda (x) #t) ()))
-(assert! "filter none match" () (filter (lambda (x) #f) (list 1 2 3)))
-(assert! "filter all match" (list 1 2 3) (filter (lambda (x) #t) (list 1 2 3)))
-
 ;; -- fold (foldl) --
 ;; Tail-recursive left fold.
 (define! (fn fold f init lst)
@@ -71,29 +56,15 @@
       acc
       (loop (cdr l) (f acc (car l))))))
 
-(assert! "fold sum" 10 (fold + 0 (list 1 2 3 4)))
-(assert! "fold empty" 0 (fold + 0 ()))
-(assert! "fold product" 24 (fold * 1 (list 1 2 3 4)))
-(assert! "fold sub" -10 (fold - 0 (list 1 2 3 4)))
-
 ;; -- foldr --
 ;; Right fold (not tail-recursive by nature, but we reverse the list first).
 (define! (fn foldr f init lst)
   (fold (lambda (acc x) (f x acc)) init (reverse lst)))
 
-(assert! "foldr cons" (list 1 2 3) (foldr cons () (list 1 2 3)))
-(assert! "foldr empty" 0 (foldr + 0 ()))
-(assert! "foldr sub" 2 (foldr - 0 (list 1 2 3)))
-
 ;; -- append --
 ;; Append two lists.
 (define! (fn append a b)
   (foldr cons b a))
-
-(assert! "append" (list 1 2 3 4) (append (list 1 2) (list 3 4)))
-(assert! "append empty left" (list 1 2) (append () (list 1 2)))
-(assert! "append empty right" (list 1 2) (append (list 1 2) ()))
-(assert! "append both empty" () (append () ()))
 
 ;; -- length --
 ;; Tail-recursive length.
@@ -103,10 +74,6 @@
       n
       (loop (cdr l) (+ n 1)))))
 
-(assert! "length" 5 (length (list 1 2 3 4 5)))
-(assert! "length empty" 0 (length ()))
-(assert! "length single" 1 (length (list 42)))
-
 ;; -- nth --
 ;; Zero-indexed element access.
 (define! (fn nth n lst)
@@ -114,20 +81,12 @@
     (car lst)
     (nth (- n 1) (cdr lst))))
 
-(assert! "nth first" 1 (nth 0 (list 1 2 3 4)))
-(assert! "nth" 3 (nth 2 (list 1 2 3 4)))
-(assert! "nth last" 4 (nth 3 (list 1 2 3 4)))
-
 ;; -- last --
 ;; Return the last element of a list.
 (define! (fn last lst)
   (if (null? (cdr lst))
     (car lst)
     (last (cdr lst))))
-
-(assert! "last single" 1 (last (list 1)))
-(assert! "last multi" 3 (last (list 1 2 3)))
-(assert! "last two" 2 (last (list 1 2)))
 
 ;; -- take --
 ;; Take the first n elements.
@@ -139,11 +98,6 @@
         (reverse acc)
         (loop (- i 1) (cdr l) (cons (car l) acc))))))
 
-(assert! "take" (list 1 2 3) (take 3 (list 1 2 3 4 5)))
-(assert! "take zero" () (take 0 (list 1 2 3)))
-(assert! "take all" (list 1 2 3) (take 5 (list 1 2 3)))
-(assert! "take empty" () (take 3 ()))
-
 ;; -- drop --
 ;; Drop the first n elements.
 (define! (fn drop n lst)
@@ -152,11 +106,6 @@
     (if (null? lst)
       ()
       (drop (- n 1) (cdr lst)))))
-
-(assert! "drop" (list 4 5) (drop 3 (list 1 2 3 4 5)))
-(assert! "drop zero" (list 1 2 3) (drop 0 (list 1 2 3)))
-(assert! "drop all" () (drop 5 (list 1 2 3)))
-(assert! "drop empty" () (drop 3 ()))
 
 ;; -- zip --
 ;; Zip two lists together into a list of pairs.
@@ -168,11 +117,6 @@
         (reverse acc)
         (loop (cdr la) (cdr lb) (cons (list (car la) (car lb)) acc))))))
 
-(assert! "zip" (list (list 1 4) (list 2 5) (list 3 6)) (zip (list 1 2 3) (list 4 5 6)))
-(assert! "zip empty" () (zip () ()))
-(assert! "zip uneven" (list (list 1 3)) (zip (list 1 2) (list 3)))
-(assert! "zip left empty" () (zip () (list 1 2)))
-
 ;; -- range --
 ;; Generate a list of integers [start, end).
 (define! (fn range start end)
@@ -180,11 +124,6 @@
     (if (< i start)
       acc
       (loop (- i 1) (cons i acc)))))
-
-(assert! "range" (list 0 1 2 3 4) (range 0 5))
-(assert! "range empty" () (range 5 5))
-(assert! "range single" (list 0) (range 0 1))
-(assert! "range negative" (list -2 -1 0) (range -2 1))
 
 ;; -- member? --
 ;; Check if an element is in a list.
@@ -195,11 +134,6 @@
       #t
       (member? x (cdr lst)))))
 
-(assert! "member?" #t (member? 3 (list 1 2 3 4)))
-(assert! "member? missing" #f (member? 9 (list 1 2 3)))
-(assert! "member? empty" #f (member? 1 ()))
-(assert! "member? first" #t (member? 1 (list 1 2 3)))
-
 ;; -- for-each --
 ;; Apply a function to each element for side effects.
 (define! (fn for-each f lst)
@@ -209,9 +143,6 @@
       (f (car lst))
       (for-each f (cdr lst)))))
 
-(assert! "for-each returns nil" () (for-each (lambda (x) x) (list 1 2 3)))
-(assert! "for-each empty" () (for-each (lambda (x) x) ()))
-
 ;; -- flatten --
 ;; Flatten a nested list structure.
 (define! (fn flatten lst)
@@ -220,11 +151,6 @@
     (if (pair? (car lst))
       (append (flatten (car lst)) (flatten (cdr lst)))
       (cons (car lst) (flatten (cdr lst))))))
-
-(assert! "flatten" (list 1 2 3 4 5 6) (flatten (list (list 1 2) (list 3 (list 4 5)) (list 6))))
-(assert! "flatten empty" () (flatten ()))
-(assert! "flatten flat" (list 1 2 3) (flatten (list 1 2 3)))
-(assert! "flatten nested" (list 1 2 3) (flatten (list (list (list 1)) 2 (list 3))))
 
 ;; ============================================================================
 ;; 3. ASSOCIATION LIST OPERATIONS
@@ -239,40 +165,20 @@
       (car lst)
       (assoc key (cdr lst)))))
 
-(assert! "assoc found" (list 2 20)
-  (assoc 2 (list (list 1 10) (list 2 20) (list 3 30))))
-(assert! "assoc not found" ()
-  (assoc 9 (list (list 1 10) (list 2 20))))
-(assert! "assoc empty" () (assoc 1 ()))
-
 ;; -- acons --
 ;; Add a key-value pair to the front of an alist.
 (define! (fn acons key val alist)
   (cons (list key val) alist))
-
-(assert! "acons" (list (list 1 10) (list 2 20))
-  (acons 1 10 (list (list 2 20))))
-(assert! "acons empty" (list (list 1 10)) (acons 1 10 ()))
-(assert! "acons shadow" (list (list 1 99) (list 1 10))
-  (acons 1 99 (list (list 1 10))))
 
 ;; -- alist-keys --
 ;; Extract all keys from an alist.
 (define! (fn alist-keys alist)
   (map car alist))
 
-(assert! "alist-keys" (list 1 2 3)
-  (alist-keys (list (list 1 10) (list 2 20) (list 3 30))))
-(assert! "alist-keys empty" () (alist-keys ()))
-
 ;; -- alist-values --
 ;; Extract all values from an alist (second element of each pair).
 (define! (fn alist-values alist)
   (map (lambda (p) (car (cdr p))) alist))
-
-(assert! "alist-values" (list 10 20 30)
-  (alist-values (list (list 1 10) (list 2 20) (list 3 30))))
-(assert! "alist-values empty" () (alist-values ()))
 
 ;; ============================================================================
 ;; 4. HIGHER-ORDER COMBINATORS
@@ -282,55 +188,28 @@
 (define! (fn compose f g)
   (lambda (x) (f (g x))))
 
-(assert! "compose" 10 ((compose (lambda (x) (* x 2)) (lambda (x) (+ x 2))) 3))
-(assert! "compose identity" 5 ((compose (lambda (x) x) (lambda (x) x)) 5))
-(assert! "compose negate-double" -6 ((compose (lambda (x) (- 0 x)) (lambda (x) (* x 2))) 3))
-
 ;; -- identity --
 (define! (fn identity x) x)
-
-(assert! "identity num" 42 (identity 42))
-(assert! "identity list" (list 1 2) (identity (list 1 2)))
-(assert! "identity bool" #t (identity #t))
 
 ;; -- constantly --
 (define! (fn constantly x)
   (lambda args x))
 
-(assert! "constantly" 42 ((constantly 42) 1 2 3))
-(assert! "constantly no args" 42 ((constantly 42)))
-(assert! "constantly nil" () ((constantly ()) 1))
-
 ;; -- flip --
 (define! (fn flip f)
   (lambda (a b) (f b a)))
-
-(assert! "flip sub" -1 ((flip -) 3 2))
-(assert! "flip cons" (list 2 1) ((flip (lambda (a b) (list a b))) 1 2))
-(assert! "flip div" 2 ((flip /) 5 10))
 
 ;; -- complement --
 (define! (fn complement pred)
   (lambda (x) (not (pred x))))
 
-(assert! "complement null?" #t ((complement null?) (list 1)))
-(assert! "complement null? empty" #f ((complement null?) ()))
-(assert! "complement not" #f ((complement (lambda (x) #t)) 1))
-
 ;; -- juxt --
 (define! (fn juxt . fs)
   (lambda (x) (map (lambda (f) (f x)) fs)))
 
-(assert! "juxt" (list 2 0) ((juxt (lambda (x) (+ x 1)) (lambda (x) (- x 1))) 1))
-(assert! "juxt single" (list 42) ((juxt identity) 42))
-
 ;; -- partial --
 (define! (fn partial f . bound)
   (lambda args (apply f (append bound args))))
-
-(assert! "partial add" 5 ((partial + 2) 3))
-(assert! "partial add multi" 6 ((partial + 1 2) 3))
-(assert! "partial identity" 42 ((partial identity) 42))
 
 ;; ============================================================================
 ;; 5. NUMERIC UTILITIES
@@ -339,83 +218,37 @@
 (define! (fn abs n)
   (if (< n 0) (- 0 n) n))
 
-(assert! "abs positive" 5 (abs 5))
-(assert! "abs negative" 5 (abs -5))
-(assert! "abs zero" 0 (abs 0))
-
 (define! (fn min a b)
   (if (< a b) a b))
-
-(assert! "min" 1 (min 1 2))
-(assert! "min equal" 3 (min 3 3))
-(assert! "min negative" -5 (min -5 3))
 
 (define! (fn max a b)
   (if (> a b) a b))
 
-(assert! "max" 2 (max 1 2))
-(assert! "max equal" 3 (max 3 3))
-(assert! "max negative" 3 (max -5 3))
-
 (define! (fn zero? n)
   (= n 0))
-
-(assert! "zero? yes" #t (zero? 0))
-(assert! "zero? no" #f (zero? 1))
-(assert! "zero? negative" #f (zero? -1))
 
 (define! (fn positive? n)
   (> n 0))
 
-(assert! "positive? yes" #t (positive? 1))
-(assert! "positive? no" #f (positive? 0))
-(assert! "positive? neg" #f (positive? -1))
-
 (define! (fn negative? n)
   (< n 0))
-
-(assert! "negative? yes" #t (negative? -1))
-(assert! "negative? no" #f (negative? 0))
-(assert! "negative? pos" #f (negative? 1))
 
 (define! (fn even? n)
   (= 0 (- n (* (/ n 2) 2))))
 
-(assert! "even? yes" #t (even? 4))
-(assert! "even? no" #f (even? 3))
-(assert! "even? zero" #t (even? 0))
-(assert! "even? negative" #t (even? -2))
-
 (define! (fn odd? n)
   (not (even? n)))
-
-(assert! "odd? yes" #t (odd? 3))
-(assert! "odd? no" #f (odd? 4))
-(assert! "odd? one" #t (odd? 1))
 
 (define! (fn sum lst)
   (fold + 0 lst))
 
-(assert! "sum" 10 (sum (list 1 2 3 4)))
-(assert! "sum empty" 0 (sum ()))
-(assert! "sum single" 42 (sum (list 42)))
-
 (define! (fn product lst)
   (fold * 1 lst))
-
-(assert! "product" 24 (product (list 1 2 3 4)))
-(assert! "product empty" 1 (product ()))
-(assert! "product single" 5 (product (list 5)))
 
 (define! (fn gcd a b)
   (if (= b 0)
     a
     (gcd b (- a (* (/ a b) b)))))
-
-(assert! "gcd" 6 (gcd 12 18))
-(assert! "gcd coprime" 1 (gcd 7 13))
-(assert! "gcd same" 5 (gcd 5 5))
-(assert! "gcd one" 1 (gcd 1 100))
 
 ;; ============================================================================
 ;; 6. CONTROL FLOW OPERATIVES
@@ -428,20 +261,12 @@
       (eval (cons begin body) e)
       ())))
 
-(assert! "when true" 42 (when #t 42))
-(assert! "when false" () (when #f 42))
-(assert! "when expr" 10 (when (= 1 1) (+ 5 5)))
-
 ;; -- unless --
 (define! unless
   (vau (test . body) e
     (if (eval test e)
       ()
       (eval (cons begin body) e))))
-
-(assert! "unless false" 42 (unless #f 42))
-(assert! "unless true" () (unless #t 42))
-(assert! "unless expr" 10 (unless (= 1 2) (+ 5 5)))
 
 ;; -- while --
 (define! while
@@ -453,15 +278,6 @@
           (loop))
         ()))
     (loop)))
-
-;; Test while with a counter
-(define! while-test-env (make-environment (current-environment)))
-(eval (quote (define! counter 0)) while-test-env)
-(eval (quote
-  (while (< counter 5)
-    (set! (current-environment) counter (+ counter 1))))
-  while-test-env)
-(assert! "while counter" 5 (eval (quote counter) while-test-env))
 
 ;; -- do-times --
 (define! do-times
@@ -496,10 +312,6 @@
             (try-clauses (cdr cs))))))
     (try-clauses clauses)))
 
-(assert! "case match first" 1 (case 1 (1 1) (2 2) (3 3)))
-(assert! "case match second" 2 (case 2 (1 1) (2 2) (3 3)))
-(assert! "case no match" () (case 9 (1 1) (2 2) (3 3)))
-
 ;; ============================================================================
 ;; 7. OBJECT SYSTEM VIA ENVIRONMENTS
 ;; ============================================================================
@@ -513,13 +325,6 @@
   (define! (fn dec!) (set! self count (- count 1)) count)
   (define! (fn reset! n) (set! self count n) count)
   self)
-
-(define! c (make-counter 0))
-(assert! "counter get" 0 (eval (quote (get)) c))
-(assert! "counter inc" 1 (eval (quote (inc!)) c))
-(assert! "counter inc 2" 2 (eval (quote (inc!)) c))
-(assert! "counter dec" 1 (eval (quote (dec!)) c))
-(assert! "counter reset" 0 (eval (quote (reset! 0)) c))
 
 ;; -- stack object --
 (define! (fn make-stack)
@@ -537,17 +342,6 @@
   (define! (fn size) (length items))
   self)
 
-(define! s (make-stack))
-(assert! "stack empty" #t (eval (quote (empty?)) s))
-(eval (quote (push! 1)) s)
-(eval (quote (push! 2)) s)
-(eval (quote (push! 3)) s)
-(assert! "stack size" 3 (eval (quote (size)) s))
-(assert! "stack peek" 3 (eval (quote (peek)) s))
-(assert! "stack pop" 3 (eval (quote (pop!)) s))
-(assert! "stack after pop" 2 (eval (quote (peek)) s))
-(assert! "stack size after pop" 2 (eval (quote (size)) s))
-
 ;; ============================================================================
 ;; 8. STRING OPERATIONS
 ;; ============================================================================
@@ -562,8 +356,6 @@
 (define! (fn string-map f str) (map f str))
 (define! (fn string-fold f init str) (fold f init str))
 
-(assert! "string-length" 5 (string-length "hello"))
-(assert! "string-length empty" 0 (string-length ""))
 ;; BUG: string-append and string-reverse operate on CharPair lists
 ;; but CharPair elements are single chars, not accessible via car/cdr
 ;; the same way as cons cells. car/cdr on strings returns CharPairs.
@@ -591,35 +383,9 @@
     (define! env-val (eval env-expr e))
     (eval (list (quote set!) (quote env-val) var (- (eval var env-val) 1)) (current-environment))))
 
-;; Test swap!
-(define! swap-test-env (make-environment (current-environment)))
-(eval (quote (begin (define! x 1) (define! y 2))) swap-test-env)
-(swap! swap-test-env x y)
-(assert! "swap! x" 2 (eval (quote x) swap-test-env))
-(assert! "swap! y" 1 (eval (quote y) swap-test-env))
-
-;; Test inc!/dec!
-(define! inc-test-env (make-environment (current-environment)))
-(eval (quote (define! n 10)) inc-test-env)
-(inc! inc-test-env n)
-(assert! "inc!" 11 (eval (quote n) inc-test-env))
-(dec! inc-test-env n)
-(assert! "dec!" 10 (eval (quote n) inc-test-env))
-
 ;; ============================================================================
-;; 10. FINAL SMOKE TESTS
+;; 10. SMOKE TEST DEFINITIONS
 ;; ============================================================================
-
-;; -- Fibonacci via named let --
-(assert! "fibonacci 10" 55
-  (let fib ((n 10) (a 0) (b 1))
-    (if (= n 0) a
-      (fib (- n 1) b (+ a b)))))
-
-(assert! "fibonacci 20" 6765
-  (let fib ((n 20) (a 0) (b 1))
-    (if (= n 0) a
-      (fib (- n 1) b (+ a b)))))
 
 ;; -- Quicksort --
 (define! (fn quicksort lst)
@@ -630,12 +396,6 @@
         (let ((less (filter (lambda (x) (< x pivot)) rest))
               (greater (filter (lambda (x) (>= x pivot)) rest)))
           (append (quicksort less) (cons pivot (quicksort greater))))))))
-
-(assert! "quicksort" (list 1 1 3 4 5) (quicksort (list 3 1 4 1 5)))
-(assert! "quicksort empty" () (quicksort ()))
-(assert! "quicksort single" (list 1) (quicksort (list 1)))
-(assert! "quicksort sorted" (list 1 2 3) (quicksort (list 1 2 3)))
-(assert! "quicksort reverse" (list 1 2 3 4 5) (quicksort (list 5 4 3 2 1)))
 
 ;; -- FizzBuzz 1-15 using cond --
 (define! (fn fizzbuzz n)
@@ -650,14 +410,6 @@
             (#t i))
           acc)))))
 
-;; -1 = fizz, -2 = buzz, -3 = fizzbuzz (using numbers since we can't easily
-;; compare strings)
-(assert! "fizzbuzz length" 15 (length (fizzbuzz 15)))
-(assert! "fizzbuzz 1" 1 (nth 0 (fizzbuzz 15)))
-(assert! "fizzbuzz 3" -1 (nth 2 (fizzbuzz 15)))
-(assert! "fizzbuzz 5" -2 (nth 4 (fizzbuzz 15)))
-(assert! "fizzbuzz 15" -3 (nth 14 (fizzbuzz 15)))
-
 ;; -- Tower of Hanoi --
 ;; Returns a list of moves as (from to) pairs.
 (define! (fn hanoi n from to aux)
@@ -666,11 +418,6 @@
       (hanoi (- n 1) from aux to)
       (cons (list from to)
         (hanoi (- n 1) aux to from)))))
-
-(assert! "hanoi 1 move count" 1 (length (hanoi 1 1 3 2)))
-(assert! "hanoi 2 move count" 3 (length (hanoi 2 1 3 2)))
-(assert! "hanoi 3 move count" 7 (length (hanoi 3 1 3 2)))
-(assert! "hanoi 4 move count" 15 (length (hanoi 4 1 3 2)))
 
 ;; -- Dictionary object via alist-backed environment pattern --
 (define! (fn make-dict)
@@ -686,6 +433,285 @@
   (define! (fn values) (alist-values data))
   (define! (fn has? key) (not (null? (assoc key data))))
   self)
+
+;; ============================================================================
+;; TESTS
+;; ============================================================================
+
+;; GC before tests
+(gc-collect)
+
+;; -- 2. Core list operations tests --
+
+(assert! "reverse basic" (list 3 2 1) (reverse (list 1 2 3)))
+(assert! "reverse empty" () (reverse ()))
+(assert! "reverse single" (list 1) (reverse (list 1)))
+(assert! "reverse two" (list 2 1) (reverse (list 1 2)))
+
+(assert! "map double" (list 2 4 6) (map (lambda (x) (* x 2)) (list 1 2 3)))
+(assert! "map empty" () (map (lambda (x) x) ()))
+(assert! "map single" (list 10) (map (lambda (x) (* x 10)) (list 1)))
+(assert! "map identity" (list 1 2 3) (map (lambda (x) x) (list 1 2 3)))
+
+(assert! "filter even" (list 2 4) (filter (lambda (x) (= 0 (- x (* (/ x 2) 2)))) (list 1 2 3 4 5)))
+(assert! "filter empty" () (filter (lambda (x) #t) ()))
+(assert! "filter none match" () (filter (lambda (x) #f) (list 1 2 3)))
+(assert! "filter all match" (list 1 2 3) (filter (lambda (x) #t) (list 1 2 3)))
+
+(assert! "fold sum" 10 (fold + 0 (list 1 2 3 4)))
+(assert! "fold empty" 0 (fold + 0 ()))
+(assert! "fold product" 24 (fold * 1 (list 1 2 3 4)))
+(assert! "fold sub" -10 (fold - 0 (list 1 2 3 4)))
+
+(assert! "foldr cons" (list 1 2 3) (foldr cons () (list 1 2 3)))
+(assert! "foldr empty" 0 (foldr + 0 ()))
+(assert! "foldr sub" 2 (foldr - 0 (list 1 2 3)))
+
+(assert! "append" (list 1 2 3 4) (append (list 1 2) (list 3 4)))
+(assert! "append empty left" (list 1 2) (append () (list 1 2)))
+(assert! "append empty right" (list 1 2) (append (list 1 2) ()))
+(assert! "append both empty" () (append () ()))
+
+(assert! "length" 5 (length (list 1 2 3 4 5)))
+(assert! "length empty" 0 (length ()))
+(assert! "length single" 1 (length (list 42)))
+
+(assert! "nth first" 1 (nth 0 (list 1 2 3 4)))
+(assert! "nth" 3 (nth 2 (list 1 2 3 4)))
+(assert! "nth last" 4 (nth 3 (list 1 2 3 4)))
+
+(assert! "last single" 1 (last (list 1)))
+(assert! "last multi" 3 (last (list 1 2 3)))
+(assert! "last two" 2 (last (list 1 2)))
+
+(assert! "take" (list 1 2 3) (take 3 (list 1 2 3 4 5)))
+(assert! "take zero" () (take 0 (list 1 2 3)))
+(assert! "take all" (list 1 2 3) (take 5 (list 1 2 3)))
+(assert! "take empty" () (take 3 ()))
+
+(assert! "drop" (list 4 5) (drop 3 (list 1 2 3 4 5)))
+(assert! "drop zero" (list 1 2 3) (drop 0 (list 1 2 3)))
+(assert! "drop all" () (drop 5 (list 1 2 3)))
+(assert! "drop empty" () (drop 3 ()))
+
+(assert! "zip" (list (list 1 4) (list 2 5) (list 3 6)) (zip (list 1 2 3) (list 4 5 6)))
+(assert! "zip empty" () (zip () ()))
+(assert! "zip uneven" (list (list 1 3)) (zip (list 1 2) (list 3)))
+(assert! "zip left empty" () (zip () (list 1 2)))
+
+(assert! "range" (list 0 1 2 3 4) (range 0 5))
+(assert! "range empty" () (range 5 5))
+(assert! "range single" (list 0) (range 0 1))
+(assert! "range negative" (list -2 -1 0) (range -2 1))
+
+(assert! "member?" #t (member? 3 (list 1 2 3 4)))
+(assert! "member? missing" #f (member? 9 (list 1 2 3)))
+(assert! "member? empty" #f (member? 1 ()))
+(assert! "member? first" #t (member? 1 (list 1 2 3)))
+
+(assert! "for-each returns nil" () (for-each (lambda (x) x) (list 1 2 3)))
+(assert! "for-each empty" () (for-each (lambda (x) x) ()))
+
+(assert! "flatten" (list 1 2 3 4 5 6) (flatten (list (list 1 2) (list 3 (list 4 5)) (list 6))))
+(assert! "flatten empty" () (flatten ()))
+(assert! "flatten flat" (list 1 2 3) (flatten (list 1 2 3)))
+(assert! "flatten nested" (list 1 2 3) (flatten (list (list (list 1)) 2 (list 3))))
+
+;; -- 3. Association list operations tests --
+
+(assert! "assoc found" (list 2 20)
+  (assoc 2 (list (list 1 10) (list 2 20) (list 3 30))))
+(assert! "assoc not found" ()
+  (assoc 9 (list (list 1 10) (list 2 20))))
+(assert! "assoc empty" () (assoc 1 ()))
+
+(assert! "acons" (list (list 1 10) (list 2 20))
+  (acons 1 10 (list (list 2 20))))
+(assert! "acons empty" (list (list 1 10)) (acons 1 10 ()))
+(assert! "acons shadow" (list (list 1 99) (list 1 10))
+  (acons 1 99 (list (list 1 10))))
+
+(assert! "alist-keys" (list 1 2 3)
+  (alist-keys (list (list 1 10) (list 2 20) (list 3 30))))
+(assert! "alist-keys empty" () (alist-keys ()))
+
+(assert! "alist-values" (list 10 20 30)
+  (alist-values (list (list 1 10) (list 2 20) (list 3 30))))
+(assert! "alist-values empty" () (alist-values ()))
+
+;; -- 4. Higher-order combinators tests --
+
+(assert! "compose" 10 ((compose (lambda (x) (* x 2)) (lambda (x) (+ x 2))) 3))
+(assert! "compose identity" 5 ((compose (lambda (x) x) (lambda (x) x)) 5))
+(assert! "compose negate-double" -6 ((compose (lambda (x) (- 0 x)) (lambda (x) (* x 2))) 3))
+
+(assert! "identity num" 42 (identity 42))
+(assert! "identity list" (list 1 2) (identity (list 1 2)))
+(assert! "identity bool" #t (identity #t))
+
+(assert! "constantly" 42 ((constantly 42) 1 2 3))
+(assert! "constantly no args" 42 ((constantly 42)))
+(assert! "constantly nil" () ((constantly ()) 1))
+
+(assert! "flip sub" -1 ((flip -) 3 2))
+(assert! "flip cons" (list 2 1) ((flip (lambda (a b) (list a b))) 1 2))
+(assert! "flip div" 2 ((flip /) 5 10))
+
+(assert! "complement null?" #t ((complement null?) (list 1)))
+(assert! "complement null? empty" #f ((complement null?) ()))
+(assert! "complement not" #f ((complement (lambda (x) #t)) 1))
+
+(assert! "juxt" (list 2 0) ((juxt (lambda (x) (+ x 1)) (lambda (x) (- x 1))) 1))
+(assert! "juxt single" (list 42) ((juxt identity) 42))
+
+(assert! "partial add" 5 ((partial + 2) 3))
+(assert! "partial add multi" 6 ((partial + 1 2) 3))
+(assert! "partial identity" 42 ((partial identity) 42))
+
+;; -- 5. Numeric utilities tests --
+
+(assert! "abs positive" 5 (abs 5))
+(assert! "abs negative" 5 (abs -5))
+(assert! "abs zero" 0 (abs 0))
+
+(assert! "min" 1 (min 1 2))
+(assert! "min equal" 3 (min 3 3))
+(assert! "min negative" -5 (min -5 3))
+
+(assert! "max" 2 (max 1 2))
+(assert! "max equal" 3 (max 3 3))
+(assert! "max negative" 3 (max -5 3))
+
+(assert! "zero? yes" #t (zero? 0))
+(assert! "zero? no" #f (zero? 1))
+(assert! "zero? negative" #f (zero? -1))
+
+(assert! "positive? yes" #t (positive? 1))
+(assert! "positive? no" #f (positive? 0))
+(assert! "positive? neg" #f (positive? -1))
+
+(assert! "negative? yes" #t (negative? -1))
+(assert! "negative? no" #f (negative? 0))
+(assert! "negative? pos" #f (negative? 1))
+
+(assert! "even? yes" #t (even? 4))
+(assert! "even? no" #f (even? 3))
+(assert! "even? zero" #t (even? 0))
+(assert! "even? negative" #t (even? -2))
+
+(assert! "odd? yes" #t (odd? 3))
+(assert! "odd? no" #f (odd? 4))
+(assert! "odd? one" #t (odd? 1))
+
+(assert! "sum" 10 (sum (list 1 2 3 4)))
+(assert! "sum empty" 0 (sum ()))
+(assert! "sum single" 42 (sum (list 42)))
+
+(assert! "product" 24 (product (list 1 2 3 4)))
+(assert! "product empty" 1 (product ()))
+(assert! "product single" 5 (product (list 5)))
+
+(assert! "gcd" 6 (gcd 12 18))
+(assert! "gcd coprime" 1 (gcd 7 13))
+(assert! "gcd same" 5 (gcd 5 5))
+(assert! "gcd one" 1 (gcd 1 100))
+
+;; -- 6. Control flow operatives tests --
+
+(assert! "when true" 42 (when #t 42))
+(assert! "when false" () (when #f 42))
+(assert! "when expr" 10 (when (= 1 1) (+ 5 5)))
+
+(assert! "unless false" 42 (unless #f 42))
+(assert! "unless true" () (unless #t 42))
+(assert! "unless expr" 10 (unless (= 1 2) (+ 5 5)))
+
+;; Test while with a counter
+(define! while-test-env (make-environment (current-environment)))
+(eval (quote (define! counter 0)) while-test-env)
+(eval (quote
+  (while (< counter 5)
+    (set! (current-environment) counter (+ counter 1))))
+  while-test-env)
+(assert! "while counter" 5 (eval (quote counter) while-test-env))
+
+(assert! "case match first" 1 (case 1 (1 1) (2 2) (3 3)))
+(assert! "case match second" 2 (case 2 (1 1) (2 2) (3 3)))
+(assert! "case no match" () (case 9 (1 1) (2 2) (3 3)))
+
+;; -- 7. Object system tests --
+
+(define! c (make-counter 0))
+(assert! "counter get" 0 (eval (quote (get)) c))
+(assert! "counter inc" 1 (eval (quote (inc!)) c))
+(assert! "counter inc 2" 2 (eval (quote (inc!)) c))
+(assert! "counter dec" 1 (eval (quote (dec!)) c))
+(assert! "counter reset" 0 (eval (quote (reset! 0)) c))
+
+(define! s (make-stack))
+(assert! "stack empty" #t (eval (quote (empty?)) s))
+(eval (quote (push! 1)) s)
+(eval (quote (push! 2)) s)
+(eval (quote (push! 3)) s)
+(assert! "stack size" 3 (eval (quote (size)) s))
+(assert! "stack peek" 3 (eval (quote (peek)) s))
+(assert! "stack pop" 3 (eval (quote (pop!)) s))
+(assert! "stack after pop" 2 (eval (quote (peek)) s))
+(assert! "stack size after pop" 2 (eval (quote (size)) s))
+
+;; -- 8. String operations tests --
+
+(assert! "string-length" 5 (string-length "hello"))
+(assert! "string-length empty" 0 (string-length ""))
+
+;; -- 9. Utility macros tests --
+
+;; Test swap!
+(define! swap-test-env (make-environment (current-environment)))
+(eval (quote (begin (define! x 1) (define! y 2))) swap-test-env)
+(swap! swap-test-env x y)
+(assert! "swap! x" 2 (eval (quote x) swap-test-env))
+(assert! "swap! y" 1 (eval (quote y) swap-test-env))
+
+;; Test inc!/dec!
+(define! inc-test-env (make-environment (current-environment)))
+(eval (quote (define! n 10)) inc-test-env)
+(inc! inc-test-env n)
+(assert! "inc!" 11 (eval (quote n) inc-test-env))
+(dec! inc-test-env n)
+(assert! "dec!" 10 (eval (quote n) inc-test-env))
+
+;; -- 10. Smoke tests --
+
+;; -- Fibonacci via named let --
+(assert! "fibonacci 10" 55
+  (let fib ((n 10) (a 0) (b 1))
+    (if (= n 0) a
+      (fib (- n 1) b (+ a b)))))
+
+(assert! "fibonacci 20" 6765
+  (let fib ((n 20) (a 0) (b 1))
+    (if (= n 0) a
+      (fib (- n 1) b (+ a b)))))
+
+(assert! "quicksort" (list 1 1 3 4 5) (quicksort (list 3 1 4 1 5)))
+(assert! "quicksort empty" () (quicksort ()))
+(assert! "quicksort single" (list 1) (quicksort (list 1)))
+(assert! "quicksort sorted" (list 1 2 3) (quicksort (list 1 2 3)))
+(assert! "quicksort reverse" (list 1 2 3 4 5) (quicksort (list 5 4 3 2 1)))
+
+;; -1 = fizz, -2 = buzz, -3 = fizzbuzz (using numbers since we can't easily
+;; compare strings)
+(assert! "fizzbuzz length" 15 (length (fizzbuzz 15)))
+(assert! "fizzbuzz 1" 1 (nth 0 (fizzbuzz 15)))
+(assert! "fizzbuzz 3" -1 (nth 2 (fizzbuzz 15)))
+(assert! "fizzbuzz 5" -2 (nth 4 (fizzbuzz 15)))
+(assert! "fizzbuzz 15" -3 (nth 14 (fizzbuzz 15)))
+
+(assert! "hanoi 1 move count" 1 (length (hanoi 1 1 3 2)))
+(assert! "hanoi 2 move count" 3 (length (hanoi 2 1 3 2)))
+(assert! "hanoi 3 move count" 7 (length (hanoi 3 1 3 2)))
+(assert! "hanoi 4 move count" 15 (length (hanoi 4 1 3 2)))
 
 (define! d (make-dict))
 (eval (list (quote set) 1 10) d)
@@ -705,5 +731,8 @@
 (define! double (partial * 2))
 (define! double-then-add1 (compose add1 double))
 (assert! "compose+partial" 11 (double-then-add1 5))
+
+;; GC after tests
+(gc-collect)
 
 (display "prelude loaded: all tests passed") (newline)
