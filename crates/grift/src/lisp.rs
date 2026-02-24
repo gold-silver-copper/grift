@@ -5,7 +5,7 @@ use core::cell::RefCell;
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
 use crate::io::{IoProvider, NullIoProvider};
-use crate::parse::Parser;
+use crate::parse::SliceSource;
 use crate::value::Value;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
@@ -230,23 +230,6 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             data = node;
         }
 
-        Ok(data)
-    }
-
-    /// Allocate a string (CharPair chain) from a slice of chars.
-    ///
-    /// Works like [`alloc_string`](Self::alloc_string) but accepts a `&[char]`
-    /// instead of a `&str`, which is useful when characters have been processed
-    /// individually (e.g. after escape-sequence resolution).
-    pub(crate) fn alloc_char_slice(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
-        if self.arena.available() < chars.len() {
-            return Err(ArenaError::OutOfMemory);
-        }
-        let mut data = ArenaIndex::NIL;
-        for &c in chars.iter().rev() {
-            let node = self.arena.alloc(Value::CharPair { ch: c, cdr: data })?;
-            data = node;
-        }
         Ok(data)
     }
 
@@ -847,11 +830,11 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Use with [`write_value`](Self::write_value) to properly display the
     /// result, including walking symbol names, string contents, and lists.
     pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
-        let mut parser = Parser::new(input);
+        let mut src = SliceSource::new(input);
 
         let mut result_idx = ArenaIndex::INERT;
-        while parser.has_more() {
-            let expr = parser.parse(self)?;
+        while src.has_more() {
+            let expr = self.parse_expr(&mut src)?;
             result_idx = self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)?;
         }
         Ok(result_idx)
