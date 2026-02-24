@@ -168,6 +168,7 @@ define_builtins! {
         "let"    => op_let    => op_let,
         "vau"    => op_vau    => op_vau,
         "current-environment" => op_current_env => op_current_env,
+        "load"   => op_load   => op_load,
     }
     applicatives {
         "cons"   => bi_cons   => builtin_cons,
@@ -204,8 +205,25 @@ define_builtins! {
         "gc-collect" => bi_gc_collect => builtin_gc_collect,
         "display"  => bi_display  => builtin_display,
         "newline"  => bi_newline  => builtin_newline,
+        "write"    => bi_write    => builtin_write,
         "error"    => bi_error    => builtin_error,
         "apply"    => bi_apply    => builtin_apply,
+        "read-char"  => bi_read_char  => builtin_read_char,
+        "peek-char"  => bi_peek_char  => builtin_peek_char,
+        "char-ready?" => bi_char_readyp => builtin_char_readyp,
+        "write-char" => bi_write_char => builtin_write_char,
+        "open-input-file"   => bi_open_input_file   => builtin_open_input_file,
+        "open-output-file"  => bi_open_output_file  => builtin_open_output_file,
+        "open-input-string" => bi_open_input_string => builtin_open_input_string,
+        "open-output-string" => bi_open_output_string => builtin_open_output_string,
+        "get-output-string"  => bi_get_output_string  => builtin_get_output_string,
+        "close-port"        => bi_close_port        => builtin_close_port,
+        "flush-output-port" => bi_flush_output_port => builtin_flush_output_port,
+        "port?"        => bi_portp        => builtin_portp,
+        "input-port?"  => bi_input_portp  => builtin_input_portp,
+        "output-port?" => bi_output_portp => builtin_output_portp,
+        "eof-object?"  => bi_eof_objectp  => builtin_eof_objectp,
+        "read"         => bi_read         => builtin_read,
 
     }
 }
@@ -1140,16 +1158,33 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         self.map_list(list, |_, h| Ok(h))
     }
 
-    /// `(display obj)` — write a human-readable representation of obj.
+    // ================================================================
+    // I/O builtins
+    // ================================================================
+
+    /// Extract a `PortId` from an optional port argument.
     ///
-    /// Borrows the [`IoProvider`] from the `RefCell` briefly, writes
-    /// through it, then drops the borrow before returning.
+    /// If `rest` is `NIL`, returns `default_port`.
+    /// Otherwise, expects a `Port` value as the first element.
+    fn opt_port(&self, rest: ArenaIndex, default_port: crate::io::PortId) -> ArenaResult<crate::io::PortId> {
+        if rest.is_nil() {
+            Ok(default_port)
+        } else {
+            let p = self.car(rest)?;
+            let id = self.get(p)?.as_port()?;
+            Ok(crate::io::PortId(id))
+        }
+    }
+
+    /// `(display obj)` or `(display obj port)` — write human-readable output.
     fn builtin_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
+        let rest = self.cdr(args)?;
+        let port = self.opt_port(rest, crate::io::PortId::STDOUT)?;
         {
             let mut io = self.io.borrow_mut();
             let mut w = crate::io::TraitIoWriter {
-                port: crate::io::PortId::STDOUT,
+                port,
                 io: &mut *io,
                 error: None,
             };
@@ -1158,12 +1193,28 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         Ok(val)
     }
 
-    /// `(newline)` — write a newline character.
-    ///
-    /// Borrows the [`IoProvider`] briefly to write `"\n"`.
-    fn builtin_newline(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let _ = self.io.borrow_mut().write_str(crate::io::PortId::STDOUT, "\n");
+    /// `(newline)` or `(newline port)` — write a newline character.
+    fn builtin_newline(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.opt_port(args, crate::io::PortId::STDOUT)?;
+        let _ = self.io.borrow_mut().write_str(port, "\n");
         Ok(ArenaIndex::INERT)
+    }
+
+    /// `(write obj)` or `(write obj port)` — write machine-readable output.
+    fn builtin_write(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.car(args)?;
+        let rest = self.cdr(args)?;
+        let port = self.opt_port(rest, crate::io::PortId::STDOUT)?;
+        {
+            let mut io = self.io.borrow_mut();
+            let mut w = crate::io::TraitIoWriter {
+                port,
+                io: &mut *io,
+                error: None,
+            };
+            let _ = self.write_value(val, &mut w);
+        }
+        Ok(val)
     }
 
     /// `(error msg)` — signal an error.
@@ -1183,5 +1234,414 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             self.car(rest2)?
         };
         self.apply_combiner(combiner, arg_list, env)
+    }
+
+    /// `(read-char)` or `(read-char port)` — read one character.
+    fn builtin_read_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.opt_port(args, crate::io::PortId::STDIN)?;
+        match self.io.borrow_mut().read_char(port) {
+            Ok(c) => self.char_val(c),
+            Err(crate::io::IoErrorKind::Eof) => self.arena.alloc(Value::Eof),
+            Err(_) => Err(ArenaError::IoError),
+        }
+    }
+
+    /// `(peek-char)` or `(peek-char port)` — peek at next character.
+    fn builtin_peek_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.opt_port(args, crate::io::PortId::STDIN)?;
+        match self.io.borrow_mut().peek_char(port) {
+            Ok(c) => self.char_val(c),
+            Err(crate::io::IoErrorKind::Eof) => self.arena.alloc(Value::Eof),
+            Err(_) => Err(ArenaError::IoError),
+        }
+    }
+
+    /// `(char-ready?)` or `(char-ready? port)` — check if a character is available.
+    fn builtin_char_readyp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.opt_port(args, crate::io::PortId::STDIN)?;
+        match self.io.borrow_mut().char_ready(port) {
+            Ok(ready) => Ok(ArenaIndex::from_bool(ready)),
+            Err(_) => Err(ArenaError::IoError),
+        }
+    }
+
+    /// `(write-char char)` or `(write-char char port)` — write one character.
+    fn builtin_write_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let ch_idx = self.car(args)?;
+        let ch = match self.get(ch_idx)? {
+            Value::CharPair { ch, .. } => ch,
+            _ => return Err(ArenaError::TypeError),
+        };
+        let rest = self.cdr(args)?;
+        let port = self.opt_port(rest, crate::io::PortId::STDOUT)?;
+        self.io.borrow_mut().write_char(port, ch).map_err(|_| ArenaError::IoError)?;
+        Ok(ArenaIndex::INERT)
+    }
+
+    /// `(open-input-file path)` — open a file for reading.
+    fn builtin_open_input_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let path_idx = self.car(args)?;
+        let mut buf = [0u8; 256];
+        let len = self.collect_string(path_idx, &mut buf)?;
+        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
+        let port = self.io.borrow_mut().open_input_file(path).map_err(|_| ArenaError::IoError)?;
+        self.arena.alloc(Value::Port(port.0))
+    }
+
+    /// `(open-output-file path)` — open a file for writing.
+    fn builtin_open_output_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let path_idx = self.car(args)?;
+        let mut buf = [0u8; 256];
+        let len = self.collect_string(path_idx, &mut buf)?;
+        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
+        let port = self.io.borrow_mut().open_output_file(path).map_err(|_| ArenaError::IoError)?;
+        self.arena.alloc(Value::Port(port.0))
+    }
+
+    /// `(open-input-string str)` — open a string port for reading.
+    fn builtin_open_input_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let str_idx = self.car(args)?;
+        let mut buf = [0u8; 4096];
+        let len = self.collect_string(str_idx, &mut buf)?;
+        let s = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
+        let port = self.io.borrow_mut().open_input_string(s).map_err(|_| ArenaError::IoError)?;
+        self.arena.alloc(Value::Port(port.0))
+    }
+
+    /// `(open-output-string)` — open a string port for writing.
+    fn builtin_open_output_string(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.io.borrow_mut().open_output_string().map_err(|_| ArenaError::IoError)?;
+        self.arena.alloc(Value::Port(port.0))
+    }
+
+    /// `(get-output-string port)` — retrieve accumulated string from an output string port.
+    fn builtin_get_output_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let p = self.car(args)?;
+        let id = self.get(p)?.as_port()?;
+        let port = crate::io::PortId(id);
+        let io = self.io.borrow();
+        let s = io.get_output_string(port).map_err(|_| ArenaError::IoError)?;
+        self.alloc_string(s)
+    }
+
+    /// `(close-port port)` — close a port.
+    fn builtin_close_port(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let p = self.car(args)?;
+        let id = self.get(p)?.as_port()?;
+        let port = crate::io::PortId(id);
+        self.io.borrow_mut().close_port(port).map_err(|_| ArenaError::IoError)?;
+        Ok(ArenaIndex::INERT)
+    }
+
+    /// `(flush-output-port)` or `(flush-output-port port)` — flush an output port.
+    fn builtin_flush_output_port(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.opt_port(args, crate::io::PortId::STDOUT)?;
+        self.io.borrow_mut().flush(port).map_err(|_| ArenaError::IoError)?;
+        Ok(ArenaIndex::INERT)
+    }
+
+    /// `(port? obj)` — test if obj is a port.
+    fn builtin_portp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.car(args)?;
+        Ok(ArenaIndex::from_bool(matches!(self.get(val)?, Value::Port(_))))
+    }
+
+    /// `(input-port? obj)` — test if obj is an input port.
+    fn builtin_input_portp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.car(args)?;
+        match self.get(val)? {
+            Value::Port(id) => {
+                let io = self.io.borrow();
+                Ok(ArenaIndex::from_bool(io.is_input_port(crate::io::PortId(id))))
+            }
+            _ => Ok(ArenaIndex::FALSE),
+        }
+    }
+
+    /// `(output-port? obj)` — test if obj is an output port.
+    fn builtin_output_portp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.car(args)?;
+        match self.get(val)? {
+            Value::Port(id) => {
+                let io = self.io.borrow();
+                Ok(ArenaIndex::from_bool(io.is_output_port(crate::io::PortId(id))))
+            }
+            _ => Ok(ArenaIndex::FALSE),
+        }
+    }
+
+    /// `(eof-object? obj)` — test if obj is the EOF sentinel.
+    fn builtin_eof_objectp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let val = self.car(args)?;
+        Ok(ArenaIndex::from_bool(matches!(self.get(val)?, Value::Eof)))
+    }
+
+    /// `(read)` or `(read port)` — read one s-expression from a port.
+    ///
+    /// Reads characters via `read_char` until a complete expression is formed.
+    /// Returns `#eof` at end of input.
+    fn builtin_read(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let port = self.opt_port(args, crate::io::PortId::STDIN)?;
+        self.read_from_port(port)
+    }
+
+    /// Read one s-expression from a port using the IoProvider's `read_char`.
+    ///
+    /// Accumulates characters into a stack buffer, parses when complete.
+    fn read_from_port(&self, port: crate::io::PortId) -> ArenaResult<ArenaIndex> {
+        // Skip whitespace and comments
+        loop {
+            let ch = match self.io.borrow_mut().read_char(port) {
+                Ok(c) => c,
+                Err(crate::io::IoErrorKind::Eof) => return self.arena.alloc(Value::Eof),
+                Err(_) => return Err(ArenaError::IoError),
+            };
+            match ch {
+                ' ' | '\t' | '\n' | '\r' => continue,
+                ';' => {
+                    // Skip to end of line
+                    loop {
+                        match self.io.borrow_mut().read_char(port) {
+                            Ok('\n') | Err(crate::io::IoErrorKind::Eof) => break,
+                            Ok(_) => continue,
+                            Err(_) => return Err(ArenaError::IoError),
+                        }
+                    }
+                }
+                _ => {
+                    // We have the first non-whitespace character.
+                    // Accumulate the full expression into a buffer.
+                    let mut buf = [0u8; 4096];
+                    let pos = ch.len_utf8();
+                    ch.encode_utf8(&mut buf[..]);
+                    return self.read_expr_from_port(port, &mut buf, pos);
+                }
+            }
+        }
+    }
+
+    /// Finish reading an s-expression after the first character has been consumed.
+    fn read_expr_from_port(
+        &self,
+        port: crate::io::PortId,
+        buf: &mut [u8; 4096],
+        initial_pos: usize,
+    ) -> ArenaResult<ArenaIndex> {
+        let mut pos = initial_pos;
+        let first = buf[0];
+
+        match first {
+            b'\'' => {
+                // Quote: read the next expression and wrap it
+                let inner = self.read_from_port(port)?;
+                let quote_sym = self.symbol("quote")?;
+                let inner_list = self.cons(inner, ArenaIndex::NIL)?;
+                self.cons(quote_sym, inner_list)
+            }
+            b'"' => {
+                // String literal: read until closing quote
+                // Reset pos since the opening quote is not part of the content
+                pos = 0;
+                loop {
+                    let ch = match self.io.borrow_mut().read_char(port) {
+                        Ok(c) => c,
+                        Err(_) => return Err(ArenaError::ParseError),
+                    };
+                    if ch == '"' {
+                        break;
+                    }
+                    if ch == '\\' {
+                        // Read escaped character
+                        let esc = match self.io.borrow_mut().read_char(port) {
+                            Ok(c) => c,
+                            Err(_) => return Err(ArenaError::ParseError),
+                        };
+                        let len = esc.len_utf8();
+                        if pos + len > buf.len() {
+                            return Err(ArenaError::InvalidArgument);
+                        }
+                        esc.encode_utf8(&mut buf[pos..]);
+                        pos += len;
+                    } else {
+                        let len = ch.len_utf8();
+                        if pos + len > buf.len() {
+                            return Err(ArenaError::InvalidArgument);
+                        }
+                        ch.encode_utf8(&mut buf[pos..]);
+                        pos += len;
+                    }
+                }
+                let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::ParseError)?;
+                self.alloc_string(s)
+            }
+            b'(' => {
+                // List: read elements until ')'
+                self.read_list_from_port(port)
+            }
+            b')' => Err(ArenaError::ParseError),
+            _ => {
+                // Atom: read until delimiter
+                loop {
+                    let ch = match self.io.borrow_mut().peek_char(port) {
+                        Ok(c) => c,
+                        Err(crate::io::IoErrorKind::Eof) => break,
+                        Err(_) => break,
+                    };
+                    match ch {
+                        ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';' => break,
+                        _ => {
+                            let _ = self.io.borrow_mut().read_char(port);
+                            let len = ch.len_utf8();
+                            if pos + len > buf.len() {
+                                return Err(ArenaError::InvalidArgument);
+                            }
+                            ch.encode_utf8(&mut buf[pos..]);
+                            pos += len;
+                        }
+                    }
+                }
+                let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::ParseError)?;
+                // Parse the atom
+                match s {
+                    "#t" | "#true" => Ok(ArenaIndex::TRUE),
+                    "#f" | "#false" => Ok(ArenaIndex::FALSE),
+                    "#inert" => Ok(ArenaIndex::INERT),
+                    "#ignore" => Ok(ArenaIndex::IGNORE),
+                    "#eof" => self.arena.alloc(Value::Eof),
+                    _ => {
+                        // Try as integer, else as symbol
+                        if let Some(n) = crate::parse::parse_integer(s) {
+                            self.number(n)
+                        } else {
+                            self.symbol(s)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read a list from a port: elements until ')'.
+    fn read_list_from_port(&self, port: crate::io::PortId) -> ArenaResult<ArenaIndex> {
+        // Skip whitespace
+        loop {
+            let ch = match self.io.borrow_mut().peek_char(port) {
+                Ok(c) => c,
+                Err(crate::io::IoErrorKind::Eof) => return Err(ArenaError::ParseError),
+                Err(_) => return Err(ArenaError::IoError),
+            };
+            match ch {
+                ' ' | '\t' | '\n' | '\r' => { let _ = self.io.borrow_mut().read_char(port); }
+                ';' => {
+                    let _ = self.io.borrow_mut().read_char(port);
+                    loop {
+                        match self.io.borrow_mut().read_char(port) {
+                            Ok('\n') | Err(crate::io::IoErrorKind::Eof) => break,
+                            Ok(_) => continue,
+                            Err(_) => return Err(ArenaError::IoError),
+                        }
+                    }
+                }
+                ')' => {
+                    let _ = self.io.borrow_mut().read_char(port);
+                    return Ok(ArenaIndex::NIL);
+                }
+                '.' => {
+                    // Check if it's a dot separator
+                    let _ = self.io.borrow_mut().read_char(port);
+                    let next = match self.io.borrow_mut().peek_char(port) {
+                        Ok(c) => c,
+                        Err(_) => return Err(ArenaError::ParseError),
+                    };
+                    if matches!(next, ' ' | '\t' | '\n' | '\r' | ')') {
+                        // Dotted pair
+                        let cdr = self.read_from_port(port)?;
+                        // Skip whitespace and consume ')'
+                        loop {
+                            let c = match self.io.borrow_mut().peek_char(port) {
+                                Ok(c) => c,
+                                Err(_) => return Err(ArenaError::ParseError),
+                            };
+                            match c {
+                                ' ' | '\t' | '\n' | '\r' => { let _ = self.io.borrow_mut().read_char(port); }
+                                ')' => { let _ = self.io.borrow_mut().read_char(port); return Ok(cdr); }
+                                _ => return Err(ArenaError::ParseError),
+                            }
+                        }
+                    } else {
+                        // It's a symbol starting with '.'
+                        let mut buf = [0u8; 4096];
+                        buf[0] = b'.';
+                        let expr = self.read_expr_from_port(port, &mut buf, 1)?;
+                        let rest = self.read_list_from_port(port)?;
+                        return self.cons(expr, rest);
+                    }
+                }
+                _ => break,
+            }
+        }
+        // Read car, then recurse for rest
+        let car = self.read_from_port(port)?;
+        let cdr = self.read_list_from_port(port)?;
+        self.cons(car, cdr)
+    }
+
+    // ================================================================
+    // Load operative
+    // ================================================================
+
+    /// `(load path)` — load and evaluate a file in the caller's environment.
+    ///
+    /// Evaluates its argument to get a path string, reads the file via
+    /// `IoProvider::read_file`, parses all expressions, and evaluates
+    /// each in the caller's environment.
+    fn op_load(
+        &self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail!({
+            let path_expr = self.car(args)?;
+            let path_val = self.eval_expr(path_expr, *env)?;
+            self.load_file(path_val, *env)
+        })
+    }
+
+    /// Load and evaluate expressions from a file path (CharPair chain).
+    fn load_file(
+        &self,
+        path_val: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let mut buf = [0u8; 256];
+        let len = self.collect_string(path_val, &mut buf)?;
+        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
+
+        // Read the file via IoProvider.
+        // We need to hold the borrow to access the string, parse all expressions
+        // into arena cells, then drop the borrow and evaluate.
+        let parsed_exprs = {
+            let mut io = self.io.borrow_mut();
+            let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
+            let mut parser = crate::parse::Parser::new(contents);
+            let mut list = ArenaIndex::NIL;
+            while parser.has_more() {
+                let e = parser.parse(self)?;
+                list = self.cons(e, list)?;
+            }
+            // Reverse so expressions are in order
+            self.reverse_list(list)?
+        };
+
+        // Now evaluate each expression in the caller's env
+        let mut result = ArenaIndex::INERT;
+        let mut cur = parsed_exprs;
+        while !cur.is_nil() {
+            let e = self.car(cur)?;
+            result = self.eval_expr(e, env)?;
+            cur = self.cdr(cur)?;
+        }
+        Ok(result)
     }
 }

@@ -6,6 +6,7 @@ use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 
 use crate::io::IoProvider;
 use crate::lisp::Lisp;
+use crate::value::Value;
 
 /// A simple S-expression parser.
 pub(crate) struct Parser<'a> {
@@ -159,6 +160,7 @@ impl<'a> Parser<'a> {
             "#f" | "#false" => Ok(ArenaIndex::FALSE),
             "#inert" => Ok(ArenaIndex::INERT),
             "#ignore" => Ok(ArenaIndex::IGNORE),
+            "#eof" => lisp.arena.alloc(Value::Eof),
             _ => parse_integer(s)
                 .map(|n| lisp.number(n))
                 .unwrap_or_else(|| lisp.symbol(s)),
@@ -167,7 +169,7 @@ impl<'a> Parser<'a> {
 }
 
 /// Parse an integer from a string slice without using std.
-fn parse_integer(s: &str) -> Option<isize> {
+pub(crate) fn parse_integer(s: &str) -> Option<isize> {
     let bytes = s.as_bytes();
     let (&first, rest) = bytes.split_first()?;
 

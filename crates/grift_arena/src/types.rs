@@ -196,6 +196,9 @@ pub enum ArenaError {
 
     /// Attempted to mutate an immutable environment (e.g., the ground environment).
     ImmutableEnvironment,
+
+    /// An I/O operation failed (read error, write error, unsupported, EOF, etc.).
+    IoError,
 }
 
 impl ArenaError {
@@ -215,6 +218,7 @@ impl ArenaError {
             ArenaError::UnboundVariable => "Unbound variable",
             ArenaError::NotCallable => "Not callable",
             ArenaError::ImmutableEnvironment => "Attempt to mutate immutable environment",
+            ArenaError::IoError => "I/O error",
         }
     }
 

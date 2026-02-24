@@ -292,7 +292,7 @@ fn test_gc_repeated_eval_no_leak() {
     // After collecting, arena should contain only the persistent evaluator
     // state (ground env, builtins, global env) plus singletons.
     assert!(
-        stats.allocated < 600,
+        stats.allocated < 900,
         "Arena should not keep growing without roots: allocated = {}",
         stats.allocated
     );
@@ -347,7 +347,7 @@ fn test_gc_list_operations_no_leak() {
 
     assert!(gc.collected > 0, "GC should collect list garbage");
     assert!(
-        stats.allocated < 600,
+        stats.allocated < 900,
         "Arena should not grow unbounded: allocated = {}",
         stats.allocated
     );
@@ -374,7 +374,7 @@ fn test_gc_stress_many_evals() {
 
     // After full GC, arena should contain only persistent evaluator state.
     assert!(
-        final_stats.allocated < 600,
+        final_stats.allocated < 900,
         "Arena should be mostly empty after GC: allocated = {}",
         final_stats.allocated
     );
@@ -3991,6 +3991,292 @@ fn test_std_io_provider_port_queries() {
     assert!(io.is_port_open(PortId::STDERR));
     // Invalid port
     assert!(!io.is_port_open(PortId(99)));
+}
+
+// ============================================================================
+// Port and I/O Builtin Tests
+// ============================================================================
+
+#[test]
+fn test_eof_object() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eof-object? #eof)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(eof-object? 42)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(eof-object? #t)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_port_predicates() {
+    use grift::{IoProvider, io::{PortId, IoResult}};
+
+    struct TestIo;
+    impl IoProvider for TestIo {
+        fn write_str(&mut self, _port: PortId, _s: &str) -> IoResult<()> { Ok(()) }
+        fn is_input_port(&self, port: PortId) -> bool { port == PortId::STDIN }
+        fn is_output_port(&self, port: PortId) -> bool {
+            port == PortId::STDOUT || port == PortId::STDERR
+        }
+    }
+
+    let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
+    // port? on a non-port value
+    assert_eq!(lisp.eval("(port? 42)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(port? #t)"), Ok(Value::Boolean(false)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_string_port_io_builtins() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // open-output-string, display to it, get-output-string
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (display "abc" p)
+          (equal? (get-output-string p) "abc"))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // write-char to output string port
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (write-char "X" p)
+          (write-char "Y" p)
+          (equal? (get-output-string p) "XY"))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // open-input-string, read-char
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "abc")))
+          (let ((c1 (read-char p))
+                (c2 (read-char p))
+                (c3 (read-char p)))
+            (list c1 c2 c3)))
+    "#);
+    // Should return list of single-char strings
+    assert!(result.is_ok());
+
+    // read-char at EOF returns #eof
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "")))
+          (eof-object? (read-char p)))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // peek-char doesn't consume
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "xy")))
+          (let ((c1 (peek-char p))
+                (c2 (peek-char p))
+                (c3 (read-char p)))
+            (equal? c1 c2)))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // close-port then read → error or eof
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "abc")))
+          (close-port p)
+          (eof-object? (read-char p)))
+    "#);
+    // Should error (PortClosed maps to IoError)
+    assert!(result.is_err());
+
+    // port? on a real port
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (port? p))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // input-port? / output-port?
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "x")))
+          (input-port? p))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (output-port? p))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "x")))
+          (output-port? p))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(false)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_read_from_string_port() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // read an atom from a string port
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "42")))
+          (read p))
+    "#);
+    assert_eq!(result, Ok(Value::Number(42)));
+
+    // read a list from a string port
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "(+ 1 2)")))
+          (equal? (read p) (list (quote +) 1 2)))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // read at EOF returns #eof
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "")))
+          (eof-object? (read p)))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // read a string literal via a multi-char string port
+    // (Grift's parser stores escape sequences raw, so we can't easily
+    //  construct a string containing quotes via string literals.
+    //  Test with a simpler input that can be round-tripped.)
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "42")))
+          (let ((v (read p)))
+            (= v 42)))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // read a symbol
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "foo")))
+          (symbol? (read p)))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // read multiple expressions
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "1 2 3")))
+          (let ((a (read p))
+                (b (read p))
+                (c (read p)))
+            (+ a b c)))
+    "#);
+    assert_eq!(result, Ok(Value::Number(6)));
+
+    // read boolean
+    let result = lisp.eval(
+        "(let ((p (open-input-string \"#t\")))\
+          (read p))"
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // read quoted expression
+    let result = lisp.eval(r#"
+        (let ((p (open-input-string "'foo")))
+          (equal? (read p) (quote (quote foo))))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_write_builtin() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // write a number to output string port
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (write 42 p)
+          (equal? (get-output-string p) "42"))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // write a boolean
+    let result = lisp.eval(
+        "(let ((p (open-output-string)))\
+          (write #t p)\
+          (equal? (get-output-string p) \"#t\"))"
+    );
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // write produces different output than display for strings
+    // (write adds quotes, display doesn't)
+    let result = lisp.eval(r#"
+        (let ((p1 (open-output-string))
+              (p2 (open-output-string)))
+          (display "hi" p1)
+          (write "hi" p2)
+          (not (equal? (get-output-string p1) (get-output-string p2))))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_display_with_port() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // display to output string port — strings without quotes
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (display "hello" p)
+          (equal? (get-output-string p) "hello"))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+
+    // newline to output string port
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (newline p)
+          (equal? (get-output-string p) "
+"))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_flush_output_port() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // flush-output-port should succeed on an output string port
+    let result = lisp.eval(r#"
+        (let ((p (open-output-string)))
+          (flush-output-port p))
+    "#);
+    assert_eq!(result, Ok(Value::Inert));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_load_builtin() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // Write a temporary Grift file, load it, check definitions are visible
+    std::fs::write("/tmp/test_load.grift", "(define! test-load-val 42)").unwrap();
+
+    let result = lisp.eval(r#"
+        (begin
+          (load "/tmp/test_load.grift")
+          test-load-val)
+    "#);
+    assert_eq!(result, Ok(Value::Number(42)));
+
+    // Clean up
+    let _ = std::fs::remove_file("/tmp/test_load.grift");
 }
 
 // ============================================================================

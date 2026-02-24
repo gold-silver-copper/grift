@@ -289,6 +289,32 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
+    /// Collect a `CharPair` chain into a fixed-size UTF-8 buffer.
+    ///
+    /// Returns the number of bytes written. If the string is longer than
+    /// the buffer, returns `Err(InvalidArgument)`.
+    pub(crate) fn collect_string(
+        &self,
+        idx: ArenaIndex,
+        buf: &mut [u8],
+    ) -> ArenaResult<usize> {
+        let mut pos = 0;
+        let mut cur = idx;
+        while !cur.is_nil() {
+            let Value::CharPair { ch, cdr } = self.arena.get(cur)? else {
+                return Err(ArenaError::TypeError);
+            };
+            let len = ch.len_utf8();
+            if pos + len > buf.len() {
+                return Err(ArenaError::InvalidArgument);
+            }
+            ch.encode_utf8(&mut buf[pos..]);
+            pos += len;
+            cur = cdr;
+        }
+        Ok(pos)
+    }
+
     // — Accessors —
 
     /// Get the value at an arena index.
@@ -738,6 +764,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             }
             Ok(Value::Inert) => w.write_str("#inert"),
             Ok(Value::Ignore) => w.write_str("#ignore"),
+            Ok(Value::Eof) => w.write_str("#eof"),
+            Ok(Value::Port(id)) => write!(w, "#<port {id}>"),
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }
