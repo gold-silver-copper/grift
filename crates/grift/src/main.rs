@@ -1,6 +1,4 @@
 use grift::Lisp;
-use grift::io::StdIoProvider;
-use grift::IoProvider;
 use grift::io::PortId;
 use rustyline::DefaultEditor;
 

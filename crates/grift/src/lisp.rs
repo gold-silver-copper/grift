@@ -655,34 +655,32 @@ impl<const N: usize> Lisp<N> {
 
     /// Write a value's display representation through an [`IoProvider`].
     ///
-    /// This is the trait-based equivalent of the `display` builtin,
-    /// suitable for use from Rust code with any I/O backend.
+    /// Streams output directly through the provider — no intermediate buffer,
+    /// no size limit.
     pub fn display_to_io(
         &self,
         idx: ArenaIndex,
         port: PortId,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        let mut buf = [0u8; 256];
-        let mut writer = StackWriter::new(&mut buf);
-        let _ = self.display_value(idx, &mut writer);
-        io.write_str(port, writer.as_str())
+        let mut w = crate::io::TraitIoWriter { port, io, error: None };
+        let _ = self.display_value(idx, &mut w);
+        w.error.map_or(Ok(()), Err)
     }
 
     /// Write a value's write representation through an [`IoProvider`].
     ///
-    /// This is the trait-based equivalent of `write_value`,
-    /// suitable for use from Rust code with any I/O backend.
+    /// Streams output directly through the provider — no intermediate buffer,
+    /// no size limit.
     pub fn write_to_io(
         &self,
         idx: ArenaIndex,
         port: PortId,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        let mut buf = [0u8; 256];
-        let mut writer = StackWriter::new(&mut buf);
-        let _ = self.write_value(idx, &mut writer);
-        io.write_str(port, writer.as_str())
+        let mut w = crate::io::TraitIoWriter { port, io, error: None };
+        let _ = self.write_value(idx, &mut w);
+        w.error.map_or(Ok(()), Err)
     }
 
     /// Emit I/O output through the currently configured write function.
@@ -835,40 +833,6 @@ impl<const N: usize> Lisp<N> {
                 }
             }
         }
-        Ok(())
-    }
-}
-
-/// A stack-allocated writer for formatting values without heap allocation.
-///
-/// Implements `core::fmt::Write` by writing UTF-8 bytes into a fixed-size
-/// buffer. Used by [`Lisp::display_to_io`] and [`Lisp::write_to_io`] to
-/// format values before sending them through an [`IoProvider`].
-pub(crate) struct StackWriter<'a> {
-    buf: &'a mut [u8],
-    pos: usize,
-}
-
-impl<'a> StackWriter<'a> {
-    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
-        StackWriter { buf, pos: 0 }
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        // core::fmt::Write::write_str only accepts valid UTF-8 by contract,
-        // so this should always succeed. The fallback is defensive since we
-        // forbid(unsafe_code) and cannot use from_utf8_unchecked.
-        core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("")
-    }
-}
-
-impl core::fmt::Write for StackWriter<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let bytes = s.as_bytes();
-        let remaining = self.buf.len() - self.pos;
-        let to_copy = bytes.len().min(remaining);
-        self.buf[self.pos..self.pos + to_copy].copy_from_slice(&bytes[..to_copy]);
-        self.pos += to_copy;
         Ok(())
     }
 }

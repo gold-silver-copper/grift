@@ -3863,6 +3863,133 @@ fn test_io_write_to_io() {
     assert_eq!(io2.output, "hello");
 }
 
+#[test]
+fn test_io_streaming_no_truncation() {
+    // Verify streaming output handles strings longer than 256 bytes
+    use grift::{IoProvider, io::{PortId, IoResult}};
+
+    struct CaptureIo {
+        output: String,
+    }
+    impl IoProvider for CaptureIo {
+        fn write_str(&mut self, _port: PortId, s: &str) -> IoResult<()> {
+            self.output.push_str(s);
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<100_000> = Lisp::new();
+    // Build a long string by concatenating. Use a string > 256 chars.
+    let long_str = "a]".repeat(200);
+    let expr = format!(r#""{}""#, long_str);
+    let idx = lisp.eval_to_index(&expr).unwrap();
+    let mut io = CaptureIo { output: String::new() };
+    lisp.display_to_io(idx, PortId::STDOUT, &mut io).unwrap();
+    // display_to_io should output the full 400-char string, not truncated at 256
+    assert_eq!(io.output.len(), 400, "streaming should not truncate output");
+    assert!(io.output.starts_with("a]a]a]"));
+}
+
+#[test]
+fn test_io_trait_io_writer_error_propagation() {
+    use grift::{IoProvider, io::{PortId, IoResult, IoErrorKind}};
+
+    struct FailIo;
+    impl IoProvider for FailIo {
+        fn write_str(&mut self, _port: PortId, _s: &str) -> IoResult<()> {
+            Err(IoErrorKind::WriteFailed)
+        }
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    let idx = lisp.eval_to_index("42").unwrap();
+    let mut io = FailIo;
+    let result = lisp.display_to_io(idx, PortId::STDOUT, &mut io);
+    assert_eq!(result, Err(IoErrorKind::WriteFailed));
+}
+
+#[test]
+fn test_io_null_provider_defaults() {
+    use grift::{IoProvider, NullIoProvider, io::{PortId, IoErrorKind}};
+
+    let mut io = NullIoProvider;
+    // write_str is a no-op
+    assert!(io.write_str(PortId::STDOUT, "hello").is_ok());
+    // Default methods return Unsupported
+    assert_eq!(io.read_char(PortId::STDIN), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.peek_char(PortId::STDIN), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.open_input_file("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.open_output_file("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.open_input_string("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.open_output_string(), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.close_port(PortId::STDOUT), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.file_exists("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.delete_file("foo"), Err(IoErrorKind::Unsupported));
+    // flush is Ok by default
+    assert!(io.flush(PortId::STDOUT).is_ok());
+    // Port queries
+    assert!(io.is_input_port(PortId::STDIN));
+    assert!(!io.is_input_port(PortId::STDOUT));
+    assert!(io.is_output_port(PortId::STDOUT));
+    assert!(io.is_output_port(PortId::STDERR));
+    assert!(!io.is_output_port(PortId::STDIN));
+    assert!(io.is_port_open(PortId::STDIN));
+    assert!(io.is_port_open(PortId::STDOUT));
+    assert!(io.is_port_open(PortId::STDERR));
+    assert!(!io.is_port_open(PortId(99)));
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_std_io_provider_string_ports() {
+    use grift::{IoProvider, StdIoProvider};
+
+    let mut io = StdIoProvider::new();
+
+    // Open an output string port, write to it, read back
+    let port = io.open_output_string().unwrap();
+    assert!(io.is_output_port(port));
+    assert!(!io.is_input_port(port));
+    assert!(io.is_port_open(port));
+    io.write_str(port, "hello ").unwrap();
+    io.write_str(port, "world").unwrap();
+    assert_eq!(io.get_output_string(port).unwrap(), "hello world");
+
+    // Close it
+    io.close_port(port).unwrap();
+    assert!(!io.is_port_open(port));
+
+    // Open an input string port and read chars
+    let iport = io.open_input_string("abc").unwrap();
+    assert!(io.is_input_port(iport));
+    assert!(!io.is_output_port(iport));
+    assert_eq!(io.read_char(iport).unwrap(), 'a');
+    assert_eq!(io.peek_char(iport).unwrap(), 'b');
+    assert_eq!(io.read_char(iport).unwrap(), 'b');
+    assert_eq!(io.read_char(iport).unwrap(), 'c');
+    assert_eq!(io.read_char(iport), Err(grift::io::IoErrorKind::Eof));
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_std_io_provider_port_queries() {
+    use grift::{IoProvider, StdIoProvider, io::PortId};
+
+    let io = StdIoProvider::new();
+    // Standard port queries
+    assert!(io.is_input_port(PortId::STDIN));
+    assert!(io.is_output_port(PortId::STDOUT));
+    assert!(io.is_output_port(PortId::STDERR));
+    assert!(!io.is_input_port(PortId::STDOUT));
+    assert!(!io.is_output_port(PortId::STDIN));
+    // Standard ports always open
+    assert!(io.is_port_open(PortId::STDIN));
+    assert!(io.is_port_open(PortId::STDOUT));
+    assert!(io.is_port_open(PortId::STDERR));
+    // Invalid port
+    assert!(!io.is_port_open(PortId(99)));
+}
+
 // ============================================================================
 // Prelude Test
 // ============================================================================

@@ -1141,15 +1141,15 @@ impl<const N: usize> Lisp<N> {
 
     /// `(display obj)` — write a human-readable representation of obj.
     ///
-    /// Output is routed through the [`IoProvider`](crate::io::IoProvider)
-    /// configured via [`set_io`](Self::set_io).  When no provider is set,
-    /// output is silently discarded.
+    /// Output is streamed directly through the [`IoProvider`](crate::io::IoProvider)
+    /// configured via [`set_io`](Self::set_io). No intermediate buffer.
     fn builtin_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
-        let mut buf = [0u8; 256];
-        let mut writer = crate::lisp::StackWriter::new(&mut buf);
-        let _ = self.display_value(val, &mut writer);
-        self.io_write(crate::io::PortId::STDOUT, writer.as_str());
+        let mut w = crate::io::IoWriter {
+            port: crate::io::PortId::STDOUT,
+            write_fn: self.write_fn.get(),
+        };
+        let _ = self.display_value(val, &mut w);
         Ok(val)
     }
 
