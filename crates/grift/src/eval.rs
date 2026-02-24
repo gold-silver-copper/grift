@@ -41,11 +41,13 @@ macro_rules! type_predicate {
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
             let mut cur = args;
             while !cur.is_nil() {
-                let val = self.car(cur)?;
+                let Value::Cons { car: val, cdr: next } = self.arena.get(cur)? else {
+                    return Err(ArenaError::TypeError);
+                };
                 if !matches!(self.get(val)?, $pat) {
                     return Ok(ArenaIndex::FALSE);
                 }
-                cur = self.cdr(cur)?;
+                cur = next;
             }
             Ok(ArenaIndex::TRUE)
         }
@@ -59,9 +61,12 @@ macro_rules! fold_numbers {
         let mut acc: isize = $init;
         let mut cur = $args;
         while !cur.is_nil() {
-            let n = $self.get($self.car(cur)?)?.as_number()?;
+            let Value::Cons { car, cdr: next } = $self.arena.get(cur)? else {
+                return Err(ArenaError::TypeError);
+            };
+            let n = $self.get(car)?.as_number()?;
             acc = acc.$op(n).ok_or(ArenaError::ArithmeticOverflow)?;
-            cur = $self.cdr(cur)?;
+            cur = next;
         }
         $self.number(acc)
     }};
@@ -478,14 +483,16 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         let mut cur = args;
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
-            let head_expr = self.car(cur)?;
+            let Value::Cons { car: head_expr, cdr: next } = self.arena.get(cur)? else {
+                return Err(ArenaError::TypeError);
+            };
             self.push_root(reversed)?;
             self.push_root(env)?;
             self.push_root(cur)?;
             let head_val = self.eval_expr(head_expr, env)?;
             self.pop_roots(3);
             reversed = self.cons(head_val, reversed)?;
-            cur = self.cdr(cur)?;
+            cur = next;
         }
         // Reverse in place — all cons cells are freshly allocated by us.
         self.reverse_chain(reversed)
@@ -633,12 +640,13 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
-                let next = self.cdr(cur)?;
+                let Value::Cons { car: e, cdr: next } = self.arena.get(cur)? else {
+                    return Err(ArenaError::TypeError);
+                };
                 if next.is_nil() {
-                    *expr = self.car(cur)?;
+                    *expr = e;
                     return Ok(());
                 }
-                let e = self.car(cur)?;
                 self.eval_expr(e, *env)?;
                 cur = next;
             }
@@ -701,8 +709,9 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
             let mut cur = args;
             while !cur.is_nil() {
-                let next = self.cdr(cur)?;
-                let e = self.car(cur)?;
+                let Value::Cons { car: e, cdr: next } = self.arena.get(cur)? else {
+                    return Err(ArenaError::TypeError);
+                };
                 let val = self.eval_expr(e, *env)?;
                 let b = self.get(val)?.as_bool()?;
                 if b != continue_while_truthy {
@@ -769,12 +778,14 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 self.push_root(local_env)?;
                 let mut cur = bindings;
                 while !cur.is_nil() {
-                    let binding = self.car(cur)?;
+                    let Value::Cons { car: binding, cdr: next } = self.arena.get(cur)? else {
+                        return Err(ArenaError::TypeError);
+                    };
                     let name = self.car(binding)?;
                     let val_expr = self.cadr(binding)?;
                     let val = self.eval_expr(val_expr, *env)?;
                     self.env_define(local_env, name, val)?;
-                    cur = self.cdr(cur)?;
+                    cur = next;
                 }
                 self.pop_roots(1);
 
@@ -912,10 +923,12 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         let mut cur = list;
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
-            let head = self.car(cur)?;
+            let Value::Cons { car: head, cdr: next } = self.arena.get(cur)? else {
+                return Err(ArenaError::TypeError);
+            };
             let val = f(self, head)?;
             reversed = self.cons(val, reversed)?;
-            cur = self.cdr(cur)?;
+            cur = next;
         }
         self.reverse_chain(reversed)
     }
@@ -1102,11 +1115,13 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         // Validate all arguments are environments.
         let mut cur = args;
         while !cur.is_nil() {
-            let v = self.car(cur)?;
+            let Value::Cons { car: v, cdr: next } = self.arena.get(cur)? else {
+                return Err(ArenaError::TypeError);
+            };
             if !matches!(self.get(v)?, Value::Environment { .. }) {
                 return Err(ArenaError::TypeError);
             }
-            cur = self.cdr(cur)?;
+            cur = next;
         }
         // Copy the parents list so it's independent of the original.
         let parents = self.copy_list(args)?;
