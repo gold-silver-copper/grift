@@ -388,15 +388,10 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     ) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !head.is_nil() {
-            let val = self.arena.get(head)?;
-            let cdr = match val {
-                Value::Cons { cdr, .. } | Value::CharPair { cdr, .. } => cdr,
+            let (new_val, cdr) = match self.arena.get(head)? {
+                Value::Cons { car, cdr } => (Value::Cons { car, cdr: prev }, cdr),
+                Value::CharPair { ch, cdr } => (Value::CharPair { ch, cdr: prev }, cdr),
                 _ => return Err(ArenaError::TypeError),
-            };
-            let new_val = match val {
-                Value::Cons { car, .. } => Value::Cons { car, cdr: prev },
-                Value::CharPair { ch, .. } => Value::CharPair { ch, cdr: prev },
-                _ => unreachable!(),
             };
             self.arena.set(head, new_val)?;
             prev = head;
