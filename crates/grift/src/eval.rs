@@ -14,6 +14,12 @@ use crate::io::IoProvider;
 use crate::lisp::Lisp;
 use crate::value::{BuiltinId, Value};
 
+/// Maximum size of a file path extracted from a CharPair chain (bytes).
+const MAX_PATH_LEN: usize = 256;
+
+/// Maximum size of a string extracted from a CharPair chain for port I/O (bytes).
+const MAX_PORT_STRING_LEN: usize = 4096;
+
 /// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
 /// `Err(e)` → `Return(Err(e))`.  Wraps the body in an IIFE so `?` and
 /// early `return` work naturally inside operatives.
@@ -1281,7 +1287,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `(open-input-file path)` — open a file for reading.
     fn builtin_open_input_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; MAX_PATH_LEN];
         let len = self.collect_string(path_idx, &mut buf)?;
         let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
         let port = self.io.borrow_mut().open_input_file(path).map_err(|_| ArenaError::IoError)?;
@@ -1291,7 +1297,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `(open-output-file path)` — open a file for writing.
     fn builtin_open_output_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; MAX_PATH_LEN];
         let len = self.collect_string(path_idx, &mut buf)?;
         let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
         let port = self.io.borrow_mut().open_output_file(path).map_err(|_| ArenaError::IoError)?;
@@ -1301,7 +1307,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `(open-input-string str)` — open a string port for reading.
     fn builtin_open_input_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let str_idx = self.car(args)?;
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; MAX_PORT_STRING_LEN];
         let len = self.collect_string(str_idx, &mut buf)?;
         let s = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
         let port = self.io.borrow_mut().open_input_string(s).map_err(|_| ArenaError::IoError)?;
@@ -1411,7 +1417,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 _ => {
                     // We have the first non-whitespace character.
                     // Accumulate the full expression into a buffer.
-                    let mut buf = [0u8; 4096];
+                    let mut buf = [0u8; MAX_PORT_STRING_LEN];
                     let pos = ch.len_utf8();
                     ch.encode_utf8(&mut buf[..]);
                     return self.read_expr_from_port(port, &mut buf, pos);
@@ -1570,7 +1576,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                         }
                     } else {
                         // It's a symbol starting with '.'
-                        let mut buf = [0u8; 4096];
+                        let mut buf = [0u8; MAX_PORT_STRING_LEN];
                         buf[0] = b'.';
                         let expr = self.read_expr_from_port(port, &mut buf, 1)?;
                         let rest = self.read_list_from_port(port)?;
@@ -1614,7 +1620,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         path_val: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; MAX_PATH_LEN];
         let len = self.collect_string(path_val, &mut buf)?;
         let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
 

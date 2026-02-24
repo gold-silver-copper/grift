@@ -4266,17 +4266,16 @@ fn test_load_builtin() {
     let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
 
     // Write a temporary Grift file, load it, check definitions are visible
-    std::fs::write("/tmp/test_load.grift", "(define! test-load-val 42)").unwrap();
+    let tmp = std::env::temp_dir().join("test_load.grift");
+    let tmp_path = tmp.to_str().unwrap();
+    std::fs::write(&tmp, "(define! test-load-val 42)").unwrap();
 
-    let result = lisp.eval(r#"
-        (begin
-          (load "/tmp/test_load.grift")
-          test-load-val)
-    "#);
+    let program = std::format!("(begin (load \"{tmp_path}\") test-load-val)");
+    let result = lisp.eval(&program);
     assert_eq!(result, Ok(Value::Number(42)));
 
     // Clean up
-    let _ = std::fs::remove_file("/tmp/test_load.grift");
+    let _ = std::fs::remove_file(&tmp);
 }
 
 // ============================================================================
