@@ -4113,7 +4113,8 @@ fn test_raw_file_operations() {
                (raw-close s)
                result))"#
     );
-    // raw-read parses "hello" as a symbol
+    // Read first s-expression back from the file stream.
+    // File contains "hello world"; raw-read parses the first token "hello" as a symbol.
     let result = lisp.eval(&program);
     assert!(result.is_ok());
 
