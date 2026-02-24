@@ -345,6 +345,144 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         Ok(pos)
     }
 
+    /// Extract a file path from a CharPair chain and pass it to a closure.
+    ///
+    /// The path is collected into a 256-byte stack-allocated buffer.
+    /// Returns `Err(InvalidArgument)` if the path exceeds this limit.
+    pub(crate) fn with_path<F, R>(&self, idx: ArenaIndex, f: F) -> ArenaResult<R>
+    where
+        F: FnOnce(&str) -> ArenaResult<R>,
+    {
+        let mut buf = [0u8; 256];
+        let len = self.collect_string(idx, &mut buf)?;
+        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
+        f(path)
+    }
+
+    /// Create an iterator over the characters in a CharPair chain.
+    pub(crate) fn chars_iter(&self, idx: ArenaIndex) -> CharPairIter<'_, N, IO> {
+        CharPairIter { lisp: self, idx }
+    }
+
+    /// Append a character to the end of a CharPair chain.
+    ///
+    /// If `tail` is NIL (empty chain), returns the newly allocated node as
+    /// both the new head and new tail.  Otherwise links the new node to
+    /// the current tail and returns `(head, new_tail)`.
+    pub(crate) fn append_char(
+        &self,
+        head: ArenaIndex,
+        tail: ArenaIndex,
+        ch: char,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        let node = self.arena.alloc(Value::CharPair { ch, cdr: ArenaIndex::NIL })?;
+        if head.is_nil() {
+            Ok((node, node))
+        } else {
+            let Value::CharPair { ch: tc, .. } = self.arena.get(tail)? else {
+                return Err(ArenaError::TypeError);
+            };
+            self.arena.set(tail, Value::CharPair { ch: tc, cdr: node })?;
+            Ok((head, node))
+        }
+    }
+
+    /// Intern a symbol from an existing CharPair chain.
+    ///
+    /// If a symbol with the same name already exists, returns the existing
+    /// symbol index (the chain is left as garbage for GC).  Otherwise
+    /// creates a new symbol using the provided chain as its name.
+    pub(crate) fn symbol_from_chain(&self, char_head: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Walk the intern alist looking for a match
+        let intern_head = self.car(ArenaIndex::INTERN_LIST)?;
+        let mut cur = intern_head;
+        while !cur.is_nil() {
+            let sym = self.car(cur)?;
+            let Value::Symbol(existing_chars) = self.arena.get(sym)? else {
+                cur = self.cdr(cur)?;
+                continue;
+            };
+            if self.strings_equal(existing_chars, char_head).unwrap_or(false) {
+                return Ok(sym);
+            }
+            cur = self.cdr(cur)?;
+        }
+
+        // Not found — create new symbol with the existing chain
+        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let new_head = self.cons(sym_idx, intern_head)?;
+
+        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
+            unreachable!();
+        };
+        self.arena.set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
+
+        Ok(sym_idx)
+    }
+
+    /// Parse an integer from a CharPair chain.
+    ///
+    /// Returns `Some(n)` if the chain represents a valid integer literal
+    /// (optional leading `-` or `+`, followed by one or more digits).
+    /// Returns `None` otherwise.
+    pub(crate) fn parse_integer_from_chain(&self, head: ArenaIndex) -> Option<isize> {
+        let mut cur = head;
+        let mut first = true;
+        let mut negative = false;
+        let mut result: isize = 0;
+        let mut has_digits = false;
+
+        while !cur.is_nil() {
+            let Value::CharPair { ch, cdr } = self.arena.get(cur).ok()? else {
+                return None;
+            };
+            if first {
+                first = false;
+                if ch == '-' {
+                    negative = true;
+                    cur = cdr;
+                    continue;
+                } else if ch == '+' {
+                    cur = cdr;
+                    continue;
+                }
+            }
+            if ch.is_ascii_digit() {
+                has_digits = true;
+                result = result.checked_mul(10)?;
+                result = result.checked_add((ch as u8 - b'0') as isize)?;
+            } else {
+                return None;
+            }
+            cur = cdr;
+        }
+
+        if !has_digits {
+            return None;
+        }
+        Some(if negative { -result } else { result })
+    }
+
+    /// Classify an atom represented as a CharPair chain.
+    ///
+    /// Checks for booleans (#t, #f, etc.), #inert, #ignore, numbers, and
+    /// symbols.  Returns the appropriate arena value.
+    pub(crate) fn classify_atom(&self, chain: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        if self.string_eq(chain, "#t") || self.string_eq(chain, "#true") {
+            Ok(ArenaIndex::TRUE)
+        } else if self.string_eq(chain, "#f") || self.string_eq(chain, "#false") {
+            Ok(ArenaIndex::FALSE)
+        } else if self.string_eq(chain, "#inert") {
+            Ok(ArenaIndex::INERT)
+        } else if self.string_eq(chain, "#ignore") {
+            Ok(ArenaIndex::IGNORE)
+        } else if let Some(n) = self.parse_integer_from_chain(chain) {
+            self.number(n)
+        } else {
+            self.symbol_from_chain(chain)
+        }
+    }
+
     // — Accessors —
 
     /// Get the value at an arena index.
@@ -922,6 +1060,95 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     w.write_str(" . ")?;
                     self.write_value(idx, w)?;
                     break;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// CharPairIter — iterator over characters in a CharPair chain
+// ============================================================================
+
+/// An iterator that yields characters from a `CharPair` chain in the arena.
+///
+/// Useful for streaming CharPair content to [`IoProvider`] methods like
+/// [`write_file_chars`](crate::io::IoProvider::write_file_chars) without
+/// materializing the entire string into a buffer.
+pub(crate) struct CharPairIter<'a, const N: usize, IO: IoProvider> {
+    lisp: &'a Lisp<N, IO>,
+    idx: ArenaIndex,
+}
+
+impl<const N: usize, IO: IoProvider> Iterator for CharPairIter<'_, N, IO> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        if self.idx.is_nil() {
+            return None;
+        }
+        match self.lisp.arena.get(self.idx) {
+            Ok(Value::CharPair { ch, cdr }) => {
+                self.idx = cdr;
+                Some(ch)
+            }
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// ArenaWriter — core::fmt::Write that builds a CharPair chain in the arena
+// ============================================================================
+
+/// A [`core::fmt::Write`] implementation that allocates `CharPair` nodes
+/// directly into the arena, building a string without any intermediate buffer.
+///
+/// Characters are appended in forward order (head points to the first
+/// character).  Call [`finish`](Self::finish) to retrieve the head of the
+/// resulting `CharPair` chain.
+pub(crate) struct ArenaWriter<'a, const N: usize, IO: IoProvider> {
+    lisp: &'a Lisp<N, IO>,
+    head: ArenaIndex,
+    tail: ArenaIndex,
+    error: Option<ArenaError>,
+}
+
+impl<'a, const N: usize, IO: IoProvider> ArenaWriter<'a, N, IO> {
+    pub(crate) fn new(lisp: &'a Lisp<N, IO>) -> Self {
+        ArenaWriter {
+            lisp,
+            head: ArenaIndex::NIL,
+            tail: ArenaIndex::NIL,
+            error: None,
+        }
+    }
+
+    /// Consume the writer and return the head of the CharPair chain,
+    /// or an error if any allocation failed during writing.
+    pub(crate) fn finish(self) -> ArenaResult<ArenaIndex> {
+        match self.error {
+            Some(e) => Err(e),
+            None => Ok(self.head),
+        }
+    }
+}
+
+impl<const N: usize, IO: IoProvider> core::fmt::Write for ArenaWriter<'_, N, IO> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.error.is_some() {
+            return Err(core::fmt::Error);
+        }
+        for ch in s.chars() {
+            match self.lisp.append_char(self.head, self.tail, ch) {
+                Ok((h, t)) => {
+                    self.head = h;
+                    self.tail = t;
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                    return Err(core::fmt::Error);
                 }
             }
         }

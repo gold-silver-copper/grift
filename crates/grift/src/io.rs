@@ -72,6 +72,18 @@ pub trait IoProvider {
     /// Write a string slice to stderr.
     fn write_stderr(&mut self, s: &str) -> IoResult<()>;
 
+    /// Write a single character to stdout (handles UTF-8 encoding internally).
+    fn write_char_stdout(&mut self, c: char) -> IoResult<()> {
+        let mut buf = [0u8; 4];
+        self.write_stdout(c.encode_utf8(&mut buf))
+    }
+
+    /// Write a single character to stderr (handles UTF-8 encoding internally).
+    fn write_char_stderr(&mut self, c: char) -> IoResult<()> {
+        let mut buf = [0u8; 4];
+        self.write_stderr(c.encode_utf8(&mut buf))
+    }
+
     /// Read a single character from stdin.
     fn read_stdin_char(&mut self) -> IoResult<char> {
         Err(IoErrorKind::Unsupported)
@@ -89,6 +101,13 @@ pub trait IoProvider {
 
     /// Write a string to a file (creating or truncating).
     fn write_file(&mut self, _path: &str, _content: &str) -> IoResult<()> {
+        Err(IoErrorKind::Unsupported)
+    }
+
+    /// Write characters from an iterator to a file (creating or truncating).
+    ///
+    /// Streams content directly without requiring a contiguous buffer.
+    fn write_file_chars(&mut self, _path: &str, _chars: &mut dyn Iterator<Item = char>) -> IoResult<()> {
         Err(IoErrorKind::Unsupported)
     }
 
@@ -259,6 +278,16 @@ mod std_io {
 
         fn write_file(&mut self, path: &str, content: &str) -> IoResult<()> {
             std::fs::write(path, content).map_err(|_| IoErrorKind::WriteFailed)
+        }
+
+        fn write_file_chars(&mut self, path: &str, chars: &mut dyn Iterator<Item = char>) -> IoResult<()> {
+            let mut file = std::fs::File::create(path).map_err(|_| IoErrorKind::WriteFailed)?;
+            let mut buf = [0u8; 4];
+            for c in chars {
+                let s = c.encode_utf8(&mut buf);
+                file.write_all(s.as_bytes()).map_err(|_| IoErrorKind::WriteFailed)?;
+            }
+            Ok(())
         }
 
         fn file_exists(&self, path: &str) -> IoResult<bool> {

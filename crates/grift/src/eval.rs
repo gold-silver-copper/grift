@@ -11,15 +11,8 @@
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::io::IoProvider;
-use crate::lisp::Lisp;
+use crate::lisp::{ArenaWriter, Lisp};
 use crate::value::{BuiltinId, Value};
-
-/// Maximum size of a file path extracted from a CharPair chain (bytes).
-const MAX_PATH_LEN: usize = 256;
-
-/// Maximum size of a string extracted from a CharPair chain for
-/// `raw-read-string` / `raw-write-file` (bytes).
-const MAX_STRING_BUF_LEN: usize = 4096;
 
 /// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
 /// `Err(e)` → `Return(Err(e))`.  Wraps the body in an IIFE so `?` and
@@ -1210,9 +1203,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             let Value::CharPair { ch, cdr } = self.get(idx)? else {
                 return Err(ArenaError::TypeError);
             };
-            let mut buf = [0u8; 4];
-            let s = ch.encode_utf8(&mut buf);
-            let _ = self.io.borrow_mut().write_stdout(s);
+            let _ = self.io.borrow_mut().write_char_stdout(ch);
             idx = cdr;
         }
         Ok(())
@@ -1224,9 +1215,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             let Value::CharPair { ch, cdr } = self.get(idx)? else {
                 return Err(ArenaError::TypeError);
             };
-            let mut buf = [0u8; 4];
-            let s = ch.encode_utf8(&mut buf);
-            let _ = self.io.borrow_mut().write_stderr(s);
+            let _ = self.io.borrow_mut().write_char_stderr(ch);
             idx = cdr;
         }
         Ok(())
@@ -1261,15 +1250,11 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `(raw-read-file path)` — read entire file into a CharPair chain.
     fn builtin_raw_read_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
-        let mut buf = [0u8; MAX_PATH_LEN];
-        let len = self.collect_string(path_idx, &mut buf)?;
-        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
-        let mut io = self.io.borrow_mut();
-        // SAFETY: We need the borrow to last long enough to get the &str,
-        // then we allocate from it. This is fine because alloc_string
-        // doesn't touch io.
-        let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
-        self.alloc_string(contents)
+        self.with_path(path_idx, |path| {
+            let mut io = self.io.borrow_mut();
+            let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
+            self.alloc_string(contents)
+        })
     }
 
     /// `(raw-write-file path str)` — write a string to a file.
@@ -1277,112 +1262,61 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         let path_idx = self.car(args)?;
         let rest = self.cdr(args)?;
         let str_idx = self.car(rest)?;
-        let mut path_buf = [0u8; MAX_PATH_LEN];
-        let path_len = self.collect_string(path_idx, &mut path_buf)?;
-        let path = core::str::from_utf8(&path_buf[..path_len]).map_err(|_| ArenaError::InvalidArgument)?;
-        let mut str_buf = [0u8; MAX_STRING_BUF_LEN];
-        let str_len = self.collect_string(str_idx, &mut str_buf)?;
-        let content = core::str::from_utf8(&str_buf[..str_len]).map_err(|_| ArenaError::InvalidArgument)?;
-        self.io.borrow_mut().write_file(path, content).map_err(|_| ArenaError::IoError)?;
-        Ok(ArenaIndex::INERT)
+        self.with_path(path_idx, |path| {
+            let mut chars = self.chars_iter(str_idx);
+            self.io.borrow_mut()
+                .write_file_chars(path, &mut chars)
+                .map_err(|_| ArenaError::IoError)?;
+            Ok(ArenaIndex::INERT)
+        })
     }
 
     /// `(raw-file-exists? path)` — check if a file exists.
     fn builtin_raw_file_existsp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
-        let mut buf = [0u8; MAX_PATH_LEN];
-        let len = self.collect_string(path_idx, &mut buf)?;
-        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
-        match self.io.borrow().file_exists(path) {
-            Ok(exists) => Ok(ArenaIndex::from_bool(exists)),
-            Err(_) => Err(ArenaError::IoError),
-        }
+        self.with_path(path_idx, |path| {
+            match self.io.borrow().file_exists(path) {
+                Ok(exists) => Ok(ArenaIndex::from_bool(exists)),
+                Err(_) => Err(ArenaError::IoError),
+            }
+        })
     }
 
     /// `(raw-delete-file path)` — delete a file.
     fn builtin_raw_delete_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
-        let mut buf = [0u8; MAX_PATH_LEN];
-        let len = self.collect_string(path_idx, &mut buf)?;
-        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
-        self.io.borrow_mut().delete_file(path).map_err(|_| ArenaError::IoError)?;
-        Ok(ArenaIndex::INERT)
+        self.with_path(path_idx, |path| {
+            self.io.borrow_mut().delete_file(path).map_err(|_| ArenaError::IoError)?;
+            Ok(ArenaIndex::INERT)
+        })
     }
 
     /// `(raw-read-string str)` — parse one s-expression from a string.
     /// Returns the parsed value or NIL if the string is empty.
     fn builtin_raw_read_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let str_idx = self.car(args)?;
-        let mut buf = [0u8; MAX_STRING_BUF_LEN];
-        let len = self.collect_string(str_idx, &mut buf)?;
-        if len == 0 {
+        if str_idx.is_nil() {
             return Ok(ArenaIndex::NIL);
         }
-        let s = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
-        let mut parser = crate::parse::Parser::new(s);
-        if parser.has_more() {
-            parser.parse(self)
-        } else {
-            Ok(ArenaIndex::NIL)
-        }
+        self.read_from_chain(str_idx)
     }
 
     /// `(raw-display-to-string obj)` — display a value to a string (CharPair chain).
     /// Uses display_value (no quotes on strings).
     fn builtin_raw_display_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
-        let mut buf = [0u8; MAX_STRING_BUF_LEN];
-        let mut pos = 0;
-        {
-            struct BufWriter<'a> {
-                buf: &'a mut [u8],
-                pos: &'a mut usize,
-            }
-            impl core::fmt::Write for BufWriter<'_> {
-                fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                    let bytes = s.as_bytes();
-                    if *self.pos + bytes.len() > self.buf.len() {
-                        return Err(core::fmt::Error);
-                    }
-                    self.buf[*self.pos..*self.pos + bytes.len()].copy_from_slice(bytes);
-                    *self.pos += bytes.len();
-                    Ok(())
-                }
-            }
-            let mut w = BufWriter { buf: &mut buf, pos: &mut pos };
-            let _ = self.display_value(val, &mut w);
-        }
-        let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::InvalidArgument)?;
-        self.alloc_string(s)
+        let mut w = ArenaWriter::new(self);
+        let _ = self.display_value(val, &mut w);
+        w.finish()
     }
 
     /// `(raw-write-to-string obj)` — write a value to a string (CharPair chain).
     /// Uses write_value (machine-readable, with quotes on strings).
     fn builtin_raw_write_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
-        let mut buf = [0u8; MAX_STRING_BUF_LEN];
-        let mut pos = 0;
-        {
-            struct BufWriter<'a> {
-                buf: &'a mut [u8],
-                pos: &'a mut usize,
-            }
-            impl core::fmt::Write for BufWriter<'_> {
-                fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                    let bytes = s.as_bytes();
-                    if *self.pos + bytes.len() > self.buf.len() {
-                        return Err(core::fmt::Error);
-                    }
-                    self.buf[*self.pos..*self.pos + bytes.len()].copy_from_slice(bytes);
-                    *self.pos += bytes.len();
-                    Ok(())
-                }
-            }
-            let mut w = BufWriter { buf: &mut buf, pos: &mut pos };
-            let _ = self.write_value(val, &mut w);
-        }
-        let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::InvalidArgument)?;
-        self.alloc_string(s)
+        let mut w = ArenaWriter::new(self);
+        let _ = self.write_value(val, &mut w);
+        w.finish()
     }
 
     /// `(error msg)` — signal an error.
@@ -1405,7 +1339,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     }
 
     // ================================================================
-    // Stdin reader (portless)
+    // Stdin reader (portless, buffer-free)
     // ================================================================
 
     /// Read one s-expression from stdin using the IoProvider's `read_stdin_char`.
@@ -1431,35 +1365,24 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                         }
                     }
                 }
-                _ => {
-                    let mut buf = [0u8; MAX_STRING_BUF_LEN];
-                    let pos = ch.len_utf8();
-                    ch.encode_utf8(&mut buf[..]);
-                    return self.read_expr_from_stdin(&mut buf, pos);
-                }
+                _ => return self.read_expr_from_stdin_char(ch),
             }
         }
     }
 
-    /// Finish reading an s-expression from stdin after the first character has been consumed.
-    fn read_expr_from_stdin(
-        &self,
-        buf: &mut [u8; MAX_STRING_BUF_LEN],
-        initial_pos: usize,
-    ) -> ArenaResult<ArenaIndex> {
-        let mut pos = initial_pos;
-        let first = buf[0];
-
+    /// Finish reading an s-expression from stdin given the first character.
+    fn read_expr_from_stdin_char(&self, first: char) -> ArenaResult<ArenaIndex> {
         match first {
-            b'\'' => {
+            '\'' => {
                 let inner = self.read_from_stdin()?;
                 let quote_sym = self.symbol("quote")?;
                 let inner_list = self.cons(inner, ArenaIndex::NIL)?;
                 self.cons(quote_sym, inner_list)
             }
-            b'"' => {
-                // String literal: read until closing quote, processing escapes.
-                pos = 0;
+            '"' => {
+                // String literal: read chars, build CharPair chain directly.
+                let mut head = ArenaIndex::NIL;
+                let mut tail = ArenaIndex::NIL;
                 loop {
                     let ch = match self.io.borrow_mut().read_stdin_char() {
                         Ok(c) => c,
@@ -1484,55 +1407,32 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     } else {
                         ch
                     };
-                    let len = actual.len_utf8();
-                    if pos + len > buf.len() {
-                        return Err(ArenaError::InvalidArgument);
-                    }
-                    actual.encode_utf8(&mut buf[pos..]);
-                    pos += len;
+                    let (h, t) = self.append_char(head, tail, actual)?;
+                    head = h;
+                    tail = t;
                 }
-                let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::ParseError)?;
-                self.alloc_string(s)
+                Ok(head)
             }
-            b'(' => {
-                self.read_list_from_stdin()
-            }
-            b')' => Err(ArenaError::ParseError),
+            '(' => self.read_list_from_stdin(),
+            ')' => Err(ArenaError::ParseError),
             _ => {
-                // Atom: read until delimiter
+                // Atom: build CharPair chain of chars, then classify.
+                let (mut head, mut tail) = self.append_char(ArenaIndex::NIL, ArenaIndex::NIL, first)?;
                 loop {
-                    let ch = match self.io.borrow_mut().peek_stdin_char() {
+                    let next = match self.io.borrow_mut().peek_stdin_char() {
                         Ok(c) => c,
                         Err(crate::io::IoErrorKind::Eof) => break,
                         Err(_) => break,
                     };
-                    match ch {
-                        ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';' => break,
-                        _ => {
-                            let _ = self.io.borrow_mut().read_stdin_char();
-                            let len = ch.len_utf8();
-                            if pos + len > buf.len() {
-                                return Err(ArenaError::InvalidArgument);
-                            }
-                            ch.encode_utf8(&mut buf[pos..]);
-                            pos += len;
-                        }
+                    if matches!(next, ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';') {
+                        break;
                     }
+                    let _ = self.io.borrow_mut().read_stdin_char();
+                    let (h, t) = self.append_char(head, tail, next)?;
+                    head = h;
+                    tail = t;
                 }
-                let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::ParseError)?;
-                match s {
-                    "#t" | "#true" => Ok(ArenaIndex::TRUE),
-                    "#f" | "#false" => Ok(ArenaIndex::FALSE),
-                    "#inert" => Ok(ArenaIndex::INERT),
-                    "#ignore" => Ok(ArenaIndex::IGNORE),
-                    _ => {
-                        if let Some(n) = crate::parse::parse_integer(s) {
-                            self.number(n)
-                        } else {
-                            self.symbol(s)
-                        }
-                    }
-                }
+                self.classify_atom(head)
             }
         }
     }
@@ -1583,10 +1483,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                             }
                         }
                     } else {
-                        // Symbol starting with '.'
-                        let mut buf = [0u8; MAX_STRING_BUF_LEN];
-                        buf[0] = b'.';
-                        let expr = self.read_expr_from_stdin(&mut buf, 1)?;
+                        // Symbol starting with '.': build chain starting with '.'
+                        let expr = self.read_expr_from_stdin_char('.')?;
                         let rest = self.read_list_from_stdin()?;
                         return self.cons(expr, rest);
                     }
@@ -1596,6 +1494,227 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         }
         let car = self.read_from_stdin()?;
         let cdr = self.read_list_from_stdin()?;
+        self.cons(car, cdr)
+    }
+
+    // ================================================================
+    // CharPair chain reader (for raw-read-string)
+    // ================================================================
+
+    /// Read one s-expression from a CharPair chain.
+    /// Returns the parsed value or NIL if the chain is empty.
+    fn read_from_chain(&self, chain: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let mut cursor = chain;
+        // Skip whitespace and comments
+        loop {
+            let (ch, next) = match self.chain_read_char(&mut cursor) {
+                Some(v) => v,
+                None => return Ok(ArenaIndex::NIL),
+            };
+            match ch {
+                ' ' | '\t' | '\n' | '\r' => { cursor = next; continue; }
+                ';' => {
+                    cursor = next;
+                    loop {
+                        match self.chain_read_char(&mut cursor) {
+                            Some(('\n', n)) => { cursor = n; break; }
+                            Some((_, n)) => { cursor = n; }
+                            None => break,
+                        }
+                    }
+                }
+                _ => {
+                    cursor = next;
+                    return self.read_expr_from_chain(ch, &mut cursor);
+                }
+            }
+        }
+    }
+
+    /// Read a single character from a CharPair chain cursor.
+    /// Returns (char, next_cursor) or None at end.
+    fn chain_read_char(&self, cursor: &mut ArenaIndex) -> Option<(char, ArenaIndex)> {
+        if cursor.is_nil() {
+            return None;
+        }
+        match self.arena.get(*cursor) {
+            Ok(Value::CharPair { ch, cdr }) => Some((ch, cdr)),
+            _ => None,
+        }
+    }
+
+    /// Peek at the next character in a CharPair chain without consuming.
+    fn chain_peek_char(&self, cursor: ArenaIndex) -> Option<char> {
+        if cursor.is_nil() {
+            return None;
+        }
+        match self.arena.get(cursor) {
+            Ok(Value::CharPair { ch, .. }) => Some(ch),
+            _ => None,
+        }
+    }
+
+    /// Finish reading an s-expression from a CharPair chain given the first character.
+    fn read_expr_from_chain(&self, first: char, cursor: &mut ArenaIndex) -> ArenaResult<ArenaIndex> {
+        match first {
+            '\'' => {
+                let inner = self.read_inner_from_chain(cursor)?;
+                let quote_sym = self.symbol("quote")?;
+                let inner_list = self.cons(inner, ArenaIndex::NIL)?;
+                self.cons(quote_sym, inner_list)
+            }
+            '"' => {
+                // String literal: read chars, build CharPair chain directly.
+                let mut head = ArenaIndex::NIL;
+                let mut tail = ArenaIndex::NIL;
+                loop {
+                    let (ch, next) = self.chain_read_char(cursor)
+                        .ok_or(ArenaError::ParseError)?;
+                    *cursor = next;
+                    if ch == '"' {
+                        break;
+                    }
+                    let actual = if ch == '\\' {
+                        let (esc, next2) = self.chain_read_char(cursor)
+                            .ok_or(ArenaError::ParseError)?;
+                        *cursor = next2;
+                        match esc {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '\\' => '\\',
+                            '"' => '"',
+                            _ => return Err(ArenaError::InvalidArgument),
+                        }
+                    } else {
+                        ch
+                    };
+                    let (h, t) = self.append_char(head, tail, actual)?;
+                    head = h;
+                    tail = t;
+                }
+                Ok(head)
+            }
+            '(' => self.read_list_from_chain(cursor),
+            ')' => Err(ArenaError::ParseError),
+            _ => {
+                // Atom: build CharPair chain, then classify.
+                let (mut head, mut tail) = self.append_char(ArenaIndex::NIL, ArenaIndex::NIL, first)?;
+                loop {
+                    let next_ch = self.chain_peek_char(*cursor);
+                    match next_ch {
+                        None => break,
+                        Some(c) if matches!(c, ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';') => break,
+                        Some(c) => {
+                            // Consume the char
+                            if let Some((_, next)) = self.chain_read_char(cursor) {
+                                *cursor = next;
+                            }
+                            let (h, t) = self.append_char(head, tail, c)?;
+                            head = h;
+                            tail = t;
+                        }
+                    }
+                }
+                self.classify_atom(head)
+            }
+        }
+    }
+
+    /// Read one s-expression from a chain cursor (after skipping whitespace).
+    fn read_inner_from_chain(&self, cursor: &mut ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Skip whitespace
+        loop {
+            match self.chain_peek_char(*cursor) {
+                None => return Ok(ArenaIndex::NIL),
+                Some(c) if matches!(c, ' ' | '\t' | '\n' | '\r') => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                }
+                Some(';') => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                    loop {
+                        match self.chain_read_char(cursor) {
+                            Some(('\n', n)) => { *cursor = n; break; }
+                            Some((_, n)) => { *cursor = n; }
+                            None => break,
+                        }
+                    }
+                }
+                Some(c) => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                    return self.read_expr_from_chain(c, cursor);
+                }
+            }
+        }
+    }
+
+    /// Read a list from a CharPair chain cursor: elements until ')'.
+    fn read_list_from_chain(&self, cursor: &mut ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Skip whitespace
+        loop {
+            match self.chain_peek_char(*cursor) {
+                None => return Err(ArenaError::ParseError),
+                Some(c) if matches!(c, ' ' | '\t' | '\n' | '\r') => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                }
+                Some(';') => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                    loop {
+                        match self.chain_read_char(cursor) {
+                            Some(('\n', n)) => { *cursor = n; break; }
+                            Some((_, n)) => { *cursor = n; }
+                            None => break,
+                        }
+                    }
+                }
+                Some(')') => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                    return Ok(ArenaIndex::NIL);
+                }
+                Some('.') => {
+                    if let Some((_, next)) = self.chain_read_char(cursor) {
+                        *cursor = next;
+                    }
+                    let peek = self.chain_peek_char(*cursor);
+                    if matches!(peek, Some(' ' | '\t' | '\n' | '\r' | ')') | None) {
+                        // Dotted pair
+                        let cdr_val = self.read_inner_from_chain(cursor)?;
+                        loop {
+                            match self.chain_peek_char(*cursor) {
+                                Some(' ' | '\t' | '\n' | '\r') => {
+                                    if let Some((_, n)) = self.chain_read_char(cursor) { *cursor = n; }
+                                }
+                                Some(')') => {
+                                    if let Some((_, n)) = self.chain_read_char(cursor) { *cursor = n; }
+                                    return Ok(cdr_val);
+                                }
+                                _ => return Err(ArenaError::ParseError),
+                            }
+                        }
+                    } else {
+                        // Symbol starting with '.'
+                        let expr = self.read_expr_from_chain('.', cursor)?;
+                        let rest = self.read_list_from_chain(cursor)?;
+                        return self.cons(expr, rest);
+                    }
+                }
+                _ => break,
+            }
+        }
+        let car = self.read_inner_from_chain(cursor)?;
+        let cdr = self.read_list_from_chain(cursor)?;
         self.cons(car, cdr)
     }
 
@@ -1627,34 +1746,32 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         path_val: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let mut buf = [0u8; MAX_PATH_LEN];
-        let len = self.collect_string(path_val, &mut buf)?;
-        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
+        self.with_path(path_val, |path| {
+            // Read the file via IoProvider.
+            // We need to hold the borrow to access the string, parse all expressions
+            // into arena cells, then drop the borrow and evaluate.
+            let parsed_exprs = {
+                let mut io = self.io.borrow_mut();
+                let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
+                let mut parser = crate::parse::Parser::new(contents);
+                let mut list = ArenaIndex::NIL;
+                while parser.has_more() {
+                    let e = parser.parse(self)?;
+                    list = self.cons(e, list)?;
+                }
+                // Reverse so expressions are in order
+                self.reverse_list(list)?
+            };
 
-        // Read the file via IoProvider.
-        // We need to hold the borrow to access the string, parse all expressions
-        // into arena cells, then drop the borrow and evaluate.
-        let parsed_exprs = {
-            let mut io = self.io.borrow_mut();
-            let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
-            let mut parser = crate::parse::Parser::new(contents);
-            let mut list = ArenaIndex::NIL;
-            while parser.has_more() {
-                let e = parser.parse(self)?;
-                list = self.cons(e, list)?;
+            // Now evaluate each expression in the caller's env
+            let mut result = ArenaIndex::INERT;
+            let mut cur = parsed_exprs;
+            while !cur.is_nil() {
+                let e = self.car(cur)?;
+                result = self.eval_expr(e, env)?;
+                cur = self.cdr(cur)?;
             }
-            // Reverse so expressions are in order
-            self.reverse_list(list)?
-        };
-
-        // Now evaluate each expression in the caller's env
-        let mut result = ArenaIndex::INERT;
-        let mut cur = parsed_exprs;
-        while !cur.is_nil() {
-            let e = self.car(cur)?;
-            result = self.eval_expr(e, env)?;
-            cur = self.cdr(cur)?;
-        }
-        Ok(result)
+            Ok(result)
+        })
     }
 }

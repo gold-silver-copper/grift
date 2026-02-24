@@ -3941,11 +3941,15 @@ fn test_io_null_provider_defaults() {
     // write_stdout/write_stderr are no-ops
     assert!(io.write_stdout("hello").is_ok());
     assert!(io.write_stderr("hello").is_ok());
+    // write_char methods use default impls that delegate to write_stdout/stderr
+    assert!(io.write_char_stdout('x').is_ok());
+    assert!(io.write_char_stderr('x').is_ok());
     // Default methods return Unsupported
     assert_eq!(io.read_stdin_char(), Err(IoErrorKind::Unsupported));
     assert_eq!(io.peek_stdin_char(), Err(IoErrorKind::Unsupported));
     assert_eq!(io.read_file("foo"), Err(IoErrorKind::Unsupported));
     assert_eq!(io.write_file("foo", "bar"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.write_file_chars("foo", &mut core::iter::empty()), Err(IoErrorKind::Unsupported));
     assert_eq!(io.file_exists("foo"), Err(IoErrorKind::Unsupported));
     assert_eq!(io.delete_file("foo"), Err(IoErrorKind::Unsupported));
 }
@@ -4046,6 +4050,46 @@ fn test_raw_write_to_string() {
         (not (equal? (raw-display-to-string "hi") (raw-write-to-string "hi")))
     "#);
     assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_arena_writer_no_size_limit() {
+    // ArenaWriter builds CharPair chains directly in the arena,
+    // so there is no fixed buffer size limit.
+    let lisp: Lisp<100_000> = Lisp::new();
+    // Verify that raw-display-to-string handles basic values correctly
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string 12345) "12345")"#), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string (list 1 2 3)) "(1 2 3)")"#), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string "hello world") "hello world")"#), Ok(Value::Boolean(true)));
+    // Verify ArenaWriter can handle a long string (previously limited to 4096 bytes
+    // in the display/write-to-string builtins; the parser still has its own limit
+    // in parse.rs, but ArenaWriter itself has no size constraint)
+    let long_input = "a".repeat(4000);
+    let expr = std::format!(r#"(equal? (raw-display-to-string "{long_input}") "{long_input}")"#);
+    assert_eq!(lisp.eval(&expr), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_read_from_chain() {
+    // raw-read-string should parse directly from a CharPair chain
+    // without materializing into a fixed buffer.
+    let lisp: Lisp<20000> = Lisp::new();
+    // Parse various types
+    assert_eq!(lisp.eval(r#"(raw-read-string "42")"#), Ok(Value::Number(42)));
+    assert_eq!(lisp.eval(r#"(raw-read-string "-7")"#), Ok(Value::Number(-7)));
+    assert_eq!(lisp.eval(r##"(raw-read-string "#t")"##), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r##"(raw-read-string "#f")"##), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval(r#"(symbol? (raw-read-string "hello"))"#), Ok(Value::Boolean(true)));
+    // Parse a list
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(1 2 3)") (list 1 2 3))"#), Ok(Value::Boolean(true)));
+    // Parse a dotted pair
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(1 . 2)") (cons 1 2))"#), Ok(Value::Boolean(true)));
+    // Parse string with escapes
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "\"hello\"") "hello")"#), Ok(Value::Boolean(true)));
+    // Parse quoted form
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "'x") (list (quote quote) (quote x)))"#), Ok(Value::Boolean(true)));
+    // Empty string returns NIL
+    assert_eq!(lisp.eval(r#"(null? (raw-read-string ""))"#), Ok(Value::Boolean(true)));
 }
 
 #[cfg(feature = "std")]
