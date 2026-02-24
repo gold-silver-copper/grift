@@ -6,7 +6,6 @@ use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 
 use crate::io::IoProvider;
 use crate::lisp::Lisp;
-use crate::value::Value;
 
 /// Maximum number of characters in a parsed string literal.
 const MAX_STRING_CHARS: usize = 4096;
@@ -186,7 +185,6 @@ impl<'a> Parser<'a> {
             "#f" | "#false" => Ok(ArenaIndex::FALSE),
             "#inert" => Ok(ArenaIndex::INERT),
             "#ignore" => Ok(ArenaIndex::IGNORE),
-            "#eof" => lisp.arena.alloc(Value::Eof),
             _ => parse_integer(s)
                 .map(|n| lisp.number(n))
                 .unwrap_or_else(|| lisp.symbol(s)),

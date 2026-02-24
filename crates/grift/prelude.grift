@@ -3,6 +3,13 @@
 ;; and the acceptance test. If it loads without error, the interpreter works.
 
 ;; ============================================================================
+;; 0. I/O WRAPPERS — define user-facing display/newline on top of raw builtins
+;; ============================================================================
+
+(define! display raw-display)
+(define! (fn newline) (raw-write-stdout "\n"))
+
+;; ============================================================================
 ;; 1. TESTING INFRASTRUCTURE
 ;; ============================================================================
 

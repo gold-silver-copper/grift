@@ -61,10 +61,6 @@ pub enum Value {
     /// The ignore value, written `#ignore`.
     /// Used specifically for parameter matching in formal parameter trees.
     Ignore,
-    /// An I/O port reference, wrapping a [`PortId`](crate::io::PortId).
-    Port(usize),
-    /// The end-of-file sentinel object, written `#eof`.
-    Eof,
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -98,8 +94,6 @@ impl Value {
             Value::Environment { .. } => "environment",
             Value::Inert => "inert",
             Value::Ignore => "ignore",
-            Value::Port(_) => "port",
-            Value::Eof => "eof-object",
         }
     }
 
@@ -125,8 +119,6 @@ impl Value {
                 | Value::CharPair { .. }
                 | Value::Inert
                 | Value::Ignore
-                | Value::Port(_)
-                | Value::Eof
         )
     }
 
@@ -154,11 +146,6 @@ impl Value {
         /// Extract the inner combiner of an applicative, or `Err(TypeError)`.
         as_applicative -> ArenaIndex, Value::Applicative(inner) => inner
     }
-
-    value_accessor! {
-        /// Extract the port id, or `Err(TypeError)` if not a port.
-        as_port -> usize, Value::Port(id) => id
-    }
 }
 
 impl core::fmt::Display for Value {
@@ -171,8 +158,6 @@ impl core::fmt::Display for Value {
             Value::CharPair { .. } => f.write_str("<string>"),
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
-            Value::Eof => f.write_str("#eof"),
-            Value::Port(id) => write!(f, "#<port {id}>"),
             _ => write!(f, "<{}>", self.type_name()),
         }
     }

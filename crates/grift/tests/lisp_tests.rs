@@ -3751,21 +3751,21 @@ fn test_define_fn_function_named_fn() {
 #[test]
 fn test_display_returns_value() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(display 42)"), Ok(Value::Number(42)));
+    assert_eq!(lisp.eval("(raw-display 42)"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_display_string() {
     let lisp: Lisp<20000> = Lisp::new();
-    // display returns its argument
-    let result = lisp.eval_to_index(r#"(display "hello")"#);
+    // raw-display returns its argument
+    let result = lisp.eval_to_index(r#"(raw-display "hello")"#);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_newline_returns_inert() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(newline)"), Ok(Value::Inert));
+    assert_eq!(lisp.eval(r#"(raw-write-stdout "\n")"#), Ok(Value::Inert));
 }
 
 #[test]
@@ -3810,91 +3810,96 @@ fn test_apply_empty_args() {
 
 #[test]
 fn test_io_null_provider() {
-    use grift::{IoProvider, NullIoProvider, io::PortId};
+    use grift::{IoProvider, NullIoProvider};
     let mut io = NullIoProvider;
-    assert!(io.write_str(PortId::STDOUT, "hello").is_ok());
+    assert!(io.write_stdout("hello").is_ok());
+    assert!(io.write_stderr("hello").is_ok());
 }
 
 #[test]
 fn test_io_generic_provider() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use grift::{IoProvider, io::{PortId, IoResult}};
+    use grift::{IoProvider, io::IoResult};
     static CALLED: AtomicBool = AtomicBool::new(false);
 
     struct TestIo;
     impl IoProvider for TestIo {
-        fn write_str(&mut self, _port: PortId, _s: &str) -> IoResult<()> {
+        fn write_stdout(&mut self, _s: &str) -> IoResult<()> {
             CALLED.store(true, Ordering::SeqCst);
             Ok(())
         }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
     CALLED.store(false, Ordering::SeqCst);
-    let _ = lisp.eval("(display 42)");
-    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_str should have been called");
+    let _ = lisp.eval("(raw-display 42)");
+    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_stdout should have been called");
 }
 
 #[test]
 fn test_io_display_to_io() {
-    use grift::{IoProvider, io::{PortId, IoResult}};
+    use grift::{IoProvider, io::IoResult};
 
     struct CaptureIo {
         output: String,
     }
     impl IoProvider for CaptureIo {
-        fn write_str(&mut self, _port: PortId, s: &str) -> IoResult<()> {
+        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
             self.output.push_str(s);
             Ok(())
         }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.eval_to_index("42").unwrap();
     let mut io = CaptureIo { output: String::new() };
-    lisp.display_to_io(idx, PortId::STDOUT, &mut io).unwrap();
+    lisp.display_to_io(idx, &mut io).unwrap();
     assert_eq!(io.output, "42");
 }
 
 #[test]
 fn test_io_write_to_io() {
-    use grift::{IoProvider, io::{PortId, IoResult}};
+    use grift::{IoProvider, io::IoResult};
 
     struct CaptureIo {
         output: String,
     }
     impl IoProvider for CaptureIo {
-        fn write_str(&mut self, _port: PortId, s: &str) -> IoResult<()> {
+        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
             self.output.push_str(s);
             Ok(())
         }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.eval_to_index(r#""hello""#).unwrap();
     let mut io = CaptureIo { output: String::new() };
-    lisp.write_to_io(idx, PortId::STDOUT, &mut io).unwrap();
+    lisp.write_to_io(idx, &mut io).unwrap();
     assert_eq!(io.output, r#""hello""#);
 
     // display_to_io should print without quotes
     let mut io2 = CaptureIo { output: String::new() };
-    lisp.display_to_io(idx, PortId::STDOUT, &mut io2).unwrap();
+    lisp.display_to_io(idx, &mut io2).unwrap();
     assert_eq!(io2.output, "hello");
 }
 
 #[test]
 fn test_io_streaming_no_truncation() {
     // Verify streaming output handles strings longer than 256 bytes
-    use grift::{IoProvider, io::{PortId, IoResult}};
+    use grift::{IoProvider, io::IoResult};
 
     struct CaptureIo {
         output: String,
     }
     impl IoProvider for CaptureIo {
-        fn write_str(&mut self, _port: PortId, s: &str) -> IoResult<()> {
+        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
             self.output.push_str(s);
             Ok(())
         }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<100_000> = Lisp::new();
@@ -3903,375 +3908,175 @@ fn test_io_streaming_no_truncation() {
     let expr = format!(r#""{}""#, long_str);
     let idx = lisp.eval_to_index(&expr).unwrap();
     let mut io = CaptureIo { output: String::new() };
-    lisp.display_to_io(idx, PortId::STDOUT, &mut io).unwrap();
+    lisp.display_to_io(idx, &mut io).unwrap();
     // display_to_io should output the full 400-char string, not truncated at 256
     assert_eq!(io.output.len(), 400, "streaming should not truncate output");
     assert!(io.output.starts_with("a]a]a]"));
 }
 
 #[test]
-fn test_io_trait_io_writer_error_propagation() {
-    use grift::{IoProvider, io::{PortId, IoResult, IoErrorKind}};
+fn test_io_writer_error_propagation() {
+    use grift::{IoProvider, io::{IoResult, IoErrorKind}};
 
     struct FailIo;
     impl IoProvider for FailIo {
-        fn write_str(&mut self, _port: PortId, _s: &str) -> IoResult<()> {
+        fn write_stdout(&mut self, _s: &str) -> IoResult<()> {
             Err(IoErrorKind::WriteFailed)
         }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.eval_to_index("42").unwrap();
     let mut io = FailIo;
-    let result = lisp.display_to_io(idx, PortId::STDOUT, &mut io);
+    let result = lisp.display_to_io(idx, &mut io);
     assert_eq!(result, Err(IoErrorKind::WriteFailed));
 }
 
 #[test]
 fn test_io_null_provider_defaults() {
-    use grift::{IoProvider, NullIoProvider, io::{PortId, IoErrorKind}};
+    use grift::{IoProvider, NullIoProvider, io::IoErrorKind};
 
     let mut io = NullIoProvider;
-    // write_str is a no-op
-    assert!(io.write_str(PortId::STDOUT, "hello").is_ok());
+    // write_stdout/write_stderr are no-ops
+    assert!(io.write_stdout("hello").is_ok());
+    assert!(io.write_stderr("hello").is_ok());
     // Default methods return Unsupported
-    assert_eq!(io.read_char(PortId::STDIN), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.peek_char(PortId::STDIN), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.open_input_file("foo"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.open_output_file("foo"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.open_input_string("foo"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.open_output_string(), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.close_port(PortId::STDOUT), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.read_stdin_char(), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.peek_stdin_char(), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.read_file("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.write_file("foo", "bar"), Err(IoErrorKind::Unsupported));
     assert_eq!(io.file_exists("foo"), Err(IoErrorKind::Unsupported));
     assert_eq!(io.delete_file("foo"), Err(IoErrorKind::Unsupported));
-    // flush is Ok by default
-    assert!(io.flush(PortId::STDOUT).is_ok());
-    // Port queries
-    assert!(io.is_input_port(PortId::STDIN));
-    assert!(!io.is_input_port(PortId::STDOUT));
-    assert!(io.is_output_port(PortId::STDOUT));
-    assert!(io.is_output_port(PortId::STDERR));
-    assert!(!io.is_output_port(PortId::STDIN));
-    assert!(io.is_port_open(PortId::STDIN));
-    assert!(io.is_port_open(PortId::STDOUT));
-    assert!(io.is_port_open(PortId::STDERR));
-    assert!(!io.is_port_open(PortId(99)));
-}
-
-#[test]
-#[cfg(feature = "std")]
-fn test_std_io_provider_string_ports() {
-    use grift::{IoProvider, StdIoProvider};
-
-    let mut io = StdIoProvider::new();
-
-    // Open an output string port, write to it, read back
-    let port = io.open_output_string().unwrap();
-    assert!(io.is_output_port(port));
-    assert!(!io.is_input_port(port));
-    assert!(io.is_port_open(port));
-    io.write_str(port, "hello ").unwrap();
-    io.write_str(port, "world").unwrap();
-    assert_eq!(io.get_output_string(port).unwrap(), "hello world");
-
-    // Close it
-    io.close_port(port).unwrap();
-    assert!(!io.is_port_open(port));
-
-    // Open an input string port and read chars
-    let iport = io.open_input_string("abc").unwrap();
-    assert!(io.is_input_port(iport));
-    assert!(!io.is_output_port(iport));
-    assert_eq!(io.read_char(iport).unwrap(), 'a');
-    assert_eq!(io.peek_char(iport).unwrap(), 'b');
-    assert_eq!(io.read_char(iport).unwrap(), 'b');
-    assert_eq!(io.read_char(iport).unwrap(), 'c');
-    assert_eq!(io.read_char(iport), Err(grift::io::IoErrorKind::Eof));
-}
-
-#[test]
-#[cfg(feature = "std")]
-fn test_std_io_provider_port_queries() {
-    use grift::{IoProvider, StdIoProvider, io::PortId};
-
-    let io = StdIoProvider::new();
-    // Standard port queries
-    assert!(io.is_input_port(PortId::STDIN));
-    assert!(io.is_output_port(PortId::STDOUT));
-    assert!(io.is_output_port(PortId::STDERR));
-    assert!(!io.is_input_port(PortId::STDOUT));
-    assert!(!io.is_output_port(PortId::STDIN));
-    // Standard ports always open
-    assert!(io.is_port_open(PortId::STDIN));
-    assert!(io.is_port_open(PortId::STDOUT));
-    assert!(io.is_port_open(PortId::STDERR));
-    // Invalid port
-    assert!(!io.is_port_open(PortId(99)));
 }
 
 // ============================================================================
-// Port and I/O Builtin Tests
+// raw-* Builtin Tests
 // ============================================================================
 
 #[test]
-fn test_eof_object() {
-    let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(eof-object? #eof)"), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval("(eof-object? 42)"), Ok(Value::Boolean(false)));
-    assert_eq!(lisp.eval("(eof-object? #t)"), Ok(Value::Boolean(false)));
+fn test_raw_display() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo { output: String }
+    impl IoProvider for CaptureIo {
+        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
+            self.output.push_str(s);
+            Ok(())
+        }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
+    }
+
+    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
+    let _ = lisp.eval("(raw-display 42)");
+    assert_eq!(lisp.io().output, "42");
 }
 
 #[test]
-fn test_port_predicates() {
-    use grift::{IoProvider, io::{PortId, IoResult}};
+fn test_raw_write_stdout() {
+    use grift::{IoProvider, io::IoResult};
 
-    struct TestIo;
-    impl IoProvider for TestIo {
-        fn write_str(&mut self, _port: PortId, _s: &str) -> IoResult<()> { Ok(()) }
-        fn is_input_port(&self, port: PortId) -> bool { port == PortId::STDIN }
-        fn is_output_port(&self, port: PortId) -> bool {
-            port == PortId::STDOUT || port == PortId::STDERR
+    struct CaptureIo { output: String }
+    impl IoProvider for CaptureIo {
+        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
+            self.output.push_str(s);
+            Ok(())
+        }
+        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
+    }
+
+    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
+    let _ = lisp.eval(r#"(raw-write-stdout "hello")"#);
+    assert_eq!(lisp.io().output, "hello");
+}
+
+#[test]
+fn test_raw_write_stderr() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo { stdout: String, stderr: String }
+    impl IoProvider for CaptureIo {
+        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
+            self.stdout.push_str(s);
+            Ok(())
+        }
+        fn write_stderr(&mut self, s: &str) -> IoResult<()> {
+            self.stderr.push_str(s);
+            Ok(())
         }
     }
 
-    let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
-    // port? on a non-port value
-    assert_eq!(lisp.eval("(port? 42)"), Ok(Value::Boolean(false)));
-    assert_eq!(lisp.eval("(port? #t)"), Ok(Value::Boolean(false)));
+    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { stdout: String::new(), stderr: String::new() });
+    let _ = lisp.eval(r#"(raw-write-stderr "error msg")"#);
+    assert_eq!(lisp.io().stderr, "error msg");
+    assert_eq!(lisp.io().stdout, "");
 }
 
-#[cfg(feature = "std")]
 #[test]
-fn test_string_port_io_builtins() {
-    use grift::StdIoProvider;
-
-    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
-
-    // open-output-string, display to it, get-output-string
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (display "abc" p)
-          (equal? (get-output-string p) "abc"))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // write-char to output string port
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (write-char "X" p)
-          (write-char "Y" p)
-          (equal? (get-output-string p) "XY"))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // open-input-string, read-char
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "abc")))
-          (let ((c1 (read-char p))
-                (c2 (read-char p))
-                (c3 (read-char p)))
-            (list c1 c2 c3)))
-    "#);
-    // Should return list of single-char strings
-    assert!(result.is_ok());
-
-    // read-char at EOF returns #eof
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "")))
-          (eof-object? (read-char p)))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // peek-char doesn't consume
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "xy")))
-          (let ((c1 (peek-char p))
-                (c2 (peek-char p))
-                (c3 (read-char p)))
-            (equal? c1 c2)))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // close-port then read → error or eof
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "abc")))
-          (close-port p)
-          (eof-object? (read-char p)))
-    "#);
-    // Should error (PortClosed maps to IoError)
-    assert!(result.is_err());
-
-    // port? on a real port
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (port? p))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // input-port? / output-port?
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "x")))
-          (input-port? p))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (output-port? p))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "x")))
-          (output-port? p))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(false)));
+fn test_raw_read_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Parse a number from a string
+    assert_eq!(lisp.eval(r#"(raw-read-string "42")"#), Ok(Value::Number(42)));
+    // Parse a symbol
+    assert_eq!(lisp.eval(r#"(symbol? (raw-read-string "foo"))"#), Ok(Value::Boolean(true)));
+    // Parse a list
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(+ 1 2)") (list (quote +) 1 2))"#), Ok(Value::Boolean(true)));
+    // Empty string returns NIL
+    assert_eq!(lisp.eval(r#"(null? (raw-read-string ""))"#), Ok(Value::Boolean(true)));
 }
 
-#[cfg(feature = "std")]
 #[test]
-fn test_read_from_string_port() {
-    use grift::StdIoProvider;
+fn test_raw_display_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Display a number
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string 42) "42")"#), Ok(Value::Boolean(true)));
+    // Display a string (no quotes in display mode)
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string "hello") "hello")"#), Ok(Value::Boolean(true)));
+    // Display a boolean
+    assert_eq!(lisp.eval(r##"(equal? (raw-display-to-string #t) "#t")"##), Ok(Value::Boolean(true)));
+}
 
-    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
-
-    // read an atom from a string port
+#[test]
+fn test_raw_write_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Write a number (same as display for numbers)
+    assert_eq!(lisp.eval(r#"(equal? (raw-write-to-string 42) "42")"#), Ok(Value::Boolean(true)));
+    // Write produces different output than display for strings (adds quotes)
     let result = lisp.eval(r#"
-        (let ((p (open-input-string "42")))
-          (read p))
-    "#);
-    assert_eq!(result, Ok(Value::Number(42)));
-
-    // read a list from a string port
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "(+ 1 2)")))
-          (equal? (read p) (list (quote +) 1 2)))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // read at EOF returns #eof
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "")))
-          (eof-object? (read p)))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // read a string literal via a multi-char string port
-    // (Grift's parser stores escape sequences raw, so we can't easily
-    //  construct a string containing quotes via string literals.
-    //  Test with a simpler input that can be round-tripped.)
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "42")))
-          (let ((v (read p)))
-            (= v 42)))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // read a symbol
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "foo")))
-          (symbol? (read p)))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // read multiple expressions
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "1 2 3")))
-          (let ((a (read p))
-                (b (read p))
-                (c (read p)))
-            (+ a b c)))
-    "#);
-    assert_eq!(result, Ok(Value::Number(6)));
-
-    // read boolean
-    let result = lisp.eval(
-        "(let ((p (open-input-string \"#t\")))\
-          (read p))"
-    );
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // read quoted expression
-    let result = lisp.eval(r#"
-        (let ((p (open-input-string "'foo")))
-          (equal? (read p) (quote (quote foo))))
+        (not (equal? (raw-display-to-string "hi") (raw-write-to-string "hi")))
     "#);
     assert_eq!(result, Ok(Value::Boolean(true)));
 }
 
 #[cfg(feature = "std")]
 #[test]
-fn test_write_builtin() {
+fn test_raw_file_operations() {
     use grift::StdIoProvider;
 
     let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
 
-    // write a number to output string port
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (write 42 p)
-          (equal? (get-output-string p) "42"))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
+    let tmp = std::env::temp_dir().join("test_raw_file.txt");
+    let tmp_path = tmp.to_str().unwrap();
 
-    // write a boolean
-    let result = lisp.eval(
-        "(let ((p (open-output-string)))\
-          (write #t p)\
-          (equal? (get-output-string p) \"#t\"))"
-    );
-    assert_eq!(result, Ok(Value::Boolean(true)));
+    // Write a file
+    let program = std::format!(r#"(raw-write-file "{tmp_path}" "hello world")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Inert));
 
-    // write produces different output than display for strings
-    // (write adds quotes, display doesn't)
-    let result = lisp.eval(r#"
-        (let ((p1 (open-output-string))
-              (p2 (open-output-string)))
-          (display "hi" p1)
-          (write "hi" p2)
-          (not (equal? (get-output-string p1) (get-output-string p2))))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-}
+    // Check file exists
+    let program = std::format!(r#"(raw-file-exists? "{tmp_path}")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Boolean(true)));
 
-#[cfg(feature = "std")]
-#[test]
-fn test_display_with_port() {
-    use grift::StdIoProvider;
+    // Read it back
+    let program = std::format!(r#"(equal? (raw-read-file "{tmp_path}") "hello world")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Boolean(true)));
 
-    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    // Delete
+    let program = std::format!(r#"(raw-delete-file "{tmp_path}")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Inert));
 
-    // display to output string port — strings without quotes
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (display "hello" p)
-          (equal? (get-output-string p) "hello"))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-
-    // newline to output string port
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (newline p)
-          (equal? (get-output-string p) "
-"))
-    "#);
-    assert_eq!(result, Ok(Value::Boolean(true)));
-}
-
-#[cfg(feature = "std")]
-#[test]
-fn test_flush_output_port() {
-    use grift::StdIoProvider;
-
-    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
-
-    // flush-output-port should succeed on an output string port
-    let result = lisp.eval(r#"
-        (let ((p (open-output-string)))
-          (flush-output-port p))
-    "#);
-    assert_eq!(result, Ok(Value::Inert));
+    // Verify deleted
+    let program = std::format!(r#"(raw-file-exists? "{tmp_path}")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Boolean(false)));
 }
 
 #[cfg(feature = "std")]
@@ -4292,26 +4097,6 @@ fn test_load_builtin() {
 
     // Clean up
     let _ = std::fs::remove_file(&tmp);
-}
-
-// ============================================================================
-// Prelude Test
-// ============================================================================
-
-#[test]
-fn test_prelude_loads() {
-    let builder = std::thread::Builder::new()
-        .name("prelude".into())
-        .stack_size(64 * 1024 * 1024);
-    let handler = builder
-        .spawn(|| {
-            let lisp: Lisp<500_000> = Lisp::new();
-            let prelude = include_str!("../prelude.grift");
-            let result = lisp.eval_to_index(prelude);
-            assert!(result.is_ok(), "prelude failed to load: {:?}", result.err());
-        })
-        .expect("failed to spawn thread");
-    handler.join().expect("prelude thread panicked");
 }
 
 // ============================================================================
@@ -4382,36 +4167,46 @@ fn test_string_unrecognised_escape_is_error() {
 }
 
 #[test]
-#[cfg(feature = "std")]
 fn test_string_roundtrip_via_write_read() {
-    use grift::io::StdIoProvider;
-    let lisp: Lisp<5000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
-    // Write "a\"b" (3 chars: a, ", b) to an output-string port
-    // then read it back and verify equality
+    let lisp: Lisp<5000> = Lisp::new();
+    // Write "a\"b" (3 chars: a, ", b) to a string via raw-write-to-string,
+    // then read it back via raw-read-string and verify equality
     let result = lisp.eval_to_index(r#"
-        (let ((out (open-output-string)))
-          (write "a\"b" out)
-          (let ((s (get-output-string out)))
-            (let ((inp (open-input-string s)))
-              (let ((back (read inp)))
-                (equal? "a\"b" back)))))
+        (let ((s (raw-write-to-string "a\"b")))
+          (let ((back (raw-read-string s)))
+            (equal? "a\"b" back)))
     "#).unwrap();
     assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
 }
 
 #[test]
-#[cfg(feature = "std")]
 fn test_string_escape_roundtrip_newline() {
-    use grift::io::StdIoProvider;
-    let lisp: Lisp<5000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    let lisp: Lisp<5000> = Lisp::new();
     // Write a string with a real newline, read it back, verify equal
     let result = lisp.eval_to_index(r#"
-        (let ((out (open-output-string)))
-          (write "line1\nline2" out)
-          (let ((s (get-output-string out)))
-            (let ((inp (open-input-string s)))
-              (let ((back (read inp)))
-                (equal? "line1\nline2" back)))))
+        (let ((s (raw-write-to-string "line1\nline2")))
+          (let ((back (raw-read-string s)))
+            (equal? "line1\nline2" back)))
     "#).unwrap();
     assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
+}
+
+// ============================================================================
+// Prelude Test
+// ============================================================================
+
+#[test]
+fn test_prelude_loads() {
+    let builder = std::thread::Builder::new()
+        .name("prelude".into())
+        .stack_size(64 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let lisp: Lisp<500_000> = Lisp::new();
+            let prelude = include_str!("../prelude.grift");
+            let result = lisp.eval_to_index(prelude);
+            assert!(result.is_ok(), "prelude failed to load: {:?}", result.err());
+        })
+        .expect("failed to spawn thread");
+    handler.join().expect("prelude thread panicked");
 }

@@ -4,7 +4,7 @@ use core::cell::RefCell;
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::io::{IoProvider, NullIoProvider, PortId};
+use crate::io::{IoProvider, NullIoProvider};
 use crate::parse::Parser;
 use crate::value::Value;
 
@@ -710,29 +710,59 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Write a value's display representation through an [`IoProvider`].
     ///
     /// Streams output directly through the provider — no intermediate buffer,
-    /// no size limit.
+    /// no size limit. Writes to stdout.
     pub fn display_to_io(
         &self,
         idx: ArenaIndex,
-        port: PortId,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        let mut w = crate::io::TraitIoWriter { port, io, error: None };
+        struct IoFmtWriter<'a> {
+            io: &'a mut dyn IoProvider,
+            error: Option<crate::io::IoErrorKind>,
+        }
+        impl core::fmt::Write for IoFmtWriter<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                if self.error.is_some() {
+                    return Err(core::fmt::Error);
+                }
+                if let Err(e) = self.io.write_stdout(s) {
+                    self.error = Some(e);
+                    return Err(core::fmt::Error);
+                }
+                Ok(())
+            }
+        }
+        let mut w = IoFmtWriter { io, error: None };
         let _ = self.display_value(idx, &mut w);
         w.error.map_or(Ok(()), Err)
     }
 
-    /// Write a value's write representation through an [`IoProvider`].
+    /// Write a value's write (machine-readable) representation through an [`IoProvider`].
     ///
     /// Streams output directly through the provider — no intermediate buffer,
-    /// no size limit.
+    /// no size limit. Writes to stdout.
     pub fn write_to_io(
         &self,
         idx: ArenaIndex,
-        port: PortId,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        let mut w = crate::io::TraitIoWriter { port, io, error: None };
+        struct IoFmtWriter<'a> {
+            io: &'a mut dyn IoProvider,
+            error: Option<crate::io::IoErrorKind>,
+        }
+        impl core::fmt::Write for IoFmtWriter<'_> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                if self.error.is_some() {
+                    return Err(core::fmt::Error);
+                }
+                if let Err(e) = self.io.write_stdout(s) {
+                    self.error = Some(e);
+                    return Err(core::fmt::Error);
+                }
+                Ok(())
+            }
+        }
+        let mut w = IoFmtWriter { io, error: None };
         let _ = self.write_value(idx, &mut w);
         w.error.map_or(Ok(()), Err)
     }
@@ -809,8 +839,6 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             }
             Ok(Value::Inert) => w.write_str("#inert"),
             Ok(Value::Ignore) => w.write_str("#ignore"),
-            Ok(Value::Eof) => w.write_str("#eof"),
-            Ok(Value::Port(id)) => write!(w, "#<port {id}>"),
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }
