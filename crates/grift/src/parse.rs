@@ -1,11 +1,11 @@
 //! S-expression parser.
 //!
 //! Defines the [`CharSource`] trait and a single generic parser that works
-//! with any character source: byte slices, stdin I/O, or CharPair chains.
+//! with any character source: byte slices, I/O streams, or CharPair chains.
 //!
 //! Three `CharSource` implementations cover all parsing needs:
 //! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, eval)
-//! - [`StdinSource`] for interactive stdin reading via [`IoProvider`]
+//! - [`StreamSource`] for reading via [`IoProvider`] streams (stdin, file handles)
 //! - [`ChainSource`] for parsing existing `CharPair` chains (raw-read-string)
 
 use core::cell::RefCell;
@@ -79,26 +79,29 @@ impl CharSource for SliceSource<'_> {
     }
 }
 
-// ── StdinSource ───────────────────────────────────────────────────
+// ── StreamSource ──────────────────────────────────────────────────
 
-/// Character source backed by an [`IoProvider`]'s stdin.
-pub(crate) struct StdinSource<'a, IO: IoProvider> {
+/// Character source backed by an [`IoProvider`] stream.
+///
+/// Reads characters from a specific stream number (0 = stdin, 3+ = file handles).
+pub(crate) struct StreamSource<'a, IO: IoProvider> {
     io: &'a RefCell<IO>,
+    stream: u8,
 }
 
-impl<'a, IO: IoProvider> StdinSource<'a, IO> {
-    pub fn new(io: &'a RefCell<IO>) -> Self {
-        StdinSource { io }
+impl<'a, IO: IoProvider> StreamSource<'a, IO> {
+    pub fn new(io: &'a RefCell<IO>, stream: u8) -> Self {
+        StreamSource { io, stream }
     }
 }
 
-impl<IO: IoProvider> CharSource for StdinSource<'_, IO> {
+impl<IO: IoProvider> CharSource for StreamSource<'_, IO> {
     fn read_char(&mut self) -> Option<char> {
-        self.io.borrow_mut().read_stdin_char().ok()
+        self.io.borrow_mut().read_stream_char(self.stream).ok()
     }
 
     fn peek_char(&mut self) -> Option<char> {
-        self.io.borrow_mut().peek_stdin_char().ok()
+        self.io.borrow_mut().peek_stream_char(self.stream).ok()
     }
 }
 
@@ -170,7 +173,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     }
 
     /// Skip whitespace and `;`-comments.
-    fn skip_ws(&self, src: &mut impl CharSource) {
+    pub(crate) fn skip_ws(&self, src: &mut impl CharSource) {
         loop {
             match src.peek_char() {
                 Some(' ' | '\t' | '\n' | '\r') => { let _ = src.read_char(); }

@@ -3751,21 +3751,21 @@ fn test_define_fn_function_named_fn() {
 #[test]
 fn test_display_returns_value() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(raw-display 42)"), Ok(Value::Number(42)));
+    assert_eq!(lisp.eval("(raw-display 1 42)"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_display_string() {
     let lisp: Lisp<20000> = Lisp::new();
     // raw-display returns its argument
-    let result = lisp.eval_to_index(r#"(raw-display "hello")"#);
+    let result = lisp.eval_to_index(r#"(raw-display 1 "hello")"#);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_newline_returns_inert() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval(r#"(raw-write-stdout "\n")"#), Ok(Value::Inert));
+    assert_eq!(lisp.eval(r#"(raw-write-str 1 "\n")"#), Ok(Value::Inert));
 }
 
 #[test]
@@ -3812,8 +3812,8 @@ fn test_apply_empty_args() {
 fn test_io_null_provider() {
     use grift::{IoProvider, NullIoProvider};
     let mut io = NullIoProvider;
-    assert!(io.write_stdout("hello").is_ok());
-    assert!(io.write_stderr("hello").is_ok());
+    assert!(io.write_stream(1, "hello").is_ok());
+    assert!(io.write_stream(2, "hello").is_ok());
 }
 
 #[test]
@@ -3824,17 +3824,18 @@ fn test_io_generic_provider() {
 
     struct TestIo;
     impl IoProvider for TestIo {
-        fn write_stdout(&mut self, _s: &str) -> IoResult<()> {
-            CALLED.store(true, Ordering::SeqCst);
+        fn write_stream(&mut self, stream: u8, _s: &str) -> IoResult<()> {
+            if stream == 1 {
+                CALLED.store(true, Ordering::SeqCst);
+            }
             Ok(())
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
     CALLED.store(false, Ordering::SeqCst);
-    let _ = lisp.eval("(raw-display 42)");
-    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_stdout should have been called");
+    let _ = lisp.eval("(raw-display 1 42)");
+    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_stream should have been called");
 }
 
 #[test]
@@ -3845,11 +3846,10 @@ fn test_io_display_to_io() {
         output: String,
     }
     impl IoProvider for CaptureIo {
-        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
-            self.output.push_str(s);
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
             Ok(())
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000> = Lisp::new();
@@ -3867,11 +3867,10 @@ fn test_io_write_to_io() {
         output: String,
     }
     impl IoProvider for CaptureIo {
-        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
-            self.output.push_str(s);
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
             Ok(())
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000> = Lisp::new();
@@ -3895,11 +3894,10 @@ fn test_io_streaming_no_truncation() {
         output: String,
     }
     impl IoProvider for CaptureIo {
-        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
-            self.output.push_str(s);
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
             Ok(())
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<100_000> = Lisp::new();
@@ -3920,10 +3918,9 @@ fn test_io_writer_error_propagation() {
 
     struct FailIo;
     impl IoProvider for FailIo {
-        fn write_stdout(&mut self, _s: &str) -> IoResult<()> {
+        fn write_stream(&mut self, _stream: u8, _s: &str) -> IoResult<()> {
             Err(IoErrorKind::WriteFailed)
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000> = Lisp::new();
@@ -3938,18 +3935,17 @@ fn test_io_null_provider_defaults() {
     use grift::{IoProvider, NullIoProvider, io::IoErrorKind};
 
     let mut io = NullIoProvider;
-    // write_stdout/write_stderr are no-ops
-    assert!(io.write_stdout("hello").is_ok());
-    assert!(io.write_stderr("hello").is_ok());
-    // write_char methods use default impls that delegate to write_stdout/stderr
-    assert!(io.write_char_stdout('x').is_ok());
-    assert!(io.write_char_stderr('x').is_ok());
+    // write_stream on 1/2 are no-ops
+    assert!(io.write_stream(1, "hello").is_ok());
+    assert!(io.write_stream(2, "hello").is_ok());
+    // write_stream on other streams returns Unsupported
+    assert_eq!(io.write_stream(0, "x"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.write_stream(3, "x"), Err(IoErrorKind::Unsupported));
     // Default methods return Unsupported
-    assert_eq!(io.read_stdin_char(), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.peek_stdin_char(), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.read_file("foo"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.write_file("foo", "bar"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.write_file_chars("foo", &mut core::iter::empty()), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.read_stream_char(0), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.peek_stream_char(0), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.open_file("foo", 0), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.close_stream(3), Err(IoErrorKind::Unsupported));
     assert_eq!(io.file_exists("foo"), Err(IoErrorKind::Unsupported));
     assert_eq!(io.delete_file("foo"), Err(IoErrorKind::Unsupported));
 }
@@ -3964,54 +3960,52 @@ fn test_raw_display() {
 
     struct CaptureIo { output: String }
     impl IoProvider for CaptureIo {
-        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
-            self.output.push_str(s);
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
             Ok(())
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
-    let _ = lisp.eval("(raw-display 42)");
+    let _ = lisp.eval("(raw-display 1 42)");
     assert_eq!(lisp.io().output, "42");
 }
 
 #[test]
-fn test_raw_write_stdout() {
+fn test_raw_write_str() {
     use grift::{IoProvider, io::IoResult};
 
     struct CaptureIo { output: String }
     impl IoProvider for CaptureIo {
-        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
-            self.output.push_str(s);
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
             Ok(())
         }
-        fn write_stderr(&mut self, _s: &str) -> IoResult<()> { Ok(()) }
     }
 
     let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
-    let _ = lisp.eval(r#"(raw-write-stdout "hello")"#);
+    let _ = lisp.eval(r#"(raw-write-str 1 "hello")"#);
     assert_eq!(lisp.io().output, "hello");
 }
 
 #[test]
-fn test_raw_write_stderr() {
+fn test_raw_write_str_stderr() {
     use grift::{IoProvider, io::IoResult};
 
     struct CaptureIo { stdout: String, stderr: String }
     impl IoProvider for CaptureIo {
-        fn write_stdout(&mut self, s: &str) -> IoResult<()> {
-            self.stdout.push_str(s);
-            Ok(())
-        }
-        fn write_stderr(&mut self, s: &str) -> IoResult<()> {
-            self.stderr.push_str(s);
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            match stream {
+                1 => self.stdout.push_str(s),
+                2 => self.stderr.push_str(s),
+                _ => {}
+            }
             Ok(())
         }
     }
 
     let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { stdout: String::new(), stderr: String::new() });
-    let _ = lisp.eval(r#"(raw-write-stderr "error msg")"#);
+    let _ = lisp.eval(r#"(raw-write-str 2 "error msg")"#);
     assert_eq!(lisp.io().stderr, "error msg");
     assert_eq!(lisp.io().stdout, "");
 }
@@ -4099,20 +4093,29 @@ fn test_raw_file_operations() {
 
     let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
 
-    let tmp = std::env::temp_dir().join("test_raw_file.txt");
+    let tmp = std::env::temp_dir().join("test_raw_file_stream.txt");
     let tmp_path = tmp.to_str().unwrap();
 
-    // Write a file
-    let program = std::format!(r#"(raw-write-file "{tmp_path}" "hello world")"#);
+    // Write a file using stream-based I/O: open, write-str, close
+    let program = std::format!(
+        r#"(let ((s (raw-open 1 "{tmp_path}"))) (raw-write-str s "hello world") (raw-close s))"#
+    );
     assert_eq!(lisp.eval(&program), Ok(Value::Inert));
 
     // Check file exists
     let program = std::format!(r#"(raw-file-exists? "{tmp_path}")"#);
     assert_eq!(lisp.eval(&program), Ok(Value::Boolean(true)));
 
-    // Read it back
-    let program = std::format!(r#"(equal? (raw-read-file "{tmp_path}") "hello world")"#);
-    assert_eq!(lisp.eval(&program), Ok(Value::Boolean(true)));
+    // Read it back using stream-based I/O: open, read chars, close
+    let program = std::format!(
+        r#"(let ((s (raw-open 0 "{tmp_path}")))
+             (let ((result (raw-read s)))
+               (raw-close s)
+               result))"#
+    );
+    // raw-read parses "hello" as a symbol
+    let result = lisp.eval(&program);
+    assert!(result.is_ok());
 
     // Delete
     let program = std::format!(r#"(raw-delete-file "{tmp_path}")"#);

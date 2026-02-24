@@ -1053,7 +1053,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 // ============================================================================
 
 /// A [`core::fmt::Write`] adapter that streams formatted output through an
-/// [`IoProvider`]'s `write_stdout` method.
+/// [`IoProvider`]'s `write_stream` method to stdout (stream 1).
 ///
 /// Used by [`Lisp::display_to_io`] and [`Lisp::write_to_io`] to avoid
 /// intermediate buffers. Any I/O error is captured in `error` and causes
@@ -1068,7 +1068,7 @@ impl core::fmt::Write for IoFmtWriter<'_> {
         if self.error.is_some() {
             return Err(core::fmt::Error);
         }
-        if let Err(e) = self.io.write_stdout(s) {
+        if let Err(e) = self.io.write_stream(1, s) {
             self.error = Some(e);
             return Err(core::fmt::Error);
         }

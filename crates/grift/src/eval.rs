@@ -12,6 +12,7 @@ use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::io::IoProvider;
 use crate::lisp::{ArenaWriter, Lisp};
+use crate::parse::CharSource;
 use crate::value::{BuiltinId, Value};
 
 /// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
@@ -207,13 +208,12 @@ define_builtins! {
         "apply"    => bi_apply    => builtin_apply,
         "raw-display"  => bi_raw_display  => builtin_raw_display,
         "raw-write"    => bi_raw_write    => builtin_raw_write,
-        "raw-write-stdout"  => bi_raw_write_stdout  => builtin_raw_write_stdout,
-        "raw-write-stderr"  => bi_raw_write_stderr  => builtin_raw_write_stderr,
+        "raw-write-str" => bi_raw_write_str => builtin_raw_write_str,
         "raw-read"          => bi_raw_read          => builtin_raw_read,
         "raw-read-char"     => bi_raw_read_char     => builtin_raw_read_char,
         "raw-peek-char"     => bi_raw_peek_char     => builtin_raw_peek_char,
-        "raw-read-file"     => bi_raw_read_file     => builtin_raw_read_file,
-        "raw-write-file"    => bi_raw_write_file    => builtin_raw_write_file,
+        "raw-open"          => bi_raw_open          => builtin_raw_open,
+        "raw-close"         => bi_raw_close         => builtin_raw_close,
         "raw-file-exists?"  => bi_raw_file_existsp  => builtin_raw_file_existsp,
         "raw-delete-file"   => bi_raw_delete_file   => builtin_raw_delete_file,
         "raw-read-string"   => bi_raw_read_string   => builtin_raw_read_string,
@@ -1154,15 +1154,19 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     }
 
     // ================================================================
-    // I/O builtins (portless model)
+    // I/O builtins (stream-based model)
     // ================================================================
 
-    /// `(raw-display obj)` — write human-readable output to stdout.
+    /// `(raw-display stream obj)` — write human-readable output to stream.
     fn builtin_raw_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.car(args)?;
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        let rest = self.cdr(args)?;
+        let val = self.car(rest)?;
         {
-            let mut w = crate::io::StdoutWriter {
+            let mut w = crate::io::StreamWriter {
                 io: &self.io,
+                stream,
                 error: None,
             };
             let _ = self.display_value(val, &mut w);
@@ -1170,12 +1174,16 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         Ok(val)
     }
 
-    /// `(raw-write obj)` — write machine-readable output to stdout.
+    /// `(raw-write stream obj)` — write machine-readable output to stream.
     fn builtin_raw_write(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.car(args)?;
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        let rest = self.cdr(args)?;
+        let val = self.car(rest)?;
         {
-            let mut w = crate::io::StdoutWriter {
+            let mut w = crate::io::StreamWriter {
                 io: &self.io,
+                stream,
                 error: None,
             };
             let _ = self.write_value(val, &mut w);
@@ -1183,93 +1191,88 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         Ok(val)
     }
 
-    /// `(raw-write-stdout str)` — write a CharPair chain to stdout.
-    fn builtin_raw_write_stdout(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let str_idx = self.car(args)?;
-        self.write_chars_to_stdout(str_idx)?;
+    /// `(raw-write-str stream str)` — write a CharPair chain to stream.
+    fn builtin_raw_write_str(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        let rest = self.cdr(args)?;
+        let str_idx = self.car(rest)?;
+        self.write_chars_to_stream(stream, str_idx)?;
         Ok(ArenaIndex::INERT)
     }
 
-    /// `(raw-write-stderr str)` — write a CharPair chain to stderr.
-    fn builtin_raw_write_stderr(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let str_idx = self.car(args)?;
-        self.write_chars_to_stderr(str_idx)?;
-        Ok(ArenaIndex::INERT)
-    }
-
-    /// Walk a CharPair chain and write each character to stdout via IoProvider.
-    fn write_chars_to_stdout(&self, mut idx: ArenaIndex) -> ArenaResult<()> {
+    /// Walk a CharPair chain and write each character to a stream via IoProvider.
+    fn write_chars_to_stream(&self, stream: u8, mut idx: ArenaIndex) -> ArenaResult<()> {
         while !idx.is_nil() {
             let Value::CharPair { ch, cdr } = self.get(idx)? else {
                 return Err(ArenaError::TypeError);
             };
-            let _ = self.io.borrow_mut().write_char_stdout(ch);
+            let mut buf = [0u8; 4];
+            let s = ch.encode_utf8(&mut buf);
+            let _ = self.io.borrow_mut().write_stream(stream, s);
             idx = cdr;
         }
         Ok(())
     }
 
-    /// Walk a CharPair chain and write each character to stderr via IoProvider.
-    fn write_chars_to_stderr(&self, mut idx: ArenaIndex) -> ArenaResult<()> {
-        while !idx.is_nil() {
-            let Value::CharPair { ch, cdr } = self.get(idx)? else {
-                return Err(ArenaError::TypeError);
-            };
-            let _ = self.io.borrow_mut().write_char_stderr(ch);
-            idx = cdr;
-        }
-        Ok(())
-    }
-
-    /// `(raw-read)` — read one s-expression from stdin.
+    /// `(raw-read stream)` — read one s-expression from stream.
     /// Returns NIL at end-of-input.
-    fn builtin_raw_read(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut src = crate::parse::StdinSource::new(&self.io);
+    fn builtin_raw_read(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        let mut src = crate::parse::StreamSource::new(&self.io, stream);
         self.parse_expr(&mut src)
     }
 
-    /// `(raw-read-char)` — read one character from stdin.
+    /// `(raw-read-char stream)` — read one character from stream.
     /// Returns a single CharPair or NIL at EOF.
-    fn builtin_raw_read_char(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.io.borrow_mut().read_stdin_char() {
+    fn builtin_raw_read_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        match self.io.borrow_mut().read_stream_char(stream) {
             Ok(c) => self.char_val(c),
             Err(crate::io::IoErrorKind::Eof) => Ok(ArenaIndex::NIL),
             Err(_) => Err(ArenaError::IoError),
         }
     }
 
-    /// `(raw-peek-char)` — peek at next character on stdin.
+    /// `(raw-peek-char stream)` — peek at next character on stream.
     /// Returns a single CharPair or NIL at EOF.
-    fn builtin_raw_peek_char(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.io.borrow_mut().peek_stdin_char() {
+    fn builtin_raw_peek_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        match self.io.borrow_mut().peek_stream_char(stream) {
             Ok(c) => self.char_val(c),
             Err(crate::io::IoErrorKind::Eof) => Ok(ArenaIndex::NIL),
             Err(_) => Err(ArenaError::IoError),
         }
     }
 
-    /// `(raw-read-file path)` — read entire file into a CharPair chain.
-    fn builtin_raw_read_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let path_idx = self.car(args)?;
-        self.with_path(path_idx, |path| {
-            let mut io = self.io.borrow_mut();
-            let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
-            self.alloc_string(contents)
-        })
-    }
-
-    /// `(raw-write-file path str)` — write a string to a file.
-    fn builtin_raw_write_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let path_idx = self.car(args)?;
+    /// `(raw-open mode path)` — open a file, return stream number.
+    /// mode: 0 = read, 1 = write (create/truncate).
+    fn builtin_raw_open(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let mode_idx = self.car(args)?;
+        let Value::Number(mode) = self.get(mode_idx)? else {
+            return Err(ArenaError::TypeError);
+        };
         let rest = self.cdr(args)?;
-        let str_idx = self.car(rest)?;
+        let path_idx = self.car(rest)?;
         self.with_path(path_idx, |path| {
-            let mut chars = self.chars_iter(str_idx);
-            self.io.borrow_mut()
-                .write_file_chars(path, &mut chars)
+            let stream_id = self.io.borrow_mut()
+                .open_file(path, mode as u8)
                 .map_err(|_| ArenaError::IoError)?;
-            Ok(ArenaIndex::INERT)
+            self.number(stream_id as isize)
         })
+    }
+
+    /// `(raw-close stream)` — close a dynamic stream.
+    fn builtin_raw_close(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let stream_idx = self.car(args)?;
+        let stream = self.get_stream_number(stream_idx)?;
+        self.io.borrow_mut()
+            .close_stream(stream)
+            .map_err(|_| ArenaError::IoError)?;
+        Ok(ArenaIndex::INERT)
     }
 
     /// `(raw-file-exists? path)` — check if a file exists.
@@ -1321,6 +1324,17 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         w.finish()
     }
 
+    /// Extract a stream number (u8) from a Number value.
+    fn get_stream_number(&self, idx: ArenaIndex) -> ArenaResult<u8> {
+        let Value::Number(n) = self.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        if n < 0 || n > 255 {
+            return Err(ArenaError::InvalidArgument);
+        }
+        Ok(n as u8)
+    }
+
     /// `(error msg)` — signal an error.
     fn builtin_error(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Err(ArenaError::InvalidArgument)
@@ -1363,37 +1377,49 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     }
 
     /// Load and evaluate expressions from a file path (CharPair chain).
+    ///
+    /// Opens the file via `IoProvider::open_file`, parses all s-expressions
+    /// from the stream, closes the stream, then evaluates each expression
+    /// in the given environment.
     fn load_file(
         &self,
         path_val: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        self.with_path(path_val, |path| {
-            // Read the file via IoProvider.
-            // We need to hold the borrow to access the string, parse all expressions
-            // into arena cells, then drop the borrow and evaluate.
-            let parsed_exprs = {
-                let mut io = self.io.borrow_mut();
-                let contents = io.read_file(path).map_err(|_| ArenaError::IoError)?;
-                let mut src = crate::parse::SliceSource::new(contents);
-                let mut list = ArenaIndex::NIL;
-                while src.has_more() {
-                    let e = self.parse_expr(&mut src)?;
-                    list = self.cons(e, list)?;
-                }
-                // Reverse so expressions are in order
-                self.reverse_list(list)?
-            };
+        // Open file for reading
+        let stream = self.with_path(path_val, |path| {
+            self.io.borrow_mut()
+                .open_file(path, 0)
+                .map_err(|_| ArenaError::IoError)
+        })?;
 
-            // Now evaluate each expression in the caller's env
-            let mut result = ArenaIndex::INERT;
-            let mut cur = parsed_exprs;
-            while !cur.is_nil() {
-                let e = self.car(cur)?;
-                result = self.eval_expr(e, env)?;
-                cur = self.cdr(cur)?;
+        // Parse all expressions from the stream
+        let parsed_exprs = {
+            let mut src = crate::parse::StreamSource::new(&self.io, stream);
+            let mut list = ArenaIndex::NIL;
+            loop {
+                self.skip_ws(&mut src);
+                if src.peek_char().is_none() {
+                    break;
+                }
+                let e = self.parse_expr(&mut src)?;
+                list = self.cons(e, list)?;
             }
-            Ok(result)
-        })
+            // Reverse so expressions are in order
+            self.reverse_list(list)?
+        };
+
+        // Close the stream
+        let _ = self.io.borrow_mut().close_stream(stream);
+
+        // Now evaluate each expression in the caller's env
+        let mut result = ArenaIndex::INERT;
+        let mut cur = parsed_exprs;
+        while !cur.is_nil() {
+            let e = self.car(cur)?;
+            result = self.eval_expr(e, env)?;
+            cur = self.cdr(cur)?;
+        }
+        Ok(result)
     }
 }
