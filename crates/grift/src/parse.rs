@@ -7,9 +7,6 @@ use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 use crate::io::IoProvider;
 use crate::lisp::Lisp;
 
-/// Maximum number of characters in a parsed string literal.
-const MAX_STRING_CHARS: usize = 4096;
-
 /// A simple S-expression parser.
 pub(crate) struct Parser<'a> {
     input: &'a [u8],
@@ -130,10 +127,10 @@ impl<'a> Parser<'a> {
         &mut self,
         lisp: &Lisp<N, IO>,
     ) -> ArenaResult<ArenaIndex> {
-        // Build the CharPair chain one character at a time so that escape
-        // sequences are resolved to their actual characters.
-        let mut chars: [char; MAX_STRING_CHARS] = ['\0'; MAX_STRING_CHARS];
-        let mut count = 0;
+        // Build the CharPair chain directly in the arena — no intermediate
+        // buffer. String length is bounded only by arena capacity.
+        let mut head = ArenaIndex::NIL;
+        let mut tail = ArenaIndex::NIL;
 
         while self.pos < self.input.len() && self.input[self.pos] != b'"' {
             let ch = if self.input[self.pos] == b'\\' {
@@ -152,11 +149,9 @@ impl<'a> Parser<'a> {
             } else {
                 self.input[self.pos] as char
             };
-            if count >= chars.len() {
-                return Err(ArenaError::InvalidArgument);
-            }
-            chars[count] = ch;
-            count += 1;
+            let (h, t) = lisp.append_char(head, tail, ch)?;
+            head = h;
+            tail = t;
             self.pos += 1;
         }
         if self.pos >= self.input.len() {
@@ -164,7 +159,7 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1; // skip closing quote
 
-        lisp.alloc_char_slice(&chars[..count])
+        Ok(head)
     }
 
     /// Parse an atom: number, symbol, or boolean.

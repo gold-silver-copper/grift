@@ -56,6 +56,13 @@ impl<const N: usize> Lisp<N> {
 }
 
 impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
+    /// Maximum supported path length (in bytes) for file operations.
+    ///
+    /// This is the size of the stack buffer used by [`with_path`](Self::with_path)
+    /// to collect a CharPair chain into a `&str` for `IoProvider` calls.
+    /// Paths exceeding this length will return `Err(InvalidArgument)`.
+    pub const MAX_PATH_LEN: usize = 256;
+
     /// Create a new Lisp interpreter with the given I/O provider.
     pub fn with_io(io: IO) -> Self {
         let arena = Arena::new(Value::Nil);
@@ -347,7 +354,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
     /// Extract a file path from a CharPair chain and pass it to a closure.
     ///
-    /// The path is collected into a 256-byte stack-allocated buffer.
+    /// The path is collected into a [`MAX_PATH_LEN`](Self::MAX_PATH_LEN)-byte
+    /// stack-allocated buffer.
     /// Returns `Err(InvalidArgument)` if the path exceeds this limit.
     ///
     /// This is an intentional fixed-size buffer: file paths are
@@ -358,7 +366,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     where
         F: FnOnce(&str) -> ArenaResult<R>,
     {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; Self::MAX_PATH_LEN];
         let len = self.collect_string(idx, &mut buf)?;
         let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
         f(path)
