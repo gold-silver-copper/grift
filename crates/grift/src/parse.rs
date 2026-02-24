@@ -8,6 +8,9 @@ use crate::io::IoProvider;
 use crate::lisp::Lisp;
 use crate::value::Value;
 
+/// Maximum number of characters in a parsed string literal.
+const MAX_STRING_CHARS: usize = 4096;
+
 /// A simple S-expression parser.
 pub(crate) struct Parser<'a> {
     input: &'a [u8],
@@ -130,7 +133,7 @@ impl<'a> Parser<'a> {
     ) -> ArenaResult<ArenaIndex> {
         // Build the CharPair chain one character at a time so that escape
         // sequences are resolved to their actual characters.
-        let mut chars: [char; 4096] = ['\0'; 4096];
+        let mut chars: [char; MAX_STRING_CHARS] = ['\0'; MAX_STRING_CHARS];
         let mut count = 0;
 
         while self.pos < self.input.len() && self.input[self.pos] != b'"' {

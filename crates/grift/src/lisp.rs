@@ -748,9 +748,12 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// and builtins in a freshly constructed `Lisp` — before any user
     /// expressions are evaluated.
     ///
-    /// Computed by running a GC on the current instance with no extra roots
-    /// and returning the surviving allocation count. Useful for computing
-    /// test budgets: `baseline + constant` rather than a magic number.
+    /// **Note:** this method triggers a garbage collection cycle to measure
+    /// the surviving allocation count. It should not be called in
+    /// performance-sensitive code paths.
+    ///
+    /// Useful for computing test budgets: `baseline + constant` rather
+    /// than a magic number.
     pub fn baseline_allocated(&self) -> usize {
         let _ = self.collect_garbage(&[]);
         self.stats().allocated
