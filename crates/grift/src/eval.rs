@@ -488,22 +488,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             cur = self.cdr(cur)?;
         }
         // Reverse in place — all cons cells are freshly allocated by us.
-        self.reverse_list(reversed)
-    }
-
-    /// Reverse a singly-linked cons-list in place by swapping cdr pointers.
-    #[inline]
-    fn reverse_list(&self, mut list: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut prev = ArenaIndex::NIL;
-        while !list.is_nil() {
-            let Value::Cons { car, cdr } = self.get(list)? else {
-                return Err(ArenaError::TypeError);
-            };
-            self.arena.set(list, Value::Cons { car, cdr: prev })?;
-            prev = list;
-            list = cdr;
-        }
-        Ok(prev)
+        self.reverse_chain(reversed)
     }
 
     // ================================================================
@@ -932,7 +917,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             reversed = self.cons(val, reversed)?;
             cur = self.cdr(cur)?;
         }
-        self.reverse_list(reversed)
+        self.reverse_chain(reversed)
     }
 
     // ================================================================
@@ -1157,8 +1142,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     // I/O builtins (stream-based model)
     // ================================================================
 
-    /// `(raw-display stream obj)` — write human-readable output to stream.
-    fn builtin_raw_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// Format a value to a stream. Shared by `raw-display` and `raw-write`.
+    fn stream_fmt(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
         let stream_idx = self.car(args)?;
         let stream = self.get_stream_number(stream_idx)?;
         let rest = self.cdr(args)?;
@@ -1169,26 +1154,19 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 stream,
                 error: None,
             };
-            let _ = self.display_value(val, &mut w);
+            let _ = self.fmt_value(val, &mut w, display);
         }
         Ok(val)
     }
 
+    /// `(raw-display stream obj)` — write human-readable output to stream.
+    fn builtin_raw_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.stream_fmt(args, true)
+    }
+
     /// `(raw-write stream obj)` — write machine-readable output to stream.
     fn builtin_raw_write(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        let rest = self.cdr(args)?;
-        let val = self.car(rest)?;
-        {
-            let mut w = crate::io::StreamWriter {
-                io: &self.io,
-                stream,
-                error: None,
-            };
-            let _ = self.write_value(val, &mut w);
-        }
-        Ok(val)
+        self.stream_fmt(args, false)
     }
 
     /// `(raw-write-str stream str)` — write a CharPair chain to stream.
@@ -1224,16 +1202,22 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         self.parse_expr(&mut src)
     }
 
+    /// Convert an `IoResult<char>` to an arena value: CharPair on success,
+    /// NIL at EOF, or `IoError` on failure.
+    fn io_char_result(&self, result: crate::io::IoResult<char>) -> ArenaResult<ArenaIndex> {
+        match result {
+            Ok(c) => self.char_val(c),
+            Err(crate::io::IoErrorKind::Eof) => Ok(ArenaIndex::NIL),
+            Err(_) => Err(ArenaError::IoError),
+        }
+    }
+
     /// `(raw-read-char stream)` — read one character from stream.
     /// Returns a single CharPair or NIL at EOF.
     fn builtin_raw_read_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let stream_idx = self.car(args)?;
         let stream = self.get_stream_number(stream_idx)?;
-        match self.io.borrow_mut().read_stream_char(stream) {
-            Ok(c) => self.char_val(c),
-            Err(crate::io::IoErrorKind::Eof) => Ok(ArenaIndex::NIL),
-            Err(_) => Err(ArenaError::IoError),
-        }
+        self.io_char_result(self.io.borrow_mut().read_stream_char(stream))
     }
 
     /// `(raw-peek-char stream)` — peek at next character on stream.
@@ -1241,11 +1225,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn builtin_raw_peek_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let stream_idx = self.car(args)?;
         let stream = self.get_stream_number(stream_idx)?;
-        match self.io.borrow_mut().peek_stream_char(stream) {
-            Ok(c) => self.char_val(c),
-            Err(crate::io::IoErrorKind::Eof) => Ok(ArenaIndex::NIL),
-            Err(_) => Err(ArenaError::IoError),
-        }
+        self.io_char_result(self.io.borrow_mut().peek_stream_char(stream))
     }
 
     /// `(raw-open mode path)` — open a file, return stream number.
@@ -1306,22 +1286,23 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         self.parse_expr(&mut src)
     }
 
-    /// `(raw-display-to-string obj)` — display a value to a string (CharPair chain).
-    /// Uses display_value (no quotes on strings).
-    fn builtin_raw_display_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    /// Format a value to an arena CharPair chain. Shared by
+    /// `raw-display-to-string` and `raw-write-to-string`.
+    fn fmt_to_string(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
         let mut w = ArenaWriter::new(self);
-        let _ = self.display_value(val, &mut w);
+        let _ = self.fmt_value(val, &mut w, display);
         w.finish()
     }
 
+    /// `(raw-display-to-string obj)` — display a value to a string (CharPair chain).
+    fn builtin_raw_display_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.fmt_to_string(args, true)
+    }
+
     /// `(raw-write-to-string obj)` — write a value to a string (CharPair chain).
-    /// Uses write_value (machine-readable, with quotes on strings).
     fn builtin_raw_write_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.car(args)?;
-        let mut w = ArenaWriter::new(self);
-        let _ = self.write_value(val, &mut w);
-        w.finish()
+        self.fmt_to_string(args, false)
     }
 
     /// Extract a stream number (u8) from a Number value.
@@ -1406,7 +1387,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 list = self.cons(e, list)?;
             }
             // Reverse so expressions are in order
-            self.reverse_list(list)?
+            self.reverse_chain(list)?
         };
 
         // Close the stream

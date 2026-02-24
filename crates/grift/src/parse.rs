@@ -272,7 +272,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             };
             head = self.prepend_char(head, actual)?;
         }
-        self.reverse_char_chain(head)
+        self.reverse_chain(head)
     }
 
     /// Parse an atom given the first character (already consumed).
@@ -291,6 +291,6 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 }
             }
         }
-        self.classify_atom(self.reverse_char_chain(head)?)
+        self.classify_atom(self.reverse_chain(head)?)
     }
 }
