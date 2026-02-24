@@ -364,11 +364,11 @@ mod std_io {
 
         let char_len = if first < 0x80 {
             1
-        } else if (0xC2..0xE0).contains(&first) {
+        } else if (0xC2..=0xDF).contains(&first) {
             2
-        } else if (0xE0..0xF0).contains(&first) {
+        } else if (0xE0..=0xEF).contains(&first) {
             3
-        } else if (0xF0..0xF5).contains(&first) {
+        } else if (0xF0..=0xF4).contains(&first) {
             4
         } else {
             return Err(IoErrorKind::ReadFailed);
