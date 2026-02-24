@@ -127,10 +127,10 @@ impl<'a> Parser<'a> {
         &mut self,
         lisp: &Lisp<N, IO>,
     ) -> ArenaResult<ArenaIndex> {
-        // Build the CharPair chain directly in the arena — no intermediate
-        // buffer. String length is bounded only by arena capacity.
+        // Build the CharPair chain in reverse (prepending each character),
+        // then reverse at the end. No intermediate buffer — string length
+        // is bounded only by arena capacity.
         let mut head = ArenaIndex::NIL;
-        let mut tail = ArenaIndex::NIL;
 
         while self.pos < self.input.len() && self.input[self.pos] != b'"' {
             let ch = if self.input[self.pos] == b'\\' {
@@ -149,9 +149,7 @@ impl<'a> Parser<'a> {
             } else {
                 self.input[self.pos] as char
             };
-            let (h, t) = lisp.append_char(head, tail, ch)?;
-            head = h;
-            tail = t;
+            head = lisp.prepend_char(head, ch)?;
             self.pos += 1;
         }
         if self.pos >= self.input.len() {
@@ -159,7 +157,7 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1; // skip closing quote
 
-        Ok(head)
+        lisp.reverse_char_chain(head)
     }
 
     /// Parse an atom: number, symbol, or boolean.

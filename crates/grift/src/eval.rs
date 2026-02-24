@@ -1380,9 +1380,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 self.cons(quote_sym, inner_list)
             }
             '"' => {
-                // String literal: read chars, build CharPair chain directly.
+                // String literal: prepend chars in reverse, then reverse.
                 let mut head = ArenaIndex::NIL;
-                let mut tail = ArenaIndex::NIL;
                 loop {
                     let ch = match self.io.borrow_mut().read_stdin_char() {
                         Ok(c) => c,
@@ -1407,17 +1406,15 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     } else {
                         ch
                     };
-                    let (h, t) = self.append_char(head, tail, actual)?;
-                    head = h;
-                    tail = t;
+                    head = self.prepend_char(head, actual)?;
                 }
-                Ok(head)
+                self.reverse_char_chain(head)
             }
             '(' => self.read_list_from_stdin(),
             ')' => Err(ArenaError::ParseError),
             _ => {
-                // Atom: build CharPair chain of chars, then classify.
-                let (mut head, mut tail) = self.append_char(ArenaIndex::NIL, ArenaIndex::NIL, first)?;
+                // Atom: prepend chars in reverse, reverse, then classify.
+                let mut head = self.prepend_char(ArenaIndex::NIL, first)?;
                 loop {
                     let next = match self.io.borrow_mut().peek_stdin_char() {
                         Ok(c) => c,
@@ -1428,10 +1425,9 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                         break;
                     }
                     let _ = self.io.borrow_mut().read_stdin_char();
-                    let (h, t) = self.append_char(head, tail, next)?;
-                    head = h;
-                    tail = t;
+                    head = self.prepend_char(head, next)?;
                 }
+                head = self.reverse_char_chain(head)?;
                 self.classify_atom(head)
             }
         }
@@ -1564,9 +1560,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 self.cons(quote_sym, inner_list)
             }
             '"' => {
-                // String literal: read chars, build CharPair chain directly.
+                // String literal: prepend chars in reverse, then reverse.
                 let mut head = ArenaIndex::NIL;
-                let mut tail = ArenaIndex::NIL;
                 loop {
                     let (ch, next) = self.chain_read_char(cursor)
                         .ok_or(ArenaError::ParseError)?;
@@ -1589,17 +1584,15 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     } else {
                         ch
                     };
-                    let (h, t) = self.append_char(head, tail, actual)?;
-                    head = h;
-                    tail = t;
+                    head = self.prepend_char(head, actual)?;
                 }
-                Ok(head)
+                self.reverse_char_chain(head)
             }
             '(' => self.read_list_from_chain(cursor),
             ')' => Err(ArenaError::ParseError),
             _ => {
-                // Atom: build CharPair chain, then classify.
-                let (mut head, mut tail) = self.append_char(ArenaIndex::NIL, ArenaIndex::NIL, first)?;
+                // Atom: prepend chars in reverse, reverse, then classify.
+                let mut head = self.prepend_char(ArenaIndex::NIL, first)?;
                 loop {
                     let next_ch = self.chain_peek_char(*cursor);
                     match next_ch {
@@ -1610,12 +1603,11 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                             if let Some((_, next)) = self.chain_read_char(cursor) {
                                 *cursor = next;
                             }
-                            let (h, t) = self.append_char(head, tail, c)?;
-                            head = h;
-                            tail = t;
+                            head = self.prepend_char(head, c)?;
                         }
                     }
                 }
+                head = self.reverse_char_chain(head)?;
                 self.classify_atom(head)
             }
         }

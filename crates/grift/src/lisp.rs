@@ -377,27 +377,45 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         CharPairIter { lisp: self, idx }
     }
 
-    /// Append a character to the end of a CharPair chain.
+    /// Prepend a character to the front of a CharPair chain.
     ///
-    /// If `tail` is NIL (empty chain), returns the newly allocated node as
-    /// both the new head and new tail.  Otherwise links the new node to
-    /// the current tail and returns `(head, new_tail)`.
-    pub(crate) fn append_char(
+    /// Allocates a new `CharPair` node whose `cdr` points to `head`.
+    /// Returns the new head. This is purely functional — no existing
+    /// arena nodes are mutated.
+    ///
+    /// Build strings by prepending characters in reverse order, then call
+    /// [`reverse_char_chain`](Self::reverse_char_chain) to flip into
+    /// forward order.
+    pub(crate) fn prepend_char(
         &self,
         head: ArenaIndex,
-        tail: ArenaIndex,
         ch: char,
-    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
-        let node = self.arena.alloc(Value::CharPair { ch, cdr: ArenaIndex::NIL })?;
-        if head.is_nil() {
-            Ok((node, node))
-        } else {
-            let Value::CharPair { ch: tc, .. } = self.arena.get(tail)? else {
+    ) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(Value::CharPair { ch, cdr: head })
+    }
+
+    /// Reverse a CharPair chain in place.
+    ///
+    /// Walks the chain starting at `head`, re-linking each node's `cdr`
+    /// to point to its predecessor. Returns the new head (formerly the
+    /// last node).
+    ///
+    /// This mutates `cdr` fields only — each node's `ch` is preserved.
+    /// Safe because the chain is freshly built and not yet shared.
+    pub(crate) fn reverse_char_chain(
+        &self,
+        mut head: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let mut prev = ArenaIndex::NIL;
+        while !head.is_nil() {
+            let Value::CharPair { ch, cdr } = self.arena.get(head)? else {
                 return Err(ArenaError::TypeError);
             };
-            self.arena.set(tail, Value::CharPair { ch: tc, cdr: node })?;
-            Ok((head, node))
+            self.arena.set(head, Value::CharPair { ch, cdr: prev })?;
+            prev = head;
+            head = cdr;
         }
+        Ok(prev)
     }
 
     /// Intern a symbol from an existing CharPair chain.
@@ -867,22 +885,6 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         idx: ArenaIndex,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        struct IoFmtWriter<'a> {
-            io: &'a mut dyn IoProvider,
-            error: Option<crate::io::IoErrorKind>,
-        }
-        impl core::fmt::Write for IoFmtWriter<'_> {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                if self.error.is_some() {
-                    return Err(core::fmt::Error);
-                }
-                if let Err(e) = self.io.write_stdout(s) {
-                    self.error = Some(e);
-                    return Err(core::fmt::Error);
-                }
-                Ok(())
-            }
-        }
         let mut w = IoFmtWriter { io, error: None };
         let _ = self.display_value(idx, &mut w);
         w.error.map_or(Ok(()), Err)
@@ -897,22 +899,6 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         idx: ArenaIndex,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        struct IoFmtWriter<'a> {
-            io: &'a mut dyn IoProvider,
-            error: Option<crate::io::IoErrorKind>,
-        }
-        impl core::fmt::Write for IoFmtWriter<'_> {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                if self.error.is_some() {
-                    return Err(core::fmt::Error);
-                }
-                if let Err(e) = self.io.write_stdout(s) {
-                    self.error = Some(e);
-                    return Err(core::fmt::Error);
-                }
-                Ok(())
-            }
-        }
         let mut w = IoFmtWriter { io, error: None };
         let _ = self.write_value(idx, &mut w);
         w.error.map_or(Ok(()), Err)
@@ -1081,6 +1067,34 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 }
 
 // ============================================================================
+// IoFmtWriter — bridges core::fmt::Write to an IoProvider
+// ============================================================================
+
+/// A [`core::fmt::Write`] adapter that streams formatted output through an
+/// [`IoProvider`]'s `write_stdout` method.
+///
+/// Used by [`Lisp::display_to_io`] and [`Lisp::write_to_io`] to avoid
+/// intermediate buffers. Any I/O error is captured in `error` and causes
+/// subsequent writes to short-circuit.
+struct IoFmtWriter<'a> {
+    io: &'a mut dyn IoProvider,
+    error: Option<crate::io::IoErrorKind>,
+}
+
+impl core::fmt::Write for IoFmtWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.error.is_some() {
+            return Err(core::fmt::Error);
+        }
+        if let Err(e) = self.io.write_stdout(s) {
+            self.error = Some(e);
+            return Err(core::fmt::Error);
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
 // CharPairIter — iterator over characters in a CharPair chain
 // ============================================================================
 
@@ -1089,6 +1103,11 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 /// Useful for streaming CharPair content to [`IoProvider`] methods like
 /// [`write_file_chars`](crate::io::IoProvider::write_file_chars) without
 /// materializing the entire string into a buffer.
+///
+/// Iteration terminates at NIL (end of chain) or at any non-`CharPair` value.
+/// A non-CharPair node is treated as end-of-sequence rather than an error
+/// because `Iterator::Item` is `char`, not `Result<char>`, and all current
+/// callers only invoke this on well-formed `CharPair` chains.
 pub(crate) struct CharPairIter<'a, const N: usize, IO: IoProvider> {
     lisp: &'a Lisp<N, IO>,
     idx: ArenaIndex,
@@ -1118,13 +1137,12 @@ impl<const N: usize, IO: IoProvider> Iterator for CharPairIter<'_, N, IO> {
 /// A [`core::fmt::Write`] implementation that allocates `CharPair` nodes
 /// directly into the arena, building a string without any intermediate buffer.
 ///
-/// Characters are appended in forward order (head points to the first
-/// character).  Call [`finish`](Self::finish) to retrieve the head of the
-/// resulting `CharPair` chain.
+/// Characters are prepended (building in reverse order) during writing.
+/// [`finish`](Self::finish) calls `reverse_char_chain` to produce
+/// the correctly ordered chain.
 pub(crate) struct ArenaWriter<'a, const N: usize, IO: IoProvider> {
     lisp: &'a Lisp<N, IO>,
     head: ArenaIndex,
-    tail: ArenaIndex,
     error: Option<ArenaError>,
 }
 
@@ -1133,17 +1151,16 @@ impl<'a, const N: usize, IO: IoProvider> ArenaWriter<'a, N, IO> {
         ArenaWriter {
             lisp,
             head: ArenaIndex::NIL,
-            tail: ArenaIndex::NIL,
             error: None,
         }
     }
 
-    /// Consume the writer and return the head of the CharPair chain,
-    /// or an error if any allocation failed during writing.
+    /// Consume the writer and return the head of the CharPair chain
+    /// in forward order, or an error if any allocation failed.
     pub(crate) fn finish(self) -> ArenaResult<ArenaIndex> {
         match self.error {
             Some(e) => Err(e),
-            None => Ok(self.head),
+            None => self.lisp.reverse_char_chain(self.head),
         }
     }
 }
@@ -1154,10 +1171,9 @@ impl<const N: usize, IO: IoProvider> core::fmt::Write for ArenaWriter<'_, N, IO>
             return Err(core::fmt::Error);
         }
         for ch in s.chars() {
-            match self.lisp.append_char(self.head, self.tail, ch) {
-                Ok((h, t)) => {
+            match self.lisp.prepend_char(self.head, ch) {
+                Ok(h) => {
                     self.head = h;
-                    self.tail = t;
                 }
                 Err(e) => {
                     self.error = Some(e);
