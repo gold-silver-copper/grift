@@ -480,44 +480,19 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     ///
     /// Checks for booleans (#t, #f, etc.), #inert, #ignore, numbers, and
     /// symbols.  Returns the appropriate arena value.
-    ///
-    /// Dispatches on the first character to avoid walking the chain
-    /// multiple times for the common cases (numbers, symbols).
     pub(crate) fn classify_atom(&self, chain: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let Value::CharPair { ch, cdr } = self.arena.get(chain)? else {
-            return self.symbol_from_chain(chain);
-        };
-        match ch {
-            '#' => self.classify_hash_atom(cdr),
-            _ => {
-                if let Some(n) = self.parse_integer_from_chain(chain) {
-                    self.number(n)
-                } else {
-                    self.symbol_from_chain(chain)
-                }
-            }
-        }
-    }
-
-    /// Classify a `#`-prefixed atom by reading the character after `#`.
-    fn classify_hash_atom(&self, after_hash: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let Ok(Value::CharPair { ch, cdr }) = self.arena.get(after_hash) else {
-            // Bare "#" — reconstruct and intern as symbol.
-            let hash_chain = self.prepend_char(ArenaIndex::NIL, '#')?;
-            return self.symbol_from_chain(hash_chain);
-        };
-        match ch {
-            't' if cdr.is_nil() => Ok(ArenaIndex::TRUE),
-            't' if self.string_eq(cdr, "rue") => Ok(ArenaIndex::TRUE),
-            'f' if cdr.is_nil() => Ok(ArenaIndex::FALSE),
-            'f' if self.string_eq(cdr, "alse") => Ok(ArenaIndex::FALSE),
-            'i' if self.string_eq(cdr, "nert") => Ok(ArenaIndex::INERT),
-            'i' if self.string_eq(cdr, "gnore") => Ok(ArenaIndex::IGNORE),
-            // Unknown #-prefix — reconstruct and intern as symbol.
-            _ => {
-                let hash_chain = self.prepend_char(after_hash, '#')?;
-                self.symbol_from_chain(hash_chain)
-            }
+        if self.string_eq(chain, "#t") || self.string_eq(chain, "#true") {
+            Ok(ArenaIndex::TRUE)
+        } else if self.string_eq(chain, "#f") || self.string_eq(chain, "#false") {
+            Ok(ArenaIndex::FALSE)
+        } else if self.string_eq(chain, "#inert") {
+            Ok(ArenaIndex::INERT)
+        } else if self.string_eq(chain, "#ignore") {
+            Ok(ArenaIndex::IGNORE)
+        } else if let Some(n) = self.parse_integer_from_chain(chain) {
+            self.number(n)
+        } else {
+            self.symbol_from_chain(chain)
         }
     }
 
@@ -664,16 +639,11 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn find_binding(&self, bindings: ArenaIndex, name: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
         let mut cur = bindings;
         while !cur.is_nil() {
-            let Value::Cons { car: binding, cdr: next } = self.arena.get(cur)? else {
-                return Err(ArenaError::TypeError);
-            };
-            let Value::Cons { car: key, .. } = self.arena.get(binding)? else {
-                return Err(ArenaError::TypeError);
-            };
-            if key == name {
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
                 return Ok(Some(binding));
             }
-            cur = next;
+            cur = self.cdr(cur)?;
         }
         Ok(None)
     }
@@ -734,28 +704,22 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 return Err(ArenaError::TypeError);
             };
 
-            // Search local bindings (2 arena.get per iteration instead of 3).
+            // Search local bindings.
             let mut b = bindings;
             while !b.is_nil() {
-                let Value::Cons { car: binding, cdr: next } = self.arena.get(b)? else {
-                    return Err(ArenaError::TypeError);
-                };
-                let Value::Cons { car: key, cdr: val } = self.arena.get(binding)? else {
-                    return Err(ArenaError::TypeError);
-                };
-                if key == name {
-                    return Ok(val);
+                let binding = self.car(b)?;
+                if self.car(binding)? == name {
+                    return self.cdr(binding);
                 }
-                b = next;
+                b = self.cdr(b)?;
             }
 
             // Single parent → follow directly (no allocation needed).
             if parents.is_nil() {
                 break;
             }
-            let Value::Cons { car: first_parent, cdr: rest } = self.arena.get(parents)? else {
-                return Err(ArenaError::TypeError);
-            };
+            let first_parent = self.car(parents)?;
+            let rest = self.cdr(parents)?;
             if rest.is_nil() {
                 cur = first_parent;
                 continue;
@@ -788,19 +752,14 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             return Err(ArenaError::TypeError);
         };
 
-        // Search local bindings (2 arena.get per iteration instead of 3).
+        // Search local bindings.
         let mut cur = bindings;
         while !cur.is_nil() {
-            let Value::Cons { car: binding, cdr: next } = self.arena.get(cur)? else {
-                return Err(ArenaError::TypeError);
-            };
-            let Value::Cons { car: key, cdr: val } = self.arena.get(binding)? else {
-                return Err(ArenaError::TypeError);
-            };
-            if key == name {
-                return Ok(val);
+            let binding = self.car(cur)?;
+            if self.car(binding)? == name {
+                return self.cdr(binding);
             }
-            cur = next;
+            cur = self.cdr(cur)?;
         }
 
         // Mark this env as visited, then search parents.
@@ -1103,6 +1062,7 @@ impl core::fmt::Write for IoFmtWriter<'_> {
     }
 }
 
+// ============================================================================
 // ============================================================================
 // ArenaWriter — core::fmt::Write that builds a CharPair chain in the arena
 // ============================================================================
