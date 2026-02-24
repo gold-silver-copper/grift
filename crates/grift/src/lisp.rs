@@ -1,32 +1,26 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 
-use core::cell::Cell;
+use core::cell::RefCell;
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::io::{IoProvider, PortId};
+use crate::io::{IoProvider, NullIoProvider, PortId};
 use crate::parse::Parser;
 use crate::value::Value;
-
-/// Function pointer type for I/O write operations.
-///
-/// Used to bridge between the `&self`-based eval loop and mutable
-/// I/O providers. The function takes a port ID and a string slice.
-type WriteFn = fn(PortId, &str);
-
-/// Default no-op write function (discards all output).
-fn null_write(_port: PortId, _s: &str) {}
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
 /// The const generic `N` controls the arena capacity (number of slots).
+/// The type parameter `IO` selects the I/O back-end; it defaults to
+/// [`NullIoProvider`] so that code which doesn't need I/O can keep
+/// writing `Lisp<N>`.
 ///
 /// # I/O Model
 ///
-/// The interpreter uses an [`IoProvider`] trait for all output operations.
-/// By default, output is discarded ([`NullIoProvider`] semantics). Call
-/// [`set_io`](Self::set_io) with a write function to enable output, or use
-/// [`eval_with_io`](Self::eval_with_io) to evaluate with a specific provider.
+/// The interpreter stores an [`IoProvider`] in a [`RefCell`] for interior-
+/// mutable access from the `&self` eval loop.  Builtins borrow the provider
+/// briefly per call and never hold the borrow across recursive eval/display
+/// walks.
 ///
 /// # Example
 ///
@@ -37,10 +31,10 @@ fn null_write(_port: PortId, _s: &str) {}
 /// let result = lisp.eval("(+ 1 2)");
 /// assert_eq!(result, Ok(Value::Number(3)));
 /// ```
-pub struct Lisp<const N: usize> {
+pub struct Lisp<const N: usize, IO: IoProvider = NullIoProvider> {
     pub(crate) arena: Arena<Value, N>,
-    /// I/O write callback, stored in a Cell for interior mutability.
-    pub(crate) write_fn: Cell<WriteFn>,
+    /// I/O provider, wrapped in a RefCell for interior mutability.
+    pub(crate) io: RefCell<IO>,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -50,13 +44,20 @@ impl<const N: usize> Default for Lisp<N> {
 }
 
 impl<const N: usize> Lisp<N> {
-    /// Create a new Lisp interpreter with an empty arena.
+    /// Create a new Lisp interpreter with a [`NullIoProvider`] (no I/O).
     ///
     /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
     /// `#ignore`, the ground environment, a parents cell, the global
     /// environment, the GC root stack, and the symbol intern list so
     /// that returning these common values is allocation-free.
     pub fn new() -> Self {
+        Self::with_io(NullIoProvider)
+    }
+}
+
+impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
+    /// Create a new Lisp interpreter with the given I/O provider.
+    pub fn with_io(io: IO) -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
             .alloc(Value::Nil)
@@ -93,7 +94,7 @@ impl<const N: usize> Lisp<N> {
 
         let lisp = Lisp {
             arena,
-            write_fn: Cell::new(null_write),
+            io: RefCell::new(io),
         };
 
         // Global env is a child of the ground env.
@@ -634,23 +635,20 @@ impl<const N: usize> Lisp<N> {
 
     // — I/O integration —
 
-    /// Set the I/O write function used by `display` and `newline` builtins.
+    /// Get a shared reference to the I/O provider.
     ///
-    /// The function pointer is stored internally and called whenever the
-    /// Lisp program invokes `(display ...)` or `(newline)`.
+    /// Panics if the I/O provider is currently borrowed mutably
+    /// (should never happen as builtins only borrow briefly).
+    pub fn io(&self) -> core::cell::Ref<'_, IO> {
+        self.io.borrow()
+    }
+
+    /// Get a mutable reference to the I/O provider.
     ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use grift::{Lisp, io::PortId};
-    ///
-    /// let lisp: Lisp<20000> = Lisp::new();
-    /// lisp.set_io(|port, s| {
-    ///     // Write to your I/O device here
-    /// });
-    /// ```
-    pub fn set_io(&self, write: fn(PortId, &str)) {
-        self.write_fn.set(write);
+    /// Panics if the I/O provider is currently borrowed
+    /// (should never happen as builtins only borrow briefly).
+    pub fn io_mut(&self) -> core::cell::RefMut<'_, IO> {
+        self.io.borrow_mut()
     }
 
     /// Write a value's display representation through an [`IoProvider`].
@@ -681,13 +679,6 @@ impl<const N: usize> Lisp<N> {
         let mut w = crate::io::TraitIoWriter { port, io, error: None };
         let _ = self.write_value(idx, &mut w);
         w.error.map_or(Ok(()), Err)
-    }
-
-    /// Emit I/O output through the currently configured write function.
-    ///
-    /// Called by the `display` and `newline` builtins.
-    pub(crate) fn io_write(&self, port: PortId, s: &str) {
-        (self.write_fn.get())(port, s);
     }
 
     // — Arena introspection —

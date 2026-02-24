@@ -4,6 +4,7 @@
 
 use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
 
+use crate::io::IoProvider;
 use crate::lisp::Lisp;
 
 /// A simple S-expression parser.
@@ -28,7 +29,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one expression.
-    pub fn parse<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    pub fn parse<const N: usize, IO: IoProvider>(&mut self, lisp: &Lisp<N, IO>) -> ArenaResult<ArenaIndex> {
         self.skip_whitespace();
         if self.pos >= self.input.len() {
             return Ok(ArenaIndex::NIL);
@@ -68,7 +69,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a list: `(a b c)` → cons cells.
-    fn parse_list<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn parse_list<const N: usize, IO: IoProvider>(&mut self, lisp: &Lisp<N, IO>) -> ArenaResult<ArenaIndex> {
         self.skip_whitespace();
 
         if self.pos >= self.input.len() {
@@ -110,7 +111,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse `'expr` → `(quote expr)`.
-    fn parse_quote<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn parse_quote<const N: usize, IO: IoProvider>(&mut self, lisp: &Lisp<N, IO>) -> ArenaResult<ArenaIndex> {
         let expr = self.parse(lisp)?;
         let quote_sym = lisp.symbol("quote")?;
         let inner = lisp.cons(expr, ArenaIndex::NIL)?;
@@ -118,9 +119,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a string literal `"..."`.
-    fn parse_string_literal<const N: usize>(
+    fn parse_string_literal<const N: usize, IO: IoProvider>(
         &mut self,
-        lisp: &Lisp<N>,
+        lisp: &Lisp<N, IO>,
     ) -> ArenaResult<ArenaIndex> {
         let start = self.pos;
         while self.pos < self.input.len() && self.input[self.pos] != b'"' {
@@ -141,7 +142,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse an atom: number, symbol, or boolean.
-    fn parse_atom<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn parse_atom<const N: usize, IO: IoProvider>(&mut self, lisp: &Lisp<N, IO>) -> ArenaResult<ArenaIndex> {
         let start = self.pos;
         while self.pos < self.input.len() {
             match self.input[self.pos] {

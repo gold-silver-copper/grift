@@ -199,24 +199,8 @@ impl IoProvider for NullIoProvider {
 }
 
 // ============================================================================
-// Streaming writer types
+// Streaming writer type
 // ============================================================================
-
-/// Streams output through the function-pointer IO path.
-///
-/// Used by builtins (`display`, `newline`) inside the eval loop,
-/// where only a `fn(PortId, &str)` callback is available.
-pub(crate) struct IoWriter {
-    pub(crate) port: PortId,
-    pub(crate) write_fn: fn(PortId, &str),
-}
-
-impl core::fmt::Write for IoWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        (self.write_fn)(self.port, s);
-        Ok(())
-    }
-}
 
 /// Streams output through a trait-object [`IoProvider`].
 ///

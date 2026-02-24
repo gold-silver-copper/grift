@@ -3800,20 +3800,23 @@ fn test_io_null_provider() {
 }
 
 #[test]
-fn test_io_set_write_fn() {
+fn test_io_generic_provider() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use grift::io::PortId;
+    use grift::{IoProvider, io::{PortId, IoResult}};
     static CALLED: AtomicBool = AtomicBool::new(false);
 
-    fn test_write(_port: PortId, _s: &str) {
-        CALLED.store(true, Ordering::SeqCst);
+    struct TestIo;
+    impl IoProvider for TestIo {
+        fn write_str(&mut self, _port: PortId, _s: &str) -> IoResult<()> {
+            CALLED.store(true, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
-    let lisp: Lisp<20000> = Lisp::new();
-    lisp.set_io(test_write);
+    let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
     CALLED.store(false, Ordering::SeqCst);
     let _ = lisp.eval("(display 42)");
-    assert!(CALLED.load(Ordering::SeqCst), "write function should have been called");
+    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_str should have been called");
 }
 
 #[test]

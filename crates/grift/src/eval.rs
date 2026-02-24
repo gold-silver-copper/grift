@@ -10,6 +10,7 @@
 
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
+use crate::io::IoProvider;
 use crate::lisp::Lisp;
 use crate::value::{BuiltinId, Value};
 
@@ -108,7 +109,7 @@ macro_rules! define_builtins {
         // — ID constants (single shared u8 space) —
         define_builtins!(@ids 0u8; $($op_id,)* $($bi_id,)*);
 
-        impl<const N: usize> Lisp<N> {
+        impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             /// Register all builtins in the ground environment.
             pub(crate) fn init_builtins(&self) {
                 $( self.bind_builtin($op_name, $op_id, false); )*
@@ -209,7 +210,7 @@ define_builtins! {
     }
 }
 
-impl<const N: usize> Lisp<N> {
+impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.
     fn bind_builtin(&self, name: &str, id: BuiltinId, wrap: bool) {
         let Ok(sym) = self.symbol(name) else {
@@ -1141,24 +1142,27 @@ impl<const N: usize> Lisp<N> {
 
     /// `(display obj)` — write a human-readable representation of obj.
     ///
-    /// Output is streamed directly through the [`IoProvider`](crate::io::IoProvider)
-    /// configured via [`set_io`](Self::set_io). No intermediate buffer.
+    /// Borrows the [`IoProvider`] from the `RefCell` briefly, writes
+    /// through it, then drops the borrow before returning.
     fn builtin_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
-        let mut w = crate::io::IoWriter {
-            port: crate::io::PortId::STDOUT,
-            write_fn: self.write_fn.get(),
-        };
-        let _ = self.display_value(val, &mut w);
+        {
+            let mut io = self.io.borrow_mut();
+            let mut w = crate::io::TraitIoWriter {
+                port: crate::io::PortId::STDOUT,
+                io: &mut *io,
+                error: None,
+            };
+            let _ = self.display_value(val, &mut w);
+        }
         Ok(val)
     }
 
     /// `(newline)` — write a newline character.
     ///
-    /// Output is routed through the [`IoProvider`](crate::io::IoProvider)
-    /// configured via [`set_io`](Self::set_io).
+    /// Borrows the [`IoProvider`] briefly to write `"\n"`.
     fn builtin_newline(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.io_write(crate::io::PortId::STDOUT, "\n");
+        let _ = self.io.borrow_mut().write_str(crate::io::PortId::STDOUT, "\n");
         Ok(ArenaIndex::INERT)
     }
 
