@@ -1427,8 +1427,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     let _ = self.io.borrow_mut().read_stdin_char();
                     head = self.prepend_char(head, next)?;
                 }
-                head = self.reverse_char_chain(head)?;
-                self.classify_atom(head)
+                self.classify_atom(self.reverse_char_chain(head)?)
             }
         }
     }
@@ -1607,8 +1606,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                         }
                     }
                 }
-                head = self.reverse_char_chain(head)?;
-                self.classify_atom(head)
+                self.classify_atom(self.reverse_char_chain(head)?)
             }
         }
     }

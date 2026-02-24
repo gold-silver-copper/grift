@@ -394,13 +394,12 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         self.arena.alloc(Value::CharPair { ch, cdr: head })
     }
 
-    /// Reverse a CharPair chain in place.
+    /// Reverse a CharPair chain by re-linking each node's `cdr`.
     ///
     /// Walks the chain starting at `head`, re-linking each node's `cdr`
     /// to point to its predecessor. Returns the new head (formerly the
-    /// last node).
+    /// last node). No new nodes are allocated.
     ///
-    /// This mutates `cdr` fields only — each node's `ch` is preserved.
     /// Safe because the chain is freshly built and not yet shared.
     pub(crate) fn reverse_char_chain(
         &self,
