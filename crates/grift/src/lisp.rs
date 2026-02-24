@@ -349,6 +349,11 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     ///
     /// The path is collected into a 256-byte stack-allocated buffer.
     /// Returns `Err(InvalidArgument)` if the path exceeds this limit.
+    ///
+    /// This is an intentional fixed-size buffer: file paths are
+    /// inherently bounded, and the IoProvider APIs require `&str`.
+    /// All other buffers have been replaced with arena allocation
+    /// or streaming.
     pub(crate) fn with_path<F, R>(&self, idx: ArenaIndex, f: F) -> ArenaResult<R>
     where
         F: FnOnce(&str) -> ArenaResult<R>,
