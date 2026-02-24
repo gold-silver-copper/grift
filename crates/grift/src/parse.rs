@@ -173,9 +173,9 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn skip_ws(&self, src: &mut impl CharSource) {
         loop {
             match src.peek_char() {
-                Some(' ' | '\t' | '\n' | '\r') => { src.read_char(); }
+                Some(' ' | '\t' | '\n' | '\r') => { let _ = src.read_char(); }
                 Some(';') => {
-                    src.read_char();
+                    let _ = src.read_char();
                     loop {
                         match src.read_char() {
                             Some('\n') | None => break,
