@@ -8,6 +8,9 @@ use crate::io::{IoProvider, NullIoProvider};
 use crate::parse::SliceSource;
 use crate::value::Value;
 
+/// Maximum supported path length (in bytes) for file operations.
+const MAX_PATH_LEN: usize = 256;
+
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
 /// The const generic `N` controls the arena capacity (number of slots).
@@ -61,7 +64,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// This is the size of the stack buffer used by [`with_path`](Self::with_path)
     /// to collect a CharPair chain into a `&str` for `IoProvider` calls.
     /// Paths exceeding this length will return `Err(InvalidArgument)`.
-    pub const MAX_PATH_LEN: usize = 256;
+    pub const MAX_PATH_LEN: usize = MAX_PATH_LEN;
 
     /// Create a new Lisp interpreter with the given I/O provider.
     pub fn with_io(io: IO) -> Self {
@@ -349,15 +352,10 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     where
         F: FnOnce(&str) -> ArenaResult<R>,
     {
-        let mut buf = [0u8; Self::MAX_PATH_LEN];
+        let mut buf = [0u8; MAX_PATH_LEN];
         let len = self.collect_string(idx, &mut buf)?;
         let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
         f(path)
-    }
-
-    /// Create an iterator over the characters in a CharPair chain.
-    pub(crate) fn chars_iter(&self, idx: ArenaIndex) -> CharPairIter<'_, N, IO> {
-        CharPairIter { lisp: self, idx }
     }
 
     /// Prepend a character to the front of a CharPair chain.
@@ -367,7 +365,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// arena nodes are mutated.
     ///
     /// Build strings by prepending characters in reverse order, then call
-    /// [`reverse_char_chain`](Self::reverse_char_chain) to flip into
+    /// [`reverse_chain`](Self::reverse_chain) to flip into
     /// forward order.
     pub(crate) fn prepend_char(
         &self,
@@ -377,23 +375,25 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         self.arena.alloc(Value::CharPair { ch, cdr: head })
     }
 
-    /// Reverse a CharPair chain by re-linking each node's `cdr`.
+    /// Reverse a singly-linked chain (Cons list or CharPair string)
+    /// in place by swapping `cdr` pointers.
     ///
-    /// Walks the chain starting at `head`, re-linking each node's `cdr`
-    /// to point to its predecessor. Returns the new head (formerly the
-    /// last node). No new nodes are allocated.
+    /// Works with both `Cons` and `CharPair` chains. Returns the new
+    /// head (formerly the last node). No new nodes are allocated.
     ///
     /// Safe because the chain is freshly built and not yet shared.
-    pub(crate) fn reverse_char_chain(
+    pub(crate) fn reverse_chain(
         &self,
         mut head: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !head.is_nil() {
-            let Value::CharPair { ch, cdr } = self.arena.get(head)? else {
-                return Err(ArenaError::TypeError);
+            let (new_val, cdr) = match self.arena.get(head)? {
+                Value::Cons { car, cdr } => (Value::Cons { car, cdr: prev }, cdr),
+                Value::CharPair { ch, cdr } => (Value::CharPair { ch, cdr: prev }, cdr),
+                _ => return Err(ArenaError::TypeError),
             };
-            self.arena.set(head, Value::CharPair { ch, cdr: prev })?;
+            self.arena.set(head, new_val)?;
             prev = head;
             head = cdr;
         }
@@ -867,9 +867,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         idx: ArenaIndex,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
-        let mut w = IoFmtWriter { io, error: None };
-        let _ = self.display_value(idx, &mut w);
-        w.error.map_or(Ok(()), Err)
+        self.fmt_to_io(idx, io, true)
     }
 
     /// Write a value's write (machine-readable) representation through an [`IoProvider`].
@@ -881,8 +879,19 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         idx: ArenaIndex,
         io: &mut dyn IoProvider,
     ) -> crate::io::IoResult<()> {
+        self.fmt_to_io(idx, io, false)
+    }
+
+    /// Shared implementation for [`display_to_io`](Self::display_to_io) and
+    /// [`write_to_io`](Self::write_to_io).
+    fn fmt_to_io(
+        &self,
+        idx: ArenaIndex,
+        io: &mut dyn IoProvider,
+        display: bool,
+    ) -> crate::io::IoResult<()> {
         let mut w = IoFmtWriter { io, error: None };
-        let _ = self.write_value(idx, &mut w);
+        let _ = self.fmt_value(idx, &mut w, display);
         w.error.map_or(Ok(()), Err)
     }
 
@@ -932,12 +941,30 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `CharPair` chains to display full symbol names and string contents,
     /// and `Cons` chains to display proper/improper lists.
     pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, false)
+    }
+
+    /// Human-readable output (like Scheme `display`).
+    ///
+    /// Same as [`write_value`](Self::write_value) except strings are printed
+    /// without surrounding quotes or escape sequences.
+    pub fn display_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, true)
+    }
+
+    /// Unified value formatter. When `display` is true, strings are printed
+    /// without quotes/escapes (like Scheme `display`); otherwise machine-
+    /// readable (like Scheme `write`).
+    pub(crate) fn fmt_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write, display: bool) -> core::fmt::Result {
         match self.arena.get(idx) {
             Ok(Value::Nil) => w.write_str("()"),
             Ok(Value::Boolean(true)) => w.write_str("#t"),
             Ok(Value::Boolean(false)) => w.write_str("#f"),
             Ok(Value::Number(n)) => write!(w, "{n}"),
             Ok(Value::Symbol(char_head)) => self.walk_chars(char_head, w, |ch, w| w.write_char(ch)),
+            Ok(Value::CharPair { .. }) if display => {
+                self.walk_chars(idx, w, |ch, w| w.write_char(ch))
+            }
             Ok(Value::CharPair { .. }) => {
                 w.write_char('"')?;
                 self.walk_chars(idx, w, |ch, w| match ch {
@@ -952,8 +979,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             }
             Ok(Value::Cons { car, cdr }) => {
                 w.write_char('(')?;
-                self.write_value(car, w)?;
-                self.write_list_tail(cdr, w)?;
+                self.fmt_value(car, w, display)?;
+                self.fmt_list_tail(cdr, w, display)?;
                 w.write_char(')')
             }
             Ok(Value::Inert) => w.write_str("#inert"),
@@ -961,48 +988,6 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }
-    }
-
-    /// Human-readable output (like Scheme `display`).
-    ///
-    /// Same as [`write_value`](Self::write_value) except strings are printed
-    /// without surrounding quotes or escape sequences.
-    pub fn display_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
-        match self.arena.get(idx) {
-            Ok(Value::CharPair { .. }) => {
-                self.walk_chars(idx, w, |ch, w| w.write_char(ch))
-            }
-            Ok(Value::Cons { car, cdr }) => {
-                w.write_char('(')?;
-                self.display_value(car, w)?;
-                self.display_list_tail(cdr, w)?;
-                w.write_char(')')
-            }
-            _ => self.write_value(idx, w),
-        }
-    }
-
-    /// Display-mode list tail (no quoting on strings).
-    fn display_list_tail(
-        &self,
-        mut idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
-    ) -> core::fmt::Result {
-        while !idx.is_nil() {
-            match self.arena.get(idx) {
-                Ok(Value::Cons { car, cdr }) => {
-                    w.write_char(' ')?;
-                    self.display_value(car, w)?;
-                    idx = cdr;
-                }
-                _ => {
-                    w.write_str(" . ")?;
-                    self.display_value(idx, w)?;
-                    break;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Walk a CharPair chain, emitting each character via a closure.
@@ -1025,21 +1010,22 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     }
 
     /// Write the tail of a list (elements after the first, with separators).
-    fn write_list_tail(
+    fn fmt_list_tail(
         &self,
         mut idx: ArenaIndex,
         w: &mut impl core::fmt::Write,
+        display: bool,
     ) -> core::fmt::Result {
         while !idx.is_nil() {
             match self.arena.get(idx) {
                 Ok(Value::Cons { car, cdr }) => {
                     w.write_char(' ')?;
-                    self.write_value(car, w)?;
+                    self.fmt_value(car, w, display)?;
                     idx = cdr;
                 }
                 _ => {
                     w.write_str(" . ")?;
-                    self.write_value(idx, w)?;
+                    self.fmt_value(idx, w, display)?;
                     break;
                 }
             }
@@ -1077,41 +1063,6 @@ impl core::fmt::Write for IoFmtWriter<'_> {
 }
 
 // ============================================================================
-// CharPairIter — iterator over characters in a CharPair chain
-// ============================================================================
-
-/// An iterator that yields characters from a `CharPair` chain in the arena.
-///
-/// Useful for streaming CharPair content to [`IoProvider`] methods like
-/// [`write_file_chars`](crate::io::IoProvider::write_file_chars) without
-/// materializing the entire string into a buffer.
-///
-/// Iteration terminates at NIL (end of chain) or at any non-`CharPair` value.
-/// A non-CharPair node is treated as end-of-sequence rather than an error
-/// because `Iterator::Item` is `char`, not `Result<char>`, and all current
-/// callers only invoke this on well-formed `CharPair` chains.
-pub(crate) struct CharPairIter<'a, const N: usize, IO: IoProvider> {
-    lisp: &'a Lisp<N, IO>,
-    idx: ArenaIndex,
-}
-
-impl<const N: usize, IO: IoProvider> Iterator for CharPairIter<'_, N, IO> {
-    type Item = char;
-
-    fn next(&mut self) -> Option<char> {
-        if self.idx.is_nil() {
-            return None;
-        }
-        match self.lisp.arena.get(self.idx) {
-            Ok(Value::CharPair { ch, cdr }) => {
-                self.idx = cdr;
-                Some(ch)
-            }
-            _ => None,
-        }
-    }
-}
-
 // ============================================================================
 // ArenaWriter — core::fmt::Write that builds a CharPair chain in the arena
 // ============================================================================
@@ -1120,7 +1071,7 @@ impl<const N: usize, IO: IoProvider> Iterator for CharPairIter<'_, N, IO> {
 /// directly into the arena, building a string without any intermediate buffer.
 ///
 /// Characters are prepended (building in reverse order) during writing.
-/// [`finish`](Self::finish) calls `reverse_char_chain` to produce
+/// [`finish`](Self::finish) calls `reverse_chain` to produce
 /// the correctly ordered chain.
 pub(crate) struct ArenaWriter<'a, const N: usize, IO: IoProvider> {
     lisp: &'a Lisp<N, IO>,
@@ -1142,7 +1093,7 @@ impl<'a, const N: usize, IO: IoProvider> ArenaWriter<'a, N, IO> {
     pub(crate) fn finish(self) -> ArenaResult<ArenaIndex> {
         match self.error {
             Some(e) => Err(e),
-            None => self.lisp.reverse_char_chain(self.head),
+            None => self.lisp.reverse_chain(self.head),
         }
     }
 }
