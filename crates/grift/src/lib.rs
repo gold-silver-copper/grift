@@ -25,7 +25,12 @@ mod value;
 mod lisp;
 mod parse;
 mod eval;
+pub mod io;
 
 pub use value::{Value, BuiltinId};
 pub use lisp::Lisp;
 pub use grift_arena::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats};
+pub use io::{IoProvider, NullIoProvider, IoErrorKind, IoResult};
+
+#[cfg(feature = "std")]
+pub use io::StdIoProvider;

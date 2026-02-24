@@ -276,6 +276,10 @@ fn test_gc_collects_eval_garbage() {
 fn test_gc_repeated_eval_no_leak() {
     let lisp: Lisp<5000> = Lisp::new();
 
+    // Compute the baseline: arena slots consumed by the ground environment,
+    // builtins, and singletons in a fresh interpreter instance.
+    let baseline = lisp.baseline_allocated();
+
     // Evaluate many expressions; each creates temporary values.
     for _ in 0..50 {
         lisp.eval("(+ 1 2)").unwrap();
@@ -289,12 +293,13 @@ fn test_gc_repeated_eval_no_leak() {
         gc.collected > 0,
         "GC should collect garbage from repeated evals"
     );
-    // After collecting, arena should contain only the persistent evaluator
-    // state (ground env, builtins, global env) plus singletons.
+    // After collecting, only the baseline persistent state should remain,
+    // plus a small constant for any test-local allocations that survive GC.
+    let budget = baseline + 32;
     assert!(
-        stats.allocated < 600,
-        "Arena should not keep growing without roots: allocated = {}",
-        stats.allocated
+        stats.allocated < budget,
+        "Arena should not keep growing without roots: allocated = {}, budget = {} (baseline {} + 32)",
+        stats.allocated, budget, baseline
     );
 }
 
@@ -336,6 +341,9 @@ fn test_gc_lambda_garbage() {
 fn test_gc_list_operations_no_leak() {
     let lisp: Lisp<5000> = Lisp::new();
 
+    // Compute the baseline: slots for ground env, builtins, singletons.
+    let baseline = lisp.baseline_allocated();
+
     // Create lists, extract elements, create garbage.
     for _ in 0..20 {
         lisp.eval("(car (list 1 2 3))").unwrap();
@@ -346,16 +354,22 @@ fn test_gc_list_operations_no_leak() {
     let stats = lisp.stats();
 
     assert!(gc.collected > 0, "GC should collect list garbage");
+    // After collecting, only the baseline persistent state should remain,
+    // plus a small constant for any test-local allocations that survive GC.
+    let budget = baseline + 32;
     assert!(
-        stats.allocated < 600,
-        "Arena should not grow unbounded: allocated = {}",
-        stats.allocated
+        stats.allocated < budget,
+        "Arena should not grow unbounded: allocated = {}, budget = {} (baseline {} + 32)",
+        stats.allocated, budget, baseline
     );
 }
 
 #[test]
 fn test_gc_stress_many_evals() {
     let lisp: Lisp<10000> = Lisp::new();
+
+    // Compute the baseline: slots for ground env, builtins, singletons.
+    let baseline = lisp.baseline_allocated();
 
     // Run many evaluations without GC, then collect.
     for i in 0..100 {
@@ -372,11 +386,13 @@ fn test_gc_stress_many_evals() {
     let _gc = lisp.collect_garbage(&[]);
     let final_stats = lisp.stats();
 
-    // After full GC, arena should contain only persistent evaluator state.
+    // After full GC, only the baseline persistent state should remain,
+    // plus a small constant for any test-local allocations that survive GC.
+    let budget = baseline + 32;
     assert!(
-        final_stats.allocated < 600,
-        "Arena should be mostly empty after GC: allocated = {}",
-        final_stats.allocated
+        final_stats.allocated < budget,
+        "Arena should be mostly empty after GC: allocated = {}, budget = {} (baseline {} + 32)",
+        final_stats.allocated, budget, baseline
     );
 }
 
@@ -3726,4 +3742,519 @@ fn test_define_fn_function_named_fn() {
         ),
         Ok(Value::Number(6))
     );
+}
+
+// ============================================================================
+// New Builtin Tests (display, newline, error, apply)
+// ============================================================================
+
+#[test]
+fn test_display_returns_value() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(raw-display 1 42)"), Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_display_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // raw-display returns its argument
+    let result = lisp.eval_to_index(r#"(raw-display 1 "hello")"#);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_newline_returns_inert() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(raw-write-str 1 "\n")"#), Ok(Value::Inert));
+}
+
+#[test]
+fn test_error_signals_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(error "test error")"#),
+        Err(ArenaError::InvalidArgument)
+    );
+}
+
+#[test]
+fn test_apply_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(apply + (list 1 2 3))"),
+        Ok(Value::Number(6))
+    );
+}
+
+#[test]
+fn test_apply_lambda() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(apply (lambda (a b) (+ a b)) (list 3 4))"),
+        Ok(Value::Number(7))
+    );
+}
+
+#[test]
+fn test_apply_empty_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(apply + ())"),
+        Ok(Value::Number(0))
+    );
+}
+
+// ============================================================================
+// I/O Trait Tests
+// ============================================================================
+
+#[test]
+fn test_io_null_provider() {
+    use grift::{IoProvider, NullIoProvider};
+    let mut io = NullIoProvider;
+    assert!(io.write_stream(1, "hello").is_ok());
+    assert!(io.write_stream(2, "hello").is_ok());
+}
+
+#[test]
+fn test_io_generic_provider() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use grift::{IoProvider, io::IoResult};
+    static CALLED: AtomicBool = AtomicBool::new(false);
+
+    struct TestIo;
+    impl IoProvider for TestIo {
+        fn write_stream(&mut self, stream: u8, _s: &str) -> IoResult<()> {
+            if stream == 1 {
+                CALLED.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
+    CALLED.store(false, Ordering::SeqCst);
+    let _ = lisp.eval("(raw-display 1 42)");
+    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_stream should have been called");
+}
+
+#[test]
+fn test_io_display_to_io() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo {
+        output: String,
+    }
+    impl IoProvider for CaptureIo {
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    let idx = lisp.eval_to_index("42").unwrap();
+    let mut io = CaptureIo { output: String::new() };
+    lisp.display_to_io(idx, &mut io).unwrap();
+    assert_eq!(io.output, "42");
+}
+
+#[test]
+fn test_io_write_to_io() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo {
+        output: String,
+    }
+    impl IoProvider for CaptureIo {
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    let idx = lisp.eval_to_index(r#""hello""#).unwrap();
+    let mut io = CaptureIo { output: String::new() };
+    lisp.write_to_io(idx, &mut io).unwrap();
+    assert_eq!(io.output, r#""hello""#);
+
+    // display_to_io should print without quotes
+    let mut io2 = CaptureIo { output: String::new() };
+    lisp.display_to_io(idx, &mut io2).unwrap();
+    assert_eq!(io2.output, "hello");
+}
+
+#[test]
+fn test_io_streaming_no_truncation() {
+    // Verify streaming output handles strings longer than 256 bytes
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo {
+        output: String,
+    }
+    impl IoProvider for CaptureIo {
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<100_000> = Lisp::new();
+    // Build a long string by concatenating. Use a string > 256 chars.
+    let long_str = "a]".repeat(200);
+    let expr = format!(r#""{}""#, long_str);
+    let idx = lisp.eval_to_index(&expr).unwrap();
+    let mut io = CaptureIo { output: String::new() };
+    lisp.display_to_io(idx, &mut io).unwrap();
+    // display_to_io should output the full 400-char string, not truncated at 256
+    assert_eq!(io.output.len(), 400, "streaming should not truncate output");
+    assert!(io.output.starts_with("a]a]a]"));
+}
+
+#[test]
+fn test_io_writer_error_propagation() {
+    use grift::{IoProvider, io::{IoResult, IoErrorKind}};
+
+    struct FailIo;
+    impl IoProvider for FailIo {
+        fn write_stream(&mut self, _stream: u8, _s: &str) -> IoResult<()> {
+            Err(IoErrorKind::WriteFailed)
+        }
+    }
+
+    let lisp: Lisp<20000> = Lisp::new();
+    let idx = lisp.eval_to_index("42").unwrap();
+    let mut io = FailIo;
+    let result = lisp.display_to_io(idx, &mut io);
+    assert_eq!(result, Err(IoErrorKind::WriteFailed));
+}
+
+#[test]
+fn test_io_null_provider_defaults() {
+    use grift::{IoProvider, NullIoProvider, io::IoErrorKind};
+
+    let mut io = NullIoProvider;
+    // write_stream on 1/2 are no-ops
+    assert!(io.write_stream(1, "hello").is_ok());
+    assert!(io.write_stream(2, "hello").is_ok());
+    // write_stream on other streams returns Unsupported
+    assert_eq!(io.write_stream(0, "x"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.write_stream(3, "x"), Err(IoErrorKind::Unsupported));
+    // Default methods return Unsupported
+    assert_eq!(io.read_stream_char(0), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.peek_stream_char(0), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.open_file("foo", 0), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.close_stream(3), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.file_exists("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!(io.delete_file("foo"), Err(IoErrorKind::Unsupported));
+}
+
+// ============================================================================
+// raw-* Builtin Tests
+// ============================================================================
+
+#[test]
+fn test_raw_display() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo { output: String }
+    impl IoProvider for CaptureIo {
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
+    let _ = lisp.eval("(raw-display 1 42)");
+    assert_eq!(lisp.io().output, "42");
+}
+
+#[test]
+fn test_raw_write_str() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo { output: String }
+    impl IoProvider for CaptureIo {
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            if stream == 1 { self.output.push_str(s); }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
+    let _ = lisp.eval(r#"(raw-write-str 1 "hello")"#);
+    assert_eq!(lisp.io().output, "hello");
+}
+
+#[test]
+fn test_raw_write_str_stderr() {
+    use grift::{IoProvider, io::IoResult};
+
+    struct CaptureIo { stdout: String, stderr: String }
+    impl IoProvider for CaptureIo {
+        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
+            match stream {
+                1 => self.stdout.push_str(s),
+                2 => self.stderr.push_str(s),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { stdout: String::new(), stderr: String::new() });
+    let _ = lisp.eval(r#"(raw-write-str 2 "error msg")"#);
+    assert_eq!(lisp.io().stderr, "error msg");
+    assert_eq!(lisp.io().stdout, "");
+}
+
+#[test]
+fn test_raw_read_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Parse a number from a string
+    assert_eq!(lisp.eval(r#"(raw-read-string "42")"#), Ok(Value::Number(42)));
+    // Parse a symbol
+    assert_eq!(lisp.eval(r#"(symbol? (raw-read-string "foo"))"#), Ok(Value::Boolean(true)));
+    // Parse a list
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(+ 1 2)") (list (quote +) 1 2))"#), Ok(Value::Boolean(true)));
+    // Empty string returns NIL
+    assert_eq!(lisp.eval(r#"(null? (raw-read-string ""))"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_raw_display_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Display a number
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string 42) "42")"#), Ok(Value::Boolean(true)));
+    // Display a string (no quotes in display mode)
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string "hello") "hello")"#), Ok(Value::Boolean(true)));
+    // Display a boolean
+    assert_eq!(lisp.eval(r##"(equal? (raw-display-to-string #t) "#t")"##), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_raw_write_to_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Write a number (same as display for numbers)
+    assert_eq!(lisp.eval(r#"(equal? (raw-write-to-string 42) "42")"#), Ok(Value::Boolean(true)));
+    // Write produces different output than display for strings (adds quotes)
+    let result = lisp.eval(r#"
+        (not (equal? (raw-display-to-string "hi") (raw-write-to-string "hi")))
+    "#);
+    assert_eq!(result, Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_arena_writer_no_size_limit() {
+    // ArenaWriter builds CharPair chains directly in the arena,
+    // so there is no fixed buffer size limit.
+    let lisp: Lisp<100_000> = Lisp::new();
+    // Verify that raw-display-to-string handles basic values correctly
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string 12345) "12345")"#), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string (list 1 2 3)) "(1 2 3)")"#), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string "hello world") "hello world")"#), Ok(Value::Boolean(true)));
+    // Verify ArenaWriter can handle a long string (previously limited to 4096 bytes
+    // in the display/write-to-string builtins; the parser still has its own limit
+    // in parse.rs, but ArenaWriter itself has no size constraint)
+    let long_input = "a".repeat(4000);
+    let expr = std::format!(r#"(equal? (raw-display-to-string "{long_input}") "{long_input}")"#);
+    assert_eq!(lisp.eval(&expr), Ok(Value::Boolean(true)));
+}
+
+#[test]
+fn test_read_from_chain() {
+    // raw-read-string should parse directly from a CharPair chain
+    // without materializing into a fixed buffer.
+    let lisp: Lisp<20000> = Lisp::new();
+    // Parse various types
+    assert_eq!(lisp.eval(r#"(raw-read-string "42")"#), Ok(Value::Number(42)));
+    assert_eq!(lisp.eval(r#"(raw-read-string "-7")"#), Ok(Value::Number(-7)));
+    assert_eq!(lisp.eval(r##"(raw-read-string "#t")"##), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r##"(raw-read-string "#f")"##), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval(r#"(symbol? (raw-read-string "hello"))"#), Ok(Value::Boolean(true)));
+    // Parse a list
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(1 2 3)") (list 1 2 3))"#), Ok(Value::Boolean(true)));
+    // Parse a dotted pair
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(1 . 2)") (cons 1 2))"#), Ok(Value::Boolean(true)));
+    // Parse string with escapes
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "\"hello\"") "hello")"#), Ok(Value::Boolean(true)));
+    // Parse quoted form
+    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "'x") (list (quote quote) (quote x)))"#), Ok(Value::Boolean(true)));
+    // Empty string returns NIL
+    assert_eq!(lisp.eval(r#"(null? (raw-read-string ""))"#), Ok(Value::Boolean(true)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_raw_file_operations() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    let tmp = std::env::temp_dir().join("test_raw_file_stream.txt");
+    let tmp_path = tmp.to_str().unwrap();
+
+    // Write a file using stream-based I/O: open, write-str, close
+    let program = std::format!(
+        r#"(let ((s (raw-open 1 "{tmp_path}"))) (raw-write-str s "hello world") (raw-close s))"#
+    );
+    assert_eq!(lisp.eval(&program), Ok(Value::Inert));
+
+    // Check file exists
+    let program = std::format!(r#"(raw-file-exists? "{tmp_path}")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Boolean(true)));
+
+    // Read it back using stream-based I/O: open, read chars, close
+    let program = std::format!(
+        r#"(let ((s (raw-open 0 "{tmp_path}")))
+             (let ((result (raw-read s)))
+               (raw-close s)
+               result))"#
+    );
+    // Read first s-expression back from the file stream.
+    // File contains "hello world"; raw-read parses the first token "hello" as a symbol.
+    let result = lisp.eval(&program);
+    assert!(result.is_ok());
+
+    // Delete
+    let program = std::format!(r#"(raw-delete-file "{tmp_path}")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Inert));
+
+    // Verify deleted
+    let program = std::format!(r#"(raw-file-exists? "{tmp_path}")"#);
+    assert_eq!(lisp.eval(&program), Ok(Value::Boolean(false)));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_load_builtin() {
+    use grift::StdIoProvider;
+
+    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+
+    // Write a temporary Grift file, load it, check definitions are visible
+    let tmp = std::env::temp_dir().join("test_load.grift");
+    let tmp_path = tmp.to_str().unwrap();
+    std::fs::write(&tmp, "(define! test-load-val 42)").unwrap();
+
+    let program = std::format!("(begin (load \"{tmp_path}\") test-load-val)");
+    let result = lisp.eval(&program);
+    assert_eq!(result, Ok(Value::Number(42)));
+
+    // Clean up
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ============================================================================
+// String escape sequence tests (Issue 1)
+// ============================================================================
+
+#[test]
+fn test_string_escape_newline() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "hello\nworld" should contain an actual newline (11 chars, not 13)
+    let result = lisp.eval_to_index(r#""hello\nworld""#).unwrap();
+    let val = lisp.get(result).unwrap();
+    assert!(matches!(val, Value::CharPair { .. }));
+    // The 6th character (index 5) should be an actual newline
+    let sixth = lisp.eval(r#"(car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))"#).unwrap();
+    assert!(matches!(sixth, Value::CharPair { .. }));
+}
+
+#[test]
+fn test_string_escape_tab() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "a\tb" should be 3 chars: a, tab, b — cdr of cdr of cdr should be nil
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\tb"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_carriage_return() {
+    let lisp: Lisp<2000> = Lisp::new();
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\rb"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_backslash() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "a\\b" should be 3 chars: a, \, b
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\\b"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_quote() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "a\"b" should be 3 chars: a, ", b
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\"b"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_newline_is_real_newline() {
+    let lisp: Lisp<5000> = Lisp::new();
+    // Verify the actual character is a newline by comparing with a string
+    // built character-by-character using cons
+    let result = lisp.eval(r#"
+        (equal? (car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))
+                (car "\n"))
+    "#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_unrecognised_escape_is_error() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // \q is not a recognised escape sequence
+    let result = lisp.eval(r#""hello\qworld""#);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_string_roundtrip_via_raw_write_read_string() {
+    let lisp: Lisp<5000> = Lisp::new();
+    // Write "a\"b" (3 chars: a, ", b) to a string via raw-write-to-string,
+    // then read it back via raw-read-string and verify equality
+    let result = lisp.eval_to_index(r#"
+        (let ((s (raw-write-to-string "a\"b")))
+          (let ((back (raw-read-string s)))
+            (equal? "a\"b" back)))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_roundtrip_newline() {
+    let lisp: Lisp<5000> = Lisp::new();
+    // Write a string with a real newline, read it back, verify equal
+    let result = lisp.eval_to_index(r#"
+        (let ((s (raw-write-to-string "line1\nline2")))
+          (let ((back (raw-read-string s)))
+            (equal? "line1\nline2" back)))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
+}
+
+// ============================================================================
+// Prelude Test
+// ============================================================================
+
+#[test]
+fn test_prelude_loads() {
+    let builder = std::thread::Builder::new()
+        .name("prelude".into())
+        .stack_size(64 * 1024 * 1024);
+    let handler = builder
+        .spawn(|| {
+            let lisp: Lisp<500_000> = Lisp::new();
+            let prelude = include_str!("../prelude.grift");
+            let result = lisp.eval_to_index(prelude);
+            assert!(result.is_ok(), "prelude failed to load: {:?}", result.err());
+        })
+        .expect("failed to spawn thread");
+    handler.join().expect("prelude thread panicked");
 }
