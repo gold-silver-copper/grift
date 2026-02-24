@@ -590,7 +590,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         non_tail!({
             let (env_expr, rest) = self.arena.get(args)?.as_cons()?;
             let (definiend, rest2) = self.arena.get(rest)?.as_cons()?;
-            let val_expr = self.car(rest2)?;
+            let (val_expr, _) = self.arena.get(rest2)?.as_cons()?;
 
             let target_env = self.eval_expr(env_expr, *env)?;
             // Validate target is an environment.

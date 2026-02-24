@@ -502,8 +502,9 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Classify a `#`-prefixed atom by reading the character after `#`.
     fn classify_hash_atom(&self, after_hash: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let Ok(Value::CharPair { ch, cdr }) = self.arena.get(after_hash) else {
-            // Bare "#" — treat as symbol.
-            return self.symbol_from_chain(after_hash);
+            // Bare "#" — reconstruct and intern as symbol.
+            let hash_chain = self.prepend_char(ArenaIndex::NIL, '#')?;
+            return self.symbol_from_chain(hash_chain);
         };
         match ch {
             't' if cdr.is_nil() => Ok(ArenaIndex::TRUE),
@@ -516,7 +517,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             _ => {
                 let hash_chain = self.prepend_char(after_hash, '#')?;
                 self.symbol_from_chain(hash_chain)
-                }
+            }
         }
     }
 
