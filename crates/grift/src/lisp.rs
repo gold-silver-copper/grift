@@ -226,6 +226,23 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         Ok(data)
     }
 
+    /// Allocate a string (CharPair chain) from a slice of chars.
+    ///
+    /// Works like [`alloc_string`](Self::alloc_string) but accepts a `&[char]`
+    /// instead of a `&str`, which is useful when characters have been processed
+    /// individually (e.g. after escape-sequence resolution).
+    pub(crate) fn alloc_char_slice(&self, chars: &[char]) -> ArenaResult<ArenaIndex> {
+        if self.arena.available() < chars.len() {
+            return Err(ArenaError::OutOfMemory);
+        }
+        let mut data = ArenaIndex::NIL;
+        for &c in chars.iter().rev() {
+            let node = self.arena.alloc(Value::CharPair { ch: c, cdr: data })?;
+            data = node;
+        }
+        Ok(data)
+    }
+
     /// Compare a `CharPair` linked list starting at `char_head` with a `&str`.
     fn string_eq(&self, char_head: ArenaIndex, s: &str) -> bool {
         let mut cur = char_head;
@@ -289,10 +306,23 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
-    /// Collect a `CharPair` chain into a fixed-size UTF-8 buffer.
+    /// Collect a `CharPair` chain into a fixed-size UTF-8 byte buffer.
     ///
-    /// Returns the number of bytes written. If the string is longer than
-    /// the buffer, returns `Err(InvalidArgument)`.
+    /// Returns the number of bytes written.  If the chain contains more
+    /// characters than the buffer can hold, returns
+    /// `Err(InvalidArgument)`.
+    ///
+    /// # When to use
+    ///
+    /// Use this method **only** when a contiguous `&str` is required by a
+    /// downstream API (e.g. file-path arguments passed to
+    /// [`IoProvider::read_file`](crate::io::IoProvider::read_file) or
+    /// [`IoProvider::open_input_string`](crate::io::IoProvider::open_input_string)).
+    ///
+    /// If you only need to iterate over the characters of a `CharPair`
+    /// chain — for example to write them one at a time, compare them, or
+    /// transform them — prefer [`walk_chars`](Self::walk_chars) which
+    /// requires no intermediate buffer and has no length limit.
     pub(crate) fn collect_string(
         &self,
         idx: ArenaIndex,
@@ -712,6 +742,18 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Return arena allocation statistics.
     pub fn stats(&self) -> ArenaStats {
         self.arena.stats()
+    }
+
+    /// Return the number of arena slots consumed by the ground environment
+    /// and builtins in a freshly constructed `Lisp` — before any user
+    /// expressions are evaluated.
+    ///
+    /// Computed by running a GC on the current instance with no extra roots
+    /// and returning the surviving allocation count. Useful for computing
+    /// test budgets: `baseline + constant` rather than a magic number.
+    pub fn baseline_allocated(&self) -> usize {
+        let _ = self.collect_garbage(&[]);
+        self.stats().allocated
     }
 
     /// Run mark-and-sweep garbage collection with the given roots.

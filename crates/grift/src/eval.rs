@@ -1445,7 +1445,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                 self.cons(quote_sym, inner_list)
             }
             b'"' => {
-                // String literal: read until closing quote
+                // String literal: read until closing quote, processing escapes.
                 // Reset pos since the opening quote is not part of the content
                 pos = 0;
                 loop {
@@ -1456,26 +1456,29 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     if ch == '"' {
                         break;
                     }
-                    if ch == '\\' {
-                        // Read escaped character
+                    let actual = if ch == '\\' {
+                        // Read escaped character and resolve the escape sequence
                         let esc = match self.io.borrow_mut().read_char(port) {
                             Ok(c) => c,
                             Err(_) => return Err(ArenaError::ParseError),
                         };
-                        let len = esc.len_utf8();
-                        if pos + len > buf.len() {
-                            return Err(ArenaError::InvalidArgument);
+                        match esc {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            '\\' => '\\',
+                            '"' => '"',
+                            _ => return Err(ArenaError::InvalidArgument),
                         }
-                        esc.encode_utf8(&mut buf[pos..]);
-                        pos += len;
                     } else {
-                        let len = ch.len_utf8();
-                        if pos + len > buf.len() {
-                            return Err(ArenaError::InvalidArgument);
-                        }
-                        ch.encode_utf8(&mut buf[pos..]);
-                        pos += len;
+                        ch
+                    };
+                    let len = actual.len_utf8();
+                    if pos + len > buf.len() {
+                        return Err(ArenaError::InvalidArgument);
                     }
+                    actual.encode_utf8(&mut buf[pos..]);
+                    pos += len;
                 }
                 let s = core::str::from_utf8(&buf[..pos]).map_err(|_| ArenaError::ParseError)?;
                 self.alloc_string(s)

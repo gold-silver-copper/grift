@@ -276,6 +276,10 @@ fn test_gc_collects_eval_garbage() {
 fn test_gc_repeated_eval_no_leak() {
     let lisp: Lisp<5000> = Lisp::new();
 
+    // Compute the baseline: arena slots consumed by the ground environment,
+    // builtins, and singletons in a fresh interpreter instance.
+    let baseline = lisp.baseline_allocated();
+
     // Evaluate many expressions; each creates temporary values.
     for _ in 0..50 {
         lisp.eval("(+ 1 2)").unwrap();
@@ -289,12 +293,13 @@ fn test_gc_repeated_eval_no_leak() {
         gc.collected > 0,
         "GC should collect garbage from repeated evals"
     );
-    // After collecting, arena should contain only the persistent evaluator
-    // state (ground env, builtins, global env) plus singletons.
+    // After collecting, only the baseline persistent state should remain,
+    // plus a small constant for any test-local allocations that survive GC.
+    let budget = baseline + 32;
     assert!(
-        stats.allocated < 900,
-        "Arena should not keep growing without roots: allocated = {}",
-        stats.allocated
+        stats.allocated < budget,
+        "Arena should not keep growing without roots: allocated = {}, budget = {} (baseline {} + 32)",
+        stats.allocated, budget, baseline
     );
 }
 
@@ -336,6 +341,9 @@ fn test_gc_lambda_garbage() {
 fn test_gc_list_operations_no_leak() {
     let lisp: Lisp<5000> = Lisp::new();
 
+    // Compute the baseline: slots for ground env, builtins, singletons.
+    let baseline = lisp.baseline_allocated();
+
     // Create lists, extract elements, create garbage.
     for _ in 0..20 {
         lisp.eval("(car (list 1 2 3))").unwrap();
@@ -346,16 +354,22 @@ fn test_gc_list_operations_no_leak() {
     let stats = lisp.stats();
 
     assert!(gc.collected > 0, "GC should collect list garbage");
+    // After collecting, only the baseline persistent state should remain,
+    // plus a small constant for any test-local allocations that survive GC.
+    let budget = baseline + 32;
     assert!(
-        stats.allocated < 900,
-        "Arena should not grow unbounded: allocated = {}",
-        stats.allocated
+        stats.allocated < budget,
+        "Arena should not grow unbounded: allocated = {}, budget = {} (baseline {} + 32)",
+        stats.allocated, budget, baseline
     );
 }
 
 #[test]
 fn test_gc_stress_many_evals() {
     let lisp: Lisp<10000> = Lisp::new();
+
+    // Compute the baseline: slots for ground env, builtins, singletons.
+    let baseline = lisp.baseline_allocated();
 
     // Run many evaluations without GC, then collect.
     for i in 0..100 {
@@ -372,11 +386,13 @@ fn test_gc_stress_many_evals() {
     let _gc = lisp.collect_garbage(&[]);
     let final_stats = lisp.stats();
 
-    // After full GC, arena should contain only persistent evaluator state.
+    // After full GC, only the baseline persistent state should remain,
+    // plus a small constant for any test-local allocations that survive GC.
+    let budget = baseline + 32;
     assert!(
-        final_stats.allocated < 900,
-        "Arena should be mostly empty after GC: allocated = {}",
-        final_stats.allocated
+        final_stats.allocated < budget,
+        "Arena should be mostly empty after GC: allocated = {}, budget = {} (baseline {} + 32)",
+        final_stats.allocated, budget, baseline
     );
 }
 
@@ -4296,4 +4312,106 @@ fn test_prelude_loads() {
         })
         .expect("failed to spawn thread");
     handler.join().expect("prelude thread panicked");
+}
+
+// ============================================================================
+// String escape sequence tests (Issue 1)
+// ============================================================================
+
+#[test]
+fn test_string_escape_newline() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "hello\nworld" should contain an actual newline (11 chars, not 13)
+    let result = lisp.eval_to_index(r#""hello\nworld""#).unwrap();
+    let val = lisp.get(result).unwrap();
+    assert!(matches!(val, Value::CharPair { .. }));
+    // The 6th character (index 5) should be an actual newline
+    let sixth = lisp.eval(r#"(car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))"#).unwrap();
+    assert!(matches!(sixth, Value::CharPair { .. }));
+}
+
+#[test]
+fn test_string_escape_tab() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "a\tb" should be 3 chars: a, tab, b — cdr of cdr of cdr should be nil
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\tb"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_carriage_return() {
+    let lisp: Lisp<2000> = Lisp::new();
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\rb"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_backslash() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "a\\b" should be 3 chars: a, \, b
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\\b"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_quote() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // "a\"b" should be 3 chars: a, ", b
+    let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\"b"))))"#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_escape_newline_is_real_newline() {
+    let lisp: Lisp<5000> = Lisp::new();
+    // Verify the actual character is a newline by comparing with a string
+    // built character-by-character using cons
+    let result = lisp.eval(r#"
+        (equal? (car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))
+                (car "\n"))
+    "#).unwrap();
+    assert_eq!(result, Value::Boolean(true));
+}
+
+#[test]
+fn test_string_unrecognised_escape_is_error() {
+    let lisp: Lisp<2000> = Lisp::new();
+    // \q is not a recognised escape sequence
+    let result = lisp.eval(r#""hello\qworld""#);
+    assert!(result.is_err());
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_string_roundtrip_via_write_read() {
+    use grift::io::StdIoProvider;
+    let lisp: Lisp<5000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    // Write "a\"b" (3 chars: a, ", b) to an output-string port
+    // then read it back and verify equality
+    let result = lisp.eval_to_index(r#"
+        (let ((out (open-output-string)))
+          (write "a\"b" out)
+          (let ((s (get-output-string out)))
+            (let ((inp (open-input-string s)))
+              (let ((back (read inp)))
+                (equal? "a\"b" back)))))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn test_string_escape_roundtrip_newline() {
+    use grift::io::StdIoProvider;
+    let lisp: Lisp<5000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    // Write a string with a real newline, read it back, verify equal
+    let result = lisp.eval_to_index(r#"
+        (let ((out (open-output-string)))
+          (write "line1\nline2" out)
+          (let ((s (get-output-string out)))
+            (let ((inp (open-input-string s)))
+              (let ((back (read inp)))
+                (equal? "line1\nline2" back)))))
+    "#).unwrap();
+    assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
 }

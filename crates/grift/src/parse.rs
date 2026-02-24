@@ -119,27 +119,50 @@ impl<'a> Parser<'a> {
         lisp.cons(quote_sym, inner)
     }
 
-    /// Parse a string literal `"..."`.
+    /// Parse a string literal `"..."`, processing escape sequences.
+    ///
+    /// Supported escapes: `\n` (newline), `\t` (tab), `\r` (carriage return),
+    /// `\\` (backslash), `\"` (double quote). Unrecognised escape sequences
+    /// return `Err(InvalidArgument)`.
     fn parse_string_literal<const N: usize, IO: IoProvider>(
         &mut self,
         lisp: &Lisp<N, IO>,
     ) -> ArenaResult<ArenaIndex> {
-        let start = self.pos;
+        // Build the CharPair chain one character at a time so that escape
+        // sequences are resolved to their actual characters.
+        let mut chars: [char; 4096] = ['\0'; 4096];
+        let mut count = 0;
+
         while self.pos < self.input.len() && self.input[self.pos] != b'"' {
-            if self.input[self.pos] == b'\\' {
-                self.pos += 1; // skip escaped char
+            let ch = if self.input[self.pos] == b'\\' {
+                self.pos += 1; // skip backslash
+                if self.pos >= self.input.len() {
+                    return Err(ArenaError::ParseError);
+                }
+                match self.input[self.pos] {
+                    b'n' => '\n',
+                    b't' => '\t',
+                    b'r' => '\r',
+                    b'\\' => '\\',
+                    b'"' => '"',
+                    _ => return Err(ArenaError::InvalidArgument),
+                }
+            } else {
+                self.input[self.pos] as char
+            };
+            if count >= chars.len() {
+                return Err(ArenaError::InvalidArgument);
             }
+            chars[count] = ch;
+            count += 1;
             self.pos += 1;
         }
         if self.pos >= self.input.len() {
             return Err(ArenaError::ParseError);
         }
-        let end = self.pos;
         self.pos += 1; // skip closing quote
 
-        let slice = &self.input[start..end];
-        let s = core::str::from_utf8(slice).map_err(|_| ArenaError::ParseError)?;
-        lisp.alloc_string(s)
+        lisp.alloc_char_slice(&chars[..count])
     }
 
     /// Parse an atom: number, symbol, or boolean.
