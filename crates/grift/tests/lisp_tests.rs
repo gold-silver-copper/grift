@@ -4167,7 +4167,7 @@ fn test_string_unrecognised_escape_is_error() {
 }
 
 #[test]
-fn test_string_roundtrip_via_write_read() {
+fn test_string_roundtrip_via_raw_write_read_string() {
     let lisp: Lisp<5000> = Lisp::new();
     // Write "a\"b" (3 chars: a, ", b) to a string via raw-write-to-string,
     // then read it back via raw-read-string and verify equality
