@@ -560,8 +560,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             // Function shorthand: (define! (fn name params...) body...)
             if let Value::Cons { car, cdr } = self.get(definiend)? {
                 if self.symbol_name_eq(car, "fn") {
-                    let name = self.car(cdr)?;
-                    let params = self.cdr(cdr)?;
+                    let (name, params) = self.arena.get(cdr)?.as_cons()?;
                     let body_list = self.cdr(args)?;
                     let body = self.wrap_begin(body_list)?;
                     let func = self.lambda(params, body, *env)?;
@@ -589,10 +588,9 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// new binding is never created.  Returns `#inert`.
     fn op_set(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
-            let env_expr = self.car(args)?;
-            let rest = self.cdr(args)?;
-            let definiend = self.car(rest)?;
-            let val_expr = self.cadr(rest)?;
+            let (env_expr, rest) = self.arena.get(args)?.as_cons()?;
+            let (definiend, rest2) = self.arena.get(rest)?.as_cons()?;
+            let val_expr = self.car(rest2)?;
 
             let target_env = self.eval_expr(env_expr, *env)?;
             // Validate target is an environment.
@@ -660,9 +658,12 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         tail_continue!({
             let mut cur = args;
             while !cur.is_nil() {
-                let clause = self.car(cur)?;
-                let test = self.car(clause)?;
-                let body = self.cdr(clause)?;
+                let Value::Cons { car: clause, cdr: next } = self.arena.get(cur)? else {
+                    return Err(ArenaError::TypeError);
+                };
+                let Value::Cons { car: test, cdr: body } = self.arena.get(clause)? else {
+                    return Err(ArenaError::TypeError);
+                };
 
                 let matched = self.symbol_name_eq(test, "else") || {
                     let test_val = self.eval_expr(test, *env)?;
@@ -673,7 +674,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
                     *expr = self.wrap_begin(body)?;
                     return Ok(());
                 }
-                cur = self.cdr(cur)?;
+                cur = next;
             }
             *expr = ArenaIndex::NIL;
             Ok(())
@@ -805,10 +806,9 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     ///   is signaled.
     fn op_vau(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         non_tail!({
-            let params = self.car(args)?;
-            let env_param = self.cadr(args)?;
-            let body_list = self.cdr(self.cdr(args)?)?;
-            let body = self.wrap_begin(body_list)?;
+            let (params, rest) = self.arena.get(args)?.as_cons()?;
+            let (env_param, body_rest) = self.arena.get(rest)?.as_cons()?;
+            let body = self.wrap_begin(body_rest)?;
 
             // Validate formals parameter tree and collect seen symbols.
             let seen_syms = self.validate_ptree(params)?;
@@ -1159,9 +1159,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
     /// Format a value to a stream. Shared by `raw-display` and `raw-write`.
     fn stream_fmt(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
+        let (stream_idx, rest) = self.arena.get(args)?.as_cons()?;
         let stream = self.get_stream_number(stream_idx)?;
-        let rest = self.cdr(args)?;
         let val = self.car(rest)?;
         {
             let mut w = crate::io::StreamWriter {
@@ -1186,9 +1185,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
     /// `(raw-write-str stream str)` — write a CharPair chain to stream.
     fn builtin_raw_write_str(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
+        let (stream_idx, rest) = self.arena.get(args)?.as_cons()?;
         let stream = self.get_stream_number(stream_idx)?;
-        let rest = self.cdr(args)?;
         let str_idx = self.car(rest)?;
         self.write_chars_to_stream(stream, str_idx)?;
         Ok(ArenaIndex::INERT)
@@ -1246,11 +1244,10 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `(raw-open mode path)` — open a file, return stream number.
     /// mode: 0 = read, 1 = write (create/truncate).
     fn builtin_raw_open(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mode_idx = self.car(args)?;
+        let (mode_idx, rest) = self.arena.get(args)?.as_cons()?;
         let Value::Number(mode) = self.get(mode_idx)? else {
             return Err(ArenaError::TypeError);
         };
-        let rest = self.cdr(args)?;
         let path_idx = self.car(rest)?;
         self.with_path(path_idx, |path| {
             let stream_id = self.io.borrow_mut()
@@ -1338,10 +1335,8 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
     /// `(apply combiner args)` — apply a combiner to a list of arguments.
     fn builtin_apply(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let combiner = self.car(args)?;
-        let rest1 = self.cdr(args)?;
-        let arg_list = self.car(rest1)?;
-        let rest2 = self.cdr(rest1)?;
+        let (combiner, rest1) = self.arena.get(args)?.as_cons()?;
+        let (arg_list, rest2) = self.arena.get(rest1)?.as_cons()?;
         let env = if rest2.is_nil() {
             ArenaIndex::GLOBAL_ENV
         } else {
