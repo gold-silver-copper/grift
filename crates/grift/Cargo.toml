@@ -11,6 +11,7 @@ repl = ["dep:rustyline", "std"]
 
 [dependencies]
 grift_arena.workspace = true
+grift_macros = { path = "../grift_macros" }
 rustyline = { version = "17.0.2", optional = true }
 
 [[bin]]
