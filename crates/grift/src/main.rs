@@ -8,13 +8,6 @@ const ARENA_SIZE: usize = 100_000;
 fn main() {
     let lisp: Lisp<ARENA_SIZE> = Lisp::with_io(IoState::std_io());
 
-    // Load prelude if bundled
-    let prelude = include_str!("../prelude.grift");
-    if let Err(e) = lisp.eval_to_index(prelude) {
-        eprintln!("error loading prelude: {e:?}");
-        std::process::exit(1);
-    }
-
     // If a file argument is given, evaluate it and exit
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
