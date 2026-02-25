@@ -10,7 +10,6 @@
 
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
-use crate::io::IoProvider;
 use crate::lisp::{ArenaWriter, Lisp};
 use crate::parse::CharSource;
 use crate::value::{BuiltinId, Value};
@@ -110,7 +109,7 @@ macro_rules! define_builtins {
         // — ID constants (single shared u8 space) —
         define_builtins!(@ids 0u8; $($op_id,)* $($bi_id,)*);
 
-        impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
+        impl<const N: usize> Lisp<N> {
             /// Register all builtins in the ground environment.
             pub(crate) fn init_builtins(&self) {
                 $( self.bind_builtin($op_name, $op_id, false); )*
@@ -223,7 +222,7 @@ define_builtins! {
     }
 }
 
-impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
+impl<const N: usize> Lisp<N> {
     /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.
     fn bind_builtin(&self, name: &str, id: BuiltinId, wrap: bool) {
         let Ok(sym) = self.symbol(name) else {
@@ -1179,7 +1178,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         Ok(ArenaIndex::INERT)
     }
 
-    /// Walk a CharPair chain and write each character to a stream via IoProvider.
+    /// Walk a CharPair chain and write each character to a stream via I/O function pointers.
     fn write_chars_to_stream(&self, stream: u8, mut idx: ArenaIndex) -> ArenaResult<()> {
         while !idx.is_nil() {
             let Value::CharPair { ch, cdr } = self.get(idx)? else {
@@ -1187,7 +1186,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
             };
             let mut buf = [0u8; 4];
             let s = ch.encode_utf8(&mut buf);
-            let _ = self.io.borrow_mut().write_stream(stream, s);
+            let _ = (self.io.borrow().write_stream)(stream, s);
             idx = cdr;
         }
         Ok(())
@@ -1217,7 +1216,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn builtin_raw_read_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let stream_idx = self.car(args)?;
         let stream = self.get_stream_number(stream_idx)?;
-        self.io_char_result(self.io.borrow_mut().read_stream_char(stream))
+        self.io_char_result((self.io.borrow().read_stream_char)(stream))
     }
 
     /// `(raw-peek-char stream)` — peek at next character on stream.
@@ -1225,7 +1224,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn builtin_raw_peek_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let stream_idx = self.car(args)?;
         let stream = self.get_stream_number(stream_idx)?;
-        self.io_char_result(self.io.borrow_mut().peek_stream_char(stream))
+        self.io_char_result((self.io.borrow().peek_stream_char)(stream))
     }
 
     /// `(raw-open mode path)` — open a file, return stream number.
@@ -1238,8 +1237,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         let rest = self.cdr(args)?;
         let path_idx = self.car(rest)?;
         self.with_path(path_idx, |path| {
-            let stream_id = self.io.borrow_mut()
-                .open_file(path, mode as u8)
+            let stream_id = (self.io.borrow().open_file)(path, mode as u8)
                 .map_err(|_| ArenaError::IoError)?;
             self.number(stream_id as isize)
         })
@@ -1249,8 +1247,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn builtin_raw_close(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let stream_idx = self.car(args)?;
         let stream = self.get_stream_number(stream_idx)?;
-        self.io.borrow_mut()
-            .close_stream(stream)
+        (self.io.borrow().close_stream)(stream)
             .map_err(|_| ArenaError::IoError)?;
         Ok(ArenaIndex::INERT)
     }
@@ -1259,7 +1256,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn builtin_raw_file_existsp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
         self.with_path(path_idx, |path| {
-            match self.io.borrow().file_exists(path) {
+            match (self.io.borrow().file_exists)(path) {
                 Ok(exists) => Ok(ArenaIndex::from_bool(exists)),
                 Err(_) => Err(ArenaError::IoError),
             }
@@ -1270,7 +1267,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn builtin_raw_delete_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let path_idx = self.car(args)?;
         self.with_path(path_idx, |path| {
-            self.io.borrow_mut().delete_file(path).map_err(|_| ArenaError::IoError)?;
+            (self.io.borrow().delete_file)(path).map_err(|_| ArenaError::IoError)?;
             Ok(ArenaIndex::INERT)
         })
     }
@@ -1342,7 +1339,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// `(load path)` — load and evaluate a file in the caller's environment.
     ///
     /// Evaluates its argument to get a path string, reads the file via
-    /// `IoProvider::read_file`, parses all expressions, and evaluates
+    /// the I/O `open_file` function, parses all expressions, and evaluates
     /// each in the caller's environment.
     fn op_load(
         &self,
@@ -1359,7 +1356,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
     /// Load and evaluate expressions from a file path (CharPair chain).
     ///
-    /// Opens the file via `IoProvider::open_file`, parses all s-expressions
+    /// Opens the file via the I/O `open_file` function pointer, parses all s-expressions
     /// from the stream, closes the stream, then evaluates each expression
     /// in the given environment.
     fn load_file(
@@ -1369,8 +1366,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     ) -> ArenaResult<ArenaIndex> {
         // Open file for reading
         let stream = self.with_path(path_val, |path| {
-            self.io.borrow_mut()
-                .open_file(path, 0)
+            (self.io.borrow().open_file)(path, 0)
                 .map_err(|_| ArenaError::IoError)
         })?;
 
@@ -1391,7 +1387,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
         };
 
         // Close the stream
-        let _ = self.io.borrow_mut().close_stream(stream);
+        let _ = (self.io.borrow().close_stream)(stream);
 
         // Now evaluate each expression in the caller's env
         let mut result = ArenaIndex::INERT;

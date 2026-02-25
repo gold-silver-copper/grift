@@ -5,14 +5,14 @@
 //!
 //! Three `CharSource` implementations cover all parsing needs:
 //! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, eval)
-//! - [`StreamSource`] for reading via [`IoProvider`] streams (stdin, file handles)
+//! - [`StreamSource`] for reading via [`IoState`] streams (stdin, file handles)
 //! - [`ChainSource`] for parsing existing `CharPair` chains (raw-read-string)
 
 use core::cell::RefCell;
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult};
 
-use crate::io::IoProvider;
+use crate::io::IoState;
 use crate::lisp::Lisp;
 use crate::value::Value;
 
@@ -81,27 +81,27 @@ impl CharSource for SliceSource<'_> {
 
 // ── StreamSource ──────────────────────────────────────────────────
 
-/// Character source backed by an [`IoProvider`] stream.
+/// Character source backed by an [`IoState`] stream.
 ///
 /// Reads characters from a specific stream number (0 = stdin, 3+ = file handles).
-pub(crate) struct StreamSource<'a, IO: IoProvider> {
-    io: &'a RefCell<IO>,
+pub(crate) struct StreamSource<'a> {
+    io: &'a RefCell<IoState>,
     stream: u8,
 }
 
-impl<'a, IO: IoProvider> StreamSource<'a, IO> {
-    pub fn new(io: &'a RefCell<IO>, stream: u8) -> Self {
+impl<'a> StreamSource<'a> {
+    pub fn new(io: &'a RefCell<IoState>, stream: u8) -> Self {
         StreamSource { io, stream }
     }
 }
 
-impl<IO: IoProvider> CharSource for StreamSource<'_, IO> {
+impl CharSource for StreamSource<'_> {
     fn read_char(&mut self) -> Option<char> {
-        self.io.borrow_mut().read_stream_char(self.stream).ok()
+        (self.io.borrow().read_stream_char)(self.stream).ok()
     }
 
     fn peek_char(&mut self) -> Option<char> {
-        self.io.borrow_mut().peek_stream_char(self.stream).ok()
+        (self.io.borrow().peek_stream_char)(self.stream).ok()
     }
 }
 
@@ -152,7 +152,7 @@ fn is_delimiter(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';')
 }
 
-impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
+impl<const N: usize> Lisp<N> {
     /// Parse one s-expression from a character source.
     ///
     /// Returns the parsed value, or `ArenaIndex::NIL` if the source is

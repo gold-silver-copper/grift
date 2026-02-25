@@ -1,12 +1,12 @@
 use grift::Lisp;
-use grift::StdIoProvider;
+use grift::IoState;
 use rustyline::DefaultEditor;
 
 const PROMPT: &str = "Λ> ";
 const ARENA_SIZE: usize = 100_000;
 
 fn main() {
-    let lisp: Lisp<ARENA_SIZE, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    let lisp: Lisp<ARENA_SIZE> = Lisp::with_io(IoState::std_io());
 
     // Load prelude if bundled
     let prelude = include_str!("../prelude.grift");
