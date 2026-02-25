@@ -3805,99 +3805,98 @@ fn test_apply_empty_args() {
 }
 
 // ============================================================================
-// I/O Trait Tests
+// I/O Tests
 // ============================================================================
 
 #[test]
 fn test_io_null_provider() {
-    use grift::{IoProvider, NullIoProvider};
-    let mut io = NullIoProvider;
-    assert!(io.write_stream(1, "hello").is_ok());
-    assert!(io.write_stream(2, "hello").is_ok());
+    use grift::IoState;
+    let io = IoState::null();
+    assert!((io.write_stream)(1, "hello").is_ok());
+    assert!((io.write_stream)(2, "hello").is_ok());
 }
 
 #[test]
 fn test_io_generic_provider() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use grift::{IoProvider, io::IoResult};
+    use grift::io::IoState;
     static CALLED: AtomicBool = AtomicBool::new(false);
 
-    struct TestIo;
-    impl IoProvider for TestIo {
-        fn write_stream(&mut self, stream: u8, _s: &str) -> IoResult<()> {
-            if stream == 1 {
-                CALLED.store(true, Ordering::SeqCst);
-            }
-            Ok(())
+    fn test_write(stream: u8, _s: &str) -> grift::io::IoResult<()> {
+        if stream == 1 {
+            CALLED.store(true, Ordering::SeqCst);
         }
+        Ok(())
     }
 
-    let lisp: Lisp<20000, TestIo> = Lisp::with_io(TestIo);
+    let io = IoState { write_stream: test_write, ..IoState::null() };
+    let lisp: Lisp<20000> = Lisp::with_io(io);
     CALLED.store(false, Ordering::SeqCst);
     let _ = lisp.eval("(raw-display 1 42)");
-    assert!(CALLED.load(Ordering::SeqCst), "IoProvider::write_stream should have been called");
+    assert!(CALLED.load(Ordering::SeqCst), "write_stream function should have been called");
 }
 
 #[test]
 fn test_io_display_to_io() {
-    use grift::{IoProvider, io::IoResult};
+    use grift::IoState;
 
-    struct CaptureIo {
-        output: String,
+    std::thread_local! {
+        static OUTPUT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     }
-    impl IoProvider for CaptureIo {
-        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
-            if stream == 1 { self.output.push_str(s); }
-            Ok(())
-        }
+
+    fn capture_write(stream: u8, s: &str) -> grift::io::IoResult<()> {
+        if stream == 1 { OUTPUT.with(|o| o.borrow_mut().push_str(s)); }
+        Ok(())
     }
 
     let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.eval_to_index("42").unwrap();
-    let mut io = CaptureIo { output: String::new() };
+    OUTPUT.with(|o| o.borrow_mut().clear());
+    let mut io = IoState { write_stream: capture_write, ..IoState::null() };
     lisp.display_to_io(idx, &mut io).unwrap();
-    assert_eq!(io.output, "42");
+    OUTPUT.with(|o| assert_eq!(*o.borrow(), "42"));
 }
 
 #[test]
 fn test_io_write_to_io() {
-    use grift::{IoProvider, io::IoResult};
+    use grift::IoState;
 
-    struct CaptureIo {
-        output: String,
+    std::thread_local! {
+        static OUTPUT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     }
-    impl IoProvider for CaptureIo {
-        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
-            if stream == 1 { self.output.push_str(s); }
-            Ok(())
-        }
+
+    fn capture_write(stream: u8, s: &str) -> grift::io::IoResult<()> {
+        if stream == 1 { OUTPUT.with(|o| o.borrow_mut().push_str(s)); }
+        Ok(())
     }
 
     let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.eval_to_index(r#""hello""#).unwrap();
-    let mut io = CaptureIo { output: String::new() };
+
+    OUTPUT.with(|o| o.borrow_mut().clear());
+    let mut io = IoState { write_stream: capture_write, ..IoState::null() };
     lisp.write_to_io(idx, &mut io).unwrap();
-    assert_eq!(io.output, r#""hello""#);
+    OUTPUT.with(|o| assert_eq!(*o.borrow(), r#""hello""#));
 
     // display_to_io should print without quotes
-    let mut io2 = CaptureIo { output: String::new() };
+    OUTPUT.with(|o| o.borrow_mut().clear());
+    let mut io2 = IoState { write_stream: capture_write, ..IoState::null() };
     lisp.display_to_io(idx, &mut io2).unwrap();
-    assert_eq!(io2.output, "hello");
+    OUTPUT.with(|o| assert_eq!(*o.borrow(), "hello"));
 }
 
 #[test]
 fn test_io_streaming_no_truncation() {
     // Verify streaming output handles strings longer than 256 bytes
-    use grift::{IoProvider, io::IoResult};
+    use grift::IoState;
 
-    struct CaptureIo {
-        output: String,
+    std::thread_local! {
+        static OUTPUT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     }
-    impl IoProvider for CaptureIo {
-        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
-            if stream == 1 { self.output.push_str(s); }
-            Ok(())
-        }
+
+    fn capture_write(stream: u8, s: &str) -> grift::io::IoResult<()> {
+        if stream == 1 { OUTPUT.with(|o| o.borrow_mut().push_str(s)); }
+        Ok(())
     }
 
     let lisp: Lisp<100_000> = Lisp::new();
@@ -3905,49 +3904,49 @@ fn test_io_streaming_no_truncation() {
     let long_str = "a]".repeat(200);
     let expr = format!(r#""{}""#, long_str);
     let idx = lisp.eval_to_index(&expr).unwrap();
-    let mut io = CaptureIo { output: String::new() };
+    OUTPUT.with(|o| o.borrow_mut().clear());
+    let mut io = IoState { write_stream: capture_write, ..IoState::null() };
     lisp.display_to_io(idx, &mut io).unwrap();
     // display_to_io should output the full 400-char string, not truncated at 256
-    assert_eq!(io.output.len(), 400, "streaming should not truncate output");
-    assert!(io.output.starts_with("a]a]a]"));
+    OUTPUT.with(|o| {
+        assert_eq!(o.borrow().len(), 400, "streaming should not truncate output");
+        assert!(o.borrow().starts_with("a]a]a]"));
+    });
 }
 
 #[test]
 fn test_io_writer_error_propagation() {
-    use grift::{IoProvider, io::{IoResult, IoErrorKind}};
+    use grift::{IoState, io::IoErrorKind};
 
-    struct FailIo;
-    impl IoProvider for FailIo {
-        fn write_stream(&mut self, _stream: u8, _s: &str) -> IoResult<()> {
-            Err(IoErrorKind::WriteFailed)
-        }
+    fn fail_write(_stream: u8, _s: &str) -> grift::io::IoResult<()> {
+        Err(IoErrorKind::WriteFailed)
     }
 
     let lisp: Lisp<20000> = Lisp::new();
     let idx = lisp.eval_to_index("42").unwrap();
-    let mut io = FailIo;
+    let mut io = IoState { write_stream: fail_write, ..IoState::null() };
     let result = lisp.display_to_io(idx, &mut io);
     assert_eq!(result, Err(IoErrorKind::WriteFailed));
 }
 
 #[test]
 fn test_io_null_provider_defaults() {
-    use grift::{IoProvider, NullIoProvider, io::IoErrorKind};
+    use grift::{IoState, io::IoErrorKind};
 
-    let mut io = NullIoProvider;
+    let io = IoState::null();
     // write_stream on 1/2 are no-ops
-    assert!(io.write_stream(1, "hello").is_ok());
-    assert!(io.write_stream(2, "hello").is_ok());
+    assert!((io.write_stream)(1, "hello").is_ok());
+    assert!((io.write_stream)(2, "hello").is_ok());
     // write_stream on other streams returns Unsupported
-    assert_eq!(io.write_stream(0, "x"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.write_stream(3, "x"), Err(IoErrorKind::Unsupported));
-    // Default methods return Unsupported
-    assert_eq!(io.read_stream_char(0), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.peek_stream_char(0), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.open_file("foo", 0), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.close_stream(3), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.file_exists("foo"), Err(IoErrorKind::Unsupported));
-    assert_eq!(io.delete_file("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.write_stream)(0, "x"), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.write_stream)(3, "x"), Err(IoErrorKind::Unsupported));
+    // Default functions return Unsupported
+    assert_eq!((io.read_stream_char)(0), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.peek_stream_char)(0), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.open_file)("foo", 0), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.close_stream)(3), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.file_exists)("foo"), Err(IoErrorKind::Unsupported));
+    assert_eq!((io.delete_file)("foo"), Err(IoErrorKind::Unsupported));
 }
 
 // ============================================================================
@@ -3956,58 +3955,69 @@ fn test_io_null_provider_defaults() {
 
 #[test]
 fn test_raw_display() {
-    use grift::{IoProvider, io::IoResult};
+    use grift::IoState;
 
-    struct CaptureIo { output: String }
-    impl IoProvider for CaptureIo {
-        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
-            if stream == 1 { self.output.push_str(s); }
-            Ok(())
-        }
+    std::thread_local! {
+        static OUTPUT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     }
 
-    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
+    fn capture_write(stream: u8, s: &str) -> grift::io::IoResult<()> {
+        if stream == 1 { OUTPUT.with(|o| o.borrow_mut().push_str(s)); }
+        Ok(())
+    }
+
+    OUTPUT.with(|o| o.borrow_mut().clear());
+    let io = IoState { write_stream: capture_write, ..IoState::null() };
+    let lisp: Lisp<20000> = Lisp::with_io(io);
     let _ = lisp.eval("(raw-display 1 42)");
-    assert_eq!(lisp.io().output, "42");
+    OUTPUT.with(|o| assert_eq!(*o.borrow(), "42"));
 }
 
 #[test]
 fn test_raw_write_str() {
-    use grift::{IoProvider, io::IoResult};
+    use grift::IoState;
 
-    struct CaptureIo { output: String }
-    impl IoProvider for CaptureIo {
-        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
-            if stream == 1 { self.output.push_str(s); }
-            Ok(())
-        }
+    std::thread_local! {
+        static OUTPUT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     }
 
-    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { output: String::new() });
+    fn capture_write(stream: u8, s: &str) -> grift::io::IoResult<()> {
+        if stream == 1 { OUTPUT.with(|o| o.borrow_mut().push_str(s)); }
+        Ok(())
+    }
+
+    OUTPUT.with(|o| o.borrow_mut().clear());
+    let io = IoState { write_stream: capture_write, ..IoState::null() };
+    let lisp: Lisp<20000> = Lisp::with_io(io);
     let _ = lisp.eval(r#"(raw-write-str 1 "hello")"#);
-    assert_eq!(lisp.io().output, "hello");
+    OUTPUT.with(|o| assert_eq!(*o.borrow(), "hello"));
 }
 
 #[test]
 fn test_raw_write_str_stderr() {
-    use grift::{IoProvider, io::IoResult};
+    use grift::IoState;
 
-    struct CaptureIo { stdout: String, stderr: String }
-    impl IoProvider for CaptureIo {
-        fn write_stream(&mut self, stream: u8, s: &str) -> IoResult<()> {
-            match stream {
-                1 => self.stdout.push_str(s),
-                2 => self.stderr.push_str(s),
-                _ => {}
-            }
-            Ok(())
-        }
+    std::thread_local! {
+        static STDOUT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+        static STDERR: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     }
 
-    let lisp: Lisp<20000, CaptureIo> = Lisp::with_io(CaptureIo { stdout: String::new(), stderr: String::new() });
+    fn capture_write(stream: u8, s: &str) -> grift::io::IoResult<()> {
+        match stream {
+            1 => STDOUT.with(|o| o.borrow_mut().push_str(s)),
+            2 => STDERR.with(|o| o.borrow_mut().push_str(s)),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    STDOUT.with(|o| o.borrow_mut().clear());
+    STDERR.with(|o| o.borrow_mut().clear());
+    let io = IoState { write_stream: capture_write, ..IoState::null() };
+    let lisp: Lisp<20000> = Lisp::with_io(io);
     let _ = lisp.eval(r#"(raw-write-str 2 "error msg")"#);
-    assert_eq!(lisp.io().stderr, "error msg");
-    assert_eq!(lisp.io().stdout, "");
+    STDERR.with(|o| assert_eq!(*o.borrow(), "error msg"));
+    STDOUT.with(|o| assert_eq!(*o.borrow(), ""));
 }
 
 #[test]
@@ -4089,9 +4099,9 @@ fn test_read_from_chain() {
 #[cfg(feature = "std")]
 #[test]
 fn test_raw_file_operations() {
-    use grift::StdIoProvider;
+    use grift::IoState;
 
-    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    let lisp: Lisp<20000> = Lisp::with_io(IoState::std_io());
 
     let tmp = std::env::temp_dir().join("test_raw_file_stream.txt");
     let tmp_path = tmp.to_str().unwrap();
@@ -4130,9 +4140,9 @@ fn test_raw_file_operations() {
 #[cfg(feature = "std")]
 #[test]
 fn test_load_builtin() {
-    use grift::StdIoProvider;
+    use grift::IoState;
 
-    let lisp: Lisp<20000, StdIoProvider> = Lisp::with_io(StdIoProvider::new());
+    let lisp: Lisp<20000> = Lisp::with_io(IoState::std_io());
 
     // Write a temporary Grift file, load it, check definitions are visible
     let tmp = std::env::temp_dir().join("test_load.grift");

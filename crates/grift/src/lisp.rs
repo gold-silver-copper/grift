@@ -4,7 +4,7 @@ use core::cell::RefCell;
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::io::{IoProvider, NullIoProvider};
+use crate::io::IoState;
 use crate::parse::SliceSource;
 use crate::value::Value;
 
@@ -14,14 +14,11 @@ const MAX_PATH_LEN: usize = 256;
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
 /// The const generic `N` controls the arena capacity (number of slots).
-/// The type parameter `IO` selects the I/O back-end; it defaults to
-/// [`NullIoProvider`] so that code which doesn't need I/O can keep
-/// writing `Lisp<N>`.
 ///
 /// # I/O Model
 ///
-/// The interpreter stores an [`IoProvider`] in a [`RefCell`] for interior-
-/// mutable access from the `&self` eval loop.  Builtins borrow the provider
+/// The interpreter stores an [`IoState`] in a [`RefCell`] for interior-
+/// mutable access from the `&self` eval loop.  Builtins borrow the state
 /// briefly per call and never hold the borrow across recursive eval/display
 /// walks.
 ///
@@ -34,10 +31,10 @@ const MAX_PATH_LEN: usize = 256;
 /// let result = lisp.eval("(+ 1 2)");
 /// assert_eq!(result, Ok(Value::Number(3)));
 /// ```
-pub struct Lisp<const N: usize, IO: IoProvider = NullIoProvider> {
+pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
-    /// I/O provider, wrapped in a RefCell for interior mutability.
-    pub(crate) io: RefCell<IO>,
+    /// I/O state, wrapped in a RefCell for interior mutability.
+    pub(crate) io: RefCell<IoState>,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -47,27 +44,25 @@ impl<const N: usize> Default for Lisp<N> {
 }
 
 impl<const N: usize> Lisp<N> {
-    /// Create a new Lisp interpreter with a [`NullIoProvider`] (no I/O).
+    /// Create a new Lisp interpreter with a null I/O state (no I/O).
     ///
     /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
     /// `#ignore`, the ground environment, a parents cell, the global
     /// environment, the GC root stack, and the symbol intern list so
     /// that returning these common values is allocation-free.
     pub fn new() -> Self {
-        Self::with_io(NullIoProvider)
+        Self::with_io(IoState::null())
     }
-}
 
-impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Maximum supported path length (in bytes) for file operations.
     ///
     /// This is the size of the stack buffer used by [`with_path`](Self::with_path)
-    /// to collect a CharPair chain into a `&str` for `IoProvider` calls.
+    /// to collect a CharPair chain into a `&str` for I/O calls.
     /// Paths exceeding this length will return `Err(InvalidArgument)`.
     pub const MAX_PATH_LEN: usize = MAX_PATH_LEN;
 
-    /// Create a new Lisp interpreter with the given I/O provider.
-    pub fn with_io(io: IO) -> Self {
+    /// Create a new Lisp interpreter with the given I/O state.
+    pub fn with_io(io: IoState) -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
             .alloc(Value::Nil)
@@ -308,9 +303,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// # When to use
     ///
     /// Use this method **only** when a contiguous `&str` is required by a
-    /// downstream API (e.g. file-path arguments passed to
-    /// [`IoProvider::read_file`](crate::io::IoProvider::read_file) or
-    /// [`IoProvider::open_input_string`](crate::io::IoProvider::open_input_string)).
+    /// downstream API (e.g. file-path arguments passed to I/O functions).
     ///
     /// If you only need to iterate over the characters of a `CharPair`
     /// chain — for example to write them one at a time, compare them, or
@@ -345,7 +338,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     /// Returns `Err(InvalidArgument)` if the path exceeds this limit.
     ///
     /// This is an intentional fixed-size buffer: file paths are
-    /// inherently bounded, and the IoProvider APIs require `&str`.
+    /// inherently bounded, and the I/O function pointer APIs require `&str`.
     /// All other buffers have been replaced with arena allocation
     /// or streaming.
     pub(crate) fn with_path<F, R>(&self, idx: ArenaIndex, f: F) -> ArenaResult<R>
@@ -842,42 +835,42 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 
     // — I/O integration —
 
-    /// Get a shared reference to the I/O provider.
+    /// Get a shared reference to the I/O state.
     ///
-    /// Panics if the I/O provider is currently borrowed mutably
+    /// Panics if the I/O state is currently borrowed mutably
     /// (should never happen as builtins only borrow briefly).
-    pub fn io(&self) -> core::cell::Ref<'_, IO> {
+    pub fn io(&self) -> core::cell::Ref<'_, IoState> {
         self.io.borrow()
     }
 
-    /// Get a mutable reference to the I/O provider.
+    /// Get a mutable reference to the I/O state.
     ///
-    /// Panics if the I/O provider is currently borrowed
+    /// Panics if the I/O state is currently borrowed
     /// (should never happen as builtins only borrow briefly).
-    pub fn io_mut(&self) -> core::cell::RefMut<'_, IO> {
+    pub fn io_mut(&self) -> core::cell::RefMut<'_, IoState> {
         self.io.borrow_mut()
     }
 
-    /// Write a value's display representation through an [`IoProvider`].
+    /// Write a value's display representation through an [`IoState`].
     ///
-    /// Streams output directly through the provider — no intermediate buffer,
+    /// Streams output directly through the I/O state — no intermediate buffer,
     /// no size limit. Writes to stdout.
     pub fn display_to_io(
         &self,
         idx: ArenaIndex,
-        io: &mut dyn IoProvider,
+        io: &mut IoState,
     ) -> crate::io::IoResult<()> {
         self.fmt_to_io(idx, io, true)
     }
 
-    /// Write a value's write (machine-readable) representation through an [`IoProvider`].
+    /// Write a value's write (machine-readable) representation through an [`IoState`].
     ///
-    /// Streams output directly through the provider — no intermediate buffer,
+    /// Streams output directly through the I/O state — no intermediate buffer,
     /// no size limit. Writes to stdout.
     pub fn write_to_io(
         &self,
         idx: ArenaIndex,
-        io: &mut dyn IoProvider,
+        io: &mut IoState,
     ) -> crate::io::IoResult<()> {
         self.fmt_to_io(idx, io, false)
     }
@@ -887,7 +880,7 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
     fn fmt_to_io(
         &self,
         idx: ArenaIndex,
-        io: &mut dyn IoProvider,
+        io: &mut IoState,
         display: bool,
     ) -> crate::io::IoResult<()> {
         let mut w = IoFmtWriter { io, error: None };
@@ -1035,17 +1028,17 @@ impl<const N: usize, IO: IoProvider> Lisp<N, IO> {
 }
 
 // ============================================================================
-// IoFmtWriter — bridges core::fmt::Write to an IoProvider
+// IoFmtWriter — bridges core::fmt::Write to an IoState
 // ============================================================================
 
 /// A [`core::fmt::Write`] adapter that streams formatted output through an
-/// [`IoProvider`]'s `write_stream` method to stdout (stream 1).
+/// [`IoState`]'s `write_stream` function pointer to stdout (stream 1).
 ///
 /// Used by [`Lisp::display_to_io`] and [`Lisp::write_to_io`] to avoid
 /// intermediate buffers. Any I/O error is captured in `error` and causes
 /// subsequent writes to short-circuit.
 struct IoFmtWriter<'a> {
-    io: &'a mut dyn IoProvider,
+    io: &'a mut IoState,
     error: Option<crate::io::IoErrorKind>,
 }
 
@@ -1054,7 +1047,7 @@ impl core::fmt::Write for IoFmtWriter<'_> {
         if self.error.is_some() {
             return Err(core::fmt::Error);
         }
-        if let Err(e) = self.io.write_stream(1, s) {
+        if let Err(e) = (self.io.write_stream)(1, s) {
             self.error = Some(e);
             return Err(core::fmt::Error);
         }
@@ -1073,14 +1066,14 @@ impl core::fmt::Write for IoFmtWriter<'_> {
 /// Characters are prepended (building in reverse order) during writing.
 /// [`finish`](Self::finish) calls `reverse_chain` to produce
 /// the correctly ordered chain.
-pub(crate) struct ArenaWriter<'a, const N: usize, IO: IoProvider> {
-    lisp: &'a Lisp<N, IO>,
+pub(crate) struct ArenaWriter<'a, const N: usize> {
+    lisp: &'a Lisp<N>,
     head: ArenaIndex,
     error: Option<ArenaError>,
 }
 
-impl<'a, const N: usize, IO: IoProvider> ArenaWriter<'a, N, IO> {
-    pub(crate) fn new(lisp: &'a Lisp<N, IO>) -> Self {
+impl<'a, const N: usize> ArenaWriter<'a, N> {
+    pub(crate) fn new(lisp: &'a Lisp<N>) -> Self {
         ArenaWriter {
             lisp,
             head: ArenaIndex::NIL,
@@ -1098,7 +1091,7 @@ impl<'a, const N: usize, IO: IoProvider> ArenaWriter<'a, N, IO> {
     }
 }
 
-impl<const N: usize, IO: IoProvider> core::fmt::Write for ArenaWriter<'_, N, IO> {
+impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         if self.error.is_some() {
             return Err(core::fmt::Error);
