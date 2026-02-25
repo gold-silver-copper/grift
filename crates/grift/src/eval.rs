@@ -11,7 +11,7 @@
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::lisp::{ArenaWriter, Lisp};
-use crate::parse::CharSource;
+use crate::parse::{CharSource, SliceSource};
 use crate::value::{BuiltinId, Value};
 
 /// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
@@ -387,6 +387,14 @@ impl<const N: usize> Lisp<N> {
                             Value::Applicative(_) => {
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
+                            Value::StdLib(stdlib) => {
+                                let real = self.eval_stdlib_source(stdlib)?;
+                                let (body, op_env) =
+                                    self.invoke_operative(real, evaled_args, *env)?;
+                                *env = op_env;
+                                *expr = body;
+                                Ok(None)
+                            }
                             _ => Err(ArenaError::NotCallable),
                         }
                     }
@@ -418,6 +426,11 @@ impl<const N: usize> Lisp<N> {
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
+            Value::StdLib(stdlib) => {
+                let real = self.eval_stdlib_source(stdlib)?;
+                let (body, op_env) = self.invoke_operative(real, evaled_args, caller_env)?;
+                self.eval_expr(body, op_env)
+            }
             _ => Err(ArenaError::NotCallable),
         }
     }
@@ -438,6 +451,20 @@ impl<const N: usize> Lisp<N> {
             self.env_define(op_env, env_param, caller_env)?;
         }
         Ok((body, op_env))
+    }
+
+    /// Parse a stdlib lambda source and evaluate it to get the underlying operative.
+    ///
+    /// Called on demand each time a `StdLib` function is invoked.
+    /// The source is a lambda expression (e.g. `(lambda (x) (+ x 1))`)
+    /// which evaluates to an Applicative(Operative). We unwrap to get
+    /// the inner Operative for direct invocation.
+    fn eval_stdlib_source(&self, stdlib: crate::stdlib::StdLib) -> ArenaResult<ArenaIndex> {
+        let mut src = SliceSource::new(stdlib.source());
+        let lambda_expr = self.parse_expr(&mut src)?;
+        let app = self.eval_expr(lambda_expr, ArenaIndex::GLOBAL_ENV)?;
+        // lambda returns Applicative(Operative) — unwrap to get the operative
+        self.unwrap_applicative(app)
     }
 
     /// Recursively match a formal parameter tree `ptree` against a value `obj`

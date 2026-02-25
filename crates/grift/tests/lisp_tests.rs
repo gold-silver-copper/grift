@@ -4254,17 +4254,63 @@ fn test_string_escape_roundtrip_newline() {
 // ============================================================================
 
 #[test]
-fn test_prelude_loads() {
-    let builder = std::thread::Builder::new()
-        .name("prelude".into())
-        .stack_size(64 * 1024 * 1024);
-    let handler = builder
-        .spawn(|| {
-            let lisp: Lisp<500_000> = Lisp::new();
-            let prelude = include_str!("../prelude.grift");
-            let result = lisp.eval_to_index(prelude);
-            assert!(result.is_ok(), "prelude failed to load: {:?}", result.err());
-        })
-        .expect("failed to spawn thread");
-    handler.join().expect("prelude thread panicked");
+fn test_stdlib_map() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // map should produce a list; check via length
+    assert_eq!(
+        lisp.eval("(length (map (lambda (x) (+ x 1)) (list 1 2 3)))"),
+        Ok(Value::Number(3)),
+    );
+    // Check the first element
+    assert_eq!(
+        lisp.eval("(car (map (lambda (x) (+ x 10)) (list 1 2 3)))"),
+        Ok(Value::Number(11)),
+    );
+}
+
+#[test]
+fn test_stdlib_length() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(length (list 1 2 3))"), Ok(Value::Number(3)));
+    assert_eq!(lisp.eval("(length ())"), Ok(Value::Number(0)));
+}
+
+#[test]
+fn test_stdlib_filter() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(length (filter (lambda (x) (> x 2)) (list 1 2 3 4 5)))"),
+        Ok(Value::Number(3))
+    );
+}
+
+#[test]
+fn test_stdlib_append() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(length (append (list 1 2) (list 3 4)))"),
+        Ok(Value::Number(4))
+    );
+}
+
+#[test]
+fn test_stdlib_constants() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("stdin"), Ok(Value::Number(0)));
+    assert_eq!(lisp.eval("stdout"), Ok(Value::Number(1)));
+    assert_eq!(lisp.eval("stderr"), Ok(Value::Number(2)));
+    assert_eq!(lisp.eval("mode-read"), Ok(Value::Number(0)));
+    assert_eq!(lisp.eval("mode-write"), Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_stdlib_entries_exist() {
+    // Verify that StdLib entries are generated
+    assert!(!grift::stdlib::STDLIB_ALL.is_empty(), "STDLIB_ALL should not be empty");
+    // Check a known function
+    let names: Vec<&str> = grift::stdlib::STDLIB_ALL.iter().map(|e| e.name()).collect();
+    assert!(names.contains(&"map"), "map should be in STDLIB_ALL");
+    assert!(names.contains(&"filter"), "filter should be in STDLIB_ALL");
+    assert!(names.contains(&"length"), "length should be in STDLIB_ALL");
+    assert!(names.contains(&"append"), "append should be in STDLIB_ALL");
 }

@@ -149,7 +149,36 @@ impl<const N: usize> Lisp<N> {
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
+        // Initialize stdlib (proc-macro-generated statics + constants).
+        lisp.init_stdlib();
+
         lisp
+    }
+
+    /// Bind all stdlib entries (proc-macro-generated statics + constants)
+    /// in the global environment.
+    fn init_stdlib(&self) {
+        use crate::stdlib::{STDLIB_ALL, init_stdlib_constants};
+
+        // Bind each stdlib function as an Applicative wrapping the StdLib value.
+        for &entry in STDLIB_ALL {
+            let stdlib_idx = self
+                .arena
+                .alloc(Value::StdLib(entry))
+                .expect("arena too small for stdlib");
+            let app_idx = self
+                .arena
+                .alloc(Value::Applicative(stdlib_idx))
+                .expect("arena too small for stdlib");
+            let sym = self
+                .symbol(entry.name())
+                .expect("arena too small for stdlib");
+            self.env_define(ArenaIndex::GLOBAL_ENV, sym, app_idx)
+                .expect("arena too small for stdlib");
+        }
+
+        // Bind stdlib constants (numbers, booleans, strings).
+        init_stdlib_constants(self);
     }
 
     // — Value constructors —
@@ -978,6 +1007,7 @@ impl<const N: usize> Lisp<N> {
             }
             Ok(Value::Inert) => w.write_str("#inert"),
             Ok(Value::Ignore) => w.write_str("#ignore"),
+            Ok(Value::StdLib(s)) => write!(w, "<stdlib:{}>", s.name()),
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }
