@@ -1,59 +1,49 @@
 //! S-expression parser.
 //!
-//! Tokenizes and parses Lisp source text into arena-allocated values.
+//! Defines the [`CharSource`] trait and a single generic parser that works
+//! with any character source: byte slices, I/O streams, or CharPair chains.
+//!
+//! Three `CharSource` implementations cover all parsing needs:
+//! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, eval)
+//! - [`StreamSource`] for reading via [`IoState`] streams (stdin, file handles)
+//! - [`ChainSource`] for parsing existing `CharPair` chains (raw-read-string)
 
-use grift_arena::{ArenaIndex, ArenaError, ArenaResult};
+use core::cell::RefCell;
 
+use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult};
+
+use crate::io::IoState;
 use crate::lisp::Lisp;
+use crate::value::Value;
 
-/// A simple S-expression parser.
-pub(crate) struct Parser<'a> {
+// ── CharSource trait ──────────────────────────────────────────────
+
+/// Abstraction over character input sources for the parser.
+pub(crate) trait CharSource {
+    /// Read and consume the next character, or `None` at end-of-input.
+    fn read_char(&mut self) -> Option<char>;
+    /// Peek at the next character without consuming it, or `None` at end-of-input.
+    fn peek_char(&mut self) -> Option<char>;
+}
+
+// ── SliceSource ───────────────────────────────────────────────────
+
+/// Character source backed by a `&[u8]` byte slice (ASCII / UTF-8 source text).
+pub(crate) struct SliceSource<'a> {
     input: &'a [u8],
     pos: usize,
 }
 
-impl<'a> Parser<'a> {
-    /// Create a new parser for the given input string.
+impl<'a> SliceSource<'a> {
     pub fn new(input: &'a str) -> Self {
-        Parser {
-            input: input.as_bytes(),
-            pos: 0,
-        }
+        SliceSource { input: input.as_bytes(), pos: 0 }
     }
 
-    /// Returns `true` if there is remaining input to parse.
+    /// Returns `true` if there is remaining non-whitespace input.
+    ///
+    /// Skips whitespace and comments so that the next `parse_expr` call
+    /// will immediately see meaningful input.
     pub fn has_more(&mut self) -> bool {
-        self.skip_whitespace();
-        self.pos < self.input.len()
-    }
-
-    /// Parse one expression.
-    pub fn parse<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
-        self.skip_whitespace();
-        if self.pos >= self.input.len() {
-            return Ok(ArenaIndex::NIL);
-        }
-
-        match self.input[self.pos] {
-            b'(' => {
-                self.pos += 1;
-                self.parse_list(lisp)
-            }
-            b'\'' => {
-                self.pos += 1;
-                self.parse_quote(lisp)
-            }
-            b'"' => {
-                self.pos += 1;
-                self.parse_string_literal(lisp)
-            }
-            b')' => Err(ArenaError::ParseError),
-            _ => self.parse_atom(lisp),
-        }
-    }
-
-    /// Skip whitespace and comments.
-    fn skip_whitespace(&mut self) {
         while self.pos < self.input.len() {
             match self.input[self.pos] {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
@@ -62,125 +52,245 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                     }
                 }
+                _ => return true,
+            }
+        }
+        false
+    }
+}
+
+impl CharSource for SliceSource<'_> {
+    fn read_char(&mut self) -> Option<char> {
+        if self.pos < self.input.len() {
+            let ch = self.input[self.pos] as char;
+            self.pos += 1;
+            Some(ch)
+        } else {
+            None
+        }
+    }
+
+    fn peek_char(&mut self) -> Option<char> {
+        if self.pos < self.input.len() {
+            Some(self.input[self.pos] as char)
+        } else {
+            None
+        }
+    }
+}
+
+// ── StreamSource ──────────────────────────────────────────────────
+
+/// Character source backed by an [`IoState`] stream.
+///
+/// Reads characters from a specific stream number (0 = stdin, 3+ = file handles).
+pub(crate) struct StreamSource<'a> {
+    io: &'a RefCell<IoState>,
+    stream: u8,
+}
+
+impl<'a> StreamSource<'a> {
+    pub fn new(io: &'a RefCell<IoState>, stream: u8) -> Self {
+        StreamSource { io, stream }
+    }
+}
+
+impl CharSource for StreamSource<'_> {
+    fn read_char(&mut self) -> Option<char> {
+        (self.io.borrow().read_stream_char)(self.stream).ok()
+    }
+
+    fn peek_char(&mut self) -> Option<char> {
+        (self.io.borrow().peek_stream_char)(self.stream).ok()
+    }
+}
+
+// ── ChainSource ───────────────────────────────────────────────────
+
+/// Character source backed by an arena `CharPair` chain.
+pub(crate) struct ChainSource<'a, const N: usize> {
+    arena: &'a Arena<Value, N>,
+    cursor: ArenaIndex,
+}
+
+impl<'a, const N: usize> ChainSource<'a, N> {
+    pub fn new(arena: &'a Arena<Value, N>, cursor: ArenaIndex) -> Self {
+        ChainSource { arena, cursor }
+    }
+}
+
+impl<const N: usize> CharSource for ChainSource<'_, N> {
+    fn read_char(&mut self) -> Option<char> {
+        if self.cursor.is_nil() {
+            return None;
+        }
+        match self.arena.get(self.cursor) {
+            Ok(Value::CharPair { ch, cdr }) => {
+                self.cursor = cdr;
+                Some(ch)
+            }
+            _ => None,
+        }
+    }
+
+    fn peek_char(&mut self) -> Option<char> {
+        if self.cursor.is_nil() {
+            return None;
+        }
+        match self.arena.get(self.cursor) {
+            Ok(Value::CharPair { ch, .. }) => Some(ch),
+            _ => None,
+        }
+    }
+}
+
+// ── Unified parser (methods on Lisp) ──────────────────────────────
+
+/// Returns `true` if `c` is a delimiter that terminates atoms and dot
+/// separators.
+fn is_delimiter(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';')
+}
+
+impl<const N: usize> Lisp<N> {
+    /// Parse one s-expression from a character source.
+    ///
+    /// Returns the parsed value, or `ArenaIndex::NIL` if the source is
+    /// exhausted (no more input).
+    pub(crate) fn parse_expr(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
+        self.skip_ws(src);
+        let ch = match src.read_char() {
+            Some(c) => c,
+            None => return Ok(ArenaIndex::NIL),
+        };
+        match ch {
+            '(' => self.parse_list(src),
+            '\'' => self.parse_quote(src),
+            '"' => self.parse_string(src),
+            ')' => Err(ArenaError::ParseError),
+            _ => self.parse_atom_from(ch, src),
+        }
+    }
+
+    /// Skip whitespace and `;`-comments.
+    pub(crate) fn skip_ws(&self, src: &mut impl CharSource) {
+        loop {
+            match src.peek_char() {
+                Some(' ' | '\t' | '\n' | '\r') => { let _ = src.read_char(); }
+                Some(';') => {
+                    let _ = src.read_char();
+                    loop {
+                        match src.read_char() {
+                            Some('\n') | None => break,
+                            _ => {}
+                        }
+                    }
+                }
                 _ => break,
             }
         }
     }
 
-    /// Parse a list: `(a b c)` → cons cells.
-    fn parse_list<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
-        self.skip_whitespace();
-
-        if self.pos >= self.input.len() {
-            return Err(ArenaError::ParseError);
-        }
-
-        if self.input[self.pos] == b')' {
-            self.pos += 1;
-            return Ok(ArenaIndex::NIL);
-        }
-
-        if self.peek_dot() {
-            return Err(ArenaError::ParseError);
-        }
-
-        let car = self.parse(lisp)?;
-
-        self.skip_whitespace();
-        if self.peek_dot() {
-            self.pos += 1; // skip the dot
-            let cdr = self.parse(lisp)?;
-            self.skip_whitespace();
-            if self.pos < self.input.len() && self.input[self.pos] == b')' {
-                self.pos += 1;
-                return lisp.cons(car, cdr);
+    /// Parse a list: `(a b c)` or dotted pair `(a . b)`.
+    fn parse_list(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
+        self.skip_ws(src);
+        match src.peek_char() {
+            None => return Err(ArenaError::ParseError), // unterminated
+            Some(')') => {
+                src.read_char();
+                return Ok(ArenaIndex::NIL);
             }
-            return Err(ArenaError::ParseError);
+            Some('.') => {
+                src.read_char(); // consume '.'
+                if src.peek_char().is_none_or(|c| is_delimiter(c)) {
+                    // Dot separator at start of list — no car element.
+                    return Err(ArenaError::ParseError);
+                }
+                // Symbol starting with '.'
+                let expr = self.parse_atom_from('.', src)?;
+                let rest = self.parse_list(src)?;
+                return self.cons(expr, rest);
+            }
+            _ => {}
         }
 
-        let cdr = self.parse_list(lisp)?;
-        lisp.cons(car, cdr)
-    }
+        let car = self.parse_expr(src)?;
 
-    /// Check if current position is a dot separator (not a number like `.5`).
-    fn peek_dot(&self) -> bool {
-        self.input.get(self.pos) == Some(&b'.')
-            && self.input.get(self.pos + 1)
-                .is_none_or(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b')'))
+        // Check for dotted pair after first element.
+        self.skip_ws(src);
+        if let Some('.') = src.peek_char() {
+            src.read_char(); // consume '.'
+            if src.peek_char().is_none_or(|c| is_delimiter(c)) {
+                // Dotted pair: (car . cdr)
+                let cdr = self.parse_expr(src)?;
+                self.skip_ws(src);
+                match src.read_char() {
+                    Some(')') => return self.cons(car, cdr),
+                    _ => return Err(ArenaError::ParseError),
+                }
+            }
+            // Symbol starting with '.' in cdr position
+            let atom = self.parse_atom_from('.', src)?;
+            let rest = self.parse_list(src)?;
+            let cdr = self.cons(atom, rest)?;
+            return self.cons(car, cdr);
+        }
+
+        let cdr = self.parse_list(src)?;
+        self.cons(car, cdr)
     }
 
     /// Parse `'expr` → `(quote expr)`.
-    fn parse_quote<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
-        let expr = self.parse(lisp)?;
-        let quote_sym = lisp.symbol("quote")?;
-        let inner = lisp.cons(expr, ArenaIndex::NIL)?;
-        lisp.cons(quote_sym, inner)
+    fn parse_quote(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
+        let expr = self.parse_expr(src)?;
+        let quote_sym = self.symbol("quote")?;
+        let inner = self.cons(expr, ArenaIndex::NIL)?;
+        self.cons(quote_sym, inner)
     }
 
-    /// Parse a string literal `"..."`.
-    fn parse_string_literal<const N: usize>(
-        &mut self,
-        lisp: &Lisp<N>,
-    ) -> ArenaResult<ArenaIndex> {
-        let start = self.pos;
-        while self.pos < self.input.len() && self.input[self.pos] != b'"' {
-            if self.input[self.pos] == b'\\' {
-                self.pos += 1; // skip escaped char
+    /// Parse a string literal (opening `"` already consumed).
+    ///
+    /// Processes escape sequences: `\n`, `\t`, `\r`, `\\`, `\"`.
+    /// Builds a CharPair chain in reverse, then reverses.
+    fn parse_string(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
+        let mut head = ArenaIndex::NIL;
+        loop {
+            let ch = src.read_char().ok_or(ArenaError::ParseError)?;
+            if ch == '"' { break; }
+            let actual = if ch == '\\' {
+                let esc = src.read_char().ok_or(ArenaError::ParseError)?;
+                match esc {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '\\' => '\\',
+                    '"' => '"',
+                    _ => return Err(ArenaError::InvalidArgument),
+                }
+            } else {
+                ch
+            };
+            head = self.prepend_char(head, actual)?;
+        }
+        self.reverse_chain(head)
+    }
+
+    /// Parse an atom given the first character (already consumed).
+    ///
+    /// Reads remaining atom characters, builds a CharPair chain,
+    /// then classifies (boolean, number, or symbol).
+    fn parse_atom_from(&self, first: char, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
+        let mut head = self.prepend_char(ArenaIndex::NIL, first)?;
+        loop {
+            match src.peek_char() {
+                None => break,
+                Some(c) if is_delimiter(c) => break,
+                _ => {
+                    let c = src.read_char().unwrap();
+                    head = self.prepend_char(head, c)?;
+                }
             }
-            self.pos += 1;
         }
-        if self.pos >= self.input.len() {
-            return Err(ArenaError::ParseError);
-        }
-        let end = self.pos;
-        self.pos += 1; // skip closing quote
-
-        let slice = &self.input[start..end];
-        let s = core::str::from_utf8(slice).map_err(|_| ArenaError::ParseError)?;
-        lisp.alloc_string(s)
+        self.classify_atom(self.reverse_chain(head)?)
     }
-
-    /// Parse an atom: number, symbol, or boolean.
-    fn parse_atom<const N: usize>(&mut self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
-        let start = self.pos;
-        while self.pos < self.input.len() {
-            match self.input[self.pos] {
-                b' ' | b'\t' | b'\n' | b'\r' | b'(' | b')' | b'"' | b';' => break,
-                _ => self.pos += 1,
-            }
-        }
-
-        let token = &self.input[start..self.pos];
-        let s = core::str::from_utf8(token).map_err(|_| ArenaError::ParseError)?;
-
-        match s {
-            "#t" | "#true" => Ok(ArenaIndex::TRUE),
-            "#f" | "#false" => Ok(ArenaIndex::FALSE),
-            "#inert" => Ok(ArenaIndex::INERT),
-            "#ignore" => Ok(ArenaIndex::IGNORE),
-            _ => parse_integer(s)
-                .map(|n| lisp.number(n))
-                .unwrap_or_else(|| lisp.symbol(s)),
-        }
-    }
-}
-
-/// Parse an integer from a string slice without using std.
-fn parse_integer(s: &str) -> Option<isize> {
-    let bytes = s.as_bytes();
-    let (&first, rest) = bytes.split_first()?;
-
-    let (negative, digits) = match first {
-        b'-' if !rest.is_empty() => (true, rest),
-        b'+' if !rest.is_empty() => (false, rest),
-        b'0'..=b'9' => (false, bytes),
-        _ => return None,
-    };
-
-    let magnitude = digits.iter().try_fold(0isize, |acc, &b| {
-        if !b.is_ascii_digit() { return None; }
-        acc.checked_mul(10)?.checked_add((b - b'0') as isize)
-    })?;
-
-    Some(if negative { -magnitude } else { magnitude })
 }
