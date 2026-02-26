@@ -1,12 +1,11 @@
 use grift::Lisp;
-use grift::IoState;
 use rustyline::DefaultEditor;
 
 const PROMPT: &str = "Λ> ";
 const ARENA_SIZE: usize = 100_000;
 
 fn main() {
-    let lisp: Lisp<ARENA_SIZE> = Lisp::with_io(IoState::std_io());
+    let lisp: Lisp<ARENA_SIZE> = Lisp::new();
 
     // If a file argument is given, evaluate it and exit
     let args: Vec<String> = std::env::args().collect();

@@ -3,13 +3,6 @@
 ;; Function definitions become StdLib statics (parsed on demand).
 ;; Constants become Rust init code (bound at startup).
 
-;; Constants
-(define! stdin 0)
-(define! stdout 1)
-(define! stderr 2)
-(define! mode-read 0)
-(define! mode-write 1)
-
 ;; Functions
 (define! (fn map f lst)
   (if (null? lst) ()
@@ -27,32 +20,3 @@
 (define! (fn append a b)
   (if (null? a) b
     (cons (car a) (append (cdr a) b))))
-
-(define! (fn display obj) (raw-display 1 obj))
-(define! (fn newline) (raw-write-str 1 "\n"))
-(define! (fn print obj) (display obj) (newline))
-(define! (fn read) (raw-read 0))
-(define! (fn read-char) (raw-read-char 0))
-(define! (fn peek-char) (raw-peek-char 0))
-
-(define! (fn open-input-file path)
-  (define! handle (raw-open 0 path))
-  (define! (fn read-char) (raw-read-char handle))
-  (define! (fn peek-char) (raw-peek-char handle))
-  (define! (fn read) (raw-read handle))
-  (define! (fn close) (raw-close handle))
-  (current-environment))
-
-(define! (fn open-output-file path)
-  (define! handle (raw-open 1 path))
-  (define! (fn display obj) (raw-display handle obj))
-  (define! (fn write-str s) (raw-write-str handle s))
-  (define! (fn newline) (raw-write-str handle "\n"))
-  (define! (fn close) (raw-close handle))
-  (current-environment))
-
-(define! (fn input-port? p)
-  (and (environment? p) (bound? 'read-char p)))
-
-(define! (fn output-port? p)
-  (and (environment? p) (bound? 'display p)))

@@ -5,8 +5,6 @@
 //! The proc macro [`grift_macros::include_stdlib!`] generates the
 //! static entries and init code from `prelude.grift` at compile time.
 
-use grift_arena::ArenaIndex;
-
 use crate::lisp::Lisp;
 
 /// A single standard library entry: name + lambda source in static memory.
