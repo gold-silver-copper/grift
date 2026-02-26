@@ -3,9 +3,7 @@
 //! [`StdLibEntry`] holds a name and lambda source in static memory.
 //! [`StdLib`] is a thin wrapper used as a [`Value`] variant.
 //! The proc macro [`grift_macros::include_stdlib!`] generates the
-//! static entries and init code from `prelude.grift` at compile time.
-
-use grift_arena::ArenaIndex;
+//! static entries from `prelude.grift` at compile time.
 
 use crate::lisp::Lisp;
 

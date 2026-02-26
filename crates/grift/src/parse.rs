@@ -1,18 +1,14 @@
 //! S-expression parser.
 //!
 //! Defines the [`CharSource`] trait and a single generic parser that works
-//! with any character source: byte slices, I/O streams, or CharPair chains.
+//! with any character source: byte slices or CharPair chains.
 //!
-//! Three `CharSource` implementations cover all parsing needs:
+//! Two `CharSource` implementations cover all parsing needs:
 //! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, eval)
-//! - [`StreamSource`] for reading via [`IoState`] streams (stdin, file handles)
 //! - [`ChainSource`] for parsing existing `CharPair` chains (raw-read-string)
-
-use core::cell::RefCell;
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult};
 
-use crate::io::IoState;
 use crate::lisp::Lisp;
 use crate::value::Value;
 
@@ -76,32 +72,6 @@ impl CharSource for SliceSource<'_> {
         } else {
             None
         }
-    }
-}
-
-// ── StreamSource ──────────────────────────────────────────────────
-
-/// Character source backed by an [`IoState`] stream.
-///
-/// Reads characters from a specific stream number (0 = stdin, 3+ = file handles).
-pub(crate) struct StreamSource<'a> {
-    io: &'a RefCell<IoState>,
-    stream: u8,
-}
-
-impl<'a> StreamSource<'a> {
-    pub fn new(io: &'a RefCell<IoState>, stream: u8) -> Self {
-        StreamSource { io, stream }
-    }
-}
-
-impl CharSource for StreamSource<'_> {
-    fn read_char(&mut self) -> Option<char> {
-        (self.io.borrow().read_stream_char)(self.stream).ok()
-    }
-
-    fn peek_char(&mut self) -> Option<char> {
-        (self.io.borrow().peek_stream_char)(self.stream).ok()
     }
 }
 
