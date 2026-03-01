@@ -3,6 +3,7 @@ name = "grift_unicode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "unicode character operations for grift"
 repository = "https://github.com/gold-silver-copper/grift"
 documentation = "https://docs.rs/grift_unicode"

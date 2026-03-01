@@ -66,6 +66,11 @@ Rust stack (not the arena), triggered when occupancy exceeds 75%. Environments a
 the sole mutable type — pairs, symbols, strings, and combiners are all immutable
 once allocated. See [ARCHITECTURE.md](ARCHITECTURE.md) for full details.
 
+## Minimum Supported Rust Version
+
+The MSRV is **1.85** (edition 2024). This is tested in CI and specified
+via `rust-version` in `Cargo.toml`.
+
 ## Build
 
 ```bash

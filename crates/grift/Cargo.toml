@@ -3,6 +3,7 @@ name = "grift"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "A simple minimalistic Lisp built on the grift_arena allocator"
 
 [features]
