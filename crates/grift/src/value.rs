@@ -53,7 +53,7 @@ pub enum Value {
     Cons {
         /// Head element of the pair.
         car: ArenaIndex,
-        /// Tail element of the pair (next node in a list, or the value in a dotted pair).
+        /// Tail element of the pair (next `Cons` node in a proper list, `NIL` at the end, or any value in a dotted pair).
         cdr: ArenaIndex,
     },
     /// A character-pair node forming a linked list for strings.
@@ -68,7 +68,6 @@ pub enum Value {
     },
     /// Compound operative (vau closure / fexpr).
     /// Created by `(vau params env-param body)`.
-    /// `params_envparam` = `(params . env-param)`, `body_env` = `(body . closed-env)`
     Operative {
         /// Cons cell packing the formal parameter tree and environment parameter.
         params_envparam: ArenaIndex,
