@@ -1,26 +1,13 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 
-use core::cell::RefCell;
-
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::io::IoState;
 use crate::parse::SliceSource;
 use crate::value::Value;
-
-/// Maximum supported path length (in bytes) for file operations.
-const MAX_PATH_LEN: usize = 256;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
 /// The const generic `N` controls the arena capacity (number of slots).
-///
-/// # I/O Model
-///
-/// The interpreter stores an [`IoState`] in a [`RefCell`] for interior-
-/// mutable access from the `&self` eval loop.  Builtins borrow the state
-/// briefly per call and never hold the borrow across recursive eval/display
-/// walks.
 ///
 /// # Example
 ///
@@ -33,8 +20,6 @@ const MAX_PATH_LEN: usize = 256;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
-    /// I/O state, wrapped in a RefCell for interior mutability.
-    pub(crate) io: RefCell<IoState>,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -44,25 +29,13 @@ impl<const N: usize> Default for Lisp<N> {
 }
 
 impl<const N: usize> Lisp<N> {
-    /// Create a new Lisp interpreter with a null I/O state (no I/O).
+    /// Create a new Lisp interpreter.
     ///
     /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
     /// `#ignore`, the ground environment, a parents cell, the global
     /// environment, the GC root stack, and the symbol intern list so
     /// that returning these common values is allocation-free.
     pub fn new() -> Self {
-        Self::with_io(IoState::null())
-    }
-
-    /// Maximum supported path length (in bytes) for file operations.
-    ///
-    /// This is the size of the stack buffer used by [`with_path`](Self::with_path)
-    /// to collect a CharPair chain into a `&str` for I/O calls.
-    /// Paths exceeding this length will return `Err(InvalidArgument)`.
-    pub const MAX_PATH_LEN: usize = MAX_PATH_LEN;
-
-    /// Create a new Lisp interpreter with the given I/O state.
-    pub fn with_io(io: IoState) -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
             .alloc(Value::Nil)
@@ -99,7 +72,6 @@ impl<const N: usize> Lisp<N> {
 
         let lisp = Lisp {
             arena,
-            io: RefCell::new(io),
         };
 
         // Global env is a child of the ground env.
@@ -149,7 +121,36 @@ impl<const N: usize> Lisp<N> {
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
+        // Initialize stdlib (proc-macro-generated statics + constants).
+        lisp.init_stdlib();
+
         lisp
+    }
+
+    /// Bind all stdlib entries (proc-macro-generated statics + constants)
+    /// in the global environment.
+    fn init_stdlib(&self) {
+        use crate::stdlib::{STDLIB_ALL, init_stdlib_constants};
+
+        // Bind each stdlib function as an Applicative wrapping the StdLib value.
+        for &entry in STDLIB_ALL {
+            let stdlib_idx = self
+                .arena
+                .alloc(Value::StdLib(entry))
+                .expect("arena too small for stdlib");
+            let app_idx = self
+                .arena
+                .alloc(Value::Applicative(stdlib_idx))
+                .expect("arena too small for stdlib");
+            let sym = self
+                .symbol(entry.name())
+                .expect("arena too small for stdlib");
+            self.env_define(ArenaIndex::GLOBAL_ENV, sym, app_idx)
+                .expect("arena too small for stdlib");
+        }
+
+        // Bind stdlib constants (numbers, booleans, strings).
+        init_stdlib_constants(self);
     }
 
     // — Value constructors —
@@ -292,63 +293,6 @@ impl<const N: usize> Lisp<N> {
             .get(idx)
             .and_then(|v| v.as_symbol())
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
-    }
-
-    /// Collect a `CharPair` chain into a fixed-size UTF-8 byte buffer.
-    ///
-    /// Returns the number of bytes written.  If the chain contains more
-    /// characters than the buffer can hold, returns
-    /// `Err(InvalidArgument)`.
-    ///
-    /// # When to use
-    ///
-    /// Use this method **only** when a contiguous `&str` is required by a
-    /// downstream API (e.g. file-path arguments passed to I/O functions).
-    ///
-    /// If you only need to iterate over the characters of a `CharPair`
-    /// chain — for example to write them one at a time, compare them, or
-    /// transform them — prefer [`walk_chars`](Self::walk_chars) which
-    /// requires no intermediate buffer and has no length limit.
-    pub(crate) fn collect_string(
-        &self,
-        idx: ArenaIndex,
-        buf: &mut [u8],
-    ) -> ArenaResult<usize> {
-        let mut pos = 0;
-        let mut cur = idx;
-        while !cur.is_nil() {
-            let Value::CharPair { ch, cdr } = self.arena.get(cur)? else {
-                return Err(ArenaError::TypeError);
-            };
-            let len = ch.len_utf8();
-            if pos + len > buf.len() {
-                return Err(ArenaError::InvalidArgument);
-            }
-            ch.encode_utf8(&mut buf[pos..]);
-            pos += len;
-            cur = cdr;
-        }
-        Ok(pos)
-    }
-
-    /// Extract a file path from a CharPair chain and pass it to a closure.
-    ///
-    /// The path is collected into a [`MAX_PATH_LEN`](Self::MAX_PATH_LEN)-byte
-    /// stack-allocated buffer.
-    /// Returns `Err(InvalidArgument)` if the path exceeds this limit.
-    ///
-    /// This is an intentional fixed-size buffer: file paths are
-    /// inherently bounded, and the I/O function pointer APIs require `&str`.
-    /// All other buffers have been replaced with arena allocation
-    /// or streaming.
-    pub(crate) fn with_path<F, R>(&self, idx: ArenaIndex, f: F) -> ArenaResult<R>
-    where
-        F: FnOnce(&str) -> ArenaResult<R>,
-    {
-        let mut buf = [0u8; MAX_PATH_LEN];
-        let len = self.collect_string(idx, &mut buf)?;
-        let path = core::str::from_utf8(&buf[..len]).map_err(|_| ArenaError::InvalidArgument)?;
-        f(path)
     }
 
     /// Prepend a character to the front of a CharPair chain.
@@ -833,61 +777,6 @@ impl<const N: usize> Lisp<N> {
         Ok(result_idx)
     }
 
-    // — I/O integration —
-
-    /// Get a shared reference to the I/O state.
-    ///
-    /// Panics if the I/O state is currently borrowed mutably
-    /// (should never happen as builtins only borrow briefly).
-    pub fn io(&self) -> core::cell::Ref<'_, IoState> {
-        self.io.borrow()
-    }
-
-    /// Get a mutable reference to the I/O state.
-    ///
-    /// Panics if the I/O state is currently borrowed
-    /// (should never happen as builtins only borrow briefly).
-    pub fn io_mut(&self) -> core::cell::RefMut<'_, IoState> {
-        self.io.borrow_mut()
-    }
-
-    /// Write a value's display representation through an [`IoState`].
-    ///
-    /// Streams output directly through the I/O state — no intermediate buffer,
-    /// no size limit. Writes to stdout.
-    pub fn display_to_io(
-        &self,
-        idx: ArenaIndex,
-        io: &mut IoState,
-    ) -> crate::io::IoResult<()> {
-        self.fmt_to_io(idx, io, true)
-    }
-
-    /// Write a value's write (machine-readable) representation through an [`IoState`].
-    ///
-    /// Streams output directly through the I/O state — no intermediate buffer,
-    /// no size limit. Writes to stdout.
-    pub fn write_to_io(
-        &self,
-        idx: ArenaIndex,
-        io: &mut IoState,
-    ) -> crate::io::IoResult<()> {
-        self.fmt_to_io(idx, io, false)
-    }
-
-    /// Shared implementation for [`display_to_io`](Self::display_to_io) and
-    /// [`write_to_io`](Self::write_to_io).
-    fn fmt_to_io(
-        &self,
-        idx: ArenaIndex,
-        io: &mut IoState,
-        display: bool,
-    ) -> crate::io::IoResult<()> {
-        let mut w = IoFmtWriter { io, error: None };
-        let _ = self.fmt_value(idx, &mut w, display);
-        w.error.map_or(Ok(()), Err)
-    }
-
     // — Arena introspection —
 
     /// Return arena allocation statistics.
@@ -978,6 +867,7 @@ impl<const N: usize> Lisp<N> {
             }
             Ok(Value::Inert) => w.write_str("#inert"),
             Ok(Value::Ignore) => w.write_str("#ignore"),
+            Ok(Value::StdLib(s)) => write!(w, "<stdlib:{}>", s.name()),
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }
@@ -1027,35 +917,6 @@ impl<const N: usize> Lisp<N> {
     }
 }
 
-// ============================================================================
-// IoFmtWriter — bridges core::fmt::Write to an IoState
-// ============================================================================
-
-/// A [`core::fmt::Write`] adapter that streams formatted output through an
-/// [`IoState`]'s `write_stream` function pointer to stdout (stream 1).
-///
-/// Used by [`Lisp::display_to_io`] and [`Lisp::write_to_io`] to avoid
-/// intermediate buffers. Any I/O error is captured in `error` and causes
-/// subsequent writes to short-circuit.
-struct IoFmtWriter<'a> {
-    io: &'a mut IoState,
-    error: Option<crate::io::IoErrorKind>,
-}
-
-impl core::fmt::Write for IoFmtWriter<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        if self.error.is_some() {
-            return Err(core::fmt::Error);
-        }
-        if let Err(e) = (self.io.write_stream)(1, s) {
-            self.error = Some(e);
-            return Err(core::fmt::Error);
-        }
-        Ok(())
-    }
-}
-
-// ============================================================================
 // ============================================================================
 // ArenaWriter — core::fmt::Write that builds a CharPair chain in the arena
 // ============================================================================

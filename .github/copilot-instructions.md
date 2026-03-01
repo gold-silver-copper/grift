@@ -15,11 +15,9 @@ This is a Rust workspace containing a LISP implementation (named "Grift") built 
 
 2. **No unsafe code** - All crates use `#![forbid(unsafe_code)]`. Do not introduce `unsafe` blocks or functions.
 
-3. **Use the arena allocator** - All dynamic data structures must use `grift_arena` for allocation.
+3. **Use the arena allocator** - All dynamic data structures must use `grift_arena` for allocation. Do not use statically sized stack  buffers.
 
 4. **Core library only** - Use `core::` instead of `std::` in no_std crates (e.g., `core::cell::Cell`, `core::option::Option`).
-
-5. **Copy types** - Types stored in the arena must implement the `Copy` trait.
 
 6. **REPL is the exception** - The repl handles I/O and user interaction, so it may use the standard library.
 
