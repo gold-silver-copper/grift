@@ -28,9 +28,16 @@ jobs:
         run: >
           cargo build --target thumbv6m-none-eabi
           -p grift_arena
-          -p grift_core
-          -p grift_parser
-          -p grift_eval
+          -p grift_unicode
+
+  # Verify the workspace builds against the Minimum Supported Rust Version.
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo build --workspace
 
   build:
     name: Build
