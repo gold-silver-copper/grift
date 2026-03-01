@@ -11,7 +11,7 @@
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::lisp::{ArenaWriter, Lisp};
-use crate::parse::CharSource;
+use crate::parse::SliceSource;
 use crate::value::{BuiltinId, Value};
 
 /// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
@@ -168,7 +168,6 @@ define_builtins! {
         "let"    => op_let    => op_let,
         "vau"    => op_vau    => op_vau,
         "current-environment" => op_current_env => op_current_env,
-        "load"   => op_load   => op_load,
     }
     applicatives {
         "cons"   => bi_cons   => builtin_cons,
@@ -205,16 +204,6 @@ define_builtins! {
         "gc-collect" => bi_gc_collect => builtin_gc_collect,
         "error"    => bi_error    => builtin_error,
         "apply"    => bi_apply    => builtin_apply,
-        "raw-display"  => bi_raw_display  => builtin_raw_display,
-        "raw-write"    => bi_raw_write    => builtin_raw_write,
-        "raw-write-str" => bi_raw_write_str => builtin_raw_write_str,
-        "raw-read"          => bi_raw_read          => builtin_raw_read,
-        "raw-read-char"     => bi_raw_read_char     => builtin_raw_read_char,
-        "raw-peek-char"     => bi_raw_peek_char     => builtin_raw_peek_char,
-        "raw-open"          => bi_raw_open          => builtin_raw_open,
-        "raw-close"         => bi_raw_close         => builtin_raw_close,
-        "raw-file-exists?"  => bi_raw_file_existsp  => builtin_raw_file_existsp,
-        "raw-delete-file"   => bi_raw_delete_file   => builtin_raw_delete_file,
         "raw-read-string"   => bi_raw_read_string   => builtin_raw_read_string,
         "raw-display-to-string" => bi_raw_display_to_string => builtin_raw_display_to_string,
         "raw-write-to-string"   => bi_raw_write_to_string   => builtin_raw_write_to_string,
@@ -387,6 +376,14 @@ impl<const N: usize> Lisp<N> {
                             Value::Applicative(_) => {
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
+                            Value::StdLib(stdlib) => {
+                                let real = self.eval_stdlib_source(stdlib)?;
+                                let (body, op_env) =
+                                    self.invoke_operative(real, evaled_args, *env)?;
+                                *env = op_env;
+                                *expr = body;
+                                Ok(None)
+                            }
                             _ => Err(ArenaError::NotCallable),
                         }
                     }
@@ -418,6 +415,11 @@ impl<const N: usize> Lisp<N> {
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
+            Value::StdLib(stdlib) => {
+                let real = self.eval_stdlib_source(stdlib)?;
+                let (body, op_env) = self.invoke_operative(real, evaled_args, caller_env)?;
+                self.eval_expr(body, op_env)
+            }
             _ => Err(ArenaError::NotCallable),
         }
     }
@@ -438,6 +440,20 @@ impl<const N: usize> Lisp<N> {
             self.env_define(op_env, env_param, caller_env)?;
         }
         Ok((body, op_env))
+    }
+
+    /// Parse a stdlib lambda source and evaluate it to get the underlying operative.
+    ///
+    /// Called on demand each time a `StdLib` function is invoked.
+    /// The source is a lambda expression (e.g. `(lambda (x) (+ x 1))`)
+    /// which evaluates to an Applicative(Operative). We unwrap to get
+    /// the inner Operative for direct invocation.
+    fn eval_stdlib_source(&self, stdlib: crate::stdlib::StdLib) -> ArenaResult<ArenaIndex> {
+        let mut src = SliceSource::new(stdlib.source());
+        let lambda_expr = self.parse_expr(&mut src)?;
+        let app = self.eval_expr(lambda_expr, ArenaIndex::GLOBAL_ENV)?;
+        // lambda returns Applicative(Operative) — unwrap to get the operative
+        self.unwrap_applicative(app)
     }
 
     /// Recursively match a formal parameter tree `ptree` against a value `obj`
@@ -1137,141 +1153,6 @@ impl<const N: usize> Lisp<N> {
         self.map_list(list, |_, h| Ok(h))
     }
 
-    // ================================================================
-    // I/O builtins (stream-based model)
-    // ================================================================
-
-    /// Format a value to a stream. Shared by `raw-display` and `raw-write`.
-    fn stream_fmt(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        let rest = self.cdr(args)?;
-        let val = self.car(rest)?;
-        {
-            let mut w = crate::io::StreamWriter {
-                io: &self.io,
-                stream,
-                error: None,
-            };
-            let _ = self.fmt_value(val, &mut w, display);
-        }
-        Ok(val)
-    }
-
-    /// `(raw-display stream obj)` — write human-readable output to stream.
-    fn builtin_raw_display(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.stream_fmt(args, true)
-    }
-
-    /// `(raw-write stream obj)` — write machine-readable output to stream.
-    fn builtin_raw_write(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.stream_fmt(args, false)
-    }
-
-    /// `(raw-write-str stream str)` — write a CharPair chain to stream.
-    fn builtin_raw_write_str(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        let rest = self.cdr(args)?;
-        let str_idx = self.car(rest)?;
-        self.write_chars_to_stream(stream, str_idx)?;
-        Ok(ArenaIndex::INERT)
-    }
-
-    /// Walk a CharPair chain and write each character to a stream via I/O function pointers.
-    fn write_chars_to_stream(&self, stream: u8, mut idx: ArenaIndex) -> ArenaResult<()> {
-        while !idx.is_nil() {
-            let Value::CharPair { ch, cdr } = self.get(idx)? else {
-                return Err(ArenaError::TypeError);
-            };
-            let mut buf = [0u8; 4];
-            let s = ch.encode_utf8(&mut buf);
-            let _ = (self.io.borrow().write_stream)(stream, s);
-            idx = cdr;
-        }
-        Ok(())
-    }
-
-    /// `(raw-read stream)` — read one s-expression from stream.
-    /// Returns NIL at end-of-input.
-    fn builtin_raw_read(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        let mut src = crate::parse::StreamSource::new(&self.io, stream);
-        self.parse_expr(&mut src)
-    }
-
-    /// Convert an `IoResult<char>` to an arena value: CharPair on success,
-    /// NIL at EOF, or `IoError` on failure.
-    fn io_char_result(&self, result: crate::io::IoResult<char>) -> ArenaResult<ArenaIndex> {
-        match result {
-            Ok(c) => self.char_val(c),
-            Err(crate::io::IoErrorKind::Eof) => Ok(ArenaIndex::NIL),
-            Err(_) => Err(ArenaError::IoError),
-        }
-    }
-
-    /// `(raw-read-char stream)` — read one character from stream.
-    /// Returns a single CharPair or NIL at EOF.
-    fn builtin_raw_read_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        self.io_char_result((self.io.borrow().read_stream_char)(stream))
-    }
-
-    /// `(raw-peek-char stream)` — peek at next character on stream.
-    /// Returns a single CharPair or NIL at EOF.
-    fn builtin_raw_peek_char(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        self.io_char_result((self.io.borrow().peek_stream_char)(stream))
-    }
-
-    /// `(raw-open mode path)` — open a file, return stream number.
-    /// mode: 0 = read, 1 = write (create/truncate).
-    fn builtin_raw_open(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mode_idx = self.car(args)?;
-        let Value::Number(mode) = self.get(mode_idx)? else {
-            return Err(ArenaError::TypeError);
-        };
-        let rest = self.cdr(args)?;
-        let path_idx = self.car(rest)?;
-        self.with_path(path_idx, |path| {
-            let stream_id = (self.io.borrow().open_file)(path, mode as u8)
-                .map_err(|_| ArenaError::IoError)?;
-            self.number(stream_id as isize)
-        })
-    }
-
-    /// `(raw-close stream)` — close a dynamic stream.
-    fn builtin_raw_close(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stream_idx = self.car(args)?;
-        let stream = self.get_stream_number(stream_idx)?;
-        (self.io.borrow().close_stream)(stream)
-            .map_err(|_| ArenaError::IoError)?;
-        Ok(ArenaIndex::INERT)
-    }
-
-    /// `(raw-file-exists? path)` — check if a file exists.
-    fn builtin_raw_file_existsp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let path_idx = self.car(args)?;
-        self.with_path(path_idx, |path| {
-            match (self.io.borrow().file_exists)(path) {
-                Ok(exists) => Ok(ArenaIndex::from_bool(exists)),
-                Err(_) => Err(ArenaError::IoError),
-            }
-        })
-    }
-
-    /// `(raw-delete-file path)` — delete a file.
-    fn builtin_raw_delete_file(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let path_idx = self.car(args)?;
-        self.with_path(path_idx, |path| {
-            (self.io.borrow().delete_file)(path).map_err(|_| ArenaError::IoError)?;
-            Ok(ArenaIndex::INERT)
-        })
-    }
-
     /// `(raw-read-string str)` — parse one s-expression from a string.
     /// Returns the parsed value or NIL if the string is empty.
     fn builtin_raw_read_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
@@ -1302,17 +1183,6 @@ impl<const N: usize> Lisp<N> {
         self.fmt_to_string(args, false)
     }
 
-    /// Extract a stream number (u8) from a Number value.
-    fn get_stream_number(&self, idx: ArenaIndex) -> ArenaResult<u8> {
-        let Value::Number(n) = self.get(idx)? else {
-            return Err(ArenaError::TypeError);
-        };
-        if n < 0 || n > 255 {
-            return Err(ArenaError::InvalidArgument);
-        }
-        Ok(n as u8)
-    }
-
     /// `(error msg)` — signal an error.
     fn builtin_error(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Err(ArenaError::InvalidArgument)
@@ -1330,73 +1200,5 @@ impl<const N: usize> Lisp<N> {
             self.car(rest2)?
         };
         self.apply_combiner(combiner, arg_list, env)
-    }
-
-    // ================================================================
-    // Load operative
-    // ================================================================
-
-    /// `(load path)` — load and evaluate a file in the caller's environment.
-    ///
-    /// Evaluates its argument to get a path string, reads the file via
-    /// the I/O `open_file` function, parses all expressions, and evaluates
-    /// each in the caller's environment.
-    fn op_load(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail!({
-            let path_expr = self.car(args)?;
-            let path_val = self.eval_expr(path_expr, *env)?;
-            self.load_file(path_val, *env)
-        })
-    }
-
-    /// Load and evaluate expressions from a file path (CharPair chain).
-    ///
-    /// Opens the file via the I/O `open_file` function pointer, parses all s-expressions
-    /// from the stream, closes the stream, then evaluates each expression
-    /// in the given environment.
-    fn load_file(
-        &self,
-        path_val: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        // Open file for reading
-        let stream = self.with_path(path_val, |path| {
-            (self.io.borrow().open_file)(path, 0)
-                .map_err(|_| ArenaError::IoError)
-        })?;
-
-        // Parse all expressions from the stream
-        let parsed_exprs = {
-            let mut src = crate::parse::StreamSource::new(&self.io, stream);
-            let mut list = ArenaIndex::NIL;
-            loop {
-                self.skip_ws(&mut src);
-                if src.peek_char().is_none() {
-                    break;
-                }
-                let e = self.parse_expr(&mut src)?;
-                list = self.cons(e, list)?;
-            }
-            // Reverse so expressions are in order
-            self.reverse_chain(list)?
-        };
-
-        // Close the stream
-        let _ = (self.io.borrow().close_stream)(stream);
-
-        // Now evaluate each expression in the caller's env
-        let mut result = ArenaIndex::INERT;
-        let mut cur = parsed_exprs;
-        while !cur.is_nil() {
-            let e = self.car(cur)?;
-            result = self.eval_expr(e, env)?;
-            cur = self.cdr(cur)?;
-        }
-        Ok(result)
     }
 }

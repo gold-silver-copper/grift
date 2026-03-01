@@ -2,6 +2,8 @@
 
 use grift_arena::{ArenaError, ArenaIndex};
 
+use crate::stdlib::StdLib;
+
 /// Type-safe identifier for built-in functions.
 ///
 /// Wraps a `u8`, supporting up to 256 builtins. Generated automatically
@@ -61,6 +63,8 @@ pub enum Value {
     /// The ignore value, written `#ignore`.
     /// Used specifically for parameter matching in formal parameter trees.
     Ignore,
+    /// Standard library function (static memory, parsed on demand).
+    StdLib(StdLib),
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -94,6 +98,7 @@ impl Value {
             Value::Environment { .. } => "environment",
             Value::Inert => "inert",
             Value::Ignore => "ignore",
+            Value::StdLib(_) => "applicative",
         }
     }
 
@@ -119,6 +124,7 @@ impl Value {
                 | Value::CharPair { .. }
                 | Value::Inert
                 | Value::Ignore
+                | Value::StdLib(_)
         )
     }
 
@@ -158,6 +164,7 @@ impl core::fmt::Display for Value {
             Value::CharPair { .. } => f.write_str("<string>"),
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
+            Value::StdLib(s) => write!(f, "<stdlib:{}>", s.name()),
             _ => write!(f, "<{}>", self.type_name()),
         }
     }
@@ -172,7 +179,7 @@ macro_rules! impl_from_value {
     };
 }
 
-impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin);
+impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin, StdLib => StdLib);
 
 impl From<char> for Value {
     #[inline]
