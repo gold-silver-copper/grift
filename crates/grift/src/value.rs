@@ -117,6 +117,16 @@ macro_rules! value_accessor {
 
 impl Value {
     /// Returns the type name as a static string (for error messages).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Value;
+    ///
+    /// assert_eq!(Value::Number(42).type_name(), "number");
+    /// assert_eq!(Value::Nil.type_name(), "nil");
+    /// assert_eq!(Value::Boolean(true).type_name(), "boolean");
+    /// ```
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Nil => "nil",

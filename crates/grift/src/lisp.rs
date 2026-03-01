@@ -805,6 +805,22 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Use with [`write_value`](Self::write_value) to properly display the
     /// result, including walking symbol names, string contents, and lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] on parse or evaluation failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let idx = lisp.eval_to_index("(+ 10 20)").unwrap();
+    /// let mut buf = String::new();
+    /// lisp.write_value(idx, &mut buf).unwrap();
+    /// assert_eq!(buf, "30");
+    /// ```
     pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut src = SliceSource::new(input);
 
@@ -819,6 +835,17 @@ impl<const N: usize> Lisp<N> {
     // — Arena introspection —
 
     /// Return arena allocation statistics.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let stats = lisp.stats();
+    /// assert_eq!(stats.capacity, 20000);
+    /// assert!(stats.allocated > 0); // singletons + builtins
+    /// ```
     pub fn stats(&self) -> ArenaStats {
         self.arena.stats()
     }
@@ -841,6 +868,17 @@ impl<const N: usize> Lisp<N> {
     /// Run mark-and-sweep garbage collection with the given roots.
     ///
     /// Pass `&[]` to collect all unreachable objects.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// lisp.eval("(define! x 42)").unwrap();
+    /// let stats = lisp.collect_garbage(&[]);
+    /// assert!(stats.marked > 0);
+    /// ```
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
         self.collect_with_roots(roots)
     }
@@ -861,6 +899,18 @@ impl<const N: usize> Lisp<N> {
     /// Unlike `Value::Display`, this method has arena access and can walk
     /// `CharPair` chains to display full symbol names and string contents,
     /// and `Cons` chains to display proper/improper lists.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let idx = lisp.eval_to_index("(list 1 2 3)").unwrap();
+    /// let mut buf = String::new();
+    /// lisp.write_value(idx, &mut buf).unwrap();
+    /// assert_eq!(buf, "(1 2 3)");
+    /// ```
     pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }
