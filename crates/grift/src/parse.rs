@@ -27,6 +27,17 @@ pub(crate) trait CharSource {
     fn read_char(&mut self) -> Option<char>;
     /// Peek at the next character without consuming it, or `None` at end-of-input.
     fn peek_char(&mut self) -> Option<char>;
+    /// Return the current 1-based (line, column) position in the source.
+    ///
+    /// Returns `(0, 0)` when position tracking is not available
+    /// (e.g. when parsing from an arena chain).
+    fn position(&self) -> (u32, u32);
+}
+
+/// Build a [`ArenaError::ParseError`] carrying the current source position.
+fn parse_error(src: &impl CharSource) -> ArenaError {
+    let (line, col) = src.position();
+    ArenaError::ParseError { line, col }
 }
 
 // ── SliceSource ───────────────────────────────────────────────────
@@ -35,11 +46,13 @@ pub(crate) trait CharSource {
 pub(crate) struct SliceSource<'a> {
     input: &'a [u8],
     pos: usize,
+    line: u32,
+    col: u32,
 }
 
 impl<'a> SliceSource<'a> {
     pub fn new(input: &'a str) -> Self {
-        SliceSource { input: input.as_bytes(), pos: 0 }
+        SliceSource { input: input.as_bytes(), pos: 0, line: 1, col: 1 }
     }
 
     /// Returns `true` if there is remaining non-whitespace input.
@@ -49,10 +62,19 @@ impl<'a> SliceSource<'a> {
     pub fn has_more(&mut self) -> bool {
         while self.pos < self.input.len() {
             match self.input[self.pos] {
-                b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
+                b'\n' => {
+                    self.pos += 1;
+                    self.line += 1;
+                    self.col = 1;
+                }
+                b' ' | b'\t' | b'\r' => {
+                    self.pos += 1;
+                    self.col += 1;
+                }
                 b';' => {
                     while self.pos < self.input.len() && self.input[self.pos] != b'\n' {
                         self.pos += 1;
+                        self.col += 1;
                     }
                 }
                 _ => return true,
@@ -67,6 +89,12 @@ impl CharSource for SliceSource<'_> {
         if self.pos < self.input.len() {
             let ch = self.input[self.pos] as char;
             self.pos += 1;
+            if ch == '\n' {
+                self.line += 1;
+                self.col = 1;
+            } else {
+                self.col += 1;
+            }
             Some(ch)
         } else {
             None
@@ -79,6 +107,10 @@ impl CharSource for SliceSource<'_> {
         } else {
             None
         }
+    }
+
+    fn position(&self) -> (u32, u32) {
+        (self.line, self.col)
     }
 }
 
@@ -119,6 +151,10 @@ impl<const N: usize> CharSource for ChainSource<'_, N> {
             _ => None,
         }
     }
+
+    fn position(&self) -> (u32, u32) {
+        (0, 0)
+    }
 }
 
 // ── Unified parser (methods on Lisp) ──────────────────────────────
@@ -144,7 +180,7 @@ impl<const N: usize> Lisp<N> {
             '(' => self.parse_list(src),
             '\'' => self.parse_quote(src),
             '"' => self.parse_string(src),
-            ')' => Err(ArenaError::ParseError),
+            ')' => Err(parse_error(src)),
             _ => self.parse_atom_from(ch, src),
         }
     }
@@ -172,7 +208,7 @@ impl<const N: usize> Lisp<N> {
     fn parse_list(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
         self.skip_ws(src);
         match src.peek_char() {
-            None => return Err(ArenaError::ParseError), // unterminated
+            None => return Err(parse_error(src)), // unterminated
             Some(')') => {
                 src.read_char();
                 return Ok(ArenaIndex::NIL);
@@ -181,7 +217,7 @@ impl<const N: usize> Lisp<N> {
                 src.read_char(); // consume '.'
                 if src.peek_char().is_none_or(|c| is_delimiter(c)) {
                     // Dot separator at start of list — no car element.
-                    return Err(ArenaError::ParseError);
+                    return Err(parse_error(src));
                 }
                 // Symbol starting with '.'
                 let expr = self.parse_atom_from('.', src)?;
@@ -203,7 +239,7 @@ impl<const N: usize> Lisp<N> {
                 self.skip_ws(src);
                 match src.read_char() {
                     Some(')') => return self.cons(car, cdr),
-                    _ => return Err(ArenaError::ParseError),
+                    _ => return Err(parse_error(src)),
                 }
             }
             // Symbol starting with '.' in cdr position
@@ -232,10 +268,16 @@ impl<const N: usize> Lisp<N> {
     fn parse_string(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
         let mut head = ArenaIndex::NIL;
         loop {
-            let ch = src.read_char().ok_or(ArenaError::ParseError)?;
+            let ch = match src.read_char() {
+                Some(c) => c,
+                None => return Err(parse_error(src)),
+            };
             if ch == '"' { break; }
             let actual = if ch == '\\' {
-                let esc = src.read_char().ok_or(ArenaError::ParseError)?;
+                let esc = match src.read_char() {
+                    Some(c) => c,
+                    None => return Err(parse_error(src)),
+                };
                 match esc {
                     'n' => '\n',
                     't' => '\t',

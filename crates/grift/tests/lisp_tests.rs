@@ -4011,3 +4011,42 @@ fn test_stdlib_entries_exist() {
     assert!(names.contains(&"length"), "length should be in STDLIB_ALL");
     assert!(names.contains(&"append"), "append should be in STDLIB_ALL");
 }
+
+// ============================================================================
+// Parse Error Location Tests
+// ============================================================================
+
+#[test]
+fn test_parse_error_unmatched_close_paren() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval(")").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 2 });
+}
+
+#[test]
+fn test_parse_error_unterminated_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval("(+ 1 2").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
+}
+
+#[test]
+fn test_parse_error_unterminated_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval("\"hello").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
+}
+
+#[test]
+fn test_parse_error_multiline_location() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Unterminated list spanning multiple lines; error at EOF
+    let err = lisp.eval("(\n  +\n  1").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 3, col: 4 });
+}
+
+#[test]
+fn test_parse_error_display() {
+    let err = ArenaError::ParseError { line: 5, col: 10 };
+    assert_eq!(format!("{err}"), "Parse error at line 5, column 10");
+}
