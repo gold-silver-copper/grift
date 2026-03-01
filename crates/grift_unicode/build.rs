@@ -43,7 +43,6 @@ fn main() {
             .unwrap_or_else(|e| panic!("Invalid code point '{}': {}", parts[0].trim(), e));
 
         let mapping: Vec<u32> = parts[2]
-            .trim()
             .split_whitespace()
             .map(|s| u32::from_str_radix(s, 16)
                 .unwrap_or_else(|e| panic!("Invalid mapping code point '{}': {}", s, e)))
@@ -77,7 +76,7 @@ fn main() {
 
     for (cp, (mapping, comment)) in &entries {
         let len = mapping.len();
-        assert!(len >= 2 && len <= 3, "Unexpected mapping length {} for U+{:04X}", len, cp);
+        assert!((2..=3).contains(&len), "Unexpected mapping length {} for U+{:04X}", len, cp);
 
         let chars_str = if len == 2 {
             format!("['\\u{{{:04X}}}', '\\u{{{:04X}}}', '\\0']", mapping[0], mapping[1])

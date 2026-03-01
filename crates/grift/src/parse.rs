@@ -215,7 +215,7 @@ impl<const N: usize> Lisp<N> {
             }
             Some('.') => {
                 src.read_char(); // consume '.'
-                if src.peek_char().is_none_or(|c| is_delimiter(c)) {
+                if src.peek_char().is_none_or(is_delimiter) {
                     // Dot separator at start of list — no car element.
                     return Err(parse_error(src));
                 }
@@ -233,7 +233,7 @@ impl<const N: usize> Lisp<N> {
         self.skip_ws(src);
         if let Some('.') = src.peek_char() {
             src.read_char(); // consume '.'
-            if src.peek_char().is_none_or(|c| is_delimiter(c)) {
+            if src.peek_char().is_none_or(is_delimiter) {
                 // Dotted pair: (car . cdr)
                 let cdr = self.parse_expr(src)?;
                 self.skip_ws(src);
