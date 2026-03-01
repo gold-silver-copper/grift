@@ -321,7 +321,7 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
         self.arena
             .get(idx)
-            .and_then(|v| v.as_symbol())
+            .and_then(super::value::Value::as_symbol)
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 

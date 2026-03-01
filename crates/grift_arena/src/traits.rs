@@ -146,6 +146,6 @@ pub trait Trace<T: Copy, const N: usize> {
     ///
     /// The default implementation just calls `trace()`.
     fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &Arena<T, N>, tracer: F) {
-        self.trace(tracer)
+        self.trace(tracer);
     }
 }
