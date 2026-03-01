@@ -82,17 +82,17 @@
 
 // — Module Declarations —
 
-pub mod types;
-pub mod traits;
-pub mod stats;
 pub mod arena;
-pub mod iter;
 pub mod gc;
+pub mod iter;
+pub mod stats;
+pub mod traits;
+pub mod types;
 
 // — Re-exports —
 
-pub use types::{ArenaIndex, ArenaError, ArenaResult};
 pub use arena::Arena;
-pub use traits::{ArenaDelete, ArenaCopy, Trace};
-pub use stats::{ArenaStats, GcStats};
 pub use iter::ArenaIterator;
+pub use stats::{ArenaStats, GcStats};
+pub use traits::{ArenaCopy, ArenaDelete, Trace};
+pub use types::{ArenaError, ArenaIndex, ArenaResult};

@@ -210,9 +210,10 @@ fn digit_value_inner(c: char) -> Option<u32> {
     // by checking that zero-1 is not numeric (if zero > 0)
     if zero > 0
         && let Some(before_zero) = char::from_u32(zero - 1)
-            && before_zero.is_numeric() {
-                return None;
-            }
+        && before_zero.is_numeric()
+    {
+        return None;
+    }
     Some(val)
 }
 
@@ -241,7 +242,9 @@ pub fn full_downcase(c: char) -> CaseMapResult {
 pub fn full_foldcase(c: char) -> CaseMapResult {
     // Check the static table for full case folding expansion entries.
     // These come from Unicode CaseFolding.txt (status 'F').
-    if let Some(result) = lookup_full_casefold(c) { result } else {
+    if let Some(result) = lookup_full_casefold(c) {
+        result
+    } else {
         // Simple case fold: single character result
         let folded = char_foldcase(c);
         CaseMapResult {

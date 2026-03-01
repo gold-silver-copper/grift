@@ -226,6 +226,9 @@ impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin, StdLib 
 impl From<char> for Value {
     #[inline]
     fn from(v: char) -> Self {
-        Value::CharPair { ch: v, cdr: ArenaIndex::NIL }
+        Value::CharPair {
+            ch: v,
+            cdr: ArenaIndex::NIL,
+        }
     }
 }
