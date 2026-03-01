@@ -2,6 +2,23 @@
 //!
 //! This module contains the mark-and-sweep garbage collection logic
 //! for the arena allocator.
+//!
+//! ## Algorithm Overview
+//!
+//! 1. **Initialize roots** — each caller-supplied root is marked and
+//!    pushed onto a fixed-size mark stack allocated on the Rust stack.
+//! 2. **Mark phase** — iteratively pop entries from the mark stack,
+//!    call [`Trace::trace_with_arena`](crate::Trace::trace_with_arena)
+//!    to discover children, and mark/push any unmarked children. Children
+//!    are processed in batches of 16 to bound per-object stack usage.
+//! 3. **Sweep phase** — scan all slots; free any that are occupied but
+//!    unmarked.
+//!
+//! ## Complexity
+//!
+//! - **Time**: O(reachable + N) where N is arena capacity.
+//! - **Space**: O(N) for the mark bitmap and mark stack (both on the Rust
+//!   stack, not heap-allocated).
 
 use crate::traits::Trace;
 use crate::types::Slot;

@@ -1,9 +1,17 @@
 //! Iterator support for the arena.
+//!
+//! Provides [`ArenaIterator`], which yields `(ArenaIndex, T)` pairs
+//! for every currently occupied slot. Slots that are free are silently
+//! skipped, so the iterator produces exactly `arena.len()` items.
 
 use crate::{Arena, ArenaIndex};
 use crate::types::Slot;
 
 /// Iterator over allocated cells in the arena.
+///
+/// Created by [`Arena::iter`]. Visits slots in index order (0..N),
+/// skipping free slots. The iterator borrows the arena immutably, so
+/// allocations and frees must not occur while iterating.
 pub struct ArenaIterator<'a, T: Copy, const N: usize> {
     pub(crate) arena: &'a Arena<T, N>,
     pub(crate) current: usize,

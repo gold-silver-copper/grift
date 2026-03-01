@@ -1,19 +1,28 @@
 #![no_std]
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 //! # Fixed-Size Arena Allocator
 //!
-//! A minimal no-std, no-alloc arena allocator with fixed capacity.
+//! A minimal `no_std`, `no_alloc` arena allocator with fixed capacity,
+//! designed for embedded and resource-constrained environments where heap
+//! allocation is unavailable or undesirable.
 //!
 //! ## Features
 //!
-//! - **Fixed-size**: All memory pre-allocated at compile time
+//! - **Fixed-size**: All memory pre-allocated at compile time via const generics
 //! - **No-std, no-alloc**: Works in embedded environments with no heap
 //! - **Generic**: Works with any `Copy` type
 //! - **Interior mutability**: Safe access via `Cell` (no runtime borrow checking overhead)
 //! - **O(1) allocation**: Free-list based allocation and deallocation
 //! - **Mark-and-sweep GC**: Trait-based garbage collection via [`Trace`]
 //! - **Zero dependencies**: Only uses `core::cell::Cell`
+//!
+//! ## Safety Guarantees
+//!
+//! This crate uses `#![forbid(unsafe_code)]` — there is no `unsafe` anywhere
+//! in the implementation. Interior mutability is achieved through `Cell<T>`
+//! rather than raw pointers, and all indices are bounds-checked before access.
 //!
 //! ## Module Organization
 //!

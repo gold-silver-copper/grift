@@ -1,30 +1,59 @@
 //! Lisp value type.
+//!
+//! Defines the [`Value`] enum representing all first-class Lisp types,
+//! along with [`BuiltinId`] for identifying primitive operatives.
+//!
+//! ## Design Constraints
+//!
+//! Every `Value` variant fits in a single arena slot and may inline at
+//! most two `ArenaIndex`-sized fields. Larger structures (parameter
+//! trees, environment chains) are built as linked lists of `Cons` or
+//! `CharPair` nodes in the arena.
 
 use grift_arena::{ArenaError, ArenaIndex};
 
 use crate::stdlib::StdLib;
 
-/// Type-safe identifier for built-in functions.
+/// Type-safe identifier for built-in operatives and applicatives.
 ///
-/// Wraps a `u8`, supporting up to 256 builtins. Generated automatically
-/// by [`define_builtins!`] and matched in [`Evaluator::apply_builtin`].
+/// Wraps a `u8`, supporting up to 256 builtins. Constants are generated
+/// automatically by the `define_builtins!` macro and dispatched in
+/// `apply_operative_builtin` / `apply_builtin_pure`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct BuiltinId(pub(crate) u8);
 
-/// A Lisp value stored in the arena. Variants can only inline max two arenaindex sized data.
+/// A Lisp value stored in the arena.
+///
+/// Each variant is `Copy` and fits in a single arena slot (tag + at most
+/// two `ArenaIndex` fields ≈ 24 bytes).
+///
+/// # Invariants
+///
+/// - **Pre-allocated singletons**: Slots 0–4 always contain `Nil`, `#t`,
+///   `#f`, `#inert`, and `#ignore` respectively. Their [`ArenaIndex`]
+///   constants ([`ArenaIndex::NIL`], [`ArenaIndex::TRUE`], etc.) are
+///   compile-time values and must never be freed or overwritten.
+/// - **Immutable pairs**: `Cons` cells are logically immutable once created;
+///   there is no `set-car!` / `set-cdr!`. This simplifies GC and enables
+///   structural sharing.
+/// - **Interned symbols**: Two symbols with the same name always share the
+///   same `ArenaIndex`, so symbol equality is pointer equality.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// The empty list / nil.
     Nil,
+    /// Boolean value (`#t` or `#f`).
     Boolean(bool),
-    /// Integer number.
+    /// Integer number (machine-width signed integer).
     Number(isize),
     /// A symbol, pointing to the first `CharPair` node of its name.
     Symbol(ArenaIndex),
     /// A cons cell (pair) with inline car and cdr.
     Cons {
+        /// Head element of the pair.
         car: ArenaIndex,
+        /// Tail element of the pair (next node in a list, or the value in a dotted pair).
         cdr: ArenaIndex,
     },
     /// A character-pair node forming a linked list for strings.
@@ -32,14 +61,18 @@ pub enum Value {
     /// exactly as a list is a linked list of `Cons` nodes terminated by NIL.
     /// A single character is `CharPair { ch, cdr: NIL }` — a one-element string.
     CharPair {
+        /// The Unicode character stored at this position.
         ch: char,
+        /// Next `CharPair` node, or `NIL` for the last character.
         cdr: ArenaIndex,
     },
     /// Compound operative (vau closure / fexpr).
     /// Created by `(vau params env-param body)`.
-    /// params_envparam = (params . env-param), body_env = (body . closed-env)
+    /// `params_envparam` = `(params . env-param)`, `body_env` = `(body . closed-env)`
     Operative {
+        /// Cons cell packing the formal parameter tree and environment parameter.
         params_envparam: ArenaIndex,
+        /// Cons cell packing the body expression and the closed-over environment.
         body_env: ArenaIndex,
     },
     /// Applicative wrapper: evaluates arguments, then calls inner combiner.
@@ -51,10 +84,10 @@ pub enum Value {
     /// Applicative primitives (like +) are (wrap (Builtin id)) at init time.
     Builtin(BuiltinId),
     /// A first-class environment with lexical parent chain.
-    /// `bindings`: alist of (symbol . value) pairs in this frame.
-    /// `parents`: cons-list of parent environments, or NIL for top-level.
     Environment {
+        /// Alist of `(symbol . value)` pairs in this frame.
         bindings: ArenaIndex,
+        /// Cons-list of parent environments, or NIL for top-level.
         parents: ArenaIndex,
     },
     /// The inert value, written `#inert`.
