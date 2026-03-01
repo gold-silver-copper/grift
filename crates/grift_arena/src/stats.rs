@@ -1,4 +1,8 @@
 //! Statistics types for arena usage monitoring.
+//!
+//! Provides [`GcStats`] (returned by garbage collection) and
+//! [`ArenaStats`] (returned by [`Arena::stats`](crate::Arena::stats))
+//! for introspecting arena utilization, fragmentation, and GC efficiency.
 
 // — GcStats —
 

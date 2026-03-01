@@ -4,8 +4,15 @@
 //! with any character source: byte slices or CharPair chains.
 //!
 //! Two `CharSource` implementations cover all parsing needs:
-//! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, eval)
-//! - [`ChainSource`] for parsing existing `CharPair` chains (raw-read-string)
+//! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, `eval`)
+//! - [`ChainSource`] for parsing existing `CharPair` chains (`raw-read-string`)
+//!
+//! The parser is recursive-descent with support for:
+//! - Proper and dotted lists: `(a b c)`, `(a . b)`
+//! - Quote shorthand: `'x` → `(quote x)`
+//! - String literals with escape sequences: `"hello\n"`
+//! - Atoms: booleans (`#t`, `#f`), `#inert`, `#ignore`, integers, symbols
+//! - Line comments: `; comment`
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult};
 
