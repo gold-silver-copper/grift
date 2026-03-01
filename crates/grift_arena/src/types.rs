@@ -1,10 +1,10 @@
 //! Core types for the arena allocator.
 //!
 //! This module contains the fundamental types used throughout the arena:
-//! - [`ArenaIndex`] - Index into the arena
-//! - [`ArenaError`] - Error types for arena operations
-//! - [`ArenaResult`] - Result type alias
-//! - [`Slot`] - Internal slot representation
+//! - [`ArenaIndex`] — Lightweight index into the arena's slot array.
+//! - [`ArenaError`] — Enumeration of all failure modes (no heap-allocated messages).
+//! - [`ArenaResult`] — Result type alias (`Result<T, ArenaError>`).
+//! - [`Slot`] — Internal slot representation (free-list node or occupied value).
 
 // — ArenaIndex —
 

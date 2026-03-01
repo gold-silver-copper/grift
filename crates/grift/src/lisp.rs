@@ -1,4 +1,28 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
+//!
+//! [`Lisp`] is the top-level entry point for the interpreter. It owns the
+//! fixed-size [`Arena`](grift_arena::Arena), pre-allocates singleton values
+//! and environments, manages symbol interning, and exposes the public
+//! [`eval`](Lisp::eval) API.
+//!
+//! ## Slot Layout
+//!
+//! Slots 0–9 are reserved at construction time for well-known values
+//! whose [`ArenaIndex`](grift_arena::ArenaIndex) constants are compile-time
+//! values:
+//!
+//! | Slot | Contents |
+//! |------|----------|
+//! | 0 | `Nil` |
+//! | 1 | `Boolean(true)` |
+//! | 2 | `Boolean(false)` |
+//! | 3 | `Inert` |
+//! | 4 | `Ignore` |
+//! | 5 | Ground environment |
+//! | 6 | Parents cons cell (ground → global) |
+//! | 7 | Global environment |
+//! | 8 | GC root stack head |
+//! | 9 | Symbol intern list head |
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
@@ -35,6 +59,12 @@ impl<const N: usize> Lisp<N> {
     /// `#ignore`, the ground environment, a parents cell, the global
     /// environment, the GC root stack, and the symbol intern list so
     /// that returning these common values is allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `N < 10` or if the arena is too small to hold the
+    /// singleton values, builtin bindings, and standard library entries.
+    /// In practice `N` should be at least a few hundred.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
@@ -748,6 +778,15 @@ impl<const N: usize> Lisp<N> {
     /// Multiple expressions are evaluated in sequence and the result of the
     /// last one is returned.  The global environment persists across calls
     /// so that bindings made by `define!` survive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] on failure. Common variants include:
+    /// - [`ParseError`](ArenaError::ParseError) — malformed S-expression.
+    /// - [`UnboundVariable`](ArenaError::UnboundVariable) — undefined symbol.
+    /// - [`TypeError`](ArenaError::TypeError) — wrong type for an operation.
+    /// - [`OutOfMemory`](ArenaError::OutOfMemory) — arena exhausted even after GC.
+    /// - [`ArithmeticOverflow`](ArenaError::ArithmeticOverflow) — integer overflow.
     ///
     /// # Example
     ///

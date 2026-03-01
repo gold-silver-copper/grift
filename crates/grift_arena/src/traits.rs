@@ -1,9 +1,12 @@
 //! Trait definitions for arena operations.
 //!
-//! This module contains the traits used for arena functionality:
-//! - [`ArenaDelete`] - Recursive deletion support
-//! - [`ArenaCopy`] - Deep copy support
-//! - [`Trace`] - Garbage collection tracing
+//! This module contains the extension traits that add higher-level
+//! behaviour to arena-allocated values:
+//! - [`ArenaDelete`] — Recursive deletion of a value and its children.
+//! - [`ArenaCopy`] — Deep copy of a value and its children.
+//! - [`Trace`] — Garbage collection tracing: enumerates all
+//!   [`ArenaIndex`](crate::ArenaIndex) references inside a value so
+//!   the mark phase can discover the full object graph.
 
 use crate::{Arena, ArenaIndex, ArenaResult};
 
