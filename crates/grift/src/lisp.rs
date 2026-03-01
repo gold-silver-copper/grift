@@ -1,4 +1,28 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
+//!
+//! [`Lisp`] is the top-level entry point for the interpreter. It owns the
+//! fixed-size [`Arena`](grift_arena::Arena), pre-allocates singleton values
+//! and environments, manages symbol interning, and exposes the public
+//! [`eval`](Lisp::eval) API.
+//!
+//! ## Slot Layout
+//!
+//! Slots 0–9 are reserved at construction time for well-known values
+//! whose [`ArenaIndex`](grift_arena::ArenaIndex) constants are compile-time
+//! values:
+//!
+//! | Slot | Contents |
+//! |------|----------|
+//! | 0 | `Nil` |
+//! | 1 | `Boolean(true)` |
+//! | 2 | `Boolean(false)` |
+//! | 3 | `Inert` |
+//! | 4 | `Ignore` |
+//! | 5 | Ground environment |
+//! | 6 | Parents cons cell (ground → global) |
+//! | 7 | Global environment |
+//! | 8 | GC root stack head |
+//! | 9 | Symbol intern list head |
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
@@ -35,6 +59,12 @@ impl<const N: usize> Lisp<N> {
     /// `#ignore`, the ground environment, a parents cell, the global
     /// environment, the GC root stack, and the symbol intern list so
     /// that returning these common values is allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `N < 10` or if the arena is too small to hold the
+    /// singleton values, builtin bindings, and standard library entries.
+    /// In practice `N` should be at least a few hundred.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
@@ -749,6 +779,15 @@ impl<const N: usize> Lisp<N> {
     /// last one is returned.  The global environment persists across calls
     /// so that bindings made by `define!` survive.
     ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] on failure. Common variants include:
+    /// - [`ParseError`](ArenaError::ParseError) — malformed S-expression.
+    /// - [`UnboundVariable`](ArenaError::UnboundVariable) — undefined symbol.
+    /// - [`TypeError`](ArenaError::TypeError) — wrong type for an operation.
+    /// - [`OutOfMemory`](ArenaError::OutOfMemory) — arena exhausted even after GC.
+    /// - [`ArithmeticOverflow`](ArenaError::ArithmeticOverflow) — integer overflow.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -766,6 +805,22 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Use with [`write_value`](Self::write_value) to properly display the
     /// result, including walking symbol names, string contents, and lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] on parse or evaluation failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let idx = lisp.eval_to_index("(+ 10 20)").unwrap();
+    /// let mut buf = String::new();
+    /// lisp.write_value(idx, &mut buf).unwrap();
+    /// assert_eq!(buf, "30");
+    /// ```
     pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut src = SliceSource::new(input);
 
@@ -780,6 +835,17 @@ impl<const N: usize> Lisp<N> {
     // — Arena introspection —
 
     /// Return arena allocation statistics.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let stats = lisp.stats();
+    /// assert_eq!(stats.capacity, 20000);
+    /// assert!(stats.allocated > 0); // singletons + builtins
+    /// ```
     pub fn stats(&self) -> ArenaStats {
         self.arena.stats()
     }
@@ -802,6 +868,17 @@ impl<const N: usize> Lisp<N> {
     /// Run mark-and-sweep garbage collection with the given roots.
     ///
     /// Pass `&[]` to collect all unreachable objects.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// lisp.eval("(define! x 42)").unwrap();
+    /// let stats = lisp.collect_garbage(&[]);
+    /// assert!(stats.marked > 0);
+    /// ```
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
         self.collect_with_roots(roots)
     }
@@ -822,6 +899,18 @@ impl<const N: usize> Lisp<N> {
     /// Unlike `Value::Display`, this method has arena access and can walk
     /// `CharPair` chains to display full symbol names and string contents,
     /// and `Cons` chains to display proper/improper lists.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let idx = lisp.eval_to_index("(list 1 2 3)").unwrap();
+    /// let mut buf = String::new();
+    /// lisp.write_value(idx, &mut buf).unwrap();
+    /// assert_eq!(buf, "(1 2 3)");
+    /// ```
     pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }

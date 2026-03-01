@@ -1,6 +1,7 @@
 //! Core arena allocator implementation.
 //!
-//! This module contains the main [`Arena`] struct and its core operations.
+//! This module contains the main [`Arena`] struct and its core operations:
+//! allocation, deallocation, access, modification, iteration, and bulk queries.
 
 use core::cell::Cell;
 

@@ -1,12 +1,35 @@
 //! Strict Lisp evaluator with Kernel-style operative/applicative semantics.
 //!
 //! Evaluates arena-allocated S-expressions in an environment using
-//! call-by-value evaluation with tail-call optimization.
+//! call-by-value evaluation with tail-call optimization (TCO).
 //!
 //! Following Shutt's vau calculus (Kernel language), the combiner system
 //! is unified: the **operative** is the sole primitive, and the
 //! **applicative** is a derived wrapper that evaluates arguments before
 //! delegating to the wrapped combiner.
+//!
+//! ## Tail-Call Optimization
+//!
+//! The evaluator uses a *trampoline* loop: each iteration calls
+//! [`eval_step`](Lisp::eval_step), which either returns a final value
+//! (`Ok(Some(v))`), signals a tail call by mutating `expr`/`env` and
+//! returning `Ok(None)`, or propagates an error. This allows unbounded
+//! tail recursion without growing the Rust call stack.
+//!
+//! ## GC Integration
+//!
+//! Garbage collection is **demand-driven**: it is triggered only when an
+//! allocation returns [`ArenaError::OutOfMemory`]. On OOM the evaluator
+//! restores the GC root stack, runs a collection cycle, and retries.
+//! If the collection frees no memory, the OOM error propagates.
+//!
+//! ## Builtin Registration
+//!
+//! All builtins are declared in a single `define_builtins!` invocation
+//! which generates:
+//! - `BuiltinId` constants (a shared `u8` namespace)
+//! - `init_builtins` — binds each builtin in the ground environment
+//! - `apply_operative_builtin` / `apply_builtin_pure` — dispatch tables
 
 use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
