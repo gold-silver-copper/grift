@@ -590,15 +590,16 @@ impl<const N: usize> Lisp<N> {
 
             // Function shorthand: (define! (fn name params...) body...)
             if let Value::Cons { car, cdr } = self.get(definiend)?
-                && self.symbol_name_eq(car, "fn") {
-                    let name = self.car(cdr)?;
-                    let params = self.cdr(cdr)?;
-                    let body_list = self.cdr(args)?;
-                    let body = self.wrap_begin(body_list)?;
-                    let func = self.lambda(params, body, *env)?;
-                    self.env_define(*env, name, func)?;
-                    return Ok(ArenaIndex::INERT);
-                }
+                && self.symbol_name_eq(car, "fn")
+            {
+                let name = self.car(cdr)?;
+                let params = self.cdr(cdr)?;
+                let body_list = self.cdr(args)?;
+                let body = self.wrap_begin(body_list)?;
+                let func = self.lambda(params, body, *env)?;
+                self.env_define(*env, name, func)?;
+                return Ok(ArenaIndex::INERT);
+            }
 
             // Regular define! with ptree matching
             self.validate_ptree(definiend)?;
@@ -968,9 +969,10 @@ impl<const N: usize> Lisp<N> {
         let a = self.car_char(args)?;
         let b = self.cadr_char(args)?;
         if let Value::CharPair { ch, cdr } = self.get(a)?
-            && cdr.is_nil() {
-                return self.arena.alloc(Value::CharPair { ch, cdr: b });
-            }
+            && cdr.is_nil()
+        {
+            return self.arena.alloc(Value::CharPair { ch, cdr: b });
+        }
         self.cons(a, b)
     }
 

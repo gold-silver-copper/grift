@@ -9,8 +9,7 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
     let path_str = path_token.to_string();
     let path = path_str.trim_matches('"');
 
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let full_path = std::path::Path::new(&manifest_dir).join(path);
     let content = std::fs::read_to_string(&full_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", full_path.display(), e));
@@ -46,9 +45,7 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
     code.push_str("];\n\n");
 
     // Emit init_stdlib_constants function
-    code.push_str(
-        "pub(crate) fn init_stdlib_constants<const N: usize>(lisp: &Lisp<N>) {\n",
-    );
+    code.push_str("pub(crate) fn init_stdlib_constants<const N: usize>(lisp: &Lisp<N>) {\n");
     for c in &constants {
         match &c.value {
             ConstValue::Number(n) => {

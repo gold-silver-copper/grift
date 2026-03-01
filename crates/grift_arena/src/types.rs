@@ -131,7 +131,6 @@ impl ArenaIndex {
     pub const fn is_nil(self) -> bool {
         self.0 == 0
     }
-
 }
 
 impl Default for ArenaIndex {

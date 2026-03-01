@@ -50,7 +50,9 @@ fn main() {
                     Err(e) => eprintln!("error: {e:?}"),
                 }
             }
-            Err(rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof) => {
+            Err(
+                rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
+            ) => {
                 break;
             }
             Err(e) => {

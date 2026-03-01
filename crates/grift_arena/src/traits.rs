@@ -137,7 +137,7 @@ pub trait Trace<T: Copy, const N: usize> {
     /// Call `tracer` once for each `ArenaIndex` field in this value.
     /// The GC uses this to discover the object graph.
     fn trace<F: FnMut(ArenaIndex)>(&self, tracer: F);
-    
+
     /// Trace with arena access for types that store metadata in the arena.
     ///
     /// Some types (like arrays/strings that store their length in the arena)

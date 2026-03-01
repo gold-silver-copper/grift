@@ -52,7 +52,12 @@ pub(crate) struct SliceSource<'a> {
 
 impl<'a> SliceSource<'a> {
     pub fn new(input: &'a str) -> Self {
-        SliceSource { input: input.as_bytes(), pos: 0, line: 1, col: 1 }
+        SliceSource {
+            input: input.as_bytes(),
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     /// Returns `true` if there is remaining non-whitespace input.
@@ -189,7 +194,9 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn skip_ws(&self, src: &mut impl CharSource) {
         loop {
             match src.peek_char() {
-                Some(' ' | '\t' | '\n' | '\r') => { let _ = src.read_char(); }
+                Some(' ' | '\t' | '\n' | '\r') => {
+                    let _ = src.read_char();
+                }
                 Some(';') => {
                     let _ = src.read_char();
                     loop {
@@ -272,7 +279,9 @@ impl<const N: usize> Lisp<N> {
                 Some(c) => c,
                 None => return Err(parse_error(src)),
             };
-            if ch == '"' { break; }
+            if ch == '"' {
+                break;
+            }
             let actual = if ch == '\\' {
                 let esc = match src.read_char() {
                     Some(c) => c,

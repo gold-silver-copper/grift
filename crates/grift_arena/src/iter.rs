@@ -4,8 +4,8 @@
 //! for every currently occupied slot. Slots that are free are silently
 //! skipped, so the iterator produces exactly `arena.len()` items.
 
-use crate::{Arena, ArenaIndex};
 use crate::types::Slot;
+use crate::{Arena, ArenaIndex};
 
 /// Iterator over allocated cells in the arena.
 ///
