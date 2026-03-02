@@ -12,6 +12,7 @@
 
 use grift_arena::{ArenaError, ArenaIndex};
 
+use crate::native::NativeFn;
 use crate::stdlib::StdLib;
 
 /// Type-safe identifier for built-in operatives and applicatives.
@@ -39,7 +40,7 @@ pub struct BuiltinId(pub(crate) u8);
 ///   structural sharing.
 /// - **Interned symbols**: Two symbols with the same name always share the
 ///   same `ArenaIndex`, so symbol equality is pointer equality.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Value {
     /// The empty list / nil.
     Nil,
@@ -97,6 +98,55 @@ pub enum Value {
     Ignore,
     /// Standard library function (static memory, parsed on demand).
     StdLib(StdLib),
+    /// User-registered native function (Rust function pointer).
+    /// Always wrapped in an `Applicative` when registered. The function
+    /// pointer is stored directly, with no const generic dependency.
+    Native(NativeFn),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Nil, Value::Nil) => true,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::Symbol(a), Value::Symbol(b)) => a == b,
+            (Value::Cons { car: a1, cdr: a2 }, Value::Cons { car: b1, cdr: b2 }) => {
+                a1 == b1 && a2 == b2
+            }
+            (Value::CharPair { ch: a, cdr: a2 }, Value::CharPair { ch: b, cdr: b2 }) => {
+                a == b && a2 == b2
+            }
+            (
+                Value::Operative {
+                    params_envparam: a1,
+                    body_env: a2,
+                },
+                Value::Operative {
+                    params_envparam: b1,
+                    body_env: b2,
+                },
+            ) => a1 == b1 && a2 == b2,
+            (Value::Applicative(a), Value::Applicative(b)) => a == b,
+            (Value::Builtin(a), Value::Builtin(b)) => a == b,
+            (
+                Value::Environment {
+                    bindings: a1,
+                    parents: a2,
+                },
+                Value::Environment {
+                    bindings: b1,
+                    parents: b2,
+                },
+            ) => a1 == b1 && a2 == b2,
+            (Value::Inert, Value::Inert) => true,
+            (Value::Ignore, Value::Ignore) => true,
+            (Value::StdLib(a), Value::StdLib(b)) => a == b,
+            #[allow(unpredictable_function_pointer_comparisons)]
+            (Value::Native(a), Value::Native(b)) => core::ptr::fn_addr_eq(*a, *b),
+            _ => false,
+        }
+    }
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -141,6 +191,7 @@ impl Value {
             Value::Inert => "inert",
             Value::Ignore => "ignore",
             Value::StdLib(_) => "applicative",
+            Value::Native(_) => "native",
         }
     }
 
@@ -167,6 +218,7 @@ impl Value {
                 | Value::Inert
                 | Value::Ignore
                 | Value::StdLib(_)
+                | Value::Native(_)
         )
     }
 
@@ -207,6 +259,7 @@ impl core::fmt::Display for Value {
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
             Value::StdLib(s) => write!(f, "<stdlib:{}>", s.name()),
+            Value::Native(_) => f.write_str("<native>"),
             _ => write!(f, "<{}>", self.type_name()),
         }
     }
