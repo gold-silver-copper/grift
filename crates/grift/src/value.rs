@@ -23,6 +23,14 @@ use crate::stdlib::StdLib;
 #[repr(transparent)]
 pub struct BuiltinId(pub(crate) u8);
 
+/// Type-safe identifier for user-registered native functions.
+///
+/// Wraps a `u8`, indexing into the native function table stored in
+/// [`Lisp`](crate::Lisp). Supports up to 64 registered native functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct NativeId(pub(crate) u8);
+
 /// A Lisp value stored in the arena.
 ///
 /// Each variant is `Copy` and fits in a single arena slot (tag + at most
@@ -97,6 +105,10 @@ pub enum Value {
     Ignore,
     /// Standard library function (static memory, parsed on demand).
     StdLib(StdLib),
+    /// User-registered native function (Rust function pointer).
+    /// Always wrapped in an `Applicative` when registered. The `NativeId`
+    /// indexes into the native function table stored in [`Lisp`](crate::Lisp).
+    Native(NativeId),
 }
 
 /// Generate a `Value` accessor that pattern-matches on a variant and
@@ -141,6 +153,7 @@ impl Value {
             Value::Inert => "inert",
             Value::Ignore => "ignore",
             Value::StdLib(_) => "applicative",
+            Value::Native(_) => "native",
         }
     }
 
@@ -167,6 +180,7 @@ impl Value {
                 | Value::Inert
                 | Value::Ignore
                 | Value::StdLib(_)
+                | Value::Native(_)
         )
     }
 
@@ -207,6 +221,7 @@ impl core::fmt::Display for Value {
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
             Value::StdLib(s) => write!(f, "<stdlib:{}>", s.name()),
+            Value::Native(id) => write!(f, "<native:{}>", id.0),
             _ => write!(f, "<{}>", self.type_name()),
         }
     }
