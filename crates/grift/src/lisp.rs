@@ -26,6 +26,7 @@
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
+use crate::native::{LispOps, NativeFn};
 use crate::parse::SliceSource;
 use crate::value::Value;
 
@@ -100,7 +101,9 @@ impl<const N: usize> Lisp<N> {
             "GROUND_ENV must be slot 5"
         );
 
-        let lisp = Lisp { arena };
+        let lisp = Lisp {
+            arena,
+        };
 
         // Global env is a child of the ground env.
         let parents = lisp
@@ -179,6 +182,50 @@ impl<const N: usize> Lisp<N> {
 
         // Bind stdlib constants (numbers, booleans, strings).
         init_stdlib_constants(self);
+    }
+
+    // — Native function registration —
+
+    /// Register a native Rust function as a Lisp applicative.
+    ///
+    /// The function is bound in the global environment under the given `name`.
+    /// It receives already-evaluated arguments as a cons-list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError::OutOfMemory`] if arena allocation fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::{Lisp, Value, ArenaIndex, ArenaResult, LispOps};
+    ///
+    /// fn my_double(
+    ///     lisp: &dyn LispOps,
+    ///     args: ArenaIndex,
+    /// ) -> ArenaResult<ArenaIndex> {
+    ///     let (a, _) = grift::extract_arg::<isize>(lisp, args)?;
+    ///     lisp.number(a * 2)
+    /// }
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// lisp.register_native("double", my_double).unwrap();
+    /// assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
+    /// ```
+    pub fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
+        let sym = self.symbol(name)?;
+        let native_val = self.arena.alloc(Value::Native(f))?;
+        let wrapped = self.wrap(native_val)?;
+        self.env_define(ArenaIndex::GLOBAL_ENV, sym, wrapped)
+    }
+
+    /// Call a native function pointer.
+    pub(crate) fn call_native(
+        &self,
+        f: NativeFn,
+        args: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        f(self, args)
     }
 
     // — Value constructors —
@@ -920,7 +967,7 @@ impl<const N: usize> Lisp<N> {
     /// lisp.write_value(idx, &mut buf).unwrap();
     /// assert_eq!(buf, "(1 2 3)");
     /// ```
-    pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+    pub fn write_value(&self, idx: ArenaIndex, w: &mut (impl core::fmt::Write + ?Sized)) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }
 
@@ -931,7 +978,7 @@ impl<const N: usize> Lisp<N> {
     pub fn display_value(
         &self,
         idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
     ) -> core::fmt::Result {
         self.fmt_value(idx, w, true)
     }
@@ -942,7 +989,7 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn fmt_value(
         &self,
         idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
         display: bool,
     ) -> core::fmt::Result {
         match self.arena.get(idx) {
@@ -981,7 +1028,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Walk a CharPair chain, emitting each character via a closure.
-    fn walk_chars<W: core::fmt::Write>(
+    fn walk_chars<W: core::fmt::Write + ?Sized>(
         &self,
         mut idx: ArenaIndex,
         w: &mut W,
@@ -1003,7 +1050,7 @@ impl<const N: usize> Lisp<N> {
     fn fmt_list_tail(
         &self,
         mut idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
         display: bool,
     ) -> core::fmt::Result {
         while !idx.is_nil() {
@@ -1021,6 +1068,111 @@ impl<const N: usize> Lisp<N> {
             }
         }
         Ok(())
+    }
+}
+
+// ============================================================================
+// LispOps trait implementation — delegates to inherent methods to erase `N`
+// ============================================================================
+
+impl<const N: usize> LispOps for Lisp<N> {
+    #[inline]
+    fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
+        self.number(n)
+    }
+    #[inline]
+    fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cons(car, cdr)
+    }
+    #[inline]
+    fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
+        self.char_val(c)
+    }
+    #[inline]
+    fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        self.symbol(name)
+    }
+    #[inline]
+    fn get(&self, idx: ArenaIndex) -> ArenaResult<Value> {
+        self.get(idx)
+    }
+    #[inline]
+    fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(idx)
+    }
+    #[inline]
+    fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cdr_char(idx)
+    }
+    #[inline]
+    fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cadr_char(idx)
+    }
+    #[inline]
+    fn lambda(
+        &self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.lambda(params, body, env)
+    }
+    #[inline]
+    fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.wrap(combiner)
+    }
+    #[inline]
+    fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.unwrap_applicative(idx)
+    }
+    #[inline]
+    fn vau(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.vau(params, env_param, body, env)
+    }
+    #[inline]
+    fn vau_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        self.vau_parts(idx)
+    }
+    #[inline]
+    fn eval(&self, input: &str) -> Result<Value, ArenaError> {
+        self.eval(input)
+    }
+    #[inline]
+    fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index(input)
+    }
+    #[inline]
+    fn stats(&self) -> ArenaStats {
+        self.stats()
+    }
+    #[inline]
+    fn baseline_allocated(&self) -> usize {
+        self.baseline_allocated()
+    }
+    #[inline]
+    fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
+        self.collect_garbage(roots)
+    }
+    #[inline]
+    fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, false)
+    }
+    #[inline]
+    fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, true)
+    }
+    #[inline]
+    fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
+        self.register_native(name, f)
     }
 }
 
