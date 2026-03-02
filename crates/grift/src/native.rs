@@ -50,10 +50,25 @@ pub type NativeFn = fn(&dyn LispOps, ArenaIndex) -> ArenaResult<ArenaIndex>;
 pub trait LispOps {
     /// Allocate a number value.
     fn number(&self, n: isize) -> ArenaResult<ArenaIndex>;
+    /// Return the `ArenaIndex` for a boolean (`#t` or `#f`).
+    ///
+    /// Booleans are pre-allocated singletons, so this never allocates
+    /// and cannot fail.
+    fn boolean(&self, b: bool) -> ArenaIndex;
+    /// Return the `ArenaIndex` for nil (the empty list).
+    ///
+    /// Nil is a pre-allocated singleton, so this never allocates
+    /// and cannot fail.
+    fn nil(&self) -> ArenaIndex;
     /// Allocate a cons cell.
     fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex>;
     /// Allocate a character (one-element string).
     fn char_val(&self, c: char) -> ArenaResult<ArenaIndex>;
+    /// Allocate a string from a `&str`.
+    ///
+    /// Strings are stored as a linked list of `CharPair` nodes in the arena.
+    /// An empty string is represented as nil.
+    fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex>;
     /// Allocate (or retrieve an interned) symbol by name.
     fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex>;
     /// Get the value at an arena index.
@@ -104,11 +119,15 @@ pub trait LispOps {
     fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result;
     /// Register a native Rust function as a Lisp applicative.
     fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()>;
+    /// Define a value in the global environment under the given symbol.
+    ///
+    /// `sym` must be a valid symbol `ArenaIndex` (e.g. from [`symbol`](Self::symbol)).
+    fn define_global(&self, sym: ArenaIndex, value: ArenaIndex) -> ArenaResult<()>;
 }
 
 /// Trait for converting a Lisp value to a Rust type.
 ///
-/// Implemented for common types (`isize`, `bool`, `ArenaIndex`).
+/// Implemented for common types (`isize`, `bool`, `char`, `ArenaIndex`).
 /// Users can implement this trait for custom types.
 pub trait FromLisp: Sized {
     /// Convert a Lisp value at the given arena index to this Rust type.
@@ -117,7 +136,7 @@ pub trait FromLisp: Sized {
 
 /// Trait for converting a Rust value to a Lisp arena value.
 ///
-/// Implemented for common types (`isize`, `bool`, `ArenaIndex`, `()`).
+/// Implemented for common types (`isize`, `bool`, `char`, `ArenaIndex`, `()`).
 /// Users can implement this trait for custom types.
 pub trait ToLisp {
     /// Allocate this value in the Lisp arena and return its index.
@@ -146,6 +165,16 @@ impl FromLisp for ArenaIndex {
     #[inline]
     fn from_lisp(_lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self> {
         Ok(idx)
+    }
+}
+
+impl FromLisp for char {
+    #[inline]
+    fn from_lisp(lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self> {
+        match lisp.get(idx)? {
+            Value::CharPair { ch, cdr } if cdr.is_nil() => Ok(ch),
+            _ => Err(ArenaError::TypeError),
+        }
     }
 }
 
@@ -178,6 +207,13 @@ impl ToLisp for () {
     #[inline]
     fn to_lisp(&self, _lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
         Ok(ArenaIndex::INERT)
+    }
+}
+
+impl ToLisp for char {
+    #[inline]
+    fn to_lisp(&self, lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
+        lisp.char_val(*self)
     }
 }
 
