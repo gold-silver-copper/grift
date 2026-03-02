@@ -1072,7 +1072,7 @@ impl<const N: usize> Lisp<N> {
 }
 
 // ============================================================================
-// LispOps trait implementation
+// LispOps trait implementation — delegates to inherent methods to erase `N`
 // ============================================================================
 
 impl<const N: usize> LispOps for Lisp<N> {
