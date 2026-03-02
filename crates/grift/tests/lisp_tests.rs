@@ -4135,3 +4135,215 @@ fn test_parse_error_display() {
     let err = ArenaError::ParseError { line: 5, col: 10 };
     assert_eq!(format!("{err}"), "Parse error at line 5, column 10");
 }
+
+// ============================================================================
+// Native Function Registration Tests
+// ============================================================================
+
+use grift::{ArenaIndex, ArenaResult, register_native};
+
+// — Manual native function (no macro) —
+
+fn native_double<const N: usize>(
+    lisp: &Lisp<N>,
+    args: ArenaIndex,
+) -> ArenaResult<ArenaIndex> {
+    let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
+    lisp.number(n * 2)
+}
+
+#[test]
+fn test_register_native_manual() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_register_native_manual_negative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    assert_eq!(lisp.eval("(double -5)"), Ok(Value::Number(-10)));
+}
+
+// — Macro-generated native functions —
+
+register_native!(native_add3, (a: isize, b: isize, c: isize) -> isize, {
+    a + b + c
+});
+
+#[test]
+fn test_register_native_macro_three_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("add3", native_add3).unwrap();
+    assert_eq!(lisp.eval("(add3 1 2 3)"), Ok(Value::Number(6)));
+}
+
+register_native!(native_negate, (n: isize) -> isize, { -n });
+
+#[test]
+fn test_register_native_macro_single_arg() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("negate", native_negate).unwrap();
+    assert_eq!(lisp.eval("(negate 42)"), Ok(Value::Number(-42)));
+}
+
+register_native!(native_is_positive, (n: isize) -> bool, { n > 0 });
+
+#[test]
+fn test_register_native_returns_bool() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("positive?", native_is_positive).unwrap();
+    assert_eq!(lisp.eval("(positive? 5)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(positive? -3)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(positive? 0)"), Ok(Value::Boolean(false)));
+}
+
+register_native!(native_bool_and, (a: bool, b: bool) -> bool, { a && b });
+
+#[test]
+fn test_register_native_bool_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("bool-and", native_bool_and).unwrap();
+    assert_eq!(lisp.eval("(bool-and #t #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(bool-and #t #f)"), Ok(Value::Boolean(false)));
+}
+
+register_native!(native_forty_two, () -> isize, { 42 });
+
+#[test]
+fn test_register_native_zero_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("forty-two", native_forty_two).unwrap();
+    assert_eq!(lisp.eval("(forty-two)"), Ok(Value::Number(42)));
+}
+
+// — With-lisp variant —
+
+register_native!(native_identity, (x: ArenaIndex) -> ArenaIndex, |_lisp, _args| {
+    x
+});
+
+#[test]
+fn test_register_native_with_lisp_identity() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("identity", native_identity).unwrap();
+    assert_eq!(lisp.eval("(identity 99)"), Ok(Value::Number(99)));
+    assert_eq!(lisp.eval("(identity #t)"), Ok(Value::Boolean(true)));
+}
+
+// — Native functions with Lisp builtins —
+
+#[test]
+fn test_native_composed_with_builtins() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    assert_eq!(lisp.eval("(+ (double 3) (double 4))"), Ok(Value::Number(14)));
+}
+
+#[test]
+fn test_native_in_lambda() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    assert_eq!(
+        lisp.eval("(define! (fn apply-twice f x) (f (f x))) (apply-twice double 3)"),
+        Ok(Value::Number(12))
+    );
+}
+
+#[test]
+fn test_native_in_higher_order() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    let idx = lisp.eval_to_index("(map double (list 1 2 3))").unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    assert_eq!(buf, "(2 4 6)");
+}
+
+#[test]
+fn test_native_type_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    // Passing a boolean to a function expecting isize should error
+    assert_eq!(lisp.eval("(double #t)"), Err(ArenaError::TypeError));
+}
+
+#[test]
+fn test_native_too_few_args() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("add3", native_add3).unwrap();
+    // Only 2 args for a 3-arg function
+    assert_eq!(lisp.eval("(add3 1 2)"), Err(ArenaError::TypeError));
+}
+
+#[test]
+fn test_multiple_natives_registered() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("double", native_double).unwrap();
+    lisp.register_native("negate", native_negate).unwrap();
+    lisp.register_native("add3", native_add3).unwrap();
+    assert_eq!(lisp.eval("(add3 (double 1) (negate 2) 3)"), Ok(Value::Number(3)));
+}
+
+// — Bit manipulation examples from the problem statement —
+
+register_native!(native_bit_set, (value: isize, bit: isize) -> bool, {
+    if (0..64).contains(&bit) {
+        (value & (1isize << bit)) != 0
+    } else {
+        false
+    }
+});
+
+register_native!(native_bit_extract, (value: isize, start: isize, width: isize) -> isize, {
+    if (0..64).contains(&start) && width > 0 && width <= 64 && (start + width) <= 64 {
+        let mask = if width >= 64 { !0isize } else { (1isize << width) - 1 };
+        (value >> start) & mask
+    } else {
+        0isize
+    }
+});
+
+#[test]
+fn test_native_bit_set() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("bit-set?", native_bit_set).unwrap();
+    assert_eq!(lisp.eval("(bit-set? 5 0)"), Ok(Value::Boolean(true)));  // 5 = 101, bit 0 set
+    assert_eq!(lisp.eval("(bit-set? 5 1)"), Ok(Value::Boolean(false))); // bit 1 not set
+    assert_eq!(lisp.eval("(bit-set? 5 2)"), Ok(Value::Boolean(true)));  // bit 2 set
+}
+
+#[test]
+fn test_native_bit_extract() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("bit-extract", native_bit_extract).unwrap();
+    // Extract bits 0-3 from 0xFF (255): should get 0xF (15)
+    assert_eq!(lisp.eval("(bit-extract 255 0 4)"), Ok(Value::Number(15)));
+    // Extract bits 4-7 from 0xFF: should get 0xF (15)
+    assert_eq!(lisp.eval("(bit-extract 255 4 4)"), Ok(Value::Number(15)));
+}
+
+// — GC interaction test —
+
+register_native!(native_alloc_pair, () -> isize, { 0 });
+
+#[test]
+fn test_native_survives_gc() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("native-zero", native_alloc_pair).unwrap();
+    // Force GC, then call native
+    lisp.eval("(gc-collect)").unwrap();
+    assert_eq!(lisp.eval("(native-zero)"), Ok(Value::Number(0)));
+}
+
+// — Unit return type test —
+
+register_native!(native_noop, () -> (), { () });
+
+#[test]
+fn test_register_native_unit_return() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("noop", native_noop).unwrap();
+    assert_eq!(lisp.eval("(noop)"), Ok(Value::Inert));
+}
