@@ -1,22 +1,22 @@
-;; Grift Standard Library Prelude
-;; This file is read at compile time by the include_stdlib! proc macro.
-;; Function definitions become StdLib statics (parsed on demand).
+;; Grift Prelude
+;; This file is read at compile time by the include_prelude! proc macro.
+;; Function definitions become Prelude statics (parsed on demand).
 ;; Constants become Rust init code (bound at startup).
 
 ;; Functions
-(define! (fn map f lst)
+(fn! map (f lst)
   (if (null? lst) ()
     (cons (f (car lst)) (map f (cdr lst)))))
 
-(define! (fn filter pred lst)
+(fn! filter (pred lst)
   (if (null? lst) ()
     (if (pred (car lst))
       (cons (car lst) (filter pred (cdr lst)))
       (filter pred (cdr lst)))))
 
-(define! (fn length lst)
+(fn! length (lst)
   (if (null? lst) 0 (+ 1 (length (cdr lst)))))
 
-(define! (fn append a b)
+(fn! append (a b)
   (if (null? a) b
     (cons (car a) (append (cdr a) b))))

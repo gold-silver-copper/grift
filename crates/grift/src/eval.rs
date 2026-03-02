@@ -182,6 +182,7 @@ define_builtins! {
         "quote"  => op_quote  => op_quote,
         "if"     => op_if     => op_if,
         "define!" => op_define => op_define,
+        "fn!"    => op_fn_define => op_fn_define,
         "set!"   => op_set    => op_set,
         "lambda" => op_lambda => op_lambda,
         "begin"  => op_begin  => op_begin,
@@ -399,8 +400,8 @@ impl<const N: usize> Lisp<N> {
                             Value::Applicative(_) => {
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
-                            Value::StdLib(stdlib) => {
-                                let real = self.eval_stdlib_source(stdlib)?;
+                            Value::Prelude(prelude) => {
+                                let real = self.eval_prelude_source(prelude)?;
                                 let (body, op_env) =
                                     self.invoke_operative(real, evaled_args, *env)?;
                                 *env = op_env;
@@ -442,8 +443,8 @@ impl<const N: usize> Lisp<N> {
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
             Value::Native(f) => self.call_native(f, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
-            Value::StdLib(stdlib) => {
-                let real = self.eval_stdlib_source(stdlib)?;
+            Value::Prelude(prelude) => {
+                let real = self.eval_prelude_source(prelude)?;
                 let (body, op_env) = self.invoke_operative(real, evaled_args, caller_env)?;
                 self.eval_expr(body, op_env)
             }
@@ -469,14 +470,14 @@ impl<const N: usize> Lisp<N> {
         Ok((body, op_env))
     }
 
-    /// Parse a stdlib lambda source and evaluate it to get the underlying operative.
+    /// Parse a prelude lambda source and evaluate it to get the underlying operative.
     ///
-    /// Called on demand each time a `StdLib` function is invoked.
+    /// Called on demand each time a `Prelude` function is invoked.
     /// The source is a lambda expression (e.g. `(lambda (x) (+ x 1))`)
     /// which evaluates to an Applicative(Operative). We unwrap to get
     /// the inner Operative for direct invocation.
-    fn eval_stdlib_source(&self, stdlib: crate::stdlib::StdLib) -> ArenaResult<ArenaIndex> {
-        let mut src = SliceSource::new(stdlib.source());
+    fn eval_prelude_source(&self, prelude: crate::prelude::Prelude) -> ArenaResult<ArenaIndex> {
+        let mut src = SliceSource::new(prelude.source());
         let lambda_expr = self.parse_expr(&mut src)?;
         let app = self.eval_expr(lambda_expr, ArenaIndex::GLOBAL_ENV)?;
         // lambda returns Applicative(Operative) — unwrap to get the operative
@@ -573,10 +574,8 @@ impl<const N: usize> Lisp<N> {
     /// (a formal parameter tree) to the result, binding symbols in the dynamic
     /// environment.  Returns `#inert`.
     ///
-    /// Function shorthand: `(define! (fn name params...) body...)` desugars to
-    /// `(define! name (lambda (params...) body...))`.  The `fn` marker is a
-    /// syntactic keyword recognized only in this position — it is never
-    /// evaluated or looked up as a variable binding.
+    /// It is an error to define a variable that already has a binding in the
+    /// current environment frame. Use `set!` to update an existing binding.
     ///
     /// Per Kernel §3.2, mutation of the ground environment or its ancestors
     /// is forbidden.
@@ -592,24 +591,38 @@ impl<const N: usize> Lisp<N> {
 
             let definiend = self.car(args)?;
 
-            // Function shorthand: (define! (fn name params...) body...)
-            if let Value::Cons { car, cdr } = self.get(definiend)?
-                && self.symbol_name_eq(car, "fn")
-            {
-                let name = self.car(cdr)?;
-                let params = self.cdr(cdr)?;
-                let body_list = self.cdr(args)?;
-                let body = self.wrap_begin(body_list)?;
-                let func = self.lambda(params, body, *env)?;
-                self.env_define(*env, name, func)?;
-                return Ok(ArenaIndex::INERT);
-            }
-
             // Regular define! with ptree matching
             self.validate_ptree(definiend)?;
             let val_expr = self.cadr(args)?;
             let val = self.eval_expr(val_expr, *env)?;
             self.match_ptree(definiend, val, *env)?;
+            Ok(ArenaIndex::INERT)
+        })
+    }
+
+    /// `(fn! name params body...)` — define a named function.
+    ///
+    /// Syntactic sugar for `(define! name (lambda params (begin body...)))`.
+    /// `name` is a symbol, `params` is a formal parameter tree, and `body`
+    /// is one or more body expressions.
+    ///
+    /// Returns `#inert`.
+    fn op_fn_define(
+        &self,
+        args: ArenaIndex,
+        _expr: &mut ArenaIndex,
+        env: &mut ArenaIndex,
+    ) -> TailAction {
+        non_tail!({
+            debug_assert!(*env != ArenaIndex::GROUND_ENV, "fn! in ground env");
+
+            let name = self.car(args)?;
+            let rest = self.cdr(args)?;
+            let params = self.car(rest)?;
+            let body_list = self.cdr(rest)?;
+            let body = self.wrap_begin(body_list)?;
+            let func = self.lambda(params, body, *env)?;
+            self.env_define(*env, name, func)?;
             Ok(ArenaIndex::INERT)
         })
     }

@@ -4083,18 +4083,18 @@ fn test_stdlib_append() {
 }
 
 #[test]
-fn test_stdlib_entries_exist() {
-    // Verify that StdLib entries are generated
+fn test_prelude_entries_exist() {
+    // Verify that Prelude entries are generated
     assert!(
-        !grift::stdlib::STDLIB_ALL.is_empty(),
-        "STDLIB_ALL should not be empty"
+        !grift::prelude::PRELUDE_ALL.is_empty(),
+        "PRELUDE_ALL should not be empty"
     );
     // Check a known function
-    let names: Vec<&str> = grift::stdlib::STDLIB_ALL.iter().map(|e| e.name()).collect();
-    assert!(names.contains(&"map"), "map should be in STDLIB_ALL");
-    assert!(names.contains(&"filter"), "filter should be in STDLIB_ALL");
-    assert!(names.contains(&"length"), "length should be in STDLIB_ALL");
-    assert!(names.contains(&"append"), "append should be in STDLIB_ALL");
+    let names: Vec<&str> = grift::prelude::PRELUDE_ALL.iter().map(|e| e.name()).collect();
+    assert!(names.contains(&"map"), "map should be in PRELUDE_ALL");
+    assert!(names.contains(&"filter"), "filter should be in PRELUDE_ALL");
+    assert!(names.contains(&"length"), "length should be in PRELUDE_ALL");
+    assert!(names.contains(&"append"), "append should be in PRELUDE_ALL");
 }
 
 // ============================================================================

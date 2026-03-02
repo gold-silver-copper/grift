@@ -13,7 +13,7 @@
 use grift_arena::{ArenaError, ArenaIndex};
 
 use crate::native::NativeFn;
-use crate::stdlib::StdLib;
+use crate::prelude::Prelude;
 
 /// Type-safe identifier for built-in operatives and applicatives.
 ///
@@ -96,8 +96,8 @@ pub enum Value {
     /// The ignore value, written `#ignore`.
     /// Used specifically for parameter matching in formal parameter trees.
     Ignore,
-    /// Standard library function (static memory, parsed on demand).
-    StdLib(StdLib),
+    /// Prelude function (static memory, parsed on demand).
+    Prelude(Prelude),
     /// User-registered native function (Rust function pointer).
     /// Always wrapped in an `Applicative` when registered. The function
     /// pointer is stored directly, with no const generic dependency.
@@ -141,7 +141,7 @@ impl PartialEq for Value {
             ) => a1 == b1 && a2 == b2,
             (Value::Inert, Value::Inert) => true,
             (Value::Ignore, Value::Ignore) => true,
-            (Value::StdLib(a), Value::StdLib(b)) => a == b,
+            (Value::Prelude(a), Value::Prelude(b)) => a == b,
             #[allow(unpredictable_function_pointer_comparisons)]
             (Value::Native(a), Value::Native(b)) => core::ptr::fn_addr_eq(*a, *b),
             _ => false,
@@ -190,7 +190,7 @@ impl Value {
             Value::Environment { .. } => "environment",
             Value::Inert => "inert",
             Value::Ignore => "ignore",
-            Value::StdLib(_) => "applicative",
+            Value::Prelude(_) => "applicative",
             Value::Native(_) => "native",
         }
     }
@@ -217,7 +217,7 @@ impl Value {
                 | Value::CharPair { .. }
                 | Value::Inert
                 | Value::Ignore
-                | Value::StdLib(_)
+                | Value::Prelude(_)
                 | Value::Native(_)
         )
     }
@@ -258,7 +258,7 @@ impl core::fmt::Display for Value {
             Value::CharPair { .. } => f.write_str("<string>"),
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
-            Value::StdLib(s) => write!(f, "<stdlib:{}>", s.name()),
+            Value::Prelude(s) => write!(f, "<prelude:{}>", s.name()),
             Value::Native(_) => f.write_str("<native>"),
             _ => write!(f, "<{}>", self.type_name()),
         }
@@ -274,7 +274,7 @@ macro_rules! impl_from_value {
     };
 }
 
-impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin, StdLib => StdLib);
+impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin, Prelude => Prelude);
 
 impl From<char> for Value {
     #[inline]
