@@ -4326,12 +4326,12 @@ fn test_native_bit_extract() {
 
 // — GC interaction test —
 
-register_native!(native_alloc_pair, () -> isize, { 0 });
+register_native!(native_const_zero, () -> isize, { 0 });
 
 #[test]
 fn test_native_survives_gc() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("native-zero", native_alloc_pair).unwrap();
+    lisp.register_native("native-zero", native_const_zero).unwrap();
     // Force GC, then call native
     lisp.eval("(gc-collect)").unwrap();
     assert_eq!(lisp.eval("(native-zero)"), Ok(Value::Number(0)));
