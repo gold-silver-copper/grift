@@ -202,6 +202,9 @@ pub enum ArenaError {
 
     /// Attempted to mutate an immutable environment (e.g., the ground environment).
     ImmutableEnvironment,
+
+    /// Attempted to define a variable that already has a binding in the current frame.
+    AlreadyDefined,
 }
 
 impl ArenaError {
@@ -221,6 +224,7 @@ impl ArenaError {
             ArenaError::UnboundVariable => "Unbound variable",
             ArenaError::NotCallable => "Not callable",
             ArenaError::ImmutableEnvironment => "Attempt to mutate immutable environment",
+            ArenaError::AlreadyDefined => "Variable already defined",
         }
     }
 
