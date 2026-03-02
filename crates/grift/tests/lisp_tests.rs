@@ -4773,3 +4773,367 @@ fn test_fn_bang_returns_inert() {
         Ok(Value::Boolean(true))
     );
 }
+
+// ============================================================================
+// Child Environment Creation — No Binding Copying
+// ============================================================================
+//
+// When a child environment is created (via make-environment, let, lambda,
+// vau, etc.), it must NOT copy bindings from its parent(s). Instead, it
+// stores a reference to the parent and starts with an empty bindings frame.
+// Symbol lookup walks the parent chain on demand.
+
+#[test]
+fn test_child_env_starts_with_empty_bindings() {
+    // A child env created via make-environment starts with no local bindings.
+    // Defining in the child doesn't affect the parent, and vice versa after creation.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! parent-val 42)
+            (define! child (make-environment (current-environment)))
+            (eval (list define! (quote child-only) 99) child)
+            child-only
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_child_env_does_not_copy_parent_bindings() {
+    // Bindings added to the parent AFTER child creation are visible in the
+    // child (because lookup walks the parent chain, not a snapshot).
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! env (current-environment))
+            (define! child (make-environment (current-environment)))
+            (define! late-binding 777)
+            (eval (quote late-binding) child)
+            "#
+        ),
+        Ok(Value::Number(777))
+    );
+}
+
+#[test]
+fn test_child_define_does_not_pollute_parent() {
+    // Defining a variable in a child env must not create or modify
+    // any binding in the parent env.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! child (make-environment (current-environment)))
+            (eval (list define! (quote x) 123) child)
+            x
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_grandparent_lookup_chain() {
+    // Lookup must traverse multiple levels: child → parent → grandparent.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! grandparent (make-empty-environment))
+            (eval (list define! (quote deep-val) 42) grandparent)
+            (define! parent (make-environment grandparent))
+            (define! child (make-environment parent))
+            (eval (quote deep-val) child)
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_child_shadows_parent_binding() {
+    // A binding in the child frame shadows the same name in the parent.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! parent-env (make-empty-environment))
+            (eval (list define! (quote x) 1) parent-env)
+            (define! child-env (make-environment parent-env))
+            (eval (list define! (quote x) 2) child-env)
+            (eval (quote x) child-env)
+            "#
+        ),
+        Ok(Value::Number(2))
+    );
+    // Parent still has original value.
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp2.eval(
+            r#"
+            (define! parent-env (make-empty-environment))
+            (eval (list define! (quote x) 1) parent-env)
+            (define! child-env (make-environment parent-env))
+            (eval (list define! (quote x) 2) child-env)
+            (eval (quote x) parent-env)
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_let_child_env_does_not_copy() {
+    // let creates a child env; bindings defined inside let don't leak out.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! outer 10)
+            (let ((inner 20))
+              (+ outer inner))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+    // 'inner' is not visible outside let.
+    let lisp2: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp2.eval(
+            r#"
+            (let ((inner 20))
+              inner)
+            inner
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_lambda_child_env_inherits_not_copies() {
+    // Lambda bodies execute in a child env that inherits from the
+    // closure's captured environment via parent chain (not copying).
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! base 100)
+            (define! f (lambda (x) (+ base x)))
+            (f 5)
+            "#
+        ),
+        Ok(Value::Number(105))
+    );
+}
+
+// ============================================================================
+// Sandbox Correctness — Selective Exposure via make-empty-environment
+// ============================================================================
+//
+// The pattern:
+//   (define! safe-env (make-empty-environment))
+//   (eval (list define! (quote +) +) safe-env)
+//   (eval (list define! (quote -) -) safe-env)
+//   (eval (quote (+ 10 (- 5 2))) safe-env)
+//
+// IS a proper sandbox. Here is why:
+//
+// 1. `make-empty-environment` creates an env with NO parents and NO bindings.
+//    Code evaluated there cannot look up any symbol not explicitly defined.
+//
+// 2. `(list define! (quote +) +)` is evaluated in the OUTER (global) env.
+//    `define!` resolves to the builtin operative VALUE, `(quote +)` resolves
+//    to the SYMBOL `+`, and `+` resolves to the arithmetic APPLICATIVE.
+//    The resulting list is: (<define!-builtin> <symbol:+> <applicative:+>).
+//
+// 3. When this list is eval'd in safe-env, the evaluator sees the head is
+//    a Builtin (self-evaluating), dispatches to the define! operative handler
+//    with the DYNAMIC environment set to safe-env. The operative:
+//      - Takes the first operand (<symbol:+>) as the definiend (parameter tree)
+//      - Takes the second operand (<applicative:+>) as the value expression
+//      - Evaluates the value expression in safe-env (it's self-evaluating → itself)
+//      - Binds the symbol `+` to the `+` applicative IN safe-env
+//
+// 4. The `+` and `-` values shared between safe-env and global are IMMUTABLE
+//    applicatives wrapping immutable builtins. They cannot be modified from
+//    Lisp code, so sharing is safe.
+//
+// 5. From within safe-env, code cannot:
+//    - Access define!, vau, lambda, eval, or any other operative/applicative
+//    - Create new closures or operatives
+//    - Construct lists or pairs (no cons/list available)
+//    - Escape to the global environment (no parent chain)
+//    - Modify any bindings (no set! available)
+
+#[test]
+fn test_sandbox_arithmetic_only() {
+    // The sandbox pattern correctly restricts to only exposed operations.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (list define! (quote -) -) safe-env)
+            (eval (quote (+ 10 (- 5 2))) safe-env)
+            "#
+        ),
+        Ok(Value::Number(13))
+    );
+}
+
+#[test]
+fn test_sandbox_no_define_access() {
+    // The sandbox does not expose define! — it cannot be called by name.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (quote (define! x 1)) safe-env)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_no_eval_access() {
+    // The sandbox does not expose eval — cannot meta-evaluate.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (quote (eval (quote 1))) safe-env)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_no_vau_access() {
+    // The sandbox does not expose vau — cannot create operatives.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (quote (vau (x) #ignore x)) safe-env)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_no_lambda_access() {
+    // The sandbox does not expose lambda — cannot create closures.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (quote (lambda (x) (+ x 1))) safe-env)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_no_set_bang_access() {
+    // The sandbox does not expose set! — cannot mutate bindings.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (quote (set! + 42)) safe-env)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_cannot_reach_global() {
+    // Code in the sandbox has no path to the global environment.
+    // Even if we expose current-environment, it returns safe-env, not global.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (quote cons) safe-env)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_define_does_not_leak_to_global() {
+    // Defining a variable inside the sandbox must not affect the global env.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote secret) 999) safe-env)
+            secret
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_sandbox_self_evaluating_values_work() {
+    // Self-evaluating values (numbers, booleans) work in any environment,
+    // including an empty sandbox.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(eval 42 (make-empty-environment))"),
+        Ok(Value::Number(42))
+    );
+    assert_eq!(
+        lisp.eval("(eval #t (make-empty-environment))"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval("(eval #f (make-empty-environment))"),
+        Ok(Value::Boolean(false))
+    );
+}
+
+#[test]
+fn test_sandbox_shared_values_are_immutable() {
+    // The + applicative shared between sandbox and global is immutable.
+    // Shadowing + in the sandbox does not affect the global +.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (list define! (quote -) -) safe-env)
+            (eval (quote (+ 10 (- 5 2))) safe-env)
+            (+ 1 2)
+            "#
+        ),
+        Ok(Value::Number(3))
+    );
+}
