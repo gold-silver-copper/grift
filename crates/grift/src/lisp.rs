@@ -26,11 +26,9 @@
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
-use crate::native::{MAX_NATIVE_FNS, NativeFn};
+use crate::native::{LispOps, NativeFn};
 use crate::parse::SliceSource;
-use crate::value::{NativeId, Value};
-
-use core::cell::Cell;
+use crate::value::Value;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
@@ -47,8 +45,6 @@ use core::cell::Cell;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
-    pub(crate) native_fns: [Cell<Option<NativeFn<N>>>; MAX_NATIVE_FNS],
-    pub(crate) native_count: Cell<u8>,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -107,8 +103,6 @@ impl<const N: usize> Lisp<N> {
 
         let lisp = Lisp {
             arena,
-            native_fns: core::array::from_fn(|_| Cell::new(None)),
-            native_count: Cell::new(0),
         };
 
         // Global env is a child of the ground env.
@@ -197,24 +191,20 @@ impl<const N: usize> Lisp<N> {
     /// The function is bound in the global environment under the given `name`.
     /// It receives already-evaluated arguments as a cons-list.
     ///
-    /// Up to [`MAX_NATIVE_FNS`](crate::native::MAX_NATIVE_FNS) native functions
-    /// can be registered.
-    ///
     /// # Errors
     ///
-    /// Returns [`ArenaError::OutOfMemory`] if the native function table is full
-    /// or if arena allocation fails.
+    /// Returns [`ArenaError::OutOfMemory`] if arena allocation fails.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use grift::{Lisp, Value, ArenaIndex, ArenaResult};
+    /// use grift::{Lisp, Value, ArenaIndex, ArenaResult, LispOps};
     ///
-    /// fn my_double<const N: usize>(
-    ///     lisp: &Lisp<N>,
+    /// fn my_double(
+    ///     lisp: &dyn LispOps,
     ///     args: ArenaIndex,
     /// ) -> ArenaResult<ArenaIndex> {
-    ///     let (a, _) = grift::extract_arg::<N, isize>(lisp, args)?;
+    ///     let (a, _) = grift::extract_arg::<isize>(lisp, args)?;
     ///     lisp.number(a * 2)
     /// }
     ///
@@ -222,30 +212,19 @@ impl<const N: usize> Lisp<N> {
     /// lisp.register_native("double", my_double).unwrap();
     /// assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
     /// ```
-    pub fn register_native(&self, name: &str, f: NativeFn<N>) -> ArenaResult<()> {
-        let count = self.native_count.get();
-        if count as usize >= MAX_NATIVE_FNS {
-            return Err(ArenaError::OutOfMemory);
-        }
-        self.native_fns[count as usize].set(Some(f));
-        let id = NativeId(count);
-        self.native_count.set(count + 1);
-
+    pub fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
         let sym = self.symbol(name)?;
-        let native_val = self.arena.alloc(Value::Native(id))?;
+        let native_val = self.arena.alloc(Value::Native(f))?;
         let wrapped = self.wrap(native_val)?;
         self.env_define(ArenaIndex::GLOBAL_ENV, sym, wrapped)
     }
 
-    /// Call a registered native function by its ID.
+    /// Call a native function pointer.
     pub(crate) fn call_native(
         &self,
-        id: NativeId,
+        f: NativeFn,
         args: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let f = self.native_fns[id.0 as usize]
-            .get()
-            .ok_or(ArenaError::NotCallable)?;
         f(self, args)
     }
 
@@ -988,7 +967,7 @@ impl<const N: usize> Lisp<N> {
     /// lisp.write_value(idx, &mut buf).unwrap();
     /// assert_eq!(buf, "(1 2 3)");
     /// ```
-    pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+    pub fn write_value(&self, idx: ArenaIndex, w: &mut (impl core::fmt::Write + ?Sized)) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }
 
@@ -999,7 +978,7 @@ impl<const N: usize> Lisp<N> {
     pub fn display_value(
         &self,
         idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
     ) -> core::fmt::Result {
         self.fmt_value(idx, w, true)
     }
@@ -1010,7 +989,7 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn fmt_value(
         &self,
         idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
         display: bool,
     ) -> core::fmt::Result {
         match self.arena.get(idx) {
@@ -1049,7 +1028,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Walk a CharPair chain, emitting each character via a closure.
-    fn walk_chars<W: core::fmt::Write>(
+    fn walk_chars<W: core::fmt::Write + ?Sized>(
         &self,
         mut idx: ArenaIndex,
         w: &mut W,
@@ -1071,7 +1050,7 @@ impl<const N: usize> Lisp<N> {
     fn fmt_list_tail(
         &self,
         mut idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
         display: bool,
     ) -> core::fmt::Result {
         while !idx.is_nil() {
@@ -1089,6 +1068,111 @@ impl<const N: usize> Lisp<N> {
             }
         }
         Ok(())
+    }
+}
+
+// ============================================================================
+// LispOps trait implementation
+// ============================================================================
+
+impl<const N: usize> LispOps for Lisp<N> {
+    #[inline]
+    fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
+        self.number(n)
+    }
+    #[inline]
+    fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cons(car, cdr)
+    }
+    #[inline]
+    fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
+        self.char_val(c)
+    }
+    #[inline]
+    fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        self.symbol(name)
+    }
+    #[inline]
+    fn get(&self, idx: ArenaIndex) -> ArenaResult<Value> {
+        self.get(idx)
+    }
+    #[inline]
+    fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(idx)
+    }
+    #[inline]
+    fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cdr_char(idx)
+    }
+    #[inline]
+    fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cadr_char(idx)
+    }
+    #[inline]
+    fn lambda(
+        &self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.lambda(params, body, env)
+    }
+    #[inline]
+    fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.wrap(combiner)
+    }
+    #[inline]
+    fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.unwrap_applicative(idx)
+    }
+    #[inline]
+    fn vau(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.vau(params, env_param, body, env)
+    }
+    #[inline]
+    fn vau_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        self.vau_parts(idx)
+    }
+    #[inline]
+    fn eval(&self, input: &str) -> Result<Value, ArenaError> {
+        self.eval(input)
+    }
+    #[inline]
+    fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index(input)
+    }
+    #[inline]
+    fn stats(&self) -> ArenaStats {
+        self.stats()
+    }
+    #[inline]
+    fn baseline_allocated(&self) -> usize {
+        self.baseline_allocated()
+    }
+    #[inline]
+    fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
+        self.collect_garbage(roots)
+    }
+    #[inline]
+    fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, false)
+    }
+    #[inline]
+    fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, true)
+    }
+    #[inline]
+    fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
+        self.register_native(name, f)
     }
 }
 

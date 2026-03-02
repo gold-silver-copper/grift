@@ -4140,12 +4140,12 @@ fn test_parse_error_display() {
 // Native Function Registration Tests
 // ============================================================================
 
-use grift::{ArenaIndex, ArenaResult, register_native};
+use grift::{ArenaIndex, ArenaResult, register_native, LispOps};
 
 // — Manual native function (no macro) —
 
-fn native_double<const N: usize>(
-    lisp: &Lisp<N>,
+fn native_double(
+    lisp: &dyn LispOps,
     args: ArenaIndex,
 ) -> ArenaResult<ArenaIndex> {
     let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
