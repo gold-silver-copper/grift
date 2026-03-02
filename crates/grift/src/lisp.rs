@@ -26,8 +26,11 @@
 
 use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
+use crate::native::{MAX_NATIVE_FNS, NativeFn};
 use crate::parse::SliceSource;
-use crate::value::Value;
+use crate::value::{NativeId, Value};
+
+use core::cell::Cell;
 
 /// A minimalistic Lisp interpreter backed by a fixed-size arena.
 ///
@@ -44,6 +47,8 @@ use crate::value::Value;
 /// ```
 pub struct Lisp<const N: usize> {
     pub(crate) arena: Arena<Value, N>,
+    pub(crate) native_fns: [Cell<Option<NativeFn<N>>>; MAX_NATIVE_FNS],
+    pub(crate) native_count: Cell<u8>,
 }
 
 impl<const N: usize> Default for Lisp<N> {
@@ -100,7 +105,11 @@ impl<const N: usize> Lisp<N> {
             "GROUND_ENV must be slot 5"
         );
 
-        let lisp = Lisp { arena };
+        let lisp = Lisp {
+            arena,
+            native_fns: core::array::from_fn(|_| Cell::new(None)),
+            native_count: Cell::new(0),
+        };
 
         // Global env is a child of the ground env.
         let parents = lisp
@@ -179,6 +188,65 @@ impl<const N: usize> Lisp<N> {
 
         // Bind stdlib constants (numbers, booleans, strings).
         init_stdlib_constants(self);
+    }
+
+    // — Native function registration —
+
+    /// Register a native Rust function as a Lisp applicative.
+    ///
+    /// The function is bound in the global environment under the given `name`.
+    /// It receives already-evaluated arguments as a cons-list.
+    ///
+    /// Up to [`MAX_NATIVE_FNS`](crate::native::MAX_NATIVE_FNS) native functions
+    /// can be registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError::OutOfMemory`] if the native function table is full
+    /// or if arena allocation fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::{Lisp, Value, ArenaIndex, ArenaResult};
+    ///
+    /// fn my_double<const N: usize>(
+    ///     lisp: &Lisp<N>,
+    ///     args: ArenaIndex,
+    /// ) -> ArenaResult<ArenaIndex> {
+    ///     let (a, _) = grift::extract_arg::<N, isize>(lisp, args)?;
+    ///     lisp.number(a * 2)
+    /// }
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// lisp.register_native("double", my_double).unwrap();
+    /// assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
+    /// ```
+    pub fn register_native(&self, name: &str, f: NativeFn<N>) -> ArenaResult<()> {
+        let count = self.native_count.get();
+        if count as usize >= MAX_NATIVE_FNS {
+            return Err(ArenaError::OutOfMemory);
+        }
+        self.native_fns[count as usize].set(Some(f));
+        let id = NativeId(count);
+        self.native_count.set(count + 1);
+
+        let sym = self.symbol(name)?;
+        let native_val = self.arena.alloc(Value::Native(id))?;
+        let wrapped = self.wrap(native_val)?;
+        self.env_define(ArenaIndex::GLOBAL_ENV, sym, wrapped)
+    }
+
+    /// Call a registered native function by its ID.
+    pub(crate) fn call_native(
+        &self,
+        id: NativeId,
+        args: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let f = self.native_fns[id.0 as usize]
+            .get()
+            .ok_or(ArenaError::NotCallable)?;
+        f(self, args)
     }
 
     // — Value constructors —

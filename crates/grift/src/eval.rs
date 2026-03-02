@@ -407,6 +407,9 @@ impl<const N: usize> Lisp<N> {
                                 *expr = body;
                                 Ok(None)
                             }
+                            Value::Native(id) => {
+                                Ok(Some(self.call_native(id, evaled_args)?))
+                            }
                             _ => Err(ArenaError::NotCallable),
                         }
                     }
@@ -437,6 +440,7 @@ impl<const N: usize> Lisp<N> {
                 self.eval_expr(body, op_env)
             }
             Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
+            Value::Native(id) => self.call_native(id, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             Value::StdLib(stdlib) => {
                 let real = self.eval_stdlib_source(stdlib)?;
