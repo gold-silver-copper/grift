@@ -7,6 +7,8 @@
 //!
 //! ## Overview
 //!
+//! - [`LispOps`] — trait exposing the subset of `Lisp<N>` methods that native
+//!   functions need, erasing the const generic `N`.
 //! - [`NativeFn`] — type alias for the native function pointer signature.
 //! - [`FromLisp`] / [`ToLisp`] — conversion traits between Rust and Lisp types.
 //! - [`extract_arg`] — extract a typed argument from an argument list.
@@ -27,59 +29,122 @@
 //! assert_eq!(lisp.eval("(add3 1 2 3)"), Ok(Value::Number(6)));
 //! ```
 
-use grift_arena::{ArenaError, ArenaIndex, ArenaResult};
+use grift_arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 
-use crate::lisp::Lisp;
 use crate::value::Value;
-
-/// Maximum number of native functions that can be registered.
-pub const MAX_NATIVE_FNS: usize = 64;
 
 /// Type alias for native function pointers.
 ///
-/// A native function receives the [`Lisp`] interpreter and a cons-list of
+/// A native function receives a [`LispOps`] trait object and a cons-list of
 /// already-evaluated arguments, and returns an arena-allocated result.
-pub type NativeFn<const N: usize> = fn(&Lisp<N>, ArenaIndex) -> ArenaResult<ArenaIndex>;
+/// The function pointer carries no const generic, so it can be stored
+/// directly inside [`Value::Native`].
+pub type NativeFn = fn(&dyn LispOps, ArenaIndex) -> ArenaResult<ArenaIndex>;
+
+/// Trait that exposes the full public API of [`Lisp`](crate::Lisp) through
+/// a trait object, erasing the const-generic arena size `N`.
+///
+/// All user-registered native functions receive `&dyn LispOps` instead of
+/// `&Lisp<N>`, which allows [`NativeFn`] (and therefore [`Value::Native`])
+/// to be independent of `N`.
+pub trait LispOps {
+    /// Allocate a number value.
+    fn number(&self, n: isize) -> ArenaResult<ArenaIndex>;
+    /// Allocate a cons cell.
+    fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Allocate a character (one-element string).
+    fn char_val(&self, c: char) -> ArenaResult<ArenaIndex>;
+    /// Allocate (or retrieve an interned) symbol by name.
+    fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex>;
+    /// Get the value at an arena index.
+    fn get(&self, idx: ArenaIndex) -> ArenaResult<Value>;
+    /// Get car of a cons cell or CharPair (user-facing).
+    fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Get cdr of a cons cell or CharPair (user-facing).
+    fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Get car of cdr (second element of a list, user-facing).
+    fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Allocate a lambda (applicative from an operative).
+    fn lambda(
+        &self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex>;
+    /// Wrap a combiner in an Applicative.
+    fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Unwrap an Applicative to get the inner combiner.
+    fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Allocate an operative (fexpr / vau closure).
+    fn vau(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex>;
+    /// Extract operative parts: (params, env_param, body, env).
+    fn vau_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)>;
+    /// Parse and evaluate Lisp expression(s) in a string.
+    fn eval(&self, input: &str) -> Result<Value, ArenaError>;
+    /// Parse and evaluate Lisp expression(s), returning the arena index.
+    fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError>;
+    /// Return arena allocation statistics.
+    fn stats(&self) -> ArenaStats;
+    /// Return the baseline allocation count.
+    fn baseline_allocated(&self) -> usize;
+    /// Run mark-and-sweep garbage collection with the given roots.
+    fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats;
+    /// Write a human-readable representation of the value at `idx`.
+    fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result;
+    /// Human-readable output (like Scheme `display`).
+    fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result;
+    /// Register a native Rust function as a Lisp applicative.
+    fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()>;
+}
 
 /// Trait for converting a Lisp value to a Rust type.
 ///
 /// Implemented for common types (`isize`, `bool`, `ArenaIndex`).
 /// Users can implement this trait for custom types.
-pub trait FromLisp<const N: usize>: Sized {
+pub trait FromLisp: Sized {
     /// Convert a Lisp value at the given arena index to this Rust type.
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self>;
+    fn from_lisp(lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self>;
 }
 
 /// Trait for converting a Rust value to a Lisp arena value.
 ///
 /// Implemented for common types (`isize`, `bool`, `ArenaIndex`, `()`).
 /// Users can implement this trait for custom types.
-pub trait ToLisp<const N: usize> {
+pub trait ToLisp {
     /// Allocate this value in the Lisp arena and return its index.
-    fn to_lisp(&self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex>;
+    fn to_lisp(&self, lisp: &dyn LispOps) -> ArenaResult<ArenaIndex>;
 }
 
 // ============================================================================
 // FromLisp implementations
 // ============================================================================
 
-impl<const N: usize> FromLisp<N> for isize {
+impl FromLisp for isize {
     #[inline]
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
+    fn from_lisp(lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self> {
         lisp.get(idx)?.as_number()
     }
 }
 
-impl<const N: usize> FromLisp<N> for bool {
+impl FromLisp for bool {
     #[inline]
-    fn from_lisp(lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
+    fn from_lisp(lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self> {
         lisp.get(idx)?.as_bool()
     }
 }
 
-impl<const N: usize> FromLisp<N> for ArenaIndex {
+impl FromLisp for ArenaIndex {
     #[inline]
-    fn from_lisp(_lisp: &Lisp<N>, idx: ArenaIndex) -> ArenaResult<Self> {
+    fn from_lisp(_lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self> {
         Ok(idx)
     }
 }
@@ -88,30 +153,30 @@ impl<const N: usize> FromLisp<N> for ArenaIndex {
 // ToLisp implementations
 // ============================================================================
 
-impl<const N: usize> ToLisp<N> for isize {
+impl ToLisp for isize {
     #[inline]
-    fn to_lisp(&self, lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn to_lisp(&self, lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
         lisp.number(*self)
     }
 }
 
-impl<const N: usize> ToLisp<N> for bool {
+impl ToLisp for bool {
     #[inline]
-    fn to_lisp(&self, _lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn to_lisp(&self, _lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
         Ok(ArenaIndex::from_bool(*self))
     }
 }
 
-impl<const N: usize> ToLisp<N> for ArenaIndex {
+impl ToLisp for ArenaIndex {
     #[inline]
-    fn to_lisp(&self, _lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn to_lisp(&self, _lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
         Ok(*self)
     }
 }
 
-impl<const N: usize> ToLisp<N> for () {
+impl ToLisp for () {
     #[inline]
-    fn to_lisp(&self, _lisp: &Lisp<N>) -> ArenaResult<ArenaIndex> {
+    fn to_lisp(&self, _lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
         Ok(ArenaIndex::INERT)
     }
 }
@@ -141,8 +206,8 @@ impl<const N: usize> ToLisp<N> for () {
 /// let (b, rest): (bool, ArenaIndex) = extract_arg(&lisp, rest).unwrap();
 /// assert_eq!(b, true);
 /// ```
-pub fn extract_arg<const N: usize, T: FromLisp<N>>(
-    lisp: &Lisp<N>,
+pub fn extract_arg<T: FromLisp>(
+    lisp: &dyn LispOps,
     args: ArenaIndex,
 ) -> ArenaResult<(T, ArenaIndex)> {
     let Value::Cons { car, cdr } = lisp.get(args)? else {
@@ -194,8 +259,8 @@ macro_rules! register_native {
 
     // Standard variant (no lisp access in body)
     ($name:ident, ($($arg:ident : $ty:ty),*) -> $ret:ty, $body:block) => {
-        pub fn $name<const N: usize>(
-            lisp: &$crate::Lisp<N>,
+        pub fn $name(
+            lisp: &dyn $crate::LispOps,
             args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
             let _ = lisp;
@@ -209,8 +274,8 @@ macro_rules! register_native {
     // With-lisp variant (user names the lisp and remaining-args variables)
     ($name:ident, ($($arg:ident : $ty:ty),*) -> $ret:ty, |$lisp:ident, $rest_args:ident| $body:block) => {
         #[allow(unused_variables)]
-        pub fn $name<const N: usize>(
-            $lisp: &$crate::Lisp<N>,
+        pub fn $name(
+            $lisp: &dyn $crate::LispOps,
             $rest_args: $crate::ArenaIndex,
         ) -> $crate::ArenaResult<$crate::ArenaIndex> {
             $crate::register_native!(@extract_args $lisp, $rest_args, $rest_args, $($arg : $ty),*);

@@ -71,6 +71,6 @@ mod value;
 
 pub use grift_arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 pub use lisp::Lisp;
-pub use native::{FromLisp, NativeFn, ToLisp, extract_arg};
+pub use native::{FromLisp, LispOps, NativeFn, ToLisp, extract_arg};
 pub use stdlib::{StdLib, StdLibEntry};
-pub use value::{BuiltinId, NativeId, Value};
+pub use value::{BuiltinId, Value};
