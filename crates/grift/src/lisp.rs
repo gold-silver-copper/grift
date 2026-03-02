@@ -100,9 +100,7 @@ impl<const N: usize> Lisp<N> {
             "GROUND_ENV must be slot 5"
         );
 
-        let lisp = Lisp {
-            arena,
-        };
+        let lisp = Lisp { arena };
 
         // Global env is a child of the ground env.
         let parents = lisp
@@ -321,7 +319,7 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
         self.arena
             .get(idx)
-            .and_then(|v| v.as_symbol())
+            .and_then(super::value::Value::as_symbol)
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
@@ -334,11 +332,7 @@ impl<const N: usize> Lisp<N> {
     /// Build strings by prepending characters in reverse order, then call
     /// [`reverse_chain`](Self::reverse_chain) to flip into
     /// forward order.
-    pub(crate) fn prepend_char(
-        &self,
-        head: ArenaIndex,
-        ch: char,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn prepend_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(Value::CharPair { ch, cdr: head })
     }
 
@@ -349,10 +343,7 @@ impl<const N: usize> Lisp<N> {
     /// head (formerly the last node). No new nodes are allocated.
     ///
     /// Safe because the chain is freshly built and not yet shared.
-    pub(crate) fn reverse_chain(
-        &self,
-        mut head: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn reverse_chain(&self, mut head: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !head.is_nil() {
             let (new_val, cdr) = match self.arena.get(head)? {
@@ -382,7 +373,10 @@ impl<const N: usize> Lisp<N> {
                 cur = self.cdr(cur)?;
                 continue;
             };
-            if self.strings_equal(existing_chars, char_head).unwrap_or(false) {
+            if self
+                .strings_equal(existing_chars, char_head)
+                .unwrap_or(false)
+            {
                 return Ok(sym);
             }
             cur = self.cdr(cur)?;
@@ -395,7 +389,8 @@ impl<const N: usize> Lisp<N> {
         let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
             unreachable!();
         };
-        self.arena.set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
+        self.arena
+            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
 
         Ok(sym_idx)
     }
@@ -603,7 +598,11 @@ impl<const N: usize> Lisp<N> {
 
     /// Search an alist for a binding whose car equals `name`.
     /// Returns `Some(binding_cons_index)` if found, `None` otherwise.
-    fn find_binding(&self, bindings: ArenaIndex, name: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+    fn find_binding(
+        &self,
+        bindings: ArenaIndex,
+        name: ArenaIndex,
+    ) -> ArenaResult<Option<ArenaIndex>> {
         let mut cur = bindings;
         while !cur.is_nil() {
             let binding = self.car(cur)?;
@@ -627,7 +626,13 @@ impl<const N: usize> Lisp<N> {
             return Err(ArenaError::TypeError);
         };
         if let Some(binding) = self.find_binding(bindings, name)? {
-            return self.arena.set(binding, Value::Cons { car: name, cdr: val });
+            return self.arena.set(
+                binding,
+                Value::Cons {
+                    car: name,
+                    cdr: val,
+                },
+            );
         }
         // Not found — create new binding
         let pair = self.cons(name, val)?;
@@ -653,7 +658,13 @@ impl<const N: usize> Lisp<N> {
             return Err(ArenaError::TypeError);
         };
         match self.find_binding(bindings, name)? {
-            Some(binding) => self.arena.set(binding, Value::Cons { car: name, cdr: val }),
+            Some(binding) => self.arena.set(
+                binding,
+                Value::Cons {
+                    car: name,
+                    cdr: val,
+                },
+            ),
             None => Err(ArenaError::UnboundVariable),
         }
     }
@@ -886,10 +897,8 @@ impl<const N: usize> Lisp<N> {
     /// Collect garbage, always protecting the macro-generated singleton
     /// root set plus any caller-supplied `extra_roots`.
     pub(crate) fn collect_with_roots(&self, extra_roots: &[ArenaIndex]) -> GcStats {
-        self.arena.collect_garbage_multi(&[
-            ArenaIndex::ROOTS,
-            extra_roots,
-        ])
+        self.arena
+            .collect_garbage_multi(&[ArenaIndex::ROOTS, extra_roots])
     }
 
     // — Value formatting —
@@ -919,14 +928,23 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Same as [`write_value`](Self::write_value) except strings are printed
     /// without surrounding quotes or escape sequences.
-    pub fn display_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+    pub fn display_value(
+        &self,
+        idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+    ) -> core::fmt::Result {
         self.fmt_value(idx, w, true)
     }
 
     /// Unified value formatter. When `display` is true, strings are printed
     /// without quotes/escapes (like Scheme `display`); otherwise machine-
     /// readable (like Scheme `write`).
-    pub(crate) fn fmt_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write, display: bool) -> core::fmt::Result {
+    pub(crate) fn fmt_value(
+        &self,
+        idx: ArenaIndex,
+        w: &mut impl core::fmt::Write,
+        display: bool,
+    ) -> core::fmt::Result {
         match self.arena.get(idx) {
             Ok(Value::Nil) => w.write_str("()"),
             Ok(Value::Boolean(true)) => w.write_str("#t"),

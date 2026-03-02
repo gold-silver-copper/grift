@@ -124,7 +124,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         (0..N)
             .filter(|&idx| !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. }))
             .map(|idx| self.free(ArenaIndex::new(idx)))
-            .filter(|r| r.is_ok())
+            .filter(core::result::Result::is_ok)
             .count()
     }
 

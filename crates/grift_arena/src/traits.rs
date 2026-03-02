@@ -137,7 +137,7 @@ pub trait Trace<T: Copy, const N: usize> {
     /// Call `tracer` once for each `ArenaIndex` field in this value.
     /// The GC uses this to discover the object graph.
     fn trace<F: FnMut(ArenaIndex)>(&self, tracer: F);
-    
+
     /// Trace with arena access for types that store metadata in the arena.
     ///
     /// Some types (like arrays/strings that store their length in the arena)
@@ -146,6 +146,6 @@ pub trait Trace<T: Copy, const N: usize> {
     ///
     /// The default implementation just calls `trace()`.
     fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &Arena<T, N>, tracer: F) {
-        self.trace(tracer)
+        self.trace(tracer);
     }
 }

@@ -1,5 +1,16 @@
 #![no_std]
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![warn(clippy::pedantic)]
+#![allow(
+    clippy::must_use_candidate,
+    clippy::doc_markdown,
+    clippy::module_name_repetitions,
+    clippy::cast_possible_wrap,
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    clippy::doc_link_with_quotes
+)]
 
 //! # Grift Unicode
 //!
@@ -197,12 +208,11 @@ fn digit_value_inner(c: char) -> Option<u32> {
     }
     // Verify zero is actually the start of a 10-digit block
     // by checking that zero-1 is not numeric (if zero > 0)
-    if zero > 0 {
-        if let Some(before_zero) = char::from_u32(zero - 1) {
-            if before_zero.is_numeric() {
-                return None;
-            }
-        }
+    if zero > 0
+        && let Some(before_zero) = char::from_u32(zero - 1)
+        && before_zero.is_numeric()
+    {
+        return None;
     }
     Some(val)
 }
@@ -232,15 +242,14 @@ pub fn full_downcase(c: char) -> CaseMapResult {
 pub fn full_foldcase(c: char) -> CaseMapResult {
     // Check the static table for full case folding expansion entries.
     // These come from Unicode CaseFolding.txt (status 'F').
-    match lookup_full_casefold(c) {
-        Some(result) => result,
-        None => {
-            // Simple case fold: single character result
-            let folded = char_foldcase(c);
-            CaseMapResult {
-                chars: [folded, '\0', '\0'],
-                len: 1,
-            }
+    if let Some(result) = lookup_full_casefold(c) {
+        result
+    } else {
+        // Simple case fold: single character result
+        let folded = char_foldcase(c);
+        CaseMapResult {
+            chars: [folded, '\0', '\0'],
+            len: 1,
         }
     }
 }

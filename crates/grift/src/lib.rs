@@ -1,6 +1,28 @@
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
+#![warn(clippy::pedantic)]
+#![allow(
+    clippy::must_use_candidate,
+    clippy::doc_markdown,
+    clippy::match_same_arms,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::single_match_else,
+    clippy::module_name_repetitions,
+    clippy::inline_always,
+    clippy::needless_pass_by_value,
+    clippy::wildcard_imports,
+    clippy::unused_self,
+    clippy::manual_let_else,
+    clippy::needless_continue,
+    clippy::unnecessary_wraps,
+    clippy::doc_link_with_quotes,
+    clippy::cast_possible_wrap
+)]
 
 //! # Grift – A Minimalistic Lisp
 //!
@@ -39,13 +61,13 @@
 //! assert_eq!(three, Ok(Value::Number(3)));
 //! ```
 
-mod value;
+mod eval;
 mod lisp;
 mod parse;
-mod eval;
 pub mod stdlib;
+mod value;
 
-pub use value::{Value, BuiltinId};
+pub use grift_arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 pub use lisp::Lisp;
-pub use grift_arena::{ArenaIndex, ArenaError, ArenaResult, ArenaStats, GcStats};
 pub use stdlib::{StdLib, StdLibEntry};
+pub use value::{BuiltinId, Value};
