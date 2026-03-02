@@ -165,9 +165,9 @@ Non-boolean test values signal `TypeError`.
 Binds `definiend` to the result of evaluating `expr` in the current
 environment.  `definiend` may be a symbol, `#ignore`, or a parameter
 tree (nested pair structure for destructuring).  Returns `#inert`.
-
-The shorthand `(define! (fn name params...) body...)` defines `name`
-as `(lambda (params...) body...)`.
+If the symbol already exists in the current frame, `define!` signals an
+error — use `set!` to update existing bindings.  Function definitions
+use the separate `(fn! name (params...) body...)` form.
 
 ### 4.4 `(set! definiend expr)`
 
@@ -305,7 +305,7 @@ Each returns `#t` if the argument is of the given type, `#f` otherwise.
 ## 6. Standard Library
 
 The following functions are defined in `prelude.grift` and loaded as
-lazy `StdLib` entries (parsed on first invocation):
+lazy prelude entries (parsed on first invocation):
 
 | Function               | Description                                  |
 |------------------------|----------------------------------------------|

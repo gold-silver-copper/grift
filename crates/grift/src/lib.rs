@@ -66,11 +66,12 @@ mod lisp;
 /// Native function registration support.
 pub mod native;
 mod parse;
-pub mod stdlib;
+/// Prelude types and generated entries.
+pub mod prelude;
 mod value;
 
 pub use grift_arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 pub use lisp::Lisp;
 pub use native::{FromLisp, LispOps, NativeFn, ToLisp, extract_arg};
-pub use stdlib::{StdLib, StdLibEntry};
+pub use prelude::{Prelude, PreludeEntry};
 pub use value::{BuiltinId, Value};

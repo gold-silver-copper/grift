@@ -2,28 +2,39 @@
 
 Known sharp edges and surprising interactions in Grift.
 
-## 1. `define!` Overwrite Mutates All Closures
+## 1. `define!` Rejects Redefinition
 
-When `define!` overwrites a binding in the same frame, every closure that
-closed over that frame sees the new value. This is intentional — the
-frame is a mutable shared reference:
+`define!` now signals an error if the symbol already exists in the current
+frame. Use `set!` to update existing bindings:
 
 ```lisp
 (define! x 1)
-(define! (fn get-x) x)
+(define! x 2)                     ;; ERROR: x already defined
+(define! e (current-environment))
+(set! e x 2)                      ;; OK — use set! to update
+```
+
+Mutation via `set!` affects all closures that closed over that frame.
+This is intentional — the frame is a mutable shared reference:
+
+```lisp
+(define! x 1)
+(fn! get-x () x)
 (get-x)                       ;; => 1
-(define! x 2)
+(define! e (current-environment))
+(set! e x 2)
 (get-x)                       ;; => 2
 ```
 
-Redefining a function silently changes the behavior of everything that
-calls it:
+Similarly, redefining a function via `set!` changes the behavior of
+everything that calls it:
 
 ```lisp
-(define! (fn helper x) (+ x 1))
-(define! (fn main x) (helper x))
+(fn! helper (x) (+ x 1))
+(fn! main (x) (helper x))
 (main 5)                       ;; => 6
-(define! (fn helper x) (* x 100))
+(define! e (current-environment))
+(set! e helper (lambda (x) (* x 100)))
 (main 5)                       ;; => 500
 ```
 
@@ -67,29 +78,29 @@ The correct form requires an explicit environment argument:
 x                                      ;; => 2
 ```
 
-## 4. `fn` Marker in `define!`
+## 4. `fn!` Is a Separate Form
 
-The `fn` keyword is only special inside `define!`'s definiend position.
-Without `fn`, a pair definiend is always ptree destructuring:
+`fn!` is a standalone operative for defining named functions. It is not
+part of `define!`. A pair in `define!`'s definiend is always ptree
+destructuring:
 
 ```lisp
-;; Without fn: destructuring
+;; define! with pair: destructuring
 (define! (x y) (list 10 20))
 x                                     ;; => 10
 y                                     ;; => 20
 
-;; With fn: function definition
-(define! (fn x y) (list 10 20))
+;; fn! for function definition
+(fn! x (y) (list 10 20))
 (x 99)                                ;; => (10 20)
 ```
 
-Since `fn` is only syntactic inside `define!`, users can still use `fn`
-as a regular variable name everywhere else:
+`fn` can still be used as a regular variable name:
 
 ```lisp
 (define! fn 42)                        ;; binds the symbol fn to 42
 fn                                     ;; => 42
-(define! (fn fn x) (+ x 1))           ;; defines a function NAMED fn
+(fn! fn (x) (+ x 1))                  ;; defines a function NAMED fn
 (fn 5)                                 ;; => 6 — fn is now a function
 ```
 

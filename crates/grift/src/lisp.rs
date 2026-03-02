@@ -152,36 +152,36 @@ impl<const N: usize> Lisp<N> {
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
-        // Initialize stdlib (proc-macro-generated statics + constants).
-        lisp.init_stdlib();
+        // Initialize prelude (proc-macro-generated statics + constants).
+        lisp.init_prelude();
 
         lisp
     }
 
-    /// Bind all stdlib entries (proc-macro-generated statics + constants)
+    /// Bind all prelude entries (proc-macro-generated statics + constants)
     /// in the global environment.
-    fn init_stdlib(&self) {
-        use crate::stdlib::{STDLIB_ALL, init_stdlib_constants};
+    fn init_prelude(&self) {
+        use crate::prelude::{PRELUDE_ALL, init_prelude_constants};
 
-        // Bind each stdlib function as an Applicative wrapping the StdLib value.
-        for &entry in STDLIB_ALL {
-            let stdlib_idx = self
+        // Bind each prelude function as an Applicative wrapping the Prelude value.
+        for &entry in PRELUDE_ALL {
+            let prelude_idx = self
                 .arena
-                .alloc(Value::StdLib(entry))
-                .expect("arena too small for stdlib");
+                .alloc(Value::Prelude(entry))
+                .expect("arena too small for prelude");
             let app_idx = self
                 .arena
-                .alloc(Value::Applicative(stdlib_idx))
-                .expect("arena too small for stdlib");
+                .alloc(Value::Applicative(prelude_idx))
+                .expect("arena too small for prelude");
             let sym = self
                 .symbol(entry.name())
-                .expect("arena too small for stdlib");
+                .expect("arena too small for prelude");
             self.env_define(ArenaIndex::GLOBAL_ENV, sym, app_idx)
-                .expect("arena too small for stdlib");
+                .expect("arena too small for prelude");
         }
 
-        // Bind stdlib constants (numbers, booleans, strings).
-        init_stdlib_constants(self);
+        // Bind prelude constants (numbers, booleans, strings).
+        init_prelude_constants(self);
     }
 
     // — Native function registration —
@@ -698,7 +698,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Define a binding in an environment (mutates in place via arena.set).
-    /// If a binding for `name` already exists in this frame, overwrite it.
+    /// Returns `AlreadyDefined` if a binding for `name` already exists in this frame.
     pub(crate) fn env_define(
         &self,
         env: ArenaIndex,
@@ -708,14 +708,8 @@ impl<const N: usize> Lisp<N> {
         let Value::Environment { bindings, parents } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
-        if let Some(binding) = self.find_binding(bindings, name)? {
-            return self.arena.set(
-                binding,
-                Value::Cons {
-                    car: name,
-                    cdr: val,
-                },
-            );
+        if self.find_binding(bindings, name)?.is_some() {
+            return Err(ArenaError::AlreadyDefined);
         }
         // Not found — create new binding
         let pair = self.cons(name, val)?;
@@ -1057,7 +1051,7 @@ impl<const N: usize> Lisp<N> {
             }
             Ok(Value::Inert) => w.write_str("#inert"),
             Ok(Value::Ignore) => w.write_str("#ignore"),
-            Ok(Value::StdLib(s)) => write!(w, "<stdlib:{}>", s.name()),
+            Ok(Value::Prelude(s)) => write!(w, "<prelude:{}>", s.name()),
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }

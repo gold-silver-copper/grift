@@ -1,11 +1,11 @@
 use proc_macro::TokenStream;
 
 #[proc_macro]
-pub fn include_stdlib(input: TokenStream) -> TokenStream {
+pub fn include_prelude(input: TokenStream) -> TokenStream {
     let path_token = input
         .into_iter()
         .next()
-        .expect("include_stdlib! expects a string literal path");
+        .expect("include_prelude! expects a string literal path");
     let path_str = path_token.to_string();
     let path = path_str.trim_matches('"');
 
@@ -28,24 +28,24 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
 
     let mut code = String::new();
 
-    // Emit static StdLibEntry for each function
+    // Emit static PreludeEntry for each function
     for (i, entry) in fn_entries.iter().enumerate() {
         let escaped = entry.source.replace('\\', "\\\\").replace('"', "\\\"");
         code.push_str(&format!(
-            "static _STDLIB_{i}: StdLibEntry = StdLibEntry {{ name: \"{}\", source: \"{}\" }};\n",
+            "static _PRELUDE_{i}: PreludeEntry = PreludeEntry {{ name: \"{}\", source: \"{}\" }};\n",
             entry.name, escaped
         ));
     }
 
-    // Emit STDLIB_ALL array
-    code.push_str("pub static STDLIB_ALL: &[StdLib] = &[\n");
+    // Emit PRELUDE_ALL array
+    code.push_str("pub static PRELUDE_ALL: &[Prelude] = &[\n");
     for i in 0..fn_entries.len() {
-        code.push_str(&format!("    StdLib::new(&_STDLIB_{i}),\n"));
+        code.push_str(&format!("    Prelude::new(&_PRELUDE_{i}),\n"));
     }
     code.push_str("];\n\n");
 
-    // Emit init_stdlib_constants function
-    code.push_str("pub(crate) fn init_stdlib_constants(lisp: &dyn LispOps) {\n");
+    // Emit init_prelude_constants function
+    code.push_str("pub(crate) fn init_prelude_constants(lisp: &dyn LispOps) {\n");
     for c in &constants {
         match &c.value {
             ConstValue::Number(n) => {
@@ -71,7 +71,7 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
     }
     code.push_str("}\n");
 
-    code.parse().expect("Failed to parse generated stdlib code")
+    code.parse().expect("Failed to parse generated prelude code")
 }
 
 struct FnEntry {
@@ -206,24 +206,30 @@ fn try_extract_fn_define(form: &str) -> Option<FnEntry> {
     let s = normalize_whitespace(form);
     let s = s.trim();
 
-    if !s.starts_with("(define!") {
+    if !s.starts_with("(fn!") {
         return None;
     }
-    let rest = s["(define!".len()..].trim_start();
-    if !rest.starts_with("(fn ") {
-        return None;
-    }
+    let rest = s["(fn!".len()..].trim_start();
 
-    // Find matching close paren for (fn name params...)
+    // Parse: name (params...) body...
+    // First token is the function name
+    let name_end = rest.find(|c: char| c.is_whitespace() || c == '(').unwrap_or(rest.len());
+    let name = rest[..name_end].to_string();
+    let after_name = rest[name_end..].trim_start();
+
+    // Next is the params list (...)
+    if !after_name.starts_with('(') {
+        return None;
+    }
     let mut depth = 0i32;
-    let mut sig_end = 0;
-    for (i, c) in rest.char_indices() {
+    let mut params_end = 0;
+    for (i, c) in after_name.char_indices() {
         match c {
             '(' => depth += 1,
             ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    sig_end = i;
+                    params_end = i;
                     break;
                 }
             }
@@ -231,18 +237,12 @@ fn try_extract_fn_define(form: &str) -> Option<FnEntry> {
         }
     }
 
-    let sig = &rest[1..sig_end]; // "fn name p1 p2 ..."
-    let tokens: Vec<&str> = sig.split_whitespace().collect();
-    if tokens.len() < 2 {
-        return None;
-    }
+    let params_str = &after_name[1..params_end]; // contents inside parens
+    let params: Vec<&str> = params_str.split_whitespace().collect();
 
-    let name = tokens[1].to_string();
-    let params: Vec<&str> = tokens[2..].to_vec();
-
-    // Body: after sig close paren, before final )
-    let after_sig = rest[sig_end + 1..].trim();
-    let body = after_sig.strip_suffix(')')?.trim();
+    // Body: after params close paren, before final )
+    let after_params = after_name[params_end + 1..].trim();
+    let body = after_params.strip_suffix(')')?.trim();
 
     // Multi-expression body gets wrapped in begin
     let body_forms = split_top_level_forms(body);

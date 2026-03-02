@@ -150,7 +150,7 @@ fn run_benchmarks() {
         &lisp,
         "fib-naive(30)",
         r#"
-        (begin
+        (let ()
           (define! fib (lambda (n)
             (if (<= n 1) n
               (+ (fib (- n 1)) (fib (- n 2))))))
@@ -164,7 +164,7 @@ fn run_benchmarks() {
         &lisp,
         "fib-tco(50)",
         r#"
-        (begin
+        (let ()
           (define! fib-tco (lambda (n a b)
             (if (= n 0) a
               (fib-tco (- n 1) b (+ a b)))))
@@ -178,7 +178,7 @@ fn run_benchmarks() {
         &lisp,
         "fib-iter(50)",
         r#"
-        (begin
+        (let ()
           (define! fib-iter (lambda (n)
             (define! loop (lambda (i a b)
               (if (= i 0) a
@@ -194,7 +194,7 @@ fn run_benchmarks() {
         &lisp,
         "sum-tco(10000)",
         r#"
-        (begin
+        (let ()
           (define! sum (lambda (n acc)
             (if (= n 0) acc
               (sum (- n 1) (+ acc n)))))
@@ -208,7 +208,7 @@ fn run_benchmarks() {
         &lisp,
         "countdown(100000)",
         r#"
-        (begin
+        (let ()
           (define! countdown (lambda (n)
             (if (= n 0) 0
               (countdown (- n 1)))))
@@ -222,7 +222,7 @@ fn run_benchmarks() {
         &lisp,
         "factorial-tco(20)",
         r#"
-        (begin
+        (let ()
           (define! fact (lambda (n acc)
             (if (= n 0) acc
               (fact (- n 1) (* acc n)))))
@@ -236,7 +236,7 @@ fn run_benchmarks() {
         &lisp,
         "ackermann(3,7)",
         r#"
-        (begin
+        (let ()
           (define! ack (lambda (m n)
             (cond
               ((= m 0) (+ n 1))
@@ -252,7 +252,7 @@ fn run_benchmarks() {
         &lisp,
         "list-build(1000)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -267,7 +267,7 @@ fn run_benchmarks() {
         &lisp,
         "list-length(1000)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -286,7 +286,7 @@ fn run_benchmarks() {
         &lisp,
         "list-sum(1000)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -305,7 +305,7 @@ fn run_benchmarks() {
         &lisp,
         "map-double(500)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -324,7 +324,7 @@ fn run_benchmarks() {
         &lisp,
         "foldl-sum(1000)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -342,7 +342,7 @@ fn run_benchmarks() {
         &lisp,
         "pure-counter(10000)",
         r#"
-        (begin
+        (let ()
           (define! count (lambda (n acc)
             (if (= n 0) acc
               (count (- n 1) (+ acc 1)))))
@@ -356,7 +356,7 @@ fn run_benchmarks() {
         &lisp,
         "mutual-recur(10000)",
         r#"
-        (begin
+        (let ()
           (define! my-even? (lambda (n)
             (if (= n 0) #t
               (my-odd? (- n 1)))))
@@ -373,7 +373,7 @@ fn run_benchmarks() {
         &lisp,
         "nested-closures",
         r#"
-        (begin
+        (let ()
           (define! adder (lambda (x)
             (lambda (y) (+ x y))))
           (define! add5 (adder 5))
@@ -391,7 +391,7 @@ fn run_benchmarks() {
         &lisp,
         "church-numerals",
         r#"
-        (begin
+        (let ()
           (define! church-zero (lambda (f) (lambda (x) x)))
           (define! church-succ (lambda (n)
             (lambda (f) (lambda (x) (f ((n f) x))))))
@@ -413,7 +413,7 @@ fn run_benchmarks() {
         &lisp,
         "fast-power(2^30)",
         r#"
-        (begin
+        (let ()
           (define! mod (lambda (a b) (- a (* b (/ a b)))))
           (define! even? (lambda (n) (= (mod n 2) 0)))
           (define! fast-pow (lambda (base exp)
@@ -432,7 +432,7 @@ fn run_benchmarks() {
         &lisp,
         "gcd-euclid",
         r#"
-        (begin
+        (let ()
           (define! mod (lambda (a b) (- a (* b (/ a b)))))
           (define! gcd (lambda (a b)
             (if (= b 0) a
@@ -447,7 +447,7 @@ fn run_benchmarks() {
         &lisp,
         "gcd-repeat(10000)",
         r#"
-        (begin
+        (let ()
           (define! mod (lambda (a b) (- a (* b (/ a b)))))
           (define! gcd (lambda (a b)
             (if (= b 0) a
@@ -465,7 +465,7 @@ fn run_benchmarks() {
         &lisp,
         "tak(18,12,6)",
         r#"
-        (begin
+        (let ()
           (define! tak (lambda (x y z)
             (if (>= y x) z
               (tak (tak (- x 1) y z)
@@ -481,7 +481,7 @@ fn run_benchmarks() {
         &lisp,
         "flatten-nested",
         r#"
-        (begin
+        (let ()
           (define! append (lambda (a b)
             (if (null? a) b
               (cons (car a) (append (cdr a) b)))))
@@ -506,7 +506,7 @@ fn run_benchmarks() {
         &lisp,
         "list-nth(5000)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -523,7 +523,7 @@ fn run_benchmarks() {
         &lisp,
         "boolean-logic",
         r#"
-        (begin
+        (let ()
           (and
             (not #f)
             (or #f #t)
@@ -544,7 +544,7 @@ fn run_benchmarks() {
         &lisp,
         "cond-classify(10000)",
         r#"
-        (begin
+        (let ()
           (define! mod (lambda (a b) (- a (* b (/ a b)))))
           (define! classify (lambda (n)
             (cond
@@ -565,7 +565,7 @@ fn run_benchmarks() {
         &lisp,
         "let-stress",
         r#"
-        (begin
+        (let ()
           (define! compute (lambda (x)
             (let ((a (+ x 1))
                   (b (* x 2))
@@ -586,7 +586,7 @@ fn run_benchmarks() {
         &lisp,
         "append-lists(500+500)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -608,7 +608,7 @@ fn run_benchmarks() {
         &lisp,
         "reverse(2000)",
         r#"
-        (begin
+        (let ()
           (define! build (lambda (n acc)
             (if (= n 0) acc
               (build (- n 1) (cons n acc)))))
@@ -627,7 +627,7 @@ fn run_benchmarks() {
         &lisp,
         "collatz-len(837799)",
         r#"
-        (begin
+        (let ()
           (define! mod (lambda (a b) (- a (* b (/ a b)))))
           (define! even? (lambda (n) (= (mod n 2) 0)))
           (define! collatz-len (lambda (n steps)
@@ -645,7 +645,7 @@ fn run_benchmarks() {
         &lisp,
         "count-primes(500)",
         r#"
-        (begin
+        (let ()
           (define! mod (lambda (a b) (- a (* b (/ a b)))))
           (define! divides? (lambda (d n) (= (mod n d) 0)))
           (define! prime? (lambda (n)
@@ -690,7 +690,7 @@ fn run_benchmarks() {
         &lisp,
         "y-combinator-fib",
         r#"
-        (begin
+        (let ()
           (define! Y-fib (lambda (f n)
             (if (<= n 1) n
               (+ (f f (- n 1)) (f f (- n 2))))))
@@ -704,7 +704,7 @@ fn run_benchmarks() {
         &lisp,
         "cps-factorial(15)",
         r#"
-        (begin
+        (let ()
           (define! fact-cps (lambda (n k)
             (if (= n 0) (k 1)
               (fact-cps (- n 1) (lambda (r) (k (* n r)))))))
@@ -718,7 +718,7 @@ fn run_benchmarks() {
         &lisp,
         "type-predicates",
         r#"
-        (begin
+        (let ()
           (and
             (number? 42)
             (not (number? #t))
