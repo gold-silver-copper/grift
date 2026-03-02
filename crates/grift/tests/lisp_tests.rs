@@ -4527,3 +4527,249 @@ fn test_native_nil_method() {
     assert_eq!(lisp.eval("(nil-if-zero 0)"), Ok(Value::Nil));
     assert_eq!(lisp.eval("(nil-if-zero 5)"), Ok(Value::Number(5)));
 }
+
+// ============================================================================
+// NIL Environment, Empty Environments, define! Rejection, and fn! Tests
+// ============================================================================
+
+#[test]
+fn test_nil_environment_is_empty() {
+    // The ground environment (slot 5) starts with only builtins.
+    // Lookups for unbound names should fail cleanly.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(eval (quote does-not-exist) (make-empty-environment))"),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_nil_environment_has_no_bindings() {
+    // An empty environment created via make-empty-environment has no bindings at all.
+    let lisp: Lisp<20000> = Lisp::new();
+    // Attempting to look up any symbol in an empty environment should fail.
+    assert_eq!(
+        lisp.eval("(eval (quote +) (make-empty-environment))"),
+        Err(ArenaError::UnboundVariable)
+    );
+    assert_eq!(
+        lisp.eval("(eval (quote cons) (make-empty-environment))"),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_empty_environment_sandbox_no_builtins() {
+    // Sandboxed eval — no access to define!, vau, eval, or anything else.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! sandbox (make-empty-environment))
+            (eval (quote (+ 1 2)) sandbox)
+            "#
+        ),
+        Err(ArenaError::UnboundVariable)
+    );
+}
+
+#[test]
+fn test_empty_environment_sandbox_selective_access() {
+    // Selectively expose only certain operations to the sandbox.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! safe-env (make-empty-environment))
+            (eval (list define! (quote +) +) safe-env)
+            (eval (list define! (quote -) -) safe-env)
+            (eval (quote (+ 10 (- 5 2))) safe-env)
+            "#
+        ),
+        Ok(Value::Number(13))
+    );
+}
+
+#[test]
+fn test_empty_environment_is_environment() {
+    // make-empty-environment returns a valid environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(environment? (make-empty-environment))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_empty_environment_self_evaluating_values() {
+    // Self-evaluating values work even in empty environments.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(eval 42 (make-empty-environment))"),
+        Ok(Value::Number(42))
+    );
+    assert_eq!(
+        lisp.eval("(eval #t (make-empty-environment))"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_define_rejects_duplicate_simple() {
+    // define! rejects defining the same variable twice in the same frame.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (define! x 2)
+            "#
+        ),
+        Err(ArenaError::AlreadyDefined)
+    );
+}
+
+#[test]
+fn test_define_rejects_duplicate_fn() {
+    // fn! rejects defining the same function name twice.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (fn! my-func (x) (+ x 1))
+            (fn! my-func (x) (* x 2))
+            "#
+        ),
+        Err(ArenaError::AlreadyDefined)
+    );
+}
+
+#[test]
+fn test_define_allows_same_name_in_child_scope() {
+    // Defining the same name in a child scope should succeed.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (let ((y 2))
+              (define! x 10)
+              (+ x y))
+            "#
+        ),
+        Ok(Value::Number(12))
+    );
+}
+
+#[test]
+fn test_define_allows_same_name_in_different_envs() {
+    // Different environments can each have the same variable name.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! e1 (make-empty-environment))
+            (define! e2 (make-empty-environment))
+            (eval (list define! (quote x) 10) e1)
+            (eval (list define! (quote x) 20) e2)
+            (+ (eval (quote x) e1) (eval (quote x) e2))
+            "#
+        ),
+        Ok(Value::Number(30))
+    );
+}
+
+#[test]
+fn test_set_bang_still_works_for_mutation() {
+    // set! is the correct way to update an existing binding.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 1)
+            (set! (current-environment) x 42)
+            x
+            "#
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_fn_bang_basic() {
+    // fn! defines a named function.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (fn! add-one (x) (+ x 1))
+            (add-one 5)
+            "#
+        ),
+        Ok(Value::Number(6))
+    );
+}
+
+#[test]
+fn test_fn_bang_multi_body() {
+    // fn! supports multiple body expressions.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (fn! compute (x)
+              (define! y (+ x 1))
+              (* y 2))
+            (compute 5)
+            "#
+        ),
+        Ok(Value::Number(12))
+    );
+}
+
+#[test]
+fn test_fn_bang_recursive() {
+    // fn! supports recursion.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (fn! fact (n)
+              (if (= n 0) 1 (* n (fact (- n 1)))))
+            (fact 10)
+            "#
+        ),
+        Ok(Value::Number(3628800))
+    );
+}
+
+#[test]
+fn test_fn_bang_closure() {
+    // fn! creates closures over the defining environment.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (fn! make-adder (n)
+              (lambda (x) (+ x n)))
+            (define! add10 (make-adder 10))
+            (add10 5)
+            "#
+        ),
+        Ok(Value::Number(15))
+    );
+}
+
+#[test]
+fn test_fn_bang_returns_inert() {
+    // fn! returns #inert.
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (inert? (fn! identity (x) x))
+            "#
+        ),
+        Ok(Value::Boolean(true))
+    );
+}
