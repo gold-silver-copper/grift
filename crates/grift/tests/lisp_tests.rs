@@ -4347,3 +4347,175 @@ fn test_register_native_unit_return() {
     lisp.register_native("noop", native_noop).unwrap();
     assert_eq!(lisp.eval("(noop)"), Ok(Value::Inert));
 }
+
+// ============================================================================
+// LispOps Expansion Tests — new methods and FromLisp/ToLisp impls
+// ============================================================================
+
+#[test]
+fn test_lispops_boolean() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.boolean(true), ArenaIndex::TRUE);
+    assert_eq!(lisp.boolean(false), ArenaIndex::FALSE);
+}
+
+#[test]
+fn test_lispops_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.nil(), ArenaIndex::NIL);
+}
+
+#[test]
+fn test_lispops_alloc_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let s = lisp.alloc_string("hello").unwrap();
+    let mut buf = String::new();
+    lisp.write_value(s, &mut buf).unwrap();
+    assert_eq!(buf, "\"hello\"");
+}
+
+#[test]
+fn test_lispops_alloc_string_empty() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let s = lisp.alloc_string("").unwrap();
+    assert!(s.is_nil());
+}
+
+#[test]
+fn test_lispops_define_global() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let sym = lisp.symbol("my-val").unwrap();
+    let val = lisp.number(99).unwrap();
+    lisp.define_global(sym, val).unwrap();
+    assert_eq!(lisp.eval("my-val"), Ok(Value::Number(99)));
+}
+
+#[test]
+fn test_lispops_define_global_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let sym = lisp.symbol("greeting").unwrap();
+    let val = lisp.alloc_string("hi").unwrap();
+    lisp.define_global(sym, val).unwrap();
+    let idx = lisp.eval_to_index("greeting").unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    assert_eq!(buf, "\"hi\"");
+}
+
+// — FromLisp/ToLisp for char —
+
+register_native!(native_first_char, (c: char) -> char, { c });
+
+#[test]
+fn test_from_lisp_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("first-char", native_first_char).unwrap();
+    // (car "hello") returns "h" (a single-char string), which FromLisp<char> can extract
+    let idx = lisp.eval_to_index("(first-char (car \"hello\"))").unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    assert_eq!(buf, "\"h\"");
+}
+
+#[test]
+fn test_from_lisp_char_type_error_on_number() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("first-char", native_first_char).unwrap();
+    // Passing a number to a char-expecting function should error
+    assert_eq!(lisp.eval("(first-char 42)"), Err(ArenaError::TypeError));
+}
+
+#[test]
+fn test_from_lisp_char_type_error_on_multi_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("first-char", native_first_char).unwrap();
+    // A multi-char string should not be extractable as a single char
+    assert_eq!(lisp.eval("(first-char \"ab\")"), Err(ArenaError::TypeError));
+}
+
+register_native!(native_to_upper, (c: char) -> char, {
+    c.to_ascii_uppercase()
+});
+
+#[test]
+fn test_to_lisp_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("to-upper", native_to_upper).unwrap();
+    let idx = lisp.eval_to_index("(to-upper (car \"a\"))").unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    assert_eq!(buf, "\"A\"");
+}
+
+// — Native function creating strings via LispOps —
+
+fn native_make_greeting(
+    lisp: &dyn LispOps,
+    _args: ArenaIndex,
+) -> ArenaResult<ArenaIndex> {
+    lisp.alloc_string("hello world")
+}
+
+#[test]
+fn test_native_creates_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("greet", native_make_greeting).unwrap();
+    let idx = lisp.eval_to_index("(greet)").unwrap();
+    let mut buf = String::new();
+    lisp.write_value(idx, &mut buf).unwrap();
+    assert_eq!(buf, "\"hello world\"");
+}
+
+// — Native function using define_global —
+
+fn native_define_answer(
+    lisp: &dyn LispOps,
+    _args: ArenaIndex,
+) -> ArenaResult<ArenaIndex> {
+    let sym = lisp.symbol("the-answer")?;
+    let val = lisp.number(42)?;
+    lisp.define_global(sym, val)?;
+    Ok(lisp.nil())
+}
+
+#[test]
+fn test_native_define_global() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("define-answer!", native_define_answer).unwrap();
+    lisp.eval("(define-answer!)").unwrap();
+    assert_eq!(lisp.eval("the-answer"), Ok(Value::Number(42)));
+}
+
+// — Native function using boolean/nil convenience methods —
+
+fn native_check_positive(
+    lisp: &dyn LispOps,
+    args: ArenaIndex,
+) -> ArenaResult<ArenaIndex> {
+    let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
+    Ok(lisp.boolean(n > 0))
+}
+
+#[test]
+fn test_native_boolean_method() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("pos?", native_check_positive).unwrap();
+    assert_eq!(lisp.eval("(pos? 5)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(pos? -1)"), Ok(Value::Boolean(false)));
+}
+
+fn native_nil_if_zero(
+    lisp: &dyn LispOps,
+    args: ArenaIndex,
+) -> ArenaResult<ArenaIndex> {
+    let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
+    if n == 0 { Ok(lisp.nil()) } else { lisp.number(n) }
+}
+
+#[test]
+fn test_native_nil_method() {
+    let lisp: Lisp<20000> = Lisp::new();
+    lisp.register_native("nil-if-zero", native_nil_if_zero).unwrap();
+    assert_eq!(lisp.eval("(nil-if-zero 0)"), Ok(Value::Nil));
+    assert_eq!(lisp.eval("(nil-if-zero 5)"), Ok(Value::Number(5)));
+}
