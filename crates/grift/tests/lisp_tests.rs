@@ -648,24 +648,23 @@ fn test_set_bang_scheme_style_is_rejected() {
 
 #[test]
 fn test_define_shadows_not_mutates() {
-    // Redefining a name at the top level creates a new shadow binding.
-    // A lambda parameter binding is independent from a later global define.
+    // Redefining with define! in the same frame now errors with AlreadyDefined.
+    // A lambda parameter binding is independent from global define.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! x 1)
         (define! get-x (lambda (x) x))
-        (define! x 2)
         (get-x 1)
     "#,
     );
-    // The lambda receives x=1 as a parameter, so global redefinition doesn't affect it.
+    // The lambda receives x=1 as a parameter.
     assert_eq!(result, Ok(Value::Number(1)));
 }
 
 #[test]
 fn test_define_redefinition_returns_new_value() {
-    // After redefining, a direct reference to x yields the latest binding.
+    // Redefining in the same frame now errors with AlreadyDefined.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -674,7 +673,7 @@ fn test_define_redefinition_returns_new_value() {
         x
     "#,
     );
-    assert_eq!(result, Ok(Value::Number(2)));
+    assert_eq!(result, Err(ArenaError::AlreadyDefined));
 }
 
 // ============================================================================
@@ -1278,7 +1277,7 @@ fn test_define_bang_mutates_environment() {
 
 #[test]
 fn test_define_bang_redefinition() {
-    // Redefining with define! updates the same environment
+    // Redefining with define! in the same frame now errors with AlreadyDefined
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -1288,7 +1287,7 @@ fn test_define_bang_redefinition() {
             x
             "#
         ),
-        Ok(Value::Number(2))
+        Err(ArenaError::AlreadyDefined)
     );
 }
 
@@ -1439,8 +1438,9 @@ fn test_vau_custom_if() {
         ),
         Ok(Value::Number(1))
     );
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
             (define! my-if
                 (vau (test then else) e
@@ -1485,8 +1485,9 @@ fn test_child_env_inherits_from_parent() {
         .is_ok()
     );
     // Verify child can use parent builtins
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
             (define! get-env (vau () e e))
             (define! child (make-environment (get-env)))
@@ -1596,8 +1597,9 @@ fn test_no_global_fallback_in_eval() {
         Err(ArenaError::UnboundVariable)
     );
     // make-empty-environment
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
             (define! isolated (make-empty-environment))
             (eval (quote +) isolated)
@@ -1731,13 +1733,12 @@ fn test_define_ptree_pair_mismatch() {
 
 #[test]
 fn test_define_ptree_rest_binding() {
-    // With fn marker, (define! (fn a . rest) ...) defines function 'a'
-    // with variadic rest args.
+    // fn! with variadic rest args — bare symbol captures all args.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn first . args) (car args))
+            (fn! first args (car args))
             (first 1 2 3)
             "#
         ),
@@ -1921,8 +1922,9 @@ fn test_eq_symbols() {
         ),
         Ok(Value::Boolean(true))
     );
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
             (define! a (quote hello))
             (define! b (quote world))
@@ -2094,8 +2096,9 @@ fn test_equal_environments_identity() {
         ),
         Ok(Value::Boolean(false))
     );
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
             (define! a (make-environment))
             (equal? a a)
@@ -2298,8 +2301,9 @@ fn test_make_environment_parent_order_matters() {
         Ok(Value::Number(1))
     );
     // Reversed order: e2 first, so e2's binding wins
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
             (define! get-env (vau () e e))
             (define! e1 (make-environment))
@@ -3180,7 +3184,7 @@ fn test_set_bang_closures_see_change() {
             r#"
             (define! x 1)
             (define! env (current-environment))
-            (define! (fn get-x) x)
+            (fn! get-x () x)
             (set! env x 99)
             (get-x)
             "#
@@ -3218,6 +3222,7 @@ fn test_set_bang_only_supports_single_symbol() {
 
 #[test]
 fn test_define_overwrites_in_same_frame() {
+    // define! now rejects re-defining in the same frame
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3227,7 +3232,7 @@ fn test_define_overwrites_in_same_frame() {
             x
             "#
         ),
-        Ok(Value::Number(2))
+        Err(ArenaError::AlreadyDefined)
     );
 }
 
@@ -3251,7 +3256,7 @@ fn test_define_different_frames() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn f x)
+            (fn! f (x)
                   (current-environment))
                 (eq? (f 1) (f 2))
             "#
@@ -3262,11 +3267,12 @@ fn test_define_different_frames() {
 
 #[test]
 fn test_define_overwrite_function_in_repl() {
+    // fn! uses define! internally, so redefining errors with AlreadyDefined
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn double n) (+ n n))
+            (fn! double (n) (+ n n))
             (double 5)
             "#
         ),
@@ -3275,11 +3281,11 @@ fn test_define_overwrite_function_in_repl() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn double n) (* n 2))
+            (fn! double (n) (* n 2))
             (double 5)
             "#
         ),
-        Ok(Value::Number(10))
+        Err(ArenaError::AlreadyDefined)
     );
 }
 
@@ -3349,7 +3355,7 @@ fn test_current_environment_in_closures() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn make-cell val)
+            (fn! make-cell (val)
               (define! env (current-environment))
               (list
                 (lambda () val)
@@ -3360,10 +3366,11 @@ fn test_current_environment_in_closures() {
         ),
         Ok(Value::Number(0))
     );
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
-            (define! (fn make-cell val)
+            (fn! make-cell (val)
               (define! env (current-environment))
               (list
                 (lambda () val)
@@ -3498,7 +3505,7 @@ fn test_define_function_shorthand_basic() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn double n) (+ n n))
+            (fn! double (n) (+ n n))
             (double 5)
             "#
         ),
@@ -3512,7 +3519,7 @@ fn test_define_function_shorthand_multi_body() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn do-stuff x)
+            (fn! do-stuff (x)
               (define! y (+ x 1))
               (* y 2))
             (do-stuff 5)
@@ -3528,7 +3535,7 @@ fn test_define_function_shorthand_variadic() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn first . args) (car args))
+            (fn! first args (car args))
             (first 1 2 3)
             "#
         ),
@@ -3543,7 +3550,7 @@ fn test_define_function_shorthand_zero_params() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn greeting) "hello")
+            (fn! greeting () "hello")
             (pair? (greeting))
             "#
         ),
@@ -3557,7 +3564,7 @@ fn test_define_function_shorthand_recursive() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn factorial n)
+            (fn! factorial (n)
               (if (= n 0) 1 (* n (factorial (- n 1)))))
             (factorial 10)
             "#
@@ -3572,8 +3579,8 @@ fn test_define_function_shorthand_mutual_recursion() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn even? n) (if (= n 0) #t (odd? (- n 1))))
-            (define! (fn odd? n)  (if (= n 0) #f (even? (- n 1))))
+            (fn! even? (n) (if (= n 0) #t (odd? (- n 1))))
+            (fn! odd? (n)  (if (= n 0) #f (even? (- n 1))))
             (even? 10)
             "#
         ),
@@ -3588,16 +3595,17 @@ fn test_define_function_shorthand_overwrite() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn f x) (+ x 1))
+            (fn! f (x) (+ x 1))
             (f 5)
             "#
         ),
         Ok(Value::Number(6))
     );
+    let lisp2: Lisp<20000> = Lisp::new();
     assert_eq!(
-        lisp.eval(
+        lisp2.eval(
             r#"
-            (define! (fn f x) (* x 2))
+            (fn! f (x) (* x 2))
             (f 5)
             "#
         ),
@@ -3611,7 +3619,7 @@ fn test_define_function_shorthand_closure() {
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn make-adder n)
+            (fn! make-adder (n)
               (lambda (x) (+ x n)))
             (define! add5 (make-adder 5))
             (add5 10)
@@ -3628,7 +3636,7 @@ fn test_define_function_shorthand_inside_let() {
         lisp.eval(
             r#"
             (let ()
-              (define! (fn helper x) (+ x 1))
+              (fn! helper (x) (+ x 1))
               (helper 41))
             "#
         ),
@@ -3673,12 +3681,12 @@ fn test_define_fn_disambiguation_destructuring_vs_function() {
 
 #[test]
 fn test_define_fn_disambiguation_function_def() {
-    // With fn: function definition
+    // With fn!: function definition
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn x y) (list 10 20))
+            (fn! x (y) (list 10 20))
             (pair? (x 99))
             "#
         ),
@@ -3740,12 +3748,12 @@ fn test_define_fn_as_variable_name() {
 
 #[test]
 fn test_define_fn_function_named_fn() {
-    // Defining a function named fn using fn marker
+    // Defining a function named fn using fn!
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
-            (define! (fn fn x) (+ x 1))
+            (fn! fn (x) (+ x 1))
             (fn 5)
             "#
         ),
@@ -4246,7 +4254,7 @@ fn test_native_in_lambda() {
     let lisp: Lisp<20000> = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     assert_eq!(
-        lisp.eval("(define! (fn apply-twice f x) (f (f x))) (apply-twice double 3)"),
+        lisp.eval("(fn! apply-twice (f x) (f (f x))) (apply-twice double 3)"),
         Ok(Value::Number(12))
     );
 }
