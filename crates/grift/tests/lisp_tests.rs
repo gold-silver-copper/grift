@@ -3496,7 +3496,7 @@ fn test_regular_let_still_works() {
 }
 
 // ============================================================================
-// Feature 5: define! Function Shorthand (fn marker)
+// Feature 5: fn! Function Definition
 // ============================================================================
 
 #[test]
@@ -4051,7 +4051,7 @@ fn test_string_escape_roundtrip_newline() {
 // ============================================================================
 
 #[test]
-fn test_stdlib_map() {
+fn test_prelude_map() {
     let lisp: Lisp<20000> = Lisp::new();
     // map should produce a list; check via length
     assert_eq!(
@@ -4066,14 +4066,14 @@ fn test_stdlib_map() {
 }
 
 #[test]
-fn test_stdlib_length() {
+fn test_prelude_length() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(length (list 1 2 3))"), Ok(Value::Number(3)));
     assert_eq!(lisp.eval("(length ())"), Ok(Value::Number(0)));
 }
 
 #[test]
-fn test_stdlib_filter() {
+fn test_prelude_filter() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval("(length (filter (lambda (x) (> x 2)) (list 1 2 3 4 5)))"),
@@ -4082,7 +4082,7 @@ fn test_stdlib_filter() {
 }
 
 #[test]
-fn test_stdlib_append() {
+fn test_prelude_append() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval("(length (append (list 1 2) (list 3 4)))"),
