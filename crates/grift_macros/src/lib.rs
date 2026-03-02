@@ -45,30 +45,25 @@ pub fn include_stdlib(input: TokenStream) -> TokenStream {
     code.push_str("];\n\n");
 
     // Emit init_stdlib_constants function
-    code.push_str("pub(crate) fn init_stdlib_constants<const N: usize>(lisp: &Lisp<N>) {\n");
+    code.push_str("pub(crate) fn init_stdlib_constants(lisp: &dyn LispOps) {\n");
     for c in &constants {
         match &c.value {
             ConstValue::Number(n) => {
                 code.push_str(&format!(
-                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let v = lisp.number({}).unwrap(); let _ = lisp.env_define(ArenaIndex::GLOBAL_ENV, s, v); }}\n",
+                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let v = lisp.number({}).unwrap(); let _ = lisp.define_global(s, v); }}\n",
                     c.name, n
                 ));
             }
             ConstValue::Bool(b) => {
-                let idx = if *b {
-                    "ArenaIndex::TRUE"
-                } else {
-                    "ArenaIndex::FALSE"
-                };
                 code.push_str(&format!(
-                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let _ = lisp.env_define(ArenaIndex::GLOBAL_ENV, s, {}); }}\n",
-                    c.name, idx
+                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let _ = lisp.define_global(s, lisp.boolean({})); }}\n",
+                    c.name, b
                 ));
             }
             ConstValue::String(s) => {
                 let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
                 code.push_str(&format!(
-                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let v = lisp.alloc_string(\"{}\").unwrap(); let _ = lisp.env_define(ArenaIndex::GLOBAL_ENV, s, v); }}\n",
+                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let v = lisp.alloc_string(\"{}\").unwrap(); let _ = lisp.define_global(s, v); }}\n",
                     c.name, escaped
                 ));
             }

@@ -228,12 +228,48 @@ impl<const N: usize> Lisp<N> {
         f(self, args)
     }
 
+    /// Define a value in the global environment under the given symbol.
+    ///
+    /// This is the general-purpose equivalent of [`register_native`](Self::register_native)
+    /// for arbitrary values. `sym` must be a valid symbol index.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::{Lisp, Value, LispOps};
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let sym = lisp.symbol("my-const").unwrap();
+    /// let val = lisp.number(42).unwrap();
+    /// lisp.define_global(sym, val).unwrap();
+    /// assert_eq!(lisp.eval("my-const"), Ok(Value::Number(42)));
+    /// ```
+    pub fn define_global(&self, sym: ArenaIndex, value: ArenaIndex) -> ArenaResult<()> {
+        self.env_define(ArenaIndex::GLOBAL_ENV, sym, value)
+    }
+
     // — Value constructors —
 
     /// Allocate a number.
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(n.into())
+    }
+
+    /// Return the `ArenaIndex` for a boolean (`#t` or `#f`).
+    ///
+    /// Booleans are pre-allocated singletons, so this never allocates.
+    #[inline]
+    pub fn boolean(&self, b: bool) -> ArenaIndex {
+        ArenaIndex::from_bool(b)
+    }
+
+    /// Return the `ArenaIndex` for nil (the empty list).
+    ///
+    /// Nil is a pre-allocated singleton, so this never allocates.
+    #[inline]
+    pub fn nil(&self) -> ArenaIndex {
+        ArenaIndex::NIL
     }
 
     /// Allocate a cons cell.
@@ -285,7 +321,7 @@ impl<const N: usize> Lisp<N> {
     /// Each `CharPair { ch, cdr }` points to the next character,
     /// with the final character's `cdr` pointing to `NIL`.
     /// An empty string is represented as `NIL`.
-    pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
+    pub fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         // Pre-check: ensure enough free slots for all chars.
         let char_count = if s.is_ascii() {
             s.len()
@@ -1081,12 +1117,24 @@ impl<const N: usize> LispOps for Lisp<N> {
         self.number(n)
     }
     #[inline]
+    fn boolean(&self, b: bool) -> ArenaIndex {
+        self.boolean(b)
+    }
+    #[inline]
+    fn nil(&self) -> ArenaIndex {
+        self.nil()
+    }
+    #[inline]
     fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.cons(car, cdr)
     }
     #[inline]
     fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
         self.char_val(c)
+    }
+    #[inline]
+    fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
+        self.alloc_string(s)
     }
     #[inline]
     fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
@@ -1173,6 +1221,10 @@ impl<const N: usize> LispOps for Lisp<N> {
     #[inline]
     fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
         self.register_native(name, f)
+    }
+    #[inline]
+    fn define_global(&self, sym: ArenaIndex, value: ArenaIndex) -> ArenaResult<()> {
+        self.define_global(sym, value)
     }
 }
 

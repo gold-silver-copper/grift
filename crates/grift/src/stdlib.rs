@@ -14,7 +14,7 @@
 //! - The `STDLIB_ALL` array referencing those entries
 //! - An `init_stdlib_constants` function for numeric/boolean/string constants
 
-use crate::lisp::Lisp;
+use crate::native::LispOps;
 
 /// A single standard library entry: name + lambda source in static memory.
 #[derive(Debug)]
