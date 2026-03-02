@@ -104,7 +104,6 @@ pub enum Value {
     Native(NativeFn),
 }
 
-#[allow(unpredictable_function_pointer_comparisons)]
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -143,6 +142,7 @@ impl PartialEq for Value {
             (Value::Inert, Value::Inert) => true,
             (Value::Ignore, Value::Ignore) => true,
             (Value::StdLib(a), Value::StdLib(b)) => a == b,
+            #[allow(unpredictable_function_pointer_comparisons)]
             (Value::Native(a), Value::Native(b)) => core::ptr::fn_addr_eq(*a, *b),
             _ => false,
         }
