@@ -5,7 +5,7 @@ pub fn include_prelude(input: TokenStream) -> TokenStream {
     let path_token = input
         .into_iter()
         .next()
-        .expect("include_stdlib! expects a string literal path");
+        .expect("include_prelude! expects a string literal path");
     let path_str = path_token.to_string();
     let path = path_str.trim_matches('"');
 
