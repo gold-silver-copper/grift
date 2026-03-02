@@ -151,7 +151,10 @@ fn test_and() {
     // Short circuit prevents evaluation of later args
     assert_eq!(lisp.eval("(and #f (/ 1 0))"), Ok(Value::Boolean(false)));
     // Last expression is tail position
-    assert_eq!(lisp.eval("(and #t (if #t #t #f))"), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval("(and #t (if #t #t #f))"),
+        Ok(Value::Boolean(true))
+    );
     // Type errors
     assert_eq!(lisp.eval("(and 1 2 3)"), Err(ArenaError::TypeError));
     assert_eq!(lisp.eval("(and 1 #f 3)"), Err(ArenaError::TypeError));
@@ -299,7 +302,9 @@ fn test_gc_repeated_eval_no_leak() {
     assert!(
         stats.allocated < budget,
         "Arena should not keep growing without roots: allocated = {}, budget = {} (baseline {} + 32)",
-        stats.allocated, budget, baseline
+        stats.allocated,
+        budget,
+        baseline
     );
 }
 
@@ -360,7 +365,9 @@ fn test_gc_list_operations_no_leak() {
     assert!(
         stats.allocated < budget,
         "Arena should not grow unbounded: allocated = {}, budget = {} (baseline {} + 32)",
-        stats.allocated, budget, baseline
+        stats.allocated,
+        budget,
+        baseline
     );
 }
 
@@ -392,7 +399,9 @@ fn test_gc_stress_many_evals() {
     assert!(
         final_stats.allocated < budget,
         "Arena should be mostly empty after GC: allocated = {}, budget = {} (baseline {} + 32)",
-        final_stats.allocated, budget, baseline
+        final_stats.allocated,
+        budget,
+        baseline
     );
 }
 
@@ -3760,10 +3769,7 @@ fn test_error_signals_error() {
 #[test]
 fn test_apply_basic() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(apply + (list 1 2 3))"),
-        Ok(Value::Number(6))
-    );
+    assert_eq!(lisp.eval("(apply + (list 1 2 3))"), Ok(Value::Number(6)));
 }
 
 #[test]
@@ -3778,10 +3784,7 @@ fn test_apply_lambda() {
 #[test]
 fn test_apply_empty_args() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(
-        lisp.eval("(apply + ())"),
-        Ok(Value::Number(0))
-    );
+    assert_eq!(lisp.eval("(apply + ())"), Ok(Value::Number(0)));
 }
 
 // ============================================================================
@@ -3792,35 +3795,61 @@ fn test_apply_empty_args() {
 fn test_raw_read_string() {
     let lisp: Lisp<20000> = Lisp::new();
     // Parse a number from a string
-    assert_eq!(lisp.eval(r#"(raw-read-string "42")"#), Ok(Value::Number(42)));
+    assert_eq!(
+        lisp.eval(r#"(raw-read-string "42")"#),
+        Ok(Value::Number(42))
+    );
     // Parse a symbol
-    assert_eq!(lisp.eval(r#"(symbol? (raw-read-string "foo"))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(symbol? (raw-read-string "foo"))"#),
+        Ok(Value::Boolean(true))
+    );
     // Parse a list
-    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(+ 1 2)") (list (quote +) 1 2))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-read-string "(+ 1 2)") (list (quote +) 1 2))"#),
+        Ok(Value::Boolean(true))
+    );
     // Empty string returns NIL
-    assert_eq!(lisp.eval(r#"(null? (raw-read-string ""))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(null? (raw-read-string ""))"#),
+        Ok(Value::Boolean(true))
+    );
 }
 
 #[test]
 fn test_raw_display_to_string() {
     let lisp: Lisp<20000> = Lisp::new();
     // Display a number
-    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string 42) "42")"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-display-to-string 42) "42")"#),
+        Ok(Value::Boolean(true))
+    );
     // Display a string (no quotes in display mode)
-    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string "hello") "hello")"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-display-to-string "hello") "hello")"#),
+        Ok(Value::Boolean(true))
+    );
     // Display a boolean
-    assert_eq!(lisp.eval(r##"(equal? (raw-display-to-string #t) "#t")"##), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r##"(equal? (raw-display-to-string #t) "#t")"##),
+        Ok(Value::Boolean(true))
+    );
 }
 
 #[test]
 fn test_raw_write_to_string() {
     let lisp: Lisp<20000> = Lisp::new();
     // Write a number (same as display for numbers)
-    assert_eq!(lisp.eval(r#"(equal? (raw-write-to-string 42) "42")"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-write-to-string 42) "42")"#),
+        Ok(Value::Boolean(true))
+    );
     // Write produces different output than display for strings (adds quotes)
-    let result = lisp.eval(r#"
+    let result = lisp.eval(
+        r#"
         (not (equal? (raw-display-to-string "hi") (raw-write-to-string "hi")))
-    "#);
+    "#,
+    );
     assert_eq!(result, Ok(Value::Boolean(true)));
 }
 
@@ -3830,9 +3859,18 @@ fn test_arena_writer_no_size_limit() {
     // so there is no fixed buffer size limit.
     let lisp: Lisp<100_000> = Lisp::new();
     // Verify that raw-display-to-string handles basic values correctly
-    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string 12345) "12345")"#), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string (list 1 2 3)) "(1 2 3)")"#), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval(r#"(equal? (raw-display-to-string "hello world") "hello world")"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-display-to-string 12345) "12345")"#),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-display-to-string (list 1 2 3)) "(1 2 3)")"#),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-display-to-string "hello world") "hello world")"#),
+        Ok(Value::Boolean(true))
+    );
     // Verify ArenaWriter can handle a long string (previously limited to 4096 bytes
     // in the display/write-to-string builtins; the parser still has its own limit
     // in parse.rs, but ArenaWriter itself has no size constraint)
@@ -3847,21 +3885,51 @@ fn test_read_from_chain() {
     // without materializing into a fixed buffer.
     let lisp: Lisp<20000> = Lisp::new();
     // Parse various types
-    assert_eq!(lisp.eval(r#"(raw-read-string "42")"#), Ok(Value::Number(42)));
-    assert_eq!(lisp.eval(r#"(raw-read-string "-7")"#), Ok(Value::Number(-7)));
-    assert_eq!(lisp.eval(r##"(raw-read-string "#t")"##), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval(r##"(raw-read-string "#f")"##), Ok(Value::Boolean(false)));
-    assert_eq!(lisp.eval(r#"(symbol? (raw-read-string "hello"))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(raw-read-string "42")"#),
+        Ok(Value::Number(42))
+    );
+    assert_eq!(
+        lisp.eval(r#"(raw-read-string "-7")"#),
+        Ok(Value::Number(-7))
+    );
+    assert_eq!(
+        lisp.eval(r##"(raw-read-string "#t")"##),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(r##"(raw-read-string "#f")"##),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(
+        lisp.eval(r#"(symbol? (raw-read-string "hello"))"#),
+        Ok(Value::Boolean(true))
+    );
     // Parse a list
-    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(1 2 3)") (list 1 2 3))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-read-string "(1 2 3)") (list 1 2 3))"#),
+        Ok(Value::Boolean(true))
+    );
     // Parse a dotted pair
-    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "(1 . 2)") (cons 1 2))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-read-string "(1 . 2)") (cons 1 2))"#),
+        Ok(Value::Boolean(true))
+    );
     // Parse string with escapes
-    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "\"hello\"") "hello")"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-read-string "\"hello\"") "hello")"#),
+        Ok(Value::Boolean(true))
+    );
     // Parse quoted form
-    assert_eq!(lisp.eval(r#"(equal? (raw-read-string "'x") (list (quote quote) (quote x)))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-read-string "'x") (list (quote quote) (quote x)))"#),
+        Ok(Value::Boolean(true))
+    );
     // Empty string returns NIL
-    assert_eq!(lisp.eval(r#"(null? (raw-read-string ""))"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(null? (raw-read-string ""))"#),
+        Ok(Value::Boolean(true))
+    );
 }
 
 // ============================================================================
@@ -3876,7 +3944,9 @@ fn test_string_escape_newline() {
     let val = lisp.get(result).unwrap();
     assert!(matches!(val, Value::CharPair { .. }));
     // The 6th character (index 5) should be an actual newline
-    let sixth = lisp.eval(r#"(car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))"#).unwrap();
+    let sixth = lisp
+        .eval(r#"(car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))"#)
+        .unwrap();
     assert!(matches!(sixth, Value::CharPair { .. }));
 }
 
@@ -3916,10 +3986,14 @@ fn test_string_escape_newline_is_real_newline() {
     let lisp: Lisp<5000> = Lisp::new();
     // Verify the actual character is a newline by comparing with a string
     // built character-by-character using cons
-    let result = lisp.eval(r#"
+    let result = lisp
+        .eval(
+            r#"
         (equal? (car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))
                 (car "\n"))
-    "#).unwrap();
+    "#,
+        )
+        .unwrap();
     assert_eq!(result, Value::Boolean(true));
 }
 
@@ -3936,11 +4010,15 @@ fn test_string_roundtrip_via_raw_write_read_string() {
     let lisp: Lisp<5000> = Lisp::new();
     // Write "a\"b" (3 chars: a, ", b) to a string via raw-write-to-string,
     // then read it back via raw-read-string and verify equality
-    let result = lisp.eval_to_index(r#"
+    let result = lisp
+        .eval_to_index(
+            r#"
         (let ((s (raw-write-to-string "a\"b")))
           (let ((back (raw-read-string s)))
             (equal? "a\"b" back)))
-    "#).unwrap();
+    "#,
+        )
+        .unwrap();
     assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
 }
 
@@ -3948,11 +4026,15 @@ fn test_string_roundtrip_via_raw_write_read_string() {
 fn test_string_escape_roundtrip_newline() {
     let lisp: Lisp<5000> = Lisp::new();
     // Write a string with a real newline, read it back, verify equal
-    let result = lisp.eval_to_index(r#"
+    let result = lisp
+        .eval_to_index(
+            r#"
         (let ((s (raw-write-to-string "line1\nline2")))
           (let ((back (raw-read-string s)))
             (equal? "line1\nline2" back)))
-    "#).unwrap();
+    "#,
+        )
+        .unwrap();
     assert_eq!(lisp.get(result).unwrap(), Value::Boolean(true));
 }
 
@@ -4003,11 +4085,53 @@ fn test_stdlib_append() {
 #[test]
 fn test_stdlib_entries_exist() {
     // Verify that StdLib entries are generated
-    assert!(!grift::stdlib::STDLIB_ALL.is_empty(), "STDLIB_ALL should not be empty");
+    assert!(
+        !grift::stdlib::STDLIB_ALL.is_empty(),
+        "STDLIB_ALL should not be empty"
+    );
     // Check a known function
     let names: Vec<&str> = grift::stdlib::STDLIB_ALL.iter().map(|e| e.name()).collect();
     assert!(names.contains(&"map"), "map should be in STDLIB_ALL");
     assert!(names.contains(&"filter"), "filter should be in STDLIB_ALL");
     assert!(names.contains(&"length"), "length should be in STDLIB_ALL");
     assert!(names.contains(&"append"), "append should be in STDLIB_ALL");
+}
+
+// ============================================================================
+// Parse Error Location Tests
+// ============================================================================
+
+#[test]
+fn test_parse_error_unmatched_close_paren() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval(")").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 2 });
+}
+
+#[test]
+fn test_parse_error_unterminated_list() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval("(+ 1 2").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
+}
+
+#[test]
+fn test_parse_error_unterminated_string() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval("\"hello").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
+}
+
+#[test]
+fn test_parse_error_multiline_location() {
+    let lisp: Lisp<20000> = Lisp::new();
+    // Unterminated list spanning multiple lines; error at EOF
+    let err = lisp.eval("(\n  +\n  1").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 3, col: 4 });
+}
+
+#[test]
+fn test_parse_error_display() {
+    let err = ArenaError::ParseError { line: 5, col: 10 };
+    assert_eq!(format!("{err}"), "Parse error at line 5, column 10");
 }

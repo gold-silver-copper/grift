@@ -4,8 +4,8 @@
 //! for every currently occupied slot. Slots that are free are silently
 //! skipped, so the iterator produces exactly `arena.len()` items.
 
-use crate::{Arena, ArenaIndex};
 use crate::types::Slot;
+use crate::{Arena, ArenaIndex};
 
 /// Iterator over allocated cells in the arena.
 ///
@@ -17,7 +17,7 @@ pub struct ArenaIterator<'a, T: Copy, const N: usize> {
     pub(crate) current: usize,
 }
 
-impl<'a, T: Copy, const N: usize> Iterator for ArenaIterator<'a, T, N> {
+impl<T: Copy, const N: usize> Iterator for ArenaIterator<'_, T, N> {
     type Item = (ArenaIndex, T);
 
     #[inline]
