@@ -1,4 +1,0 @@
-[package]
-name = "grift_unicode"
-version.workspace = true
-edition.workspace = true
