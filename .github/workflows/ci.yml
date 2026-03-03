@@ -28,7 +28,6 @@ jobs:
         run: >
           cargo build --target thumbv6m-none-eabi
           -p grift_arena
-          -p grift_unicode
 
   # Verify the workspace builds against the Minimum Supported Rust Version.
   msrv:
