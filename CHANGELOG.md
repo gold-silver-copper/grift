@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ArenaError::ParseError` is now a struct variant with `line` and `col`
   fields (breaking change for pattern matching).
 - Upgraded `#![warn(missing_docs)]` to `#![deny(missing_docs)]` in
-  `grift`, `grift_arena`, and `grift_unicode`.
+  `grift` and `grift_arena`.
 - Enabled `#![warn(clippy::pedantic)]` across all crates with targeted
   allows for accepted patterns.
 - CI clippy job now uses `-- -D warnings` to fail on any warning.

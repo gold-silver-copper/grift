@@ -32,15 +32,6 @@ src/
 └── eval.rs      Evaluator — TCO trampoline, builtin registration, all operatives/applicatives
 ```
 
-### `grift_unicode` (no_std, no dependencies)
-
-```
-src/
-├── lib.rs       Character operations, case mapping, full case folding
-└── build.rs     Code generator: parses CaseFolding.txt into a static lookup table
-```
-
-Currently standalone. Not yet wired into the interpreter's string operations.
 
 ## Key Data Types
 
