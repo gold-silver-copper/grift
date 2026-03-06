@@ -26,14 +26,14 @@
 
 //! # Grift – A Minimalistic Lisp
 //!
-//! A `no_std`, `no_alloc` Lisp interpreter built on top of [`grift_arena`],
+//! A `no_std`, `no_alloc` Lisp interpreter built on top of [`arena`],
 //! implementing Kernel-style vau calculus (fexprs).
 //!
 //! ## Features
 //!
 //! - **No-std, no-alloc**: Works in embedded environments with no heap.
 //!   Only `core::` types are used; the crate compiles for bare-metal targets.
-//! - **Arena-allocated**: All values live in a fixed-size [`Arena`](grift_arena::Arena)
+//! - **Arena-allocated**: All values live in a fixed-size [`Arena`](arena::Arena)
 //!   with const-generic capacity. No `Vec`, `String`, or `Box`.
 //! - **Simple API**: Parse and evaluate Lisp expressions in one call via [`Lisp::eval`].
 //! - **Tail-call optimization**: Unbounded recursion in tail position without
@@ -61,6 +61,8 @@
 //! assert_eq!(three, Ok(Value::Number(3)));
 //! ```
 
+/// Fixed-size arena allocator with free-list and mark-and-sweep GC.
+pub mod arena;
 mod eval;
 mod lisp;
 /// Native function registration support.
@@ -70,7 +72,7 @@ mod parse;
 pub mod prelude;
 mod value;
 
-pub use grift_arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
+pub use arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 pub use lisp::Lisp;
 pub use native::{FromLisp, LispOps, NativeFn, ToLisp, extract_arg};
 pub use prelude::{Prelude, PreludeEntry};

@@ -1,14 +1,14 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 //!
 //! [`Lisp`] is the top-level entry point for the interpreter. It owns the
-//! fixed-size [`Arena`](grift_arena::Arena), pre-allocates singleton values
+//! fixed-size [`Arena`](crate::arena::Arena), pre-allocates singleton values
 //! and environments, manages symbol interning, and exposes the public
 //! [`eval`](Lisp::eval) API.
 //!
 //! ## Slot Layout
 //!
 //! Slots 0–9 are reserved at construction time for well-known values
-//! whose [`ArenaIndex`](grift_arena::ArenaIndex) constants are compile-time
+//! whose [`ArenaIndex`](crate::arena::ArenaIndex) constants are compile-time
 //! values:
 //!
 //! | Slot | Contents |
@@ -24,7 +24,7 @@
 //! | 8 | GC root stack head |
 //! | 9 | Symbol intern list head |
 
-use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
+use crate::arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
 use crate::native::{LispOps, NativeFn};
 use crate::parse::SliceSource;
