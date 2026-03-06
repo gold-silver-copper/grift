@@ -10,7 +10,7 @@
 //! trees, environment chains) are built as linked lists of `Cons` or
 //! `CharPair` nodes in the arena.
 
-use grift_arena::{ArenaError, ArenaIndex};
+use crate::arena::{ArenaError, ArenaIndex};
 
 use crate::native::NativeFn;
 use crate::prelude::Prelude;
