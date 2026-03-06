@@ -5,6 +5,7 @@ members = [
 
     "crates/grift",
 ]
+exclude = ["grift-docs"]
 
 [workspace.package]
 version = "1.5.0"
