@@ -67,10 +67,14 @@ fn extract_signature(doc: &str, lisp_name: &str) -> String {
 }
 
 fn detect_tco(method_name: &str, file_contents: &str) -> bool {
-    // Simple heuristic: look for the method definition and check if body
-    // uses tail_continue! or TailAction::Continue
-    let search = format!("fn {method_name}");
-    if let Some(pos) = file_contents.find(&search) {
+    // Look for the method definition with a word boundary check
+    // (followed by a non-alphanumeric character like '(' or whitespace)
+    let search = format!("fn {method_name}(");
+    let search_alt = format!("fn {method_name} ");
+    let pos = file_contents
+        .find(&search)
+        .or_else(|| file_contents.find(&search_alt));
+    if let Some(pos) = pos {
         let rest = &file_contents[pos..];
         // Look within a reasonable range (next 2000 chars)
         let range = &rest[..rest.len().min(2000)];

@@ -1,6 +1,6 @@
 use crate::model::DocModel;
 
-use super::md_writer::MdWriter;
+use super::md_writer::{find_errors_for_method, split_doc_examples, MdWriter};
 
 /// Builtin group classification.
 struct BuiltinGroup {
@@ -144,8 +144,7 @@ fn render_builtin_entry(
         }
     }
 
-    // Error cross-references
-    let related_errors = find_errors_for_method(&entry.rust_method, model);
+    let related_errors = find_errors_for_method(&entry.rust_method, &model.error_sites);
     if !related_errors.is_empty() {
         md.raw("#### Errors\n\n");
         for variant in &related_errors {
@@ -153,50 +152,4 @@ fn render_builtin_entry(
         }
         md.raw("\n");
     }
-}
-
-fn find_errors_for_method(method: &str, model: &DocModel) -> Vec<String> {
-    let mut variants = Vec::new();
-    for (variant, fns) in &model.error_sites {
-        if fns.iter().any(|f| f == method) {
-            variants.push(variant.clone());
-        }
-    }
-    variants
-}
-
-fn split_doc_examples(doc: &str) -> (String, Vec<String>) {
-    let mut prose = String::new();
-    let mut examples = Vec::new();
-    let mut in_code = false;
-    let mut current_example = String::new();
-    let mut is_scheme = false;
-
-    for line in doc.lines() {
-        if line.starts_with("```") {
-            if in_code {
-                if is_scheme {
-                    examples.push(current_example.clone());
-                }
-                current_example.clear();
-                in_code = false;
-                is_scheme = false;
-            } else {
-                in_code = true;
-                is_scheme = line.contains("scheme") || line.contains("lisp");
-            }
-        } else if in_code {
-            if !current_example.is_empty() {
-                current_example.push('\n');
-            }
-            current_example.push_str(line);
-        } else {
-            if !prose.is_empty() {
-                prose.push('\n');
-            }
-            prose.push_str(line);
-        }
-    }
-
-    (prose, examples)
 }

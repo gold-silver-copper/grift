@@ -97,14 +97,19 @@ impl DocModel {
 
         // Also try to extract from .grift files
         for (path, _) in &map.files {
-            // Check for prelude.grift next to src files
-            if let Some(parent) = path.parent() {
-                let grift_path = parent.join("../prelude.grift");
-                if grift_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&grift_path) {
-                        let grift_entries = crate::extract::prelude::extract_from_grift(&content);
-                        if !grift_entries.is_empty() && prelude.is_empty() {
-                            prelude = grift_entries;
+            if prelude.is_empty() {
+                // Check parent directories for prelude.grift
+                if let Some(parent) = path.parent() {
+                    if let Some(grandparent) = parent.parent() {
+                        let grift_path = grandparent.join("prelude.grift");
+                        if grift_path.exists() {
+                            if let Ok(content) = std::fs::read_to_string(&grift_path) {
+                                let grift_entries =
+                                    crate::extract::prelude::extract_from_grift(&content);
+                                if !grift_entries.is_empty() {
+                                    prelude = grift_entries;
+                                }
+                            }
                         }
                     }
                 }
