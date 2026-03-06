@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/grift_arena",
     "crates/grift_macros",
 
     "crates/grift",
@@ -12,9 +11,6 @@ version = "1.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
-
-[workspace.dependencies]
-grift_arena = { version = "1.5.0", path = "crates/grift_arena" }
 
 # Use basic optimizations in dev/test builds to prevent stack overflows
 # caused by deep recursion in the Scheme evaluator. Without optimizations,
