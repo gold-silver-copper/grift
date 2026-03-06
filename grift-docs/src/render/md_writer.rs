@@ -102,3 +102,54 @@ pub fn first_sentence(doc: &str) -> String {
     // Return first line if no period
     s.lines().next().unwrap_or(s).to_string()
 }
+
+/// Split doc string into prose and code examples.
+pub fn split_doc_examples(doc: &str) -> (String, Vec<String>) {
+    let mut prose = String::new();
+    let mut examples = Vec::new();
+    let mut in_code = false;
+    let mut current_example = String::new();
+    let mut is_scheme = false;
+
+    for line in doc.lines() {
+        if line.starts_with("```") {
+            if in_code {
+                if is_scheme {
+                    examples.push(current_example.clone());
+                }
+                current_example.clear();
+                in_code = false;
+                is_scheme = false;
+            } else {
+                in_code = true;
+                is_scheme = line.contains("scheme") || line.contains("lisp");
+            }
+        } else if in_code {
+            if !current_example.is_empty() {
+                current_example.push('\n');
+            }
+            current_example.push_str(line);
+        } else {
+            if !prose.is_empty() {
+                prose.push('\n');
+            }
+            prose.push_str(line);
+        }
+    }
+
+    (prose, examples)
+}
+
+/// Find error variants raised in a given method.
+pub fn find_errors_for_method(
+    method: &str,
+    error_sites: &indexmap::IndexMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut variants = Vec::new();
+    for (variant, fns) in error_sites {
+        if fns.iter().any(|f| f == method) {
+            variants.push(variant.clone());
+        }
+    }
+    variants
+}
