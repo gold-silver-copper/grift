@@ -1,6 +1,6 @@
 // tests/arena_tests.rs
 
-use grift_arena::{
+use grift::arena::{
     Arena, ArenaCopy, ArenaDelete, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace,
 };
 

@@ -31,7 +31,7 @@
 //! - `init_builtins` — binds each builtin in the ground environment
 //! - `apply_operative_builtin` / `apply_builtin_pure` — dispatch tables
 
-use grift_arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
+use crate::arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
 
 use crate::lisp::{ArenaWriter, Lisp};
 use crate::parse::SliceSource;

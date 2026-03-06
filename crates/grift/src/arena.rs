@@ -1,7 +1,3 @@
-#![no_std]
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-#![warn(clippy::pedantic)]
 #![allow(
     clippy::must_use_candidate,
     clippy::doc_markdown,
@@ -45,7 +41,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use grift_arena::{Arena, ArenaIndex};
+//! use grift::arena::{Arena, ArenaIndex};
 //!
 //! #[derive(Clone, Copy, Debug, PartialEq)]
 //! enum Node {
@@ -455,7 +451,7 @@ impl ArenaStats {
 /// # Example
 ///
 /// ```rust
-/// use grift_arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
+/// use grift::arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -489,7 +485,7 @@ pub trait ArenaDelete<T: Copy, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use grift_arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
+/// use grift::arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -523,7 +519,7 @@ pub trait ArenaCopy<T: Copy, const N: usize> {
 /// # Example
 ///
 /// ```rust
-/// use grift_arena::{Arena, ArenaIndex, Trace};
+/// use grift::arena::{Arena, ArenaIndex, Trace};
 ///
 /// #[derive(Clone, Copy)]
 /// enum Tree {
@@ -658,7 +654,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::Arena;
+    /// use grift::arena::Arena;
     ///
     /// let arena: Arena<isize, 100> = Arena::new(0);
     /// ```
@@ -717,7 +713,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::Arena;
+    /// use grift::arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
@@ -807,7 +803,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::Arena;
+    /// use grift::arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
@@ -879,7 +875,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::Arena;
+    /// use grift::arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// let idx = arena.alloc(42).unwrap();
@@ -930,7 +926,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::Arena;
+    /// use grift::arena::Arena;
     ///
     /// let arena: Arena<isize, 10> = Arena::new(0);
     /// arena.alloc(1).unwrap();
@@ -1284,7 +1280,7 @@ impl<T: Copy, const N: usize> Arena<T, N> {
     /// # Example
     ///
     /// ```rust
-    /// use grift_arena::{Arena, ArenaIndex, Trace};
+    /// use grift::arena::{Arena, ArenaIndex, Trace};
     ///
     /// #[derive(Clone, Copy)]
     /// struct Node {

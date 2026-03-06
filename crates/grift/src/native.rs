@@ -29,7 +29,7 @@
 //! assert_eq!(lisp.eval("(add3 1 2 3)"), Ok(Value::Number(6)));
 //! ```
 
-use grift_arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
+use crate::arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 
 use crate::value::Value;
 

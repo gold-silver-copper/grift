@@ -14,7 +14,7 @@
 //! - Atoms: booleans (`#t`, `#f`), `#inert`, `#ignore`, integers, symbols
 //! - Line comments: `; comment`
 
-use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult};
+use crate::arena::{Arena, ArenaError, ArenaIndex, ArenaResult};
 
 use crate::lisp::Lisp;
 use crate::value::Value;
