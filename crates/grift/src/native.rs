@@ -73,12 +73,12 @@ pub trait LispOps {
     fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex>;
     /// Get the value at an arena index.
     fn get(&self, idx: ArenaIndex) -> ArenaResult<Value>;
-    /// Get car of a cons cell (user-facing).
-    fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
-    /// Get cdr of a cons cell (user-facing).
-    fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
-    /// Get car of cdr (second element of a list, user-facing).
-    fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Get car of a cons cell.
+    fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Get cdr of a cons cell.
+    fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
+    /// Get car of cdr (second element of a list).
+    fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
     /// Allocate a lambda (applicative from an operative).
     fn lambda(
         &self,

@@ -30,7 +30,7 @@ pub(crate) trait CharSource {
     /// Return the current 1-based (line, column) position in the source.
     ///
     /// Returns `(0, 0)` when position tracking is not available
-    /// (e.g. when parsing from an arena chain).
+    /// (e.g. when parsing from an arena-backed string value).
     fn position(&self) -> (u32, u32);
 }
 
@@ -144,41 +144,35 @@ impl<'a, const N: usize> ChainSource<'a, N> {
     pub fn new(arena: &'a Arena<Value, N>, cursor: ArenaIndex) -> Self {
         ChainSource { arena, cursor }
     }
-}
 
-impl<const N: usize> CharSource for ChainSource<'_, N> {
-    /// Read and consume the next character from the current char-list node.
-    fn read_char(&mut self) -> Option<char> {
+    fn current_char(&self) -> Option<(char, ArenaIndex)> {
         if self.cursor.is_nil() {
             return None;
         }
         match self.arena.get(self.cursor) {
             Ok(Value::Cons { car, cdr }) => match self.arena.get(car) {
-                Ok(Value::Char(ch)) => {
-                    self.cursor = cdr;
-                    Some(ch)
-                }
+                Ok(Value::Char(ch)) => Some((ch, cdr)),
                 _ => None,
             },
             _ => None,
         }
     }
+}
 
-    /// Peek at the next character in the chain without consuming it.
+impl<const N: usize> CharSource for ChainSource<'_, N> {
+    /// Read and consume the next character from the current char-list node.
+    fn read_char(&mut self) -> Option<char> {
+        let (ch, cdr) = self.current_char()?;
+        self.cursor = cdr;
+        Some(ch)
+    }
+
+    /// Peek at the next character without consuming it.
     fn peek_char(&mut self) -> Option<char> {
-        if self.cursor.is_nil() {
-            return None;
-        }
-        match self.arena.get(self.cursor) {
-            Ok(Value::Cons { car, .. }) => match self.arena.get(car) {
-                Ok(Value::Char(ch)) => Some(ch),
-                _ => None,
-            },
-            _ => None,
-        }
+        self.current_char().map(|(ch, _)| ch)
     }
 
-    /// Return `(0, 0)` because chain-backed parsing does not track source
+    /// Return `(0, 0)` because arena-backed parsing does not track source
     /// coordinates.
     fn position(&self) -> (u32, u32) {
         (0, 0)
@@ -365,9 +359,9 @@ impl<const N: usize> Lisp<N> {
             } else {
                 ch
             };
-            head = self.prepend_char(head, actual)?;
+            head = self.cons_char(head, actual)?;
         }
-        self.reverse_chain(head)
+        self.reverse_list(head)
     }
 
     /// Parse an atom given the first character (already consumed).
@@ -375,17 +369,17 @@ impl<const N: usize> Lisp<N> {
     /// Reads remaining atom characters, builds a char list,
     /// then classifies (boolean, number, or symbol).
     fn parse_atom_from(&self, first: char, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
-        let mut head = self.prepend_char(ArenaIndex::NIL, first)?;
+        let mut head = self.cons_char(ArenaIndex::NIL, first)?;
         loop {
             match src.peek_char() {
                 None => break,
                 Some(c) if is_delimiter(c) => break,
                 _ => {
                     let c = src.read_char().unwrap();
-                    head = self.prepend_char(head, c)?;
+                    head = self.cons_char(head, c)?;
                 }
             }
         }
-        self.classify_atom(self.reverse_chain(head)?)
+        self.classify_atom(self.reverse_list(head)?)
     }
 }
