@@ -62,20 +62,20 @@ pub trait LispOps {
     fn nil(&self) -> ArenaIndex;
     /// Allocate a cons cell.
     fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex>;
-    /// Allocate a character value.
+    /// Allocate a character (one-element string).
     fn char_val(&self, c: char) -> ArenaResult<ArenaIndex>;
     /// Allocate a string from a `&str`.
     ///
-    /// Strings are stored as proper lists of `Char` values in the arena.
+    /// Strings are stored as a linked list of `CharPair` nodes in the arena.
     /// An empty string is represented as nil.
     fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex>;
     /// Allocate (or retrieve an interned) symbol by name.
     fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex>;
     /// Get the value at an arena index.
     fn get(&self, idx: ArenaIndex) -> ArenaResult<Value>;
-    /// Get car of a cons cell (user-facing).
+    /// Get car of a cons cell or CharPair (user-facing).
     fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
-    /// Get cdr of a cons cell (user-facing).
+    /// Get cdr of a cons cell or CharPair (user-facing).
     fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
     /// Get car of cdr (second element of a list, user-facing).
     fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
@@ -173,10 +173,10 @@ impl FromLisp for ArenaIndex {
 
 impl FromLisp for char {
     #[inline]
-    /// Extract a Rust `char` from a Lisp character value.
+    /// Extract a Rust `char` from a one-character Lisp string node.
     fn from_lisp(lisp: &dyn LispOps, idx: ArenaIndex) -> ArenaResult<Self> {
         match lisp.get(idx)? {
-            Value::Char(ch) => Ok(ch),
+            Value::CharPair { ch, cdr } if cdr.is_nil() => Ok(ch),
             _ => Err(ArenaError::TypeError),
         }
     }
@@ -220,7 +220,7 @@ impl ToLisp for () {
 
 impl ToLisp for char {
     #[inline]
-    /// Allocate the character as a Lisp character value.
+    /// Allocate the character as a one-element Lisp string.
     fn to_lisp(&self, lisp: &dyn LispOps) -> ArenaResult<ArenaIndex> {
         lisp.char_val(*self)
     }

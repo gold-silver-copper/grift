@@ -7,8 +7,8 @@
 //!
 //! Every `Value` variant fits in a single arena slot and may inline at
 //! most two `ArenaIndex`-sized fields. Larger structures (parameter
-//! trees, environment chains, strings, symbol names) are built as linked
-//! lists of `Cons` nodes in the arena.
+//! trees, environment chains) are built as linked lists of `Cons` or
+//! `CharPair` nodes in the arena.
 
 use crate::arena::{ArenaError, ArenaIndex};
 
@@ -48,7 +48,7 @@ pub enum Value {
     Boolean(bool),
     /// Integer number (machine-width signed integer).
     Number(isize),
-    /// A symbol, pointing to the first `Cons` node of its char-list name.
+    /// A symbol, pointing to the first `CharPair` node of its name.
     Symbol(ArenaIndex),
     /// A cons cell (pair) with inline car and cdr.
     Cons {
@@ -57,8 +57,16 @@ pub enum Value {
         /// Tail element of the pair (next `Cons` node in a proper list, `NIL` at the end, or any value in a dotted pair).
         cdr: ArenaIndex,
     },
-    /// A first-class character value.
-    Char(char),
+    /// A character-pair node forming a linked list for strings.
+    /// A string is a linked list of `CharPair` nodes terminated by NIL,
+    /// exactly as a list is a linked list of `Cons` nodes terminated by NIL.
+    /// A single character is `CharPair { ch, cdr: NIL }` — a one-element string.
+    CharPair {
+        /// The Unicode character stored at this position.
+        ch: char,
+        /// Next `CharPair` node, or `NIL` for the last character.
+        cdr: ArenaIndex,
+    },
     /// Compound operative (vau closure / fexpr).
     /// Created by `(vau params env-param body)`.
     Operative {
@@ -110,7 +118,9 @@ impl PartialEq for Value {
             (Value::Cons { car: a1, cdr: a2 }, Value::Cons { car: b1, cdr: b2 }) => {
                 a1 == b1 && a2 == b2
             }
-            (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::CharPair { ch: a, cdr: a2 }, Value::CharPair { ch: b, cdr: b2 }) => {
+                a == b && a2 == b2
+            }
             (
                 Value::Operative {
                     params_envparam: a1,
@@ -177,7 +187,7 @@ impl Value {
             Value::Number(_) => "number",
             Value::Symbol(_) => "symbol",
             Value::Cons { .. } => "pair",
-            Value::Char(_) => "char",
+            Value::CharPair { .. } => "string",
             Value::Operative { .. } => "operative",
             Value::Applicative(_) => "applicative",
             Value::Builtin(_) => "builtin",
@@ -208,7 +218,7 @@ impl Value {
                 | Value::Boolean(_)
                 | Value::Number(_)
                 | Value::Symbol(_)
-                | Value::Char(_)
+                | Value::CharPair { .. }
                 | Value::Inert
                 | Value::Ignore
                 | Value::Prelude(_)
@@ -255,7 +265,7 @@ impl core::fmt::Display for Value {
             Value::Boolean(true) => f.write_str("#t"),
             Value::Boolean(false) => f.write_str("#f"),
             Value::Number(n) => write!(f, "{n}"),
-            Value::Char(ch) => write!(f, "#\\{ch}"),
+            Value::CharPair { .. } => f.write_str("<string>"),
             Value::Inert => f.write_str("#inert"),
             Value::Ignore => f.write_str("#ignore"),
             Value::Prelude(s) => write!(f, "<prelude:{}>", s.name()),
@@ -283,8 +293,11 @@ impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin, Prelude
 
 impl From<char> for Value {
     #[inline]
-    /// Convert a Rust `char` into a Lisp character value.
+    /// Convert a Rust `char` into a one-character Lisp string node.
     fn from(v: char) -> Self {
-        Value::Char(v)
+        Value::CharPair {
+            ch: v,
+            cdr: ArenaIndex::NIL,
+        }
     }
 }

@@ -27,9 +27,9 @@ The crate layout is:
 - `crates/grift/src/arena.rs`: fixed-size free-list arena and GC
 - `crates/grift/src/value.rs`: `Value`, `BuiltinId`, value predicates/accessors
 - `crates/grift/src/lisp.rs`: `Lisp<N>`, symbol interning, environment helpers,
-  formatting, text helpers, public API
+  formatting, string helpers, public API
 - `crates/grift/src/parse.rs`: recursive-descent reader over byte slices and
-  char-list strings
+  `CharPair` chains
 - `crates/grift/src/eval.rs`: evaluator, builtin registration, tail-call loop,
   GC integration
 - `crates/grift/src/native.rs`: Rust native-function registration API
@@ -68,7 +68,7 @@ enum Value {
     Number(isize),
     Symbol(ArenaIndex),
     Cons { car: ArenaIndex, cdr: ArenaIndex },
-    Char(char),
+    CharPair { ch: char, cdr: ArenaIndex },
     Operative { params_envparam: ArenaIndex, body_env: ArenaIndex },
     Applicative(ArenaIndex),
     Builtin(BuiltinId),
@@ -82,44 +82,42 @@ enum Value {
 
 Important consequences:
 
-- There is no `String` header value.
-- `Char` is a first-class runtime value.
-- Strings are ordinary proper lists of `Char`.
+- There is no `String` header value anymore. Strings are plain `CharPair` chains.
+- There is no dedicated character type. A single-character string is one
+  `CharPair { ch, cdr: NIL }`.
 - Empty string is represented as `NIL`.
 - Prelude functions and registered Rust natives are first-class values and are
   part of the actual runtime model.
 
 ### Strings
 
-Strings are ordinary proper `Cons` lists of `Char` values:
+Strings are singly-linked `CharPair` chains. Semantically, they are list-like
+values rather than a distinct header-wrapped type:
 
 ```text
 "hello"
-@100 = Cons(@200, @101)
-@101 = Cons(@201, @102)
-@102 = Cons(@202, @103)
-@103 = Cons(@203, @104)
-@104 = Cons(@204, NIL)
-@200 = Char('h')
-@201 = Char('e')
-@202 = Char('l')
-@203 = Char('l')
-@204 = Char('o')
+@100 = CharPair('h', @101)
+@101 = CharPair('e', @102)
+@102 = CharPair('l', @103)
+@103 = CharPair('l', @104)
+@104 = CharPair('o', NIL)
 ```
 
 That design drives a few visible behaviors:
 
 - `""` is exactly `NIL`
-- `(car "hello")` returns `#\h`
+- there is no separate character type, so each string element is represented as
+  a one-character string node
+- `(car "hello")` returns `"h"` as a newly allocated one-character string
 - `(cdr "hello")` returns `"ello"` by reusing the tail of the chain
-- `(cons #\h "ello")` constructs `"hello"`
+- `(cons (car "h") "ello")` constructs `"hello"`
 - `(cdr "x")` returns `()`
 - write-mode canonicalizes the shared empty string / empty list value as `()`
 - display-mode also renders the shared empty value as `()`
 
 ### Symbols
 
-`Value::Symbol` points at the head of its name's char list. Symbols are
+`Value::Symbol` points at the head of its name's `CharPair` chain. Symbols are
 interned by walking the list stored behind `ArenaIndex::INTERN_LIST`, so equal
 names share the same symbol index.
 
@@ -389,8 +387,10 @@ The one-argument form evaluates in `GLOBAL_ENV`.
 That means `eq?` is not a general structural predicate. In particular, use
 `equal?` for lists and strings.
 
-`equal?` is structural for cons cells, including strings because strings are
-ordinary lists of `Char`.
+`equal?` is structural for:
+
+- cons cells
+- `CharPair` chains
 
 and identity-only for environments.
 
@@ -405,7 +405,7 @@ Other `arena.set()` usage is runtime bookkeeping:
 
 - updating `GC_ROOTS`
 - updating `INTERN_LIST`
-- reversing freshly built `Cons` chains in place
+- reversing freshly built `Cons` or `CharPair` chains in place
 - environment initialization during builtin/prelude setup
 
 There is still no user-visible pair mutation:
@@ -420,7 +420,6 @@ The parser currently supports:
 
 - proper and dotted lists
 - quote shorthand `'x`
-- character literals in `#\x` syntax
 - string escapes: `\n`, `\t`, `\r`, `\\`, `\"`
 - line comments starting with `;`
 - booleans `#t`, `#f`, plus reader aliases `#true`, `#false`
@@ -430,7 +429,7 @@ The parser currently supports:
 The raw string builtins are accurate documentation targets because they are used
 in tests:
 
-- `(raw-read-string str)` parses one expression from a char-list string
+- `(raw-read-string str)` parses one expression from a `CharPair` chain
 - `(raw-display-to-string obj)` formats with display semantics
 - `(raw-write-to-string obj)` formats with write semantics
 
@@ -443,7 +442,7 @@ These are the current sharp edges worth remembering:
 - `set!` requires an explicit environment argument
 - `set!` only updates the target frame, never a parent frame
 - empty string is literally `NIL`
-- `pair?`, `car`, and `cdr` treat non-empty strings as ordinary lists
+- `pair?`, `car`, and `cdr` treat non-empty strings as `CharPair` chains
 - `and`/`or` are not variadic identity forms right now; they error on fewer
   than two operands
 - `cond` with no matching clause returns `()`, not `#inert`
@@ -457,7 +456,7 @@ These are the current sharp edges worth remembering:
 The deleted files were inaccurate in several concrete ways. The merged document
 corrects them:
 
-- strings are proper `Cons` lists of `Char`, not boxed string headers
+- strings are `CharPair` chains, not `String { data }` headers
 - `Value` also includes `Prelude` and `Native`
 - GC is OOM-triggered, not threshold-triggered
 - `set!` takes an explicit environment and does not search parents
