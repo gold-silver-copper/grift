@@ -139,15 +139,14 @@ fn test_quote() {
 #[test]
 fn test_and() {
     let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(and)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(and #t)"), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval("(and #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(and #t #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(and #t #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(and #f #t)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(and #t #t #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(and #t #f #t)"), Ok(Value::Boolean(false)));
-    // Zero args — error
-    assert_eq!(lisp.eval("(and)"), Err(ArenaError::InvalidArgument));
-    // One arg — error
-    assert_eq!(lisp.eval("(and #t)"), Err(ArenaError::InvalidArgument));
     // Short circuit prevents evaluation of later args
     assert_eq!(lisp.eval("(and #f (/ 1 0))"), Ok(Value::Boolean(false)));
     // Last expression is tail position
@@ -156,6 +155,7 @@ fn test_and() {
         Ok(Value::Boolean(true))
     );
     // Type errors
+    assert_eq!(lisp.eval("(and 1)"), Err(ArenaError::TypeError));
     assert_eq!(lisp.eval("(and 1 2 3)"), Err(ArenaError::TypeError));
     assert_eq!(lisp.eval("(and 1 #f 3)"), Err(ArenaError::TypeError));
 }
@@ -163,20 +163,20 @@ fn test_and() {
 #[test]
 fn test_or() {
     let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(or)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #f)"), Ok(Value::Boolean(false)));
+    assert_eq!(lisp.eval("(or #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(or #f #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(or #f #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(or #t #f)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(or #f #f #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(or #f #t #f)"), Ok(Value::Boolean(true)));
-    // Zero args — error
-    assert_eq!(lisp.eval("(or)"), Err(ArenaError::InvalidArgument));
-    // One arg — error
-    assert_eq!(lisp.eval("(or #f)"), Err(ArenaError::InvalidArgument));
     // Short circuit prevents evaluation of later args
     assert_eq!(lisp.eval("(or #t (/ 1 0))"), Ok(Value::Boolean(true)));
     // Last expression is tail position
     assert_eq!(lisp.eval("(or #f (if #t #t #f))"), Ok(Value::Boolean(true)));
     // Type errors
+    assert_eq!(lisp.eval("(or 1)"), Err(ArenaError::TypeError));
     assert_eq!(lisp.eval("(or #f #f 3)"), Err(ArenaError::TypeError));
 }
 

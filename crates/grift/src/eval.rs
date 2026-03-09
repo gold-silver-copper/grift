@@ -774,12 +774,12 @@ impl<const N: usize> Lisp<N> {
         })
     }
 
-    /// `(and expr1 expr2 ...)` — strict on tests, last is tail.
+    /// `(and expr...)` — strict on tests, last is tail.
     fn op_and(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         self.eval_short_circuit(args, expr, env, true)
     }
 
-    /// `(or expr1 expr2 ...)` — strict on tests, last is tail.
+    /// `(or expr...)` — strict on tests, last is tail.
     fn op_or(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
         self.eval_short_circuit(args, expr, env, false)
     }
@@ -794,11 +794,8 @@ impl<const N: usize> Lisp<N> {
     ) -> TailAction {
         tail_continue!({
             if args.is_nil() {
-                return Err(ArenaError::InvalidArgument);
-            }
-            let second = self.cdr(args)?;
-            if second.is_nil() {
-                return Err(ArenaError::InvalidArgument);
+                *expr = ArenaIndex::from_bool(continue_while_truthy);
+                return Ok(());
             }
 
             let mut cur = args;

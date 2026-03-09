@@ -9,6 +9,8 @@
 
 use grift::{Lisp, Value};
 
+const BENCH_RUNS: u32 = 10;
+
 fn main() {
     let builder = std::thread::Builder::new()
         .name("bench".into())
@@ -23,7 +25,9 @@ fn main() {
 
 struct BenchResult {
     name: &'static str,
-    elapsed: std::time::Duration,
+    avg_elapsed: std::time::Duration,
+    min_elapsed: std::time::Duration,
+    max_elapsed: std::time::Duration,
     output: String,
     ok: bool,
 }
@@ -35,33 +39,48 @@ fn bench<const N: usize>(
     program: &str,
     expected: Option<Value>,
 ) -> BenchResult {
-    let start = std::time::Instant::now();
-    let result = lisp.eval(program);
-    let elapsed = start.elapsed();
+    let mut total_elapsed = std::time::Duration::ZERO;
+    let mut min_elapsed = std::time::Duration::MAX;
+    let mut max_elapsed = std::time::Duration::ZERO;
+    let mut output = String::new();
+    let mut ok = true;
 
-    match result {
-        Ok(val) => {
-            let ok = expected.as_ref().map_or(true, |e| values_equal(&val, e));
-            let output = format!("{val:?}");
-            if !ok {
-                eprintln!(
-                    "  MISMATCH in {name}: got {output}, expected {:?}",
-                    expected.unwrap()
-                );
+    for _ in 0..BENCH_RUNS {
+        let start = std::time::Instant::now();
+        let result = lisp.eval(program);
+        let elapsed = start.elapsed();
+        total_elapsed += elapsed;
+        min_elapsed = min_elapsed.min(elapsed);
+        max_elapsed = max_elapsed.max(elapsed);
+
+        match result {
+            Ok(val) => {
+                let run_ok = expected.as_ref().is_none_or(|e| values_equal(&val, e));
+                output = format!("{val:?}");
+                if !run_ok {
+                    ok = false;
+                }
             }
-            BenchResult {
-                name,
-                elapsed,
-                output,
-                ok,
+            Err(e) => {
+                output = format!("ERROR: {e:?}");
+                ok = false;
             }
         }
-        Err(e) => BenchResult {
-            name,
-            elapsed,
-            output: format!("ERROR: {e:?}"),
-            ok: false,
-        },
+    }
+
+    if !ok
+        && let Some(expected) = expected.as_ref()
+    {
+        eprintln!("  MISMATCH in {name}: got {output}, expected {expected:?}");
+    }
+
+    BenchResult {
+        name,
+        avg_elapsed: total_elapsed / BENCH_RUNS,
+        min_elapsed,
+        max_elapsed,
+        output,
+        ok,
     }
 }
 
@@ -84,30 +103,36 @@ fn print_report(results: &[BenchResult]) {
         .min(30);
 
     println!();
-    println!("╔{:═<width$}╗", "", width = max_name + max_out + 32);
+    println!("╔{:═<width$}╗", "", width = max_name + max_out + 60);
     println!(
         "║ {:^width$} ║",
         "GRIFT BENCHMARK RESULTS",
-        width = max_name + max_out + 30
+        width = max_name + max_out + 58
     );
-    println!("╠{:═<width$}╣", "", width = max_name + max_out + 32);
+    println!("╠{:═<width$}╣", "", width = max_name + max_out + 60);
     println!(
-        "║ {:<nw$}  {:<ow$}  {:>12}  {:>6} ║",
+        "║ {:<nw$}  {:<ow$}  {:>12}  {:>12}  {:>12}  {:>6} ║",
         "Benchmark",
         "Result",
-        "Time",
+        "Avg",
+        "Min",
+        "Max",
         "Status",
         nw = max_name,
         ow = max_out
     );
-    println!("╠{:─<width$}╣", "", width = max_name + max_out + 32);
+    println!("╠{:─<width$}╣", "", width = max_name + max_out + 60);
 
-    let mut total = std::time::Duration::ZERO;
+    let mut total_avg = std::time::Duration::ZERO;
+    let mut total_min = std::time::Duration::ZERO;
+    let mut total_max = std::time::Duration::ZERO;
     let mut pass = 0usize;
     let mut fail = 0usize;
 
     for r in results {
-        total += r.elapsed;
+        total_avg += r.avg_elapsed;
+        total_min += r.min_elapsed;
+        total_max += r.max_elapsed;
         if r.ok {
             pass += 1;
         } else {
@@ -116,27 +141,31 @@ fn print_report(results: &[BenchResult]) {
         let status = if r.ok { " OK " } else { "FAIL" };
         let truncated: String = r.output.chars().take(max_out).collect();
         println!(
-            "║ {:<nw$}  {:<ow$}  {:>12.3?}  {:>6} ║",
+            "║ {:<nw$}  {:<ow$}  {:>12.3?}  {:>12.3?}  {:>12.3?}  {:>6} ║",
             r.name,
             truncated,
-            r.elapsed,
+            r.avg_elapsed,
+            r.min_elapsed,
+            r.max_elapsed,
             status,
             nw = max_name,
             ow = max_out
         );
     }
 
-    println!("╠{:─<width$}╣", "", width = max_name + max_out + 32);
+    println!("╠{:─<width$}╣", "", width = max_name + max_out + 60);
     println!(
-        "║ {:<nw$}  {:<ow$}  {:>12.3?}  {:>6} ║",
-        "TOTAL",
+        "║ {:<nw$}  {:<ow$}  {:>12.3?}  {:>12.3?}  {:>12.3?}  {:>6} ║",
+        format!("TOTAL ({BENCH_RUNS} runs)"),
         format!("{pass} pass, {fail} fail"),
-        total,
+        total_avg,
+        total_min,
+        total_max,
         "",
         nw = max_name,
         ow = max_out
     );
-    println!("╚{:═<width$}╝", "", width = max_name + max_out + 32);
+    println!("╚{:═<width$}╝", "", width = max_name + max_out + 60);
 }
 
 // ── Benchmark Suite ──────────────────────────────────────────────────────────

@@ -699,12 +699,13 @@ Current quirk:
 Syntax:
 
 ```lisp
-(and expr1 expr2 ...)
+(and expr...)
 ```
 
 Behavior:
 
-- requires at least two operands; fewer raise `InvalidArgument`
+- zero operands return `#t`
+- one operand evaluates that operand, requires a boolean, and returns it
 - evaluates operands left to right
 - every evaluated operand must be a boolean
 - stops at the first `#f`
@@ -718,12 +719,13 @@ Unlike Scheme, it never returns an arbitrary last truthy value.
 Syntax:
 
 ```lisp
-(or expr1 expr2 ...)
+(or expr...)
 ```
 
 Behavior:
 
-- requires at least two operands; fewer raise `InvalidArgument`
+- zero operands return `#f`
+- one operand evaluates that operand, requires a boolean, and returns it
 - evaluates operands left to right
 - every evaluated operand must be a boolean
 - stops at the first `#t`
@@ -1245,7 +1247,7 @@ Typical causes:
 | Error | Typical causes |
 | --- | --- |
 | `ParseError` | malformed list syntax, unexpected `)`, unterminated string |
-| `InvalidArgument` | `(and)`, `(or)`, `(-)`, unknown string escape, duplicate ptree symbol, `(error ...)` |
+| `InvalidArgument` | `(-)`, unknown string escape, duplicate ptree symbol, `(error ...)` |
 | `TypeError` | wrong runtime type, non-boolean in boolean context, malformed parameter tree shape, missing operands surfacing through list access |
 | `ArithmeticOverflow` | checked overflow in `+`, `-`, `*`, unary negation |
 | `DivisionByZero` | second used operand of `/` is zero |
