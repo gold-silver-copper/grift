@@ -4,6 +4,9 @@ This file is the canonical architecture note for Grift. It replaces the older
 split notes in `SPEC.md`, `LANGUAGE.md`, `INTERNALS.md`, `MUTATION.md`, and
 `GOTCHAS.md`.
 
+The companion language-level specification lives in
+`docs/architecture/LANGUAGE_SPECIFICATION.md`.
+
 Everything below is cross-checked against the current implementation in
 `crates/grift/src` and the behavior exercised by `crates/grift/tests/lisp_tests.rs`.
 
