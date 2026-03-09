@@ -370,6 +370,9 @@ impl<const N: usize> Lisp<N> {
             Value::Symbol(_) => Ok(Some(self.env_lookup(*env, *expr)?)),
 
             Value::Cons { car, cdr } => {
+                if self.is_nonempty_char_list(*expr)? {
+                    return Ok(Some(*expr));
+                }
                 self.push_root(cdr)?;
                 self.push_root(*env)?;
 
@@ -1024,18 +1027,9 @@ impl<const N: usize> Lisp<N> {
     // Applicative builtin implementations (operate on evaluated args)
     // ================================================================
 
-    /// `(cons a b)` — cons cell construction.
-    /// When `a` is a single-character string (CharPair with cdr=NIL),
-    /// produces a CharPair node instead, so `(cons (car "h") "ello")` → `"hello"`.
+    /// `(cons a b)` — ordinary pair construction.
     fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car_char(args)?;
-        let b = self.cadr_char(args)?;
-        if let Value::CharPair { ch, cdr } = self.get(a)?
-            && cdr.is_nil()
-        {
-            return self.arena.alloc(Value::CharPair { ch, cdr: b });
-        }
-        self.cons(a, b)
+        self.cons(self.car(args)?, self.cadr(args)?)
     }
 
     /// `(+ ...)` — variadic addition.
@@ -1090,7 +1084,7 @@ impl<const N: usize> Lisp<N> {
     // — Type predicate built-ins —
 
     type_predicate!(builtin_nullp, Value::Nil);
-    type_predicate!(builtin_pairp, Value::Cons { .. } | Value::CharPair { .. });
+    type_predicate!(builtin_pairp, Value::Cons { .. });
     type_predicate!(builtin_numberp, Value::Number(_));
     type_predicate!(builtin_symbolp, Value::Symbol(_));
     type_predicate!(builtin_booleanp, Value::Boolean(_));
@@ -1151,8 +1145,6 @@ impl<const N: usize> Lisp<N> {
             (Value::Cons { car: a1, cdr: a2 }, Value::Cons { car: b1, cdr: b2 }) => {
                 Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
             }
-            // Strings: compare character-by-character.
-            (Value::CharPair { .. }, Value::CharPair { .. }) => self.strings_equal(a, b),
             // Environments: eq? only (identity-based).
             // Different environments are never equal? unless eq?.
             (Value::Environment { .. }, Value::Environment { .. }) => Ok(false),
@@ -1249,7 +1241,7 @@ impl<const N: usize> Lisp<N> {
         self.parse_expr(&mut src)
     }
 
-    /// Format a value to an arena CharPair chain. Shared by
+    /// Format a value to an arena string value. Shared by
     /// `raw-display-to-string` and `raw-write-to-string`.
     fn fmt_to_string(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
@@ -1258,12 +1250,12 @@ impl<const N: usize> Lisp<N> {
         w.finish()
     }
 
-    /// `(raw-display-to-string obj)` — display a value to a string (CharPair chain).
+    /// `(raw-display-to-string obj)` — display a value to a string.
     fn builtin_raw_display_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.fmt_to_string(args, true)
     }
 
-    /// `(raw-write-to-string obj)` — write a value to a string (CharPair chain).
+    /// `(raw-write-to-string obj)` — write a value to a string.
     fn builtin_raw_write_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.fmt_to_string(args, false)
     }

@@ -112,6 +112,23 @@ fn test_booleans() {
 }
 
 #[test]
+fn test_char_literal_basic() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"#\a"#), Ok(Value::Char('a')));
+}
+
+#[test]
+fn test_char_literal_named_escapes() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"#\newline"#), Ok(Value::Char('\n')));
+    assert_eq!(lisp.eval(r#"#\tab"#), Ok(Value::Char('\t')));
+    assert_eq!(lisp.eval(r#"#\return"#), Ok(Value::Char('\r')));
+    assert_eq!(lisp.eval(r#"#\\"#), Ok(Value::Char('\\')));
+    assert_eq!(lisp.eval("#\\\""), Ok(Value::Char('"')));
+    assert_eq!(lisp.eval(r#"#\space"#), Ok(Value::Char(' ')));
+}
+
+#[test]
 fn test_if_true() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(if #t 1 2)"), Ok(Value::Number(1)));
@@ -2905,29 +2922,29 @@ fn test_gc_oom_triggers_collection() {
 }
 
 // ============================================================================
-// String as Linked List (CharPair) Tests
+// String as Linked List (Char) Tests
 // ============================================================================
 
 #[test]
 fn test_car_of_string() {
-    // (car "hello") => a one-element string "h"
+    // (car "hello") => the character #\h
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(r#"(car "hello")"#).unwrap();
     assert!(
-        matches!(result, Value::CharPair { ch: 'h', .. }),
-        "car of string should return CharPair with first char, got: {:?}",
+        matches!(result, Value::Char('h')),
+        "car of string should return Char('h'), got: {:?}",
         result
     );
 }
 
 #[test]
 fn test_cdr_of_string() {
-    // (cdr "hello") => "ello", check via (car (cdr "hello")) => "e"
+    // (cdr "hello") => "ello", check via (car (cdr "hello")) => #\e
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(r#"(car (cdr "hello"))"#).unwrap();
     assert!(
-        matches!(result, Value::CharPair { ch: 'e', .. }),
-        "car of cdr of string should be 'e', got: {:?}",
+        matches!(result, Value::Char('e')),
+        "car of cdr of string should be Char('e'), got: {:?}",
         result
     );
 }
@@ -2941,7 +2958,7 @@ fn test_null_of_empty_string() {
 
 #[test]
 fn test_pair_of_nonempty_string() {
-    // (pair? "hello") => #t (non-empty string is a CharPair)
+    // (pair? "hello") => #t (non-empty string is a Cons list)
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval(r#"(pair? "hello")"#), Ok(Value::Boolean(true)));
 }
@@ -2970,35 +2987,35 @@ fn test_string_traversal() {
 
 #[test]
 fn test_cons_char_onto_string() {
-    // (cons (car "h") "ello") should produce a string "hello"
+    // (cons #\h "ello") should produce a string "hello"
     let lisp: Lisp<20000> = Lisp::new();
     // Verify by checking car/cdr of the result
-    let result = lisp.eval(r#"(car (cons (car "h") "ello"))"#).unwrap();
+    let result = lisp.eval(r#"(car (cons #\h "ello"))"#).unwrap();
     assert!(
-        matches!(result, Value::CharPair { ch: 'h', .. }),
-        "car of cons char onto string should be 'h', got: {:?}",
+        matches!(result, Value::Char('h')),
+        "car of cons char onto string should be Char('h'), got: {:?}",
         result
     );
-    let result2 = lisp.eval(r#"(car (cdr (cons (car "h") "ello")))"#).unwrap();
+    let result2 = lisp.eval(r#"(car (cdr (cons #\h "ello")))"#).unwrap();
     assert!(
-        matches!(result2, Value::CharPair { ch: 'e', .. }),
-        "second char of cons'd string should be 'e', got: {:?}",
+        matches!(result2, Value::Char('e')),
+        "second char of cons'd string should be Char('e'), got: {:?}",
         result2
     );
 }
 
 #[test]
 fn test_cons_char_onto_nil() {
-    // (cons (car "h") ()) should produce a one-element string
+    // (cons #\h ()) should produce a one-character string/list
     let lisp: Lisp<20000> = Lisp::new();
-    let result = lisp.eval(r#"(car (cons (car "h") '()))"#).unwrap();
+    let result = lisp.eval(r#"(car (cons #\h '()))"#).unwrap();
     assert!(
-        matches!(result, Value::CharPair { ch: 'h', .. }),
-        "cons char onto nil should produce single-char string, got: {:?}",
+        matches!(result, Value::Char('h')),
+        "cons char onto nil should produce Char('h') at the head, got: {:?}",
         result
     );
     assert_eq!(
-        lisp.eval(r#"(null? (cdr (cons (car "h") '())))"#),
+        lisp.eval(r#"(null? (cdr (cons #\h '())))"#),
         Ok(Value::Boolean(true))
     );
 }
@@ -3029,8 +3046,8 @@ fn test_string_is_self_evaluating() {
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(r#""hello""#).unwrap();
     assert!(
-        matches!(result, Value::CharPair { ch: 'h', .. }),
-        "string should self-evaluate to its head CharPair, got: {:?}",
+        matches!(result, Value::Cons { .. }),
+        "string should self-evaluate to a Cons char list, got: {:?}",
         result
     );
 }
@@ -3076,9 +3093,16 @@ fn test_write_value_string() {
 
 #[test]
 fn test_write_value_string_single_char() {
-    // car of a string is a one-element string
+    // car of a string is a char
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(display(&lisp, r#"(car "hello")"#), r#""h""#);
+    assert_eq!(display(&lisp, r#"(car "hello")"#), r#"#\h"#);
+}
+
+#[test]
+fn test_write_value_char() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(display(&lisp, r#"#\a"#), r#"#\a"#);
+    assert_eq!(display(&lisp, r#"#\space"#), r#"#\space"#);
 }
 
 #[test]
@@ -3971,7 +3995,7 @@ fn test_raw_write_to_string() {
 
 #[test]
 fn test_arena_writer_no_size_limit() {
-    // ArenaWriter builds CharPair chains directly in the arena,
+    // ArenaWriter builds char lists directly in the arena,
     // so there is no fixed buffer size limit.
     let lisp: Lisp<100_000> = Lisp::new();
     // Verify that raw-display-to-string handles basic values correctly
@@ -3997,7 +4021,7 @@ fn test_arena_writer_no_size_limit() {
 
 #[test]
 fn test_read_from_chain() {
-    // raw-read-string should parse directly from a CharPair chain
+    // raw-read-string should parse directly from a char-list string
     // without materializing into a fixed buffer.
     let lisp: Lisp<20000> = Lisp::new();
     // Parse various types
@@ -4058,12 +4082,12 @@ fn test_string_escape_newline() {
     // "hello\nworld" should contain an actual newline (11 chars, not 13)
     let result = lisp.eval_to_index(r#""hello\nworld""#).unwrap();
     let val = lisp.get(result).unwrap();
-    assert!(matches!(val, Value::CharPair { .. }));
+    assert!(matches!(val, Value::Cons { .. }));
     // The 6th character (index 5) should be an actual newline
     let sixth = lisp
         .eval(r#"(car (cdr (cdr (cdr (cdr (cdr "hello\nworld"))))))"#)
         .unwrap();
-    assert!(matches!(sixth, Value::CharPair { .. }));
+    assert!(matches!(sixth, Value::Char('\n')));
 }
 
 #[test]
@@ -4526,11 +4550,11 @@ register_native!(native_first_char, (c: char) -> char, { c });
 fn test_from_lisp_char() {
     let lisp: Lisp<20000> = Lisp::new();
     lisp.register_native("first-char", native_first_char).unwrap();
-    // (car "hello") returns "h" (a single-char string), which FromLisp<char> can extract
+    // (car "hello") returns #\h, which FromLisp<char> can extract
     let idx = lisp.eval_to_index("(first-char (car \"hello\"))").unwrap();
     let mut buf = String::new();
     lisp.write_value(idx, &mut buf).unwrap();
-    assert_eq!(buf, "\"h\"");
+    assert_eq!(buf, "#\\h");
 }
 
 #[test]
@@ -4560,7 +4584,7 @@ fn test_to_lisp_char() {
     let idx = lisp.eval_to_index("(to-upper (car \"a\"))").unwrap();
     let mut buf = String::new();
     lisp.write_value(idx, &mut buf).unwrap();
-    assert_eq!(buf, "\"A\"");
+    assert_eq!(buf, "#\\A");
 }
 
 // — Native function creating strings via LispOps —

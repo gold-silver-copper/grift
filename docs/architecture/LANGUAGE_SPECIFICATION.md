@@ -54,11 +54,11 @@ The reader recognizes:
 - lists: `(a b c)`
 - dotted pairs: `(a . b)`
 - quote shorthand: `'x`
+- character literals: `#\x`
 - string literals: `"hello"`
 - atoms: booleans, `#inert`, `#ignore`, integers, and symbols
 
-There is no quasiquote, unquote, vector syntax, byte string syntax, or
-character literal syntax.
+There is no quasiquote, unquote, vector syntax, or byte string syntax.
 
 ### 3.3 Reader Algorithm
 
@@ -69,6 +69,7 @@ The reader is recursive-descent and behaves as follows:
 3. Dispatch:
    - `(` starts list parsing
    - `'` parses the following expression and rewrites it as `(quote expr)`
+   - `#\` starts character-literal parsing
    - `"` starts string parsing
    - `)` is a parse error
    - anything else starts atom parsing
@@ -146,7 +147,24 @@ Any other backslash escape raises `InvalidArgument`, not `ParseError`.
 Source-level strings are parsed character by character until the closing `"`.
 An unterminated string raises `ParseError`.
 
-### 3.8 Source Character Set
+### 3.8 Character Literals
+
+Character literals use Scheme-style `#\` syntax.
+
+Accepted forms are:
+
+- any single character followed immediately by a delimiter or end of input,
+  such as `#\a` or `#\(`
+- the named forms `#\newline`, `#\tab`, `#\return`, and `#\space`
+
+The current reader also accepts:
+
+- `#\\` for backslash
+- `#\"` for double quote
+
+Unknown character names raise `ParseError`.
+
+### 3.9 Source Character Set
 
 The current reader is byte-oriented rather than full UTF-8 decoding. Portable
 source programs should therefore be treated as ASCII source text plus the escape
@@ -155,7 +173,7 @@ sequences above.
 Runtime strings conceptually store characters, but only ASCII source behavior is
 well-defined by the current implementation.
 
-### 3.9 Parse Errors
+### 3.10 Parse Errors
 
 Malformed syntax raises `ParseError { line, col }`, using 1-based coordinates.
 
@@ -172,6 +190,7 @@ Grift has these runtime value categories:
 | nil | `()` |
 | booleans | `#t`, `#f` |
 | numbers | decimal integer |
+| characters | `#\x` |
 | symbols | symbol name |
 | pairs | list syntax or dotted pair syntax |
 | strings | quoted by write-mode, raw by display-mode |
@@ -214,6 +233,9 @@ Symbols are interned by name.
 Two symbols with the same spelling are the same symbol for equality and
 environment lookup purposes.
 
+Internally, a symbol stores the head of a proper list of `Char` values that
+spells its name.
+
 ### 4.4 Pairs and Lists
 
 Pairs are immutable cons cells. Proper lists are chains of pairs ending in
@@ -221,26 +243,40 @@ Pairs are immutable cons cells. Proper lists are chains of pairs ending in
 
 There is no `set-car!` or `set-cdr!`.
 
-### 4.5 Strings
+### 4.5 Characters
 
-Strings are singly linked chains of character nodes. A non-empty string is not a
-distinct top-level value kind; it is a chain analogous to a list, and the empty
-string is exactly `NIL`.
+Characters are first-class immutable values.
 
 Observable consequences:
 
-- `car` of a non-empty string returns a newly allocated one-character string
+- `(car "hello")` returns `#\h`
+- `(cons #\h "ello")` constructs `"hello"`
+- standalone characters print in `#\x` syntax
+- `FromLisp<char>` and `ToLisp<char>` operate on character values, not
+  one-character strings
+
+### 4.6 Strings
+
+Strings are proper lists of `Char` values built from ordinary `Cons` cells.
+There is no distinct string header object.
+
+The empty string is exactly `NIL`. A non-empty string is a proper list whose
+elements are all characters.
+
+Observable consequences:
+
+- `car` of a non-empty string returns a character value
 - `cdr` of a non-empty string returns the tail string
 - `cdr "x"` returns `NIL`
 - `pair?` is true for non-empty strings
 - `pair?` is false for the empty string because the empty string is `NIL`
-- `cons` can construct strings only in a restricted case described below
+- `(cons #\h "ello")` constructs `"hello"` using ordinary pair construction
+- `equal?` compares strings by ordinary structural list equality
 
-There is no separate character type. A single character is represented as a
-one-character string. Therefore strings are semantically lists of one-character
-strings rather than lists of a separate `char` value type.
+Because strings are ordinary lists, no string-specific pair node exists in the
+runtime.
 
-### 4.6 Callable Values
+### 4.7 Callable Values
 
 Grift has five callable storage forms:
 
@@ -266,6 +302,7 @@ These values evaluate to themselves:
 - `NIL`
 - booleans
 - numbers
+- characters
 - strings
 - operatives
 - applicatives
@@ -277,6 +314,9 @@ These values evaluate to themselves:
 - native values
 
 Symbols are not self-evaluating. Pairs are not self-evaluating.
+
+The one exception to the second rule is that a proper non-empty list of
+characters is treated as a string literal value and therefore self-evaluates.
 
 ### 5.2 Truth
 
@@ -786,18 +826,13 @@ Normal behavior:
 
 - constructs a pair `(a . b)`
 
-String-specialized behavior:
+There is no string-specialized construction rule in the runtime. Strings are
+ordinary pairs whose elements are characters. Therefore:
 
-- if `a` is a one-character string and `b` is any value, the result is a string
-  node whose first character is that character and whose tail is `b`
-- this is how `(cons (car "h") "ello")` constructs `"hello"`
-- `b` is not required to be a well-formed string tail, so this rule can create
-  char-node structures whose cdr is not another string node or `NIL`
-
-Important limitation:
-
-- only a one-character first argument triggers string construction
-- `(cons "ab" "cd")` constructs a pair, not a string
+- `(cons #\h "ello")` constructs `"hello"`
+- `(cons (car "hello") (cdr "hello"))` reconstructs `"hello"`
+- `(cons "ab" "cd")` constructs a pair, not a string, because `"ab"` is not a
+  character value
 
 #### `car`
 
@@ -806,7 +841,7 @@ Important limitation:
 ```
 
 - on a pair, returns the pair's car
-- on a non-empty string, returns a newly allocated one-character string
+- on a non-empty string, returns the first character
 - on anything else, raises `TypeError`
 - extra operands are ignored
 
@@ -853,7 +888,7 @@ Semantics:
 
 Specific meanings:
 
-- `pair?` is true for cons cells and non-empty strings
+- `pair?` is true for cons cells; this therefore includes non-empty strings
 - `operative?` is true for compound operatives and builtin operative values
 - `applicative?` is true only for applicative wrapper values
 
@@ -891,14 +926,13 @@ For compatibility, the effective behavior is:
 - environments compare by object identity only
 - operatives compare by object identity only
 - applicatives compare by object identity only
-- strings compare by node representation, not full text content
+- characters compare by character value
+- strings follow the pair rule, because they are ordinary lists
 
 That last rule is important:
 
 - two separately allocated equal multi-character strings are usually not `eq?`
 - a shared string tail may be `eq?`
-- two separately allocated one-character strings with the same character are
-  `eq?`, because their stored representation is the same
 
 #### `equal?`
 
@@ -912,9 +946,11 @@ Rules:
 
 - if `eq?` is true, `equal?` is true
 - pairs compare recursively by car and cdr
-- strings compare by complete character sequence
 - environments are never `equal?` unless they are `eq?`
 - all other values use the `eq?` result
+
+Because strings are ordinary lists of characters, no dedicated string-equality
+rule is needed beyond recursive pair equality.
 
 ### 10.6 Evaluation and Combiner Operations
 
@@ -994,7 +1030,8 @@ Rules:
 (raw-read-string string)
 ```
 
-- parses one expression from the supplied string
+- parses one expression from the supplied string value, which is a list of
+  characters
 - if the input string is empty, returns `NIL`
 - trailing unread characters after the first expression are ignored
 - reader syntax is the same as the top-level reader
@@ -1006,7 +1043,8 @@ Rules:
 ```
 
 - renders `obj` using display-mode formatting
-- strings are emitted without quotes or escapes
+- non-empty strings are emitted without quotes or escapes
+- the empty string still renders as `()`
 
 #### `raw-write-to-string`
 
@@ -1015,7 +1053,9 @@ Rules:
 ```
 
 - renders `obj` using write-mode formatting
-- strings are emitted with surrounding quotes and the five supported escapes
+- non-empty strings are emitted with surrounding quotes and the five supported
+  escapes
+- the empty string still renders as `()`
 
 ### 10.9 Other Builtins
 
@@ -1051,8 +1091,11 @@ Formatting rules:
 - `NIL` => `()`
 - booleans => `#t`, `#f`
 - numbers => decimal integer
+- characters => `#\x`, with named forms for newline, tab, carriage return,
+  backslash, double quote, and space
 - symbols => symbol name
-- strings => quoted, with escapes for `"`, `\`, newline, tab, and carriage return
+- non-empty strings => quoted, with escapes for `"`, `\`, newline, tab, and
+  carriage return
 - proper lists => `(a b c)`
 - improper lists => `(a b . c)`
 - `#inert` => `#inert`

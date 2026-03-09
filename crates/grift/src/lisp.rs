@@ -280,12 +280,9 @@ impl<const N: usize> Lisp<N> {
         self.arena.alloc(Value::Cons { car, cdr })
     }
 
-    /// Allocate a character (one-element string).
+    /// Allocate a character value.
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair {
-            ch: c,
-            cdr: ArenaIndex::NIL,
-        })
+        self.arena.alloc(Value::Char(c))
     }
 
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
@@ -319,10 +316,8 @@ impl<const N: usize> Lisp<N> {
 
     /// Allocate a string value from a `&str`.
     ///
-    /// Strings are stored as a linked list of `CharPair` nodes.
-    /// Each `CharPair { ch, cdr }` points to the next character,
-    /// with the final character's `cdr` pointing to `NIL`.
-    /// An empty string is represented as `NIL`.
+    /// Strings are stored as proper `Cons` lists whose elements are `Char`
+    /// values. The empty string is represented as `NIL`.
     pub fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         // Pre-check: ensure enough free slots for all chars.
         let char_count = if s.is_ascii() {
@@ -330,7 +325,8 @@ impl<const N: usize> Lisp<N> {
         } else {
             s.chars().count()
         };
-        if self.arena.available() < char_count {
+        let needed = char_count.saturating_mul(2);
+        if self.arena.available() < needed {
             return Err(ArenaError::OutOfMemory);
         }
 
@@ -338,18 +334,52 @@ impl<const N: usize> Lisp<N> {
 
         // Build the linked list in reverse so the first char is at the head.
         for c in s.chars().rev() {
-            let node = self.arena.alloc(Value::CharPair { ch: c, cdr: data })?;
+            let node = self.prepend_char(data, c)?;
             data = node;
         }
 
         Ok(data)
     }
 
-    /// Compare a `CharPair` linked list starting at `char_head` with a `&str`.
+    fn char_list_step(&self, idx: ArenaIndex) -> ArenaResult<Option<(char, ArenaIndex)>> {
+        if idx.is_nil() {
+            return Ok(None);
+        }
+        let Value::Cons { car, cdr } = self.arena.get(idx)? else {
+            return Err(ArenaError::TypeError);
+        };
+        let Value::Char(ch) = self.arena.get(car)? else {
+            return Err(ArenaError::TypeError);
+        };
+        Ok(Some((ch, cdr)))
+    }
+
+    pub(crate) fn is_char_list(&self, idx: ArenaIndex) -> ArenaResult<bool> {
+        let mut cur = idx;
+        while !cur.is_nil() {
+            let Value::Cons { car, cdr } = self.arena.get(cur)? else {
+                return Ok(false);
+            };
+            if !matches!(self.arena.get(car)?, Value::Char(_)) {
+                return Ok(false);
+            }
+            cur = cdr;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn is_nonempty_char_list(&self, idx: ArenaIndex) -> ArenaResult<bool> {
+        if idx.is_nil() {
+            return Ok(false);
+        }
+        self.is_char_list(idx)
+    }
+
+    /// Compare a char-list starting at `char_head` with a `&str`.
     fn string_eq(&self, char_head: ArenaIndex, s: &str) -> bool {
         let mut cur = char_head;
         for c in s.chars() {
-            let Ok(Value::CharPair { ch, cdr }) = self.arena.get(cur) else {
+            let Ok(Some((ch, cdr))) = self.char_list_step(cur) else {
                 return false;
             };
             if ch != c {
@@ -357,11 +387,10 @@ impl<const N: usize> Lisp<N> {
             }
             cur = cdr;
         }
-        // The string must be fully consumed (cur should be NIL).
         cur.is_nil()
     }
 
-    /// Compare two arena-allocated strings by their `CharPair` chains.
+    /// Compare two arena-allocated strings by their char lists.
     pub(crate) fn strings_equal(
         &self,
         data_a: ArenaIndex,
@@ -378,18 +407,10 @@ impl<const N: usize> Lisp<N> {
                 (true, false) | (false, true) => return Ok(false),
                 _ => {}
             }
-            let Value::CharPair {
-                ch: ca,
-                cdr: next_a,
-            } = self.arena.get(cur_a)?
-            else {
+            let Some((ca, next_a)) = self.char_list_step(cur_a)? else {
                 return Err(ArenaError::TypeError);
             };
-            let Value::CharPair {
-                ch: cb,
-                cdr: next_b,
-            } = self.arena.get(cur_b)?
-            else {
+            let Some((cb, next_b)) = self.char_list_step(cur_b)? else {
                 return Err(ArenaError::TypeError);
             };
             if ca != cb {
@@ -408,34 +429,19 @@ impl<const N: usize> Lisp<N> {
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
-    /// Prepend a character to the front of a CharPair chain.
-    ///
-    /// Allocates a new `CharPair` node whose `cdr` points to `head`.
-    /// Returns the new head. This is purely functional — no existing
-    /// arena nodes are mutated.
-    ///
-    /// Build strings by prepending characters in reverse order, then call
-    /// [`reverse_chain`](Self::reverse_chain) to flip into
-    /// forward order.
+    /// Prepend a character to the front of a char-list.
     pub(crate) fn prepend_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair { ch, cdr: head })
+        let ch = self.char_val(ch)?;
+        self.cons(ch, head)
     }
 
-    /// Reverse a singly-linked chain (Cons list or CharPair string)
+    /// Reverse a singly-linked cons chain
     /// in place by swapping `cdr` pointers.
-    ///
-    /// Works with both `Cons` and `CharPair` chains. Returns the new
-    /// head (formerly the last node). No new nodes are allocated.
-    ///
-    /// Safe because the chain is freshly built and not yet shared.
     pub(crate) fn reverse_chain(&self, mut head: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !head.is_nil() {
-            let (new_val, cdr) = match self.arena.get(head)? {
-                Value::Cons { car, cdr } => (Value::Cons { car, cdr: prev }, cdr),
-                Value::CharPair { ch, cdr } => (Value::CharPair { ch, cdr: prev }, cdr),
-                _ => return Err(ArenaError::TypeError),
-            };
+            let (car, cdr) = self.arena.get(head)?.as_cons()?;
+            let new_val = Value::Cons { car, cdr: prev };
             self.arena.set(head, new_val)?;
             prev = head;
             head = cdr;
@@ -443,7 +449,7 @@ impl<const N: usize> Lisp<N> {
         Ok(prev)
     }
 
-    /// Intern a symbol from an existing CharPair chain.
+    /// Intern a symbol from an existing char list.
     ///
     /// If a symbol with the same name already exists, returns the existing
     /// symbol index (the chain is left as garbage for GC).  Otherwise
@@ -480,7 +486,7 @@ impl<const N: usize> Lisp<N> {
         Ok(sym_idx)
     }
 
-    /// Parse an integer from a CharPair chain.
+    /// Parse an integer from a char list.
     ///
     /// Returns `Some(n)` if the chain represents a valid integer literal
     /// (optional leading `-` or `+`, followed by one or more digits).
@@ -493,9 +499,7 @@ impl<const N: usize> Lisp<N> {
         let mut has_digits = false;
 
         while !cur.is_nil() {
-            let Value::CharPair { ch, cdr } = self.arena.get(cur).ok()? else {
-                return None;
-            };
+            let (ch, cdr) = self.char_list_step(cur).ok()??;
             if first {
                 first = false;
                 if ch == '-' {
@@ -523,7 +527,7 @@ impl<const N: usize> Lisp<N> {
         Some(if negative { -result } else { result })
     }
 
-    /// Classify an atom represented as a CharPair chain.
+    /// Classify an atom represented as a char list.
     ///
     /// Checks for booleans (#t, #f, etc.), #inert, #ignore, numbers, and
     /// symbols.  Returns the appropriate arena value.
@@ -551,27 +555,16 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)
     }
 
-    /// Get car of a cons cell or CharPair (user-facing).
-    /// For CharPair, allocates a fresh one-element string.
+    /// Get car of a cons cell (user-facing).
     #[inline]
     pub fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Cons { car, .. } => Ok(car),
-            Value::CharPair { ch, .. } => self.arena.alloc(Value::CharPair {
-                ch,
-                cdr: ArenaIndex::NIL,
-            }),
-            _ => Err(ArenaError::TypeError),
-        }
+        self.car(idx)
     }
 
-    /// Get cdr of a cons cell or CharPair (user-facing).
+    /// Get cdr of a cons cell (user-facing).
     #[inline]
     pub fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        match self.arena.get(idx)? {
-            Value::Cons { cdr, .. } | Value::CharPair { cdr, .. } => Ok(cdr),
-            _ => Err(ArenaError::TypeError),
-        }
+        self.cdr(idx)
     }
 
     /// Get car of cdr (second element of a list, user-facing).
@@ -985,8 +978,8 @@ impl<const N: usize> Lisp<N> {
     /// Write a human-readable representation of the value at `idx`.
     ///
     /// Unlike `Value::Display`, this method has arena access and can walk
-    /// `CharPair` chains to display full symbol names and string contents,
-    /// and `Cons` chains to display proper/improper lists.
+    /// char lists to display full symbol names and string contents, and
+    /// `Cons` chains to display proper/improper lists.
     ///
     /// # Example
     ///
@@ -1029,21 +1022,25 @@ impl<const N: usize> Lisp<N> {
             Ok(Value::Boolean(true)) => w.write_str("#t"),
             Ok(Value::Boolean(false)) => w.write_str("#f"),
             Ok(Value::Number(n)) => write!(w, "{n}"),
-            Ok(Value::Symbol(char_head)) => self.walk_chars(char_head, w, |ch, w| w.write_char(ch)),
-            Ok(Value::CharPair { .. }) if display => {
-                self.walk_chars(idx, w, |ch, w| w.write_char(ch))
+            Ok(Value::Symbol(char_head)) => {
+                self.walk_char_list(char_head, w, |ch, w| w.write_char(ch))
             }
-            Ok(Value::CharPair { .. }) => {
-                w.write_char('"')?;
-                self.walk_chars(idx, w, |ch, w| match ch {
-                    '"' => w.write_str("\\\""),
-                    '\\' => w.write_str("\\\\"),
-                    '\n' => w.write_str("\\n"),
-                    '\t' => w.write_str("\\t"),
-                    '\r' => w.write_str("\\r"),
-                    c => w.write_char(c),
-                })?;
-                w.write_char('"')
+            Ok(Value::Char(ch)) => self.fmt_char(ch, w),
+            Ok(Value::Cons { .. }) if self.is_nonempty_char_list(idx).unwrap_or(false) => {
+                if display {
+                    self.walk_char_list(idx, w, |ch, w| w.write_char(ch))
+                } else {
+                    w.write_char('"')?;
+                    self.walk_char_list(idx, w, |ch, w| match ch {
+                        '"' => w.write_str("\\\""),
+                        '\\' => w.write_str("\\\\"),
+                        '\n' => w.write_str("\\n"),
+                        '\t' => w.write_str("\\t"),
+                        '\r' => w.write_str("\\r"),
+                        c => w.write_char(c),
+                    })?;
+                    w.write_char('"')
+                }
             }
             Ok(Value::Cons { car, cdr }) => {
                 w.write_char('(')?;
@@ -1059,21 +1056,35 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Walk a CharPair chain, emitting each character via a closure.
-    fn walk_chars<W: core::fmt::Write + ?Sized>(
+    fn fmt_char(
+        &self,
+        ch: char,
+        w: &mut (impl core::fmt::Write + ?Sized),
+    ) -> core::fmt::Result {
+        match ch {
+            '\n' => w.write_str("#\\newline"),
+            '\t' => w.write_str("#\\tab"),
+            '\r' => w.write_str("#\\return"),
+            '\\' => w.write_str("#\\\\"),
+            '"' => w.write_str("#\\\""),
+            ' ' => w.write_str("#\\space"),
+            c => write!(w, "#\\{c}"),
+        }
+    }
+
+    /// Walk a char list, emitting each character via a closure.
+    fn walk_char_list<W: core::fmt::Write + ?Sized>(
         &self,
         mut idx: ArenaIndex,
         w: &mut W,
         mut emit: impl FnMut(char, &mut W) -> core::fmt::Result,
     ) -> core::fmt::Result {
         while !idx.is_nil() {
-            match self.arena.get(idx) {
-                Ok(Value::CharPair { ch, cdr }) => {
-                    emit(ch, w)?;
-                    idx = cdr;
-                }
-                _ => break,
-            }
+            let Ok(Some((ch, cdr))) = self.char_list_step(idx) else {
+                break;
+            };
+            emit(ch, w)?;
+            idx = cdr;
         }
         Ok(())
     }
@@ -1250,15 +1261,12 @@ impl<const N: usize> LispOps for Lisp<N> {
 }
 
 // ============================================================================
-// ArenaWriter — core::fmt::Write that builds a CharPair chain in the arena
+// ArenaWriter — core::fmt::Write that builds a char list in the arena
 // ============================================================================
 
-/// A [`core::fmt::Write`] implementation that allocates `CharPair` nodes
-/// directly into the arena, building a string without any intermediate buffer.
-///
-/// Characters are prepended (building in reverse order) during writing.
-/// [`finish`](Self::finish) calls `reverse_chain` to produce
-/// the correctly ordered chain.
+/// A [`core::fmt::Write`] implementation that allocates `Char` values and
+/// `Cons` cells directly into the arena, building a string without any
+/// intermediate buffer.
 pub(crate) struct ArenaWriter<'a, const N: usize> {
     lisp: &'a Lisp<N>,
     head: ArenaIndex,
@@ -1275,7 +1283,7 @@ impl<'a, const N: usize> ArenaWriter<'a, N> {
         }
     }
 
-    /// Consume the writer and return the head of the CharPair chain
+    /// Consume the writer and return the head of the char list
     /// in forward order, or an error if any allocation failed.
     pub(crate) fn finish(self) -> ArenaResult<ArenaIndex> {
         match self.error {
@@ -1286,7 +1294,7 @@ impl<'a, const N: usize> ArenaWriter<'a, N> {
 }
 
 impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
-    /// Append text by allocating one `CharPair` per character into the arena.
+    /// Append text by allocating one `Char` and one `Cons` cell per character.
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         if self.error.is_some() {
             return Err(core::fmt::Error);
@@ -1325,7 +1333,6 @@ impl<const N: usize> Trace<Value, N> for Value {
                 tracer(car);
                 tracer(cdr);
             }
-            Value::CharPair { cdr, .. } if !cdr.is_nil() => tracer(cdr),
             Value::Applicative(inner) => tracer(inner),
             Value::Symbol(s) => tracer(s),
             _ => {}
