@@ -71,7 +71,8 @@ pub fn include_prelude(input: TokenStream) -> TokenStream {
     }
     code.push_str("}\n");
 
-    code.parse().expect("Failed to parse generated prelude code")
+    code.parse()
+        .expect("Failed to parse generated prelude code")
 }
 
 struct FnEntry {
@@ -213,7 +214,9 @@ fn try_extract_fn_define(form: &str) -> Option<FnEntry> {
 
     // Parse: name (params...) body...
     // First token is the function name
-    let name_end = rest.find(|c: char| c.is_whitespace() || c == '(').unwrap_or(rest.len());
+    let name_end = rest
+        .find(|c: char| c.is_whitespace() || c == '(')
+        .unwrap_or(rest.len());
     let name = rest[..name_end].to_string();
     let after_name = rest[name_end..].trim_start();
 

@@ -1,42 +1,58 @@
 # Grift Language Specification
 
 This document specifies the currently implemented Grift language as it exists
-in `crates/grift/src` and `crates/grift/tests/lisp_tests.rs`.
+in `crates/grift/src`, `crates/grift/prelude.grift`, and
+`crates/grift/tests/lisp_tests.rs`.
 
-It is intentionally implementation-facing: the goal is to make a compatible
-reimplementation possible in another language such as C, not to describe an
-idealized future language.
+It is an implementation-compatibility specification, not an idealized design
+document. The goal is to make a source-compatible reimplementation possible in
+another language such as C, including Grift's current quirks.
 
-## 1. Scope and Compatibility Target
+## 1. Conformance Target
 
 A conforming implementation must match the observable behavior of:
 
 - the reader
 - the evaluator
 - environment lookup and mutation
-- the built-in operatives and applicatives
-- equality
+- formal-parameter-tree matching
+- builtin operatives and applicatives
+- equality predicates
 - string/list behavior
-- the printed forms produced by `raw-display-to-string` and `raw-write-to-string`
+- prelude bindings
+- `raw-read-string`
+- `raw-display-to-string`
+- `raw-write-to-string`
 
-This spec covers the core language and prelude. It does not attempt to
-standardize Rust host APIs such as `register_native`, except where host-native
-functions are visible as first-class runtime values.
+It does not need to match Rust-only host APIs such as the exact shape of
+`LispOps`, except where host-native values are visible as first-class runtime
+values.
 
 ## 2. Program Model
 
 A program is zero or more expressions read from a character stream.
 
-- Expressions are parsed and evaluated sequentially.
-- The result of the last expression is the result of the program.
-- An empty program evaluates to `#inert`.
-- Top-level evaluation happens in the global environment.
+- Top-level input is parsed and evaluated sequentially.
+- The result of the last expression is the result of the whole program.
+- An empty top-level program evaluates to `#inert`.
+- Evaluation happens in the global environment unless an explicit environment
+  is provided to `eval` or `apply`.
 - The global environment persists across evaluations performed on the same
   interpreter instance.
 
-## 3. Lexical Syntax and Reader
+## 3. Reader
 
-### 3.1 Whitespace and Comments
+### 3.1 Source Model
+
+The reader is byte-oriented. Portable source should therefore be treated as
+ASCII source text plus the escape sequences listed below.
+
+Source coordinates are reported as 1-based `(line, col)` pairs for ordinary
+top-level parsing. Parsing through `raw-read-string` uses a `CharPair` chain and
+reports `(0, 0)` for reader-generated parse errors because source coordinates
+are not tracked there.
+
+### 3.2 Whitespace and Comments
 
 The reader treats these characters as whitespace:
 
@@ -47,33 +63,63 @@ The reader treats these characters as whitespace:
 
 Line comments begin with `;` and continue to the next newline or end of input.
 
-### 3.2 Expression Forms
+### 3.3 Surface Forms
 
 The reader recognizes:
 
-- lists: `(a b c)`
+- proper lists: `(a b c)`
 - dotted pairs: `(a . b)`
 - quote shorthand: `'x`
 - string literals: `"hello"`
 - atoms: booleans, `#inert`, `#ignore`, integers, and symbols
 
-There is no quasiquote, unquote, vector syntax, byte string syntax, or
-character literal syntax.
+The language does not currently have reader support for:
 
-### 3.3 Reader Algorithm
+- quasiquote / unquote
+- vectors
+- byte strings
+- characters as a separate literal type
+- block comments
+
+### 3.4 Informal Grammar
+
+The implemented grammar is best described procedurally, but the accepted forms
+can be summarized as:
+
+```text
+program    := { ws_or_comment expr }*
+expr       := list | quote | string | atom
+quote      := "'" expr
+list       := "(" list_contents
+list_contents
+           := ")"
+           | expr list_tail
+list_tail  := ")"
+           | ws_or_comment "." ws_or_comment expr ws_or_comment ")"
+           | ws_or_comment expr list_tail
+string     := '"' { string_char } '"'
+atom       := { non_delimiter }+
+```
+
+That grammar is not complete by itself because `.` is only special in one
+specific list-parsing position; see the dot rules below.
+
+### 3.5 Reader Algorithm
 
 The reader is recursive-descent and behaves as follows:
 
-1. Skip whitespace and comments.
+1. Skip whitespace and `;` comments.
 2. Read one character.
 3. Dispatch:
    - `(` starts list parsing
-   - `'` parses the following expression and rewrites it as `(quote expr)`
+   - `'` parses the next expression and rewrites it as `(quote expr)`
    - `"` starts string parsing
    - `)` is a parse error
    - anything else starts atom parsing
 
-### 3.4 Lists and Dotted Pairs
+At top level, `parse_expr` returns `NIL` when no input remains.
+
+### 3.6 Lists and Dotted Pairs
 
 After reading `(`:
 
@@ -81,23 +127,40 @@ After reading `(`:
 2. If the next character is `)`, the result is `NIL`.
 3. Otherwise parse the first element.
 4. Skip whitespace/comments.
-5. If the next character is `.` and that `.` is followed by a delimiter or end
-   of input, parse one more expression as the cdr, require a closing `)`, and
-   return a dotted pair.
+5. If the next character is `.` and that `.` is followed immediately by a
+   delimiter or end of input, parse one more expression as the cdr, require a
+   closing `)`, and return a dotted pair.
 6. Otherwise continue parsing the remaining list elements recursively.
 
 Important dot rules:
 
 - A lone `.` in list-structure position is special.
-- A token beginning with `.` is a normal symbol if the `.` is not followed by a
-  delimiter immediately after it is read in dot position.
-- `( . x)` is a parse error.
+- `.` is not a general token delimiter.
 - `(a . b)` is a dotted pair.
-- `(a .foo)` is parsed as `(a .foo)`, not as a dotted pair.
+- `(a .foo)` is parsed as the proper list `(a .foo)`.
+- `( . x)` is a parse error.
+- A list whose first token begins with `.` also follows this rule:
+  `( .foo bar)` parses as `(.foo bar)`.
 
-### 3.5 Delimiters
+### 3.7 Quote Shorthand
 
-The reader stops an atom when it encounters one of:
+`'expr` rewrites to `(quote expr)`.
+
+Current implementation quirk:
+
+- a bare trailing `'` does not raise `ParseError`
+- instead it rewrites to `(quote ())`, because end-of-input is treated as
+  `NIL` by `parse_expr`
+
+Examples:
+
+- `'x` => `(quote x)`
+- `'(1 2)` => `(quote (1 2))`
+- `'` => `(quote ())`
+
+### 3.8 Atom Delimiters
+
+Atom parsing stops at:
 
 - space
 - tab
@@ -108,10 +171,9 @@ The reader stops an atom when it encounters one of:
 - `"`
 - `;`
 
-Notably, `.` is not a general delimiter. It is only special in the list parser
-as described above.
+Notably, `.` is not a delimiter outside the list parser's dotted-pair logic.
 
-### 3.6 Atoms
+### 3.9 Atom Classification
 
 An atom token is classified in this order:
 
@@ -119,17 +181,17 @@ An atom token is classified in this order:
 2. `#f` or `#false` => boolean false
 3. `#inert` => inert singleton
 4. `#ignore` => ignore singleton
-5. a signed base-10 integer that fits in the host signed machine integer type
+5. a signed base-10 integer that fits the host `isize`
 6. otherwise, a symbol
 
-Implications:
+Consequences:
 
-- `+42` and `-42` are numeric literals.
-- `+` and `-` by themselves are symbols.
-- An integer literal that overflows the host integer type is not an error; it is
-  read as a symbol.
+- `+42` and `-42` are numeric literals
+- `+` and `-` by themselves are symbols
+- `#unknown` is a symbol
+- an overflowing integer literal is not a reader error; it becomes a symbol
 
-### 3.7 Strings
+### 3.10 Strings
 
 String literals are delimited by `"`.
 
@@ -141,125 +203,192 @@ Recognized escape sequences are exactly:
 - `\\`
 - `\"`
 
-Any other backslash escape raises `InvalidArgument`, not `ParseError`.
+Current behavior:
 
-Source-level strings are parsed character by character until the closing `"`.
-An unterminated string raises `ParseError`.
+- any other backslash escape raises `InvalidArgument`, not `ParseError`
+- unterminated string literals raise `ParseError`
+- the reader stores runtime strings as linked `CharPair` nodes
 
-### 3.8 Source Character Set
+### 3.11 Reader Errors
 
-The current reader is byte-oriented rather than full UTF-8 decoding. Portable
-source programs should therefore be treated as ASCII source text plus the escape
-sequences above.
+Malformed syntax can raise:
 
-Runtime strings conceptually store characters, but only ASCII source behavior is
-well-defined by the current implementation.
+- `ParseError { line, col }` for structural reader failures
+- `InvalidArgument` for an unknown string escape
 
-### 3.9 Parse Errors
+Examples of `ParseError` cases:
 
-Malformed syntax raises `ParseError { line, col }`, using 1-based coordinates.
-
-Top-level parsing reports real source coordinates. Parsing through
-`raw-read-string` has no line/column tracking and therefore reports `(0, 0)` for
-reader-generated parse errors.
+- unexpected `)`
+- unterminated list
+- unterminated string
+- malformed dotted-pair syntax
 
 ## 4. Runtime Value Model
 
 Grift has these runtime value categories:
 
-| Category | Printed form |
+| Category | External form |
 | --- | --- |
 | nil | `()` |
 | booleans | `#t`, `#f` |
 | numbers | decimal integer |
 | symbols | symbol name |
-| pairs | list syntax or dotted pair syntax |
-| strings | quoted by write-mode, raw by display-mode |
-| operatives | `<operative>` |
+| pairs | list syntax or dotted-pair syntax |
+| strings | quoted in write mode, raw in display mode |
+| compound operatives | `<operative>` |
 | applicatives | `<applicative>` |
-| builtin operatives | `<builtin>` |
+| builtin operative cores | `<builtin>` |
 | environments | `<environment>` |
 | inert | `#inert` |
 | ignore | `#ignore` |
 | prelude entries | `<prelude:name>` |
-| native functions | `<native>` |
+| native host functions | `<native>` |
 
-### 4.1 Nil
+### 4.1 Nil and the Empty String
 
-`NIL` is the empty list.
+`NIL` is the empty list and also the empty string.
 
-`NIL` is also the runtime representation of the empty string. This is the most
-important Grift-specific compatibility rule:
+This aliasing is mandatory for compatibility:
 
 - `()` and `""` are distinct reader syntax
 - both evaluate to the same runtime object
 - `null? ""` is true
 - `pair? ""` is false
-- printing `""` through write-mode produces `()`, not `""`
-
-A compatible implementation must preserve this observable aliasing.
+- `raw-write-to-string ""` produces `"()"`, not `"\"\""`
 
 ### 4.2 Numbers
 
 Numbers are signed machine integers with host width equivalent to Rust `isize`.
 
-- Literal recognition is checked during parsing.
-- Arithmetic builtins raise `ArithmeticOverflow` on checked overflow.
-- Division is integer division truncating toward zero.
+- reader classification checks whether the literal fits `isize`
+- arithmetic builtins use checked arithmetic
+- overflow raises `ArithmeticOverflow`
+- division truncates toward zero
 
 ### 4.3 Symbols
 
 Symbols are interned by name.
 
-Two symbols with the same spelling are the same symbol for equality and
-environment lookup purposes.
+- two symbols with the same spelling are the same symbol for `eq?`,
+  `equal?`, and environment lookup
+- symbol interning is observable because symbol equality becomes pointer-stable
 
-### 4.4 Pairs and Lists
+### 4.4 Pairs
 
-Pairs are immutable cons cells. Proper lists are chains of pairs ending in
-`NIL`. Improper lists are pairs whose cdr is not a proper list.
+Pairs are immutable cons cells.
 
-There is no `set-car!` or `set-cdr!`.
+- proper lists are chains of pairs ending in `NIL`
+- improper lists are pairs whose final cdr is not `NIL`
+- there is no `set-car!`
+- there is no `set-cdr!`
 
 ### 4.5 Strings
 
-Strings are singly linked chains of character nodes. A non-empty string is not a
-distinct top-level value kind; it is a chain analogous to a list, and the empty
-string is exactly `NIL`.
+Strings are singly linked chains of `CharPair` nodes.
+
+- a non-empty string is a chain of `CharPair { ch, cdr }`
+- the empty string is exactly `NIL`
+- there is no separate character type
+- a single character is represented as a one-character string
 
 Observable consequences:
 
-- `car` of a non-empty string returns a newly allocated one-character string
-- `cdr` of a non-empty string returns the tail string
-- `cdr "x"` returns `NIL`
+- `(car "hello")` returns `"h"` as a fresh one-character string
+- `(cdr "hello")` returns `"ello"`
+- `(cdr "x")` returns `()`
 - `pair?` is true for non-empty strings
-- `pair?` is false for the empty string because the empty string is `NIL`
-- `cons` can construct strings only in a restricted case described below
+- `pair?` is false for the empty string
+- `cons` can construct a string node only when its first argument is a
+  one-character string
 
-There is no separate character type. A single character is represented as a
-one-character string. Therefore strings are semantically lists of one-character
-strings rather than lists of a separate `char` value type.
+Strings behave like list-shaped values in several places, but they are still a
+distinct runtime representation from `Cons`.
 
-### 4.6 Callable Values
+### 4.6 Callables
 
 Grift has five callable storage forms:
 
-- builtin operatives
+- builtin operative cores (`Value::Builtin`)
 - compound operatives created by `vau`
-- applicatives created by `wrap` or `lambda`
-- prelude entries
-- native host functions
+- applicatives (`Value::Applicative`)
+- prelude entries (`Value::Prelude`, normally wrapped in an applicative)
+- native host functions (`Value::Native`, normally wrapped in an applicative)
 
 Operationally:
 
-- builtin operatives and `vau` operatives receive raw operands
+- builtin operative cores receive raw operands
+- compound operatives receive raw operands
 - applicatives evaluate operands first
-- prelude entries are bound as applicatives
-- native functions are bound as applicatives
+- prelude entries are bound as applicatives in the global environment
+- native functions are normally bound as applicatives in the global environment
 
-## 5. Self-Evaluating Values and Truth
+## 5. Environments
 
-### 5.1 Self-Evaluating Values
+An environment is a frame plus zero or more parent environments.
+
+### 5.1 Structure
+
+Each environment stores:
+
+- `bindings`: an alist of `(symbol . value)` pairs
+- `parents`: a proper list of parent environments
+
+The implementation also reserves:
+
+- `GROUND_ENV`: builtin-only environment
+- `GLOBAL_ENV`: child of `GROUND_ENV`; this is the normal user top level
+
+Builtins live in the ground environment. Prelude bindings and user top-level
+definitions live in the global environment.
+
+### 5.2 Definition
+
+`define!`:
+
+- mutates only the current frame
+- rejects rebinding a name already present in that same frame
+- raises `AlreadyDefined` for same-frame redefinition
+
+### 5.3 Mutation
+
+`set!`:
+
+- mutates only the explicitly supplied environment
+- searches only that environment's own frame
+- does not walk parents
+- raises `UnboundVariable` if the symbol is absent from that frame
+
+### 5.4 Lookup Order
+
+Environment lookup is observable and must match the implementation:
+
+1. Search the current frame's bindings from newest to oldest.
+2. If there is exactly one parent, continue upward iteratively.
+3. If there are multiple parents, search them in left-to-right depth-first
+   order.
+4. During multi-parent search, already-visited environments are skipped to
+   avoid cycles.
+5. If nothing matches, raise `UnboundVariable`.
+
+Consequences:
+
+- children inherit through parent links; they do not copy parent bindings
+- a later parent can be shadowed by an earlier parent's ancestor because the
+  search is depth-first, not breadth-first
+- evaluating in a custom environment never falls back to the global environment
+  unless that environment is actually in the parent chain
+
+### 5.5 Environment Construction
+
+`make-environment` creates a fresh frame with the supplied parent list.
+
+`make-empty-environment` always creates a parentless environment.
+
+Child environments start with no local bindings of their own.
+
+## 6. Evaluation Semantics
+
+### 6.1 Self-Evaluating Values
 
 These values evaluate to themselves:
 
@@ -267,9 +396,9 @@ These values evaluate to themselves:
 - booleans
 - numbers
 - strings
-- operatives
+- compound operatives
 - applicatives
-- builtin values
+- builtin operative cores
 - environments
 - `#inert`
 - `#ignore`
@@ -278,14 +407,13 @@ These values evaluate to themselves:
 
 Symbols are not self-evaluating. Pairs are not self-evaluating.
 
-### 5.2 Truth
+### 6.2 Truth
 
 Only booleans are accepted in boolean contexts.
 
-This differs from Scheme. There is no general truthiness rule such as "anything
-except false is true."
+This differs from Scheme. There is no general truthiness rule.
 
-The following require actual boolean values and raise `TypeError` otherwise:
+The following require actual booleans and raise `TypeError` otherwise:
 
 - `if`
 - `cond` test expressions except `else`
@@ -293,62 +421,80 @@ The following require actual boolean values and raise `TypeError` otherwise:
 - `or`
 - `not`
 
-## 6. Environments
+### 6.3 Symbol Evaluation
 
-An environment is a frame plus zero or more parent environments.
+Evaluating a symbol performs environment lookup in the current environment.
 
-### 6.1 Bindings
+### 6.4 Combination Evaluation
 
-Each frame stores bindings from symbols to values.
+Evaluating a `Cons` cell treats it as a combination:
 
-- `define!` adds a new binding to the current frame
-- `set!` mutates an existing binding in a specified frame
-- lookup searches the current frame first, then parents
+1. Evaluate the operator position.
+2. Dispatch on the resulting value.
 
-### 6.2 Lookup Order
+Dispatch rules:
 
-Lookup behavior is observable and must match:
+- builtin operative core => call with raw operand list and caller environment
+- compound operative => call with raw operand list and caller environment
+- applicative => evaluate operands left-to-right exactly once, then call the
+  wrapped value
+- anything else => `NotCallable`
 
-1. Search the current frame.
-2. If there is exactly one parent, continue upward iteratively.
-3. If there are multiple parents, search them in left-to-right depth-first
-   order.
-4. During multi-parent search, already-visited environments are skipped to avoid
-   cycles.
-5. If no binding is found, raise `UnboundVariable`.
+### 6.5 Applicative Evaluation Order
 
-### 6.3 No Implicit Global Fallback
+Applicatives evaluate operands:
 
-Evaluating in a custom environment does not fall back to the global environment
-unless that environment is actually in the parent chain.
+- strictly
+- left to right
+- exactly once
 
-This matters for `eval`, `apply`, and user code that constructs sandboxed
-environments.
+The resulting list of evaluated arguments is then passed to the wrapped value.
 
-### 6.4 Mutation Rules
+### 6.6 Operative Invocation
 
-`define!`:
+Invoking a compound operative created by `vau`:
 
-- affects only the current frame
-- rejects rebinding a symbol already defined in that same frame
-- raises `AlreadyDefined` on same-frame redefinition
+1. Create a child environment whose single parent is the operative's definition
+   environment.
+2. Match the formal parameter tree against the operand object.
+3. If an environment parameter exists, bind it to the caller's environment.
+4. Evaluate the body in that new environment.
 
-`set!`:
+This yields lexical scope plus explicit dynamic access to the caller
+environment.
 
-- updates only the target environment's own frame
-- does not search parents for a place to mutate
-- raises `UnboundVariable` if the symbol is absent from that frame
+### 6.7 Tail Positions
 
-The language does not expose the builtin-only ground environment directly.
+The implementation performs proper tail-call behavior for:
+
+- user operatives
+- `if`
+- `begin`
+- `cond`
+- `and`
+- `or`
+- `let`
+
+A compatible reimplementation should preserve unbounded tail recursion.
+
+### 6.8 Arity Policy
+
+Grift does not impose a single exact-arity rule across all builtins.
+
+The current language uses four patterns:
+
+- exact arity for a few forms via explicit checks
+- "use only the first N operands" with extras ignored
+- "consume all remaining operands"
+- missing operands surfacing as `TypeError` from list access
+
+This specification treats those exact per-form behaviors as normative.
 
 ## 7. Formal Parameter Trees
 
-Formal parameter trees are used by:
+Formal parameter trees are used in matching and destructuring.
 
-- `vau`
-- `lambda`
-- `fn!`
-- `define!`
+### 7.1 Valid Shapes
 
 A valid formal parameter tree is:
 
@@ -366,134 +512,72 @@ Examples:
 - `(head . tail)`
 - `((a b) c)`
 
-Meaning during matching:
+### 7.2 Matching Semantics
+
+When a formal parameter tree is matched against an object:
 
 - symbol => bind symbol to the matched object
 - `#ignore` => ignore the matched object
-- `NIL` => matched object must be `NIL`
-- pair => matched object must be a pair and both halves are matched recursively
+- `NIL` => the matched object must be `NIL`
+- pair => the matched object must be a `Cons`, then match car and cdr
 
-This gives Grift its destructuring behavior.
+Important limitation:
 
-Examples:
+- matching requires the object to be a `Cons` when the tree is a pair
+- a `CharPair` string node does not count as a pair for parameter matching
 
-- `(define! (a . b) (cons 1 2))` binds `a = 1`, `b = 2`
-- `(define! ((a b) c) (list (list 1 2) 3))` binds `a = 1`, `b = 2`, `c = 3`
-- a bare symbol formal such as `args` captures the entire remaining object
+### 7.3 Build-Dependent Validation
 
-Validation rules:
+Formal-parameter-tree validation is currently gated on Rust `debug_assertions`.
 
-- duplicate symbols inside a formal parameter tree are invalid
-- cyclic formal parameter trees are invalid
-- `vau` additionally forbids the environment parameter symbol from also
-  appearing anywhere in the formal tree
+In debug builds, `define!` and `vau` perform an eager validation pass:
 
-Validation failures raise:
+- duplicate symbols are rejected
+- cyclic trees are rejected
+- malformed non-symbol leaves are rejected
+- `vau` also checks that `env-param` is a symbol or `#ignore`
+- `vau` also checks that `env-param` does not appear in `params`
 
-- `InvalidArgument` for duplicate symbols or env-parameter conflicts
-- `Cyclic` for cyclic trees
-- `TypeError` for structurally invalid trees
+In release builds, that eager validation is skipped:
 
-## 8. Evaluation Semantics
+- `define!` evaluates its right-hand side and then immediately attempts matching
+- `vau` stores `params` directly and only normalizes `#ignore` to "no env binding"
+- malformed trees therefore fail only when matching or later binding activity
+  reaches the bad shape
 
-### 8.1 Symbol Evaluation
+Consequences:
 
-Evaluating a symbol performs environment lookup in the current environment.
+- debug and release builds can differ on whether malformed `define!` or `vau`
+  forms fail at construction time or only later
+- `lambda` and `fn!` do not perform eager validation in either build mode
 
-### 8.2 Combination Evaluation
-
-Evaluating a pair treats it as a combination:
-
-1. Evaluate the operator position.
-2. Dispatch on the resulting callable.
-
-Dispatch rules:
-
-- builtin operative => call with raw operand list and caller environment
-- compound operative => call with raw operand list and caller environment
-- applicative => evaluate operands left-to-right, then call the wrapped value
-- anything else => `NotCallable`
-
-### 8.3 Applicative Evaluation Order
-
-Applicatives evaluate their operands:
-
-- strictly
-- left to right
-- exactly once
-
-The evaluated operand list is then passed to the wrapped callable.
-
-The wrapped callable may itself be a builtin operative, another applicative, a
-prelude entry, or a native function. Builtin inner values retain their builtin
-calling convention when reached this way.
-
-### 8.4 Operative Invocation
-
-Invoking a compound operative created by `vau`:
-
-1. Create a child environment whose parent is the operative's definition
-   environment.
-2. Match the formal parameter tree against the operand object.
-3. If the operative has an environment parameter, bind that symbol to the
-   caller's environment.
-4. Evaluate the body in the new environment.
-
-This gives lexical scope for the closure and dynamic access to the caller
-environment through the explicit env parameter.
-
-### 8.5 Tail Position
-
-The implementation guarantees tail-call behavior for:
-
-- user operatives
-- `if`
-- `begin`
-- `cond`
-- `and`
-- `or`
-- `let`
-
-This matters operationally but does not change value semantics. A compatible
-implementation should preserve unbounded tail recursion.
-
-### 8.6 Arity Behavior
-
-Grift does not enforce a uniform exact-arity rule across all builtins.
-
-- Some forms explicitly validate arity and raise `InvalidArgument`.
-- Many forms simply read the operands they need and ignore extras.
-- Missing operands often surface as `TypeError` from list access rather than as
-  a dedicated arity error.
-
-The per-form behavior below is normative.
-
-## 9. Operatives
+## 8. Operatives
 
 Unless otherwise stated, an operative receives its operands unevaluated.
 
-### 9.1 `quote`
+### 8.1 `quote`
 
-Signature:
+Syntax:
 
 ```lisp
 (quote expr)
 ```
 
-Semantics:
+Behavior:
 
-- returns `expr` unchanged
-- ignores any extra operands
+- returns the first operand unchanged
+- ignores extra operands
+- missing operand raises `TypeError`
 
-### 9.2 `if`
+### 8.2 `if`
 
-Signature:
+Syntax:
 
 ```lisp
 (if test then [else])
 ```
 
-Semantics:
+Behavior:
 
 1. Evaluate `test`.
 2. `test` must evaluate to a boolean.
@@ -505,57 +589,64 @@ Semantics:
 
 Only the selected branch is evaluated.
 
-### 9.3 `define!`
+### 8.3 `define!`
 
-Signature:
+Syntax:
 
 ```lisp
 (define! definiend expression)
 ```
 
-Semantics:
+Behavior:
 
-1. Validate `definiend` as a formal parameter tree.
-2. Evaluate `expression` in the current environment.
-3. Match `definiend` against that value in the current frame.
-4. Return `#inert`.
+1. Evaluate `expression` in the current environment.
+2. Match `definiend` against the resulting value in the current frame.
+3. Return `#inert`.
 
 Important:
 
-- this is destructuring definition, not Scheme's function-definition shorthand
+- this is destructuring definition, not Scheme function-definition shorthand
 - `(define! (f x) body)` destructures instead of defining a function
 - same-frame rebinding raises `AlreadyDefined`
+- in debug builds, malformed definiends can fail before RHS evaluation due to
+  eager validation
+- in release builds, malformed definiends fail during matching instead
+- extra operands after the expression are ignored
 
-### 9.4 `fn!`
+### 8.4 `fn!`
 
-Signature:
+Syntax:
 
 ```lisp
 (fn! name params body...)
 ```
 
-Semantics:
+Behavior:
 
-- equivalent to `(define! name (lambda params (begin body...)))`
+- creates a function equivalent to `(lambda params (begin body...))`
+- binds it in the current frame under `name`
 - returns `#inert`
 
-`name` is intended to be a symbol. The current implementation does not perform a
-separate explicit type check for that position.
+Current quirks:
 
-### 9.5 `set!`
+- `name` is not explicitly type-checked to be a symbol
+- `params` are not eagerly validated as a formal parameter tree
+- zero body expressions are allowed; such a function returns `NIL`
 
-Signature:
+### 8.5 `set!`
+
+Syntax:
 
 ```lisp
 (set! env-expr symbol value-expr)
 ```
 
-Semantics:
+Behavior:
 
 1. Evaluate `env-expr` in the current environment.
 2. The result must be an environment.
 3. Evaluate `value-expr` in the current environment.
-4. `symbol` must be a symbol literal, not a formal parameter tree.
+4. `symbol` must be a symbol literal, not a parameter tree.
 5. Mutate that symbol's existing binding in the target environment's own frame.
 6. Return `#inert`.
 
@@ -563,94 +654,103 @@ Differences from Scheme:
 
 - there is no `(set! x value)` shorthand
 - the target environment is explicit
-- parent frames are not searched for the binding to mutate
+- parent frames are not searched for mutation
+- extra operands are ignored after the third used operand
 
-### 9.6 `lambda`
+### 8.6 `lambda`
 
-Signature:
+Syntax:
 
 ```lisp
 (lambda params body...)
 ```
 
-Semantics:
+Behavior:
 
 - creates an applicative closure
-- equivalent to wrapping a `vau` whose environment parameter is ignored
-- closes over the definition environment
-- arguments are evaluated before parameter matching
+- captures the definition environment lexically
+- evaluates arguments before matching them against `params`
+- zero body expressions are allowed; the function returns `NIL`
 
-### 9.7 `begin`
+Current quirk:
 
-Signature:
+- `params` are not eagerly validated at definition time
+
+### 8.7 `begin`
+
+Syntax:
 
 ```lisp
 (begin expr...)
 ```
 
-Semantics:
+Behavior:
 
-- evaluate expressions left to right
-- result is the result of the last expression
+- evaluate operands left to right
+- the result is the result of the last operand
 - `(begin)` returns `NIL`
 
-### 9.8 `cond`
+### 8.8 `cond`
 
-Signature:
+Syntax:
 
 ```lisp
 (cond (test expr...) ...)
 ```
 
-Semantics:
+Behavior:
 
-- clauses are tried left to right
-- in each clause, `test` is evaluated and must produce a boolean
-- a clause whose test is the symbol `else` matches unconditionally
-- when a clause matches, its body is evaluated as though wrapped in `begin`
+- clauses are considered left to right
+- in each clause, `test` is either:
+  - the symbol `else`, which matches unconditionally, or
+  - an expression that must evaluate to a boolean
+- when a clause matches, its body is evaluated as if wrapped in `begin`
 - a matching clause with no body returns `NIL`
 - if no clause matches, the result is `NIL`
 
-The symbol `else` is recognized by name, not by binding identity.
+Current quirk:
 
-### 9.9 `and`
+- `else` is recognized purely by symbol name
+- it does not need to be the final clause
+- therefore `(cond (else 1) (#t 2))` evaluates to `1`
 
-Signature:
+### 8.9 `and`
+
+Syntax:
 
 ```lisp
 (and expr1 expr2 ...)
 ```
 
-Semantics:
+Behavior:
 
 - requires at least two operands; fewer raise `InvalidArgument`
-- operands are evaluated left to right
-- every operand must evaluate to a boolean
-- evaluation stops at the first `#f`
-- if any operand is `#f`, the result is `#f`
-- if all operands are `#t`, the result is `#t`
+- evaluates operands left to right
+- every evaluated operand must be a boolean
+- stops at the first `#f`
+- returns `#f` if any operand is `#f`
+- returns `#t` if all operands are `#t`
 
-Unlike Scheme, `and` does not return an arbitrary last truthy value because only
-booleans are accepted.
+Unlike Scheme, it never returns an arbitrary last truthy value.
 
-### 9.10 `or`
+### 8.10 `or`
 
-Signature:
+Syntax:
 
 ```lisp
 (or expr1 expr2 ...)
 ```
 
-Semantics:
+Behavior:
 
 - requires at least two operands; fewer raise `InvalidArgument`
-- operands are evaluated left to right
-- every operand must evaluate to a boolean
-- evaluation stops at the first `#t`
-- if any operand is `#t`, the result is `#t`
-- if all operands are `#f`, the result is `#f`
+- evaluates operands left to right
+- every evaluated operand must be a boolean
+- stops at the first `#t`
+- returns `#t` if any operand is `#t`
+- returns `#f` if all operands are `#f`
 
-### 9.11 `let`
+### 8.11 `let`
 
 Regular form:
 
@@ -658,11 +758,11 @@ Regular form:
 (let ((name init) ...) body...)
 ```
 
-Semantics:
+Behavior:
 
 1. Create a child environment of the current environment.
-2. Evaluate each `init` in the outer environment, not in the new child.
-3. Bind each `name` in the child environment.
+2. Evaluate every `init` in the outer environment, not the child.
+3. Bind each `name` in the child frame.
 4. Evaluate `body...` in the child environment.
 
 This is simultaneous binding, not `let*`.
@@ -673,50 +773,59 @@ Named form:
 (let name ((param init) ...) body...)
 ```
 
-Semantics:
+Behavior:
 
-1. Evaluate all `init` expressions in the outer environment.
-2. Create a local environment that is a child of the current environment.
-3. Bind `name` in that local environment to a recursive function.
-4. Invoke that function with the already-evaluated init values.
+1. Evaluate all init expressions in the outer environment.
+2. Create a child environment.
+3. Define `name` in that child as a recursive function.
+4. Invoke that function with the already evaluated init values.
 
-This is the supported recursive named-let form.
+Current details:
 
-### 9.12 `vau`
+- named-let init values are not re-evaluated when the helper function is
+  invoked
+- zero body expressions are allowed; the result is `NIL`
 
-Signature:
+### 8.12 `vau`
+
+Syntax:
 
 ```lisp
 (vau params env-param body...)
 ```
 
-Semantics:
+Behavior:
 
 - creates a compound operative
-- `params` must be a valid formal parameter tree
-- `env-param` must be either a symbol or `#ignore`
+- captures the definition environment lexically
+- zero body expressions are allowed; the operative body is `NIL`
+
+`env-param` handling:
+
 - if `env-param` is `#ignore`, no caller-environment binding is created
-- if `env-param` is a symbol, that symbol must not appear anywhere in `params`
-- the operative closes over its definition environment
+- in debug builds, non-symbol/non-`#ignore` `env-param` values are rejected
+- in debug builds, `env-param` is rejected if it also appears in `params`
+- in release builds, any non-`#ignore` value is stored as-is and later used as
+  the binding key
 
-### 9.13 `current-environment`
+### 8.13 `current-environment`
 
-Signature:
+Syntax:
 
 ```lisp
 (current-environment)
 ```
 
-Semantics:
+Behavior:
 
 - returns the caller's current environment
-- ignores any extra operands
+- ignores every supplied operand
 
-## 10. Applicatives
+## 9. Applicatives
 
 Applicatives evaluate their arguments before running.
 
-### 10.1 Arithmetic
+### 9.1 Arithmetic
 
 #### `+`
 
@@ -757,14 +866,15 @@ Applicatives evaluate their arguments before running.
 (/ a b)
 ```
 
-- integer division
-- divides the first argument by the second
+- integer division truncating toward zero
+- uses only the first two arguments
 - division by zero => `DivisionByZero`
+- missing operands typically raise `TypeError`
 - extra operands are ignored
 
-### 10.2 Numeric Comparison
+### 9.2 Numeric Comparison
 
-These use only the first two arguments and ignore extras:
+These forms use only the first two evaluated arguments:
 
 - `(= a b)`
 - `(< a b)`
@@ -772,9 +882,14 @@ These use only the first two arguments and ignore extras:
 - `(<= a b)`
 - `(>= a b)`
 
-Both operands must be numbers. The result is a boolean.
+Behavior:
 
-### 10.3 Pair and String Operations
+- both used operands must be numbers
+- result is a boolean
+- missing operands typically raise `TypeError`
+- extra operands are ignored
+
+### 9.3 Pair and String Operations
 
 #### `cons`
 
@@ -788,16 +903,15 @@ Normal behavior:
 
 String-specialized behavior:
 
-- if `a` is a one-character string and `b` is any value, the result is a string
-  node whose first character is that character and whose tail is `b`
+- if `a` is a one-character string, the result is a `CharPair` node whose
+  character is that character and whose cdr is `b`
 - this is how `(cons (car "h") "ello")` constructs `"hello"`
-- `b` is not required to be a well-formed string tail, so this rule can create
-  char-node structures whose cdr is not another string node or `NIL`
 
 Important limitation:
 
 - only a one-character first argument triggers string construction
 - `(cons "ab" "cd")` constructs a pair, not a string
+- the resulting cdr is not validated to be a proper string tail
 
 #### `car`
 
@@ -806,7 +920,7 @@ Important limitation:
 ```
 
 - on a pair, returns the pair's car
-- on a non-empty string, returns a newly allocated one-character string
+- on a non-empty string, returns a fresh one-character string
 - on anything else, raises `TypeError`
 - extra operands are ignored
 
@@ -827,10 +941,10 @@ Important limitation:
 (list obj ...)
 ```
 
-- returns the already-evaluated argument list as a proper list
+- returns the already evaluated argument list as a proper list
 - `(list)` returns `NIL`
 
-### 10.4 Predicates
+### 9.4 Predicates
 
 These predicates are variadic universal predicates:
 
@@ -845,16 +959,16 @@ These predicates are variadic universal predicates:
 - `(applicative? obj ...)`
 - `(environment? obj ...)`
 
-Semantics:
+Behavior:
 
-- return `#t` iff every supplied argument matches the predicate
-- return `#f` as soon as one argument does not match
-- with zero arguments, return `#t`
+- return `#t` iff every supplied operand matches the predicate
+- return `#f` as soon as one operand does not match
+- with zero operands, return `#t`
 
 Specific meanings:
 
-- `pair?` is true for cons cells and non-empty strings
-- `operative?` is true for compound operatives and builtin operative values
+- `pair?` is true for `Cons` cells and non-empty strings
+- `operative?` is true for compound operatives and bare builtin operative cores
 - `applicative?` is true only for applicative wrapper values
 
 #### `not`
@@ -863,12 +977,12 @@ Specific meanings:
 (not boolean)
 ```
 
-- boolean negation
-- only the first argument is used
-- the first argument must be a boolean
+- negates the first used operand
+- that operand must be a boolean
+- missing operand raises `TypeError`
 - extra operands are ignored
 
-### 10.5 Equality
+### 9.5 Equality
 
 #### `eq?`
 
@@ -876,14 +990,10 @@ Specific meanings:
 (eq? a b)
 ```
 
-`eq?` is identity-like equality with a few value-based cases.
+`eq?` first checks whether `a` and `b` are the same arena object. If not, it
+falls back to value-based comparison only for immutable value kinds.
 
-It returns true if:
-
-- `a` and `b` are the same object, or
-- they are immutable values with equal stored representation
-
-For compatibility, the effective behavior is:
+Effective behavior:
 
 - nil, booleans, numbers, symbols, `#inert`, `#ignore`, prelude entries, and
   native functions compare by abstract value
@@ -891,14 +1001,14 @@ For compatibility, the effective behavior is:
 - environments compare by object identity only
 - operatives compare by object identity only
 - applicatives compare by object identity only
-- strings compare by node representation, not full text content
+- strings compare by node representation, not by full text content
 
-That last rule is important:
+String consequence:
 
 - two separately allocated equal multi-character strings are usually not `eq?`
-- a shared string tail may be `eq?`
 - two separately allocated one-character strings with the same character are
-  `eq?`, because their stored representation is the same
+  `eq?`
+- shared string tails can be `eq?`
 
 #### `equal?`
 
@@ -906,17 +1016,15 @@ That last rule is important:
 (equal? a b)
 ```
 
-`equal?` is structural equality.
-
-Rules:
+`equal?` is structural equality:
 
 - if `eq?` is true, `equal?` is true
 - pairs compare recursively by car and cdr
-- strings compare by complete character sequence
-- environments are never `equal?` unless they are `eq?`
+- strings compare character-by-character
+- environments are never `equal?` unless they are already `eq?`
 - all other values use the `eq?` result
 
-### 10.6 Evaluation and Combiner Operations
+### 9.6 Combiner Operations
 
 #### `eval`
 
@@ -924,11 +1032,16 @@ Rules:
 (eval expr [env])
 ```
 
-- if `env` is omitted, use the global environment
-- otherwise evaluate `expr` in the supplied environment
-- extra operands are ignored after the optional environment
-- the environment argument is not eagerly type-checked; if `expr` is
-  self-evaluating, `(eval expr non-environment)` can still succeed
+- if `env` is omitted, the global environment is used
+- otherwise `expr` is evaluated in the supplied environment
+- only the first two operands are used
+- the environment operand is not eagerly type-checked
+
+That last point is observable:
+
+- `(eval 42 not-an-environment)` can succeed because `42` is self-evaluating
+- environment type errors appear only if evaluation actually needs environment
+  operations
 
 #### `wrap`
 
@@ -938,7 +1051,8 @@ Rules:
 
 - returns an applicative that evaluates operands before delegating to
   `combiner`
-- only the first argument is used
+- only the first operand is used
+- `combiner` is not validated eagerly to be callable
 
 #### `unwrap`
 
@@ -946,8 +1060,9 @@ Rules:
 (unwrap applicative)
 ```
 
-- extracts the wrapped value from an applicative
-- only the first argument is used
+- extracts the wrapped inner value
+- only the first operand is used
+- raises `TypeError` if the operand is not an applicative
 
 #### `apply`
 
@@ -955,16 +1070,25 @@ Rules:
 (apply combiner arg-list [env])
 ```
 
-- if `env` is omitted, use the global environment
+- if `env` is omitted, the global environment is used
 - `arg-list` is passed directly as the combiner's operand object
-- for applicatives, `arg-list` therefore contains already-evaluated arguments
-- for compound operatives, `arg-list` is treated as raw operands
-- dispatch mirrors ordinary combination evaluation for all callable values,
-  including builtin operatives such as `if` or `quote`
-- the optional environment argument is not eagerly type-checked; errors arise
-  only if the invoked combiner actually uses it as an environment
+- if `combiner` is applicative, `arg-list` therefore contains already evaluated
+  arguments
+- if `combiner` is operative, `arg-list` is treated as raw operands
+- only the first three operands are used
 
-### 10.7 Environment Constructors
+`apply` mirrors ordinary combination dispatch and works with:
+
+- builtin operatives such as `if`, `quote`, and `current-environment`
+- user operatives created by `vau`
+- applicatives including wrapped builtin operatives
+- prelude entries
+- native functions
+
+As with `eval`, the optional environment is only type-checked if the call path
+actually uses it as an environment.
+
+### 9.7 Environment Constructors
 
 #### `make-environment`
 
@@ -972,11 +1096,11 @@ Rules:
 (make-environment env ...)
 ```
 
-- each argument must be an environment
-- returns a fresh environment whose parent list is the supplied environments in
-  the given order
+- every operand must be an environment
+- returns a fresh environment whose parent list is the supplied operands in
+  order
 - the parent list is copied into fresh list structure
-- with zero arguments, returns a parentless environment
+- zero operands produce a parentless environment
 
 #### `make-empty-environment`
 
@@ -985,8 +1109,9 @@ Rules:
 ```
 
 - always returns a parentless environment
+- current implementation ignores extra operands instead of rejecting them
 
-### 10.8 Raw Reader/Printer Builtins
+### 9.8 Raw Reader and Printer Builtins
 
 #### `raw-read-string`
 
@@ -994,10 +1119,15 @@ Rules:
 (raw-read-string string)
 ```
 
-- parses one expression from the supplied string
+- parses one expression from the supplied string value
 - if the input string is empty, returns `NIL`
-- trailing unread characters after the first expression are ignored
-- reader syntax is the same as the top-level reader
+- uses the same reader rules as top-level parsing
+- only the first operand is used
+
+Important quirk:
+
+- trailing unread characters after the first parsed expression are ignored
+- for example, `(raw-read-string "1 2")` returns `1`
 
 #### `raw-display-to-string`
 
@@ -1007,6 +1137,7 @@ Rules:
 
 - renders `obj` using display-mode formatting
 - strings are emitted without quotes or escapes
+- only the first operand is used
 
 #### `raw-write-to-string`
 
@@ -1015,9 +1146,10 @@ Rules:
 ```
 
 - renders `obj` using write-mode formatting
-- strings are emitted with surrounding quotes and the five supported escapes
+- strings are emitted with quotes and the five supported escapes
+- only the first operand is used
 
-### 10.9 Other Builtins
+### 9.9 Other Builtins
 
 #### `gc-collect`
 
@@ -1025,11 +1157,9 @@ Rules:
 (gc-collect)
 ```
 
-- forces a garbage collection cycle
-- returns the number of collected runtime objects
-
-This is observable but implementation-dependent. A compatible
-reimplementation should return a nonnegative integer with the same meaning.
+- forces a garbage-collection cycle
+- returns the number of collected objects as a nonnegative integer
+- ignores all operands
 
 #### `error`
 
@@ -1037,14 +1167,14 @@ reimplementation should return a nonnegative integer with the same meaning.
 (error msg)
 ```
 
-- ignores its argument
+- ignores all operands
 - always raises `InvalidArgument`
 
-## 11. Printed Representation
+## 10. Printed Representation
 
-### 11.1 Write-Mode Formatting
+### 10.1 Write Mode
 
-Write-mode is used by `raw-write-to-string`.
+Write mode is used by `raw-write-to-string`.
 
 Formatting rules:
 
@@ -1052,40 +1182,45 @@ Formatting rules:
 - booleans => `#t`, `#f`
 - numbers => decimal integer
 - symbols => symbol name
-- strings => quoted, with escapes for `"`, `\`, newline, tab, and carriage return
+- non-empty strings => quoted, with escapes for `"`, `\`, newline, tab, and
+  carriage return
 - proper lists => `(a b c)`
 - improper lists => `(a b . c)`
 - `#inert` => `#inert`
 - `#ignore` => `#ignore`
 - compound operatives => `<operative>`
 - applicatives => `<applicative>`
-- builtin operatives => `<builtin>`
+- builtin operative cores => `<builtin>`
 - environments => `<environment>`
 - prelude entry `name` => `<prelude:name>`
 - native function => `<native>`
 
-### 11.2 Display-Mode Formatting
+### 10.2 Display Mode
 
-Display-mode is used by `raw-display-to-string`.
+Display mode is used by `raw-display-to-string`.
 
-It is identical to write-mode except that non-empty strings are emitted without
-quotes and without escape processing. Because the empty string is `NIL`, the
-shared empty value still renders as `()`.
+It is identical to write mode except that non-empty strings are emitted:
 
-### 11.3 Empty String Ambiguity
+- without surrounding quotes
+- without escape rewriting
 
-Because the empty string is `NIL`, both display-mode and write-mode render it as
-`()`. Write-mode is therefore canonical for the shared empty list / empty string
-value.
+Because the empty string is `NIL`, the shared empty value still renders as
+`()`.
 
-Therefore Grift printing is not injective:
+### 10.3 Non-Injective Printing
 
-- `()` and `""` print the same way in write-mode
-- `raw-read-string` can round-trip the value, but not the original source form
+Printing is not injective because `NIL` is both empty list and empty string.
 
-## 12. Prelude
+Consequences:
 
-The global environment includes these standard bindings as applicatives:
+- `()` and `""` print the same way in write mode
+- `()` and `""` print the same way in display mode
+- `raw-read-string` can round-trip the runtime value, but not the original
+  source spelling
+
+## 11. Prelude
+
+The global environment includes these prelude bindings as applicatives:
 
 ```lisp
 (fn! map (f lst)
@@ -1106,11 +1241,17 @@ The global environment includes these standard bindings as applicatives:
     (cons (car a) (append (cdr a) b))))
 ```
 
-These are semantically ordinary top-level definitions. A compatible
-implementation may realize them eagerly or lazily as long as the visible
-behavior is the same.
+Compatibility requirements:
 
-## 13. Error Conditions
+- these names must be present in the global environment
+- they behave as ordinary applicatives
+- their visible behavior must match the source above
+
+The Rust implementation realizes them lazily by storing `Prelude` values and
+parsing their lambda source on demand. A C implementation may realize them
+eagerly if the behavior is the same.
+
+## 12. Error Conditions
 
 User-visible errors in the current language include:
 
@@ -1121,8 +1262,8 @@ User-visible errors in the current language include:
 - `DivisionByZero`
 - `UnboundVariable`
 - `NotCallable`
-- `Cyclic`
 - `AlreadyDefined`
+- `Cyclic` in debug builds
 
 Typical causes:
 
@@ -1130,47 +1271,68 @@ Typical causes:
 | --- | --- |
 | `ParseError` | malformed list syntax, unexpected `)`, unterminated string |
 | `InvalidArgument` | `(and)`, `(or)`, `(-)`, unknown string escape, duplicate ptree symbol, `(error ...)` |
-| `TypeError` | wrong runtime type, non-boolean in boolean context, invalid formal tree shape |
+| `TypeError` | wrong runtime type, non-boolean in boolean context, malformed parameter tree shape, missing operands surfacing through list access |
 | `ArithmeticOverflow` | checked overflow in `+`, `-`, `*`, unary negation |
-| `DivisionByZero` | second operand of `/` is zero |
+| `DivisionByZero` | second used operand of `/` is zero |
 | `UnboundVariable` | symbol not found in the searched environment chain |
 | `NotCallable` | attempt to call a non-combiner |
-| `Cyclic` | cyclic formal parameter tree during validation |
-| `AlreadyDefined` | `define!` in a frame that already contains the same symbol |
+| `AlreadyDefined` | duplicate binding in the same frame |
+| `Cyclic` | cyclic formal parameter tree during debug-build eager validation |
 
-Two error variants exist in the Rust implementation but are not part of the
-normal source-language surface today:
+Two Rust error variants exist but are not part of the normal source-language
+surface today:
 
 - `ImmutableEnvironment`
 - `TraceError`
 
-## 14. Non-Scheme / Non-Kernel Gotchas
+## 13. Compatibility Quirks and Inconsistencies
 
-The following are essential for compatibility:
+These are all observable in the current implementation and matter for
+behavioral compatibility.
 
-- Only booleans are true/false values in conditionals.
-- `""` and `()` are the same runtime value.
-- Strings are linked lists, so `car`, `cdr`, and `pair?` work on non-empty strings.
-- `define!` is destructuring definition, not Scheme function-definition syntax.
-- `set!` takes an explicit environment.
-- `let` is simultaneous, not sequential.
-- `and` and `or` require at least two operands.
-- Type predicates are vacuously true on zero operands.
-- Large integer literals that do not fit the machine integer type become symbols.
+### 13.1 Intentional-Looking Quirks
 
-## 15. Minimum Checklist for a Compatible Reimplementation
+- only booleans are accepted in boolean contexts
+- `""` and `()` are the same runtime value
+- strings are list-like enough that `car`, `cdr`, and `pair?` work on non-empty
+  strings
+- `define!` is destructuring definition, not Scheme function-definition syntax
+- `set!` takes an explicit environment
+- `let` is simultaneous, not sequential
+- `and` and `or` require at least two operands
+- type predicates are vacuously true on zero operands
+- many builtins ignore extra operands
+- large integer literals that do not fit `isize` become symbols
 
-A reimplementation should verify at least these behaviors:
+### 13.2 Implementation Inconsistencies Worth Knowing
+
+- eager formal-tree validation for `define!` and `vau` exists only in debug
+  builds; release builds skip it
+- `cond` accepts `else` in any clause position, not just the last one
+- `raw-read-string` parses only the first expression and ignores trailing input
+- a bare trailing `'` is accepted and read as `(quote ())`
+- `make-empty-environment`, `gc-collect`, `error`, and `current-environment`
+  ignore all operands instead of enforcing exact arity
+
+These are not merely documentation notes. A reimplementation that aims for
+bug-for-bug source compatibility should reproduce them.
+
+## 14. Reimplementation Checklist
+
+A compatible reimplementation should verify at least these behaviors:
 
 - parse `'x` as `(quote x)`
-- support dotted pairs and the exact dot disambiguation rules
+- preserve the trailing-quote quirk where `'` reads as `(quote ())`
+- implement dotted pairs and the exact dot-disambiguation rules
 - preserve `NIL == empty string`
 - intern symbols
-- evaluate applicative operands left-to-right
+- evaluate applicative operands left-to-right exactly once
 - implement lexical closures for `lambda` and `vau`
-- expose caller environments through `vau` env parameters
-- implement formal-parameter-tree destructuring for both `define!` and `vau`
-- preserve left-to-right DFS search for multi-parent environments
+- expose caller environments through `vau` environment parameters
+- decide whether compatibility target means debug-build or release-build
+  behavior, because `define!` and `vau` validation now differs by build mode
+- preserve left-to-right depth-first search for multi-parent environments
 - make `pair?`, `car`, and `cdr` work on non-empty strings
-- preserve the exact `eq?`/`equal?` split, especially for strings
-- preserve write/display formatting, including the `()` rendering of empty string
+- preserve the exact `eq?` / `equal?` split, especially for strings
+- preserve write/display formatting, including `()` for the empty string
+- include the prelude bindings `map`, `filter`, `length`, and `append`

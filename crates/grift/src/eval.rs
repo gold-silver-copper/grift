@@ -898,24 +898,7 @@ impl<const N: usize> Lisp<N> {
             let env_param = self.cadr(args)?;
             let body_list = self.cdr(self.cdr(args)?)?;
             let body = self.wrap_begin(body_list)?;
-
-            // Validate formals parameter tree and collect seen symbols.
-            let seen_syms = self.validate_ptree(params)?;
-
-            // Validate env-param: must be a symbol or #ignore.
-            let ep = match self.get(env_param)? {
-                Value::Ignore => ArenaIndex::NIL,
-                Value::Symbol(_) => {
-                    // env-param symbol must not also occur in formals.
-                    if self.list_contains(seen_syms, env_param) {
-                        return Err(ArenaError::InvalidArgument);
-                    }
-                    env_param
-                }
-                _ => return Err(ArenaError::TypeError),
-            };
-
-            self.vau(params, ep, body, *env)
+            self.vau(params, env_param, body, *env)
         })
     }
 
@@ -927,61 +910,6 @@ impl<const N: usize> Lisp<N> {
         env: &mut ArenaIndex,
     ) -> TailAction {
         TailAction::Return(Ok(*env))
-    }
-
-    /// Validate that `ptree` is a well-formed formal parameter tree.
-    ///
-    /// Per the Kernel spec (§4.9.1), a valid ptree is:
-    /// - A symbol or `#ignore`.
-    /// - Nil (the empty list).
-    /// - A pair whose car and cdr are both valid ptrees.
-    ///
-    /// Additionally, the tree must be acyclic and no symbol may occur
-    /// more than once.
-    ///
-    /// Returns the cons-list of symbols found in the tree (for use by
-    /// callers that need to check membership, e.g. `op_vau`).
-    fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.validate_ptree_inner(ptree, ArenaIndex::NIL, ArenaIndex::NIL)
-    }
-
-    /// Recursive helper for `validate_ptree`.
-    ///
-    /// `visited` is a cons-list of pair nodes already traversed (cycle
-    /// detection).  `seen_syms` is a cons-list of symbol indices already
-    /// encountered (duplicate detection).  Returns the updated
-    /// `seen_syms` list on success.
-    fn validate_ptree_inner(
-        &self,
-        ptree: ArenaIndex,
-        visited: ArenaIndex,
-        seen_syms: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        if ptree.is_nil() {
-            return Ok(seen_syms);
-        }
-        match self.get(ptree)? {
-            Value::Ignore => Ok(seen_syms),
-            Value::Symbol(_) => {
-                if self.list_contains(seen_syms, ptree) {
-                    return Err(ArenaError::InvalidArgument);
-                }
-                self.cons(ptree, seen_syms)
-            }
-            Value::Cons {
-                car: ptree_car,
-                cdr: ptree_cdr,
-            } => {
-                // Cycle detection: this pair must not have been visited.
-                if self.list_contains(visited, ptree) {
-                    return Err(ArenaError::Cyclic);
-                }
-                let new_visited = self.cons(ptree, visited)?;
-                let seen_syms = self.validate_ptree_inner(ptree_car, new_visited, seen_syms)?;
-                self.validate_ptree_inner(ptree_cdr, new_visited, seen_syms)
-            }
-            _ => Err(ArenaError::TypeError),
-        }
     }
 
     // ================================================================

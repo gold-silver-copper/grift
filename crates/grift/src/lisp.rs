@@ -613,7 +613,7 @@ impl<const N: usize> Lisp<N> {
         body: ArenaIndex,
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let operative = self.vau(params, ArenaIndex::NIL, body, env)?;
+        let operative = self.vau(params, ArenaIndex::IGNORE, body, env)?;
         self.wrap(operative)
     }
 
@@ -628,7 +628,23 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Allocate an operative (fexpr / vau closure).
+    ///
+    /// `params` must be a valid formal parameter tree. `env_param` must be a
+    /// symbol or `#ignore`; `#ignore` is normalized to `NIL` in the stored
+    /// operative.
     pub fn vau(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let env_param = self.validate_vau_formals(params, env_param)?;
+        self.vau_unchecked(params, env_param, body, env)
+    }
+
+    /// Allocate an operative without validating `params` or `env_param`.
+    fn vau_unchecked(
         &self,
         params: ArenaIndex,
         env_param: ArenaIndex,
@@ -859,6 +875,67 @@ impl<const N: usize> Lisp<N> {
             }
         }
         false
+    }
+
+    /// Validate that `ptree` is a well-formed formal parameter tree.
+    ///
+    /// A valid ptree is a symbol, `#ignore`, `NIL`, or a pair whose car and cdr
+    /// are valid ptrees. The tree must also be acyclic and contain no duplicate
+    /// symbols.
+    pub(crate) fn validate_ptree(&self, ptree: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.validate_ptree_inner(ptree, ArenaIndex::NIL, ArenaIndex::NIL)
+    }
+
+    /// Recursive helper for `validate_ptree`.
+    fn validate_ptree_inner(
+        &self,
+        ptree: ArenaIndex,
+        visited: ArenaIndex,
+        seen_syms: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        if ptree.is_nil() {
+            return Ok(seen_syms);
+        }
+        match self.get(ptree)? {
+            Value::Ignore => Ok(seen_syms),
+            Value::Symbol(_) => {
+                if self.list_contains(seen_syms, ptree) {
+                    return Err(ArenaError::InvalidArgument);
+                }
+                self.cons(ptree, seen_syms)
+            }
+            Value::Cons {
+                car: ptree_car,
+                cdr: ptree_cdr,
+            } => {
+                if self.list_contains(visited, ptree) {
+                    return Err(ArenaError::Cyclic);
+                }
+                let new_visited = self.cons(ptree, visited)?;
+                let seen_syms = self.validate_ptree_inner(ptree_car, new_visited, seen_syms)?;
+                self.validate_ptree_inner(ptree_cdr, new_visited, seen_syms)
+            }
+            _ => Err(ArenaError::TypeError),
+        }
+    }
+
+    /// Validate the `vau` formals and normalize `#ignore` env params to `NIL`.
+    pub(crate) fn validate_vau_formals(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        let seen_syms = self.validate_ptree(params)?;
+        match self.get(env_param)? {
+            Value::Ignore => Ok(ArenaIndex::NIL),
+            Value::Symbol(_) => {
+                if self.list_contains(seen_syms, env_param) {
+                    return Err(ArenaError::InvalidArgument);
+                }
+                Ok(env_param)
+            }
+            _ => Err(ArenaError::TypeError),
+        }
     }
 
     // — Evaluation entry point —

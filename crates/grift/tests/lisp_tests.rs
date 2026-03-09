@@ -1065,6 +1065,13 @@ fn test_lambda_is_applicative() {
 }
 
 #[test]
+fn test_lambda_rejects_invalid_formals_eagerly() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(lambda (42) 1)").is_err());
+    assert!(lisp.eval("(lambda (x x) x)").is_err());
+}
+
+#[test]
 fn test_plus_is_applicative() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
@@ -4880,6 +4887,13 @@ fn test_fn_bang_returns_inert() {
         ),
         Ok(Value::Boolean(true))
     );
+}
+
+#[test]
+fn test_fn_bang_rejects_invalid_formals_eagerly() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert!(lisp.eval("(fn! bad (42) 1)").is_err());
+    assert!(lisp.eval("(fn! bad (x x) x)").is_err());
 }
 
 // ============================================================================
