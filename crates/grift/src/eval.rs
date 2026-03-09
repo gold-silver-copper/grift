@@ -145,6 +145,12 @@ macro_rules! define_builtins {
                 $( self.bind_builtin($bi_name, $bi_id, true); )*
             }
 
+            /// True if this builtin id names an operative builtin.
+            #[allow(non_upper_case_globals)]
+            fn is_operative_builtin(&self, id: BuiltinId) -> bool {
+                matches!(id, $( $op_id )|*)
+            }
+
             /// Dispatch an operative builtin (receives unevaluated args + caller env).
             #[allow(non_upper_case_globals)]
             fn apply_operative_builtin(
@@ -402,9 +408,9 @@ impl<const N: usize> Lisp<N> {
                                 *expr = body;
                                 Ok(None)
                             }
-                            Value::Builtin(id) => {
-                                Ok(Some(self.apply_builtin_pure(id, evaled_args)?))
-                            }
+                            Value::Builtin(id) => Ok(Some(
+                                self.apply_builtin_value(id, evaled_args, *env)?,
+                            )),
                             Value::Applicative(_) => {
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
@@ -434,9 +440,40 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Apply a combiner to a list of already-evaluated arguments.
+    /// Drive a builtin tail action to a concrete result.
+    fn resolve_tail_action(
+        &self,
+        action: TailAction,
+        expr: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        match action {
+            TailAction::Return(result) => result,
+            TailAction::Continue => self.eval_expr(expr, env),
+        }
+    }
+
+    /// Invoke a builtin using the calling convention implied by its id.
+    fn apply_builtin_value(
+        &self,
+        id: BuiltinId,
+        args: ArenaIndex,
+        caller_env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        if self.is_operative_builtin(id) {
+            let mut expr = ArenaIndex::NIL;
+            let mut env = caller_env;
+            let action = self.apply_operative_builtin(id, args, &mut expr, &mut env);
+            self.resolve_tail_action(action, expr, env)
+        } else {
+            self.apply_builtin_pure(id, args)
+        }
+    }
+
+    /// Apply a combiner to an operand object.
     ///
-    /// Used for double-wrapped applicatives and internal dispatch.
+    /// Applicatives expect `evaled_args` to contain evaluated arguments.
+    /// Operatives receive it unchanged as their raw operand object.
     fn apply_combiner(
         &self,
         combiner: ArenaIndex,
@@ -448,7 +485,7 @@ impl<const N: usize> Lisp<N> {
                 let (body, op_env) = self.invoke_operative(combiner, evaled_args, caller_env)?;
                 self.eval_expr(body, op_env)
             }
-            Value::Builtin(id) => self.apply_builtin_pure(id, evaled_args),
+            Value::Builtin(id) => self.apply_builtin_value(id, evaled_args, caller_env),
             Value::Native(f) => self.call_native(f, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             Value::Prelude(prelude) => {
@@ -1138,7 +1175,7 @@ impl<const N: usize> Lisp<N> {
         self.eval_expr(expr_val, env_val)
     }
 
-    /// `(wrap combiner)` — wrap an operative into an applicative.
+    /// `(wrap combiner)` — wrap a combiner into an applicative.
     fn builtin_wrap(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let combiner = self.car(args)?;
         self.wrap(combiner)

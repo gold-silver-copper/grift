@@ -45,6 +45,9 @@ The current builtin surface includes:
 - applicatives such as arithmetic, list primitives, equality, `eval`, `wrap`,
   `unwrap`, environment constructors, GC control, and raw read/write helpers
 
+`apply` and `wrap` operate uniformly over first-class callables, including
+builtin operatives such as `if`.
+
 ## Rust API
 
 ```rust
@@ -106,6 +109,9 @@ assert_eq!(lisp.eval("(double 21)"), Ok(grift::Value::Number(42)));
     (if (eval test e)
         (eval then e)
         (eval else e))))
+
+(apply if (list #t 1 2)) ; => 1
+((wrap if) #t 1 2)       ; => 1
 
 ;; Tail recursion runs through the trampoline evaluator.
 (fn! fib (n a b)

@@ -195,6 +195,11 @@ When an applicative unwraps, the inner value can currently be:
 - `Prelude`
 - `Native`
 
+Builtin inner values keep their own calling convention: builtin operatives
+receive raw operands, while builtin applicative cores consume the already
+evaluated argument list. This is what makes `wrap` and `apply` work uniformly
+across builtin and user-defined callables.
+
 `Prelude` is special: the source lambda is parsed and evaluated on demand, then
 unwrapped to its underlying operative before invocation.
 

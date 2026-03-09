@@ -3790,6 +3790,99 @@ fn test_apply_lambda() {
 }
 
 #[test]
+fn test_apply_builtin_operative_if() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(let ((x 41)) (apply if (list #t 'x 0) (current-environment)))"),
+        Ok(Value::Number(41))
+    );
+}
+
+#[test]
+fn test_apply_builtin_operative_quote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(equal? (apply quote (list 'x)) 'x)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_apply_builtin_operative_and_preserves_short_circuit() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(apply and '(#f missing))"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_apply_builtin_operative_current_environment_uses_explicit_env() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(let ((x 17)) (eval 'x (apply current-environment () (current-environment))))"),
+        Ok(Value::Number(17))
+    );
+}
+
+#[test]
+fn test_apply_builtin_operative_define_uses_explicit_env() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            "(begin (define! target (make-empty-environment)) \
+             (apply define! (list 'x 42) target) \
+             (eval 'x target))"
+        ),
+        Ok(Value::Number(42))
+    );
+}
+
+#[test]
+fn test_apply_user_defined_operative_uses_explicit_env() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            "(let ((x 41)) \
+             (apply (vau (expr) e (eval expr e)) \
+                    (list 'x) \
+                    (current-environment)))"
+        ),
+        Ok(Value::Number(41))
+    );
+}
+
+#[test]
+fn test_wrap_builtin_operative_is_callable() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("((wrap if) #t 1 2)"), Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_apply_wrapped_builtin_operative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(apply (wrap if) (list #t 1 2))"), Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_wrap_builtin_operative_quote_evaluates_arguments_first() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("((wrap quote) (+ 1 2))"), Ok(Value::Number(3)));
+}
+
+#[test]
+fn test_wrap_builtin_operative_current_environment_is_callable() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(let ((x 23)) (eval 'x ((wrap current-environment))))"),
+        Ok(Value::Number(23))
+    );
+}
+
+#[test]
+fn test_wrap_builtin_operative_forces_eager_evaluation() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("((wrap and) #f missing)"), Err(ArenaError::UnboundVariable));
+}
+
+#[test]
 fn test_apply_empty_args() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(apply + ())"), Ok(Value::Number(0)));

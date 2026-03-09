@@ -421,6 +421,10 @@ Applicatives evaluate their operands:
 
 The evaluated operand list is then passed to the wrapped callable.
 
+The wrapped callable may itself be a builtin operative, another applicative, a
+prelude entry, or a native function. Builtin inner values retain their builtin
+calling convention when reached this way.
+
 ### 8.4 Operative Invocation
 
 Invoking a compound operative created by `vau`:
@@ -952,13 +956,10 @@ Rules:
 - `arg-list` is passed directly as the combiner's operand object
 - for applicatives, `arg-list` therefore contains already-evaluated arguments
 - for compound operatives, `arg-list` is treated as raw operands
+- dispatch mirrors ordinary combination evaluation for all callable values,
+  including builtin operatives such as `if` or `quote`
 - the optional environment argument is not eagerly type-checked; errors arise
   only if the invoked combiner actually uses it as an environment
-
-Current implementation limitation:
-
-- `apply` does not support builtin operative values such as `if` or `quote`
-- applying such a builtin operative raises `NotCallable`
 
 ### 10.7 Environment Constructors
 
@@ -1128,7 +1129,7 @@ Typical causes:
 | `ArithmeticOverflow` | checked overflow in `+`, `-`, `*`, unary negation |
 | `DivisionByZero` | second operand of `/` is zero |
 | `UnboundVariable` | symbol not found in the searched environment chain |
-| `NotCallable` | attempt to call a non-combiner, or use `apply` on a builtin operative |
+| `NotCallable` | attempt to call a non-combiner |
 | `Cyclic` | cyclic formal parameter tree during validation |
 | `AlreadyDefined` | `define!` in a frame that already contains the same symbol |
 
@@ -1151,7 +1152,6 @@ The following are essential for compatibility:
 - `and` and `or` require at least two operands.
 - Type predicates are vacuously true on zero operands.
 - Large integer literals that do not fit the machine integer type become symbols.
-- `apply` does not support builtin operative values like `if`.
 
 ## 15. Minimum Checklist for a Compatible Reimplementation
 
