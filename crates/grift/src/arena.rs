@@ -29,7 +29,8 @@
 //! - **Generic**: Works with any `Copy` type
 //! - **Interior mutability**: Safe access via `Cell` (no runtime borrow checking overhead)
 //! - **O(1) allocation**: Free-list based allocation and deallocation
-//! - **Mark-and-sweep GC**: Trait-based garbage collection via [`Trace`]
+//! - **Mark-and-sweep GC**: Trait-based garbage collection via
+//!   [`crate::arena::Trace`]
 //! - **Zero dependencies**: Only uses `core::cell::Cell`
 //!
 //! ## Safety Guarantees
@@ -204,6 +205,7 @@ impl Default for ArenaIndex {
 }
 
 impl core::fmt::Display for ArenaIndex {
+    /// Format the index as `@<slot>` for concise debugging output.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "@{}", self.0)
     }
@@ -257,10 +259,10 @@ pub enum ArenaError {
     /// Division or modulo by zero.
     DivisionByZero,
 
-    /// A variable was not found in the current or global environment.
+    /// A variable was not found in the searched environment chain.
     UnboundVariable,
 
-    /// Attempted to call a value that is not a function (lambda or builtin).
+    /// Attempted to apply a value that is not callable.
     NotCallable,
 
     /// Attempted to mutate an immutable environment (e.g., the ground environment).
@@ -311,6 +313,8 @@ impl ArenaError {
 }
 
 impl core::fmt::Display for ArenaError {
+    /// Format the error using its short description, preserving line/column
+    /// details for parse failures.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ArenaError::ParseError { line, col } => {
@@ -595,6 +599,7 @@ impl<T: Copy, const N: usize> Iterator for ArenaIterator<'_, T, N> {
     type Item = (ArenaIndex, T);
 
     #[inline]
+    /// Return the next occupied slot in ascending index order.
     fn next(&mut self) -> Option<Self::Item> {
         while self.current < N {
             let idx = self.current;
@@ -633,7 +638,8 @@ impl<T: Copy, const N: usize> Iterator for ArenaIterator<'_, T, N> {
 ///
 /// # Garbage Collection
 ///
-/// The arena supports mark-and-sweep garbage collection via the [`Trace`] trait.
+/// The arena supports mark-and-sweep garbage collection via the
+/// [`crate::arena::Trace`] trait.
 ///
 /// # Performance
 ///
@@ -955,6 +961,8 @@ impl<T: Copy, const N: usize> Arena<T, N> {
         }
     }
 
+    /// Estimate fragmentation as the number of free-space runs divided by the
+    /// total arena capacity.
     fn calculate_fragmentation(&self) -> f32 {
         // Count free-space fragments: contiguous runs of free slots.
         let (fragments, _) = (0..N).fold((0u32, false), |(count, was_free), i| {

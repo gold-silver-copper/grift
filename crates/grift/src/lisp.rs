@@ -48,6 +48,8 @@ pub struct Lisp<const N: usize> {
 }
 
 impl<const N: usize> Default for Lisp<N> {
+    /// Construct a fresh interpreter with the default singleton layout,
+    /// builtin set, and prelude bindings.
     fn default() -> Self {
         Self::new()
     }
@@ -1107,50 +1109,62 @@ impl<const N: usize> Lisp<N> {
 
 impl<const N: usize> LispOps for Lisp<N> {
     #[inline]
+    /// Delegate to [`Lisp::number`].
     fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.number(n)
     }
     #[inline]
+    /// Delegate to [`Lisp::boolean`].
     fn boolean(&self, b: bool) -> ArenaIndex {
         self.boolean(b)
     }
     #[inline]
+    /// Delegate to [`Lisp::nil`].
     fn nil(&self) -> ArenaIndex {
         self.nil()
     }
     #[inline]
+    /// Delegate to [`Lisp::cons`].
     fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.cons(car, cdr)
     }
     #[inline]
+    /// Delegate to [`Lisp::char_val`].
     fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
         self.char_val(c)
     }
     #[inline]
+    /// Delegate to [`Lisp::alloc_string`].
     fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         self.alloc_string(s)
     }
     #[inline]
+    /// Delegate to [`Lisp::symbol`].
     fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
         self.symbol(name)
     }
     #[inline]
+    /// Delegate to [`Lisp::get`].
     fn get(&self, idx: ArenaIndex) -> ArenaResult<Value> {
         self.get(idx)
     }
     #[inline]
+    /// Delegate to [`Lisp::car_char`].
     fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.car_char(idx)
     }
     #[inline]
+    /// Delegate to [`Lisp::cdr_char`].
     fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.cdr_char(idx)
     }
     #[inline]
+    /// Delegate to [`Lisp::cadr_char`].
     fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.cadr_char(idx)
     }
     #[inline]
+    /// Delegate to [`Lisp::lambda`].
     fn lambda(
         &self,
         params: ArenaIndex,
@@ -1160,14 +1174,17 @@ impl<const N: usize> LispOps for Lisp<N> {
         self.lambda(params, body, env)
     }
     #[inline]
+    /// Delegate to [`Lisp::wrap`].
     fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.wrap(combiner)
     }
     #[inline]
+    /// Delegate to [`Lisp::unwrap_applicative`].
     fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.unwrap_applicative(idx)
     }
     #[inline]
+    /// Delegate to [`Lisp::vau`].
     fn vau(
         &self,
         params: ArenaIndex,
@@ -1178,6 +1195,7 @@ impl<const N: usize> LispOps for Lisp<N> {
         self.vau(params, env_param, body, env)
     }
     #[inline]
+    /// Delegate to [`Lisp::vau_parts`].
     fn vau_parts(
         &self,
         idx: ArenaIndex,
@@ -1185,38 +1203,47 @@ impl<const N: usize> LispOps for Lisp<N> {
         self.vau_parts(idx)
     }
     #[inline]
+    /// Delegate to [`Lisp::eval`].
     fn eval(&self, input: &str) -> Result<Value, ArenaError> {
         self.eval(input)
     }
     #[inline]
+    /// Delegate to [`Lisp::eval_to_index`].
     fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         self.eval_to_index(input)
     }
     #[inline]
+    /// Delegate to [`Lisp::stats`].
     fn stats(&self) -> ArenaStats {
         self.stats()
     }
     #[inline]
+    /// Delegate to [`Lisp::baseline_allocated`].
     fn baseline_allocated(&self) -> usize {
         self.baseline_allocated()
     }
     #[inline]
+    /// Delegate to [`Lisp::collect_garbage`].
     fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
         self.collect_garbage(roots)
     }
     #[inline]
+    /// Format a value using write-style semantics.
     fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }
     #[inline]
+    /// Format a value using display-style semantics.
     fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
         self.fmt_value(idx, w, true)
     }
     #[inline]
+    /// Delegate to [`Lisp::register_native`].
     fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
         self.register_native(name, f)
     }
     #[inline]
+    /// Delegate to [`Lisp::define_global`].
     fn define_global(&self, sym: ArenaIndex, value: ArenaIndex) -> ArenaResult<()> {
         self.define_global(sym, value)
     }
@@ -1239,6 +1266,7 @@ pub(crate) struct ArenaWriter<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> ArenaWriter<'a, N> {
+    /// Create an empty arena-backed string builder.
     pub(crate) fn new(lisp: &'a Lisp<N>) -> Self {
         ArenaWriter {
             lisp,
@@ -1258,6 +1286,7 @@ impl<'a, const N: usize> ArenaWriter<'a, N> {
 }
 
 impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
+    /// Append text by allocating one `CharPair` per character into the arena.
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         if self.error.is_some() {
             return Err(core::fmt::Error);
@@ -1278,6 +1307,10 @@ impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
 }
 
 impl<const N: usize> Trace<Value, N> for Value {
+    /// Visit every direct `ArenaIndex` child reachable from this value.
+    ///
+    /// The tracer intentionally skips inline scalars and singleton variants
+    /// that do not own other arena objects.
     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
         match *self {
             Value::Cons { car, cdr }

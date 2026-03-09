@@ -60,6 +60,8 @@ macro_rules! non_tail {
 /// `(pred? . objects)` returns `#t` iff every object matches the pattern.
 macro_rules! type_predicate {
     ($name:ident, $pat:pat) => {
+        #[doc = "Return `#t` iff every evaluated argument matches the expected"]
+        #[doc = "runtime pattern for this predicate; otherwise return `#f`."]
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
             let mut cur = args;
             while !cur.is_nil() {
@@ -92,6 +94,8 @@ macro_rules! fold_numbers {
 /// Generate a numeric comparison builtin method.
 macro_rules! cmp_builtin {
     ($name:ident, $op:tt) => {
+        #[doc = "Compare two evaluated numeric arguments and return a boolean"]
+        #[doc = "singleton representing the result."]
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
             let a = self.get(self.car(args)?)?.as_number()?;
             let b = self.get(self.cadr(args)?)?.as_number()?;
@@ -103,6 +107,8 @@ macro_rules! cmp_builtin {
 /// Generate a pair-accessor builtin (`car` or `cdr`).
 macro_rules! pair_builtin {
     ($name:ident, $accessor:ident) => {
+        #[doc = "Apply the corresponding pair/string accessor to the first"]
+        #[doc = "evaluated argument."]
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
             let pair = self.car_char(args)?;
             self.$accessor(pair)
@@ -304,8 +310,10 @@ impl<const N: usize> Lisp<N> {
         self.collect_with_roots(&[expr, env])
     }
 
-    /// Trigger garbage collection unconditionally (ignores gc_enabled flag).
-    /// Used by the `gc-collect` builtin for explicit manual collection.
+    /// Trigger garbage collection unconditionally.
+    ///
+    /// This is used by the `gc-collect` builtin, which should force a
+    /// collection cycle even when the evaluator is not currently handling OOM.
     #[cold]
     fn eval_collect_garbage_unconditional(&self) -> GcStats {
         self.collect_with_roots(&[])
@@ -577,8 +585,8 @@ impl<const N: usize> Lisp<N> {
     /// It is an error to define a variable that already has a binding in the
     /// current environment frame. Use `set!` to update an existing binding.
     ///
-    /// Per Kernel §3.2, mutation of the ground environment or its ancestors
-    /// is forbidden.
+    /// User code never receives a direct handle to the ground environment, so
+    /// this operative only mutates the current dynamic frame.
     fn op_define(
         &self,
         args: ArenaIndex,
@@ -1061,9 +1069,9 @@ impl<const N: usize> Lisp<N> {
     /// `(eq? object1 object2)` — identity predicate (§4.2.1).
     ///
     /// Returns `#t` iff the two objects are effectively the same object.
-    /// For immutable, encapsulated types (booleans, nil, inert, symbols),
-    /// eq? is determined by value. For mutable/constructed objects (pairs,
-    /// environments), eq? compares arena identity.
+    /// Identity is index-based first; if the indices differ, the helper falls
+    /// back to `Value::is_immutable()` to decide whether direct value
+    /// comparison is permitted.
     fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.car(args)?;
         let b = self.cadr(args)?;
@@ -1223,7 +1231,10 @@ impl<const N: usize> Lisp<N> {
         self.fmt_to_string(args, false)
     }
 
-    /// `(error msg)` — signal an error.
+    /// `(error msg)` — currently signal `InvalidArgument` unconditionally.
+    ///
+    /// The argument is accepted for future compatibility but is not yet
+    /// threaded into a richer error payload.
     fn builtin_error(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         Err(ArenaError::InvalidArgument)
     }

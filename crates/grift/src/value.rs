@@ -105,6 +105,10 @@ pub enum Value {
 }
 
 impl PartialEq for Value {
+    /// Compare two values using their stored representation.
+    ///
+    /// This is intentionally not the same as Lisp `eq?` or `equal?`. It is a
+    /// Rust-side structural comparison used by tests and a few runtime helpers.
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Nil, Value::Nil) => true,
@@ -249,6 +253,12 @@ impl Value {
 }
 
 impl core::fmt::Display for Value {
+    /// Render a compact placeholder-style description of the value.
+    ///
+    /// This formatter does not have arena access, so compound values such as
+    /// strings, symbols, and lists are intentionally summarized rather than
+    /// expanded. Use [`crate::Lisp::write_value`] when full Lisp syntax is
+    /// required.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Value::Nil => f.write_str("()"),
@@ -265,10 +275,15 @@ impl core::fmt::Display for Value {
     }
 }
 
+/// Generate `From<T> for Value` implementations for simple wrapper variants.
+///
+/// This keeps the public constructors ergonomic while centralizing the
+/// one-field conversion boilerplate in one place.
 macro_rules! impl_from_value {
     ($($ty:ty => $variant:ident),+ $(,)?) => {
         $(impl From<$ty> for Value {
             #[inline]
+            /// Wrap the Rust value in the corresponding [`Value`] variant.
             fn from(v: $ty) -> Self { Value::$variant(v) }
         })+
     };
@@ -278,6 +293,7 @@ impl_from_value!(bool => Boolean, isize => Number, BuiltinId => Builtin, Prelude
 
 impl From<char> for Value {
     #[inline]
+    /// Convert a Rust `char` into a one-character Lisp string node.
     fn from(v: char) -> Self {
         Value::CharPair {
             ch: v,

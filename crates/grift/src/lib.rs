@@ -24,7 +24,7 @@
     clippy::cast_possible_wrap
 )]
 
-//! # Grift – A Minimalistic Lisp
+//! # Grift
 //!
 //! A `no_std`, `no_alloc` Lisp interpreter built on top of [`arena`],
 //! implementing Kernel-style vau calculus (fexprs).
@@ -44,12 +44,16 @@
 //!
 //! ## Architecture
 //!
-//! The interpreter is split into four internal modules:
+//! The interpreter is split into several focused modules:
 //!
-//! - [`value`] — The [`Value`] enum (12 variants) representing all Lisp types.
+//! - `value` — The [`Value`] enum representing runtime values, including
+//!   operatives, applicatives, environments, prelude handles, and native
+//!   function pointers.
 //! - `lisp` — The [`Lisp`] struct: arena wrapper, symbol interning, environments.
 //! - `parse` — Recursive-descent S-expression parser.
 //! - `eval` — Evaluator with TCO trampoline, builtin dispatch, and GC integration.
+//! - [`native`] — Registration and conversion support for Rust-hosted functions.
+//! - [`prelude`] — Lazily-loaded prelude entries generated from `prelude.grift`.
 //!
 //! ## Example
 //!

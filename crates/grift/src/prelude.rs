@@ -30,6 +30,10 @@ pub struct PreludeEntry {
 pub struct Prelude(pub &'static PreludeEntry);
 
 impl PartialEq for Prelude {
+    /// Compare prelude handles by entry identity.
+    ///
+    /// Prelude values are thin wrappers around `'static` entry pointers, so
+    /// pointer equality is the canonical equality relation.
     fn eq(&self, other: &Self) -> bool {
         core::ptr::eq(self.0, other.0)
     }

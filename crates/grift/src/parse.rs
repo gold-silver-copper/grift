@@ -51,6 +51,12 @@ pub(crate) struct SliceSource<'a> {
 }
 
 impl<'a> SliceSource<'a> {
+    /// Create a source over UTF-8 text stored in a Rust string slice.
+    ///
+    /// The reader starts at line 1, column 1 and advances one byte at a time.
+    /// This is sufficient for Grift's current parser, which treats source text
+    /// as byte-oriented input and only needs line/column reporting for
+    /// diagnostics.
     pub fn new(input: &'a str) -> Self {
         SliceSource {
             input: input.as_bytes(),
@@ -90,6 +96,7 @@ impl<'a> SliceSource<'a> {
 }
 
 impl CharSource for SliceSource<'_> {
+    /// Read and consume the next source character, updating line and column.
     fn read_char(&mut self) -> Option<char> {
         if self.pos < self.input.len() {
             let ch = self.input[self.pos] as char;
@@ -106,6 +113,7 @@ impl CharSource for SliceSource<'_> {
         }
     }
 
+    /// Peek at the next source character without advancing the cursor.
     fn peek_char(&mut self) -> Option<char> {
         if self.pos < self.input.len() {
             Some(self.input[self.pos] as char)
@@ -114,6 +122,7 @@ impl CharSource for SliceSource<'_> {
         }
     }
 
+    /// Return the current tracked `(line, column)` position.
     fn position(&self) -> (u32, u32) {
         (self.line, self.col)
     }
@@ -128,12 +137,17 @@ pub(crate) struct ChainSource<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> ChainSource<'a, N> {
+    /// Create a source that reads characters from an arena `CharPair` chain.
+    ///
+    /// This is used by raw read helpers such as `raw-read-string`, where the
+    /// source text already exists as a Lisp string in the arena.
     pub fn new(arena: &'a Arena<Value, N>, cursor: ArenaIndex) -> Self {
         ChainSource { arena, cursor }
     }
 }
 
 impl<const N: usize> CharSource for ChainSource<'_, N> {
+    /// Read and consume the next character from the current `CharPair` node.
     fn read_char(&mut self) -> Option<char> {
         if self.cursor.is_nil() {
             return None;
@@ -147,6 +161,7 @@ impl<const N: usize> CharSource for ChainSource<'_, N> {
         }
     }
 
+    /// Peek at the next character in the chain without consuming it.
     fn peek_char(&mut self) -> Option<char> {
         if self.cursor.is_nil() {
             return None;
@@ -157,6 +172,8 @@ impl<const N: usize> CharSource for ChainSource<'_, N> {
         }
     }
 
+    /// Return `(0, 0)` because chain-backed parsing does not track source
+    /// coordinates.
     fn position(&self) -> (u32, u32) {
         (0, 0)
     }

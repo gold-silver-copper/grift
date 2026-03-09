@@ -1,9 +1,23 @@
+//! REPL and file-runner binary for Grift.
+//!
+//! This target is only built when the `repl` feature is enabled. It provides a
+//! small command-line interface that either:
+//!
+//! - evaluates a source file passed as the first positional argument, or
+//! - starts an interactive line-editing REPL backed by `rustyline`
+
 use grift::Lisp;
 use rustyline::DefaultEditor;
 
+/// Prompt shown for each interactive input line.
 const PROMPT: &str = "Λ> ";
+/// Arena size used by the standalone binary.
 const ARENA_SIZE: usize = 100_000;
 
+/// Entry point for the feature-gated Grift CLI.
+///
+/// The process constructs one interpreter instance and reuses it for the
+/// entire session so that top-level bindings persist across inputs.
 fn main() {
     let lisp: Lisp<ARENA_SIZE> = Lisp::new();
 
