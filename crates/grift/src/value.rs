@@ -91,7 +91,7 @@ pub enum Value {
         parents: ArenaIndex,
     },
     /// The inert value, written `#inert`.
-    /// Returned by combiners whose primary purpose is side-effect (e.g. `$define!`).
+    /// Returned by combiners whose primary purpose is side-effect (e.g. `define!`).
     Inert,
     /// The ignore value, written `#ignore`.
     /// Used specifically for parameter matching in formal parameter trees.

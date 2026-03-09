@@ -87,8 +87,8 @@ terminates (provided the quantity of actual data within the runtime system is
 finite), then equal? must return true. For example,
 – Suppose variables x and y are set up by evaluating the following sequence
 of expressions.
-($define! x (list 1))
-($define! y (list 1 1))
+(define! x (list 1))
+(define! y (list 1 1))
 (append! x x)
 (append! y y)
 Then (equal? x y) would evaluate to #t.
@@ -149,10 +149,10 @@ declaration of for-effect combiners.
 4.5.1 inert?
 (inert? . objects)
 The primitive type predicate for type inert.
-4.5.2 $if
-($if htesti hconsequenti halternativei)
-The $if operative first evaluates htesti in the dynamic environment (that is, the
-environment in which the ($if ...) combination is evaluated). If the result is not of
+4.5.2 if
+(if htesti hconsequenti halternativei)
+The if operative first evaluates htesti in the dynamic environment (that is, the
+environment in which the (if ...) combination is evaluated). If the result is not of
 type boolean, an error is signaled. If the result is true, hconsequenti is then evaluated
 in the dynamic environment as a tail context (§3.10). Otherwise, halternativei is
 evaluated in the dynamic environment as a tail context.
@@ -162,13 +162,13 @@ Partitioning of types, §3.5.
 In R5RS Scheme, the halternativei operand to if is optional; and if it is omitted,
 and htesti evaluates to false, the result is ‘unspecified’ — which would mean, in Kernel,
 that the result would be inert. For consistency with the design purpose of #inert —
-which is to convey no information— two-operand $if ought to return #inert regardless
+which is to convey no information— two-operand if ought to return #inert regardless
 of whether hconsequenti is evaluated; but at that point, it becomes evident that the twoand three-operand operations are really separate, and by rights ought not to be lumped
 into a single operative (which lumping doesn’t square well with the uniformity guideline,
 G1 of §0.1.2, anyway); instead, if both operations are supported they should be given
 different names. The two-operand form, though, is just a specialized shorthand; so both
 clarity (thus accident-avoidance, G3 of §0.1.2) and simplicity are against its inclusion in
-the language. (Similar issues arise for $cond, §5.6.1.)
+the language. (Similar issues arise for cond, §5.6.1.)
 4.6 Pairs and lists
 A pair is an object that refers to two other objects, called its car and cdr. The Kernel
 data type pair is encapsulated.

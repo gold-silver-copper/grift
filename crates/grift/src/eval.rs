@@ -568,7 +568,7 @@ impl<const N: usize> Lisp<N> {
         })
     }
 
-    /// `($define! definiend expression)` — Kernel §4.9.1.
+    /// `(define! definiend expression)` — Kernel §4.9.1.
     ///
     /// Evaluates `expression` in the dynamic environment and matches `definiend`
     /// (a formal parameter tree) to the result, binding symbols in the dynamic
@@ -627,7 +627,7 @@ impl<const N: usize> Lisp<N> {
         })
     }
 
-    /// `($set! exp1 formals exp2)` — Kernel §6.8.1.
+    /// `(set! exp1 formals exp2)` — Kernel §6.8.1.
     ///
     /// Evaluates `exp1` and `exp2` in the dynamic environment; call the
     /// results `env` and `obj`.  If `env` is not an environment, an error

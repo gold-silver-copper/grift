@@ -27,7 +27,7 @@ embedded-friendly:
   `ArithmeticOverflow`.
 - **No mutation of pairs** — `set-car!` and `set-cdr!` are not provided;
   pairs are immutable once constructed.
-- **No `$sequence`** — Use `begin` (equivalent semantics).
+- **No `sequence`** — Use `begin` (equivalent semantics).
 
 Everything that Grift *does* provide follows the Kernel R-1 semantics.
 

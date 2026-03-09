@@ -167,7 +167,7 @@ A first-class environment with lexical parent chain.
 ### Inert
 
 The inert value, written `#inert`.
-Returned by combiners whose primary purpose is side-effect (e.g. `$define!`).
+Returned by combiners whose primary purpose is side-effect (e.g. `define!`).
 
 **Related:** [Built-ins](builtins.md) | [Special Forms](special-forms.md) | [Errors](errors.md)
 
@@ -199,4 +199,3 @@ pointer is stored directly, with no const generic dependency.
 | `_` | `NativeFn` | — |
 
 **Related:** [Built-ins](builtins.md) | [Special Forms](special-forms.md) | [Errors](errors.md)
-

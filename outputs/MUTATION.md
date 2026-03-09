@@ -57,7 +57,7 @@ on its next evaluation.
 
 ### `set!`
 
-**Syntax:** `($set! env-expr symbol value-expr)`
+**Syntax:** `(set! env-expr symbol value-expr)`
 
 **What is mutated:** The binding cons cell in the target environment
 is overwritten via `arena.set(binding, Cons { car: name, cdr:

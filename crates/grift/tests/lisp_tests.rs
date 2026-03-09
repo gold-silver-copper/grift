@@ -631,7 +631,7 @@ fn test_tco_begin_tail_position() {
 #[test]
 fn test_set_bang_scheme_style_is_rejected() {
     // Scheme-style (set! x 2) is not valid Kernel syntax;
-    // Kernel's $set! requires an environment argument: (set! env definiend expr).
+    // Kernel's set! requires an environment argument: (set! env definiend expr).
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -1610,12 +1610,12 @@ fn test_no_global_fallback_in_eval() {
 }
 
 // ============================================================================
-// Kernel $define! Conformance Tests (§4.9.1)
+// Kernel define! Conformance Tests (§4.9.1)
 // ============================================================================
 
 #[test]
 fn test_define_returns_inert() {
-    // Per Kernel spec, $define! returns #inert
+    // Per Kernel spec, define! returns #inert
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(define! x 42)"), Ok(Value::Inert));
 }
@@ -1881,7 +1881,7 @@ fn test_inert_predicate() {
 
 #[test]
 fn test_inert_predicate_on_define_result() {
-    // $define! returns #inert per Kernel spec
+    // define! returns #inert per Kernel spec
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -2229,7 +2229,7 @@ fn test_ignore_equal() {
 
 #[test]
 fn test_ignore_in_define_ptree() {
-    // #ignore in $define! parameter tree ignores the value
+    // #ignore in define! parameter tree ignores the value
     // With function shorthand, use non-symbol-headed pair for ptree
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
@@ -2541,12 +2541,12 @@ fn test_multi_parent_first_parent_wins() {
 }
 
 // ============================================================================
-// Kernel §3.1 — References and Mutation ($set!)
+// Kernel §3.1 — References and Mutation (set!)
 // ============================================================================
 
 #[test]
 fn test_set_bang_basic() {
-    // $set! mutates an existing binding in the specified environment.
+    // set! mutates an existing binding in the specified environment.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -2562,7 +2562,7 @@ fn test_set_bang_basic() {
 
 #[test]
 fn test_set_bang_returns_inert() {
-    // $set! returns #inert per Kernel spec.
+    // set! returns #inert per Kernel spec.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -2577,7 +2577,7 @@ fn test_set_bang_returns_inert() {
 
 #[test]
 fn test_set_bang_creates_new_binding() {
-    // Per the new semantics, $set! does NOT create new bindings.
+    // Per the new semantics, set! does NOT create new bindings.
     // It errors with UnboundVariable if the symbol doesn't exist in the target frame.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
@@ -2593,7 +2593,7 @@ fn test_set_bang_creates_new_binding() {
 
 #[test]
 fn test_set_bang_in_captured_env() {
-    // Per Kernel §6.8.1, $set! binds formals in the specified environment.
+    // Per Kernel §6.8.1, set! binds formals in the specified environment.
     // To modify a variable in an outer scope, capture that scope's env first.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
@@ -2631,7 +2631,7 @@ fn test_set_bang_mutation_visible_to_closures() {
 
 #[test]
 fn test_set_bang_ptree_destructuring() {
-    // $set! now only supports single symbol formals (not ptree destructuring).
+    // set! now only supports single symbol formals (not ptree destructuring).
     // Passing a pair as the formal should signal TypeError.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
@@ -2648,7 +2648,7 @@ fn test_set_bang_ptree_destructuring() {
 
 #[test]
 fn test_set_bang_requires_environment() {
-    // $set! requires the first argument to evaluate to an environment.
+    // set! requires the first argument to evaluate to an environment.
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(
         r#"
@@ -2661,7 +2661,7 @@ fn test_set_bang_requires_environment() {
 
 #[test]
 fn test_set_bang_evaluates_exp2_in_dynamic_env() {
-    // Per Kernel §6.8.1, $set! evaluates exp2 in the dynamic environment
+    // Per Kernel §6.8.1, set! evaluates exp2 in the dynamic environment
     // (the caller's env), NOT in the target environment.
     // set! now requires the binding to exist in the target frame.
     let lisp: Lisp<20000> = Lisp::new();
@@ -2680,7 +2680,7 @@ fn test_set_bang_evaluates_exp2_in_dynamic_env() {
 
 #[test]
 fn test_set_bang_defines_in_target_not_dynamic() {
-    // $set! modifies bindings in the target env, not the dynamic env.
+    // set! modifies bindings in the target env, not the dynamic env.
     // set! now requires the binding to exist. Test that set! modifies a
     // binding in a child env that has its own copy.
     let lisp: Lisp<20000> = Lisp::new();
@@ -2725,7 +2725,7 @@ fn test_define_in_standard_env_does_not_affect_ground() {
 
 #[test]
 fn test_set_bang_on_ground_env_rejected() {
-    // $set! should reject direct mutation of the ground environment.
+    // set! should reject direct mutation of the ground environment.
     // Per Kernel §3.2, the ground environment is immutable.
     // Also, set! now requires the binding to already exist in the target frame.
     // Trying to set! a ground-env binding via the standard env fails because
@@ -2808,7 +2808,7 @@ fn test_operative_static_env_not_extractable() {
     // §3.4: No feature allows extracting the static environment
     // of a compound operative. Closures with local state demonstrate
     // that only the operative itself can access its closed-over env.
-    // Per §6.8.1, $set! binds formals in the captured environment.
+    // Per §6.8.1, set! binds formals in the captured environment.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(

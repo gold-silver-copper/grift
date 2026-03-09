@@ -59,7 +59,7 @@ Operatives receive unevaluated arguments. Entries and signatures are derived fro
 
 **Name:** `define!`
 
-**Signature:** `($define! definiend expression)`
+**Signature:** `(define! definiend expression)`
 
 **Kind:** Operative
 
@@ -67,7 +67,7 @@ Operatives receive unevaluated arguments. Entries and signatures are derived fro
 
 **Tail-call optimized:** No
 
-`($define! definiend expression)` — Kernel §4.9.1.
+`(define! definiend expression)` — Kernel §4.9.1.
 
 Evaluates `expression` in the dynamic environment and matches `definiend`
 (a formal parameter tree) to the result, binding symbols in the dynamic
@@ -107,7 +107,7 @@ Returns `#inert`.
 
 **Name:** `set!`
 
-**Signature:** `($set! exp1 formals exp2)`
+**Signature:** `(set! exp1 formals exp2)`
 
 **Kind:** Operative
 
@@ -115,7 +115,7 @@ Returns `#inert`.
 
 **Tail-call optimized:** Yes
 
-`($set! exp1 formals exp2)` — Kernel §6.8.1.
+`(set! exp1 formals exp2)` — Kernel §6.8.1.
 
 Evaluates `exp1` and `exp2` in the dynamic environment; call the
 results `env` and `obj`.  If `env` is not an environment, an error
@@ -263,4 +263,3 @@ Per the Kernel spec (§4.10.3):
 `(current-environment)` — return the caller's environment.
 
 **Related:** [Types](types.md) | [Errors](errors.md) | [Examples](examples.md)
-

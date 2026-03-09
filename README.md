@@ -92,7 +92,7 @@ cargo run -p grift --features repl
 
 ## Documentation
 - [Kernel Spec](05-07.pdf) -- Revised-1 Report on the Kernel Programming Language
-- [$vau the ultimate](jshutt.pdf) -- Fexprs as the basis of Lisp function application or $vau : the ultimate abstraction
+- [vau the ultimate](jshutt.pdf) -- Fexprs as the basis of Lisp function application or vau: the ultimate abstraction
 - [SPEC.md](SPEC.md) -- Formal reference specification for the Grift dialect
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- System architecture, arena design, GC, TCO
 - [LANGUAGE.md](LANGUAGE.md) -- Language reference: types, primitives, evaluation rules
@@ -103,4 +103,3 @@ cargo run -p grift --features repl
 ## License
 
 MIT OR Apache-2.0
-
