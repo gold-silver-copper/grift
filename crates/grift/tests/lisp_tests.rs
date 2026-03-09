@@ -1067,8 +1067,11 @@ fn test_lambda_is_applicative() {
 #[test]
 fn test_lambda_rejects_invalid_formals_eagerly() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp.eval("(lambda (42) 1)").is_err());
-    assert!(lisp.eval("(lambda (x x) x)").is_err());
+    assert_eq!(lisp.eval("(lambda (42) 1)"), Err(ArenaError::TypeError));
+    assert_eq!(
+        lisp.eval("(lambda (x x) x)"),
+        Err(ArenaError::InvalidArgument)
+    );
 }
 
 #[test]
@@ -1785,34 +1788,40 @@ fn test_vau_eformal_must_be_symbol_or_ignore() {
 
     // eformal = number should error
     let lisp3: Lisp<20000> = Lisp::new();
-    assert!(lisp3.eval("(vau (x) 42 x)").is_err());
+    assert_eq!(lisp3.eval("(vau (x) 42 x)"), Err(ArenaError::TypeError));
 
     // eformal = list/pair should error
     let lisp4: Lisp<20000> = Lisp::new();
-    assert!(lisp4.eval("(vau (x) (a b) x)").is_err());
+    assert_eq!(lisp4.eval("(vau (x) (a b) x)"), Err(ArenaError::TypeError));
 
     // eformal = boolean should error
     let lisp5: Lisp<20000> = Lisp::new();
-    assert!(lisp5.eval("(vau (x) #t x)").is_err());
+    assert_eq!(lisp5.eval("(vau (x) #t x)"), Err(ArenaError::TypeError));
 
     // eformal = nil should error
     let lisp6: Lisp<20000> = Lisp::new();
-    assert!(lisp6.eval("(vau (x) () x)").is_err());
+    assert_eq!(lisp6.eval("(vau (x) () x)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_vau_eformal_not_in_formals() {
     // env-param symbol must not also appear in formals
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp.eval("(vau (e) e e)").is_err());
+    assert_eq!(lisp.eval("(vau (e) e e)"), Err(ArenaError::InvalidArgument));
 
     // env-param symbol nested in formals should also be caught
     let lisp2: Lisp<20000> = Lisp::new();
-    assert!(lisp2.eval("(vau (a (b e)) e e)").is_err());
+    assert_eq!(
+        lisp2.eval("(vau (a (b e)) e e)"),
+        Err(ArenaError::InvalidArgument)
+    );
 
     // env-param symbol in dotted rest position
     let lisp3: Lisp<20000> = Lisp::new();
-    assert!(lisp3.eval("(vau (a . e) e e)").is_err());
+    assert_eq!(
+        lisp3.eval("(vau (a . e) e e)"),
+        Err(ArenaError::InvalidArgument)
+    );
 
     // No conflict: different symbol names are fine
     let lisp4: Lisp<20000> = Lisp::new();
@@ -1840,11 +1849,11 @@ fn test_vau_formals_must_be_valid_ptree() {
 
     // Invalid: number in formals
     let lisp6: Lisp<20000> = Lisp::new();
-    assert!(lisp6.eval("(vau (42) #ignore 1)").is_err());
+    assert_eq!(lisp6.eval("(vau (42) #ignore 1)"), Err(ArenaError::TypeError));
 
     // Invalid: boolean in formals
     let lisp7: Lisp<20000> = Lisp::new();
-    assert!(lisp7.eval("(vau (#t) #ignore 1)").is_err());
+    assert_eq!(lisp7.eval("(vau (#t) #ignore 1)"), Err(ArenaError::TypeError));
 }
 
 #[test]
@@ -2489,8 +2498,9 @@ fn test_define_allows_ignore_duplicates_in_ptree() {
 fn test_vau_rejects_duplicate_symbol_in_ptree() {
     // vau should also reject duplicate symbols in formals.
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(
-        lisp.eval("(vau (a a) #ignore a)").is_err(),
+    assert_eq!(
+        lisp.eval("(vau (a a) #ignore a)"),
+        Err(ArenaError::InvalidArgument),
         "duplicate symbol 'a' in vau formals"
     );
 }
@@ -4892,8 +4902,11 @@ fn test_fn_bang_returns_inert() {
 #[test]
 fn test_fn_bang_rejects_invalid_formals_eagerly() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert!(lisp.eval("(fn! bad (42) 1)").is_err());
-    assert!(lisp.eval("(fn! bad (x x) x)").is_err());
+    assert_eq!(lisp.eval("(fn! bad (42) 1)"), Err(ArenaError::TypeError));
+    assert_eq!(
+        lisp.eval("(fn! bad (x x) x)"),
+        Err(ArenaError::InvalidArgument)
+    );
 }
 
 // ============================================================================

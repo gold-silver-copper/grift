@@ -526,30 +526,23 @@ Important limitation:
 - matching requires the object to be a `Cons` when the tree is a pair
 - a `CharPair` string node does not count as a pair for parameter matching
 
-### 7.3 Build-Dependent Validation
+### 7.3 Formal Parameter Validation
 
-Formal-parameter-tree validation is currently gated on Rust `debug_assertions`.
+Formal-parameter-tree validation is eager and build-independent.
 
-In debug builds, `define!` and `vau` perform an eager validation pass:
+`define!`, `vau`, `lambda`, and `fn!` all validate formal trees before creating
+bindings or closures:
 
-- duplicate symbols are rejected
-- cyclic trees are rejected
-- malformed non-symbol leaves are rejected
+- duplicate symbols are rejected with `InvalidArgument`
+- cyclic trees are rejected with `Cyclic`
+- malformed non-symbol leaves are rejected with `TypeError`
 - `vau` also checks that `env-param` is a symbol or `#ignore`
 - `vau` also checks that `env-param` does not appear in `params`
 
-In release builds, that eager validation is skipped:
-
-- `define!` evaluates its right-hand side and then immediately attempts matching
-- `vau` stores `params` directly and only normalizes `#ignore` to "no env binding"
-- malformed trees therefore fail only when matching or later binding activity
-  reaches the bad shape
-
 Consequences:
 
-- debug and release builds can differ on whether malformed `define!` or `vau`
-  forms fail at construction time or only later
-- `lambda` and `fn!` do not perform eager validation in either build mode
+- malformed `define!`, `vau`, `lambda`, and `fn!` forms fail at definition time
+- debug and release builds no longer differ on formal-tree validation behavior
 
 ## 8. Operatives
 
@@ -608,9 +601,7 @@ Important:
 - this is destructuring definition, not Scheme function-definition shorthand
 - `(define! (f x) body)` destructures instead of defining a function
 - same-frame rebinding raises `AlreadyDefined`
-- in debug builds, malformed definiends can fail before RHS evaluation due to
-  eager validation
-- in release builds, malformed definiends fail during matching instead
+- malformed definiends fail before RHS evaluation due to eager validation
 - extra operands after the expression are ignored
 
 ### 8.4 `fn!`
@@ -630,7 +621,6 @@ Behavior:
 Current quirks:
 
 - `name` is not explicitly type-checked to be a symbol
-- `params` are not eagerly validated as a formal parameter tree
 - zero body expressions are allowed; such a function returns `NIL`
 
 ### 8.5 `set!`
@@ -671,10 +661,6 @@ Behavior:
 - captures the definition environment lexically
 - evaluates arguments before matching them against `params`
 - zero body expressions are allowed; the function returns `NIL`
-
-Current quirk:
-
-- `params` are not eagerly validated at definition time
 
 ### 8.7 `begin`
 
@@ -803,10 +789,8 @@ Behavior:
 `env-param` handling:
 
 - if `env-param` is `#ignore`, no caller-environment binding is created
-- in debug builds, non-symbol/non-`#ignore` `env-param` values are rejected
-- in debug builds, `env-param` is rejected if it also appears in `params`
-- in release builds, any non-`#ignore` value is stored as-is and later used as
-  the binding key
+- non-symbol/non-`#ignore` `env-param` values are rejected with `TypeError`
+- `env-param` is rejected with `InvalidArgument` if it also appears in `params`
 
 ### 8.13 `current-environment`
 
@@ -1263,7 +1247,7 @@ User-visible errors in the current language include:
 - `UnboundVariable`
 - `NotCallable`
 - `AlreadyDefined`
-- `Cyclic` in debug builds
+- `Cyclic`
 
 Typical causes:
 
@@ -1277,7 +1261,7 @@ Typical causes:
 | `UnboundVariable` | symbol not found in the searched environment chain |
 | `NotCallable` | attempt to call a non-combiner |
 | `AlreadyDefined` | duplicate binding in the same frame |
-| `Cyclic` | cyclic formal parameter tree during debug-build eager validation |
+| `Cyclic` | cyclic formal parameter tree during eager validation |
 
 Two Rust error variants exist but are not part of the normal source-language
 surface today:
@@ -1306,8 +1290,6 @@ behavioral compatibility.
 
 ### 13.2 Implementation Inconsistencies Worth Knowing
 
-- eager formal-tree validation for `define!` and `vau` exists only in debug
-  builds; release builds skip it
 - `cond` accepts `else` in any clause position, not just the last one
 - `raw-read-string` parses only the first expression and ignores trailing input
 - a bare trailing `'` is accepted and read as `(quote ())`
@@ -1329,8 +1311,6 @@ A compatible reimplementation should verify at least these behaviors:
 - evaluate applicative operands left-to-right exactly once
 - implement lexical closures for `lambda` and `vau`
 - expose caller environments through `vau` environment parameters
-- decide whether compatibility target means debug-build or release-build
-  behavior, because `define!` and `vau` validation now differs by build mode
 - preserve left-to-right depth-first search for multi-parent environments
 - make `pair?`, `car`, and `cdr` work on non-empty strings
 - preserve the exact `eq?` / `equal?` split, especially for strings

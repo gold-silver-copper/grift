@@ -604,7 +604,9 @@ impl<const N: usize> Lisp<N> {
         self.car(self.cdr(idx)?)
     }
 
-    /// Allocate a lambda (applicative from an operative that ignores caller env).
+    /// Allocate a validated lambda (applicative from an operative that ignores
+    /// caller env).
+    ///
     /// This is sugar for: `(wrap (vau params #ignore body))` with closed env.
     /// Produces `Applicative(Operative { ... })` in the arena.
     pub fn lambda(
@@ -627,11 +629,12 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)?.as_applicative()
     }
 
-    /// Allocate an operative (fexpr / vau closure).
+    /// Allocate a validated operative (fexpr / vau closure).
     ///
     /// `params` must be a valid formal parameter tree. `env_param` must be a
     /// symbol or `#ignore`; `#ignore` is normalized to `NIL` in the stored
-    /// operative.
+    /// operative. This checked constructor is the only public operative
+    /// allocation path; raw closure allocation remains private.
     pub fn vau(
         &self,
         params: ArenaIndex,
@@ -640,11 +643,11 @@ impl<const N: usize> Lisp<N> {
         env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
         let env_param = self.validate_vau_formals(params, env_param)?;
-        self.vau_unchecked(params, env_param, body, env)
+        self.alloc_operative_unchecked(params, env_param, body, env)
     }
 
     /// Allocate an operative without validating `params` or `env_param`.
-    fn vau_unchecked(
+    fn alloc_operative_unchecked(
         &self,
         params: ArenaIndex,
         env_param: ArenaIndex,

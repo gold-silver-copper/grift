@@ -79,7 +79,7 @@ pub trait LispOps {
     fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
     /// Get car of cdr (second element of a list, user-facing).
     fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
-    /// Allocate a lambda (applicative from an operative).
+    /// Allocate a validated lambda (applicative from an operative).
     fn lambda(
         &self,
         params: ArenaIndex,
@@ -90,7 +90,10 @@ pub trait LispOps {
     fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex>;
     /// Unwrap an Applicative to get the inner combiner.
     fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex>;
-    /// Allocate an operative (fexpr / vau closure).
+    /// Allocate a validated operative (fexpr / vau closure).
+    ///
+    /// This is the checked public constructor; raw closure allocation stays
+    /// internal to the interpreter.
     fn vau(
         &self,
         params: ArenaIndex,
