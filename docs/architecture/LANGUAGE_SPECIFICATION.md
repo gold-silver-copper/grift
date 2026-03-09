@@ -224,18 +224,21 @@ There is no `set-car!` or `set-cdr!`.
 ### 4.5 Strings
 
 Strings are singly linked chains of character nodes. A non-empty string is not a
-distinct top-level value kind; it is a chain analogous to a list.
+distinct top-level value kind; it is a chain analogous to a list, and the empty
+string is exactly `NIL`.
 
 Observable consequences:
 
 - `car` of a non-empty string returns a newly allocated one-character string
 - `cdr` of a non-empty string returns the tail string
+- `cdr "x"` returns `NIL`
 - `pair?` is true for non-empty strings
 - `pair?` is false for the empty string because the empty string is `NIL`
 - `cons` can construct strings only in a restricted case described below
 
 There is no separate character type. A single character is represented as a
-one-character string.
+one-character string. Therefore strings are semantically lists of one-character
+strings rather than lists of a separate `char` value type.
 
 ### 4.6 Callable Values
 
@@ -1066,12 +1069,14 @@ Formatting rules:
 Display-mode is used by `raw-display-to-string`.
 
 It is identical to write-mode except that non-empty strings are emitted without
-quotes and without escape processing.
+quotes and without escape processing. Because the empty string is `NIL`, the
+shared empty value still renders as `()`.
 
 ### 11.3 Empty String Ambiguity
 
 Because the empty string is `NIL`, both display-mode and write-mode render it as
-`()`.
+`()`. Write-mode is therefore canonical for the shared empty list / empty string
+value.
 
 Therefore Grift printing is not injective:
 

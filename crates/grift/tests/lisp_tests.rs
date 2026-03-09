@@ -2954,11 +2954,18 @@ fn test_pair_of_empty_string() {
 }
 
 #[test]
+fn test_equal_empty_string_and_nil() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(equal? "" ())"#), Ok(Value::Boolean(true)));
+}
+
+#[test]
 fn test_string_traversal() {
     // Walk through a string using car/cdr until null
     let lisp: Lisp<20000> = Lisp::new();
     // cdr of a single-char string should be NIL
     assert_eq!(lisp.eval(r#"(null? (cdr "x"))"#), Ok(Value::Boolean(true)));
+    assert_eq!(lisp.eval(r#"(equal? (cdr "x") ())"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -3935,6 +3942,10 @@ fn test_raw_display_to_string() {
         lisp.eval(r##"(equal? (raw-display-to-string #t) "#t")"##),
         Ok(Value::Boolean(true))
     );
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-display-to-string "") "()")"#),
+        Ok(Value::Boolean(true))
+    );
 }
 
 #[test]
@@ -3952,6 +3963,10 @@ fn test_raw_write_to_string() {
     "#,
     );
     assert_eq!(result, Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (raw-write-to-string "") "()")"#),
+        Ok(Value::Boolean(true))
+    );
 }
 
 #[test]

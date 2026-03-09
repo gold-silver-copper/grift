@@ -91,7 +91,8 @@ Important consequences:
 
 ### Strings
 
-Strings are singly-linked `CharPair` chains:
+Strings are singly-linked `CharPair` chains. Semantically, they are list-like
+values rather than a distinct header-wrapped type:
 
 ```text
 "hello"
@@ -104,11 +105,15 @@ Strings are singly-linked `CharPair` chains:
 
 That design drives a few visible behaviors:
 
+- `""` is exactly `NIL`
+- there is no separate character type, so each string element is represented as
+  a one-character string node
 - `(car "hello")` returns `"h"` as a newly allocated one-character string
 - `(cdr "hello")` returns `"ello"` by reusing the tail of the chain
 - `(cons (car "h") "ello")` constructs `"hello"`
-- `""` and `()` are both `NIL` internally; formatting determines whether the
-  user sees list syntax or string syntax
+- `(cdr "x")` returns `()`
+- write-mode canonicalizes the shared empty string / empty list value as `()`
+- display-mode also renders the shared empty value as `()`
 
 ### Symbols
 
@@ -436,7 +441,7 @@ These are the current sharp edges worth remembering:
 - `fn!` is separate from `define!`
 - `set!` requires an explicit environment argument
 - `set!` only updates the target frame, never a parent frame
-- empty string is `NIL` internally
+- empty string is literally `NIL`
 - `pair?`, `car`, and `cdr` treat non-empty strings as `CharPair` chains
 - `and`/`or` are not variadic identity forms right now; they error on fewer
   than two operands
