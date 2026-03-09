@@ -523,7 +523,9 @@ impl<const N: usize> Lisp<N> {
     /// the inner Operative for direct invocation.
     fn eval_prelude_source(&self, prelude: crate::prelude::Prelude) -> ArenaResult<ArenaIndex> {
         let mut src = SliceSource::new(prelude.source());
-        let lambda_expr = self.parse_expr(&mut src)?;
+        let lambda_expr = self
+            .parse_complete_expr(&mut src)?
+            .ok_or_else(|| ArenaError::ParseError { line: 1, col: 1 })?;
         let app = self.eval_expr(lambda_expr, ArenaIndex::GLOBAL_ENV)?;
         // lambda returns Applicative(Operative) — unwrap to get the operative
         self.unwrap_applicative(app)
@@ -1174,7 +1176,9 @@ impl<const N: usize> Lisp<N> {
             return Ok(ArenaIndex::NIL);
         }
         let mut src = crate::parse::ChainSource::new(&self.arena, str_idx);
-        self.parse_expr(&mut src)
+        Ok(self
+            .parse_complete_expr(&mut src)?
+            .unwrap_or(ArenaIndex::NIL))
     }
 
     /// Format a value to an arena CharPair chain. Shared by

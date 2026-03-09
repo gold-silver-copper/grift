@@ -146,17 +146,11 @@ Important dot rules:
 
 `'expr` rewrites to `(quote expr)`.
 
-Current implementation quirk:
-
-- a bare trailing `'` does not raise `ParseError`
-- instead it rewrites to `(quote ())`, because end-of-input is treated as
-  `NIL` by `parse_expr`
-
 Examples:
 
 - `'x` => `(quote x)`
 - `'(1 2)` => `(quote (1 2))`
-- `'` => `(quote ())`
+- `'` => parse error
 
 ### 3.8 Atom Delimiters
 
@@ -1107,11 +1101,8 @@ actually uses it as an environment.
 - if the input string is empty, returns `NIL`
 - uses the same reader rules as top-level parsing
 - only the first operand is used
-
-Important quirk:
-
-- trailing unread characters after the first parsed expression are ignored
-- for example, `(raw-read-string "1 2")` returns `1`
+- rejects trailing unread non-whitespace input after that expression
+- for example, `(raw-read-string "1 2")` raises `ParseError`
 
 #### `raw-display-to-string`
 
@@ -1291,8 +1282,6 @@ behavioral compatibility.
 ### 13.2 Implementation Inconsistencies Worth Knowing
 
 - `cond` accepts `else` in any clause position, not just the last one
-- `raw-read-string` parses only the first expression and ignores trailing input
-- a bare trailing `'` is accepted and read as `(quote ())`
 - `make-empty-environment`, `gc-collect`, `error`, and `current-environment`
   ignore all operands instead of enforcing exact arity
 
@@ -1304,7 +1293,7 @@ bug-for-bug source compatibility should reproduce them.
 A compatible reimplementation should verify at least these behaviors:
 
 - parse `'x` as `(quote x)`
-- preserve the trailing-quote quirk where `'` reads as `(quote ())`
+- reject bare trailing `'` with `ParseError`
 - implement dotted pairs and the exact dot-disambiguation rules
 - preserve `NIL == empty string`
 - intern symbols

@@ -4065,6 +4065,20 @@ fn test_read_from_chain() {
     );
 }
 
+#[test]
+fn test_raw_read_string_rejects_trailing_input() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval(r#"(raw-read-string "1 2")"#).unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 0, col: 0 });
+}
+
+#[test]
+fn test_raw_read_string_rejects_bare_quote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval(r#"(raw-read-string "'")"#).unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 0, col: 0 });
+}
+
 // ============================================================================
 // String escape sequence tests (Issue 1)
 // ============================================================================
@@ -4253,6 +4267,19 @@ fn test_parse_error_unterminated_string() {
     let lisp: Lisp<20000> = Lisp::new();
     let err = lisp.eval("\"hello").unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
+}
+
+#[test]
+fn test_parse_error_bare_quote() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let err = lisp.eval("'").unwrap_err();
+    assert_eq!(err, ArenaError::ParseError { line: 1, col: 2 });
+}
+
+#[test]
+fn test_top_level_evaluates_multiple_expressions() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("1 2"), Ok(Value::Number(2)));
 }
 
 #[test]

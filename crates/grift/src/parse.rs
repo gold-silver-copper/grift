@@ -65,34 +65,6 @@ impl<'a> SliceSource<'a> {
             col: 1,
         }
     }
-
-    /// Returns `true` if there is remaining non-whitespace input.
-    ///
-    /// Skips whitespace and comments so that the next `parse_expr` call
-    /// will immediately see meaningful input.
-    pub fn has_more(&mut self) -> bool {
-        while self.pos < self.input.len() {
-            match self.input[self.pos] {
-                b'\n' => {
-                    self.pos += 1;
-                    self.line += 1;
-                    self.col = 1;
-                }
-                b' ' | b'\t' | b'\r' => {
-                    self.pos += 1;
-                    self.col += 1;
-                }
-                b';' => {
-                    while self.pos < self.input.len() && self.input[self.pos] != b'\n' {
-                        self.pos += 1;
-                        self.col += 1;
-                    }
-                }
-                _ => return true,
-            }
-        }
-        false
-    }
 }
 
 impl CharSource for SliceSource<'_> {
@@ -188,16 +160,48 @@ fn is_delimiter(c: char) -> bool {
 }
 
 impl<const N: usize> Lisp<N> {
-    /// Parse one s-expression from a character source.
+    /// Parse one required s-expression from a character source.
     ///
-    /// Returns the parsed value, or `ArenaIndex::NIL` if the source is
-    /// exhausted (no more input).
+    /// End-of-input after whitespace/comments is a parse error.
     pub(crate) fn parse_expr(&self, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
+        self.parse_optional_expr(src)?
+            .ok_or_else(|| parse_error(src))
+    }
+
+    /// Parse one optional s-expression from a character source.
+    ///
+    /// Returns `Ok(None)` when the source is exhausted after whitespace and
+    /// comments.
+    pub(crate) fn parse_optional_expr(
+        &self,
+        src: &mut impl CharSource,
+    ) -> ArenaResult<Option<ArenaIndex>> {
         self.skip_ws(src);
         let ch = match src.read_char() {
             Some(c) => c,
-            None => return Ok(ArenaIndex::NIL),
+            None => return Ok(None),
         };
+        self.parse_expr_from(ch, src).map(Some)
+    }
+
+    /// Parse zero or one s-expression and reject any trailing non-whitespace
+    /// input.
+    pub(crate) fn parse_complete_expr(
+        &self,
+        src: &mut impl CharSource,
+    ) -> ArenaResult<Option<ArenaIndex>> {
+        let expr = self.parse_optional_expr(src)?;
+        if expr.is_none() {
+            return Ok(None);
+        }
+        self.skip_ws(src);
+        if src.peek_char().is_some() {
+            return Err(parse_error(src));
+        }
+        Ok(expr)
+    }
+
+    fn parse_expr_from(&self, ch: char, src: &mut impl CharSource) -> ArenaResult<ArenaIndex> {
         match ch {
             '(' => self.parse_list(src),
             '\'' => self.parse_quote(src),

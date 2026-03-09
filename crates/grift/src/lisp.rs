@@ -995,8 +995,7 @@ impl<const N: usize> Lisp<N> {
         let mut src = SliceSource::new(input);
 
         let mut result_idx = ArenaIndex::INERT;
-        while src.has_more() {
-            let expr = self.parse_expr(&mut src)?;
+        while let Some(expr) = self.parse_optional_expr(&mut src)? {
             result_idx = self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)?;
         }
         Ok(result_idx)
