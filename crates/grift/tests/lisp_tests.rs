@@ -3006,7 +3006,7 @@ fn test_cons_char_onto_string() {
 
 #[test]
 fn test_cons_char_onto_nil() {
-    // (cons #\h ()) should produce a single-character string/list
+    // (cons #\h ()) should produce a one-character string/list
     let lisp: Lisp<20000> = Lisp::new();
     let result = lisp.eval(r#"(car (cons #\h '()))"#).unwrap();
     assert!(

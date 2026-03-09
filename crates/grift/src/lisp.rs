@@ -288,12 +288,30 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a symbol by name. Interns the symbol: if a symbol with the
     /// same name already exists in the intern list, returns the existing index.
     pub fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
-        if let Some(sym) = self.find_interned_symbol(|sym| Ok(self.symbol_name_eq(sym, name)))? {
-            return Ok(sym);
+        // Walk the intern alist
+        let intern_head = self.car(ArenaIndex::INTERN_LIST)?;
+        let mut cur = intern_head;
+        while !cur.is_nil() {
+            let sym = self.car(cur)?;
+            if self.symbol_name_eq(sym, name) {
+                return Ok(sym);
+            }
+            cur = self.cdr(cur)?;
         }
 
+        // Not found — allocate new symbol and prepend to intern list
         let char_head = self.alloc_string(name)?;
-        self.insert_interned_symbol(char_head)
+        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let new_head = self.cons(sym_idx, intern_head)?;
+
+        // Update the intern list head in place
+        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
+            unreachable!();
+        };
+        self.arena
+            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
+
+        Ok(sym_idx)
     }
 
     /// Allocate a string value from a `&str`.
@@ -316,7 +334,7 @@ impl<const N: usize> Lisp<N> {
 
         // Build the linked list in reverse so the first char is at the head.
         for c in s.chars().rev() {
-            let node = self.cons_char(data, c)?;
+            let node = self.prepend_char(data, c)?;
             data = node;
         }
 
@@ -350,7 +368,7 @@ impl<const N: usize> Lisp<N> {
         Ok(true)
     }
 
-    pub(crate) fn is_nonempty_string(&self, idx: ArenaIndex) -> ArenaResult<bool> {
+    pub(crate) fn is_nonempty_char_list(&self, idx: ArenaIndex) -> ArenaResult<bool> {
         if idx.is_nil() {
             return Ok(false);
         }
@@ -411,43 +429,15 @@ impl<const N: usize> Lisp<N> {
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
-    fn find_interned_symbol(
-        &self,
-        mut matches: impl FnMut(ArenaIndex) -> ArenaResult<bool>,
-    ) -> ArenaResult<Option<ArenaIndex>> {
-        let mut cur = self.car(ArenaIndex::INTERN_LIST)?;
-        while !cur.is_nil() {
-            let sym = self.car(cur)?;
-            if matches(sym)? {
-                return Ok(Some(sym));
-            }
-            cur = self.cdr(cur)?;
-        }
-        Ok(None)
-    }
-
-    fn insert_interned_symbol(&self, char_head: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
-        let intern_head = self.car(ArenaIndex::INTERN_LIST)?;
-        let new_head = self.cons(sym_idx, intern_head)?;
-
-        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
-            unreachable!();
-        };
-        self.arena
-            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
-        Ok(sym_idx)
-    }
-
-    /// Prepend a character to the front of a char list.
-    pub(crate) fn cons_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
+    /// Prepend a character to the front of a char-list.
+    pub(crate) fn prepend_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
         let ch = self.char_val(ch)?;
         self.cons(ch, head)
     }
 
-    /// Reverse a singly-linked cons list
+    /// Reverse a singly-linked cons chain
     /// in place by swapping `cdr` pointers.
-    pub(crate) fn reverse_list(&self, mut head: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn reverse_chain(&self, mut head: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !head.is_nil() {
             let (car, cdr) = self.arena.get(head)?.as_cons()?;
@@ -462,27 +452,46 @@ impl<const N: usize> Lisp<N> {
     /// Intern a symbol from an existing char list.
     ///
     /// If a symbol with the same name already exists, returns the existing
-    /// symbol index (the unused list is left as garbage for GC). Otherwise
-    /// creates a new symbol using the provided char list as its name.
-    pub(crate) fn symbol_from_chars(&self, char_head: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if let Some(sym) = self.find_interned_symbol(|sym| {
+    /// symbol index (the chain is left as garbage for GC).  Otherwise
+    /// creates a new symbol using the provided chain as its name.
+    pub(crate) fn symbol_from_chain(&self, char_head: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        // Walk the intern alist looking for a match
+        let intern_head = self.car(ArenaIndex::INTERN_LIST)?;
+        let mut cur = intern_head;
+        while !cur.is_nil() {
+            let sym = self.car(cur)?;
             let Value::Symbol(existing_chars) = self.arena.get(sym)? else {
-                return Ok(false);
+                cur = self.cdr(cur)?;
+                continue;
             };
-            self.strings_equal(existing_chars, char_head)
-        })? {
-            return Ok(sym);
+            if self
+                .strings_equal(existing_chars, char_head)
+                .unwrap_or(false)
+            {
+                return Ok(sym);
+            }
+            cur = self.cdr(cur)?;
         }
 
-        self.insert_interned_symbol(char_head)
+        // Not found — create new symbol with the existing chain
+        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let new_head = self.cons(sym_idx, intern_head)?;
+
+        let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
+            unreachable!();
+        };
+        self.arena
+            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
+
+        Ok(sym_idx)
     }
 
     /// Parse an integer from a char list.
     ///
-    /// Returns `Some(n)` if the char list represents a valid integer literal
+    /// Returns `Some(n)` if the chain represents a valid integer literal
     /// (optional leading `-` or `+`, followed by one or more digits).
     /// Returns `None` otherwise.
-    pub(crate) fn parse_integer_from_chars(&self, head: ArenaIndex) -> Option<isize> {
+    pub(crate) fn parse_integer_from_chain(&self, head: ArenaIndex) -> Option<isize> {
         let mut cur = head;
         let mut first = true;
         let mut negative = false;
@@ -522,19 +531,19 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Checks for booleans (#t, #f, etc.), #inert, #ignore, numbers, and
     /// symbols.  Returns the appropriate arena value.
-    pub(crate) fn classify_atom(&self, chars: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if self.string_eq(chars, "#t") || self.string_eq(chars, "#true") {
+    pub(crate) fn classify_atom(&self, chain: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        if self.string_eq(chain, "#t") || self.string_eq(chain, "#true") {
             Ok(ArenaIndex::TRUE)
-        } else if self.string_eq(chars, "#f") || self.string_eq(chars, "#false") {
+        } else if self.string_eq(chain, "#f") || self.string_eq(chain, "#false") {
             Ok(ArenaIndex::FALSE)
-        } else if self.string_eq(chars, "#inert") {
+        } else if self.string_eq(chain, "#inert") {
             Ok(ArenaIndex::INERT)
-        } else if self.string_eq(chars, "#ignore") {
+        } else if self.string_eq(chain, "#ignore") {
             Ok(ArenaIndex::IGNORE)
-        } else if let Some(n) = self.parse_integer_from_chars(chars) {
+        } else if let Some(n) = self.parse_integer_from_chain(chain) {
             self.number(n)
         } else {
-            self.symbol_from_chars(chars)
+            self.symbol_from_chain(chain)
         }
     }
 
@@ -546,27 +555,45 @@ impl<const N: usize> Lisp<N> {
         self.arena.get(idx)
     }
 
-    /// Get car of a cons cell.
+    /// Get car of a cons cell (user-facing).
+    #[inline]
+    pub fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car(idx)
+    }
+
+    /// Get cdr of a cons cell (user-facing).
+    #[inline]
+    pub fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cdr(idx)
+    }
+
+    /// Get car of cdr (second element of a list, user-facing).
+    #[inline]
+    pub fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(self.cdr_char(idx)?)
+    }
+
+    /// Get car of a Cons cell only (internal hot-path accessor).
     #[inline(always)]
-    pub fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let Value::Cons { car, .. } = self.arena.get(idx)? else {
             return Err(ArenaError::TypeError);
         };
         Ok(car)
     }
 
-    /// Get cdr of a cons cell.
+    /// Get cdr of a Cons cell only (internal hot-path accessor).
     #[inline(always)]
-    pub fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let Value::Cons { cdr, .. } = self.arena.get(idx)? else {
             return Err(ArenaError::TypeError);
         };
         Ok(cdr)
     }
 
-    /// Get car of cdr (second element of a list).
+    /// Get car of cdr of Cons cells only (internal hot-path accessor).
     #[inline(always)]
-    pub fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         self.car(self.cdr(idx)?)
     }
 
@@ -952,7 +979,7 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Unlike `Value::Display`, this method has arena access and can walk
     /// char lists to display full symbol names and string contents, and
-    /// `Cons` lists to display proper/improper lists.
+    /// `Cons` chains to display proper/improper lists.
     ///
     /// # Example
     ///
@@ -999,8 +1026,21 @@ impl<const N: usize> Lisp<N> {
                 self.walk_char_list(char_head, w, |ch, w| w.write_char(ch))
             }
             Ok(Value::Char(ch)) => self.fmt_char(ch, w),
-            Ok(Value::Cons { .. }) if self.is_nonempty_string(idx).unwrap_or(false) => {
-                self.fmt_string(idx, w, display)
+            Ok(Value::Cons { .. }) if self.is_nonempty_char_list(idx).unwrap_or(false) => {
+                if display {
+                    self.walk_char_list(idx, w, |ch, w| w.write_char(ch))
+                } else {
+                    w.write_char('"')?;
+                    self.walk_char_list(idx, w, |ch, w| match ch {
+                        '"' => w.write_str("\\\""),
+                        '\\' => w.write_str("\\\\"),
+                        '\n' => w.write_str("\\n"),
+                        '\t' => w.write_str("\\t"),
+                        '\r' => w.write_str("\\r"),
+                        c => w.write_char(c),
+                    })?;
+                    w.write_char('"')
+                }
             }
             Ok(Value::Cons { car, cdr }) => {
                 w.write_char('(')?;
@@ -1029,39 +1069,6 @@ impl<const N: usize> Lisp<N> {
             '"' => w.write_str("#\\\""),
             ' ' => w.write_str("#\\space"),
             c => write!(w, "#\\{c}"),
-        }
-    }
-
-    fn fmt_string(
-        &self,
-        idx: ArenaIndex,
-        w: &mut (impl core::fmt::Write + ?Sized),
-        display: bool,
-    ) -> core::fmt::Result {
-        if !display {
-            w.write_char('"')?;
-        }
-        self.walk_char_list(idx, w, |ch, w| {
-            if display {
-                w.write_char(ch)
-            } else {
-                Self::fmt_string_char(ch, w)
-            }
-        })?;
-        if !display {
-            w.write_char('"')?;
-        }
-        Ok(())
-    }
-
-    fn fmt_string_char(ch: char, w: &mut (impl core::fmt::Write + ?Sized)) -> core::fmt::Result {
-        match ch {
-            '"' => w.write_str("\\\""),
-            '\\' => w.write_str("\\\\"),
-            '\n' => w.write_str("\\n"),
-            '\t' => w.write_str("\\t"),
-            '\r' => w.write_str("\\r"),
-            c => w.write_char(c),
         }
     }
 
@@ -1153,19 +1160,19 @@ impl<const N: usize> LispOps for Lisp<N> {
         self.get(idx)
     }
     #[inline]
-    /// Delegate to [`Lisp::car`].
-    fn car(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        Lisp::car(self, idx)
+    /// Delegate to [`Lisp::car_char`].
+    fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(idx)
     }
     #[inline]
-    /// Delegate to [`Lisp::cdr`].
-    fn cdr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        Lisp::cdr(self, idx)
+    /// Delegate to [`Lisp::cdr_char`].
+    fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cdr_char(idx)
     }
     #[inline]
-    /// Delegate to [`Lisp::cadr`].
-    fn cadr(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        Lisp::cadr(self, idx)
+    /// Delegate to [`Lisp::cadr_char`].
+    fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cadr_char(idx)
     }
     #[inline]
     /// Delegate to [`Lisp::lambda`].
@@ -1281,7 +1288,7 @@ impl<'a, const N: usize> ArenaWriter<'a, N> {
     pub(crate) fn finish(self) -> ArenaResult<ArenaIndex> {
         match self.error {
             Some(e) => Err(e),
-            None => self.lisp.reverse_list(self.head),
+            None => self.lisp.reverse_chain(self.head),
         }
     }
 }
@@ -1293,7 +1300,7 @@ impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
             return Err(core::fmt::Error);
         }
         for ch in s.chars() {
-            match self.lisp.cons_char(self.head, ch) {
+            match self.lisp.prepend_char(self.head, ch) {
                 Ok(h) => {
                     self.head = h;
                 }

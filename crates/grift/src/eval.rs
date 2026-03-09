@@ -107,10 +107,10 @@ macro_rules! cmp_builtin {
 /// Generate a pair-accessor builtin (`car` or `cdr`).
 macro_rules! pair_builtin {
     ($name:ident, $accessor:ident) => {
-        #[doc = "Apply the corresponding list accessor to the first"]
+        #[doc = "Apply the corresponding pair/string accessor to the first"]
         #[doc = "evaluated argument."]
         fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let pair = self.car(args)?;
+            let pair = self.car_char(args)?;
             self.$accessor(pair)
         }
     };
@@ -366,14 +366,13 @@ impl<const N: usize> Lisp<N> {
         expr: &mut ArenaIndex,
         env: &mut ArenaIndex,
     ) -> Result<Option<ArenaIndex>, ArenaError> {
-        if self.is_self_evaluating_expr(*expr)? {
-            return Ok(Some(*expr));
-        }
-
         match self.get(*expr)? {
             Value::Symbol(_) => Ok(Some(self.env_lookup(*env, *expr)?)),
 
             Value::Cons { car, cdr } => {
+                if self.is_nonempty_char_list(*expr)? {
+                    return Ok(Some(*expr));
+                }
                 self.push_root(cdr)?;
                 self.push_root(*env)?;
 
@@ -439,15 +438,8 @@ impl<const N: usize> Lisp<N> {
                     }
                 }
             }
-            _ => unreachable!("non-self-evaluating expressions are symbols or cons cells"),
-        }
-    }
 
-    #[inline]
-    fn is_self_evaluating_expr(&self, expr: ArenaIndex) -> ArenaResult<bool> {
-        match self.get(expr)? {
-            Value::Cons { .. } => self.is_nonempty_string(expr),
-            value => Ok(value.is_self_evaluating()),
+            _ => Ok(Some(*expr)), // self-evaluating: literals, closures, builtins,
         }
     }
 
@@ -587,7 +579,7 @@ impl<const N: usize> Lisp<N> {
             cur = self.cdr(cur)?;
         }
         // Reverse in place — all cons cells are freshly allocated by us.
-        self.reverse_list(reversed)
+        self.reverse_chain(reversed)
     }
 
     // ================================================================
@@ -1028,7 +1020,7 @@ impl<const N: usize> Lisp<N> {
             reversed = self.cons(val, reversed)?;
             cur = self.cdr(cur)?;
         }
-        self.reverse_list(reversed)
+        self.reverse_chain(reversed)
     }
 
     // ================================================================
@@ -1086,8 +1078,8 @@ impl<const N: usize> Lisp<N> {
         Ok(args)
     }
 
-    pair_builtin!(builtin_car, car);
-    pair_builtin!(builtin_cdr, cdr);
+    pair_builtin!(builtin_car, car_char);
+    pair_builtin!(builtin_cdr, cdr_char);
 
     // — Type predicate built-ins —
 
