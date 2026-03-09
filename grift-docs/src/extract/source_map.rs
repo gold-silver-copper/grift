@@ -6,23 +6,25 @@ use walkdir::WalkDir;
 
 /// All parsed source files, keyed by path relative to the source root.
 pub struct SourceMap {
+    pub root: PathBuf,
     pub files: IndexMap<PathBuf, syn::File>,
+    pub sources: IndexMap<PathBuf, String>,
 }
 
 impl SourceMap {
     /// Walk `src_dir` recursively, parse every `*.rs` file with `syn`.
     pub fn load(src_dir: &Path) -> Result<Self> {
         let mut files = IndexMap::new();
+        let mut sources = IndexMap::new();
         for entry in WalkDir::new(src_dir)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path().extension().is_some_and(|ext| ext == "rs")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
         {
             let path = entry.path().to_owned();
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
+            sources.insert(path.clone(), content.clone());
             match syn::parse_file(&content) {
                 Ok(parsed) => {
                     files.insert(path, parsed);
@@ -32,6 +34,10 @@ impl SourceMap {
                 }
             }
         }
-        Ok(SourceMap { files })
+        Ok(SourceMap {
+            root: src_dir.to_path_buf(),
+            files,
+            sources,
+        })
     }
 }

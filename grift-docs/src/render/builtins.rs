@@ -1,146 +1,66 @@
+use indexmap::IndexMap;
+
+use crate::extract::BuiltinEntry;
 use crate::model::DocModel;
 
-use super::md_writer::{find_errors_for_method, split_doc_examples, MdWriter};
+use super::{
+    md_writer::{find_errors_for_method, slugify, split_doc_examples, MdWriter, TocItem},
+    PageSpec,
+};
 
-/// Builtin group classification.
-struct BuiltinGroup {
-    name: &'static str,
-    members: &'static [&'static str],
-}
-
-const GROUPS: &[BuiltinGroup] = &[
-    BuiltinGroup {
-        name: "Arithmetic",
-        members: &["+", "-", "*", "/"],
-    },
-    BuiltinGroup {
-        name: "Comparison",
-        members: &["=", "<", ">", "<=", ">="],
-    },
-    BuiltinGroup {
-        name: "Pairs & Lists",
-        members: &["cons", "car", "cdr", "list", "null?", "pair?"],
-    },
-    BuiltinGroup {
-        name: "Strings",
-        members: &[
-            "raw-read-string",
-            "raw-display-to-string",
-            "raw-write-to-string",
-        ],
-    },
-    BuiltinGroup {
-        name: "Type Predicates",
-        members: &[
-            "number?",
-            "symbol?",
-            "boolean?",
-            "inert?",
-            "ignore?",
-            "operative?",
-            "applicative?",
-            "environment?",
-        ],
-    },
-    BuiltinGroup {
-        name: "Logic",
-        members: &["not"],
-    },
-    BuiltinGroup {
-        name: "Equality",
-        members: &["eq?", "equal?"],
-    },
-    BuiltinGroup {
-        name: "Combiners",
-        members: &["eval", "wrap", "unwrap", "apply"],
-    },
-    BuiltinGroup {
-        name: "Environments",
-        members: &["make-environment", "make-empty-environment"],
-    },
-    BuiltinGroup {
-        name: "GC & Control",
-        members: &["gc-collect", "error"],
-    },
-];
-
-pub fn render_builtins(model: &DocModel) -> String {
+pub fn render_builtins(model: &DocModel, page: &PageSpec) -> String {
     let mut md = MdWriter::new();
-    md.front_matter("Built-in Functions", 4);
-    md.h1("Built-in Functions (Applicatives)");
-
+    md.page_front_matter(page);
+    md.h1("Built-in Functions");
     md.paragraph(
-        "Applicatives evaluate their arguments before dispatch. They are \
-         created by wrapping an operative with `wrap`.",
+        "Applicatives evaluate arguments before dispatch. The grouping below is derived from the builtin names present in the source tree.",
     );
 
-    // Group the applicatives
-    let mut used: Vec<bool> = vec![false; model.applicatives.len()];
-
-    for group in GROUPS {
-        let group_entries: Vec<(usize, _)> = model
-            .applicatives
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| group.members.contains(&e.lisp_name.as_str()))
-            .collect();
-
-        if group_entries.is_empty() {
-            continue;
-        }
-
-        md.h2(group.name);
-
-        for (idx, entry) in &group_entries {
-            used[*idx] = true;
-            render_builtin_entry(&mut md, entry, model);
-        }
-    }
-
-    // "Other" section for ungrouped builtins
-    let other_entries: Vec<_> = model
-        .applicatives
-        .iter()
-        .enumerate()
-        .filter(|(idx, _)| !used[*idx])
+    let grouped = group_by_prefix(&model.applicatives);
+    let toc_items: Vec<_> = grouped
+        .values()
+        .flat_map(|entries| {
+            entries.iter().map(|entry| TocItem {
+                title: entry.lisp_name.as_str(),
+                anchor: builtin_anchor(entry),
+            })
+        })
         .collect();
+    md.toc("Contents", &toc_items);
 
-    if !other_entries.is_empty() {
-        md.h2("Other");
-        for (_, entry) in &other_entries {
-            render_builtin_entry(&mut md, entry, model);
+    for (group, entries) in grouped {
+        md.h2(&group);
+        for entry in entries {
+            render_builtin_entry(&mut md, entry, model, "Applicative");
         }
     }
 
     md.finish()
 }
 
-fn render_builtin_entry(
+pub(crate) fn render_builtin_entry(
     md: &mut MdWriter,
-    entry: &crate::extract::BuiltinEntry,
+    entry: &BuiltinEntry,
     model: &DocModel,
+    kind_label: &str,
 ) {
-    md.h3(&format!("`{}`", entry.signature));
-
-    md.paragraph(
-        "**Kind:** Applicative — arguments are evaluated before dispatch.",
-    );
-
-    let tco = if entry.is_tco { "Yes" } else { "No" };
-    md.paragraph(&format!("**TCO:** {tco}"));
+    md.h3(&entry.rust_method);
+    md.paragraph(&format!("**Name:** `{}`", entry.lisp_name));
+    md.paragraph(&format!("**Signature:** `{}`", entry.signature));
+    md.paragraph(&format!("**Kind:** {kind_label}"));
+    md.paragraph(&format!("**Dispatch method:** `{}`", entry.rust_method));
+    md.paragraph(&format!(
+        "**Tail-call optimized:** {}",
+        yes_no(entry.is_tco)
+    ));
 
     if entry.doc.is_empty() {
         md.missing_doc_warning();
     } else {
         let (prose, examples) = split_doc_examples(&entry.doc);
         md.paragraph(&prose);
-
-        for ex in &examples {
-            md.code_block("scheme", ex);
-        }
-
-        if examples.is_empty() {
-            md.code_block("scheme", &format!("({} ...)", entry.lisp_name));
+        for example in examples {
+            md.code_block("scheme", &example);
         }
     }
 
@@ -152,4 +72,54 @@ fn render_builtin_entry(
         }
         md.raw("\n");
     }
+
+    let mut related = vec![("Types", "types.md".to_string())];
+    if let Some(first_error) = related_errors.first() {
+        related.push(("Error", format!("errors.md#{}", slugify(first_error))));
+    } else {
+        related.push(("Errors", "errors.md".to_string()));
+    }
+    related.push(("Examples", "examples.md".to_string()));
+    md.related_links(&related);
+}
+
+fn group_by_prefix<'a>(entries: &'a [BuiltinEntry]) -> IndexMap<String, Vec<&'a BuiltinEntry>> {
+    let mut grouped: IndexMap<String, Vec<&BuiltinEntry>> = IndexMap::new();
+    let mut ordered: Vec<_> = entries.iter().collect();
+    ordered.sort_by(|a, b| a.lisp_name.cmp(&b.lisp_name));
+
+    for entry in ordered {
+        let label = category_label(&entry.lisp_name);
+        grouped.entry(label).or_default().push(entry);
+    }
+
+    grouped
+}
+
+fn category_label(name: &str) -> String {
+    if let Some(prefix) = name
+        .split(['-', '?'])
+        .next()
+        .filter(|prefix| !prefix.is_empty())
+    {
+        let mut chars = prefix.chars();
+        if let Some(first) = chars.next() {
+            let mut label = first.to_uppercase().collect::<String>();
+            label.push_str(chars.as_str());
+            return label;
+        }
+    }
+    "Other".to_string()
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "Yes"
+    } else {
+        "No"
+    }
+}
+
+fn builtin_anchor(entry: &BuiltinEntry) -> String {
+    slugify(&entry.rust_method)
 }

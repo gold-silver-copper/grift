@@ -37,7 +37,11 @@ impl BuiltinExtractor {
 
     /// After extraction, attach docs from the MethodIndex and detect TCO.
     pub fn attach_docs(&mut self, methods: &MethodIndex, file_contents: &str) {
-        for entry in self.operatives.iter_mut().chain(self.applicatives.iter_mut()) {
+        for entry in self
+            .operatives
+            .iter_mut()
+            .chain(self.applicatives.iter_mut())
+        {
             if let Some(mdoc) = methods.get(&entry.rust_method) {
                 entry.doc = mdoc.doc.clone();
                 // Extract signature from first backtick span in doc
@@ -169,7 +173,7 @@ fn parse_entries(tokens: proc_macro2::TokenStream, kind: BuiltinKind) -> Vec<Bui
             });
 
             i += 7; // skip: name = > const = > method
-            // Skip comma if present
+                    // Skip comma if present
             if i < toks.len() {
                 if let TokenTree::Punct(p) = &toks[i] {
                     if p.as_char() == ',' {

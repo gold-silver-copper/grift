@@ -1,6 +1,15 @@
+use std::path::Path;
+
+use crate::render::PageSpec;
+
 /// Markdown writer helper wrapping a String.
 pub struct MdWriter {
     buf: String,
+}
+
+pub struct TocItem<'a> {
+    pub title: &'a str,
+    pub anchor: String,
 }
 
 impl MdWriter {
@@ -10,10 +19,10 @@ impl MdWriter {
         }
     }
 
-    pub fn front_matter(&mut self, title: &str, order: u32) {
+    pub fn page_front_matter(&mut self, page: &PageSpec) {
         self.buf.push_str("---\n");
-        self.buf.push_str(&format!("title: \"{title}\"\n"));
-        self.buf.push_str(&format!("order: {order}\n"));
+        self.buf.push_str(&format!("title: \"{}\"\n", page.title));
+        self.buf.push_str(&format!("order: {}\n", page.order));
         self.buf.push_str("---\n\n");
     }
 
@@ -77,8 +86,37 @@ impl MdWriter {
         self.buf.push_str(s);
     }
 
+    pub fn bullet_link(&mut self, label: &str, target: &str) {
+        self.buf.push_str(&format!("- [{}]({target})\n", label));
+    }
+
+    pub fn toc(&mut self, title: &str, items: &[TocItem<'_>]) {
+        if items.is_empty() {
+            return;
+        }
+        self.h2(title);
+        for item in items {
+            self.bullet_link(item.title, &format!("#{}", item.anchor));
+        }
+        self.buf.push('\n');
+    }
+
+    pub fn related_links(&mut self, links: &[(&str, String)]) {
+        if links.is_empty() {
+            return;
+        }
+        self.raw("**Related:** ");
+        for (idx, (label, target)) in links.iter().enumerate() {
+            if idx > 0 {
+                self.raw(" | ");
+            }
+            self.raw(&format!("[{label}]({target})"));
+        }
+        self.raw("\n\n");
+    }
+
     pub fn missing_doc_warning(&mut self) {
-        self.blockquote("⚠️ No documentation found.");
+        self.blockquote("No documentation found.");
     }
 
     pub fn finish(self) -> String {
@@ -152,4 +190,54 @@ pub fn find_errors_for_method(
         }
     }
     variants
+}
+
+pub fn path_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub fn slugify(value: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+
+    for ch in value.chars() {
+        let mapped = match ch {
+            'a'..='z' | '0'..='9' => Some(ch),
+            'A'..='Z' => Some(ch.to_ascii_lowercase()),
+            '+' => Some('p'),
+            '*' => Some('x'),
+            '=' => Some('e'),
+            '<' => Some('l'),
+            '>' => Some('g'),
+            '?' => None,
+            _ => Some('-'),
+        };
+
+        match mapped {
+            Some('-') => {
+                if !slug.is_empty() && !prev_dash {
+                    slug.push('-');
+                    prev_dash = true;
+                }
+            }
+            Some(value) => {
+                slug.push(value);
+                prev_dash = false;
+            }
+            None => {}
+        }
+    }
+
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+
+    if slug.is_empty() {
+        "section".to_string()
+    } else {
+        slug
+    }
 }

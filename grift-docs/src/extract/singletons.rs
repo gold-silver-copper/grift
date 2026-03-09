@@ -51,28 +51,27 @@ fn parse_singletons(tokens: proc_macro2::TokenStream) -> Vec<SingletonEntry> {
 
     while i < toks.len() {
         // Check for doc attribute: # [ doc = "..." ]
-        if matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == '#')
-            && i + 1 < toks.len() {
-                if let TokenTree::Group(group) = &toks[i + 1] {
-                    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
-                    // Look for: doc = "..."
-                    if inner.len() >= 3 {
-                        if let TokenTree::Ident(id) = &inner[0] {
-                            if id == "doc" {
-                                // inner[1] should be '=', inner[2] should be literal
-                                if let TokenTree::Literal(lit) = &inner[2] {
-                                    let raw = lit.to_string();
-                                    let s = raw.trim_matches('"');
-                                    let s = s.strip_prefix(' ').unwrap_or(s);
-                                    pending_docs.push(s.to_string());
-                                }
+        if matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == '#') && i + 1 < toks.len() {
+            if let TokenTree::Group(group) = &toks[i + 1] {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                // Look for: doc = "..."
+                if inner.len() >= 3 {
+                    if let TokenTree::Ident(id) = &inner[0] {
+                        if id == "doc" {
+                            // inner[1] should be '=', inner[2] should be literal
+                            if let TokenTree::Literal(lit) = &inner[2] {
+                                let raw = lit.to_string();
+                                let s = raw.trim_matches('"');
+                                let s = s.strip_prefix(' ').unwrap_or(s);
+                                pending_docs.push(s.to_string());
                             }
                         }
                     }
-                    i += 2;
-                    continue;
                 }
+                i += 2;
+                continue;
             }
+        }
 
         // Check for semicolon (marks end of regular entries, start of FIRST_FREE)
         if matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == ';') {
@@ -85,26 +84,28 @@ fn parse_singletons(tokens: proc_macro2::TokenStream) -> Vec<SingletonEntry> {
             // Next should be '='
             if i + 1 < toks.len()
                 && matches!(&toks[i + 1], TokenTree::Punct(p) if p.as_char() == '=')
-                    && i + 2 < toks.len() {
-                        if let TokenTree::Literal(lit) = &toks[i + 2] {
-                            if let Ok(slot) = lit.to_string().parse::<usize>() {
-                                let doc = pending_docs.join("\n");
-                                entries.push(SingletonEntry {
-                                    name: name_str,
-                                    slot,
-                                    doc,
-                                });
-                                pending_docs.clear();
-                                i += 3;
-                                // Skip comma
-                                if i < toks.len()
-                                    && matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == ',') {
-                                        i += 1;
-                                    }
-                                continue;
-                            }
+                && i + 2 < toks.len()
+            {
+                if let TokenTree::Literal(lit) = &toks[i + 2] {
+                    if let Ok(slot) = lit.to_string().parse::<usize>() {
+                        let doc = pending_docs.join("\n");
+                        entries.push(SingletonEntry {
+                            name: name_str,
+                            slot,
+                            doc,
+                        });
+                        pending_docs.clear();
+                        i += 3;
+                        // Skip comma
+                        if i < toks.len()
+                            && matches!(&toks[i], TokenTree::Punct(p) if p.as_char() == ',')
+                        {
+                            i += 1;
                         }
+                        continue;
                     }
+                }
+            }
         }
 
         i += 1;

@@ -31,10 +31,7 @@ impl<'ast> Visit<'ast> for ImplMethodExtractor {
         let doc = extract_doc(&node.attrs);
         if !doc.is_empty() {
             let name = node.sig.ident.to_string();
-            self.methods.insert(
-                name.clone(),
-                MethodDoc { name, doc },
-            );
+            self.methods.insert(name.clone(), MethodDoc { name, doc });
         }
         syn::visit::visit_impl_item_fn(self, node);
     }
@@ -43,10 +40,7 @@ impl<'ast> Visit<'ast> for ImplMethodExtractor {
         let doc = extract_doc(&node.attrs);
         if !doc.is_empty() {
             let name = node.sig.ident.to_string();
-            self.methods.insert(
-                name.clone(),
-                MethodDoc { name, doc },
-            );
+            self.methods.insert(name.clone(), MethodDoc { name, doc });
         }
         syn::visit::visit_item_fn(self, node);
     }

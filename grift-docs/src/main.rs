@@ -4,7 +4,7 @@ mod render;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use model::DocModel;
@@ -12,42 +12,28 @@ use model::DocModel;
 /// Static-analysis documentation generator for the grift Lisp interpreter.
 #[derive(Parser)]
 struct Args {
-    /// Path to the grift source tree (e.g. `./crates/grift`).
+    /// Output directory for Markdown files. Defaults to `../docs/grift`.
     #[arg(long)]
-    src: PathBuf,
-
-    /// Output directory for Markdown files.
-    #[arg(long)]
-    out: PathBuf,
+    out: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let map = extract::SourceMap::load(&args.src)?;
+    let src = grift_source_dir()?;
+    let out = output_dir(args.out)?;
+    let map = extract::SourceMap::load(&src)?;
     let model = DocModel::build(&map)?;
-    std::fs::create_dir_all(&args.out)?;
+    std::fs::create_dir_all(&out)?;
 
-    type PageFn = fn(&DocModel) -> String;
-    let pages: &[(&str, PageFn)] = &[
-        ("index.md", render::render_index),
-        ("types.md", render::render_types),
-        ("special-forms.md", render::render_special_forms),
-        ("builtins.md", render::render_builtins),
-        ("environments.md", render::render_environments),
-        ("strings.md", render::render_strings),
-        ("gc.md", render::render_gc),
-        ("errors.md", render::render_errors),
-        ("examples.md", render::render_examples),
-    ];
-
-    for (name, render_fn) in pages {
-        std::fs::write(args.out.join(name), render_fn(&model))?;
-        println!("  wrote {name}");
+    for page in render::pages() {
+        std::fs::write(out.join(page.file_name), (page.render)(&model, page))?;
+        println!("  wrote {}", page.file_name);
     }
 
     println!(
-        "\n{} value types, {} operatives, {} applicatives, \
+        "\n{}: {} value types, {} operatives, {} applicatives, \
          {} errors, {} prelude entries",
+        model.project_name,
         model.value_enum.variants.len(),
         model.operatives.len(),
         model.applicatives.len(),
@@ -55,4 +41,34 @@ fn main() -> Result<()> {
         model.prelude.len(),
     );
     Ok(())
+}
+
+fn grift_source_dir() -> Result<PathBuf> {
+    let docs_dir = manifest_dir();
+    let repo_root = docs_dir
+        .parent()
+        .context("grift-docs crate is expected to live directly under the repo root")?;
+    let src = repo_root.join("crates/grift/src");
+    anyhow::ensure!(
+        src.is_dir(),
+        "expected Grift source directory at {}",
+        src.display()
+    );
+    Ok(src)
+}
+
+fn output_dir(cli_out: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = cli_out {
+        return Ok(path);
+    }
+
+    let docs_dir = manifest_dir();
+    let repo_root = docs_dir
+        .parent()
+        .context("grift-docs crate is expected to live directly under the repo root")?;
+    Ok(repo_root.join("docs/grift"))
+}
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }

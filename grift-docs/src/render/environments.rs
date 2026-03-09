@@ -1,42 +1,67 @@
 use crate::model::DocModel;
 
-use super::md_writer::MdWriter;
+use super::md_writer::{slugify, MdWriter, TocItem};
+use super::PageSpec;
 
-pub fn render_environments(model: &DocModel) -> String {
+pub fn render_environments(model: &DocModel, page: &PageSpec) -> String {
     let mut md = MdWriter::new();
-    md.front_matter("Environments", 5);
+    md.page_front_matter(page);
     md.h1("Environments");
 
-    // File doc from lisp.rs
-    if let Some(intro) = model.file_doc.get("lisp") {
+    if let Some(intro) = model
+        .file_doc
+        .get("lisp")
+        .or_else(|| model.file_doc.get("eval"))
+    {
         md.paragraph(intro);
     }
 
-    md.h2("Environment Chain");
+    let methods = model.method_docs_matching(|method| {
+        method.name.starts_with("env_")
+            || method.name.contains("environment")
+            || method.name.contains("_env")
+    });
 
-    md.code_block("", "\
-Ground Env (slot 5) — immutable, builtins only
-     ↓ parent
-Global Env (slot 7) — prelude + user define!s
-     ↓ parent
-User Env   (dynamic) — created per lambda / let");
-
-    md.h2("Environment Methods");
-
-    let env_methods = [
-        "env_define",
-        "env_set",
-        "env_lookup",
-        "make_env",
-        "make_child_env",
-    ];
-
-    for name in &env_methods {
-        if let Some(mdoc) = model.method_index.get(*name) {
-            md.h3(&format!("`{}`", mdoc.name));
-            md.paragraph(&mdoc.doc);
+    if methods.is_empty() {
+        md.missing_doc_warning();
+    } else {
+        md.h2("Methods");
+        let toc_items: Vec<_> = methods
+            .iter()
+            .map(|method| TocItem {
+                title: method.name.as_str(),
+                anchor: slugify(&method.name),
+            })
+            .collect();
+        md.toc("Contents", &toc_items);
+        for method in methods {
+            md.h3(&method.name);
+            md.paragraph(&method.doc);
+            let related = [
+                ("Built-ins", "builtins.md".to_string()),
+                ("Types", "types.md".to_string()),
+                ("Errors", "errors.md".to_string()),
+            ];
+            md.related_links(&related);
         }
     }
+
+    let builtins = model.builtins_matching(|entry| entry.lisp_name.contains("environment"));
+    if !builtins.is_empty() {
+        md.h2("Builtins");
+        for builtin in builtins {
+            md.h3(&builtin.rust_method);
+            md.paragraph(&format!("**Name:** `{}`", builtin.lisp_name));
+            md.paragraph(&format!("**Signature:** `{}`", builtin.signature));
+            md.paragraph(&builtin.doc);
+        }
+    }
+
+    md.related_links(&[
+        ("Built-ins", "builtins.md".to_string()),
+        ("Special Forms", "special-forms.md".to_string()),
+        ("Types", "types.md".to_string()),
+    ]);
 
     md.finish()
 }

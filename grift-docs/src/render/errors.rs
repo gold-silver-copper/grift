@@ -1,10 +1,11 @@
 use crate::model::DocModel;
 
-use super::md_writer::{first_sentence, MdWriter};
+use super::md_writer::{first_sentence, slugify, MdWriter, TocItem};
+use super::PageSpec;
 
-pub fn render_errors(model: &DocModel) -> String {
+pub fn render_errors(model: &DocModel, page: &PageSpec) -> String {
     let mut md = MdWriter::new();
-    md.front_matter("Error Types", 8);
+    md.page_front_matter(page);
     md.h1("Error Types");
 
     if !model.arena_error.doc.is_empty() {
@@ -41,10 +42,19 @@ pub fn render_errors(model: &DocModel) -> String {
     }
 
     md.table(&["Variant", "Raised when", "Raised in"], &rows);
+    let toc_items: Vec<_> = model
+        .arena_error
+        .variants
+        .iter()
+        .map(|variant| TocItem {
+            title: variant.name.as_str(),
+            anchor: slugify(&variant.name),
+        })
+        .collect();
+    md.toc("Contents", &toc_items);
 
-    // Per-variant sections
     for v in &model.arena_error.variants {
-        md.h3(&format!("`{}`", v.name));
+        md.h3(&v.name);
 
         if v.doc.is_empty() {
             md.missing_doc_warning();
@@ -52,7 +62,6 @@ pub fn render_errors(model: &DocModel) -> String {
             md.paragraph(&v.doc);
         }
 
-        // Field table for struct variants
         let named_fields: Vec<_> = v.fields.iter().filter(|f| f.name.is_some()).collect();
         if !named_fields.is_empty() {
             let field_rows: Vec<Vec<String>> = named_fields
@@ -72,7 +81,6 @@ pub fn render_errors(model: &DocModel) -> String {
             md.table(&["Field", "Type", "Description"], &field_rows);
         }
 
-        // Raised-in cross-reference
         if let Some(fns) = model.error_sites.get(&v.name) {
             md.raw("**Raised in:**\n\n");
             for f in fns {
@@ -80,8 +88,15 @@ pub fn render_errors(model: &DocModel) -> String {
             }
             md.raw("\n");
         } else {
-            md.blockquote("⚠️ No call-sites found for this error variant.");
+            md.blockquote("No call-sites found for this error variant.");
         }
+
+        let related = [
+            ("Built-ins", "builtins.md".to_string()),
+            ("Special Forms", "special-forms.md".to_string()),
+            ("Types", "types.md".to_string()),
+        ];
+        md.related_links(&related);
     }
 
     md.finish()
