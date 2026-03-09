@@ -1,4 +1,4 @@
-use grift_arena::*;
+use grift::arena::*;
 
 #[test]
 fn test_basic_allocation() {

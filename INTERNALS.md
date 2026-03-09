@@ -5,42 +5,28 @@ hot paths, the macro system, arena allocation patterns, and GC interaction.
 
 ## Module Structure
 
-### `grift_arena` (no_std, no dependencies)
+### `arena` module (no_std, no dependencies)
 
 ```
 src/
-├── lib.rs       Re-exports and module declarations
-├── types.rs     ArenaIndex, ArenaError, ArenaResult, Slot (internal)
-├── arena.rs     Arena<T, N> — alloc, free, get, set
-├── traits.rs    ArenaDelete, ArenaCopy, Trace
-├── gc.rs        Mark-and-sweep: initialize_roots, process_mark_stack, sweep_unmarked
-├── iter.rs      ArenaIterator
-└── stats.rs     ArenaStats, GcStats
+├── arena.rs     Arena allocator — ArenaIndex, ArenaError, Arena<T, N>, Trace, GC, etc.
 ```
 
 All public API types are re-exported from `lib.rs`. The `Slot` enum and
 `FREE_LIST_END` sentinel are `pub(crate)`.
 
-### `grift` (no_std, depends on grift_arena)
+### `grift` (no_std)
 
 ```
 src/
 ├── lib.rs       Crate root — #![no_std], #![forbid(unsafe_code)], re-exports
+├── arena.rs     Fixed-size arena allocator with free-list, mark-and-sweep GC
 ├── value.rs     Value enum, BuiltinId, Display impl, accessor macros
 ├── lisp.rs      Lisp<N> — arena wrapper, symbol interning, env operations, Trace impl
 ├── parse.rs     Parser — recursive descent S-expression parser
 └── eval.rs      Evaluator — TCO trampoline, builtin registration, all operatives/applicatives
 ```
 
-### `grift_unicode` (no_std, no dependencies)
-
-```
-src/
-├── lib.rs       Character operations, case mapping, full case folding
-└── build.rs     Code generator: parses CaseFolding.txt into a static lookup table
-```
-
-Currently standalone. Not yet wired into the interpreter's string operations.
 
 ## Key Data Types
 
@@ -366,7 +352,7 @@ These must be maintained for correctness:
 6. **All arena types are Copy**. The arena uses `Cell` for interior mutability,
    which requires `T: Copy`.
 
-7. **No unsafe code**. Both `grift` and `grift_arena` use `#![forbid(unsafe_code)]`.
+7. **No unsafe code**. `grift` uses `#![forbid(unsafe_code)]`.
 
 8. **No heap allocation in core crates**. `Vec`, `String`, `Box`, and
    `alloc::` are forbidden. Only the REPL binary (behind the `repl` feature)

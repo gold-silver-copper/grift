@@ -28,14 +28,12 @@ Two operations perform user-visible mutation. Both are operatives
 
 ### `define!`
 
-**Syntax:** `(define! symbol expr)` or `(define! (fn name params...) body...)`
+**Syntax:** `(define! symbol expr)` or `(define! ptree expr)`
 
 **What is mutated:**
 
-- If the symbol already exists in the current environment frame, the
-  binding's cons cell is overwritten via `arena.set(binding, Cons {
-  car: name, cdr: new_value })`. Only the cdr (value) changes; the
-  car (symbol) remains the same.
+- If the symbol already exists in the current environment frame,
+  `define!` signals an error — use `set!` to update existing bindings.
 
 - If the symbol does not exist, a new binding pair is consed onto the
   bindings list, and the environment slot itself is overwritten via
@@ -53,9 +51,9 @@ user code from redefining builtins.
 
 **Closure observation:** Because environments are shared by reference,
 any closure that closes over the same environment frame will observe
-the redefinition. If a closure captures a frame and a later `define!`
-overwrites a binding in that frame, the closure sees the new value on
-its next evaluation.
+mutations made via `set!`. If a closure captures a frame and a later
+`set!` updates a binding in that frame, the closure sees the new value
+on its next evaluation.
 
 ### `set!`
 
@@ -270,13 +268,13 @@ those operations.
 
 ## 6. Known Limitations and Caveats
 
-### `define!` overwrite
+### `define!` rejects redefinition
 
-Closures sharing a frame see redefinitions. This is by design but
-can surprise users. A closure that references a function which is
-later redefined via `define!` will call the new version on subsequent
-invocations. This is consistent with Kernel semantics but differs
-from languages with lexical immutability.
+`define!` now signals an error if the symbol already exists in the
+current frame. Use `set!` to update existing bindings. Closures
+sharing a frame still see mutations made via `set!`. A closure that
+references a function which is later updated via `set!` will call
+the new version on subsequent invocations.
 
 ### Environment references are capabilities
 

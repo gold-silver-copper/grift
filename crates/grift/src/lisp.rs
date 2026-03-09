@@ -1,7 +1,32 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
+//!
+//! [`Lisp`] is the top-level entry point for the interpreter. It owns the
+//! fixed-size [`Arena`](crate::arena::Arena), pre-allocates singleton values
+//! and environments, manages symbol interning, and exposes the public
+//! [`eval`](Lisp::eval) API.
+//!
+//! ## Slot Layout
+//!
+//! Slots 0–9 are reserved at construction time for well-known values
+//! whose [`ArenaIndex`](crate::arena::ArenaIndex) constants are compile-time
+//! values:
+//!
+//! | Slot | Contents |
+//! |------|----------|
+//! | 0 | `Nil` |
+//! | 1 | `Boolean(true)` |
+//! | 2 | `Boolean(false)` |
+//! | 3 | `Inert` |
+//! | 4 | `Ignore` |
+//! | 5 | Ground environment |
+//! | 6 | Parents cons cell (ground → global) |
+//! | 7 | Global environment |
+//! | 8 | GC root stack head |
+//! | 9 | Symbol intern list head |
 
-use grift_arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
+use crate::arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats, Trace};
 
+use crate::native::{LispOps, NativeFn};
 use crate::parse::SliceSource;
 use crate::value::Value;
 
@@ -35,6 +60,12 @@ impl<const N: usize> Lisp<N> {
     /// `#ignore`, the ground environment, a parents cell, the global
     /// environment, the GC root stack, and the symbol intern list so
     /// that returning these common values is allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `N < 10` or if the arena is too small to hold the
+    /// singleton values, builtin bindings, and standard library entries.
+    /// In practice `N` should be at least a few hundred.
     pub fn new() -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
@@ -121,36 +152,100 @@ impl<const N: usize> Lisp<N> {
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
-        // Initialize stdlib (proc-macro-generated statics + constants).
-        lisp.init_stdlib();
+        // Initialize prelude (proc-macro-generated statics + constants).
+        lisp.init_prelude();
 
         lisp
     }
 
-    /// Bind all stdlib entries (proc-macro-generated statics + constants)
+    /// Bind all prelude entries (proc-macro-generated statics + constants)
     /// in the global environment.
-    fn init_stdlib(&self) {
-        use crate::stdlib::{STDLIB_ALL, init_stdlib_constants};
+    fn init_prelude(&self) {
+        use crate::prelude::{PRELUDE_ALL, init_prelude_constants};
 
-        // Bind each stdlib function as an Applicative wrapping the StdLib value.
-        for &entry in STDLIB_ALL {
-            let stdlib_idx = self
+        // Bind each prelude function as an Applicative wrapping the Prelude value.
+        for &entry in PRELUDE_ALL {
+            let prelude_idx = self
                 .arena
-                .alloc(Value::StdLib(entry))
-                .expect("arena too small for stdlib");
+                .alloc(Value::Prelude(entry))
+                .expect("arena too small for prelude");
             let app_idx = self
                 .arena
-                .alloc(Value::Applicative(stdlib_idx))
-                .expect("arena too small for stdlib");
+                .alloc(Value::Applicative(prelude_idx))
+                .expect("arena too small for prelude");
             let sym = self
                 .symbol(entry.name())
-                .expect("arena too small for stdlib");
+                .expect("arena too small for prelude");
             self.env_define(ArenaIndex::GLOBAL_ENV, sym, app_idx)
-                .expect("arena too small for stdlib");
+                .expect("arena too small for prelude");
         }
 
-        // Bind stdlib constants (numbers, booleans, strings).
-        init_stdlib_constants(self);
+        // Bind prelude constants (numbers, booleans, strings).
+        init_prelude_constants(self);
+    }
+
+    // — Native function registration —
+
+    /// Register a native Rust function as a Lisp applicative.
+    ///
+    /// The function is bound in the global environment under the given `name`.
+    /// It receives already-evaluated arguments as a cons-list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError::OutOfMemory`] if arena allocation fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::{Lisp, Value, ArenaIndex, ArenaResult, LispOps};
+    ///
+    /// fn my_double(
+    ///     lisp: &dyn LispOps,
+    ///     args: ArenaIndex,
+    /// ) -> ArenaResult<ArenaIndex> {
+    ///     let (a, _) = grift::extract_arg::<isize>(lisp, args)?;
+    ///     lisp.number(a * 2)
+    /// }
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// lisp.register_native("double", my_double).unwrap();
+    /// assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
+    /// ```
+    pub fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
+        let sym = self.symbol(name)?;
+        let native_val = self.arena.alloc(Value::Native(f))?;
+        let wrapped = self.wrap(native_val)?;
+        self.env_define(ArenaIndex::GLOBAL_ENV, sym, wrapped)
+    }
+
+    /// Call a native function pointer.
+    pub(crate) fn call_native(
+        &self,
+        f: NativeFn,
+        args: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        f(self, args)
+    }
+
+    /// Define a value in the global environment under the given symbol.
+    ///
+    /// This is the general-purpose equivalent of [`register_native`](Self::register_native)
+    /// for arbitrary values. `sym` must be a valid symbol index.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::{Lisp, Value, LispOps};
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let sym = lisp.symbol("my-const").unwrap();
+    /// let val = lisp.number(42).unwrap();
+    /// lisp.define_global(sym, val).unwrap();
+    /// assert_eq!(lisp.eval("my-const"), Ok(Value::Number(42)));
+    /// ```
+    pub fn define_global(&self, sym: ArenaIndex, value: ArenaIndex) -> ArenaResult<()> {
+        self.env_define(ArenaIndex::GLOBAL_ENV, sym, value)
     }
 
     // — Value constructors —
@@ -159,6 +254,22 @@ impl<const N: usize> Lisp<N> {
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(n.into())
+    }
+
+    /// Return the `ArenaIndex` for a boolean (`#t` or `#f`).
+    ///
+    /// Booleans are pre-allocated singletons, so this never allocates.
+    #[inline]
+    pub fn boolean(&self, b: bool) -> ArenaIndex {
+        ArenaIndex::from_bool(b)
+    }
+
+    /// Return the `ArenaIndex` for nil (the empty list).
+    ///
+    /// Nil is a pre-allocated singleton, so this never allocates.
+    #[inline]
+    pub fn nil(&self) -> ArenaIndex {
+        ArenaIndex::NIL
     }
 
     /// Allocate a cons cell.
@@ -210,7 +321,7 @@ impl<const N: usize> Lisp<N> {
     /// Each `CharPair { ch, cdr }` points to the next character,
     /// with the final character's `cdr` pointing to `NIL`.
     /// An empty string is represented as `NIL`.
-    pub(crate) fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
+    pub fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
         // Pre-check: ensure enough free slots for all chars.
         let char_count = if s.is_ascii() {
             s.len()
@@ -291,7 +402,7 @@ impl<const N: usize> Lisp<N> {
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
         self.arena
             .get(idx)
-            .and_then(|v| v.as_symbol())
+            .and_then(super::value::Value::as_symbol)
             .is_ok_and(|str_idx| self.string_eq(str_idx, name))
     }
 
@@ -304,11 +415,7 @@ impl<const N: usize> Lisp<N> {
     /// Build strings by prepending characters in reverse order, then call
     /// [`reverse_chain`](Self::reverse_chain) to flip into
     /// forward order.
-    pub(crate) fn prepend_char(
-        &self,
-        head: ArenaIndex,
-        ch: char,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn prepend_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
         self.arena.alloc(Value::CharPair { ch, cdr: head })
     }
 
@@ -319,10 +426,7 @@ impl<const N: usize> Lisp<N> {
     /// head (formerly the last node). No new nodes are allocated.
     ///
     /// Safe because the chain is freshly built and not yet shared.
-    pub(crate) fn reverse_chain(
-        &self,
-        mut head: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn reverse_chain(&self, mut head: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let mut prev = ArenaIndex::NIL;
         while !head.is_nil() {
             let (new_val, cdr) = match self.arena.get(head)? {
@@ -352,7 +456,10 @@ impl<const N: usize> Lisp<N> {
                 cur = self.cdr(cur)?;
                 continue;
             };
-            if self.strings_equal(existing_chars, char_head).unwrap_or(false) {
+            if self
+                .strings_equal(existing_chars, char_head)
+                .unwrap_or(false)
+            {
                 return Ok(sym);
             }
             cur = self.cdr(cur)?;
@@ -365,7 +472,8 @@ impl<const N: usize> Lisp<N> {
         let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
             unreachable!();
         };
-        self.arena.set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
+        self.arena
+            .set(ArenaIndex::INTERN_LIST, Value::Cons { car: new_head, cdr })?;
 
         Ok(sym_idx)
     }
@@ -573,7 +681,11 @@ impl<const N: usize> Lisp<N> {
 
     /// Search an alist for a binding whose car equals `name`.
     /// Returns `Some(binding_cons_index)` if found, `None` otherwise.
-    fn find_binding(&self, bindings: ArenaIndex, name: ArenaIndex) -> ArenaResult<Option<ArenaIndex>> {
+    fn find_binding(
+        &self,
+        bindings: ArenaIndex,
+        name: ArenaIndex,
+    ) -> ArenaResult<Option<ArenaIndex>> {
         let mut cur = bindings;
         while !cur.is_nil() {
             let binding = self.car(cur)?;
@@ -586,7 +698,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Define a binding in an environment (mutates in place via arena.set).
-    /// If a binding for `name` already exists in this frame, overwrite it.
+    /// Returns `AlreadyDefined` if a binding for `name` already exists in this frame.
     pub(crate) fn env_define(
         &self,
         env: ArenaIndex,
@@ -596,8 +708,8 @@ impl<const N: usize> Lisp<N> {
         let Value::Environment { bindings, parents } = self.arena.get(env)? else {
             return Err(ArenaError::TypeError);
         };
-        if let Some(binding) = self.find_binding(bindings, name)? {
-            return self.arena.set(binding, Value::Cons { car: name, cdr: val });
+        if self.find_binding(bindings, name)?.is_some() {
+            return Err(ArenaError::AlreadyDefined);
         }
         // Not found — create new binding
         let pair = self.cons(name, val)?;
@@ -623,7 +735,13 @@ impl<const N: usize> Lisp<N> {
             return Err(ArenaError::TypeError);
         };
         match self.find_binding(bindings, name)? {
-            Some(binding) => self.arena.set(binding, Value::Cons { car: name, cdr: val }),
+            Some(binding) => self.arena.set(
+                binding,
+                Value::Cons {
+                    car: name,
+                    cdr: val,
+                },
+            ),
             None => Err(ArenaError::UnboundVariable),
         }
     }
@@ -749,6 +867,15 @@ impl<const N: usize> Lisp<N> {
     /// last one is returned.  The global environment persists across calls
     /// so that bindings made by `define!` survive.
     ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] on failure. Common variants include:
+    /// - [`ParseError`](ArenaError::ParseError) — malformed S-expression.
+    /// - [`UnboundVariable`](ArenaError::UnboundVariable) — undefined symbol.
+    /// - [`TypeError`](ArenaError::TypeError) — wrong type for an operation.
+    /// - [`OutOfMemory`](ArenaError::OutOfMemory) — arena exhausted even after GC.
+    /// - [`ArithmeticOverflow`](ArenaError::ArithmeticOverflow) — integer overflow.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -766,6 +893,22 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Use with [`write_value`](Self::write_value) to properly display the
     /// result, including walking symbol names, string contents, and lists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] on parse or evaluation failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let idx = lisp.eval_to_index("(+ 10 20)").unwrap();
+    /// let mut buf = String::new();
+    /// lisp.write_value(idx, &mut buf).unwrap();
+    /// assert_eq!(buf, "30");
+    /// ```
     pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut src = SliceSource::new(input);
 
@@ -780,6 +923,17 @@ impl<const N: usize> Lisp<N> {
     // — Arena introspection —
 
     /// Return arena allocation statistics.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let stats = lisp.stats();
+    /// assert_eq!(stats.capacity, 20000);
+    /// assert!(stats.allocated > 0); // singletons + builtins
+    /// ```
     pub fn stats(&self) -> ArenaStats {
         self.arena.stats()
     }
@@ -802,6 +956,17 @@ impl<const N: usize> Lisp<N> {
     /// Run mark-and-sweep garbage collection with the given roots.
     ///
     /// Pass `&[]` to collect all unreachable objects.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// lisp.eval("(define! x 42)").unwrap();
+    /// let stats = lisp.collect_garbage(&[]);
+    /// assert!(stats.marked > 0);
+    /// ```
     pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
         self.collect_with_roots(roots)
     }
@@ -809,10 +974,8 @@ impl<const N: usize> Lisp<N> {
     /// Collect garbage, always protecting the macro-generated singleton
     /// root set plus any caller-supplied `extra_roots`.
     pub(crate) fn collect_with_roots(&self, extra_roots: &[ArenaIndex]) -> GcStats {
-        self.arena.collect_garbage_multi(&[
-            ArenaIndex::ROOTS,
-            extra_roots,
-        ])
+        self.arena
+            .collect_garbage_multi(&[ArenaIndex::ROOTS, extra_roots])
     }
 
     // — Value formatting —
@@ -822,7 +985,19 @@ impl<const N: usize> Lisp<N> {
     /// Unlike `Value::Display`, this method has arena access and can walk
     /// `CharPair` chains to display full symbol names and string contents,
     /// and `Cons` chains to display proper/improper lists.
-    pub fn write_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use grift::Lisp;
+    ///
+    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let idx = lisp.eval_to_index("(list 1 2 3)").unwrap();
+    /// let mut buf = String::new();
+    /// lisp.write_value(idx, &mut buf).unwrap();
+    /// assert_eq!(buf, "(1 2 3)");
+    /// ```
+    pub fn write_value(&self, idx: ArenaIndex, w: &mut (impl core::fmt::Write + ?Sized)) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }
 
@@ -830,14 +1005,23 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Same as [`write_value`](Self::write_value) except strings are printed
     /// without surrounding quotes or escape sequences.
-    pub fn display_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+    pub fn display_value(
+        &self,
+        idx: ArenaIndex,
+        w: &mut (impl core::fmt::Write + ?Sized),
+    ) -> core::fmt::Result {
         self.fmt_value(idx, w, true)
     }
 
     /// Unified value formatter. When `display` is true, strings are printed
     /// without quotes/escapes (like Scheme `display`); otherwise machine-
     /// readable (like Scheme `write`).
-    pub(crate) fn fmt_value(&self, idx: ArenaIndex, w: &mut impl core::fmt::Write, display: bool) -> core::fmt::Result {
+    pub(crate) fn fmt_value(
+        &self,
+        idx: ArenaIndex,
+        w: &mut (impl core::fmt::Write + ?Sized),
+        display: bool,
+    ) -> core::fmt::Result {
         match self.arena.get(idx) {
             Ok(Value::Nil) => w.write_str("()"),
             Ok(Value::Boolean(true)) => w.write_str("#t"),
@@ -867,14 +1051,14 @@ impl<const N: usize> Lisp<N> {
             }
             Ok(Value::Inert) => w.write_str("#inert"),
             Ok(Value::Ignore) => w.write_str("#ignore"),
-            Ok(Value::StdLib(s)) => write!(w, "<stdlib:{}>", s.name()),
+            Ok(Value::Prelude(s)) => write!(w, "<prelude:{}>", s.name()),
             Ok(val) => write!(w, "<{}>", val.type_name()),
             Err(_) => w.write_str("<error>"),
         }
     }
 
     /// Walk a CharPair chain, emitting each character via a closure.
-    fn walk_chars<W: core::fmt::Write>(
+    fn walk_chars<W: core::fmt::Write + ?Sized>(
         &self,
         mut idx: ArenaIndex,
         w: &mut W,
@@ -896,7 +1080,7 @@ impl<const N: usize> Lisp<N> {
     fn fmt_list_tail(
         &self,
         mut idx: ArenaIndex,
-        w: &mut impl core::fmt::Write,
+        w: &mut (impl core::fmt::Write + ?Sized),
         display: bool,
     ) -> core::fmt::Result {
         while !idx.is_nil() {
@@ -914,6 +1098,127 @@ impl<const N: usize> Lisp<N> {
             }
         }
         Ok(())
+    }
+}
+
+// ============================================================================
+// LispOps trait implementation — delegates to inherent methods to erase `N`
+// ============================================================================
+
+impl<const N: usize> LispOps for Lisp<N> {
+    #[inline]
+    fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
+        self.number(n)
+    }
+    #[inline]
+    fn boolean(&self, b: bool) -> ArenaIndex {
+        self.boolean(b)
+    }
+    #[inline]
+    fn nil(&self) -> ArenaIndex {
+        self.nil()
+    }
+    #[inline]
+    fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cons(car, cdr)
+    }
+    #[inline]
+    fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
+        self.char_val(c)
+    }
+    #[inline]
+    fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
+        self.alloc_string(s)
+    }
+    #[inline]
+    fn symbol(&self, name: &str) -> ArenaResult<ArenaIndex> {
+        self.symbol(name)
+    }
+    #[inline]
+    fn get(&self, idx: ArenaIndex) -> ArenaResult<Value> {
+        self.get(idx)
+    }
+    #[inline]
+    fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.car_char(idx)
+    }
+    #[inline]
+    fn cdr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cdr_char(idx)
+    }
+    #[inline]
+    fn cadr_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.cadr_char(idx)
+    }
+    #[inline]
+    fn lambda(
+        &self,
+        params: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.lambda(params, body, env)
+    }
+    #[inline]
+    fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.wrap(combiner)
+    }
+    #[inline]
+    fn unwrap_applicative(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        self.unwrap_applicative(idx)
+    }
+    #[inline]
+    fn vau(
+        &self,
+        params: ArenaIndex,
+        env_param: ArenaIndex,
+        body: ArenaIndex,
+        env: ArenaIndex,
+    ) -> ArenaResult<ArenaIndex> {
+        self.vau(params, env_param, body, env)
+    }
+    #[inline]
+    fn vau_parts(
+        &self,
+        idx: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)> {
+        self.vau_parts(idx)
+    }
+    #[inline]
+    fn eval(&self, input: &str) -> Result<Value, ArenaError> {
+        self.eval(input)
+    }
+    #[inline]
+    fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index(input)
+    }
+    #[inline]
+    fn stats(&self) -> ArenaStats {
+        self.stats()
+    }
+    #[inline]
+    fn baseline_allocated(&self) -> usize {
+        self.baseline_allocated()
+    }
+    #[inline]
+    fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
+        self.collect_garbage(roots)
+    }
+    #[inline]
+    fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, false)
+    }
+    #[inline]
+    fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        self.fmt_value(idx, w, true)
+    }
+    #[inline]
+    fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
+        self.register_native(name, f)
+    }
+    #[inline]
+    fn define_global(&self, sym: ArenaIndex, value: ArenaIndex) -> ArenaResult<()> {
+        self.define_global(sym, value)
     }
 }
 

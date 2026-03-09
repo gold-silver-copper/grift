@@ -9,15 +9,11 @@ is the way it is.
 ## Crate Structure
 
 ```
-grift_arena     Fixed-size arena allocator with free-list, mark-and-sweep GC
-grift_unicode   Unicode character operations (case mapping, folding, properties)
-grift           Parser, evaluator, value types, Lisp API — depends on grift_arena
+grift           Parser, evaluator, value types, arena allocator, Lisp API
 ```
 
-`grift_arena` is a general-purpose arena with no knowledge of Lisp. `grift`
-stores `Value` enums in the arena and implements the language on top of it. The
-`grift_unicode` crate is currently a standalone utility not yet wired into the
-interpreter.
+The arena allocator (`arena` module) is a general-purpose arena with no knowledge of Lisp. The rest of `grift`
+stores `Value` enums in the arena and implements the language on top of it.
 
 ## Arena Allocator
 

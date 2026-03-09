@@ -122,34 +122,22 @@ must evaluate to a boolean.
 
 ```
 (define! definiend expression)
-(define! (fn name params...) body...)
 ```
 
-**Simple binding:** Evaluate `expression` in the current environment, then match
-`definiend` (a formal parameter tree) against the result, binding symbols in the
-current environment. Returns `#inert`. Mutating the ground environment is
-forbidden. If a binding for the symbol already exists in the current frame, the
-value is overwritten in place rather than creating a duplicate.
+Evaluate `expression` in the current environment, then match `definiend`
+(a formal parameter tree) against the result, binding symbols in the current
+environment. Returns `#inert`. Mutating the ground environment is forbidden.
+If a binding for the symbol already exists in the current frame, `define!`
+signals an error — use `set!` to update existing bindings.
 
-**Function shorthand:** When `definiend` is a pair whose car is the syntactic
-keyword `fn`, it is treated as function definition sugar.
-`(define! (fn name params...) body...)` desugars to
-`(define! name (lambda (params...) body...))`.  The `fn` marker is purely
-structural — it is never evaluated, never looked up, and never interned as a
-regular symbol.
-
-**Ptree destructuring:** When `definiend` is a pair whose car is NOT `fn`,
-standard parameter tree matching applies.  This includes pairs beginning with
-symbols, `#ignore`, nested pairs, or nil.
+**Ptree destructuring:** When `definiend` is a pair, standard parameter tree
+matching applies.  This includes pairs beginning with symbols, `#ignore`,
+nested pairs, or nil.
 
 ```lisp
 (define! x 42)                           ; simple binding
-(define! x 99)                           ; overwrites x (same frame)
-(define! (fn double n) (+ n n))          ; function shorthand (fn marker)
-(double 5)                               ; → 10
-(define! (fn first . args) (car args))   ; variadic function shorthand
-(first 1 2 3)                            ; → 1
-(define! (a b) (list 1 2))               ; ptree destructuring (no fn)
+(define! x 99)                           ; ERROR: x already defined (use set!)
+(define! (a b) (list 1 2))               ; ptree destructuring
 (define! ((a b) c) (list (list 1 2) 3))  ; nested ptree destructuring
 ```
 
@@ -306,7 +294,7 @@ This is equivalent to:
 
 ```lisp
 (let ()
-  (define! (fn name param ...) body...)
+  (fn! name (param ...) body...)
   (name init ...))
 ```
 
@@ -478,7 +466,7 @@ x                                     ; → 2
   (eq? outer inner))                   ; → #f
 
 ;; Mutable cells using current-environment and set!
-(define! (fn make-cell val)
+(fn! make-cell (val)
   (define! env (current-environment))
   (list
     (lambda () val)
