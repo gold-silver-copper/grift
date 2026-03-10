@@ -1,10 +1,11 @@
 //! S-expression parser.
 //!
 //! Defines the [`CharSource`] trait and a single generic parser that works
-//! with any character source: byte slices or CharPair chains.
+//! with Grift's two source models: external byte-oriented text and runtime
+//! `CharPair` chains.
 //!
 //! Two `CharSource` implementations cover all parsing needs:
-//! - [`SliceSource`] for `&str` / `&[u8]` input (file contents, `eval`)
+//! - [`SliceSource`] for byte-oriented external source (`eval`)
 //! - [`ChainSource`] for parsing existing `CharPair` chains (`raw-read-string`)
 //!
 //! The parser is recursive-descent with support for:
@@ -42,7 +43,11 @@ fn parse_error(src: &impl CharSource) -> ArenaError {
 
 // ── SliceSource ───────────────────────────────────────────────────
 
-/// Character source backed by a `&[u8]` byte slice (ASCII / UTF-8 source text).
+/// Parser source backed by a raw byte slice.
+///
+/// This reader is intentionally byte-oriented: each byte is exposed as one
+/// parser unit and cast directly to `char`. It does not decode UTF-8 into
+/// Unicode scalar values.
 pub(crate) struct SliceSource<'a> {
     input: &'a [u8],
     pos: usize,
@@ -51,12 +56,12 @@ pub(crate) struct SliceSource<'a> {
 }
 
 impl<'a> SliceSource<'a> {
-    /// Create a source over UTF-8 text stored in a Rust string slice.
+    /// Create a byte-oriented source over a Rust string slice.
     ///
     /// The reader starts at line 1, column 1 and advances one byte at a time.
-    /// This is sufficient for Grift's current parser, which treats source text
-    /// as byte-oriented input and only needs line/column reporting for
-    /// diagnostics.
+    /// This matches Grift's external reader semantics: line/column accounting
+    /// and tokenization are based on raw input bytes, not decoded Unicode
+    /// scalar values.
     pub fn new(input: &'a str) -> Self {
         SliceSource {
             input: input.as_bytes(),
@@ -68,7 +73,8 @@ impl<'a> SliceSource<'a> {
 }
 
 impl CharSource for SliceSource<'_> {
-    /// Read and consume the next source character, updating line and column.
+    /// Read and consume the next source byte as a parser unit, updating line
+    /// and column.
     fn read_char(&mut self) -> Option<char> {
         if self.pos < self.input.len() {
             let ch = self.input[self.pos] as char;
@@ -85,7 +91,7 @@ impl CharSource for SliceSource<'_> {
         }
     }
 
-    /// Peek at the next source character without advancing the cursor.
+    /// Peek at the next source byte as a parser unit without advancing.
     fn peek_char(&mut self) -> Option<char> {
         if self.pos < self.input.len() {
             Some(self.input[self.pos] as char)

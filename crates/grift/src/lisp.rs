@@ -1102,9 +1102,7 @@ impl<const N: usize> Lisp<N> {
         idx: ArenaIndex,
         w: &mut (impl core::fmt::Write + ?Sized),
     ) -> core::fmt::Result {
-        self.validate_value_for_format(idx)
-            .map_err(|_| core::fmt::Error)?;
-        self.fmt_value(idx, w, false)
+        self.checked_fmt_value(idx, w, false)
     }
 
     /// Human-readable output (like Scheme `display`).
@@ -1116,9 +1114,21 @@ impl<const N: usize> Lisp<N> {
         idx: ArenaIndex,
         w: &mut (impl core::fmt::Write + ?Sized),
     ) -> core::fmt::Result {
+        self.checked_fmt_value(idx, w, true)
+    }
+
+    /// Validate a value and then format it using either write or display
+    /// semantics. This is the single checked formatting entry point used by
+    /// both the inherent API and the erased `LispOps` trait API.
+    fn checked_fmt_value(
+        &self,
+        idx: ArenaIndex,
+        w: &mut (impl core::fmt::Write + ?Sized),
+        display: bool,
+    ) -> core::fmt::Result {
         self.validate_value_for_format(idx)
             .map_err(|_| core::fmt::Error)?;
-        self.fmt_value(idx, w, true)
+        self.fmt_value(idx, w, display)
     }
 
     /// Unified value formatter. When `display` is true, strings are printed
@@ -1336,12 +1346,12 @@ impl<const N: usize> LispOps for Lisp<N> {
     #[inline]
     /// Format a value using write-style semantics.
     fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        self.fmt_value(idx, w, false)
+        self.checked_fmt_value(idx, w, false)
     }
     #[inline]
     /// Format a value using display-style semantics.
     fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        self.fmt_value(idx, w, true)
+        self.checked_fmt_value(idx, w, true)
     }
     #[inline]
     /// Delegate to [`Lisp::register_native`].
@@ -1457,6 +1467,21 @@ mod tests {
         let mut buf = String::new();
         assert!(lisp.write_value(bad, &mut buf).is_err());
         assert!(lisp.display_value(bad, &mut buf).is_err());
+    }
+
+    #[test]
+    fn malformed_string_lispops_write_and_display_error() {
+        let lisp: Lisp<20000> = Lisp::new();
+        let ops: &dyn crate::native::LispOps = &lisp;
+        let tail = lisp.number(42).unwrap();
+        let bad = lisp
+            .arena
+            .alloc(Value::CharPair { ch: 'a', cdr: tail })
+            .unwrap();
+
+        let mut buf = String::new();
+        assert!(ops.write_value(bad, &mut buf).is_err());
+        assert!(ops.display_value(bad, &mut buf).is_err());
     }
 
     #[test]

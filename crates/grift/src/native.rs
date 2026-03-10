@@ -116,9 +116,15 @@ pub trait LispOps {
     fn baseline_allocated(&self) -> usize;
     /// Run mark-and-sweep garbage collection with the given roots.
     fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats;
-    /// Write a human-readable representation of the value at `idx`.
+    /// Write a machine-readable representation of the value at `idx`.
+    ///
+    /// This matches [`crate::Lisp::write_value`], including validation of
+    /// reachable symbol and string structure before formatting.
     fn write_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result;
     /// Human-readable output (like Scheme `display`).
+    ///
+    /// This matches [`crate::Lisp::display_value`], including validation of
+    /// reachable symbol and string structure before formatting.
     fn display_value(&self, idx: ArenaIndex, w: &mut dyn core::fmt::Write) -> core::fmt::Result;
     /// Register a native Rust function as a Lisp applicative.
     fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()>;
