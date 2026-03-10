@@ -228,8 +228,11 @@ pub enum ArenaError {
     /// Index refers to a slot that has been freed or was never allocated.
     IndexNotAllocated,
 
-    /// An argument to an arena operation was invalid (e.g., zero-length contiguous allocation).
+    /// An argument to an arena operation was invalid.
     InvalidArgument,
+
+    /// A form or builtin received the wrong number of operands.
+    ArityError,
 
     /// An error occurred during garbage collection tracing.
     /// This can happen if the mark stack overflows or roots are invalid.
@@ -280,6 +283,7 @@ impl ArenaError {
             ArenaError::IndexOutOfBounds => "Index out of bounds",
             ArenaError::IndexNotAllocated => "Index not allocated",
             ArenaError::InvalidArgument => "Invalid argument",
+            ArenaError::ArityError => "Arity error",
             ArenaError::TraceError => "Error during GC tracing",
             ArenaError::Cyclic => "Cycle detected in evaluation",
             ArenaError::TypeError => "Type error",

@@ -801,12 +801,9 @@ Behavior:
 Details:
 
 - zero body expressions are allowed; such a function returns `NIL`
+- `name` must be a symbol
 - `params` are validated through `lambda`
 - redefinition in the same frame raises `AlreadyDefined`
-
-Quirk:
-
-- `name` is not explicitly validated to be a symbol
 
 ### 8.5 `set!`
 
@@ -1024,7 +1021,7 @@ Behavior:
 
 Behavior:
 
-- zero arguments => `InvalidArgument`
+- zero arguments => `ArityError`
 - one argument => arithmetic negation
 - multiple arguments => left-fold subtraction
 - all used arguments must be numbers
@@ -1312,8 +1309,7 @@ Syntax:
 Behavior:
 
 - create a fresh parentless environment
-- current implementation ignores all supplied operands instead of rejecting
-  them
+- reject any supplied operands with `ArityError`
 
 ### 9.10 `gc-collect`
 
@@ -1386,15 +1382,10 @@ Syntax:
 Behavior:
 
 - if the first argument is `NIL`, return `NIL`
+- otherwise require the first argument to be a runtime string chain
 - otherwise parse exactly one complete expression from the runtime string chain
 - if the runtime string is empty, return `NIL`
 - if trailing unread input remains, raise `ParseError`
-
-Current quirk:
-
-- the argument is not type-checked as a string
-- a non-`NIL` non-`CharPair` argument behaves like empty input and returns
-  `NIL`
 
 #### `raw-display-to-string`
 
@@ -1521,6 +1512,7 @@ There are currently no additional prelude constants defined in
 The implementation exposes at least these relevant language-visible errors:
 
 - `ParseError`
+- `ArityError`
 - `InvalidArgument`
 - `TypeError`
 - `UnboundVariable`
@@ -1575,25 +1567,10 @@ External source parsing is byte-oriented, while `raw-read-string` parses
 character chains. Non-ASCII text is therefore not handled identically by the
 two entry points.
 
-### 13.5 `fn!` Does Not Enforce Symbol Names
-
-`fn!` validates parameter trees through `lambda`, but it does not explicitly
-require the function name to be a symbol before creating the binding.
-
-### 13.6 `make-empty-environment` Ignores Extra Arguments
-
-Despite its apparent zero-argument interface, the implementation currently
-ignores any supplied operands.
-
-### 13.7 `error` Ignores Its Message
+### 13.5 `error` Ignores Its Message
 
 `(error msg)` does not propagate `msg` into an error payload. It simply raises
 `InvalidArgument`.
-
-### 13.8 `raw-read-string` Does Not Type-Check Its Input
-
-Passing a non-string, non-`NIL` value to `raw-read-string` behaves like empty
-input and returns `NIL`.
 
 ## 14. Reimplementation Checklist
 

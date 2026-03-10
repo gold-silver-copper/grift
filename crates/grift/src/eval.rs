@@ -408,9 +408,9 @@ impl<const N: usize> Lisp<N> {
                                 *expr = body;
                                 Ok(None)
                             }
-                            Value::Builtin(id) => Ok(Some(
-                                self.apply_builtin_value(id, evaled_args, *env)?,
-                            )),
+                            Value::Builtin(id) => {
+                                Ok(Some(self.apply_builtin_value(id, evaled_args, *env)?))
+                            }
                             Value::Applicative(_) => {
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
@@ -422,9 +422,7 @@ impl<const N: usize> Lisp<N> {
                                 *expr = body;
                                 Ok(None)
                             }
-                            Value::Native(f) => {
-                                Ok(Some(self.call_native(f, evaled_args)?))
-                            }
+                            Value::Native(f) => Ok(Some(self.call_native(f, evaled_args)?)),
                             _ => Err(ArenaError::NotCallable),
                         }
                     }
@@ -664,6 +662,9 @@ impl<const N: usize> Lisp<N> {
             debug_assert!(*env != ArenaIndex::GROUND_ENV, "fn! in ground env");
 
             let name = self.car(args)?;
+            if !matches!(self.get(name)?, Value::Symbol(_)) {
+                return Err(ArenaError::TypeError);
+            }
             let rest = self.cdr(args)?;
             let params = self.car(rest)?;
             let body_list = self.cdr(rest)?;
@@ -695,10 +696,7 @@ impl<const N: usize> Lisp<N> {
                 return Err(ArenaError::TypeError);
             }
 
-            debug_assert!(
-                target_env != ArenaIndex::GROUND_ENV,
-                "define! in ground env"
-            );
+            debug_assert!(target_env != ArenaIndex::GROUND_ENV, "set! in ground env");
 
             let val = self.eval_expr(val_expr, *env)?;
             // set! only supports a single symbol formal.
@@ -973,7 +971,7 @@ impl<const N: usize> Lisp<N> {
     /// `(- a b ...)` — subtraction. With one arg, negates.
     fn builtin_sub(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         if args.is_nil() {
-            return Err(ArenaError::InvalidArgument);
+            return Err(ArenaError::ArityError);
         }
         let first = self.get(self.car(args)?)?.as_number()?;
         let rest = self.cdr(args)?;
@@ -1034,8 +1032,7 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Returns `#t` iff the two objects are effectively the same object.
     /// Identity is index-based first; if the indices differ, the helper falls
-    /// back to `Value::is_immutable()` to decide whether direct value
-    /// comparison is permitted.
+    /// back to content/value comparison for strings and immutable kinds.
     fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.car(args)?;
         let b = self.cadr(args)?;
@@ -1059,9 +1056,12 @@ impl<const N: usize> Lisp<N> {
             return Ok(true);
         }
         let (va, vb) = (self.get(a)?, self.get(b)?);
+        if matches!((va, vb), (Value::CharPair { .. }, Value::CharPair { .. })) {
+            return self.strings_equal(a, b);
+        }
         // Immutable encapsulated types: eq? is value-based.
         // Mutable/constructed types (pairs, environments, operatives,
-        // applicatives, strings): eq? is arena identity only (checked above).
+        // applicatives): eq? is arena identity only (checked above).
         Ok(va.is_immutable() && va == vb)
     }
 
@@ -1141,7 +1141,10 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// `(make-empty-environment)` — always creates a parentless environment.
-    fn builtin_make_empty_env(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    fn builtin_make_empty_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        if !args.is_nil() {
+            return Err(ArenaError::ArityError);
+        }
         self.make_env(ArenaIndex::NIL)
     }
 
@@ -1171,6 +1174,9 @@ impl<const N: usize> Lisp<N> {
         let str_idx = self.car(args)?;
         if str_idx.is_nil() {
             return Ok(ArenaIndex::NIL);
+        }
+        if !matches!(self.get(str_idx)?, Value::CharPair { .. }) {
+            return Err(ArenaError::TypeError);
         }
         let mut src = crate::parse::ChainSource::new(&self.arena, str_idx);
         Ok(self

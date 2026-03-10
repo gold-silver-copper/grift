@@ -36,6 +36,12 @@ fn test_subtraction_unary() {
 }
 
 #[test]
+fn test_subtraction_zero_args_is_arity_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(-)"), Err(ArenaError::ArityError));
+}
+
+#[test]
 fn test_multiplication() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(* 3 4)"), Ok(Value::Number(12)));
@@ -1849,11 +1855,17 @@ fn test_vau_formals_must_be_valid_ptree() {
 
     // Invalid: number in formals
     let lisp6: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp6.eval("(vau (42) #ignore 1)"), Err(ArenaError::TypeError));
+    assert_eq!(
+        lisp6.eval("(vau (42) #ignore 1)"),
+        Err(ArenaError::TypeError)
+    );
 
     // Invalid: boolean in formals
     let lisp7: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp7.eval("(vau (#t) #ignore 1)"), Err(ArenaError::TypeError));
+    assert_eq!(
+        lisp7.eval("(vau (#t) #ignore 1)"),
+        Err(ArenaError::TypeError)
+    );
 }
 
 #[test]
@@ -1956,6 +1968,19 @@ fn test_eq_numbers() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(eq? 42 42)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(eq? 1 2)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_eq_strings_are_value_based() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(eq? "hello" "hello")"#),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        lisp.eval(r#"(eq? "hello" "world")"#),
+        Ok(Value::Boolean(false))
+    );
 }
 
 #[test]
@@ -2982,7 +3007,10 @@ fn test_string_traversal() {
     let lisp: Lisp<20000> = Lisp::new();
     // cdr of a single-char string should be NIL
     assert_eq!(lisp.eval(r#"(null? (cdr "x"))"#), Ok(Value::Boolean(true)));
-    assert_eq!(lisp.eval(r#"(equal? (cdr "x") ())"#), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.eval(r#"(equal? (cdr "x") ())"#),
+        Ok(Value::Boolean(true))
+    );
 }
 
 #[test]
@@ -3834,7 +3862,10 @@ fn test_apply_builtin_operative_quote() {
 #[test]
 fn test_apply_builtin_operative_and_preserves_short_circuit() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(apply and '(#f missing))"), Ok(Value::Boolean(false)));
+    assert_eq!(
+        lisp.eval("(apply and '(#f missing))"),
+        Ok(Value::Boolean(false))
+    );
 }
 
 #[test]
@@ -3882,7 +3913,10 @@ fn test_wrap_builtin_operative_is_callable() {
 #[test]
 fn test_apply_wrapped_builtin_operative() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("(apply (wrap if) (list #t 1 2))"), Ok(Value::Number(1)));
+    assert_eq!(
+        lisp.eval("(apply (wrap if) (list #t 1 2))"),
+        Ok(Value::Number(1))
+    );
 }
 
 #[test]
@@ -3903,7 +3937,10 @@ fn test_wrap_builtin_operative_current_environment_is_callable() {
 #[test]
 fn test_wrap_builtin_operative_forces_eager_evaluation() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval("((wrap and) #f missing)"), Err(ArenaError::UnboundVariable));
+    assert_eq!(
+        lisp.eval("((wrap and) #f missing)"),
+        Err(ArenaError::UnboundVariable)
+    );
 }
 
 #[test]
@@ -4079,6 +4116,15 @@ fn test_raw_read_string_rejects_bare_quote() {
     assert_eq!(err, ArenaError::ParseError { line: 0, col: 0 });
 }
 
+#[test]
+fn test_raw_read_string_requires_string_input() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(r#"(raw-read-string 42)"#),
+        Err(ArenaError::TypeError)
+    );
+}
+
 // ============================================================================
 // String escape sequence tests (Issue 1)
 // ============================================================================
@@ -4237,7 +4283,10 @@ fn test_prelude_entries_exist() {
         "PRELUDE_ALL should not be empty"
     );
     // Check a known function
-    let names: Vec<&str> = grift::prelude::PRELUDE_ALL.iter().map(|e| e.name()).collect();
+    let names: Vec<&str> = grift::prelude::PRELUDE_ALL
+        .iter()
+        .map(|e| e.name())
+        .collect();
     assert!(names.contains(&"map"), "map should be in PRELUDE_ALL");
     assert!(names.contains(&"filter"), "filter should be in PRELUDE_ALL");
     assert!(names.contains(&"length"), "length should be in PRELUDE_ALL");
@@ -4300,14 +4349,11 @@ fn test_parse_error_display() {
 // Native Function Registration Tests
 // ============================================================================
 
-use grift::{ArenaIndex, ArenaResult, register_native, LispOps};
+use grift::{ArenaIndex, ArenaResult, LispOps, register_native};
 
 // — Manual native function (no macro) —
 
-fn native_double(
-    lisp: &dyn LispOps,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
+fn native_double(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
     lisp.number(n * 2)
 }
@@ -4353,7 +4399,8 @@ register_native!(native_is_positive, (n: isize) -> bool, { n > 0 });
 #[test]
 fn test_register_native_returns_bool() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("positive?", native_is_positive).unwrap();
+    lisp.register_native("positive?", native_is_positive)
+        .unwrap();
     assert_eq!(lisp.eval("(positive? 5)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(positive? -3)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(positive? 0)"), Ok(Value::Boolean(false)));
@@ -4398,7 +4445,10 @@ fn test_register_native_with_lisp_identity() {
 fn test_native_composed_with_builtins() {
     let lisp: Lisp<20000> = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
-    assert_eq!(lisp.eval("(+ (double 3) (double 4))"), Ok(Value::Number(14)));
+    assert_eq!(
+        lisp.eval("(+ (double 3) (double 4))"),
+        Ok(Value::Number(14))
+    );
 }
 
 #[test]
@@ -4443,7 +4493,10 @@ fn test_multiple_natives_registered() {
     lisp.register_native("double", native_double).unwrap();
     lisp.register_native("negate", native_negate).unwrap();
     lisp.register_native("add3", native_add3).unwrap();
-    assert_eq!(lisp.eval("(add3 (double 1) (negate 2) 3)"), Ok(Value::Number(3)));
+    assert_eq!(
+        lisp.eval("(add3 (double 1) (negate 2) 3)"),
+        Ok(Value::Number(3))
+    );
 }
 
 // — Bit manipulation examples from the problem statement —
@@ -4469,15 +4522,16 @@ register_native!(native_bit_extract, (value: isize, start: isize, width: isize) 
 fn test_native_bit_set() {
     let lisp: Lisp<20000> = Lisp::new();
     lisp.register_native("bit-set?", native_bit_set).unwrap();
-    assert_eq!(lisp.eval("(bit-set? 5 0)"), Ok(Value::Boolean(true)));  // 5 = 101, bit 0 set
+    assert_eq!(lisp.eval("(bit-set? 5 0)"), Ok(Value::Boolean(true))); // 5 = 101, bit 0 set
     assert_eq!(lisp.eval("(bit-set? 5 1)"), Ok(Value::Boolean(false))); // bit 1 not set
-    assert_eq!(lisp.eval("(bit-set? 5 2)"), Ok(Value::Boolean(true)));  // bit 2 set
+    assert_eq!(lisp.eval("(bit-set? 5 2)"), Ok(Value::Boolean(true))); // bit 2 set
 }
 
 #[test]
 fn test_native_bit_extract() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("bit-extract", native_bit_extract).unwrap();
+    lisp.register_native("bit-extract", native_bit_extract)
+        .unwrap();
     // Extract bits 0-3 from 0xFF (255): should get 0xF (15)
     assert_eq!(lisp.eval("(bit-extract 255 0 4)"), Ok(Value::Number(15)));
     // Extract bits 4-7 from 0xFF: should get 0xF (15)
@@ -4491,7 +4545,8 @@ register_native!(native_const_zero, () -> isize, { 0 });
 #[test]
 fn test_native_survives_gc() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("native-zero", native_const_zero).unwrap();
+    lisp.register_native("native-zero", native_const_zero)
+        .unwrap();
     // Force GC, then call native
     lisp.eval("(gc-collect)").unwrap();
     assert_eq!(lisp.eval("(native-zero)"), Ok(Value::Number(0)));
@@ -4569,7 +4624,8 @@ register_native!(native_first_char, (c: char) -> char, { c });
 #[test]
 fn test_from_lisp_char() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("first-char", native_first_char).unwrap();
+    lisp.register_native("first-char", native_first_char)
+        .unwrap();
     // (car "hello") returns "h" (a single-char string), which FromLisp<char> can extract
     let idx = lisp.eval_to_index("(first-char (car \"hello\"))").unwrap();
     let mut buf = String::new();
@@ -4580,7 +4636,8 @@ fn test_from_lisp_char() {
 #[test]
 fn test_from_lisp_char_type_error_on_number() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("first-char", native_first_char).unwrap();
+    lisp.register_native("first-char", native_first_char)
+        .unwrap();
     // Passing a number to a char-expecting function should error
     assert_eq!(lisp.eval("(first-char 42)"), Err(ArenaError::TypeError));
 }
@@ -4588,7 +4645,8 @@ fn test_from_lisp_char_type_error_on_number() {
 #[test]
 fn test_from_lisp_char_type_error_on_multi_char() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("first-char", native_first_char).unwrap();
+    lisp.register_native("first-char", native_first_char)
+        .unwrap();
     // A multi-char string should not be extractable as a single char
     assert_eq!(lisp.eval("(first-char \"ab\")"), Err(ArenaError::TypeError));
 }
@@ -4609,10 +4667,7 @@ fn test_to_lisp_char() {
 
 // — Native function creating strings via LispOps —
 
-fn native_make_greeting(
-    lisp: &dyn LispOps,
-    _args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
+fn native_make_greeting(lisp: &dyn LispOps, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     lisp.alloc_string("hello world")
 }
 
@@ -4628,10 +4683,7 @@ fn test_native_creates_string() {
 
 // — Native function using define_global —
 
-fn native_define_answer(
-    lisp: &dyn LispOps,
-    _args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
+fn native_define_answer(lisp: &dyn LispOps, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let sym = lisp.symbol("the-answer")?;
     let val = lisp.number(42)?;
     lisp.define_global(sym, val)?;
@@ -4641,17 +4693,15 @@ fn native_define_answer(
 #[test]
 fn test_native_define_global() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("define-answer!", native_define_answer).unwrap();
+    lisp.register_native("define-answer!", native_define_answer)
+        .unwrap();
     lisp.eval("(define-answer!)").unwrap();
     assert_eq!(lisp.eval("the-answer"), Ok(Value::Number(42)));
 }
 
 // — Native function using boolean/nil convenience methods —
 
-fn native_check_positive(
-    lisp: &dyn LispOps,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
+fn native_check_positive(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
     Ok(lisp.boolean(n > 0))
 }
@@ -4664,18 +4714,20 @@ fn test_native_boolean_method() {
     assert_eq!(lisp.eval("(pos? -1)"), Ok(Value::Boolean(false)));
 }
 
-fn native_nil_if_zero(
-    lisp: &dyn LispOps,
-    args: ArenaIndex,
-) -> ArenaResult<ArenaIndex> {
+fn native_nil_if_zero(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     let (n, _): (isize, _) = grift::extract_arg(lisp, args)?;
-    if n == 0 { Ok(lisp.nil()) } else { lisp.number(n) }
+    if n == 0 {
+        Ok(lisp.nil())
+    } else {
+        lisp.number(n)
+    }
 }
 
 #[test]
 fn test_native_nil_method() {
     let lisp: Lisp<20000> = Lisp::new();
-    lisp.register_native("nil-if-zero", native_nil_if_zero).unwrap();
+    lisp.register_native("nil-if-zero", native_nil_if_zero)
+        .unwrap();
     assert_eq!(lisp.eval("(nil-if-zero 0)"), Ok(Value::Nil));
     assert_eq!(lisp.eval("(nil-if-zero 5)"), Ok(Value::Number(5)));
 }
@@ -4933,6 +4985,21 @@ fn test_fn_bang_rejects_invalid_formals_eagerly() {
     assert_eq!(
         lisp.eval("(fn! bad (x x) x)"),
         Err(ArenaError::InvalidArgument)
+    );
+}
+
+#[test]
+fn test_fn_bang_requires_symbol_name() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(fn! "bad" () 1)"#), Err(ArenaError::TypeError));
+}
+
+#[test]
+fn test_make_empty_environment_rejects_extra_operands() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(make-empty-environment 1)"),
+        Err(ArenaError::ArityError)
     );
 }
 

@@ -103,9 +103,7 @@ impl<const N: usize> Lisp<N> {
             "GROUND_ENV must be slot 5"
         );
 
-        let lisp = Lisp {
-            arena,
-        };
+        let lisp = Lisp { arena };
 
         // Global env is a child of the ground env.
         let parents = lisp
@@ -222,11 +220,7 @@ impl<const N: usize> Lisp<N> {
     }
 
     /// Call a native function pointer.
-    pub(crate) fn call_native(
-        &self,
-        f: NativeFn,
-        args: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    pub(crate) fn call_native(&self, f: NativeFn, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         f(self, args)
     }
 
@@ -1078,7 +1072,11 @@ impl<const N: usize> Lisp<N> {
     /// lisp.write_value(idx, &mut buf).unwrap();
     /// assert_eq!(buf, "(1 2 3)");
     /// ```
-    pub fn write_value(&self, idx: ArenaIndex, w: &mut (impl core::fmt::Write + ?Sized)) -> core::fmt::Result {
+    pub fn write_value(
+        &self,
+        idx: ArenaIndex,
+        w: &mut (impl core::fmt::Write + ?Sized),
+    ) -> core::fmt::Result {
         self.fmt_value(idx, w, false)
     }
 

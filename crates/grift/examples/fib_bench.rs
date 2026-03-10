@@ -68,9 +68,7 @@ fn bench<const N: usize>(
         }
     }
 
-    if !ok
-        && let Some(expected) = expected.as_ref()
-    {
+    if !ok && let Some(expected) = expected.as_ref() {
         eprintln!("  MISMATCH in {name}: got {output}, expected {expected:?}");
     }
 
