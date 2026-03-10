@@ -114,6 +114,8 @@ That design drives a few visible behaviors:
 - `(cdr "x")` returns `()`
 - write-mode canonicalizes the shared empty string / empty list value as `()`
 - display-mode also renders the shared empty value as `()`
+- `cons` does not validate the tail when constructing a `CharPair`, so malformed
+  string-like values are possible
 
 ### Symbols
 
@@ -141,7 +143,7 @@ An environment is:
 
 ```rust
 Value::Environment {
-    bindings: ArenaIndex, // alist of (symbol . value) pairs
+    bindings: ArenaIndex, // alist of (key . value) pairs, normally symbols
     parents: ArenaIndex,  // list of parent environments
 }
 ```
@@ -152,6 +154,8 @@ Key properties:
 - `GLOBAL_ENV` is a child of `GROUND_ENV`
 - prelude bindings and user globals live in `GLOBAL_ENV`
 - child environments do not copy parent bindings; they just reference parents
+- closures capture environment object identity rather than a snapshot of
+  bindings
 - `make-environment` can create multi-parent environments
 - `make-empty-environment` creates a parentless environment
 
@@ -165,8 +169,8 @@ Lookup behavior in `env_lookup`:
 
 Mutation behavior:
 
-- `env_define` prepends a new `(symbol . value)` binding into the current frame
-  and errors with `AlreadyDefined` if that frame already binds the symbol
+- `env_define` prepends a new `(key . value)` binding into the current frame
+  and errors with `AlreadyDefined` if that frame already binds the same key
 - `env_set` mutates an existing binding in the target frame only and errors with
   `UnboundVariable` if the symbol is only present in a parent
 

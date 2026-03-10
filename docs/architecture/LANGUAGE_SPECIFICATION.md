@@ -69,6 +69,46 @@ The empty top-level program evaluates to `#inert`.
 
 This is different from `raw-read-string`, which returns `()` for empty input.
 
+### 2.4 Surface Syntax vs Runtime-Only Values
+
+Not every runtime value kind has direct reader syntax.
+
+Source text can directly construct only:
+
+- nil
+- booleans
+- numbers
+- symbols
+- pairs/lists
+- strings
+- `#inert`
+- `#ignore`
+
+The following runtime categories have no literal syntax and can only become
+observable through evaluation, builtin bindings, host-native registration, or
+other runtime operations:
+
+- environments
+- builtin operative cores
+- compound operatives
+- applicatives
+- prelude entries
+- native host functions
+
+### 2.5 Environment Identity Capture
+
+Closures and other environment-capturing runtime objects retain the identity of
+an environment object, not an immutable snapshot of its bindings.
+
+Observable consequences:
+
+- a closure can observe later `define!` or `set!` mutations performed on the
+  captured environment
+- `(define! f (lambda ...))` supports recursion even though the lambda is
+  allocated before the binding is installed
+- sequential top-level function definitions can support mutual recursion because
+  they share the same mutable global environment object
+
 ## 3. Reader
 
 The reader is recursive-descent and has two entry points:
@@ -378,6 +418,8 @@ Important properties:
 - a one-character string is one `CharPair` node with `cdr = NIL`
 - strings are not `Cons` cells, even though some operations treat them as
   pair-like
+- the runtime does not enforce that every `CharPair` tail is either another
+  `CharPair` or `NIL`
 
 Observable consequences:
 
@@ -388,6 +430,17 @@ Observable consequences:
 - `(pair? "")` is false
 - strings format as `()` when empty, because empty string and nil are the same
   runtime value
+
+Malformed string-like values can therefore be constructed by `cons` or host
+code, for example by making a `CharPair` whose tail is a number or cons cell.
+Current implementation behavior for such values is uneven:
+
+- `pair?`, `car`, and `cdr` still treat the head node as string-like
+- formatting walks character nodes until the first non-`CharPair` tail and then
+  stops silently
+- `raw-read-string` treats the first non-`CharPair` tail as end of input
+- equality and other string-consuming helpers are only reliable on proper
+  `CharPair` chains
 
 ### 4.7 Callables
 
@@ -460,6 +513,21 @@ Defining a new binding prepends a new entry.
 
 This makes shadowing within one frame observable by definition order, although
 duplicate same-frame definitions are normally rejected.
+
+### 5.2.1 Binding Keys Are Not Uniformly Validated
+
+The runtime can store non-symbol binding keys.
+
+Relevant cases:
+
+- `define!` validates its definiend as a formal parameter tree, so any actual
+  bindings it creates are symbol bindings
+- `fn!` requires its function name to be a symbol
+- host-side APIs can also create environments containing non-symbol keys
+
+Ordinary source-level lookup still uses only symbol evaluation, so non-symbol
+keys are mostly an environment-representation quirk unless the host exposes
+them deliberately.
 
 ### 5.3 Lookup Algorithm
 
@@ -598,6 +666,20 @@ Invoking a compound operative created by `vau` performs:
 4. evaluate the body in the new environment
 
 This yields lexical scope plus an explicit hook into the caller environment.
+
+### 6.6.1 Closure Capture Is By Environment Identity
+
+The captured environment is the exact environment object present at combiner
+creation time.
+
+It is not copied.
+
+Consequences:
+
+- closures see later `set!` mutations to captured bindings
+- self-recursive `(define! f (lambda ...))` works because the closure captures
+  the current frame object and that frame is then mutated to add `f`
+- `fn!` and named `let` recursion work for the same reason
 
 ### 6.7 Tail Positions
 
@@ -775,6 +857,8 @@ Important points:
 - `(define! (f x) body)` destructures a value; it does not define a function
 - same-frame redefinition raises `AlreadyDefined`
 - extra operands are ignored
+- `(define! f (lambda ...))` can still define a recursive function because the
+  lambda captures the current environment object by identity
 
 Examples:
 
@@ -804,6 +888,9 @@ Details:
 - `name` must be a symbol
 - `params` are validated through `lambda`
 - redefinition in the same frame raises `AlreadyDefined`
+- recursion and mutual recursion work because the created lambda closes over the
+  current frame object, and `fn!` then mutates that same frame to install the
+  new binding
 
 ### 8.5 `set!`
 
@@ -933,9 +1020,12 @@ Regular form:
 Behavior:
 
 1. create a child environment of the current environment
-2. evaluate every `init` in the outer environment, not the child
-3. define each `name` in the child
-4. evaluate the body in the child
+2. require every binding to be exactly `(symbol init)`
+3. evaluate every `init` in the outer environment, not the child
+4. define each `name` in the child
+5. evaluate the body in the child
+
+Invalid regular-let bindings raise `TypeError`.
 
 This is simultaneous binding, not `let*`.
 
@@ -955,6 +1045,9 @@ Behavior:
 Important detail:
 
 - named-let init values are not re-evaluated during the helper invocation
+- the recursive helper works because it captures the newly created local
+  environment object by identity, then that environment is mutated to bind the
+  helper name
 
 Zero body expressions are allowed and yield `NIL`.
 
@@ -1249,6 +1342,8 @@ Important detail:
 - `expr` is already an evaluated argument because `eval` is applicative
 - to evaluate source-like syntax, callers normally quote or construct the
   expression object explicitly
+- if `env` is supplied, it must already be an environment
+- a non-environment explicit `env` raises `TypeError`
 
 ### 9.7 `wrap`
 
@@ -1360,6 +1455,7 @@ Crucial semantic detail:
 - applicatives receiving `arg-list` therefore treat it as an already evaluated
   argument list
 - operatives receiving `arg-list` treat it as a raw operand object
+- if `env` is supplied, it must already be an environment
 
 Consequences:
 
@@ -1500,6 +1596,8 @@ Their source definitions are:
 Implementation detail that is still language-visible:
 
 - each prelude function is stored as source and parsed on demand when invoked
+- each invocation reparses and reevaluates that source; the current
+  implementation does not memoize the resulting operative
 - invocation happens in `GLOBAL_ENV`
 - the parsed result is expected to evaluate to an applicative wrapping an
   operative
@@ -1572,6 +1670,27 @@ two entry points.
 `(error msg)` does not propagate `msg` into an error payload. It simply raises
 `InvalidArgument`.
 
+### 13.6 Closures Capture Environment Objects, Not Snapshots
+
+Captured environments are live mutable objects.
+
+That choice is what makes recursive `define!`, recursive `fn!`, named `let`,
+and mutation-visible closures work.
+
+### 13.7 `cons` Can Manufacture Malformed String-Like Values
+
+When `cons` sees a one-character first argument, it creates a `CharPair`
+without validating the second argument as a proper string tail.
+
+This means malformed string-like values exist in the current language model and
+are handled inconsistently by different consumers.
+
+### 13.8 Prelude Calls Reparse Source Every Time
+
+Prelude bindings wrap source text, not precompiled closures.
+
+Each call reparses and reevaluates the stored lambda source before invocation.
+
 ## 14. Reimplementation Checklist
 
 A C or other-language reimplementation should preserve at least these concrete
@@ -1590,8 +1709,14 @@ properties:
 9. Applicatives evaluate operands exactly once, left to right.
 10. `apply` receives an already constructed argument list and does not walk it
     to evaluate elements.
-11. Prelude functions `map`, `filter`, `length`, and `append` are present.
-12. Formatting of strings, especially the empty string, matches current write
+11. An explicit environment supplied to `eval` or `apply` must be an
+    environment.
+12. Regular `let` requires each binding to be exactly `(symbol init)`.
+13. Closures capture mutable environment objects by identity, not snapshots.
+14. `cons` can construct malformed string-like values when its first argument is
+    a one-character string.
+15. Prelude functions `map`, `filter`, `length`, and `append` are present.
+16. Formatting of strings, especially the empty string, matches current write
     and display behavior.
 
 If this file and the implementation disagree, the code and tests in

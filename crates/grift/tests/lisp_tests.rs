@@ -3547,6 +3547,24 @@ fn test_regular_let_still_works() {
     );
 }
 
+#[test]
+fn test_regular_let_rejects_non_symbol_binding_name() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(let ((42 1)) 42)"), Err(ArenaError::TypeError));
+}
+
+#[test]
+fn test_regular_let_rejects_extra_binding_elements() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(let ((x 1 2)) x)"), Err(ArenaError::TypeError));
+}
+
+#[test]
+fn test_regular_let_rejects_missing_init() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(let ((x)) x)"), Err(ArenaError::TypeError));
+}
+
 // ============================================================================
 // Feature 5: fn! Function Definition
 // ============================================================================
@@ -3830,6 +3848,12 @@ fn test_error_signals_error() {
 fn test_apply_basic() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(apply + (list 1 2 3))"), Ok(Value::Number(6)));
+}
+
+#[test]
+fn test_apply_rejects_non_environment_operand() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(apply + () 99)"), Err(ArenaError::TypeError));
 }
 
 #[test]
@@ -4816,6 +4840,12 @@ fn test_empty_environment_self_evaluating_values() {
         lisp.eval("(eval #t (make-empty-environment))"),
         Ok(Value::Boolean(true))
     );
+}
+
+#[test]
+fn test_eval_rejects_non_environment_operand() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(eval 42 99)"), Err(ArenaError::TypeError));
 }
 
 #[test]

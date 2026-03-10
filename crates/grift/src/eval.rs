@@ -867,8 +867,7 @@ impl<const N: usize> Lisp<N> {
                 let mut cur = bindings;
                 while !cur.is_nil() {
                     let binding = self.car(cur)?;
-                    let name = self.car(binding)?;
-                    let val_expr = self.cadr(binding)?;
+                    let (name, val_expr) = self.regular_let_binding_parts(binding)?;
                     let val = self.eval_expr(val_expr, *env)?;
                     self.env_define(local_env, name, val)?;
                     cur = self.cdr(cur)?;
@@ -943,6 +942,34 @@ impl<const N: usize> Lisp<N> {
             cur = self.cdr(cur)?;
         }
         self.reverse_chain(reversed)
+    }
+
+    /// Require that `idx` names an environment and return it unchanged.
+    #[inline]
+    fn require_environment(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        if matches!(self.get(idx)?, Value::Environment { .. }) {
+            Ok(idx)
+        } else {
+            Err(ArenaError::TypeError)
+        }
+    }
+
+    /// Parse one regular-let binding of the form `(symbol init)`.
+    #[inline]
+    fn regular_let_binding_parts(
+        &self,
+        binding: ArenaIndex,
+    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
+        let name = self.car(binding)?;
+        if !matches!(self.get(name)?, Value::Symbol(_)) {
+            return Err(ArenaError::TypeError);
+        }
+        let rest = self.cdr(binding)?;
+        let init = self.car(rest)?;
+        if !self.cdr(rest)?.is_nil() {
+            return Err(ArenaError::TypeError);
+        }
+        Ok((name, init))
     }
 
     // ================================================================
@@ -1097,7 +1124,7 @@ impl<const N: usize> Lisp<N> {
         let env_val = if rest.is_nil() {
             ArenaIndex::GLOBAL_ENV
         } else {
-            self.car(rest)?
+            self.require_environment(self.car(rest)?)?
         };
         self.eval_expr(expr_val, env_val)
     }
@@ -1220,7 +1247,7 @@ impl<const N: usize> Lisp<N> {
         let env = if rest2.is_nil() {
             ArenaIndex::GLOBAL_ENV
         } else {
-            self.car(rest2)?
+            self.require_environment(self.car(rest2)?)?
         };
         self.apply_combiner(combiner, arg_list, env)
     }
