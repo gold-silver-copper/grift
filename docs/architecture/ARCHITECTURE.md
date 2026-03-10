@@ -123,9 +123,10 @@ names share the same symbol index.
 
 ### Operatives, Applicatives, Prelude, Native
 
-Grift has four callable storage forms:
+Grift has five callable storage forms:
 
 - `Operative`: user-created `vau` closures
+- `Applicative`: explicit wrapper that evaluates operands before delegation
 - `Builtin`: primitive callable core identified by `BuiltinId`
 - `Prelude`: lazily parsed lambda source loaded from `prelude.grift`
 - `Native`: user-registered Rust function pointers
