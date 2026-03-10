@@ -394,6 +394,31 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
+    /// Validate that `head` is a well-formed string chain:
+    /// zero or more `CharPair` nodes terminated by `NIL`.
+    pub(crate) fn validate_char_chain(&self, mut head: ArenaIndex) -> ArenaResult<()> {
+        while !head.is_nil() {
+            let Value::CharPair { cdr, .. } = self.arena.get(head)? else {
+                return Err(ArenaError::TypeError);
+            };
+            head = cdr;
+        }
+        Ok(())
+    }
+
+    /// Validate that every string reachable from `idx` is well formed.
+    pub(crate) fn validate_value_for_format(&self, idx: ArenaIndex) -> ArenaResult<()> {
+        match self.arena.get(idx)? {
+            Value::Symbol(chars) => self.validate_char_chain(chars),
+            Value::CharPair { .. } => self.validate_char_chain(idx),
+            Value::Cons { car, cdr } => {
+                self.validate_value_for_format(car)?;
+                self.validate_value_for_format(cdr)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Returns true if the symbol at `idx` has the given name.
     pub(crate) fn symbol_name_eq(&self, idx: ArenaIndex, name: &str) -> bool {
         self.arena
@@ -1077,6 +1102,8 @@ impl<const N: usize> Lisp<N> {
         idx: ArenaIndex,
         w: &mut (impl core::fmt::Write + ?Sized),
     ) -> core::fmt::Result {
+        self.validate_value_for_format(idx)
+            .map_err(|_| core::fmt::Error)?;
         self.fmt_value(idx, w, false)
     }
 
@@ -1089,6 +1116,8 @@ impl<const N: usize> Lisp<N> {
         idx: ArenaIndex,
         w: &mut (impl core::fmt::Write + ?Sized),
     ) -> core::fmt::Result {
+        self.validate_value_for_format(idx)
+            .map_err(|_| core::fmt::Error)?;
         self.fmt_value(idx, w, true)
     }
 
@@ -1407,5 +1436,57 @@ impl<const N: usize> Trace<Value, N> for Value {
             Value::Symbol(s) => tracer(s),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    extern crate std;
+    use std::string::String;
+
+    #[test]
+    fn malformed_string_write_and_display_error() {
+        let lisp: Lisp<20000> = Lisp::new();
+        let tail = lisp.number(42).unwrap();
+        let bad = lisp
+            .arena
+            .alloc(Value::CharPair { ch: 'a', cdr: tail })
+            .unwrap();
+
+        let mut buf = String::new();
+        assert!(lisp.write_value(bad, &mut buf).is_err());
+        assert!(lisp.display_value(bad, &mut buf).is_err());
+    }
+
+    #[test]
+    fn malformed_string_raw_helpers_error() {
+        let lisp: Lisp<20000> = Lisp::new();
+        let tail = lisp.number(42).unwrap();
+        let bad = lisp
+            .arena
+            .alloc(Value::CharPair { ch: '1', cdr: tail })
+            .unwrap();
+        let sym = lisp.symbol("bad-string").unwrap();
+        lisp.define_global(sym, bad).unwrap();
+
+        assert_eq!(
+            lisp.eval("(raw-read-string bad-string)"),
+            Err(ArenaError::TypeError)
+        );
+        assert_eq!(
+            lisp.eval("(raw-write-to-string bad-string)"),
+            Err(ArenaError::TypeError)
+        );
+        assert_eq!(
+            lisp.eval("(raw-display-to-string bad-string)"),
+            Err(ArenaError::TypeError)
+        );
+    }
+
+    #[test]
+    fn raw_prelude_type_name_matches_predicates() {
+        let prelude = crate::prelude::PRELUDE_ALL[0];
+        assert_eq!(Value::Prelude(prelude).type_name(), "prelude");
     }
 }

@@ -985,6 +985,7 @@ impl<const N: usize> Lisp<N> {
         if let Value::CharPair { ch, cdr } = self.get(a)?
             && cdr.is_nil()
         {
+            self.validate_char_chain(b)?;
             return self.arena.alloc(Value::CharPair { ch, cdr: b });
         }
         self.cons(a, b)
@@ -1202,9 +1203,7 @@ impl<const N: usize> Lisp<N> {
         if str_idx.is_nil() {
             return Ok(ArenaIndex::NIL);
         }
-        if !matches!(self.get(str_idx)?, Value::CharPair { .. }) {
-            return Err(ArenaError::TypeError);
-        }
+        self.validate_char_chain(str_idx)?;
         let mut src = crate::parse::ChainSource::new(&self.arena, str_idx);
         Ok(self
             .parse_complete_expr(&mut src)?
@@ -1215,6 +1214,7 @@ impl<const N: usize> Lisp<N> {
     /// `raw-display-to-string` and `raw-write-to-string`.
     fn fmt_to_string(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
+        self.validate_value_for_format(val)?;
         let mut w = ArenaWriter::new(self);
         let _ = self.fmt_value(val, &mut w, display);
         w.finish()

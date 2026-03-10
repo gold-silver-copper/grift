@@ -214,6 +214,12 @@ fn test_cons_car_cdr() {
 }
 
 #[test]
+fn test_cons_rejects_non_string_tail_for_charpair_construction() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval(r#"(cons (car "a") 42)"#), Err(ArenaError::TypeError));
+}
+
+#[test]
 fn test_list() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(car (list 1 2 3))"), Ok(Value::Number(1)));
@@ -4315,6 +4321,12 @@ fn test_prelude_entries_exist() {
     assert!(names.contains(&"filter"), "filter should be in PRELUDE_ALL");
     assert!(names.contains(&"length"), "length should be in PRELUDE_ALL");
     assert!(names.contains(&"append"), "append should be in PRELUDE_ALL");
+}
+
+#[test]
+fn test_raw_prelude_value_type_name_is_prelude() {
+    let prelude = grift::prelude::PRELUDE_ALL[0];
+    assert_eq!(Value::Prelude(prelude).type_name(), "prelude");
 }
 
 // ============================================================================

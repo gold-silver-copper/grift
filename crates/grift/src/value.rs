@@ -194,7 +194,7 @@ impl Value {
             Value::Environment { .. } => "environment",
             Value::Inert => "inert",
             Value::Ignore => "ignore",
-            Value::Prelude(_) => "applicative",
+            Value::Prelude(_) => "prelude",
             Value::Native(_) => "native",
         }
     }

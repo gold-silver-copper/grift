@@ -418,8 +418,7 @@ Important properties:
 - a one-character string is one `CharPair` node with `cdr = NIL`
 - strings are not `Cons` cells, even though some operations treat them as
   pair-like
-- the runtime does not enforce that every `CharPair` tail is either another
-  `CharPair` or `NIL`
+- well-formed strings are `CharPair` chains terminated by `NIL`
 
 Observable consequences:
 
@@ -430,17 +429,6 @@ Observable consequences:
 - `(pair? "")` is false
 - strings format as `()` when empty, because empty string and nil are the same
   runtime value
-
-Malformed string-like values can therefore be constructed by `cons` or host
-code, for example by making a `CharPair` whose tail is a number or cons cell.
-Current implementation behavior for such values is uneven:
-
-- `pair?`, `car`, and `cdr` still treat the head node as string-like
-- formatting walks character nodes until the first non-`CharPair` tail and then
-  stops silently
-- `raw-read-string` treats the first non-`CharPair` tail as end of input
-- equality and other string-consuming helpers are only reliable on proper
-  `CharPair` chains
 
 ### 4.7 Callables
 
@@ -1185,8 +1173,10 @@ String-specialized behavior:
 Important limitations:
 
 - only a one-character first argument triggers string construction
+- if string construction is triggered, `b` must already be a well-formed string
+  tail or `NIL`
 - `(cons "ab" "cd")` creates a pair, not a string
-- the second argument is not validated to be a proper string tail
+- an invalid would-be string tail raises `TypeError`
 
 #### `car`
 
@@ -1482,6 +1472,7 @@ Behavior:
 - otherwise parse exactly one complete expression from the runtime string chain
 - if the runtime string is empty, return `NIL`
 - if trailing unread input remains, raise `ParseError`
+- malformed string chains raise `TypeError`
 
 #### `raw-display-to-string`
 
@@ -1547,6 +1538,9 @@ Write mode wraps non-empty strings in quotes and escapes only:
 
 The empty string still renders as `()`, not `""`, because empty string and nil
 are the same runtime value.
+
+Malformed string chains are invalid runtime values. Formatting APIs reject them
+rather than truncating output.
 
 ### 10.3 Display Mode for Strings
 
@@ -1677,15 +1671,7 @@ Captured environments are live mutable objects.
 That choice is what makes recursive `define!`, recursive `fn!`, named `let`,
 and mutation-visible closures work.
 
-### 13.7 `cons` Can Manufacture Malformed String-Like Values
-
-When `cons` sees a one-character first argument, it creates a `CharPair`
-without validating the second argument as a proper string tail.
-
-This means malformed string-like values exist in the current language model and
-are handled inconsistently by different consumers.
-
-### 13.8 Prelude Calls Reparse Source Every Time
+### 13.7 Prelude Calls Reparse Source Every Time
 
 Prelude bindings wrap source text, not precompiled closures.
 
@@ -1713,8 +1699,7 @@ properties:
     environment.
 12. Regular `let` requires each binding to be exactly `(symbol init)`.
 13. Closures capture mutable environment objects by identity, not snapshots.
-14. `cons` can construct malformed string-like values when its first argument is
-    a one-character string.
+14. String construction via `cons` requires a well-formed string tail.
 15. Prelude functions `map`, `filter`, `length`, and `append` are present.
 16. Formatting of strings, especially the empty string, matches current write
     and display behavior.

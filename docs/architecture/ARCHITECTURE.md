@@ -114,8 +114,8 @@ That design drives a few visible behaviors:
 - `(cdr "x")` returns `()`
 - write-mode canonicalizes the shared empty string / empty list value as `()`
 - display-mode also renders the shared empty value as `()`
-- `cons` does not validate the tail when constructing a `CharPair`, so malformed
-  string-like values are possible
+- `cons` only constructs a `CharPair` when the tail is already a well-formed
+  string chain or `NIL`
 
 ### Symbols
 
