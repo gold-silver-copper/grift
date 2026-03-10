@@ -1049,18 +1049,17 @@ impl<const N: usize> Lisp<N> {
     type_predicate!(builtin_booleanp, Value::Boolean(_));
     type_predicate!(builtin_inertp, Value::Inert);
 
-    /// `(not boolean)` — boolean negation (requires exactly one boolean arg).
+    /// `(not boolean)` — boolean negation of the first evaluated argument.
     fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let val = self.car(args)?;
         let b = self.get(val)?.as_bool()?;
         Ok(ArenaIndex::from_bool(!b))
     }
 
-    /// `(eq? object1 object2)` — identity predicate (§4.2.1).
+    /// `(eq? object1 object2)` — eq?-style equality predicate (§4.2.1).
     ///
-    /// Returns `#t` iff the two objects are effectively the same object.
-    /// Identity is index-based first; if the indices differ, the helper falls
-    /// back to content/value comparison for strings and immutable kinds.
+    /// Returns `#t` iff the two objects are the same arena object, or if they
+    /// are immutable/string kinds that compare equal by value.
     fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.car(args)?;
         let b = self.cadr(args)?;
@@ -1069,8 +1068,8 @@ impl<const N: usize> Lisp<N> {
 
     /// `(equal? object1 object2)` — structural equality predicate (§4.3.1).
     ///
-    /// Returns `#t` iff the two objects "look" the same as long as nothing
-    /// is mutated. Weaker than eq?; equal? returns true whenever eq? would.
+    /// Returns `#t` iff the two objects compare equal structurally.
+    /// `equal?` extends `eq?`; every `eq?` match is also an `equal?` match.
     fn builtin_equalp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
         let a = self.car(args)?;
         let b = self.cadr(args)?;

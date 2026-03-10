@@ -363,8 +363,8 @@ Current details:
 - `(if test consequent)` returns `()` when the test is false
 - `cond` treats a symbol named `else` specially and returns `()` if no clause
   matches
-- `and` and `or` currently require at least two operands; fewer operands return
-  `InvalidArgument`
+- `and` with zero operands returns `#t`, and `or` with zero operands returns `#f`
+- single-operand `and` and `or` forms are allowed
 - `and` and `or` short-circuit, but because they insist on booleans they behave
   as boolean operators, not general truthy/falsy operators
 
@@ -404,7 +404,7 @@ and identity-only for environments.
 User-visible mutation is intentionally narrow:
 
 - `define!` mutates an environment by replacing its `bindings` pointer
-- `set!` mutates an existing `(symbol . value)` binding pair in place
+- `set!` mutates an existing `(key . value)` binding pair in place
 
 Other `arena.set()` usage is runtime bookkeeping:
 

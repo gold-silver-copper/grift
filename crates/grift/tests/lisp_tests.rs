@@ -1687,7 +1687,7 @@ fn test_define_ptree_nil_mismatch() {
 
 #[test]
 fn test_define_ptree_pair_destructuring() {
-    // Without the fn marker, (define! (a . b) expr) is ptree destructuring.
+    // Without fn!, (define! (a . b) expr) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
     // (#ignore . b) — ptree destructuring
     assert_eq!(
@@ -1703,7 +1703,7 @@ fn test_define_ptree_pair_destructuring() {
 
 #[test]
 fn test_define_ptree_list_destructuring() {
-    // Without the fn marker, (define! (a b c) ...) is ptree destructuring.
+    // Without fn!, (define! (a b c) ...) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -1770,7 +1770,7 @@ fn test_define_ptree_rest_binding() {
 
 #[test]
 fn test_define_ptree_kernel_example() {
-    // Without fn marker, (define! (x y z) ...) is ptree destructuring.
+    // Without fn!, (define! (x y z) ...) is ptree destructuring.
     // Kernel-style destructuring works for all pair-headed definiends.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
@@ -2277,7 +2277,6 @@ fn test_ignore_equal() {
 #[test]
 fn test_ignore_in_define_ptree() {
     // #ignore in define! parameter tree ignores the value
-    // With function shorthand, use non-symbol-headed pair for ptree
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -2478,9 +2477,8 @@ fn test_depth_first_search_in_multi_parent() {
 // ============================================================================
 
 #[test]
-fn test_define_rejects_duplicate_symbol_in_ptree() {
+fn test_define_rejects_duplicate_symbol_in_parameter_tree() {
     // Ptree destructuring rejects duplicate symbols.
-    // Use non-symbol-headed pair so it's not function shorthand.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
         lisp.eval("(define! (#ignore a a) (list 1 2 3))").is_err(),
@@ -2489,9 +2487,8 @@ fn test_define_rejects_duplicate_symbol_in_ptree() {
 }
 
 #[test]
-fn test_define_rejects_duplicate_symbol_nested_ptree() {
+fn test_define_rejects_duplicate_symbol_in_nested_parameter_tree() {
     // Duplicate detection must work across nested pairs in ptree.
-    // Use non-symbol-headed pair so it's ptree destructuring, not function shorthand.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
         lisp.eval("(define! ((a b) (b c)) (list (list 1 2) (list 3 4)))")
@@ -3260,7 +3257,7 @@ fn test_set_bang_empty_env() {
 
 #[test]
 fn test_set_bang_only_supports_single_symbol() {
-    // set! no longer supports ptree destructuring
+    // set! only accepts a single symbol target.
     let lisp: Lisp<20000> = Lisp::new();
     assert!(
         lisp.eval(
@@ -3275,12 +3272,12 @@ fn test_set_bang_only_supports_single_symbol() {
 }
 
 // ============================================================================
-// Feature 2: define! Overwrites Existing Bindings
+// Feature 2: define! Rejects Same-Frame Redefinition
 // ============================================================================
 
 #[test]
-fn test_define_overwrites_in_same_frame() {
-    // define! now rejects re-defining in the same frame
+fn test_define_rejects_redefinition_in_same_frame() {
+    // define! rejects re-defining in the same frame
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3295,7 +3292,7 @@ fn test_define_overwrites_in_same_frame() {
 }
 
 #[test]
-fn test_define_overwrite_does_not_affect_child_scopes() {
+fn test_parent_definition_remains_visible_in_child_scope() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3324,7 +3321,7 @@ fn test_define_different_frames() {
 }
 
 #[test]
-fn test_define_overwrite_function_in_repl() {
+fn test_fn_bang_rejects_redefinition_in_repl() {
     // fn! uses define! internally, so redefining errors with AlreadyDefined
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
@@ -3576,7 +3573,7 @@ fn test_regular_let_rejects_missing_init() {
 // ============================================================================
 
 #[test]
-fn test_define_function_shorthand_basic() {
+fn test_fn_bang_basic_definition() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3590,7 +3587,7 @@ fn test_define_function_shorthand_basic() {
 }
 
 #[test]
-fn test_define_function_shorthand_multi_body() {
+fn test_fn_bang_multi_body_definition() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3606,7 +3603,7 @@ fn test_define_function_shorthand_multi_body() {
 }
 
 #[test]
-fn test_define_function_shorthand_variadic() {
+fn test_fn_bang_variadic() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3620,7 +3617,7 @@ fn test_define_function_shorthand_variadic() {
 }
 
 #[test]
-fn test_define_function_shorthand_zero_params() {
+fn test_fn_bang_zero_params() {
     let lisp: Lisp<20000> = Lisp::new();
     // Verify it returns a string value
     assert_eq!(
@@ -3635,7 +3632,7 @@ fn test_define_function_shorthand_zero_params() {
 }
 
 #[test]
-fn test_define_function_shorthand_recursive() {
+fn test_fn_bang_recursive_definition() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3650,7 +3647,7 @@ fn test_define_function_shorthand_recursive() {
 }
 
 #[test]
-fn test_define_function_shorthand_mutual_recursion() {
+fn test_fn_bang_mutual_recursion() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3666,7 +3663,7 @@ fn test_define_function_shorthand_mutual_recursion() {
 }
 
 #[test]
-fn test_define_function_shorthand_overwrite() {
+fn test_fn_bang_independent_redefinitions_across_fresh_interpreters() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3690,7 +3687,7 @@ fn test_define_function_shorthand_overwrite() {
 }
 
 #[test]
-fn test_define_function_shorthand_closure() {
+fn test_fn_bang_closure_definition() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3706,7 +3703,7 @@ fn test_define_function_shorthand_closure() {
 }
 
 #[test]
-fn test_define_function_shorthand_inside_let() {
+fn test_fn_bang_inside_let() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3736,12 +3733,12 @@ fn test_define_destructuring_still_works_non_symbol_car() {
 }
 
 // ============================================================================
-// Feature 5b: fn marker disambiguation
+// Feature 5b: fn! Disambiguation
 // ============================================================================
 
 #[test]
-fn test_define_fn_disambiguation_destructuring_vs_function() {
-    // Without fn: destructuring
+fn test_fn_bang_disambiguation_destructuring_vs_function() {
+    // Without fn!, define! destructures.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3756,8 +3753,8 @@ fn test_define_fn_disambiguation_destructuring_vs_function() {
 }
 
 #[test]
-fn test_define_fn_disambiguation_function_def() {
-    // With fn!: function definition
+fn test_fn_bang_disambiguation_function_definition() {
+    // With fn!, the same surface shape defines a function.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3771,8 +3768,8 @@ fn test_define_fn_disambiguation_function_def() {
 }
 
 #[test]
-fn test_define_fn_destructuring_pair() {
-    // Without fn: (a b) is ptree destructuring
+fn test_fn_bang_pair_shape_without_marker_destructures() {
+    // Without fn!, (a b) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3787,8 +3784,8 @@ fn test_define_fn_destructuring_pair() {
 }
 
 #[test]
-fn test_define_fn_destructuring_dotted() {
-    // Without fn: (x . y) is ptree destructuring
+fn test_fn_bang_dotted_shape_without_marker_destructures() {
+    // Without fn!, (x . y) is ptree destructuring.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3802,7 +3799,7 @@ fn test_define_fn_destructuring_dotted() {
 }
 
 #[test]
-fn test_define_fn_destructuring_with_ignore() {
+fn test_fn_bang_shape_without_marker_destructures_with_ignore() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(
@@ -3816,15 +3813,15 @@ fn test_define_fn_destructuring_with_ignore() {
 }
 
 #[test]
-fn test_define_fn_as_variable_name() {
-    // fn can be used as a regular variable name
+fn test_fn_symbol_can_still_be_used_as_variable_name() {
+    // `fn` remains an ordinary symbol in define!.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(define! fn 42) fn"), Ok(Value::Number(42)));
 }
 
 #[test]
-fn test_define_fn_function_named_fn() {
-    // Defining a function named fn using fn!
+fn test_fn_bang_can_define_function_named_fn() {
+    // fn! can define a function literally named `fn`.
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval(

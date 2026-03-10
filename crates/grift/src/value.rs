@@ -85,7 +85,7 @@ pub enum Value {
     Builtin(BuiltinId),
     /// A first-class environment with lexical parent chain.
     Environment {
-        /// Alist of `(symbol . value)` pairs in this frame.
+        /// Alist of `(key . value)` pairs in this frame, normally symbol keys.
         bindings: ArenaIndex,
         /// Cons-list of parent environments, or NIL for top-level.
         parents: ArenaIndex,
