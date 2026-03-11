@@ -1,65 +1,110 @@
 # Grift Architecture
 
-This file is the canonical architecture note for Grift. It replaces the older
-split notes in `SPEC.md`, `LANGUAGE.md`, `INTERNALS.md`, `MUTATION.md`, and
-`GOTCHAS.md`.
+This document describes the current Grift implementation as shipped in
+`crates/grift/src`. It is intentionally implementation-facing: it explains how
+the interpreter is put together, which invariants the runtime relies on, and
+which details matter for a compatible reimplementation.
 
-The companion language-level specification lives in
+The companion language-level behavior specification is
 `docs/architecture/LANGUAGE_SPECIFICATION.md`.
 
-Everything below is cross-checked against the current implementation in
-`crates/grift/src` and the behavior exercised by `crates/grift/tests/lisp_tests.rs`.
+The primary conformance sources for this document are:
 
-## Overview
+- `crates/grift/src/arena.rs`
+- `crates/grift/src/value.rs`
+- `crates/grift/src/lisp.rs`
+- `crates/grift/src/parse.rs`
+- `crates/grift/src/eval.rs`
+- `crates/grift/src/native.rs`
+- `crates/grift/src/prelude.rs`
+- `crates/grift/prelude.grift`
+- `crates/grift/tests/lisp_tests.rs`
 
-Grift is a `#![no_std]`, `#![forbid(unsafe_code)]` Lisp interpreter built around
-the Kernel/vau model:
+## 1. Top-Level Shape
 
-- all dynamic values live in a fixed-size `Arena<Value, N>`
-- there is no heap allocation
-- operatives are the primitive combiners
-- applicatives are wrappers that evaluate operands first
-- evaluation uses a trampoline for tail calls
-- garbage collection is mark-and-sweep, triggered on OOM or by `(gc-collect)`
+Grift is a `#![no_std]`, `#![forbid(unsafe_code)]`, arena-allocated Lisp
+interpreter with Kernel-style operative/applicative semantics.
 
-The crate layout is:
+The important implementation choices are:
 
-- `crates/grift/src/arena.rs`: fixed-size free-list arena and GC
-- `crates/grift/src/value.rs`: `Value`, `BuiltinId`, value predicates/accessors
-- `crates/grift/src/lisp.rs`: `Lisp<N>`, symbol interning, environment helpers,
-  formatting, string helpers, public API
-- `crates/grift/src/parse.rs`: recursive-descent reader over byte slices and
-  `CharPair` chains
-- `crates/grift/src/eval.rs`: evaluator, builtin registration, tail-call loop,
-  GC integration
-- `crates/grift/src/native.rs`: Rust native-function registration API
-- `crates/grift/src/prelude.rs`: lazily-loaded prelude entries generated from
-  `prelude.grift`
+- all runtime objects live in a fixed-capacity `Arena<Value, N>`
+- there is no heap allocation and no `alloc` dependency in the interpreter
+- strings are linked `CharPair` chains, not heap-backed buffers
+- symbols are interned and compare by arena identity
+- environments are first-class linked objects
+- `vau` creates primitive user-defined combiners
+- applicatives are explicit wrappers around other callable values
+- evaluation uses a trampoline instead of recursive host-language calls in tail
+  position
+- garbage collection is mark-and-sweep and is normally triggered only after
+  `OutOfMemory`
 
-## Reserved Arena Slots
+The library entry point is [`Lisp`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/lisp.rs).
+The optional binary in [`main.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/main.rs)
+constructs one `Lisp` instance and reuses it across a file run or REPL session,
+so top-level state persists across inputs.
 
-`Lisp::new()` allocates slots `0..10` up front and relies on their indices being
-stable:
+## 2. Module Responsibilities
 
-| Slot | `ArenaIndex` | Meaning |
-|------|--------------|---------|
-| 0 | `NIL` | nil / empty list / empty string |
-| 1 | `TRUE` | `#t` |
-| 2 | `FALSE` | `#f` |
-| 3 | `INERT` | `#inert` |
-| 4 | `IGNORE` | `#ignore` |
-| 5 | `GROUND_ENV` | builtin-only environment |
-| 6 | reserved parent-list cell | cons cell holding the ground parent list for global |
-| 7 | `GLOBAL_ENV` | standard user-visible top-level environment |
-| 8 | `GC_ROOTS` | cons cell whose `car` is the temporary root stack head |
-| 9 | `INTERN_LIST` | cons cell whose `car` is the symbol intern list head |
+The runtime is split into a small set of modules with fairly sharp boundaries:
 
-`ArenaIndex::ROOTS` includes these singleton indices, so they survive every GC
-cycle.
+- [`arena.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/arena.rs):
+  fixed-size free-list allocator, `ArenaIndex`, tracing, and mark/sweep GC
+- [`value.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/value.rs):
+  `Value` enum and low-level runtime categories
+- [`lisp.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/lisp.rs):
+  interpreter object, symbol interning, environment operations, formatting,
+  and public API
+- [`parse.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/parse.rs):
+  recursive-descent reader shared by byte-oriented source text and runtime
+  string chains
+- [`eval.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/eval.rs):
+  evaluator, builtin registration, operative/applicative dispatch, TCO, and GC
+  retry logic
+- [`native.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/native.rs):
+  host-function registration and `LispOps` abstraction
+- [`prelude.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/prelude.rs):
+  generated static prelude metadata and constant initialization
+- [`grift_macros/src/lib.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift_macros/src/lib.rs):
+  proc macro that reads `prelude.grift` at compile time and emits prelude
+  tables
 
-## Value Model
+## 3. Startup and Reserved Slots
 
-The runtime value type is the current `Value` enum in `crates/grift/src/value.rs`:
+`Lisp::new()` constructs a fresh arena, allocates fixed singleton values, then
+installs builtin bindings and prelude bindings.
+
+The first ten slots are reserved and their indices are treated as ABI-like
+constants throughout the runtime:
+
+| Slot | Constant | Meaning |
+| --- | --- | --- |
+| 0 | `ArenaIndex::NIL` | nil, empty list, and empty string |
+| 1 | `ArenaIndex::TRUE` | `#t` |
+| 2 | `ArenaIndex::FALSE` | `#f` |
+| 3 | `ArenaIndex::INERT` | `#inert` |
+| 4 | `ArenaIndex::IGNORE` | `#ignore` |
+| 5 | `ArenaIndex::GROUND_ENV` | builtin-only environment |
+| 6 | implicit | cons cell containing the one-element parent list for `GLOBAL_ENV` |
+| 7 | `ArenaIndex::GLOBAL_ENV` | user-visible top-level environment |
+| 8 | `ArenaIndex::GC_ROOTS` | cons cell whose `car` stores the temporary GC root stack head |
+| 9 | `ArenaIndex::INTERN_LIST` | cons cell whose `car` stores the symbol intern list head |
+
+`ArenaIndex::ROOTS` includes all singleton slots above, so they always survive
+collection.
+
+Initialization order in `Lisp::new()` is:
+
+1. allocate singleton values and fixed environments
+2. allocate the global-parent cons cell at slot 6
+3. allocate `GC_ROOTS` and `INTERN_LIST`
+4. bind builtins into `GROUND_ENV`
+5. bind prelude functions and constants into `GLOBAL_ENV`
+
+## 4. Runtime Value Model
+
+The runtime data model is exactly the `Value` enum in
+[`value.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/value.rs):
 
 ```rust
 enum Value {
@@ -82,122 +127,177 @@ enum Value {
 
 Important consequences:
 
-- There is no `String` header value anymore. Strings are plain `CharPair` chains.
-- There is no dedicated character type. A single-character string is one
-  `CharPair { ch, cdr: NIL }`.
-- Empty string is represented as `NIL`.
-- Prelude functions and registered Rust natives are first-class values and are
-  part of the actual runtime model.
+- every runtime object fits in one arena slot
+- larger structures are assembled out of linked arena nodes
+- there is no dedicated string header object
+- there is no dedicated character type
+- prelude entries and host-native functions are first-class runtime values
 
-### Strings
+### 4.1 Strings
 
-Strings are singly-linked `CharPair` chains. Semantically, they are list-like
-values rather than a distinct header-wrapped type:
+Strings are singly linked `CharPair` chains terminated by `NIL`.
 
 ```text
-"hello"
-@100 = CharPair('h', @101)
-@101 = CharPair('e', @102)
-@102 = CharPair('l', @103)
-@103 = CharPair('l', @104)
-@104 = CharPair('o', NIL)
+"cat"
+@a = CharPair('c', @b)
+@b = CharPair('a', @c)
+@c = CharPair('t', NIL)
 ```
 
-That design drives a few visible behaviors:
+This representation is observable:
 
-- `""` is exactly `NIL`
-- there is no separate character type, so each string element is represented as
-  a one-character string node
-- `(car "hello")` returns `"h"` as a newly allocated one-character string
-- `(cdr "hello")` returns `"ello"` by reusing the tail of the chain
-- `(cons (car "h") "ello")` constructs `"hello"`
-- `(cdr "x")` returns `()`
-- write-mode canonicalizes the shared empty string / empty list value as `()`
-- display-mode also renders the shared empty value as `()`
-- `cons` only constructs a `CharPair` when the tail is already a well-formed
-  string chain or `NIL`
+- empty string is exactly `NIL`
+- a one-character string is one `CharPair` whose `cdr` is `NIL`
+- `(car string)` allocates a fresh one-character string
+- `(cdr string)` reuses the tail of the existing chain
+- `pair?` treats non-empty strings as pair-like
+- formal parameter tree matching does not treat strings as cons cells
 
-### Symbols
+### 4.2 Symbols
 
-`Value::Symbol` points at the head of its name's `CharPair` chain. Symbols are
-interned by walking the list stored behind `ArenaIndex::INTERN_LIST`, so equal
-names share the same symbol index.
+`Value::Symbol` stores the head of the symbol name's `CharPair` chain.
+`Lisp::symbol` interns names by walking the list stored behind
+`ArenaIndex::INTERN_LIST`.
 
-### Operatives, Applicatives, Prelude, Native
+Symbol equality in environments is therefore pointer equality on the symbol
+object, not repeated string comparison during lookup.
+
+### 4.3 Callables
 
 Grift has five callable storage forms:
 
-- `Operative`: user-created `vau` closures
-- `Applicative`: explicit wrapper that evaluates operands before delegation
-- `Builtin`: primitive callable core identified by `BuiltinId`
-- `Prelude`: lazily parsed lambda source loaded from `prelude.grift`
-- `Native`: user-registered Rust function pointers
+- `Builtin`: builtin combiner core identified by `BuiltinId`
+- `Operative`: user-created `vau` closure
+- `Applicative`: wrapper around another runtime value
+- `Prelude`: static prelude entry containing a function name and lambda source
+- `Native`: host function pointer
 
-Only `Operative` and `Builtin` are primitive combiners. Applicative builtins are
-bound as `Applicative(Builtin(_))`. `Prelude` and `Native` are normally reached
-through `Applicative` wrappers.
+Calling convention depends on the outer runtime form:
 
-## Environment Model
+- `Builtin` used directly: raw operands plus caller environment if the builtin
+  is operative; evaluated arguments otherwise
+- `Operative`: raw operand object plus caller environment
+- `Applicative`: evaluate operands left-to-right, then invoke the wrapped value
+- `Prelude`: normally stored behind an `Applicative`; each call reparses and
+  reevaluates its lambda source, then unwraps to the inner operative
+- `Native`: normally stored behind an `Applicative`; receives already evaluated
+  argument list
+
+## 5. Environment Representation
 
 An environment is:
 
 ```rust
 Value::Environment {
-    bindings: ArenaIndex, // alist of (key . value) pairs, normally symbols
-    parents: ArenaIndex,  // list of parent environments
+    bindings: ArenaIndex,
+    parents: ArenaIndex,
 }
 ```
 
-Key properties:
+`bindings` is an association list of binding pairs. Each binding pair is a
+`Cons { car: key, cdr: value }`, and the binding list itself is a cons list of
+those pairs.
 
-- `GROUND_ENV` contains builtins only
+`parents` is a proper list of parent environments.
+
+Observable properties:
+
+- `GROUND_ENV` contains builtin bindings only
 - `GLOBAL_ENV` is a child of `GROUND_ENV`
-- prelude bindings and user globals live in `GLOBAL_ENV`
-- child environments do not copy parent bindings; they just reference parents
-- closures capture environment object identity rather than a snapshot of
-  bindings
-- `make-environment` can create multi-parent environments
-- `make-empty-environment` creates a parentless environment
+- prelude bindings and user top-level definitions live in `GLOBAL_ENV`
+- child environments never copy parent bindings
+- closures capture environment object identity, not a snapshot of values
 
-Lookup behavior in `env_lookup`:
+### 5.1 Lookup
 
-1. Search the current frame's `bindings` alist.
-2. If there is exactly one parent, iterate upward without allocation.
-3. If there are multiple parents, fall back to DFS with an arena-allocated
-   visited set.
-4. Fail with `ArenaError::UnboundVariable` if nothing matches.
+`env_lookup` has two paths:
 
-Mutation behavior:
+- zero or one parent: iterate upward without allocating
+- multiple parents: do left-to-right depth-first search using an arena-allocated
+  visited set
 
-- `env_define` prepends a new `(key . value)` binding into the current frame
-  and errors with `AlreadyDefined` if that frame already binds the same key
-- `env_set` mutates an existing binding in the target frame only and errors with
-  `UnboundVariable` if the symbol is only present in a parent
+Multi-parent lookup is cycle-tolerant because already visited environments are
+skipped.
 
-The ground environment is effectively immutable to user code because no builtin
-exposes `GROUND_ENV`. The implementation relies on that invariant; the operative
-paths use `debug_assert!` rather than a runtime guard.
+### 5.2 Mutation
 
-## Evaluation Model
+Only two user-visible operations mutate environments:
 
-`eval_step` implements the whole evaluator:
+- `define!`: prepend a new binding in the current frame
+- `set!`: mutate an existing binding pair in the explicitly supplied frame
 
-- `Symbol` values perform environment lookup
-- `Cons` values are combinations
-- everything else is self-evaluating
+`env_define` rejects same-frame duplicates with `AlreadyDefined`.
+`env_set` never searches parents and rejects missing local bindings with
+`UnboundVariable`.
 
-### Combination Dispatch
+## 6. Reader Architecture
 
-For a form `(f arg1 arg2 ...)`:
+The parser in
+[`parse.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/parse.rs)
+is a single recursive-descent implementation over a small `CharSource` trait.
 
-1. Evaluate `f`.
-2. Dispatch on the resulting value:
-   - `Builtin`: pass operands through unchanged
-   - `Operative`: pass operands through unchanged and invoke with caller env
-   - `Applicative`: evaluate operands left-to-right, then call the wrapped value
-   - anything else: `NotCallable`
+There are two concrete sources:
 
-When an applicative unwraps, the inner value can currently be:
+- `SliceSource<'a>`: reads external source text one byte at a time
+- `ChainSource<'a, N>`: reads characters from an existing `CharPair` chain
+
+This distinction matters:
+
+- ordinary `eval` is byte-oriented and does not decode UTF-8 into Unicode
+  scalar values before tokenization
+- `raw-read-string` is character-oriented because it walks runtime `char`
+  values
+- parse errors from `SliceSource` report real 1-based `(line, col)`
+- parse errors from `ChainSource` report `(0, 0)`
+
+The parser directly recognizes:
+
+- proper lists
+- dotted pairs
+- quote shorthand
+- strings with `\n`, `\t`, `\r`, `\\`, `\"`
+- booleans
+- `#inert`
+- `#ignore`
+- base-10 signed integers that fit `isize`
+- symbols
+
+Unknown string escapes raise `InvalidArgument`, not `ParseError`.
+
+## 7. Evaluation Architecture
+
+The evaluator in
+[`eval.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/eval.rs)
+uses a trampoline centered on `eval_expr` and `eval_step`.
+
+At a high level:
+
+1. parse one or more expressions
+2. evaluate them sequentially in `GLOBAL_ENV`
+3. return the last result, or `#inert` for empty input
+
+`eval_step` dispatches by runtime type:
+
+- `Symbol`: environment lookup
+- `Cons`: combination evaluation
+- everything else: self-evaluating
+
+### 7.1 Combination Dispatch
+
+For a combination `(f arg1 arg2 ...)`:
+
+1. evaluate `f`
+2. dispatch on the result
+
+Dispatch rules:
+
+- `Builtin`: call builtin operative path on raw operands
+- `Operative`: invoke user operative with raw operand object
+- `Applicative`: evaluate operands once, left-to-right, then invoke wrapped
+  value
+- anything else: `NotCallable`
+
+When an applicative unwraps, the inner value may itself be:
 
 - `Operative`
 - `Builtin`
@@ -205,270 +305,163 @@ When an applicative unwraps, the inner value can currently be:
 - `Prelude`
 - `Native`
 
-Builtin inner values keep their own calling convention: builtin operatives
-receive raw operands, while builtin applicative cores consume the already
-evaluated argument list. This is what makes `wrap` and `apply` work uniformly
-across builtin and user-defined callables.
+That is what makes `wrap`, `unwrap`, and `apply` uniform across builtin and
+user-defined combiners.
 
-`Prelude` is special: the source lambda is parsed and evaluated on demand, then
-unwrapped to its underlying operative before invocation.
+### 7.2 Tail Calls
 
-### Tail Calls
+Tail positions are implemented by mutating `expr` and `env` and returning to
+the trampoline loop instead of recursing in Rust.
 
-Tail positions do not recurse in Rust. Operatives such as `if`, `begin`, `cond`,
-`and`, `or`, `let`, and user-defined combiners update `expr`/`env` and return
-control to the trampoline loop.
+The builtin operative paths that intentionally preserve tail position are:
 
-### Garbage Collection
-
-GC is not threshold-based anymore. The current behavior is:
-
-- evaluation retries an operation after `ArenaError::OutOfMemory`
-- before collecting, the evaluator restores the saved GC-root stack head
-- collection roots include `ArenaIndex::ROOTS`, the current `expr`, the current
-  `env`, and whatever temporary roots are on the GC root stack
-- `(gc-collect)` runs collection unconditionally and returns the number of
-  reclaimed objects
-
-This matches the comments and logic in `crates/grift/src/eval.rs` and
-`crates/grift/src/arena.rs`.
-
-## Current Language Surface
-
-This is the implemented language surface in `define_builtins!`, not the older
-superset described by the split docs.
-
-### Operatives
-
-The operative set is:
-
-- `quote`
 - `if`
-- `define!`
-- `fn!`
-- `set!`
-- `lambda`
 - `begin`
 - `cond`
 - `and`
 - `or`
 - `let`
-- `vau`
-- `current-environment`
+- user-defined operatives after argument matching
 
-### Applicatives
+### 7.3 Formal Parameter Tree Matching
 
-The builtin applicative set is:
+Formal parameter trees are validated eagerly by `validate_ptree` and matched by
+`match_ptree`.
 
-- `cons`
-- `+`, `-`, `*`, `/`
-- `=`, `<`, `>`, `<=`, `>=`
-- `car`, `cdr`, `list`
-- `null?`, `not`, `pair?`, `number?`, `symbol?`, `boolean?`, `inert?`,
-  `ignore?`
-- `eq?`, `equal?`
-- `eval`, `wrap`, `unwrap`
-- `operative?`, `applicative?`
-- `make-environment`, `make-empty-environment`, `environment?`
-- `gc-collect`
-- `error`
-- `apply`
-- `raw-read-string`, `raw-display-to-string`, `raw-write-to-string`
+Validation checks:
 
-The global environment also receives prelude functions and any Rust natives
-registered through `Lisp::register_native`.
+- only symbols, `#ignore`, `NIL`, and cons cells are allowed
+- duplicate symbols are rejected
+- cyclic trees are rejected
 
-## Semantic Notes That Matter
+`vau` adds one more check: the environment parameter must be a symbol or
+`#ignore`, and it may not duplicate a symbol from the parameter tree.
 
-### `define!`
+### 7.4 GC Integration
 
-Implemented form:
+The evaluator uses a temporary root stack stored behind `ArenaIndex::GC_ROOTS`.
+During evaluation, important intermediate values are pushed onto that list.
 
-```lisp
-(define! definiend expr)
-```
+On `OutOfMemory`:
 
-Behavior:
+1. restore the saved GC root stack head for the current evaluation step
+2. collect garbage using:
+   - `ArenaIndex::ROOTS`
+   - the current `expr`
+   - the current `env`
+   - anything on the temporary GC root stack
+3. retry the evaluation step
 
-- evaluates `expr` immediately
-- validates `definiend` as a Kernel-style parameter tree
-- binds into the current frame only
-- rejects duplicate bindings in the same frame with `AlreadyDefined`
-- supports destructuring because it uses `match_ptree`
+If collection frees nothing, `OutOfMemory` propagates.
 
-Function definition sugar is not embedded in `define!`; it lives in `fn!`.
+`(gc-collect)` bypasses the OOM trigger and forces an unconditional collection.
 
-### `fn!`
+## 8. Builtin and Prelude Installation
 
-Implemented form:
+Builtin registration is generated by the `define_builtins!` macro in
+[`eval.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/eval.rs).
 
-```lisp
-(fn! name params body ...)
-```
+The macro defines:
 
-It is sugar for defining a named lambda in the current environment. It supports
-multiple body expressions by wrapping them in `begin`.
+- the `BuiltinId` constants
+- `init_builtins`
+- builtin dispatch tables for operative and applicative call conventions
 
-### `set!`
+Registration policy:
 
-Implemented form:
+- builtin operatives are stored as raw `Builtin` values in `GROUND_ENV`
+- builtin applicatives are stored as `Applicative(Builtin(_))`
 
-```lisp
-(set! env-expr symbol expr)
-```
+Prelude installation happens in `Lisp::init_prelude()`:
 
-This is a major place where the old docs drifted. Current behavior is:
+- each prelude function becomes `Applicative(Prelude(entry))` in `GLOBAL_ENV`
+- prelude constants are bound eagerly during startup
+- prelude functions are not compiled once and cached; they are reparsed and
+  reevaluated on each invocation
 
-- `env-expr` is evaluated first and must yield an environment
-- only a single symbol target is accepted
-- the symbol must already exist in that environment's own frame
-- parent environments are not searched
-- no new binding is created
+The proc macro in
+[`grift_macros/src/lib.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift_macros/src/lib.rs)
+extracts two things from `prelude.grift`:
 
-Scheme-style `(set! x 2)` is not supported.
+- top-level `(fn! ...)` forms, converted to static lambda source strings
+- simple top-level constant definitions, converted to startup initialization
+  code
 
-### `lambda` and `vau`
+## 9. Formatting and Raw String Helpers
 
-`lambda` is still implemented as wrapped `vau`, but the actual constructor path
-is `Lisp::lambda`, which stores an operative with `env_param = NIL` and then
-wraps it as an applicative.
+Formatting lives in `Lisp::fmt_value` and supports two modes:
 
-`vau` behavior is:
+- write mode via `write_value`
+- display mode via `display_value`
 
-- `params` must be a valid parameter tree
-- `env-param` must be a symbol or `#ignore`
-- duplicate parameter names are rejected
-- `env-param` may not duplicate a symbol already used in `params`
-- multiple body forms are wrapped in `begin`
+Formatting is preceded by structure validation:
 
-### `let`
+- symbols must point to well-formed `CharPair` chains
+- strings must be well-formed `CharPair` chains
+- lists are recursively validated
 
-Two forms are implemented:
+The same validation is reused by:
 
-```lisp
-(let ((name expr) ...) body ...)
-(let name ((param init) ...) body ...) ; named let
-```
+- `write_value`
+- `display_value`
+- `LispOps::write_value`
+- `LispOps::display_value`
+- `raw-write-to-string`
+- `raw-display-to-string`
 
-Named `let` is implemented directly in `op_let`; it is not just documentation.
-The initializer expressions are evaluated in the outer environment, then the
-recursive function is invoked with those already-evaluated values.
+Because empty string and `NIL` are the same object, both write mode and display
+mode render the empty string as `()`.
 
-### `if`, `cond`, `and`, `or`
+`raw-read-string` reuses the parser on a `ChainSource` and requires the entire
+runtime string to contain at most one expression plus trailing whitespace or
+comments.
 
-Boolean contexts are strict: the tested value must be an actual boolean.
+## 10. Host Integration
 
-Current details:
+Host functions use the interface in
+[`native.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/native.rs).
 
-- `(if test consequent)` returns `()` when the test is false
-- `cond` treats a symbol named `else` specially and returns `()` if no clause
-  matches
-- `and` with zero operands returns `#t`, and `or` with zero operands returns `#f`
-- single-operand `and` and `or` forms are allowed
-- `and` and `or` short-circuit, but because they insist on booleans they behave
-  as boolean operators, not general truthy/falsy operators
-
-### `eval` and environments
-
-`eval` supports both:
-
-```lisp
-(eval expr)
-(eval expr env)
-```
-
-The one-argument form evaluates in `GLOBAL_ENV`.
-
-`current-environment` returns the live environment object, not a snapshot.
-
-### Equality
-
-`eq?` is implemented as:
-
-1. true if the two indices are identical
-2. otherwise, for values that `Value::is_immutable()` marks immutable, compare
-   the stored `Value`
-
-That means `eq?` is not a general structural predicate. In particular, use
-`equal?` for lists and strings.
-
-`equal?` is structural for:
-
-- cons cells
-- `CharPair` chains
-
-and identity-only for environments.
-
-## Mutation Surface
-
-User-visible mutation is intentionally narrow:
-
-- `define!` mutates an environment by replacing its `bindings` pointer
-- `set!` mutates an existing `(key . value)` binding pair in place
-
-Other `arena.set()` usage is runtime bookkeeping:
-
-- updating `GC_ROOTS`
-- updating `INTERN_LIST`
-- reversing freshly built `Cons` or `CharPair` chains in place
-- environment initialization during builtin/prelude setup
-
-There is still no user-visible pair mutation:
-
-- no `set-car!`
-- no `set-cdr!`
-- strings are immutable after construction
-
-## Reader and Formatting Notes
-
-The parser currently supports:
-
-- proper and dotted lists
-- quote shorthand `'x`
-- string escapes: `\n`, `\t`, `\r`, `\\`, `\"`
-- line comments starting with `;`
-- booleans `#t`, `#f`, plus reader aliases `#true`, `#false`
-- `#inert` and `#ignore`
-- signed base-10 integers
-
-The raw string builtins are accurate documentation targets because they are used
-in tests:
-
-- `(raw-read-string str)` parses one expression from a `CharPair` chain
-- `(raw-display-to-string obj)` formats with display semantics
-- `(raw-write-to-string obj)` formats with write semantics
-
-## Practical Gotchas
-
-These are the current sharp edges worth remembering:
-
-- `define!` does not redefine; same-frame rebinding is an error
-- `fn!` is separate from `define!`
-- `set!` requires an explicit environment argument
-- `set!` only updates the target frame, never a parent frame
-- empty string is literally `NIL`
-- `pair?`, `car`, and `cdr` treat non-empty strings as `CharPair` chains
-- `and`/`or` are not variadic identity forms right now; they error on fewer
-  than two operands
-- `cond` with no matching clause returns `()`, not `#inert`
-- `make-empty-environment` really is empty, which makes it useful for sandboxed
-  `eval`
-- `current-environment` returns a live mutable environment reference
-- `error` is currently a stub that always signals `InvalidArgument`
-
-## What Changed Relative To The Old Split Docs
-
-The deleted files were inaccurate in several concrete ways. The merged document
-corrects them:
-
-- strings are `CharPair` chains, not `String { data }` headers
-- `Value` also includes `Prelude` and `Native`
-- GC is OOM-triggered, not threshold-triggered
-- `set!` takes an explicit environment and does not search parents
-- `fn!` and named `let` both exist
-- `and`/`or` currently reject arities below two
-- `cond` with no match returns `()`
-- top-level user code runs in `GLOBAL_ENV`; `GROUND_ENV` is for builtin setup
-
-If this file and the code ever disagree, the code in `crates/grift/src` is the
-source of truth.
+Important pieces:
+
+- `NativeFn`: erased function pointer type
+- `LispOps`: trait object exposing the public interpreter surface without the
+  arena-size const generic
+- `FromLisp` / `ToLisp`: host conversion traits
+- `register_native!`: macro for ergonomic native bindings
+
+Registered natives are stored as `Native` values wrapped in an
+`Applicative`, then defined in `GLOBAL_ENV`.
+
+## 11. Reimplementation Notes
+
+A compatible reimplementation in C or another host language should preserve at
+least these architectural facts:
+
+- fixed singleton identities for nil/booleans/inert/ignore
+- linked-node strings and interned symbols
+- first-class environments with explicit parent lists
+- separate operative and applicative calling conventions
+- byte-oriented external parsing and char-oriented `raw-read-string`
+- eager formal-parameter validation
+- depth-first multi-parent lookup
+- trampoline-style tail execution
+- OOM-driven GC retry behavior
+- reparsed prelude function calls
+
+## 12. Confirmed Oddities
+
+These are implementation oddities worth keeping in mind because they are easy
+to miss when reading only the public API:
+
+- empty string is identical to `NIL`
+- `pair?`, `car`, and `cdr` treat non-empty strings as pair-like, but formal
+  parameter matching does not
+- `apply` never evaluates the supplied argument list
+- `wrap` does not check whether the wrapped value is callable
+- prelude functions are resolved from source text on every call
+- the external reader and `raw-read-string` are observably different for
+  non-ASCII input
+
+If this document and the implementation disagree, the code in
+`crates/grift/src` and the behavior covered by `crates/grift/tests/lisp_tests.rs`
+are authoritative.

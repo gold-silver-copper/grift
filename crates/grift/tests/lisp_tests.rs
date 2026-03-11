@@ -4068,9 +4068,8 @@ fn test_arena_writer_no_size_limit() {
         lisp.eval(r#"(equal? (raw-display-to-string "hello world") "hello world")"#),
         Ok(Value::Boolean(true))
     );
-    // Verify ArenaWriter can handle a long string (previously limited to 4096 bytes
-    // in the display/write-to-string builtins; the parser still has its own limit
-    // in parse.rs, but ArenaWriter itself has no size constraint)
+    // Verify ArenaWriter can handle a long string without a fixed formatting
+    // buffer limit. Parsing still depends on available arena space.
     let long_input = "a".repeat(4000);
     let expr = std::format!(r#"(equal? (raw-display-to-string "{long_input}") "{long_input}")"#);
     assert_eq!(lisp.eval(&expr), Ok(Value::Boolean(true)));

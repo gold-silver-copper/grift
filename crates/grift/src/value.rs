@@ -79,9 +79,9 @@ pub enum Value {
     /// Created by `(wrap combiner)`. The inner combiner is any callable:
     /// Operative, Builtin, or even another Applicative.
     Applicative(ArenaIndex),
-    /// Rust-native primitive operative.
-    /// Always an operative — receives unevaluated args + caller env.
-    /// Applicative primitives (like +) are (wrap (Builtin id)) at init time.
+    /// Builtin combiner core.
+    /// Operative builtins are stored directly as `Builtin(id)`.
+    /// Builtin applicatives (like `+`) are stored as `Applicative(Builtin(id))`.
     Builtin(BuiltinId),
     /// A first-class environment with lexical parent chain.
     Environment {
