@@ -4,6 +4,12 @@
 ;; Constants become Rust init code (bound at startup).
 
 ;; Derived operatives
+(define! quote
+  (vau (x . #ignore) #ignore x))
+
+(define! current-environment
+  (vau #ignore e e))
+
 (define! lambda
   (vau (formals . body) e
     (wrap
@@ -20,6 +26,48 @@
           e)))
 
 ;; Functions
+(define! list
+  (lambda args args))
+
+(define! not
+  (lambda args
+    (if (car args) #f #t)))
+
+(define! null?
+  (lambda args
+    (if (eq? args ()) #t
+      (if (eq? (car args) ())
+        (apply null? (cdr args))
+        #f))))
+
+(define! boolean?
+  (lambda args
+    (if (eq? args ()) #t
+      (if (or (eq? (car args) #t)
+              (eq? (car args) #f))
+        (apply boolean? (cdr args))
+        #f))))
+
+(define! inert?
+  (lambda args
+    (if (eq? args ()) #t
+      (if (eq? (car args) #inert)
+        (apply inert? (cdr args))
+        #f))))
+
+(define! ignore?
+  (lambda args
+    (if (eq? args ()) #t
+      (if (eq? (car args) #ignore)
+        (apply ignore? (cdr args))
+        #f))))
+
+(define! make-empty-environment
+  (lambda args
+    (if (null? args)
+      (make-environment)
+      (-))))
+
 (fn! map (f lst)
   (if (null? lst) ()
     (cons (f (car lst)) (map f (cdr lst)))))

@@ -216,13 +216,22 @@ fn test_cons_car_cdr() {
 #[test]
 fn test_cons_rejects_non_string_tail_for_charpair_construction() {
     let lisp: Lisp<20000> = Lisp::new();
-    assert_eq!(lisp.eval(r#"(cons (car "a") 42)"#), Err(ArenaError::TypeError));
+    assert_eq!(
+        lisp.eval(r#"(cons (car "a") 42)"#),
+        Err(ArenaError::TypeError)
+    );
 }
 
 #[test]
 fn test_list() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(car (list 1 2 3))"), Ok(Value::Number(1)));
+}
+
+#[test]
+fn test_list_is_applicative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(applicative? list)"), Ok(Value::Boolean(true)));
 }
 
 // ============================================================================
@@ -241,6 +250,27 @@ fn test_not() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(lisp.eval("(not #f)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(not #t)"), Ok(Value::Boolean(false)));
+}
+
+#[test]
+fn test_not_ignores_extra_operands_but_still_evaluates_them() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 0)
+            (not #f (begin (set! (current-environment) x 1) #t))
+            x
+            "#
+        ),
+        Ok(Value::Number(1))
+    );
+}
+
+#[test]
+fn test_not_requires_at_least_one_operand() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(not)"), Err(ArenaError::TypeError));
 }
 
 #[test]
@@ -854,6 +884,21 @@ fn test_first_class_quote() {
     "#,
     );
     assert_eq!(result, Ok(Value::Number(42)));
+}
+
+#[test]
+fn test_quote_ignores_extra_operands_without_evaluating_them() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(equal? (quote answer does-not-exist) 'answer)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_quote_requires_at_least_one_operand() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(quote)"), Err(ArenaError::TypeError));
 }
 
 #[test]
@@ -3365,6 +3410,21 @@ fn test_current_environment_returns_environment() {
 }
 
 #[test]
+fn test_current_environment_ignores_extra_operands_without_evaluating_them() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval(
+            r#"
+            (define! x 0)
+            (current-environment does-not-exist)
+            x
+            "#
+        ),
+        Ok(Value::Number(0))
+    );
+}
+
+#[test]
 fn test_current_environment_captures_frame() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
@@ -4309,6 +4369,27 @@ fn test_prelude_append() {
 }
 
 #[test]
+fn test_lazy_prelude_applicatives_survive_repeated_gc() {
+    let lisp: Lisp<20000> = Lisp::new();
+    let program = r#"
+        (let ()
+          (define! build (lambda (n acc)
+            (if (= n 0) acc
+              (build (- n 1) (cons n acc)))))
+          (define! length-local (lambda (lst)
+            (define! loop (lambda (l acc)
+              (if (null? l) acc
+                (loop (cdr l) (+ acc 1)))))
+            (loop lst 0)))
+          (length-local (build 1000 (list))))
+    "#;
+
+    for _ in 0..10 {
+        assert_eq!(lisp.eval(program), Ok(Value::Number(1000)));
+    }
+}
+
+#[test]
 fn test_prelude_entries_exist() {
     // Verify that Prelude entries are generated
     assert!(
@@ -5042,11 +5123,38 @@ fn test_fn_bang_requires_symbol_name() {
 }
 
 #[test]
+fn test_quote_and_current_environment_are_operative_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(operative? quote current-environment)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
+fn test_derived_predicates_and_constructors_are_applicative_bindings() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(applicative? list make-empty-environment not null? boolean? inert? ignore?)"),
+        Ok(Value::Boolean(true))
+    );
+}
+
+#[test]
 fn test_make_empty_environment_rejects_extra_operands() {
     let lisp: Lisp<20000> = Lisp::new();
     assert_eq!(
         lisp.eval("(make-empty-environment 1)"),
         Err(ArenaError::ArityError)
+    );
+}
+
+#[test]
+fn test_make_empty_environment_evaluates_extra_operands_before_arity_error() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(
+        lisp.eval("(make-empty-environment does-not-exist)"),
+        Err(ArenaError::UnboundVariable)
     );
 }
 

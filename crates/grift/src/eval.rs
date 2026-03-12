@@ -124,6 +124,37 @@ enum TailAction {
     Continue,
 }
 
+/// Scope-bound GC root tracking for evaluator temporaries.
+///
+/// Each successful `push` extends the current GC root stack and increments the
+/// guard's count. When the guard goes out of scope, all roots it added are
+/// popped automatically.
+#[must_use = "GC roots are released when the guard is dropped"]
+struct GcRootGuard<'a, const N: usize> {
+    lisp: &'a Lisp<N>,
+    count: usize,
+}
+
+impl<'a, const N: usize> GcRootGuard<'a, N> {
+    #[inline]
+    fn new(lisp: &'a Lisp<N>) -> Self {
+        Self { lisp, count: 0 }
+    }
+
+    #[inline]
+    fn push(&mut self, idx: ArenaIndex) -> ArenaResult<()> {
+        self.lisp.push_root(idx)?;
+        self.count += 1;
+        Ok(())
+    }
+}
+
+impl<const N: usize> Drop for GcRootGuard<'_, N> {
+    fn drop(&mut self) {
+        self.lisp.pop_roots(self.count);
+    }
+}
+
 // ============================================================================
 // Unified builtin registration
 // ============================================================================
@@ -191,7 +222,6 @@ macro_rules! define_builtins {
 
 define_builtins! {
     operatives {
-        "quote"  => op_quote  => op_quote,
         "if"     => op_if     => op_if,
         "define!" => op_define => op_define,
         "set!"   => op_set    => op_set,
@@ -201,7 +231,6 @@ define_builtins! {
         "or"     => op_or     => op_or,
         "let"    => op_let    => op_let,
         "vau"    => op_vau    => op_vau,
-        "current-environment" => op_current_env => op_current_env,
     }
     applicatives {
         "cons"   => bi_cons   => builtin_cons,
@@ -216,15 +245,9 @@ define_builtins! {
         ">="     => bi_ge     => builtin_ge,
         "car"    => bi_car    => builtin_car,
         "cdr"    => bi_cdr    => builtin_cdr,
-        "list"   => bi_list   => builtin_list,
-        "null?"  => bi_nullp  => builtin_nullp,
-        "not"    => bi_not    => builtin_not,
         "pair?"  => bi_pairp  => builtin_pairp,
         "number?" => bi_numberp => builtin_numberp,
         "symbol?" => bi_symbolp => builtin_symbolp,
-        "boolean?" => bi_booleanp => builtin_booleanp,
-        "inert?"  => bi_inertp  => builtin_inertp,
-        "ignore?" => bi_ignorep => builtin_ignorep,
         "eq?"    => bi_eqp    => builtin_eqp,
         "equal?" => bi_equalp => builtin_equalp,
         "eval"   => bi_eval   => builtin_eval,
@@ -233,7 +256,6 @@ define_builtins! {
         "operative?" => bi_operativep => builtin_operativep,
         "applicative?" => bi_applicativep => builtin_applicativep,
         "make-environment" => bi_make_env => builtin_make_env,
-        "make-empty-environment" => bi_make_empty_env => builtin_make_empty_env,
         "environment?" => bi_environmentp => builtin_environmentp,
         "gc-collect" => bi_gc_collect => builtin_gc_collect,
         "error"    => bi_error    => builtin_error,
@@ -308,6 +330,12 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
+    /// Create a scope guard that automatically pops any GC roots it pushes.
+    #[inline]
+    fn root_scope(&self) -> GcRootGuard<'_, N> {
+        GcRootGuard::new(self)
+    }
+
     /// Trigger garbage collection using all known live roots. Used for OOM collections.
     #[cold]
     fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
@@ -368,15 +396,15 @@ impl<const N: usize> Lisp<N> {
             Value::Symbol(_) => Ok(Some(self.env_lookup(*env, *expr)?)),
 
             Value::Cons { car, cdr } => {
-                self.push_root(cdr)?;
-                self.push_root(*env)?;
+                let mut roots = self.root_scope();
+                roots.push(cdr)?;
+                roots.push(*env)?;
 
                 let func_val = self.eval_expr(car, *env)?;
 
                 match self.get(func_val)? {
                     Value::Builtin(id) => {
                         let action = self.apply_operative_builtin(id, cdr, expr, env);
-                        self.pop_roots(2);
                         match action {
                             TailAction::Return(val) => val.map(Some),
                             TailAction::Continue => Ok(None),
@@ -385,7 +413,6 @@ impl<const N: usize> Lisp<N> {
 
                     Value::Operative { .. } => {
                         let (body, op_env) = self.invoke_operative(func_val, cdr, *env)?;
-                        self.pop_roots(2);
                         *env = op_env;
                         *expr = body;
                         Ok(None)
@@ -394,7 +421,6 @@ impl<const N: usize> Lisp<N> {
                     Value::Prelude(prelude) => {
                         let real = self.eval_prelude_source(prelude)?;
                         let (body, op_env) = self.invoke_operative(real, cdr, *env)?;
-                        self.pop_roots(2);
                         *env = op_env;
                         *expr = body;
                         Ok(None)
@@ -402,12 +428,9 @@ impl<const N: usize> Lisp<N> {
 
                     Value::Applicative(inner) => {
                         let evaled_args = self.eval_args(cdr, *env)?;
-                        self.push_root(evaled_args)?;
+                        roots.push(evaled_args)?;
 
-                        let inner_val = self.get(inner)?;
-                        self.pop_roots(3);
-
-                        match inner_val {
+                        match self.get(inner)? {
                             Value::Operative { .. } => {
                                 let (body, op_env) =
                                     self.invoke_operative(inner, evaled_args, *env)?;
@@ -434,10 +457,7 @@ impl<const N: usize> Lisp<N> {
                         }
                     }
 
-                    _ => {
-                        self.pop_roots(2);
-                        Err(ArenaError::NotCallable)
-                    }
+                    _ => Err(ArenaError::NotCallable),
                 }
             }
 
@@ -494,6 +514,9 @@ impl<const N: usize> Lisp<N> {
             Value::Native(f) => self.call_native(f, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             Value::Prelude(prelude) => {
+                let mut roots = self.root_scope();
+                roots.push(evaled_args)?;
+                roots.push(caller_env)?;
                 let real = self.eval_prelude_source(prelude)?;
                 let (body, op_env) = self.invoke_operative(real, evaled_args, caller_env)?;
                 self.eval_expr(body, op_env)
@@ -577,11 +600,13 @@ impl<const N: usize> Lisp<N> {
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
             let head_expr = self.car(cur)?;
-            self.push_root(reversed)?;
-            self.push_root(env)?;
-            self.push_root(cur)?;
-            let head_val = self.eval_expr(head_expr, env)?;
-            self.pop_roots(3);
+            let head_val = {
+                let mut roots = self.root_scope();
+                roots.push(reversed)?;
+                roots.push(env)?;
+                roots.push(cur)?;
+                self.eval_expr(head_expr, env)?
+            };
             reversed = self.cons(head_val, reversed)?;
             cur = self.cdr(cur)?;
         }
@@ -592,16 +617,6 @@ impl<const N: usize> Lisp<N> {
     // ================================================================
     // Operative builtin implementations (receive unevaluated args)
     // ================================================================
-
-    /// `(quote expr)` — return the expression unevaluated.
-    fn op_quote(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        _env: &mut ArenaIndex,
-    ) -> TailAction {
-        TailAction::Return(self.car(args))
-    }
 
     /// `(if test then else)` — test is strict, branches are tail positions.
     fn op_if(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
@@ -797,28 +812,30 @@ impl<const N: usize> Lisp<N> {
                 let inits = self.map_list(bindings, Self::cadr)?;
 
                 let local_env = self.make_child_env(*env)?;
-                self.push_root(local_env)?;
 
-                // Evaluate init values in the OUTER env
-                let evaled_inits = self.eval_args(inits, *env)?;
-                self.push_root(evaled_inits)?;
+                let (body_expr, op_env) = {
+                    let mut roots = self.root_scope();
+                    roots.push(local_env)?;
 
-                // Create the recursive function in the local env
-                let body = self.wrap_begin(body_list)?;
-                let func = self.lambda(params, body, local_env)?;
-                self.env_define(local_env, name, func)?;
+                    // Evaluate init values in the OUTER env
+                    let evaled_inits = self.eval_args(inits, *env)?;
+                    roots.push(evaled_inits)?;
 
-                self.pop_roots(2);
+                    // Create the recursive function in the local env
+                    let body = self.wrap_begin(body_list)?;
+                    let func = self.lambda(params, body, local_env)?;
+                    self.env_define(local_env, name, func)?;
 
-                // Invoke the operative directly with pre-evaluated init values,
-                // bypassing the normal eval loop.  The previous approach built
-                // `(name val1 val2 …)` and fed it back through `eval_expr`,
-                // which would re-evaluate the already-evaluated values.  That
-                // is harmless for self-evaluating types (numbers, booleans) but
-                // breaks when an init value is a list—`eval` would interpret
-                // the list as a function call, producing a NotCallable error.
-                let inner = self.unwrap_applicative(func)?;
-                let (body_expr, op_env) = self.invoke_operative(inner, evaled_inits, local_env)?;
+                    // Invoke the operative directly with pre-evaluated init values,
+                    // bypassing the normal eval loop.  The previous approach built
+                    // `(name val1 val2 …)` and fed it back through `eval_expr`,
+                    // which would re-evaluate the already-evaluated values.  That
+                    // is harmless for self-evaluating types (numbers, booleans) but
+                    // breaks when an init value is a list—`eval` would interpret
+                    // the list as a function call, producing a NotCallable error.
+                    let inner = self.unwrap_applicative(func)?;
+                    self.invoke_operative(inner, evaled_inits, local_env)?
+                };
                 *env = op_env;
                 *expr = body_expr;
                 Ok(())
@@ -828,16 +845,18 @@ impl<const N: usize> Lisp<N> {
                 let body_list = self.cdr(args)?;
 
                 let local_env = self.make_child_env(*env)?;
-                self.push_root(local_env)?;
-                let mut cur = bindings;
-                while !cur.is_nil() {
-                    let binding = self.car(cur)?;
-                    let (name, val_expr) = self.regular_let_binding_parts(binding)?;
-                    let val = self.eval_expr(val_expr, *env)?;
-                    self.env_define(local_env, name, val)?;
-                    cur = self.cdr(cur)?;
+                {
+                    let mut roots = self.root_scope();
+                    roots.push(local_env)?;
+                    let mut cur = bindings;
+                    while !cur.is_nil() {
+                        let binding = self.car(cur)?;
+                        let (name, val_expr) = self.regular_let_binding_parts(binding)?;
+                        let val = self.eval_expr(val_expr, *env)?;
+                        self.env_define(local_env, name, val)?;
+                        cur = self.cdr(cur)?;
+                    }
                 }
-                self.pop_roots(1);
 
                 *env = local_env;
                 *expr = self.wrap_begin(body_list)?;
@@ -861,16 +880,6 @@ impl<const N: usize> Lisp<N> {
             let body = self.wrap_begin(body_list)?;
             self.vau(params, env_param, body, *env)
         })
-    }
-
-    /// `(current-environment)` — return the caller's environment.
-    fn op_current_env(
-        &self,
-        _args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        TailAction::Return(Ok(*env))
     }
 
     // ================================================================
@@ -997,29 +1006,14 @@ impl<const N: usize> Lisp<N> {
 
     // — Pair / list built-ins —
 
-    /// `(list ...)` — return args as-is (already evaluated).
-    fn builtin_list(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        Ok(args)
-    }
-
     pair_builtin!(builtin_car, car_char);
     pair_builtin!(builtin_cdr, cdr_char);
 
     // — Type predicate built-ins —
 
-    type_predicate!(builtin_nullp, Value::Nil);
     type_predicate!(builtin_pairp, Value::Cons { .. } | Value::CharPair { .. });
     type_predicate!(builtin_numberp, Value::Number(_));
     type_predicate!(builtin_symbolp, Value::Symbol(_));
-    type_predicate!(builtin_booleanp, Value::Boolean(_));
-    type_predicate!(builtin_inertp, Value::Inert);
-
-    /// `(not boolean)` — boolean negation of the first evaluated argument.
-    fn builtin_not(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let val = self.car(args)?;
-        let b = self.get(val)?.as_bool()?;
-        Ok(ArenaIndex::from_bool(!b))
-    }
 
     /// `(eq? object1 object2)` — eq?-style equality predicate (§4.2.1).
     ///
@@ -1145,16 +1139,7 @@ impl<const N: usize> Lisp<N> {
         self.make_env(parents)
     }
 
-    /// `(make-empty-environment)` — always creates a parentless environment.
-    fn builtin_make_empty_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if !args.is_nil() {
-            return Err(ArenaError::ArityError);
-        }
-        self.make_env(ArenaIndex::NIL)
-    }
-
     type_predicate!(builtin_environmentp, Value::Environment { .. });
-    type_predicate!(builtin_ignorep, Value::Ignore);
 
     // ================================================================
     // GC control builtins
