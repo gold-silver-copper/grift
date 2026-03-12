@@ -124,37 +124,6 @@ enum TailAction {
     Continue,
 }
 
-/// Scope-bound GC root tracking for evaluator temporaries.
-///
-/// Each successful `push` extends the current GC root stack and increments the
-/// guard's count. When the guard goes out of scope, all roots it added are
-/// popped automatically.
-#[must_use = "GC roots are released when the guard is dropped"]
-struct GcRootGuard<'a, const N: usize> {
-    lisp: &'a Lisp<N>,
-    count: usize,
-}
-
-impl<'a, const N: usize> GcRootGuard<'a, N> {
-    #[inline]
-    fn new(lisp: &'a Lisp<N>) -> Self {
-        Self { lisp, count: 0 }
-    }
-
-    #[inline]
-    fn push(&mut self, idx: ArenaIndex) -> ArenaResult<()> {
-        self.lisp.push_root(idx)?;
-        self.count += 1;
-        Ok(())
-    }
-}
-
-impl<const N: usize> Drop for GcRootGuard<'_, N> {
-    fn drop(&mut self) {
-        self.lisp.pop_roots(self.count);
-    }
-}
-
 // ============================================================================
 // Unified builtin registration
 // ============================================================================
@@ -330,12 +299,6 @@ impl<const N: usize> Lisp<N> {
         }
     }
 
-    /// Create a scope guard that automatically pops any GC roots it pushes.
-    #[inline]
-    fn root_scope(&self) -> GcRootGuard<'_, N> {
-        GcRootGuard::new(self)
-    }
-
     /// Trigger garbage collection using all known live roots. Used for OOM collections.
     #[cold]
     fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
@@ -396,15 +359,15 @@ impl<const N: usize> Lisp<N> {
             Value::Symbol(_) => Ok(Some(self.env_lookup(*env, *expr)?)),
 
             Value::Cons { car, cdr } => {
-                let mut roots = self.root_scope();
-                roots.push(cdr)?;
-                roots.push(*env)?;
+                self.push_root(cdr)?;
+                self.push_root(*env)?;
 
                 let func_val = self.eval_expr(car, *env)?;
 
                 match self.get(func_val)? {
                     Value::Builtin(id) => {
                         let action = self.apply_operative_builtin(id, cdr, expr, env);
+                        self.pop_roots(2);
                         match action {
                             TailAction::Return(val) => val.map(Some),
                             TailAction::Continue => Ok(None),
@@ -413,6 +376,7 @@ impl<const N: usize> Lisp<N> {
 
                     Value::Operative { .. } => {
                         let (body, op_env) = self.invoke_operative(func_val, cdr, *env)?;
+                        self.pop_roots(2);
                         *env = op_env;
                         *expr = body;
                         Ok(None)
@@ -421,6 +385,7 @@ impl<const N: usize> Lisp<N> {
                     Value::Prelude(prelude) => {
                         let real = self.eval_prelude_source(prelude)?;
                         let (body, op_env) = self.invoke_operative(real, cdr, *env)?;
+                        self.pop_roots(2);
                         *env = op_env;
                         *expr = body;
                         Ok(None)
@@ -428,10 +393,11 @@ impl<const N: usize> Lisp<N> {
 
                     Value::Applicative(inner) => {
                         let evaled_args = self.eval_args(cdr, *env)?;
-                        roots.push(evaled_args)?;
+                        self.push_root(evaled_args)?;
 
                         match self.get(inner)? {
                             Value::Operative { .. } => {
+                                self.pop_roots(3);
                                 let (body, op_env) =
                                     self.invoke_operative(inner, evaled_args, *env)?;
                                 *env = op_env;
@@ -439,25 +405,37 @@ impl<const N: usize> Lisp<N> {
                                 Ok(None)
                             }
                             Value::Builtin(id) => {
+                                self.pop_roots(3);
                                 Ok(Some(self.apply_builtin_value(id, evaled_args, *env)?))
                             }
                             Value::Applicative(_) => {
+                                self.pop_roots(3);
                                 Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
                             }
                             Value::Prelude(prelude) => {
                                 let real = self.eval_prelude_source(prelude)?;
+                                self.pop_roots(3);
                                 let (body, op_env) =
                                     self.invoke_operative(real, evaled_args, *env)?;
                                 *env = op_env;
                                 *expr = body;
                                 Ok(None)
                             }
-                            Value::Native(f) => Ok(Some(self.call_native(f, evaled_args)?)),
-                            _ => Err(ArenaError::NotCallable),
+                            Value::Native(f) => {
+                                self.pop_roots(3);
+                                Ok(Some(self.call_native(f, evaled_args)?))
+                            }
+                            _ => {
+                                self.pop_roots(3);
+                                Err(ArenaError::NotCallable)
+                            }
                         }
                     }
 
-                    _ => Err(ArenaError::NotCallable),
+                    _ => {
+                        self.pop_roots(2);
+                        Err(ArenaError::NotCallable)
+                    }
                 }
             }
 
@@ -514,10 +492,10 @@ impl<const N: usize> Lisp<N> {
             Value::Native(f) => self.call_native(f, evaled_args),
             Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
             Value::Prelude(prelude) => {
-                let mut roots = self.root_scope();
-                roots.push(evaled_args)?;
-                roots.push(caller_env)?;
+                self.push_root(evaled_args)?;
+                self.push_root(caller_env)?;
                 let real = self.eval_prelude_source(prelude)?;
+                self.pop_roots(2);
                 let (body, op_env) = self.invoke_operative(real, evaled_args, caller_env)?;
                 self.eval_expr(body, op_env)
             }
@@ -600,13 +578,11 @@ impl<const N: usize> Lisp<N> {
         let mut reversed = ArenaIndex::NIL;
         while !cur.is_nil() {
             let head_expr = self.car(cur)?;
-            let head_val = {
-                let mut roots = self.root_scope();
-                roots.push(reversed)?;
-                roots.push(env)?;
-                roots.push(cur)?;
-                self.eval_expr(head_expr, env)?
-            };
+            self.push_root(reversed)?;
+            self.push_root(env)?;
+            self.push_root(cur)?;
+            let head_val = self.eval_expr(head_expr, env)?;
+            self.pop_roots(3);
             reversed = self.cons(head_val, reversed)?;
             cur = self.cdr(cur)?;
         }
@@ -813,29 +789,27 @@ impl<const N: usize> Lisp<N> {
 
                 let local_env = self.make_child_env(*env)?;
 
-                let (body_expr, op_env) = {
-                    let mut roots = self.root_scope();
-                    roots.push(local_env)?;
+                self.push_root(local_env)?;
 
-                    // Evaluate init values in the OUTER env
-                    let evaled_inits = self.eval_args(inits, *env)?;
-                    roots.push(evaled_inits)?;
+                // Evaluate init values in the OUTER env
+                let evaled_inits = self.eval_args(inits, *env)?;
+                self.push_root(evaled_inits)?;
 
-                    // Create the recursive function in the local env
-                    let body = self.wrap_begin(body_list)?;
-                    let func = self.lambda(params, body, local_env)?;
-                    self.env_define(local_env, name, func)?;
+                // Create the recursive function in the local env
+                let body = self.wrap_begin(body_list)?;
+                let func = self.lambda(params, body, local_env)?;
+                self.env_define(local_env, name, func)?;
 
-                    // Invoke the operative directly with pre-evaluated init values,
-                    // bypassing the normal eval loop.  The previous approach built
-                    // `(name val1 val2 …)` and fed it back through `eval_expr`,
-                    // which would re-evaluate the already-evaluated values.  That
-                    // is harmless for self-evaluating types (numbers, booleans) but
-                    // breaks when an init value is a list—`eval` would interpret
-                    // the list as a function call, producing a NotCallable error.
-                    let inner = self.unwrap_applicative(func)?;
-                    self.invoke_operative(inner, evaled_inits, local_env)?
-                };
+                // Invoke the operative directly with pre-evaluated init values,
+                // bypassing the normal eval loop.  The previous approach built
+                // `(name val1 val2 …)` and fed it back through `eval_expr`,
+                // which would re-evaluate the already-evaluated values.  That
+                // is harmless for self-evaluating types (numbers, booleans) but
+                // breaks when an init value is a list—`eval` would interpret
+                // the list as a function call, producing a NotCallable error.
+                let inner = self.unwrap_applicative(func)?;
+                let (body_expr, op_env) = self.invoke_operative(inner, evaled_inits, local_env)?;
+                self.pop_roots(2);
                 *env = op_env;
                 *expr = body_expr;
                 Ok(())
@@ -845,18 +819,16 @@ impl<const N: usize> Lisp<N> {
                 let body_list = self.cdr(args)?;
 
                 let local_env = self.make_child_env(*env)?;
-                {
-                    let mut roots = self.root_scope();
-                    roots.push(local_env)?;
-                    let mut cur = bindings;
-                    while !cur.is_nil() {
-                        let binding = self.car(cur)?;
-                        let (name, val_expr) = self.regular_let_binding_parts(binding)?;
-                        let val = self.eval_expr(val_expr, *env)?;
-                        self.env_define(local_env, name, val)?;
-                        cur = self.cdr(cur)?;
-                    }
+                self.push_root(local_env)?;
+                let mut cur = bindings;
+                while !cur.is_nil() {
+                    let binding = self.car(cur)?;
+                    let (name, val_expr) = self.regular_let_binding_parts(binding)?;
+                    let val = self.eval_expr(val_expr, *env)?;
+                    self.env_define(local_env, name, val)?;
+                    cur = self.cdr(cur)?;
                 }
+                self.pop_roots(1);
 
                 *env = local_env;
                 *expr = self.wrap_begin(body_list)?;
