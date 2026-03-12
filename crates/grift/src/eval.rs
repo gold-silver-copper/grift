@@ -521,22 +521,54 @@ impl<const N: usize> Lisp<N> {
         Ok((body, op_env))
     }
 
-    /// Parse a prelude combiner source and evaluate it to get the underlying operative.
-    ///
-    /// Called on demand each time a `Prelude` function is invoked.
-    /// Applicative prelude entries evaluate to `Applicative(Operative)` and are
-    /// unwrapped to the inner operative. Operative prelude entries evaluate
-    /// directly to an operative.
+    /// Parse and realize a lazy prelude binding directly from its defining form.
     fn eval_prelude_source(&self, prelude: crate::prelude::Prelude) -> ArenaResult<ArenaIndex> {
         let mut src = SliceSource::new(prelude.source());
         let source_expr = self
             .parse_complete_expr(&mut src)?
             .ok_or_else(|| ArenaError::ParseError { line: 1, col: 1 })?;
-        let combiner = self.eval_expr(source_expr, ArenaIndex::GLOBAL_ENV)?;
-        if prelude.is_operative() {
-            Ok(combiner)
+        let Value::Cons {
+            car: head,
+            cdr: rest,
+        } = self.get(source_expr)?
+        else {
+            return Err(ArenaError::TypeError);
+        };
+
+        if self.symbol_name_eq(head, "fn!") {
+            let after_name = self.cdr(rest)?;
+            let params = self.car(after_name)?;
+            let body = self.wrap_begin(self.cdr(after_name)?)?;
+            self.unwrap_applicative(self.lambda(params, body, ArenaIndex::GLOBAL_ENV)?)
+        } else if self.symbol_name_eq(head, "define!") {
+            let rhs = self.cadr(rest)?;
+            self.realize_prelude_combiner(rhs)
         } else {
-            self.unwrap_applicative(combiner)
+            Err(ArenaError::TypeError)
+        }
+    }
+
+    fn realize_prelude_combiner(&self, expr: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let Value::Cons {
+            car: head,
+            cdr: rest,
+        } = self.get(expr)?
+        else {
+            return Err(ArenaError::TypeError);
+        };
+
+        if self.symbol_name_eq(head, "vau") {
+            let params = self.car(rest)?;
+            let after_env = self.cdr(rest)?;
+            let env_param = self.car(after_env)?;
+            let body = self.wrap_begin(self.cdr(after_env)?)?;
+            self.vau(params, env_param, body, ArenaIndex::GLOBAL_ENV)
+        } else if self.symbol_name_eq(head, "lambda") {
+            let params = self.car(rest)?;
+            let body = self.wrap_begin(self.cdr(rest)?)?;
+            self.unwrap_applicative(self.lambda(params, body, ArenaIndex::GLOBAL_ENV)?)
+        } else {
+            Err(ArenaError::TypeError)
         }
     }
 

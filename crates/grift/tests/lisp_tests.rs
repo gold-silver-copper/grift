@@ -4328,6 +4328,52 @@ fn test_string_escape_roundtrip_newline() {
 // Prelude Test
 // ============================================================================
 
+fn eval_render<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<String, ArenaError> {
+    let idx = lisp.eval_to_index(input)?;
+    let mut out = String::new();
+    lisp.write_value(idx, &mut out).unwrap();
+    Ok(out)
+}
+
+#[test]
+fn test_real_prelude_loads_in_empty_interpreter() {
+    let lisp: Lisp<50000> = Lisp::new_without_prelude();
+    let prelude = include_str!("../prelude.grift");
+
+    assert_eq!(lisp.eval_to_index(prelude), Ok(grift::ArenaIndex::INERT));
+    assert_eq!(lisp.eval("(length (list 1 2 3 4))"), Ok(Value::Number(4)));
+}
+
+#[test]
+fn test_bundled_prelude_matches_real_prelude_behavior() {
+    let empty_loaded: Lisp<50000> = Lisp::new_without_prelude();
+    empty_loaded
+        .eval_to_index(include_str!("../prelude.grift"))
+        .unwrap();
+
+    let bundled: Lisp<50000> = Lisp::new();
+    let programs = [
+        "(quote 1 2)",
+        "(begin (define! env (current-environment)) (environment? env))",
+        "((lambda x x) 1 2 3)",
+        "(begin (fn! id x x) (id 1 2 3))",
+        "(map (lambda (x) (+ x x)) (quote (1 2 3)))",
+        "(filter (lambda (x) (< x 3)) (quote (1 2 3 4)))",
+        "(append (quote (1 2)) (quote (3 4)))",
+        "(list 1 2 3)",
+        "(boolean? #t #f)",
+        "(ignore? #ignore #ignore)",
+        "(environment? (make-empty-environment))",
+    ];
+
+    for program in programs {
+        assert_eq!(
+            eval_render(&empty_loaded, program),
+            eval_render(&bundled, program)
+        );
+    }
+}
+
 #[test]
 fn test_prelude_map() {
     let lisp: Lisp<20000> = Lisp::new();
@@ -4391,27 +4437,18 @@ fn test_lazy_prelude_applicatives_survive_repeated_gc() {
 
 #[test]
 fn test_prelude_entries_exist() {
-    // Verify that Prelude entries are generated
     assert!(
-        !grift::prelude::PRELUDE_ALL.is_empty(),
-        "PRELUDE_ALL should not be empty"
+        !grift::prelude::PRELUDE_SOURCE.trim().is_empty(),
+        "PRELUDE_SOURCE should not be empty"
     );
-    // Check a known function
-    let names: Vec<&str> = grift::prelude::PRELUDE_ALL
-        .iter()
-        .map(|e| e.name())
-        .collect();
-    assert!(names.contains(&"map"), "map should be in PRELUDE_ALL");
-    assert!(names.contains(&"filter"), "filter should be in PRELUDE_ALL");
-    assert!(names.contains(&"length"), "length should be in PRELUDE_ALL");
-    assert!(names.contains(&"append"), "append should be in PRELUDE_ALL");
-    assert!(names.contains(&"lambda"), "lambda should be in PRELUDE_ALL");
-    assert!(names.contains(&"fn!"), "fn! should be in PRELUDE_ALL");
+    assert!(grift::prelude::PRELUDE_SOURCE.contains("(fn! map"));
+    assert!(grift::prelude::PRELUDE_SOURCE.contains("(fn! filter"));
+    assert!(grift::prelude::PRELUDE_SOURCE.contains("(define! lambda"));
 }
 
 #[test]
 fn test_raw_prelude_value_type_name_is_prelude() {
-    let prelude = grift::prelude::PRELUDE_ALL[0];
+    let prelude = grift::Prelude::new("(define! x (vau #ignore #ignore ()))");
     assert_eq!(Value::Prelude(prelude).type_name(), "prelude");
 }
 

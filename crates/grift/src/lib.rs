@@ -79,5 +79,5 @@ mod value;
 pub use arena::{ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcStats};
 pub use lisp::Lisp;
 pub use native::{FromLisp, LispOps, NativeFn, ToLisp, extract_arg};
-pub use prelude::{Prelude, PreludeEntry};
+pub use prelude::Prelude;
 pub use value::{BuiltinId, Value};

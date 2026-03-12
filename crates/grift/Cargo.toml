@@ -10,7 +10,6 @@ description = "A simple minimalistic Lisp with a built-in arena allocator"
 repl = ["dep:rustyline"]
 
 [dependencies]
-grift_macros = { path = "../grift_macros" }
 rustyline = { version = "17.0.2", optional = true }
 
 [[bin]]

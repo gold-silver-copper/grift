@@ -1,7 +1,7 @@
 ;; Grift Prelude
-;; This file is read at compile time by the include_prelude! proc macro.
-;; Combiner definitions become Prelude statics (parsed on demand).
-;; Constants become Rust init code (bound at startup).
+;; This file is bundled as static source and loaded by the runtime at startup.
+;; Lazy combiner definitions are bound from their top-level defining forms.
+;; Other top-level forms are evaluated eagerly during startup.
 
 ;; Derived operatives
 (define! quote

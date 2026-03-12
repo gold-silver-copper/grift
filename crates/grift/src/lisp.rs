@@ -69,6 +69,23 @@ impl<const N: usize> Lisp<N> {
     /// singleton values, builtin bindings, and standard library entries.
     /// In practice `N` should be at least a few hundred.
     pub fn new() -> Self {
+        Self::new_inner(true)
+    }
+
+    /// Create a new Lisp interpreter without loading the bundled prelude.
+    ///
+    /// This is useful for verifying or bootstrapping `prelude.grift` using the
+    /// real runtime before the bundled prelude has been installed.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Lisp::new`], except it does not
+    /// require space for prelude bindings.
+    pub fn new_without_prelude() -> Self {
+        Self::new_inner(false)
+    }
+
+    fn new_inner(load_prelude: bool) -> Self {
         let arena = Arena::new(Value::Nil);
         let nil_idx = arena
             .alloc(Value::Nil)
@@ -152,40 +169,88 @@ impl<const N: usize> Lisp<N> {
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
-        // Initialize prelude (proc-macro-generated lazy bindings + constants).
-        lisp.init_prelude();
+        if load_prelude {
+            // Initialize the bundled prelude.
+            lisp.init_prelude();
+        }
 
         lisp
     }
 
-    /// Bind all prelude entries (proc-macro-generated statics + constants)
-    /// in the global environment.
+    /// Bind the bundled prelude in the global environment.
     fn init_prelude(&self) {
-        use crate::prelude::{PRELUDE_ALL, init_prelude_constants};
+        use crate::prelude::{PRELUDE_SOURCE, Prelude, extract_binding_name};
 
-        // Bind each prelude entry either as a raw operative or through an
-        // applicative wrapper, depending on its source shape.
-        for &entry in PRELUDE_ALL {
-            let prelude_idx = self
-                .arena
-                .alloc(Value::Prelude(entry))
-                .expect("arena too small for prelude");
-            let sym = self
-                .symbol(entry.name())
-                .expect("arena too small for prelude");
-            let binding = if entry.is_operative() {
-                prelude_idx
-            } else {
-                self.arena
-                    .alloc(Value::Applicative(prelude_idx))
-                    .expect("arena too small for prelude")
+        let mut src = SliceSource::new(PRELUDE_SOURCE);
+        loop {
+            self.skip_ws(&mut src);
+            let start = src.offset();
+            let Some(expr) = self
+                .parse_optional_expr(&mut src)
+                .expect("arena too small for prelude")
+            else {
+                break;
             };
-            self.env_define(ArenaIndex::GLOBAL_ENV, sym, binding)
-                .expect("arena too small for prelude");
+            let end = src.offset();
+            let form_source = &PRELUDE_SOURCE[start..end];
+
+            if let Some(is_operative) = self.classify_lazy_prelude_form(expr) {
+                let name =
+                    extract_binding_name(form_source).expect("lazy prelude form missing name");
+                let prelude_idx = self
+                    .arena
+                    .alloc(Value::Prelude(Prelude::new(form_source)))
+                    .expect("arena too small for prelude");
+                let sym = self.symbol(name).expect("arena too small for prelude");
+                let binding = if is_operative {
+                    prelude_idx
+                } else {
+                    self.arena
+                        .alloc(Value::Applicative(prelude_idx))
+                        .expect("arena too small for prelude")
+                };
+                self.env_define(ArenaIndex::GLOBAL_ENV, sym, binding)
+                    .expect("arena too small for prelude");
+            } else {
+                self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)
+                    .expect("invalid bundled prelude");
+            }
+        }
+    }
+
+    fn classify_lazy_prelude_form(&self, expr: ArenaIndex) -> Option<bool> {
+        let Value::Cons {
+            car: head,
+            cdr: rest,
+        } = self.get(expr).ok()?
+        else {
+            return None;
+        };
+
+        if self.symbol_name_eq(head, "fn!") {
+            let name = self.car(rest).ok()?;
+            return matches!(self.get(name).ok()?, Value::Symbol(_)).then_some(false);
         }
 
-        // Bind prelude constants (numbers, booleans, strings).
-        init_prelude_constants(self);
+        if !self.symbol_name_eq(head, "define!") {
+            return None;
+        }
+
+        let definiend = self.car(rest).ok()?;
+        if !matches!(self.get(definiend).ok()?, Value::Symbol(_)) {
+            return None;
+        }
+        let rhs = self.cadr(rest).ok()?;
+        let Value::Cons { car: rhs_head, .. } = self.get(rhs).ok()? else {
+            return None;
+        };
+        if self.symbol_name_eq(rhs_head, "vau") {
+            Some(true)
+        } else if self.symbol_name_eq(rhs_head, "lambda") {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     // — Native function registration —
@@ -1515,7 +1580,7 @@ mod tests {
 
     #[test]
     fn raw_prelude_type_name_matches_predicates() {
-        let prelude = crate::prelude::PRELUDE_ALL[0];
+        let prelude = crate::Prelude::new("(define! x (vau #ignore #ignore ()))");
         assert_eq!(Value::Prelude(prelude).type_name(), "prelude");
     }
 }

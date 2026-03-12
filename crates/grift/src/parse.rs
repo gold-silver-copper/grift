@@ -70,6 +70,11 @@ impl<'a> SliceSource<'a> {
             col: 1,
         }
     }
+
+    /// Return the current byte offset into the underlying source.
+    pub(crate) const fn offset(&self) -> usize {
+        self.pos
+    }
 }
 
 impl CharSource for SliceSource<'_> {

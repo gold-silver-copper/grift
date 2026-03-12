@@ -64,10 +64,7 @@ The runtime is split into a small set of modules with fairly sharp boundaries:
 - [`native.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/native.rs):
   host-function registration and `LispOps` abstraction
 - [`prelude.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/prelude.rs):
-  generated static prelude metadata and constant initialization
-- [`grift_macros/src/lib.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift_macros/src/lib.rs):
-  proc macro that reads `prelude.grift` at compile time and emits prelude
-  tables
+  bundled prelude source and lazy prelude binding helpers
 
 ## 3. Startup and Reserved Slots
 
@@ -374,19 +371,21 @@ Registration policy:
 
 Prelude installation happens in `Lisp::init_prelude()`:
 
-- operative prelude entries are stored as raw `Prelude(entry)` values in `GLOBAL_ENV`
-- applicative prelude entries are stored as `Applicative(Prelude(entry))`
-- prelude constants are bound eagerly during startup
+- operative prelude entries are stored as raw `Prelude(form)` values in `GLOBAL_ENV`
+- applicative prelude entries are stored as `Applicative(Prelude(form))`
+- non-lazy top-level prelude forms are evaluated eagerly during startup
 - prelude entries are not compiled once and cached; they are reparsed and
   reevaluated on each invocation
 
-The proc macro in
-[`grift_macros/src/lib.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift_macros/src/lib.rs)
-extracts two things from `prelude.grift`:
+At startup, the runtime walks `prelude.grift` form-by-form using the normal
+reader:
 
-- top-level combiner definitions, converted to static source strings
-- simple top-level constant definitions, converted to startup initialization
-  code
+- top-level `fn!` forms are installed as lazy applicative prelude bindings
+- top-level `(define! name (vau ...))` forms are installed as lazy operative
+  prelude bindings
+- top-level `(define! name (lambda ...))` forms are installed as lazy
+  applicative prelude bindings
+- all other top-level forms are evaluated eagerly in `GLOBAL_ENV`
 
 ## 9. Formatting and Raw String Helpers
 

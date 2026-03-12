@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/grift_macros",
-
     "crates/grift",
 ]
 exclude = ["grift-docs"]
