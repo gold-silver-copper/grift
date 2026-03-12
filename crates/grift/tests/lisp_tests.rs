@@ -1066,6 +1066,7 @@ fn test_unwrap_retrieves_operative() {
 #[test]
 fn test_lambda_is_applicative() {
     let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(operative? lambda)"), Ok(Value::Boolean(true)));
     assert_eq!(
         lisp.eval("(applicative? (lambda (x) x))"),
         Ok(Value::Boolean(true))
@@ -1074,6 +1075,12 @@ fn test_lambda_is_applicative() {
         lisp.eval("(operative? (unwrap (lambda (x) x)))"),
         Ok(Value::Boolean(true))
     );
+}
+
+#[test]
+fn test_fn_bang_is_operative() {
+    let lisp: Lisp<20000> = Lisp::new();
+    assert_eq!(lisp.eval("(operative? fn!)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -4317,6 +4324,8 @@ fn test_prelude_entries_exist() {
     assert!(names.contains(&"filter"), "filter should be in PRELUDE_ALL");
     assert!(names.contains(&"length"), "length should be in PRELUDE_ALL");
     assert!(names.contains(&"append"), "append should be in PRELUDE_ALL");
+    assert!(names.contains(&"lambda"), "lambda should be in PRELUDE_ALL");
+    assert!(names.contains(&"fn!"), "fn! should be in PRELUDE_ALL");
 }
 
 #[test]

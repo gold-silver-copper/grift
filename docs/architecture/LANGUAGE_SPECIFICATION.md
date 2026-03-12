@@ -1008,13 +1008,13 @@ Membership rules:
 
 - `null?` => only `NIL`
 - `pair?` => `Cons` and non-empty `CharPair` strings
-- `operative?` => builtin combiner cores and compound operatives
+- `operative?` => builtin combiner cores, compound operatives, and operative prelude bindings
 - `applicative?` => `Applicative` only
 - `environment?` => `Environment` only
 
 Notably:
 
-- prelude entries are not `operative?`
+- operative prelude bindings such as `lambda` and `fn!` are `operative?`
 - native host functions are not `operative?`
 - wrapped operatives are `applicative?`
 
@@ -1272,7 +1272,10 @@ Malformed reachable string structure causes formatting failure in host APIs and
 
 ## 10. Prelude
 
-The bundled prelude defines these functions in `GLOBAL_ENV`:
+The bundled prelude initializes these global bindings:
+
+- lazy operative bindings such as `lambda` and `fn!`
+- lazy prelude functions such as `map`, `filter`, `length`, and `append`
 
 ### 10.1 `map`
 

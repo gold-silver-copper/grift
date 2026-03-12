@@ -374,16 +374,17 @@ Registration policy:
 
 Prelude installation happens in `Lisp::init_prelude()`:
 
-- each prelude function becomes `Applicative(Prelude(entry))` in `GLOBAL_ENV`
+- operative prelude entries are stored as raw `Prelude(entry)` values in `GLOBAL_ENV`
+- applicative prelude entries are stored as `Applicative(Prelude(entry))`
 - prelude constants are bound eagerly during startup
-- prelude functions are not compiled once and cached; they are reparsed and
+- prelude entries are not compiled once and cached; they are reparsed and
   reevaluated on each invocation
 
 The proc macro in
 [`grift_macros/src/lib.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift_macros/src/lib.rs)
 extracts two things from `prelude.grift`:
 
-- top-level `(fn! ...)` forms, converted to static lambda source strings
+- top-level combiner definitions, converted to static source strings
 - simple top-level constant definitions, converted to startup initialization
   code
 

@@ -40,10 +40,13 @@ That gives the runtime three important properties:
 
 The current builtin surface includes:
 
-- operatives such as `quote`, `if`, `define!`, `fn!`, `set!`, `begin`, `cond`,
-  `and`, `or`, `let`, `vau`, and `current-environment`
+- operatives such as `quote`, `if`, `define!`, `set!`, `begin`, `cond`, `and`,
+  `or`, `let`, `vau`, and `current-environment`
 - applicatives such as arithmetic, list primitives, equality, `eval`, `wrap`,
   `unwrap`, environment constructors, GC control, and raw read/write helpers
+
+The bundled prelude also provides derived forms such as `lambda` and `fn!`,
+loaded lazily like the rest of the prelude.
 
 `apply` and `wrap` operate uniformly over first-class callables, including
 builtin operatives such as `if`.

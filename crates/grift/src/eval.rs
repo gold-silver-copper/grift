@@ -194,9 +194,7 @@ define_builtins! {
         "quote"  => op_quote  => op_quote,
         "if"     => op_if     => op_if,
         "define!" => op_define => op_define,
-        "fn!"    => op_fn_define => op_fn_define,
         "set!"   => op_set    => op_set,
-        "lambda" => op_lambda => op_lambda,
         "begin"  => op_begin  => op_begin,
         "cond"   => op_cond   => op_cond,
         "and"    => op_and    => op_and,
@@ -393,6 +391,15 @@ impl<const N: usize> Lisp<N> {
                         Ok(None)
                     }
 
+                    Value::Prelude(prelude) => {
+                        let real = self.eval_prelude_source(prelude)?;
+                        let (body, op_env) = self.invoke_operative(real, cdr, *env)?;
+                        self.pop_roots(2);
+                        *env = op_env;
+                        *expr = body;
+                        Ok(None)
+                    }
+
                     Value::Applicative(inner) => {
                         let evaled_args = self.eval_args(cdr, *env)?;
                         self.push_root(evaled_args)?;
@@ -513,20 +520,23 @@ impl<const N: usize> Lisp<N> {
         Ok((body, op_env))
     }
 
-    /// Parse a prelude lambda source and evaluate it to get the underlying operative.
+    /// Parse a prelude combiner source and evaluate it to get the underlying operative.
     ///
     /// Called on demand each time a `Prelude` function is invoked.
-    /// The source is a lambda expression (e.g. `(lambda (x) (+ x 1))`)
-    /// which evaluates to an Applicative(Operative). We unwrap to get
-    /// the inner Operative for direct invocation.
+    /// Applicative prelude entries evaluate to `Applicative(Operative)` and are
+    /// unwrapped to the inner operative. Operative prelude entries evaluate
+    /// directly to an operative.
     fn eval_prelude_source(&self, prelude: crate::prelude::Prelude) -> ArenaResult<ArenaIndex> {
         let mut src = SliceSource::new(prelude.source());
-        let lambda_expr = self
+        let source_expr = self
             .parse_complete_expr(&mut src)?
             .ok_or_else(|| ArenaError::ParseError { line: 1, col: 1 })?;
-        let app = self.eval_expr(lambda_expr, ArenaIndex::GLOBAL_ENV)?;
-        // lambda returns Applicative(Operative) — unwrap to get the operative
-        self.unwrap_applicative(app)
+        let combiner = self.eval_expr(source_expr, ArenaIndex::GLOBAL_ENV)?;
+        if prelude.is_operative() {
+            Ok(combiner)
+        } else {
+            self.unwrap_applicative(combiner)
+        }
     }
 
     /// Recursively match a formal parameter tree `ptree` against a value `obj`
@@ -645,36 +655,6 @@ impl<const N: usize> Lisp<N> {
         })
     }
 
-    /// `(fn! name params body...)` — define a named function.
-    ///
-    /// Syntactic sugar for `(define! name (lambda params (begin body...)))`.
-    /// `name` is a symbol, `params` is a formal parameter tree, and `body`
-    /// is one or more body expressions.
-    ///
-    /// Returns `#inert`.
-    fn op_fn_define(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail!({
-            debug_assert!(*env != ArenaIndex::GROUND_ENV, "fn! in ground env");
-
-            let name = self.car(args)?;
-            if !matches!(self.get(name)?, Value::Symbol(_)) {
-                return Err(ArenaError::TypeError);
-            }
-            let rest = self.cdr(args)?;
-            let params = self.car(rest)?;
-            let body_list = self.cdr(rest)?;
-            let body = self.wrap_begin(body_list)?;
-            let func = self.lambda(params, body, *env)?;
-            self.env_define(*env, name, func)?;
-            Ok(ArenaIndex::INERT)
-        })
-    }
-
     /// `(set! exp1 formals exp2)` — Kernel §6.8.1.
     ///
     /// Evaluates `exp1` and `exp2` in the dynamic environment; call the
@@ -705,21 +685,6 @@ impl<const N: usize> Lisp<N> {
             }
             self.env_set(target_env, definiend, val)?;
             Ok(ArenaIndex::INERT)
-        })
-    }
-
-    /// `(lambda (params...) body...)`.
-    /// Derived: `lambda = wrap(vau(params, #ignore, body))`.
-    fn op_lambda(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail!({
-            let params = self.car(args)?;
-            let body = self.wrap_begin(self.cdr(args)?)?;
-            self.lambda(params, body, *env)
         })
     }
 
@@ -1141,10 +1106,23 @@ impl<const N: usize> Lisp<N> {
         self.unwrap_applicative(app)
     }
 
-    type_predicate!(
-        builtin_operativep,
-        Value::Operative { .. } | Value::Builtin(_)
-    );
+    fn builtin_operativep(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+        let mut cur = args;
+        while !cur.is_nil() {
+            let val = self.car(cur)?;
+            let is_operative = match self.get(val)? {
+                Value::Operative { .. } | Value::Builtin(_) => true,
+                Value::Prelude(prelude) => prelude.is_operative(),
+                _ => false,
+            };
+            if !is_operative {
+                return Ok(ArenaIndex::FALSE);
+            }
+            cur = self.cdr(cur)?;
+        }
+        Ok(ArenaIndex::TRUE)
+    }
+
     type_predicate!(builtin_applicativep, Value::Applicative(_));
 
     /// `(make-environment . environments)` — create a new environment with

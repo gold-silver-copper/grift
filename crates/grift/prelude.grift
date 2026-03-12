@@ -1,7 +1,23 @@
 ;; Grift Prelude
 ;; This file is read at compile time by the include_prelude! proc macro.
-;; Function definitions become Prelude statics (parsed on demand).
+;; Combiner definitions become Prelude statics (parsed on demand).
 ;; Constants become Rust init code (bound at startup).
+
+;; Derived operatives
+(define! lambda
+  (vau (formals . body) e
+    (wrap
+      (eval (cons vau
+                  (cons formals
+                        (cons #ignore body)))
+            e))))
+
+(define! fn!
+  (vau (name params . body) e
+    (eval (list define! name
+                (cons lambda
+                      (cons params body)))
+          e)))
 
 ;; Functions
 (fn! map (f lst)

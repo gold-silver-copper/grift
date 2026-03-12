@@ -152,7 +152,7 @@ impl<const N: usize> Lisp<N> {
         // Initialize builtins into the ground environment.
         lisp.init_builtins();
 
-        // Initialize prelude (proc-macro-generated statics + constants).
+        // Initialize prelude (proc-macro-generated lazy bindings + constants).
         lisp.init_prelude();
 
         lisp
@@ -163,20 +163,24 @@ impl<const N: usize> Lisp<N> {
     fn init_prelude(&self) {
         use crate::prelude::{PRELUDE_ALL, init_prelude_constants};
 
-        // Bind each prelude function as an Applicative wrapping the Prelude value.
+        // Bind each prelude entry either as a raw operative or through an
+        // applicative wrapper, depending on its source shape.
         for &entry in PRELUDE_ALL {
             let prelude_idx = self
                 .arena
                 .alloc(Value::Prelude(entry))
                 .expect("arena too small for prelude");
-            let app_idx = self
-                .arena
-                .alloc(Value::Applicative(prelude_idx))
-                .expect("arena too small for prelude");
             let sym = self
                 .symbol(entry.name())
                 .expect("arena too small for prelude");
-            self.env_define(ArenaIndex::GLOBAL_ENV, sym, app_idx)
+            let binding = if entry.is_operative() {
+                prelude_idx
+            } else {
+                self.arena
+                    .alloc(Value::Applicative(prelude_idx))
+                    .expect("arena too small for prelude")
+            };
+            self.env_define(ArenaIndex::GLOBAL_ENV, sym, binding)
                 .expect("arena too small for prelude");
         }
 

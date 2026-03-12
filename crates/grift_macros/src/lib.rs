@@ -15,31 +15,32 @@ pub fn include_prelude(input: TokenStream) -> TokenStream {
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", full_path.display(), e));
 
     let forms = split_top_level_forms(&content);
-    let mut fn_entries: Vec<FnEntry> = Vec::new();
+    let mut entries: Vec<PreludeEntrySpec> = Vec::new();
     let mut constants: Vec<ConstEntry> = Vec::new();
 
     for form in &forms {
-        if let Some(entry) = try_extract_fn_define(form) {
-            fn_entries.push(entry);
+        if let Some(entry) = try_extract_prelude_entry(form) {
+            entries.push(entry);
         } else if let Some(entry) = try_extract_constant(form) {
             constants.push(entry);
+        } else {
+            panic!("Unsupported top-level prelude form: {}", form.trim());
         }
     }
 
     let mut code = String::new();
 
-    // Emit static PreludeEntry for each function
-    for (i, entry) in fn_entries.iter().enumerate() {
-        let escaped = entry.source.replace('\\', "\\\\").replace('"', "\\\"");
+    // Emit static PreludeEntry for each lazy prelude binding.
+    for (i, entry) in entries.iter().enumerate() {
         code.push_str(&format!(
-            "static _PRELUDE_{i}: PreludeEntry = PreludeEntry {{ name: \"{}\", source: \"{}\" }};\n",
-            entry.name, escaped
+            "static _PRELUDE_{i}: PreludeEntry = PreludeEntry {{ name: {:?}, source: {:?} }};\n",
+            entry.name, entry.source
         ));
     }
 
     // Emit PRELUDE_ALL array
     code.push_str("pub static PRELUDE_ALL: &[Prelude] = &[\n");
-    for i in 0..fn_entries.len() {
+    for i in 0..entries.len() {
         code.push_str(&format!("    Prelude::new(&_PRELUDE_{i}),\n"));
     }
     code.push_str("];\n\n");
@@ -50,21 +51,20 @@ pub fn include_prelude(input: TokenStream) -> TokenStream {
         match &c.value {
             ConstValue::Number(n) => {
                 code.push_str(&format!(
-                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let v = lisp.number({}).unwrap(); let _ = lisp.define_global(s, v); }}\n",
+                    "    {{ let s = lisp.symbol({:?}).unwrap(); let v = lisp.number({}).unwrap(); let _ = lisp.define_global(s, v); }}\n",
                     c.name, n
                 ));
             }
             ConstValue::Bool(b) => {
                 code.push_str(&format!(
-                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let _ = lisp.define_global(s, lisp.boolean({})); }}\n",
+                    "    {{ let s = lisp.symbol({:?}).unwrap(); let _ = lisp.define_global(s, lisp.boolean({})); }}\n",
                     c.name, b
                 ));
             }
             ConstValue::String(s) => {
-                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
                 code.push_str(&format!(
-                    "    {{ let s = lisp.symbol(\"{}\").unwrap(); let v = lisp.alloc_string(\"{}\").unwrap(); let _ = lisp.define_global(s, v); }}\n",
-                    c.name, escaped
+                    "    {{ let s = lisp.symbol({:?}).unwrap(); let v = lisp.alloc_string({:?}).unwrap(); let _ = lisp.define_global(s, v); }}\n",
+                    c.name, s
                 ));
             }
         }
@@ -75,7 +75,7 @@ pub fn include_prelude(input: TokenStream) -> TokenStream {
         .expect("Failed to parse generated prelude code")
 }
 
-struct FnEntry {
+struct PreludeEntrySpec {
     name: String,
     source: String,
 }
@@ -203,7 +203,20 @@ fn split_top_level_forms(source: &str) -> Vec<&str> {
     forms
 }
 
-fn try_extract_fn_define(form: &str) -> Option<FnEntry> {
+fn try_extract_prelude_entry(form: &str) -> Option<PreludeEntrySpec> {
+    if let Some(entry) = try_extract_fn_define(form) {
+        return Some(entry);
+    }
+
+    let (name, source) = extract_named_define(form)?;
+    if source.starts_with("(vau") || source.starts_with("(lambda") {
+        Some(PreludeEntrySpec { name, source })
+    } else {
+        None
+    }
+}
+
+fn try_extract_fn_define(form: &str) -> Option<PreludeEntrySpec> {
     let s = normalize_whitespace(form);
     let s = s.trim();
 
@@ -256,29 +269,15 @@ fn try_extract_fn_define(form: &str) -> Option<FnEntry> {
     };
 
     let source = format!("(lambda ({}) {})", params.join(" "), body_str);
-    Some(FnEntry { name, source })
+    Some(PreludeEntrySpec { name, source })
 }
 
 fn try_extract_constant(form: &str) -> Option<ConstEntry> {
-    let s = normalize_whitespace(form);
-    let s = s.trim();
-
-    if !s.starts_with("(define!") {
-        return None;
-    }
-    let rest = s["(define!".len()..].trim_start();
-    // Skip if it's a fn define or any sub-expression
-    if rest.starts_with('(') {
-        return None;
-    }
-
-    // Should be: name value)
-    let inner = rest.strip_suffix(')')?;
-    let mut parts = inner.split_whitespace();
-    let name = parts.next()?.to_string();
-    let value_str = parts.next()?;
+    let (name, value_str) = extract_named_define(form)?;
 
     // Ensure no extra tokens (simple constant only)
+    let mut parts = value_str.split_whitespace();
+    let value_str = parts.next()?;
     if parts.next().is_some() {
         return None;
     }
@@ -297,4 +296,28 @@ fn try_extract_constant(form: &str) -> Option<ConstEntry> {
     };
 
     Some(ConstEntry { name, value })
+}
+
+fn extract_named_define(form: &str) -> Option<(String, String)> {
+    let s = normalize_whitespace(form);
+    let s = s.trim();
+
+    if !s.starts_with("(define!") {
+        return None;
+    }
+    let rest = s["(define!".len()..].trim_start();
+    if rest.starts_with('(') {
+        return None;
+    }
+
+    let name_end = rest
+        .find(|c: char| c.is_whitespace() || c == ')')
+        .unwrap_or(rest.len());
+    let name = rest[..name_end].to_string();
+    let rhs = rest[name_end..]
+        .trim_start()
+        .strip_suffix(')')?
+        .trim()
+        .to_string();
+    Some((name, rhs))
 }
