@@ -1,67 +1,117 @@
 use grift::{ArenaError, Lisp, Value};
 
+#[test]
+fn test_singleton_identities_survive_dynamic_initialization() {
+    let lisp = Lisp::new();
+
+    assert_eq!(lisp.get(grift::ArenaIndex::NIL), Ok(Value::Nil));
+    assert_eq!(lisp.get(grift::ArenaIndex::TRUE), Ok(Value::Boolean(true)));
+    assert_eq!(
+        lisp.get(grift::ArenaIndex::FALSE),
+        Ok(Value::Boolean(false))
+    );
+    assert_eq!(lisp.get(grift::ArenaIndex::INERT), Ok(Value::Inert));
+    assert_eq!(lisp.get(grift::ArenaIndex::IGNORE), Ok(Value::Ignore));
+    assert!(matches!(
+        lisp.get(grift::ArenaIndex::GROUND_ENV),
+        Ok(Value::Environment { .. })
+    ));
+    assert!(matches!(
+        lisp.get(grift::ArenaIndex::GLOBAL_ENV),
+        Ok(Value::Environment { .. })
+    ));
+    assert!(matches!(
+        lisp.get(grift::ArenaIndex::GC_ROOTS),
+        Ok(Value::Cons { .. })
+    ));
+    assert!(matches!(
+        lisp.get(grift::ArenaIndex::INTERN_LIST),
+        Ok(Value::Cons { .. })
+    ));
+}
+
+#[test]
+fn test_symbol_parsing_and_formatting_after_reallocation() {
+    let lisp = Lisp::new();
+    let stable = lisp.symbol("stable").unwrap();
+    let slots_before = lisp.stats().slot_count;
+    let long_name = "x".repeat(8192);
+    let long_symbol = lisp.symbol(&long_name).unwrap();
+
+    assert!(lisp.stats().slot_count > slots_before);
+    assert_eq!(lisp.symbol("stable"), Ok(stable));
+    assert_eq!(
+        lisp.eval_to_index(&format!("'{long_name}")),
+        Ok(long_symbol)
+    );
+
+    let mut rendered = String::new();
+    lisp.write_value(long_symbol, &mut rendered).unwrap();
+    assert_eq!(rendered, long_name);
+}
+
 // ============================================================================
 // Basic Arithmetic Tests
 // ============================================================================
 
 #[test]
 fn test_addition() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let three = lisp.eval("(+ 1 2)");
     assert_eq!(three, Ok(Value::Number(3)));
 }
 
 #[test]
 fn test_addition_multiple() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(+ 1 2 3 4)"), Ok(Value::Number(10)));
 }
 
 #[test]
 fn test_addition_zero_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(+)"), Ok(Value::Number(0)));
 }
 
 #[test]
 fn test_subtraction() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(- 10 3)"), Ok(Value::Number(7)));
 }
 
 #[test]
 fn test_subtraction_unary() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(- 5)"), Ok(Value::Number(-5)));
 }
 
 #[test]
 fn test_subtraction_zero_args_is_arity_error() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(-)"), Err(ArenaError::ArityError));
 }
 
 #[test]
 fn test_multiplication() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(* 3 4)"), Ok(Value::Number(12)));
 }
 
 #[test]
 fn test_multiplication_zero_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(*)"), Ok(Value::Number(1)));
 }
 
 #[test]
 fn test_division() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(/ 10 3)"), Ok(Value::Number(3)));
 }
 
 #[test]
 fn test_nested_arithmetic() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(+ (* 2 3) (- 10 4))"), Ok(Value::Number(12)));
 }
 
@@ -71,28 +121,28 @@ fn test_nested_arithmetic() {
 
 #[test]
 fn test_numeric_equality() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(= 3 3)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(= 3 4)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_less_than() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(< 1 2)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(< 2 1)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_greater_than() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(> 2 1)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(> 1 2)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_less_equal() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(<= 1 2)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(<= 2 2)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(<= 3 2)"), Ok(Value::Boolean(false)));
@@ -100,7 +150,7 @@ fn test_less_equal() {
 
 #[test]
 fn test_greater_equal() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(>= 2 1)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(>= 2 2)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(>= 1 2)"), Ok(Value::Boolean(false)));
@@ -112,39 +162,39 @@ fn test_greater_equal() {
 
 #[test]
 fn test_booleans() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("#t"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("#f"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_if_true() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(if #t 1 2)"), Ok(Value::Number(1)));
 }
 
 #[test]
 fn test_if_false() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(if #f 1 2)"), Ok(Value::Number(2)));
 }
 
 #[test]
 fn test_if_no_else() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(if #f 1)"), Ok(Value::Nil));
 }
 
 #[test]
 fn test_quote() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // A quoted number should still be a number
     assert_eq!(lisp.eval("'42"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_and() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(and)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(and #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(and #f)"), Ok(Value::Boolean(false)));
@@ -168,7 +218,7 @@ fn test_and() {
 
 #[test]
 fn test_or() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(or)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(or #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(or #t)"), Ok(Value::Boolean(true)));
@@ -192,13 +242,13 @@ fn test_or() {
 
 #[test]
 fn test_number_literal() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("42"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_negative_number() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("-7"), Ok(Value::Number(-7)));
 }
 
@@ -208,14 +258,14 @@ fn test_negative_number() {
 
 #[test]
 fn test_cons_car_cdr() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(car (cons 1 2))"), Ok(Value::Number(1)));
     assert_eq!(lisp.eval("(cdr (cons 1 2))"), Ok(Value::Number(2)));
 }
 
 #[test]
 fn test_cons_rejects_non_string_tail_for_charpair_construction() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(cons (car "a") 42)"#),
         Err(ArenaError::TypeError)
@@ -224,13 +274,13 @@ fn test_cons_rejects_non_string_tail_for_charpair_construction() {
 
 #[test]
 fn test_list() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(car (list 1 2 3))"), Ok(Value::Number(1)));
 }
 
 #[test]
 fn test_list_is_applicative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(applicative? list)"), Ok(Value::Boolean(true)));
 }
 
@@ -240,21 +290,21 @@ fn test_list_is_applicative() {
 
 #[test]
 fn test_null_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(null? '())"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(null? 1)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_not() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(not #f)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(not #t)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_not_ignores_extra_operands_but_still_evaluates_them() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -269,27 +319,27 @@ fn test_not_ignores_extra_operands_but_still_evaluates_them() {
 
 #[test]
 fn test_not_requires_at_least_one_operand() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(not)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_pair_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(pair? (cons 1 2))"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(pair? 1)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_number_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(number? 42)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(number? #t)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_boolean_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(boolean? #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(boolean? 1)"), Ok(Value::Boolean(false)));
 }
@@ -300,14 +350,14 @@ fn test_boolean_predicate() {
 
 #[test]
 fn test_gc_collects_eval_garbage() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Evaluate an expression; intermediate values become garbage.
     lisp.eval("(+ 1 2)").unwrap();
     let before = lisp.stats();
 
     // GC with no roots should collect all values except the pre-allocated nil.
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     let after = lisp.stats();
 
     assert!(gc.collected > 0, "GC should collect some garbage");
@@ -319,11 +369,11 @@ fn test_gc_collects_eval_garbage() {
 
 #[test]
 fn test_gc_repeated_eval_no_leak() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Compute the baseline: arena slots consumed by the ground environment,
     // builtins, and singletons in a fresh interpreter instance.
-    let baseline = lisp.baseline_allocated();
+    let baseline = lisp.baseline_allocated().unwrap();
 
     // Evaluate many expressions; each creates temporary values.
     for _ in 0..50 {
@@ -331,7 +381,7 @@ fn test_gc_repeated_eval_no_leak() {
     }
 
     // GC should free the accumulated garbage.
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     let stats = lisp.stats();
 
     assert!(
@@ -352,7 +402,7 @@ fn test_gc_repeated_eval_no_leak() {
 
 #[test]
 fn test_gc_nested_expressions_no_leak() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Deeply nested expression creates many intermediate values.
     lisp.eval("(+ (* 2 3) (- 10 (+ 1 2)))").unwrap();
@@ -360,7 +410,7 @@ fn test_gc_nested_expressions_no_leak() {
     lisp.eval("(car (cons (+ 1 2) (list 4 5 6)))").unwrap();
 
     let before_gc = lisp.stats();
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     let after_gc = lisp.stats();
 
     assert!(gc.collected > 0, "GC should collect nested-expr garbage");
@@ -374,22 +424,22 @@ fn test_gc_nested_expressions_no_leak() {
 
 #[test]
 fn test_gc_lambda_garbage() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Create and call a lambda; the lambda and its environment become garbage.
     lisp.eval("((lambda (x) (+ x 1)) 5)").unwrap();
     lisp.eval("((lambda (x y) (* x y)) 3 4)").unwrap();
 
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     assert!(gc.collected > 0, "GC should collect lambda garbage");
 }
 
 #[test]
 fn test_gc_list_operations_no_leak() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Compute the baseline: slots for ground env, builtins, singletons.
-    let baseline = lisp.baseline_allocated();
+    let baseline = lisp.baseline_allocated().unwrap();
 
     // Create lists, extract elements, create garbage.
     for _ in 0..20 {
@@ -397,7 +447,7 @@ fn test_gc_list_operations_no_leak() {
         lisp.eval("(cdr (cons 1 2))").unwrap();
     }
 
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     let stats = lisp.stats();
 
     assert!(gc.collected > 0, "GC should collect list garbage");
@@ -415,10 +465,10 @@ fn test_gc_list_operations_no_leak() {
 
 #[test]
 fn test_gc_stress_many_evals() {
-    let lisp: Lisp<10000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Compute the baseline: slots for ground env, builtins, singletons.
-    let baseline = lisp.baseline_allocated();
+    let baseline = lisp.baseline_allocated().unwrap();
 
     // Run many evaluations without GC, then collect.
     for i in 0..100 {
@@ -426,13 +476,13 @@ fn test_gc_stress_many_evals() {
         lisp.eval("(* 3 4)").unwrap();
         lisp.eval("(list 1 2 3)").unwrap();
 
-        // Periodic GC every 25 iterations to prevent OOM.
+        // Periodic GC every 25 iterations to reclaim temporary objects.
         if (i + 1) % 25 == 0 {
             let _ = lisp.collect_garbage(&[]);
         }
     }
 
-    let _gc = lisp.collect_garbage(&[]);
+    let _gc = lisp.collect_garbage(&[]).unwrap();
     let final_stats = lisp.stats();
 
     // After full GC, only the baseline persistent state should remain,
@@ -451,20 +501,20 @@ fn test_gc_stress_many_evals() {
 fn test_gc_define_creates_garbage() {
     // The evaluator state persists across calls, but temporary values
     // (lambdas, intermediate results) become garbage after evaluation.
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // Evaluate several expressions that create lambdas and intermediate values.
     lisp.eval("((lambda (x) (+ x 1)) 5)").unwrap();
     lisp.eval("((lambda (a b) (* a b)) 3 7)").unwrap();
 
     // After eval, temporary values are garbage.
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     assert!(gc.collected > 0, "GC should collect temporary values");
 }
 
 #[test]
 fn test_gc_stats_accuracy() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     let initial = lisp.stats();
     assert!(initial.allocated > 0, "Nil slot should be pre-allocated");
@@ -476,7 +526,7 @@ fn test_gc_stats_accuracy() {
         "Eval should allocate arena slots"
     );
 
-    let gc = lisp.collect_garbage(&[]);
+    let gc = lisp.collect_garbage(&[]).unwrap();
     let after_gc = lisp.stats();
 
     // GC stats should report correct numbers.
@@ -492,7 +542,7 @@ fn test_gc_stats_accuracy() {
 
 #[test]
 fn test_fib_self_apply() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let program = r#"
         ((lambda (fib-self n)
             (fib-self fib-self n))
@@ -514,7 +564,7 @@ fn test_fib_self_apply() {
 fn test_strict_unused_arg_evaluated() {
     // In call-by-value, all arguments are evaluated even if unused.
     // The second argument is a type error that will crash.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         ((lambda (x y) x) 1 (+ 1 "crash"))
@@ -530,7 +580,7 @@ fn test_strict_unused_arg_evaluated() {
 fn test_if_unused_branch_not_evaluated() {
     // The false branch contains a type error; it must not be evaluated.
     // (if still only evaluates the taken branch)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(if #t 42 (+ 1 "crash"))"#),
         Ok(Value::Number(42))
@@ -540,7 +590,7 @@ fn test_if_unused_branch_not_evaluated() {
 #[test]
 fn test_strict_define_evaluated() {
     // Define now evaluates immediately, so a type error is caught.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! bad (+ 1 "crash"))
@@ -556,7 +606,7 @@ fn test_strict_define_evaluated() {
 #[test]
 fn test_strict_let_evaluated() {
     // Let binding now evaluates immediately, so a type error is caught.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (let ((x (+ 1 "crash")))
@@ -576,7 +626,7 @@ fn test_strict_let_evaluated() {
 #[test]
 fn test_memoization_double() {
     // (double x) uses x twice. With memoization, (+ 1 2) is evaluated once.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         ((lambda (double)
@@ -590,7 +640,7 @@ fn test_memoization_double() {
 #[test]
 fn test_memoization_let_reuse() {
     // x is used twice in let body. It should be evaluated at most once.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (let ((x (+ 10 20)))
@@ -603,7 +653,7 @@ fn test_memoization_let_reuse() {
 #[test]
 fn test_answers_through_let_bindings() {
     // Answers can be wrapped in pending bindings (indirections).
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (let ((x 1))
@@ -621,7 +671,7 @@ fn test_answers_through_let_bindings() {
 #[test]
 fn test_tco_countdown() {
     // Deep recursion that must not overflow the Rust stack.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! count (lambda (n)
@@ -635,7 +685,7 @@ fn test_tco_countdown() {
 #[test]
 fn test_tco_mutual_recursion() {
     // Mutual recursion in tail position.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-even? (lambda (n)
@@ -651,7 +701,7 @@ fn test_tco_mutual_recursion() {
 #[test]
 fn test_tco_begin_tail_position() {
     // The last expression in begin is a tail position.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (begin
@@ -674,7 +724,7 @@ fn test_tco_begin_tail_position() {
 fn test_set_bang_scheme_style_is_rejected() {
     // Scheme-style (set! x 2) is not valid Kernel syntax;
     // Kernel's set! requires an environment argument: (set! env definiend expr).
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! x 1)
@@ -692,7 +742,7 @@ fn test_set_bang_scheme_style_is_rejected() {
 fn test_define_shadows_not_mutates() {
     // Redefining with define! in the same frame now errors with AlreadyDefined.
     // A lambda parameter binding is independent from global define.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! x 1)
@@ -707,7 +757,7 @@ fn test_define_shadows_not_mutates() {
 #[test]
 fn test_define_redefinition_returns_new_value() {
     // Redefining in the same frame now errors with AlreadyDefined.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! x 1)
@@ -725,7 +775,7 @@ fn test_define_redefinition_returns_new_value() {
 #[test]
 fn test_tco_with_lazy_accumulator() {
     // Tail-recursive sum with lazy arguments.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! sum-to (lambda (n acc)
@@ -739,7 +789,7 @@ fn test_tco_with_lazy_accumulator() {
 #[test]
 fn test_tco_iterative_fib() {
     // Iterative fib via self-application with define.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! fib (lambda (n)
@@ -757,9 +807,9 @@ fn test_tco_iterative_fib() {
 
 #[test]
 fn test_recursive_fib_30() {
-    // Naive recursive fib(30) — previously crashed with OOM.
-    // GC during evaluation reclaims intermediate values, allowing completion.
-    let lisp: Lisp<100_000> = Lisp::new();
+    // Naive recursive fib(30) exercises closure reachability while the arena
+    // grows and temporary objects are reclaimed.
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! fib (lambda (n)
@@ -777,7 +827,7 @@ fn test_recursive_fib_30() {
 #[test]
 fn test_vau_basic_quote() {
     // vau receives unevaluated args: (vau (x) #ignore x) acts like quote.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-quote (vau (x) #ignore x))
@@ -790,7 +840,7 @@ fn test_vau_basic_quote() {
 #[test]
 fn test_vau_receives_unevaluated_args() {
     // The vau body can inspect unevaluated args. Here we quote a symbol.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-quote (vau (x) #ignore x))
@@ -803,7 +853,7 @@ fn test_vau_receives_unevaluated_args() {
 #[test]
 fn test_vau_with_env_param() {
     // vau captures the caller's environment via env-param and can eval in it.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-eval-add
@@ -819,7 +869,7 @@ fn test_vau_with_env_param() {
 fn test_vau_derive_lambda() {
     // Derive a simple applicative from vau: evaluates a single argument
     // in the caller's environment before using it.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-inc
@@ -834,7 +884,7 @@ fn test_vau_derive_lambda() {
 #[test]
 fn test_lambda_as_syntactic_sugar_over_vau() {
     // lambda is syntactic sugar: wrap(vau(params, #ignore, body, env))
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! double (lambda (x) (+ x x)))
@@ -847,7 +897,7 @@ fn test_lambda_as_syntactic_sugar_over_vau() {
 #[test]
 fn test_vau_closure() {
     // vau closes over its definition environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! make-adder
@@ -863,7 +913,7 @@ fn test_vau_closure() {
 #[test]
 fn test_first_class_if() {
     // `if` is a first-class operative that can be passed as an argument.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-if if)
@@ -876,7 +926,7 @@ fn test_first_class_if() {
 #[test]
 fn test_first_class_quote() {
     // `quote` is a first-class operative.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-quote quote)
@@ -888,7 +938,7 @@ fn test_first_class_quote() {
 
 #[test]
 fn test_quote_ignores_extra_operands_without_evaluating_them() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(equal? (quote answer does-not-exist) 'answer)"),
         Ok(Value::Boolean(true))
@@ -897,14 +947,14 @@ fn test_quote_ignores_extra_operands_without_evaluating_them() {
 
 #[test]
 fn test_quote_requires_at_least_one_operand() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(quote)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_first_class_begin() {
     // `begin` is a first-class operative.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (begin
@@ -918,7 +968,7 @@ fn test_first_class_begin() {
 #[test]
 fn test_first_class_define() {
     // `define!` is a first-class operative.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-define define!)
@@ -932,7 +982,7 @@ fn test_first_class_define() {
 #[test]
 fn test_first_class_and() {
     // `and` is a first-class operative.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-and and)
@@ -945,7 +995,7 @@ fn test_first_class_and() {
 #[test]
 fn test_first_class_or() {
     // `or` is a first-class operative.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-or or)
@@ -958,7 +1008,7 @@ fn test_first_class_or() {
 #[test]
 fn test_first_class_plus() {
     // `+` is a first-class operative stored in the environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-add +)
@@ -971,7 +1021,7 @@ fn test_first_class_plus() {
 #[test]
 fn test_first_class_cons() {
     // `cons` is a first-class operative.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-cons cons)
@@ -984,7 +1034,7 @@ fn test_first_class_cons() {
 #[test]
 fn test_eval_builtin() {
     // `eval` can evaluate expressions.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (eval '(+ 1 2))
@@ -996,7 +1046,7 @@ fn test_eval_builtin() {
 #[test]
 fn test_vau_if_alternative() {
     // Define a custom if using vau.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-if
@@ -1013,7 +1063,7 @@ fn test_vau_if_alternative() {
 #[test]
 fn test_vau_short_circuit() {
     // vau-defined if should not evaluate the unused branch.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-if
@@ -1030,7 +1080,7 @@ fn test_vau_short_circuit() {
 #[test]
 fn test_operative_is_value() {
     // Operatives (builtins) are values that can be bound and looked up.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! f +)
@@ -1043,7 +1093,7 @@ fn test_operative_is_value() {
 #[test]
 fn test_vau_rest_params() {
     // vau with a rest parameter binds all unevaluated args.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! count-args
@@ -1058,7 +1108,7 @@ fn test_vau_rest_params() {
 #[test]
 fn test_vau_gc_stress() {
     // Create and call many vau operatives to test GC.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! make-op
@@ -1079,7 +1129,7 @@ fn test_vau_gc_stress() {
 
 #[test]
 fn test_vau_creates_operative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(operative? (vau (x) e x))"),
         Ok(Value::Boolean(true))
@@ -1092,7 +1142,7 @@ fn test_vau_creates_operative() {
 
 #[test]
 fn test_wrap_creates_applicative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(applicative? (wrap (vau (x) #ignore x)))"),
         Ok(Value::Boolean(true))
@@ -1101,7 +1151,7 @@ fn test_wrap_creates_applicative() {
 
 #[test]
 fn test_unwrap_retrieves_operative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(operative? (unwrap (wrap (vau (x) #ignore x))))"),
         Ok(Value::Boolean(true))
@@ -1110,7 +1160,7 @@ fn test_unwrap_retrieves_operative() {
 
 #[test]
 fn test_lambda_is_applicative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(operative? lambda)"), Ok(Value::Boolean(true)));
     assert_eq!(
         lisp.eval("(applicative? (lambda (x) x))"),
@@ -1124,13 +1174,13 @@ fn test_lambda_is_applicative() {
 
 #[test]
 fn test_fn_bang_is_operative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(operative? fn!)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_lambda_rejects_invalid_formals_eagerly() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(lambda (42) 1)"), Err(ArenaError::TypeError));
     assert_eq!(
         lisp.eval("(lambda (x x) x)"),
@@ -1140,7 +1190,7 @@ fn test_lambda_rejects_invalid_formals_eagerly() {
 
 #[test]
 fn test_plus_is_applicative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(operative? +)"), Ok(Value::Boolean(false)));
 }
@@ -1148,7 +1198,7 @@ fn test_plus_is_applicative() {
 #[test]
 fn test_unwrap_plus() {
     // Unwrapping + gives the underlying operative (Builtin).
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(operative? (unwrap +))"),
         Ok(Value::Boolean(true))
@@ -1157,7 +1207,7 @@ fn test_unwrap_plus() {
 
 #[test]
 fn test_if_is_operative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(applicative? if)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
 }
@@ -1165,7 +1215,7 @@ fn test_if_is_operative() {
 #[test]
 fn test_wrap_unwrap_roundtrip() {
     // wrap/unwrap round-trip on user operatives.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-op (vau (x) e (eval x e)))
@@ -1179,7 +1229,7 @@ fn test_wrap_unwrap_roundtrip() {
 #[test]
 fn test_user_defined_unless() {
     // User-defined special form: unless
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! unless
@@ -1194,7 +1244,7 @@ fn test_user_defined_unless() {
 
 #[test]
 fn test_user_defined_unless_true() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! unless
@@ -1209,7 +1259,7 @@ fn test_user_defined_unless_true() {
 
 #[test]
 fn test_user_defined_when() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! when
@@ -1228,7 +1278,7 @@ fn test_user_defined_when() {
 
 #[test]
 fn test_dollar_vau_syntax() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-quote (vau (x) #ignore x))
@@ -1240,7 +1290,7 @@ fn test_dollar_vau_syntax() {
 
 #[test]
 fn test_dollar_vau_user_defined_unless() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! unless
@@ -1254,19 +1304,19 @@ fn test_dollar_vau_user_defined_unless() {
 
 #[test]
 fn test_operative_predicate_on_if() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_applicative_predicate_on_plus() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_operative_predicate_on_unwrap_plus() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(operative? (unwrap +))"),
         Ok(Value::Boolean(true))
@@ -1275,7 +1325,7 @@ fn test_operative_predicate_on_unwrap_plus() {
 
 #[test]
 fn test_applicative_predicate_on_wrap_if() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(applicative? (wrap if))"),
         Ok(Value::Boolean(true))
@@ -1284,7 +1334,7 @@ fn test_applicative_predicate_on_wrap_if() {
 
 #[test]
 fn test_derive_lambda_from_dollar_vau() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-lambda
@@ -1298,7 +1348,7 @@ fn test_derive_lambda_from_dollar_vau() {
 
 #[test]
 fn test_dollar_vau_with_env_param() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-eval-add
@@ -1316,7 +1366,7 @@ fn test_dollar_vau_with_env_param() {
 
 #[test]
 fn test_environment_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(environment? (make-environment))"),
         Ok(Value::Boolean(true))
@@ -1327,7 +1377,7 @@ fn test_environment_predicate() {
 
 #[test]
 fn test_make_environment_no_parent() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(environment? (make-environment))"),
         Ok(Value::Boolean(true))
@@ -1337,7 +1387,7 @@ fn test_make_environment_no_parent() {
 #[test]
 fn test_define_bang_mutates_environment() {
     // define! mutates the current environment in place
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1352,7 +1402,7 @@ fn test_define_bang_mutates_environment() {
 #[test]
 fn test_define_bang_redefinition() {
     // Redefining with define! in the same frame now errors with AlreadyDefined
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1368,7 +1418,7 @@ fn test_define_bang_redefinition() {
 #[test]
 fn test_let_creates_child_scope() {
     // let creates a child scope; define! inside let is local
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1384,7 +1434,7 @@ fn test_let_creates_child_scope() {
 #[test]
 fn test_lexical_scope_preserved() {
     // Closures see their definition environment, not the call site
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1402,7 +1452,7 @@ fn test_lexical_scope_preserved() {
 #[test]
 fn test_mutual_recursion_through_shared_env() {
     // Mutual recursion through shared environment
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1418,7 +1468,7 @@ fn test_mutual_recursion_through_shared_env() {
 #[test]
 fn test_vau_captures_caller_env_as_environment() {
     // Vau's env-param captures the caller's environment as a first-class Environment value
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1434,7 +1484,7 @@ fn test_vau_captures_caller_env_as_environment() {
 #[test]
 fn test_eval_in_custom_environment() {
     // Create a fresh environment and eval in it
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Note: we pass current env as parent so builtins are accessible
     assert_eq!(
         lisp.eval(
@@ -1452,7 +1502,7 @@ fn test_eval_in_custom_environment() {
 #[test]
 fn test_lambda_higher_order() {
     // Higher-order function: compose
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1467,7 +1517,7 @@ fn test_lambda_higher_order() {
 #[test]
 fn test_tco_with_define_bang() {
     // TCO works with define!
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1483,14 +1533,14 @@ fn test_tco_with_define_bang() {
 #[test]
 fn test_lambda_square() {
     // Lambda application
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("((lambda (x) (* x x)) 5)"), Ok(Value::Number(25)));
 }
 
 #[test]
 fn test_existing_functionality_preserved() {
     // Arithmetic, comparisons, lists
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(+ 1 2 3)"), Ok(Value::Number(6)));
     assert_eq!(lisp.eval("(< 1 2)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(car (list 1 2 3))"), Ok(Value::Number(1)));
@@ -1500,7 +1550,7 @@ fn test_existing_functionality_preserved() {
 #[test]
 fn test_vau_custom_if() {
     // Custom if using vau/operatives
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1512,7 +1562,7 @@ fn test_vau_custom_if() {
         ),
         Ok(Value::Number(1))
     );
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -1529,7 +1579,7 @@ fn test_vau_custom_if() {
 #[test]
 fn test_make_environment_with_parent() {
     // Child of current env can access parent bindings via eval
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1546,7 +1596,7 @@ fn test_make_environment_with_parent() {
 #[test]
 fn test_child_env_inherits_from_parent() {
     // A child env can look up bindings from its parent
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Verify + is accessible through parent chain (just check no error)
     assert!(
         lisp.eval(
@@ -1559,7 +1609,7 @@ fn test_child_env_inherits_from_parent() {
         .is_ok()
     );
     // Verify child can use parent builtins
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -1579,7 +1629,7 @@ fn test_child_env_inherits_from_parent() {
 #[test]
 fn test_sandboxed_eval_no_access_to_builtins() {
     // Sandboxed eval — no access to define!, vau, eval, or anything else
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1594,7 +1644,7 @@ fn test_sandboxed_eval_no_access_to_builtins() {
 #[test]
 fn test_selective_exposure_arithmetic_only() {
     // Selective exposure — only arithmetic, no metaprogramming
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1611,7 +1661,7 @@ fn test_selective_exposure_arithmetic_only() {
 #[test]
 fn test_selective_exposure_vau_is_unbound() {
     // vau should be unbound in the selective environment
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1628,7 +1678,7 @@ fn test_selective_exposure_vau_is_unbound() {
 #[test]
 fn test_make_empty_environment_is_truly_empty() {
     // make-empty-environment creates a truly empty scope
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1643,7 +1693,7 @@ fn test_make_empty_environment_is_truly_empty() {
 #[test]
 fn test_make_environment_with_current_env_has_builtins() {
     // Users who want builtins available write (make-environment (current-environment))
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1659,7 +1709,7 @@ fn test_make_environment_with_current_env_has_builtins() {
 #[test]
 fn test_no_global_fallback_in_eval() {
     // Without parent chain to global, symbols in global are unreachable
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // make-environment with no args
     assert_eq!(
         lisp.eval(
@@ -1671,7 +1721,7 @@ fn test_no_global_fallback_in_eval() {
         Err(ArenaError::UnboundVariable)
     );
     // make-empty-environment
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -1690,21 +1740,21 @@ fn test_no_global_fallback_in_eval() {
 #[test]
 fn test_define_returns_inert() {
     // Per Kernel spec, define! returns #inert
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(define! x 42)"), Ok(Value::Inert));
 }
 
 #[test]
 fn test_inert_is_self_evaluating() {
     // #inert evaluates to itself
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("#inert"), Ok(Value::Inert));
 }
 
 #[test]
 fn test_define_ptree_symbol() {
     // Simple symbol definiend
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1719,28 +1769,28 @@ fn test_define_ptree_symbol() {
 #[test]
 fn test_define_ptree_ignore() {
     // #ignore definiend — value is discarded
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(define! #ignore (+ 1 2))"), Ok(Value::Inert));
 }
 
 #[test]
 fn test_define_ptree_nil() {
     // Nil definiend matches nil value
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(define! () ())"), Ok(Value::Inert));
 }
 
 #[test]
 fn test_define_ptree_nil_mismatch() {
     // Nil definiend must match nil value; non-nil causes error
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(lisp.eval("(define! () 42)").is_err());
 }
 
 #[test]
 fn test_define_ptree_pair_destructuring() {
     // Without fn!, (define! (a . b) expr) is ptree destructuring.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // (#ignore . b) — ptree destructuring
     assert_eq!(
         lisp.eval(
@@ -1756,7 +1806,7 @@ fn test_define_ptree_pair_destructuring() {
 #[test]
 fn test_define_ptree_list_destructuring() {
     // Without fn!, (define! (a b c) ...) is ptree destructuring.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1771,7 +1821,7 @@ fn test_define_ptree_list_destructuring() {
 #[test]
 fn test_define_ptree_nested_destructuring() {
     // Nested pair definiend
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1786,7 +1836,7 @@ fn test_define_ptree_nested_destructuring() {
 #[test]
 fn test_define_ptree_with_ignore_in_pair() {
     // #ignore in a non-symbol-headed pair position
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1801,14 +1851,14 @@ fn test_define_ptree_with_ignore_in_pair() {
 #[test]
 fn test_define_ptree_pair_mismatch() {
     // Non-symbol-headed pair definiend with non-pair value should error
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(lisp.eval("(define! (#ignore . b) 42)").is_err());
 }
 
 #[test]
 fn test_define_ptree_rest_binding() {
     // fn! with variadic rest args — bare symbol captures all args.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1824,7 +1874,7 @@ fn test_define_ptree_rest_binding() {
 fn test_define_ptree_kernel_example() {
     // Without fn!, (define! (x y z) ...) is ptree destructuring.
     // Kernel-style destructuring works for all pair-headed definiends.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1843,83 +1893,83 @@ fn test_define_ptree_kernel_example() {
 #[test]
 fn test_vau_eformal_must_be_symbol_or_ignore() {
     // eformal = #ignore is valid
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(lisp.eval("(vau (x) #ignore x)").is_ok());
 
     // eformal = symbol is valid
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert!(lisp2.eval("(vau (x) e x)").is_ok());
 
     // eformal = number should error
-    let lisp3: Lisp<20000> = Lisp::new();
+    let lisp3: Lisp = Lisp::new();
     assert_eq!(lisp3.eval("(vau (x) 42 x)"), Err(ArenaError::TypeError));
 
     // eformal = list/pair should error
-    let lisp4: Lisp<20000> = Lisp::new();
+    let lisp4: Lisp = Lisp::new();
     assert_eq!(lisp4.eval("(vau (x) (a b) x)"), Err(ArenaError::TypeError));
 
     // eformal = boolean should error
-    let lisp5: Lisp<20000> = Lisp::new();
+    let lisp5: Lisp = Lisp::new();
     assert_eq!(lisp5.eval("(vau (x) #t x)"), Err(ArenaError::TypeError));
 
     // eformal = nil should error
-    let lisp6: Lisp<20000> = Lisp::new();
+    let lisp6: Lisp = Lisp::new();
     assert_eq!(lisp6.eval("(vau (x) () x)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_vau_eformal_not_in_formals() {
     // env-param symbol must not also appear in formals
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(vau (e) e e)"), Err(ArenaError::InvalidArgument));
 
     // env-param symbol nested in formals should also be caught
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval("(vau (a (b e)) e e)"),
         Err(ArenaError::InvalidArgument)
     );
 
     // env-param symbol in dotted rest position
-    let lisp3: Lisp<20000> = Lisp::new();
+    let lisp3: Lisp = Lisp::new();
     assert_eq!(
         lisp3.eval("(vau (a . e) e e)"),
         Err(ArenaError::InvalidArgument)
     );
 
     // No conflict: different symbol names are fine
-    let lisp4: Lisp<20000> = Lisp::new();
+    let lisp4: Lisp = Lisp::new();
     assert!(lisp4.eval("(vau (a b) e e)").is_ok());
 }
 
 #[test]
 fn test_vau_formals_must_be_valid_ptree() {
     // Valid formal parameter trees
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Symbol
     assert!(lisp.eval("(vau x #ignore x)").is_ok());
     // Nil
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert!(lisp2.eval("(vau () #ignore 42)").is_ok());
     // Pair/list of symbols
-    let lisp3: Lisp<20000> = Lisp::new();
+    let lisp3: Lisp = Lisp::new();
     assert!(lisp3.eval("(vau (a b) #ignore a)").is_ok());
     // Nested pairs
-    let lisp4: Lisp<20000> = Lisp::new();
+    let lisp4: Lisp = Lisp::new();
     assert!(lisp4.eval("(vau ((a b) c) #ignore a)").is_ok());
     // #ignore in formals
-    let lisp5: Lisp<20000> = Lisp::new();
+    let lisp5: Lisp = Lisp::new();
     assert!(lisp5.eval("(vau (a #ignore) #ignore a)").is_ok());
 
     // Invalid: number in formals
-    let lisp6: Lisp<20000> = Lisp::new();
+    let lisp6: Lisp = Lisp::new();
     assert_eq!(
         lisp6.eval("(vau (42) #ignore 1)"),
         Err(ArenaError::TypeError)
     );
 
     // Invalid: boolean in formals
-    let lisp7: Lisp<20000> = Lisp::new();
+    let lisp7: Lisp = Lisp::new();
     assert_eq!(
         lisp7.eval("(vau (#t) #ignore 1)"),
         Err(ArenaError::TypeError)
@@ -1929,7 +1979,7 @@ fn test_vau_formals_must_be_valid_ptree() {
 #[test]
 fn test_vau_valid_after_validation() {
     // After validation, vau still works correctly for valid cases
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! my-quote (vau (x) #ignore x))
@@ -1939,7 +1989,7 @@ fn test_vau_valid_after_validation() {
     assert_eq!(result, Ok(Value::Boolean(true)));
 
     // vau with env param works correctly
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -1958,7 +2008,7 @@ fn test_vau_valid_after_validation() {
 
 #[test]
 fn test_inert_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(inert? #inert)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(inert? 42)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(inert? #t)"), Ok(Value::Boolean(false)));
@@ -1968,7 +2018,7 @@ fn test_inert_predicate() {
 #[test]
 fn test_inert_predicate_on_define_result() {
     // define! returns #inert per Kernel spec
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -1987,7 +2037,7 @@ fn test_inert_predicate_on_define_result() {
 #[test]
 fn test_eq_booleans() {
     // Booleans: eq? iff same boolean value
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eq? #t #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(eq? #f #f)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(eq? #t #f)"), Ok(Value::Boolean(false)));
@@ -1997,7 +2047,7 @@ fn test_eq_booleans() {
 #[test]
 fn test_eq_symbols() {
     // Symbols are eq? iff they have the same external representation
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2008,7 +2058,7 @@ fn test_eq_symbols() {
         ),
         Ok(Value::Boolean(true))
     );
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -2023,14 +2073,14 @@ fn test_eq_symbols() {
 
 #[test]
 fn test_eq_numbers() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eq? 42 42)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(eq? 1 2)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_eq_strings_are_value_based() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(eq? "hello" "hello")"#),
         Ok(Value::Boolean(true))
@@ -2043,20 +2093,20 @@ fn test_eq_strings_are_value_based() {
 
 #[test]
 fn test_eq_nil() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eq? '() '())"), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_eq_inert() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eq? #inert #inert)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_eq_cons_different_calls() {
     // Two different calls to cons produce non-eq? pairs (§4.6.3)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2072,7 +2122,7 @@ fn test_eq_cons_different_calls() {
 #[test]
 fn test_eq_same_pair() {
     // Same pair is eq? to itself
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2087,7 +2137,7 @@ fn test_eq_same_pair() {
 #[test]
 fn test_eq_different_types() {
     // Different types are never eq?
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eq? #t 1)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(eq? '() #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(eq? 0 #f)"), Ok(Value::Boolean(false)));
@@ -2099,7 +2149,7 @@ fn test_eq_different_types() {
 
 #[test]
 fn test_equal_booleans() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(equal? #t #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(equal? #f #f)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(equal? #t #f)"), Ok(Value::Boolean(false)));
@@ -2107,7 +2157,7 @@ fn test_equal_booleans() {
 
 #[test]
 fn test_equal_numbers() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(equal? 42 42)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(equal? 1 2)"), Ok(Value::Boolean(false)));
 }
@@ -2115,7 +2165,7 @@ fn test_equal_numbers() {
 #[test]
 fn test_equal_cons_structural() {
     // equal? compares cons cells structurally
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2130,7 +2180,7 @@ fn test_equal_cons_structural() {
 
 #[test]
 fn test_equal_cons_different_content() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2146,7 +2196,7 @@ fn test_equal_cons_different_content() {
 #[test]
 fn test_equal_nested_lists() {
     // Deep structural equality of nested lists
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2162,7 +2212,7 @@ fn test_equal_nested_lists() {
 #[test]
 fn test_equal_implies_by_eq() {
     // eq? ⇒ equal? (Rule 2)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2176,7 +2226,7 @@ fn test_equal_implies_by_eq() {
 
 #[test]
 fn test_equal_different_types() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(equal? #t 1)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(equal? '() #f)"), Ok(Value::Boolean(false)));
 }
@@ -2184,7 +2234,7 @@ fn test_equal_different_types() {
 #[test]
 fn test_equal_environments_identity() {
     // Environments are equal? only when eq? (identity-based)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2195,7 +2245,7 @@ fn test_equal_environments_identity() {
         ),
         Ok(Value::Boolean(false))
     );
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -2213,7 +2263,7 @@ fn test_equal_environments_identity() {
 
 #[test]
 fn test_variadic_boolean_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(boolean? #t #f #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(boolean? #t 1 #f)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(boolean?)"), Ok(Value::Boolean(true)));
@@ -2221,7 +2271,7 @@ fn test_variadic_boolean_predicate() {
 
 #[test]
 fn test_variadic_number_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(number? 1 2 3)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(number? 1 #t 3)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(number?)"), Ok(Value::Boolean(true)));
@@ -2229,7 +2279,7 @@ fn test_variadic_number_predicate() {
 
 #[test]
 fn test_variadic_symbol_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(symbol? (quote a) (quote b))"),
         Ok(Value::Boolean(true))
@@ -2243,7 +2293,7 @@ fn test_variadic_symbol_predicate() {
 
 #[test]
 fn test_variadic_pair_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(pair? (cons 1 2) (cons 3 4))"),
         Ok(Value::Boolean(true))
@@ -2254,7 +2304,7 @@ fn test_variadic_pair_predicate() {
 
 #[test]
 fn test_variadic_null_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(null? '() '())"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(null? '() 1)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(null?)"), Ok(Value::Boolean(true)));
@@ -2262,7 +2312,7 @@ fn test_variadic_null_predicate() {
 
 #[test]
 fn test_variadic_inert_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(inert? #inert #inert)"),
         Ok(Value::Boolean(true))
@@ -2277,13 +2327,13 @@ fn test_variadic_inert_predicate() {
 
 #[test]
 fn test_ignore_is_self_evaluating() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("#ignore"), Ok(Value::Ignore));
 }
 
 #[test]
 fn test_ignore_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(ignore? #ignore)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(ignore? #t)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore? 42)"), Ok(Value::Boolean(false)));
@@ -2293,7 +2343,7 @@ fn test_ignore_predicate() {
 
 #[test]
 fn test_variadic_ignore_predicate() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(ignore? #ignore #ignore)"),
         Ok(Value::Boolean(true))
@@ -2305,21 +2355,21 @@ fn test_variadic_ignore_predicate() {
 #[test]
 fn test_ignore_is_not_symbol() {
     // #ignore is a distinct type, not a symbol
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(symbol? #ignore)"), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_ignore_eq() {
     // #ignore is eq? to itself (single immutable value)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eq? #ignore #ignore)"), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_ignore_equal() {
     // #ignore is equal? to itself
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(equal? #ignore #ignore)"),
         Ok(Value::Boolean(true))
@@ -2329,7 +2379,7 @@ fn test_ignore_equal() {
 #[test]
 fn test_ignore_in_define_ptree() {
     // #ignore in define! parameter tree ignores the value
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2344,7 +2394,7 @@ fn test_ignore_in_define_ptree() {
 #[test]
 fn test_ignore_in_lambda_params() {
     // #ignore can be used in lambda parameter trees
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2363,7 +2413,7 @@ fn test_ignore_in_lambda_params() {
 #[test]
 fn test_make_environment_multiple_parents() {
     // (make-environment env1 env2) creates env with both parents
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2383,7 +2433,7 @@ fn test_make_environment_multiple_parents() {
 #[test]
 fn test_make_environment_parent_order_matters() {
     // When both parents define the same symbol, the first parent wins
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2399,7 +2449,7 @@ fn test_make_environment_parent_order_matters() {
         Ok(Value::Number(1))
     );
     // Reversed order: e2 first, so e2's binding wins
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -2419,7 +2469,7 @@ fn test_make_environment_parent_order_matters() {
 #[test]
 fn test_make_environment_three_parents() {
     // Three parents
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2442,7 +2492,7 @@ fn test_make_environment_three_parents() {
 #[test]
 fn test_make_environment_validates_args_are_environments() {
     // make-environment should only accept environments as arguments
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(make-environment 42)"),
         Err(ArenaError::TypeError)
@@ -2453,7 +2503,7 @@ fn test_make_environment_validates_args_are_environments() {
 fn test_make_environment_copies_parent_list() {
     // The constructed environment stores its parents independently
     // of the original argument list (Kernel §4.8.4)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2470,7 +2520,7 @@ fn test_make_environment_copies_parent_list() {
 #[test]
 fn test_make_environment_no_args_has_no_parents() {
     // (make-environment) with no args creates parentless environment
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2485,7 +2535,7 @@ fn test_make_environment_no_args_has_no_parents() {
 #[test]
 fn test_make_environment_local_bindings_shadow_parents() {
     // Local bindings shadow parent bindings
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2507,7 +2557,7 @@ fn test_depth_first_search_in_multi_parent() {
     // child = (make-environment e1 e2) where e2 has x=200
     // Since e1 is searched depth-first before e2, and e1's parent gp has x=100,
     // that should be found before e2's x=200
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2531,7 +2581,7 @@ fn test_depth_first_search_in_multi_parent() {
 #[test]
 fn test_define_rejects_duplicate_symbol_in_parameter_tree() {
     // Ptree destructuring rejects duplicate symbols.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(
         lisp.eval("(define! (#ignore a a) (list 1 2 3))").is_err(),
         "duplicate symbol 'a' in ptree"
@@ -2541,7 +2591,7 @@ fn test_define_rejects_duplicate_symbol_in_parameter_tree() {
 #[test]
 fn test_define_rejects_duplicate_symbol_in_nested_parameter_tree() {
     // Duplicate detection must work across nested pairs in ptree.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(
         lisp.eval("(define! ((a b) (b c)) (list (list 1 2) (list 3 4)))")
             .is_err(),
@@ -2552,7 +2602,7 @@ fn test_define_rejects_duplicate_symbol_in_nested_parameter_tree() {
 #[test]
 fn test_define_rejects_duplicate_symbol_dotted_ptree() {
     // Duplicate in a non-symbol-headed dotted-pair ptree.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(
         lisp.eval("(define! (#ignore a . a) (list 1 2 3))").is_err(),
         "duplicate symbol 'a' in dotted pair ptree"
@@ -2562,7 +2612,7 @@ fn test_define_rejects_duplicate_symbol_dotted_ptree() {
 #[test]
 fn test_define_allows_ignore_duplicates_in_ptree() {
     // #ignore may appear multiple times — it is not a symbol.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2577,7 +2627,7 @@ fn test_define_allows_ignore_duplicates_in_ptree() {
 #[test]
 fn test_vau_rejects_duplicate_symbol_in_ptree() {
     // vau should also reject duplicate symbols in formals.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(vau (a a) #ignore a)"),
         Err(ArenaError::InvalidArgument),
@@ -2588,7 +2638,7 @@ fn test_vau_rejects_duplicate_symbol_in_ptree() {
 #[test]
 fn test_make_environment_rejects_non_environment_mixed() {
     // Passing a mix of environments and non-environments should fail.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(
         lisp.eval(
             r#"
@@ -2604,7 +2654,7 @@ fn test_make_environment_rejects_non_environment_mixed() {
 #[test]
 fn test_ignore_predicate_various_types() {
     // ignore? returns #f for all non-ignore types.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(ignore? #ignore)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(ignore? #t)"), Ok(Value::Boolean(false)));
     assert_eq!(lisp.eval("(ignore? #f)"), Ok(Value::Boolean(false)));
@@ -2621,7 +2671,7 @@ fn test_ignore_predicate_various_types() {
 #[test]
 fn test_multi_parent_first_parent_wins() {
     // When multiple parents define the same binding, the first parent wins.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2644,7 +2694,7 @@ fn test_multi_parent_first_parent_wins() {
 #[test]
 fn test_set_bang_basic() {
     // set! mutates an existing binding in the specified environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2660,7 +2710,7 @@ fn test_set_bang_basic() {
 #[test]
 fn test_set_bang_returns_inert() {
     // set! returns #inert per Kernel spec.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2676,7 +2726,7 @@ fn test_set_bang_returns_inert() {
 fn test_set_bang_creates_new_binding() {
     // Per the new semantics, set! does NOT create new bindings.
     // It errors with UnboundVariable if the symbol doesn't exist in the target frame.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2692,7 +2742,7 @@ fn test_set_bang_creates_new_binding() {
 fn test_set_bang_in_captured_env() {
     // Per Kernel §6.8.1, set! binds formals in the specified environment.
     // To modify a variable in an outer scope, capture that scope's env first.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2712,7 +2762,7 @@ fn test_set_bang_in_captured_env() {
 #[test]
 fn test_set_bang_mutation_visible_to_closures() {
     // §3.1: After mutation, subsequent lookups see the new value.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2730,7 +2780,7 @@ fn test_set_bang_mutation_visible_to_closures() {
 fn test_set_bang_ptree_destructuring() {
     // set! now only supports single symbol formals (not ptree destructuring).
     // Passing a pair as the formal should signal TypeError.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(
         lisp.eval(
             r#"
@@ -2746,7 +2796,7 @@ fn test_set_bang_ptree_destructuring() {
 #[test]
 fn test_set_bang_requires_environment() {
     // set! requires the first argument to evaluate to an environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(
         r#"
         (define! x 1)
@@ -2761,7 +2811,7 @@ fn test_set_bang_evaluates_exp2_in_dynamic_env() {
     // Per Kernel §6.8.1, set! evaluates exp2 in the dynamic environment
     // (the caller's env), NOT in the target environment.
     // set! now requires the binding to exist in the target frame.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2780,7 +2830,7 @@ fn test_set_bang_defines_in_target_not_dynamic() {
     // set! modifies bindings in the target env, not the dynamic env.
     // set! now requires the binding to exist. Test that set! modifies a
     // binding in a child env that has its own copy.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2801,7 +2851,7 @@ fn test_set_bang_defines_in_target_not_dynamic() {
 #[test]
 fn test_standard_env_is_child_of_ground() {
     // The standard environment inherits all builtins from the ground.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
     assert_eq!(lisp.eval("(operative? if)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(applicative? +)"), Ok(Value::Boolean(true)));
@@ -2811,12 +2861,12 @@ fn test_standard_env_is_child_of_ground() {
 fn test_define_in_standard_env_does_not_affect_ground() {
     // Defining in the standard env persists across calls but should not
     // affect a separate Lisp instance (different ground/standard envs).
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(define! x 42) x"), Ok(Value::Number(42)));
     // The binding persists in the same instance.
     assert_eq!(lisp.eval("x"), Ok(Value::Number(42)));
     // A fresh Lisp instance does not see the binding.
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(lisp2.eval("x"), Err(ArenaError::UnboundVariable));
 }
 
@@ -2827,7 +2877,7 @@ fn test_set_bang_on_ground_env_rejected() {
     // Also, set! now requires the binding to already exist in the target frame.
     // Trying to set! a ground-env binding via the standard env fails because
     // the binding is in ground, not the standard env's own frame.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
 
     // set! cannot modify ground-env inherited bindings through the standard env
     // because they don't exist in the standard env's own frame.
@@ -2859,7 +2909,7 @@ fn test_set_bang_on_ground_env_rejected() {
 #[test]
 fn test_evaluator_self_evaluating() {
     // Step 1: If o isn't a symbol and isn't a pair, return o.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("42"), Ok(Value::Number(42)));
     assert_eq!(lisp.eval("#t"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("#f"), Ok(Value::Boolean(false)));
@@ -2869,14 +2919,14 @@ fn test_evaluator_self_evaluating() {
 #[test]
 fn test_evaluator_symbol_unbound_error() {
     // Step 2 error: If symbol is not bound, signal an error.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("nonexistent"), Err(ArenaError::UnboundVariable));
 }
 
 #[test]
 fn test_evaluator_not_callable_error() {
     // Step 3 error: If f is neither applicative nor operative, error.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(42 1 2)"), Err(ArenaError::NotCallable));
 }
 
@@ -2887,7 +2937,7 @@ fn test_evaluator_not_callable_error() {
 #[test]
 fn test_operative_encapsulation_no_distinction() {
     // §3.4: operative? cannot distinguish compound from primitive operatives.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2906,7 +2956,7 @@ fn test_operative_static_env_not_extractable() {
     // of a compound operative. Closures with local state demonstrate
     // that only the operative itself can access its closed-over env.
     // Per §6.8.1, set! binds formals in the captured environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2930,7 +2980,7 @@ fn test_operative_static_env_not_extractable() {
 #[test]
 fn test_set_bang_enables_mutable_state() {
     // §3.1: References can be set after creation, enabling mutable state.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -2959,7 +3009,7 @@ fn test_set_bang_enables_mutable_state() {
 
 #[test]
 fn test_gc_collect_returns_number() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval("(gc-collect)");
     // gc-collect returns the number of objects collected
     match result {
@@ -2972,7 +3022,7 @@ fn test_gc_collect_returns_number() {
 fn test_gc_collect_with_garbage() {
     // Create garbage by allocating values that become unreachable,
     // then verify gc-collect reclaims them.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // First eval creates garbage (evaluator, builtins, etc.)
     lisp.eval("(+ 1 2)").unwrap();
     // gc-collect should reclaim at least something from the previous eval
@@ -2986,19 +3036,21 @@ fn test_gc_collect_with_garbage() {
 }
 
 #[test]
-fn test_gc_oom_triggers_collection() {
-    // Use a small arena so OOM-triggered GC is exercised.
-    // Repeated evaluations should succeed because GC reclaims garbage on OOM.
-    let lisp: Lisp<5000> = Lisp::new();
-    for i in 0..30 {
+fn test_repeated_eval_grows_without_fixed_limit() {
+    // Repeated evaluation can grow object storage without a configured slot
+    // ceiling; explicit GC still reclaims the resulting temporary objects.
+    let lisp: Lisp = Lisp::new();
+    let initial_slots = lisp.stats().slot_count;
+    for i in 0..200 {
         let result = lisp.eval("(+ 1 2)");
         assert_eq!(
             result,
             Ok(Value::Number(3)),
-            "eval iteration {} should succeed (OOM-triggered GC should reclaim garbage)",
-            i
+            "eval iteration {i} should succeed while arena storage grows"
         );
     }
+    assert!(lisp.stats().slot_count > initial_slots);
+    assert!(lisp.collect_garbage(&[]).unwrap().collected > 0);
 }
 
 // ============================================================================
@@ -3008,7 +3060,7 @@ fn test_gc_oom_triggers_collection() {
 #[test]
 fn test_car_of_string() {
     // (car "hello") => a one-element string "h"
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(r#"(car "hello")"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
@@ -3020,7 +3072,7 @@ fn test_car_of_string() {
 #[test]
 fn test_cdr_of_string() {
     // (cdr "hello") => "ello", check via (car (cdr "hello")) => "e"
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(r#"(car (cdr "hello"))"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'e', .. }),
@@ -3032,34 +3084,34 @@ fn test_cdr_of_string() {
 #[test]
 fn test_null_of_empty_string() {
     // (null? "") => #t (empty string is NIL)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval(r#"(null? "")"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_pair_of_nonempty_string() {
     // (pair? "hello") => #t (non-empty string is a CharPair)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval(r#"(pair? "hello")"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_pair_of_empty_string() {
     // (pair? "") => #f (empty string is NIL)
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval(r#"(pair? "")"#), Ok(Value::Boolean(false)));
 }
 
 #[test]
 fn test_equal_empty_string_and_nil() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval(r#"(equal? "" ())"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_string_traversal() {
     // Walk through a string using car/cdr until null
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // cdr of a single-char string should be NIL
     assert_eq!(lisp.eval(r#"(null? (cdr "x"))"#), Ok(Value::Boolean(true)));
     assert_eq!(
@@ -3071,7 +3123,7 @@ fn test_string_traversal() {
 #[test]
 fn test_cons_char_onto_string() {
     // (cons (car "h") "ello") should produce a string "hello"
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Verify by checking car/cdr of the result
     let result = lisp.eval(r#"(car (cons (car "h") "ello"))"#).unwrap();
     assert!(
@@ -3090,7 +3142,7 @@ fn test_cons_char_onto_string() {
 #[test]
 fn test_cons_char_onto_nil() {
     // (cons (car "h") ()) should produce a one-element string
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(r#"(car (cons (car "h") '()))"#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
@@ -3106,7 +3158,7 @@ fn test_cons_char_onto_nil() {
 #[test]
 fn test_equal_strings() {
     // Two separately allocated strings with same content should be equal?
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(equal? "hello" "hello")"#),
         Ok(Value::Boolean(true))
@@ -3119,14 +3171,14 @@ fn test_equal_strings() {
 
 #[test]
 fn test_equal_empty_strings() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval(r#"(equal? "" "")"#), Ok(Value::Boolean(true)));
 }
 
 #[test]
 fn test_string_is_self_evaluating() {
     // Strings are self-evaluating
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(r#""hello""#).unwrap();
     assert!(
         matches!(result, Value::CharPair { ch: 'h', .. }),
@@ -3140,7 +3192,7 @@ fn test_string_is_self_evaluating() {
 // ============================================================================
 
 /// Helper: evaluate and format via write_value.
-fn display(lisp: &Lisp<20000>, input: &str) -> String {
+fn display(lisp: &Lisp, input: &str) -> String {
     let idx = lisp.eval_to_index(input).unwrap();
     let mut buf = String::new();
     lisp.write_value(idx, &mut buf).unwrap();
@@ -3149,27 +3201,27 @@ fn display(lisp: &Lisp<20000>, input: &str) -> String {
 
 #[test]
 fn test_write_value_number() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "42"), "42");
     assert_eq!(display(&lisp, "-7"), "-7");
 }
 
 #[test]
 fn test_write_value_boolean() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "#t"), "#t");
     assert_eq!(display(&lisp, "#f"), "#f");
 }
 
 #[test]
 fn test_write_value_nil() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "'()"), "()");
 }
 
 #[test]
 fn test_write_value_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, r#""hello""#), r#""hello""#);
     assert_eq!(display(&lisp, r#""""#), "()"); // empty string is NIL
 }
@@ -3177,65 +3229,65 @@ fn test_write_value_string() {
 #[test]
 fn test_write_value_string_single_char() {
     // car of a string is a one-element string
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, r#"(car "hello")"#), r#""h""#);
 }
 
 #[test]
 fn test_write_value_string_cdr() {
     // cdr of a string is the rest of the string
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, r#"(cdr "hello")"#), r#""ello""#);
 }
 
 #[test]
 fn test_write_value_symbol() {
     // quote returns the symbol itself
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "'foo"), "foo");
     assert_eq!(display(&lisp, "'define!"), "define!");
 }
 
 #[test]
 fn test_write_value_list() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "'(1 2 3)"), "(1 2 3)");
     assert_eq!(display(&lisp, "'(1)"), "(1)");
 }
 
 #[test]
 fn test_write_value_nested_list() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "'(1 (2 3) 4)"), "(1 (2 3) 4)");
 }
 
 #[test]
 fn test_write_value_dotted_pair() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "(cons 1 2)"), "(1 . 2)");
 }
 
 #[test]
 fn test_write_value_improper_list() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "(cons 1 (cons 2 3))"), "(1 2 . 3)");
 }
 
 #[test]
 fn test_write_value_inert() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "#inert"), "#inert");
 }
 
 #[test]
 fn test_write_value_ignore() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, "#ignore"), "#ignore");
 }
 
 #[test]
 fn test_write_value_list_with_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(display(&lisp, r#"(cons 1 (cons "hi" '()))"#), r#"(1 "hi")"#);
 }
 
@@ -3245,7 +3297,7 @@ fn test_write_value_list_with_string() {
 
 #[test]
 fn test_set_bang_modifies_existing() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3260,7 +3312,7 @@ fn test_set_bang_modifies_existing() {
 
 #[test]
 fn test_set_bang_errors_on_nonexistent() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(set! (current-environment) y 1)"),
         Err(ArenaError::UnboundVariable)
@@ -3270,7 +3322,7 @@ fn test_set_bang_errors_on_nonexistent() {
 #[test]
 fn test_set_bang_does_not_walk_parents() {
     // x exists in the parent env, but not in e's own frame.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3285,7 +3337,7 @@ fn test_set_bang_does_not_walk_parents() {
 
 #[test]
 fn test_set_bang_closures_see_change() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3303,14 +3355,14 @@ fn test_set_bang_closures_see_change() {
 #[test]
 fn test_set_bang_empty_env() {
     // Cannot set! in an env with no bindings
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(lisp.eval("(set! (make-environment) x 1)").is_err());
 }
 
 #[test]
 fn test_set_bang_only_supports_single_symbol() {
     // set! only accepts a single symbol target.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert!(
         lisp.eval(
             r#"
@@ -3330,7 +3382,7 @@ fn test_set_bang_only_supports_single_symbol() {
 #[test]
 fn test_define_rejects_redefinition_in_same_frame() {
     // define! rejects re-defining in the same frame
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3345,7 +3397,7 @@ fn test_define_rejects_redefinition_in_same_frame() {
 
 #[test]
 fn test_parent_definition_remains_visible_in_child_scope() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3359,7 +3411,7 @@ fn test_parent_definition_remains_visible_in_child_scope() {
 }
 #[test]
 fn test_define_different_frames() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3375,7 +3427,7 @@ fn test_define_different_frames() {
 #[test]
 fn test_fn_bang_rejects_redefinition_in_repl() {
     // fn! uses define! internally, so redefining errors with AlreadyDefined
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3402,7 +3454,7 @@ fn test_fn_bang_rejects_redefinition_in_repl() {
 
 #[test]
 fn test_current_environment_returns_environment() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(environment? (current-environment))"),
         Ok(Value::Boolean(true))
@@ -3411,7 +3463,7 @@ fn test_current_environment_returns_environment() {
 
 #[test]
 fn test_current_environment_ignores_extra_operands_without_evaluating_them() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3426,7 +3478,7 @@ fn test_current_environment_ignores_extra_operands_without_evaluating_them() {
 
 #[test]
 fn test_current_environment_captures_frame() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3441,7 +3493,7 @@ fn test_current_environment_captures_frame() {
 
 #[test]
 fn test_current_environment_different_scopes() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3457,7 +3509,7 @@ fn test_current_environment_different_scopes() {
 
 #[test]
 fn test_current_environment_with_set() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3473,7 +3525,7 @@ fn test_current_environment_with_set() {
 
 #[test]
 fn test_current_environment_in_closures() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3488,7 +3540,7 @@ fn test_current_environment_in_closures() {
         ),
         Ok(Value::Number(0))
     );
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -3512,7 +3564,7 @@ fn test_current_environment_in_closures() {
 
 #[test]
 fn test_named_let_basic_loop() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3526,7 +3578,7 @@ fn test_named_let_basic_loop() {
 
 #[test]
 fn test_named_let_factorial() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3541,7 +3593,7 @@ fn test_named_let_factorial() {
 
 #[test]
 fn test_named_let_fibonacci() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3556,7 +3608,7 @@ fn test_named_let_fibonacci() {
 
 #[test]
 fn test_named_let_name_not_visible_outside() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.eval(
         r#"
         (let loop ((i 0))
@@ -3569,7 +3621,7 @@ fn test_named_let_name_not_visible_outside() {
 
 #[test]
 fn test_named_let_inits_in_outer_scope() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3585,7 +3637,7 @@ fn test_named_let_inits_in_outer_scope() {
 #[test]
 fn test_named_let_tco() {
     // Should not stack overflow with TCO
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3599,13 +3651,13 @@ fn test_named_let_tco() {
 
 #[test]
 fn test_named_let_zero_bindings() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(let loop () 42)"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_regular_let_still_works() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3619,19 +3671,19 @@ fn test_regular_let_still_works() {
 
 #[test]
 fn test_regular_let_rejects_non_symbol_binding_name() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(let ((42 1)) 42)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_regular_let_rejects_extra_binding_elements() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(let ((x 1 2)) x)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_regular_let_rejects_missing_init() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(let ((x)) x)"), Err(ArenaError::TypeError));
 }
 
@@ -3641,7 +3693,7 @@ fn test_regular_let_rejects_missing_init() {
 
 #[test]
 fn test_fn_bang_basic_definition() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3655,7 +3707,7 @@ fn test_fn_bang_basic_definition() {
 
 #[test]
 fn test_fn_bang_multi_body_definition() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3671,7 +3723,7 @@ fn test_fn_bang_multi_body_definition() {
 
 #[test]
 fn test_fn_bang_variadic() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3685,7 +3737,7 @@ fn test_fn_bang_variadic() {
 
 #[test]
 fn test_fn_bang_zero_params() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Verify it returns a string value
     assert_eq!(
         lisp.eval(
@@ -3700,7 +3752,7 @@ fn test_fn_bang_zero_params() {
 
 #[test]
 fn test_fn_bang_recursive_definition() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3715,7 +3767,7 @@ fn test_fn_bang_recursive_definition() {
 
 #[test]
 fn test_fn_bang_mutual_recursion() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3731,7 +3783,7 @@ fn test_fn_bang_mutual_recursion() {
 
 #[test]
 fn test_fn_bang_independent_redefinitions_across_fresh_interpreters() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3741,7 +3793,7 @@ fn test_fn_bang_independent_redefinitions_across_fresh_interpreters() {
         ),
         Ok(Value::Number(6))
     );
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -3755,7 +3807,7 @@ fn test_fn_bang_independent_redefinitions_across_fresh_interpreters() {
 
 #[test]
 fn test_fn_bang_closure_definition() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3771,7 +3823,7 @@ fn test_fn_bang_closure_definition() {
 
 #[test]
 fn test_fn_bang_inside_let() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3787,7 +3839,7 @@ fn test_fn_bang_inside_let() {
 #[test]
 fn test_define_destructuring_still_works_non_symbol_car() {
     // Ptree destructuring works when car of definiend is NOT a symbol
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3806,7 +3858,7 @@ fn test_define_destructuring_still_works_non_symbol_car() {
 #[test]
 fn test_fn_bang_disambiguation_destructuring_vs_function() {
     // Without fn!, define! destructures.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3822,7 +3874,7 @@ fn test_fn_bang_disambiguation_destructuring_vs_function() {
 #[test]
 fn test_fn_bang_disambiguation_function_definition() {
     // With fn!, the same surface shape defines a function.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3837,7 +3889,7 @@ fn test_fn_bang_disambiguation_function_definition() {
 #[test]
 fn test_fn_bang_pair_shape_without_marker_destructures() {
     // Without fn!, (a b) is ptree destructuring.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3853,7 +3905,7 @@ fn test_fn_bang_pair_shape_without_marker_destructures() {
 #[test]
 fn test_fn_bang_dotted_shape_without_marker_destructures() {
     // Without fn!, (x . y) is ptree destructuring.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3867,7 +3919,7 @@ fn test_fn_bang_dotted_shape_without_marker_destructures() {
 
 #[test]
 fn test_fn_bang_shape_without_marker_destructures_with_ignore() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3882,14 +3934,14 @@ fn test_fn_bang_shape_without_marker_destructures_with_ignore() {
 #[test]
 fn test_fn_symbol_can_still_be_used_as_variable_name() {
     // `fn` remains an ordinary symbol in define!.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(define! fn 42) fn"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_fn_bang_can_define_function_named_fn() {
     // fn! can define a function literally named `fn`.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -3907,7 +3959,7 @@ fn test_fn_bang_can_define_function_named_fn() {
 
 #[test]
 fn test_error_signals_error() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(error "test error")"#),
         Err(ArenaError::InvalidArgument)
@@ -3916,19 +3968,19 @@ fn test_error_signals_error() {
 
 #[test]
 fn test_apply_basic() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(apply + (list 1 2 3))"), Ok(Value::Number(6)));
 }
 
 #[test]
 fn test_apply_rejects_non_environment_operand() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(apply + () 99)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_apply_lambda() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(apply (lambda (a b) (+ a b)) (list 3 4))"),
         Ok(Value::Number(7))
@@ -3937,7 +3989,7 @@ fn test_apply_lambda() {
 
 #[test]
 fn test_apply_builtin_operative_if() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(let ((x 41)) (apply if (list #t 'x 0) (current-environment)))"),
         Ok(Value::Number(41))
@@ -3946,7 +3998,7 @@ fn test_apply_builtin_operative_if() {
 
 #[test]
 fn test_apply_builtin_operative_quote() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(equal? (apply quote (list 'x)) 'x)"),
         Ok(Value::Boolean(true))
@@ -3955,7 +4007,7 @@ fn test_apply_builtin_operative_quote() {
 
 #[test]
 fn test_apply_builtin_operative_and_preserves_short_circuit() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(apply and '(#f missing))"),
         Ok(Value::Boolean(false))
@@ -3964,7 +4016,7 @@ fn test_apply_builtin_operative_and_preserves_short_circuit() {
 
 #[test]
 fn test_apply_builtin_operative_current_environment_uses_explicit_env() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(let ((x 17)) (eval 'x (apply current-environment () (current-environment))))"),
         Ok(Value::Number(17))
@@ -3973,7 +4025,7 @@ fn test_apply_builtin_operative_current_environment_uses_explicit_env() {
 
 #[test]
 fn test_apply_builtin_operative_define_uses_explicit_env() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             "(begin (define! target (make-empty-environment)) \
@@ -3986,7 +4038,7 @@ fn test_apply_builtin_operative_define_uses_explicit_env() {
 
 #[test]
 fn test_apply_user_defined_operative_uses_explicit_env() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             "(let ((x 41)) \
@@ -4000,13 +4052,13 @@ fn test_apply_user_defined_operative_uses_explicit_env() {
 
 #[test]
 fn test_wrap_builtin_operative_is_callable() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("((wrap if) #t 1 2)"), Ok(Value::Number(1)));
 }
 
 #[test]
 fn test_apply_wrapped_builtin_operative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(apply (wrap if) (list #t 1 2))"),
         Ok(Value::Number(1))
@@ -4015,13 +4067,13 @@ fn test_apply_wrapped_builtin_operative() {
 
 #[test]
 fn test_wrap_builtin_operative_quote_evaluates_arguments_first() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("((wrap quote) (+ 1 2))"), Ok(Value::Number(3)));
 }
 
 #[test]
 fn test_wrap_builtin_operative_current_environment_is_callable() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(let ((x 23)) (eval 'x ((wrap current-environment))))"),
         Ok(Value::Number(23))
@@ -4030,7 +4082,7 @@ fn test_wrap_builtin_operative_current_environment_is_callable() {
 
 #[test]
 fn test_wrap_builtin_operative_forces_eager_evaluation() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("((wrap and) #f missing)"),
         Err(ArenaError::UnboundVariable)
@@ -4039,7 +4091,7 @@ fn test_wrap_builtin_operative_forces_eager_evaluation() {
 
 #[test]
 fn test_apply_empty_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(apply + ())"), Ok(Value::Number(0)));
 }
 
@@ -4049,7 +4101,7 @@ fn test_apply_empty_args() {
 
 #[test]
 fn test_raw_read_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Parse a number from a string
     assert_eq!(
         lisp.eval(r#"(raw-read-string "42")"#),
@@ -4074,7 +4126,7 @@ fn test_raw_read_string() {
 
 #[test]
 fn test_raw_display_to_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Display a number
     assert_eq!(
         lisp.eval(r#"(equal? (raw-display-to-string 42) "42")"#),
@@ -4098,7 +4150,7 @@ fn test_raw_display_to_string() {
 
 #[test]
 fn test_raw_write_to_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Write a number (same as display for numbers)
     assert_eq!(
         lisp.eval(r#"(equal? (raw-write-to-string 42) "42")"#),
@@ -4121,7 +4173,7 @@ fn test_raw_write_to_string() {
 fn test_arena_writer_no_size_limit() {
     // ArenaWriter builds CharPair chains directly in the arena,
     // so there is no fixed buffer size limit.
-    let lisp: Lisp<100_000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Verify that raw-display-to-string handles basic values correctly
     assert_eq!(
         lisp.eval(r#"(equal? (raw-display-to-string 12345) "12345")"#),
@@ -4146,7 +4198,7 @@ fn test_arena_writer_no_size_limit() {
 fn test_read_from_chain() {
     // raw-read-string should parse directly from a CharPair chain
     // without materializing into a fixed buffer.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Parse various types
     assert_eq!(
         lisp.eval(r#"(raw-read-string "42")"#),
@@ -4197,21 +4249,21 @@ fn test_read_from_chain() {
 
 #[test]
 fn test_raw_read_string_rejects_trailing_input() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let err = lisp.eval(r#"(raw-read-string "1 2")"#).unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 0, col: 0 });
 }
 
 #[test]
 fn test_raw_read_string_rejects_bare_quote() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let err = lisp.eval(r#"(raw-read-string "'")"#).unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 0, col: 0 });
 }
 
 #[test]
 fn test_raw_read_string_requires_string_input() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(r#"(raw-read-string 42)"#),
         Err(ArenaError::TypeError)
@@ -4224,7 +4276,7 @@ fn test_raw_read_string_requires_string_input() {
 
 #[test]
 fn test_string_escape_newline() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // "hello\nworld" should contain an actual newline (11 chars, not 13)
     let result = lisp.eval_to_index(r#""hello\nworld""#).unwrap();
     let val = lisp.get(result).unwrap();
@@ -4238,7 +4290,7 @@ fn test_string_escape_newline() {
 
 #[test]
 fn test_string_escape_tab() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // "a\tb" should be 3 chars: a, tab, b — cdr of cdr of cdr should be nil
     let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\tb"))))"#).unwrap();
     assert_eq!(result, Value::Boolean(true));
@@ -4246,14 +4298,14 @@ fn test_string_escape_tab() {
 
 #[test]
 fn test_string_escape_carriage_return() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\rb"))))"#).unwrap();
     assert_eq!(result, Value::Boolean(true));
 }
 
 #[test]
 fn test_string_escape_backslash() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // "a\\b" should be 3 chars: a, \, b
     let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\\b"))))"#).unwrap();
     assert_eq!(result, Value::Boolean(true));
@@ -4261,7 +4313,7 @@ fn test_string_escape_backslash() {
 
 #[test]
 fn test_string_escape_quote() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // "a\"b" should be 3 chars: a, ", b
     let result = lisp.eval(r#"(null? (cdr (cdr (cdr "a\"b"))))"#).unwrap();
     assert_eq!(result, Value::Boolean(true));
@@ -4269,7 +4321,7 @@ fn test_string_escape_quote() {
 
 #[test]
 fn test_string_escape_newline_is_real_newline() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Verify the actual character is a newline by comparing with a string
     // built character-by-character using cons
     let result = lisp
@@ -4285,7 +4337,7 @@ fn test_string_escape_newline_is_real_newline() {
 
 #[test]
 fn test_string_unrecognised_escape_is_error() {
-    let lisp: Lisp<2000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // \q is not a recognised escape sequence
     let result = lisp.eval(r#""hello\qworld""#);
     assert!(result.is_err());
@@ -4293,7 +4345,7 @@ fn test_string_unrecognised_escape_is_error() {
 
 #[test]
 fn test_string_roundtrip_via_raw_write_read_string() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Write "a\"b" (3 chars: a, ", b) to a string via raw-write-to-string,
     // then read it back via raw-read-string and verify equality
     let result = lisp
@@ -4310,7 +4362,7 @@ fn test_string_roundtrip_via_raw_write_read_string() {
 
 #[test]
 fn test_string_escape_roundtrip_newline() {
-    let lisp: Lisp<5000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Write a string with a real newline, read it back, verify equal
     let result = lisp
         .eval_to_index(
@@ -4328,7 +4380,7 @@ fn test_string_escape_roundtrip_newline() {
 // Prelude Test
 // ============================================================================
 
-fn eval_render<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<String, ArenaError> {
+fn eval_render(lisp: &Lisp, input: &str) -> Result<String, ArenaError> {
     let idx = lisp.eval_to_index(input)?;
     let mut out = String::new();
     lisp.write_value(idx, &mut out).unwrap();
@@ -4337,7 +4389,7 @@ fn eval_render<const N: usize>(lisp: &Lisp<N>, input: &str) -> Result<String, Ar
 
 #[test]
 fn test_real_prelude_loads_in_empty_interpreter() {
-    let lisp: Lisp<50000> = Lisp::new_without_prelude();
+    let lisp: Lisp = Lisp::new_without_prelude();
     let prelude = include_str!("../prelude.grift");
 
     assert_eq!(lisp.eval_to_index(prelude), Ok(grift::ArenaIndex::INERT));
@@ -4346,12 +4398,12 @@ fn test_real_prelude_loads_in_empty_interpreter() {
 
 #[test]
 fn test_bundled_prelude_matches_real_prelude_behavior() {
-    let empty_loaded: Lisp<50000> = Lisp::new_without_prelude();
+    let empty_loaded: Lisp = Lisp::new_without_prelude();
     empty_loaded
         .eval_to_index(include_str!("../prelude.grift"))
         .unwrap();
 
-    let bundled: Lisp<50000> = Lisp::new();
+    let bundled: Lisp = Lisp::new();
     let programs = [
         "(quote 1 2)",
         "(begin (define! env (current-environment)) (environment? env))",
@@ -4376,7 +4428,7 @@ fn test_bundled_prelude_matches_real_prelude_behavior() {
 
 #[test]
 fn test_prelude_map() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // map should produce a list; check via length
     assert_eq!(
         lisp.eval("(length (map (lambda (x) (+ x 1)) (list 1 2 3)))"),
@@ -4391,14 +4443,14 @@ fn test_prelude_map() {
 
 #[test]
 fn test_prelude_length() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(length (list 1 2 3))"), Ok(Value::Number(3)));
     assert_eq!(lisp.eval("(length ())"), Ok(Value::Number(0)));
 }
 
 #[test]
 fn test_prelude_filter() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(length (filter (lambda (x) (> x 2)) (list 1 2 3 4 5)))"),
         Ok(Value::Number(3))
@@ -4407,7 +4459,7 @@ fn test_prelude_filter() {
 
 #[test]
 fn test_prelude_append() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(length (append (list 1 2) (list 3 4)))"),
         Ok(Value::Number(4))
@@ -4416,7 +4468,7 @@ fn test_prelude_append() {
 
 #[test]
 fn test_lazy_prelude_applicatives_survive_repeated_gc() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let program = r#"
         (let ()
           (define! build (lambda (n acc)
@@ -4458,41 +4510,41 @@ fn test_raw_prelude_value_type_name_is_prelude() {
 
 #[test]
 fn test_parse_error_unmatched_close_paren() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let err = lisp.eval(")").unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 1, col: 2 });
 }
 
 #[test]
 fn test_parse_error_unterminated_list() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let err = lisp.eval("(+ 1 2").unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
 }
 
 #[test]
 fn test_parse_error_unterminated_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let err = lisp.eval("\"hello").unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 1, col: 7 });
 }
 
 #[test]
 fn test_parse_error_bare_quote() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let err = lisp.eval("'").unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 1, col: 2 });
 }
 
 #[test]
 fn test_top_level_evaluates_multiple_expressions() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("1 2"), Ok(Value::Number(2)));
 }
 
 #[test]
 fn test_parse_error_multiline_location() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Unterminated list spanning multiple lines; error at EOF
     let err = lisp.eval("(\n  +\n  1").unwrap_err();
     assert_eq!(err, ArenaError::ParseError { line: 3, col: 4 });
@@ -4517,18 +4569,34 @@ fn native_double(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex
     lisp.number(n * 2)
 }
 
+fn native_reentrant_eval(lisp: &dyn LispOps, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
+    match lisp.eval("(+ 20 22)")? {
+        Value::Number(value) => lisp.number(value),
+        _ => Err(ArenaError::TypeError),
+    }
+}
+
 #[test]
 fn test_register_native_manual() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
 }
 
 #[test]
 fn test_register_native_manual_negative() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     assert_eq!(lisp.eval("(double -5)"), Ok(Value::Number(-10)));
+}
+
+#[test]
+fn test_native_can_reenter_evaluator_without_borrow_panic() {
+    let lisp = Lisp::new();
+    lisp.register_native("reentrant-eval", native_reentrant_eval)
+        .unwrap();
+
+    assert_eq!(lisp.eval("(reentrant-eval)"), Ok(Value::Number(42)));
 }
 
 // — Macro-generated native functions —
@@ -4539,7 +4607,7 @@ register_native!(native_add3, (a: isize, b: isize, c: isize) -> isize, {
 
 #[test]
 fn test_register_native_macro_three_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("add3", native_add3).unwrap();
     assert_eq!(lisp.eval("(add3 1 2 3)"), Ok(Value::Number(6)));
 }
@@ -4548,7 +4616,7 @@ register_native!(native_negate, (n: isize) -> isize, { -n });
 
 #[test]
 fn test_register_native_macro_single_arg() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("negate", native_negate).unwrap();
     assert_eq!(lisp.eval("(negate 42)"), Ok(Value::Number(-42)));
 }
@@ -4557,7 +4625,7 @@ register_native!(native_is_positive, (n: isize) -> bool, { n > 0 });
 
 #[test]
 fn test_register_native_returns_bool() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("positive?", native_is_positive)
         .unwrap();
     assert_eq!(lisp.eval("(positive? 5)"), Ok(Value::Boolean(true)));
@@ -4569,7 +4637,7 @@ register_native!(native_bool_and, (a: bool, b: bool) -> bool, { a && b });
 
 #[test]
 fn test_register_native_bool_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("bool-and", native_bool_and).unwrap();
     assert_eq!(lisp.eval("(bool-and #t #t)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(bool-and #t #f)"), Ok(Value::Boolean(false)));
@@ -4579,7 +4647,7 @@ register_native!(native_forty_two, () -> isize, { 42 });
 
 #[test]
 fn test_register_native_zero_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("forty-two", native_forty_two).unwrap();
     assert_eq!(lisp.eval("(forty-two)"), Ok(Value::Number(42)));
 }
@@ -4592,7 +4660,7 @@ register_native!(native_identity, (x: ArenaIndex) -> ArenaIndex, |_lisp, _args| 
 
 #[test]
 fn test_register_native_with_lisp_identity() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("identity", native_identity).unwrap();
     assert_eq!(lisp.eval("(identity 99)"), Ok(Value::Number(99)));
     assert_eq!(lisp.eval("(identity #t)"), Ok(Value::Boolean(true)));
@@ -4602,7 +4670,7 @@ fn test_register_native_with_lisp_identity() {
 
 #[test]
 fn test_native_composed_with_builtins() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     assert_eq!(
         lisp.eval("(+ (double 3) (double 4))"),
@@ -4612,7 +4680,7 @@ fn test_native_composed_with_builtins() {
 
 #[test]
 fn test_native_in_lambda() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     assert_eq!(
         lisp.eval("(fn! apply-twice (f x) (f (f x))) (apply-twice double 3)"),
@@ -4622,7 +4690,7 @@ fn test_native_in_lambda() {
 
 #[test]
 fn test_native_in_higher_order() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     let idx = lisp.eval_to_index("(map double (list 1 2 3))").unwrap();
     let mut buf = String::new();
@@ -4632,7 +4700,7 @@ fn test_native_in_higher_order() {
 
 #[test]
 fn test_native_type_error() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     // Passing a boolean to a function expecting isize should error
     assert_eq!(lisp.eval("(double #t)"), Err(ArenaError::TypeError));
@@ -4640,7 +4708,7 @@ fn test_native_type_error() {
 
 #[test]
 fn test_native_too_few_args() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("add3", native_add3).unwrap();
     // Only 2 args for a 3-arg function
     assert_eq!(lisp.eval("(add3 1 2)"), Err(ArenaError::TypeError));
@@ -4648,7 +4716,7 @@ fn test_native_too_few_args() {
 
 #[test]
 fn test_multiple_natives_registered() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("double", native_double).unwrap();
     lisp.register_native("negate", native_negate).unwrap();
     lisp.register_native("add3", native_add3).unwrap();
@@ -4679,7 +4747,7 @@ register_native!(native_bit_extract, (value: isize, start: isize, width: isize) 
 
 #[test]
 fn test_native_bit_set() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("bit-set?", native_bit_set).unwrap();
     assert_eq!(lisp.eval("(bit-set? 5 0)"), Ok(Value::Boolean(true))); // 5 = 101, bit 0 set
     assert_eq!(lisp.eval("(bit-set? 5 1)"), Ok(Value::Boolean(false))); // bit 1 not set
@@ -4688,7 +4756,7 @@ fn test_native_bit_set() {
 
 #[test]
 fn test_native_bit_extract() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("bit-extract", native_bit_extract)
         .unwrap();
     // Extract bits 0-3 from 0xFF (255): should get 0xF (15)
@@ -4703,7 +4771,7 @@ register_native!(native_const_zero, () -> isize, { 0 });
 
 #[test]
 fn test_native_survives_gc() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("native-zero", native_const_zero)
         .unwrap();
     // Force GC, then call native
@@ -4717,7 +4785,7 @@ register_native!(native_noop, () -> (), { () });
 
 #[test]
 fn test_register_native_unit_return() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("noop", native_noop).unwrap();
     assert_eq!(lisp.eval("(noop)"), Ok(Value::Inert));
 }
@@ -4728,20 +4796,20 @@ fn test_register_native_unit_return() {
 
 #[test]
 fn test_lispops_boolean() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.boolean(true), ArenaIndex::TRUE);
     assert_eq!(lisp.boolean(false), ArenaIndex::FALSE);
 }
 
 #[test]
 fn test_lispops_nil() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.nil(), ArenaIndex::NIL);
 }
 
 #[test]
 fn test_lispops_alloc_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let s = lisp.alloc_string("hello").unwrap();
     let mut buf = String::new();
     lisp.write_value(s, &mut buf).unwrap();
@@ -4750,14 +4818,14 @@ fn test_lispops_alloc_string() {
 
 #[test]
 fn test_lispops_alloc_string_empty() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let s = lisp.alloc_string("").unwrap();
     assert!(s.is_nil());
 }
 
 #[test]
 fn test_lispops_define_global() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let sym = lisp.symbol("my-val").unwrap();
     let val = lisp.number(99).unwrap();
     lisp.define_global(sym, val).unwrap();
@@ -4766,7 +4834,7 @@ fn test_lispops_define_global() {
 
 #[test]
 fn test_lispops_define_global_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let sym = lisp.symbol("greeting").unwrap();
     let val = lisp.alloc_string("hi").unwrap();
     lisp.define_global(sym, val).unwrap();
@@ -4782,7 +4850,7 @@ register_native!(native_first_char, (c: char) -> char, { c });
 
 #[test]
 fn test_from_lisp_char() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("first-char", native_first_char)
         .unwrap();
     // (car "hello") returns "h" (a single-char string), which FromLisp<char> can extract
@@ -4794,7 +4862,7 @@ fn test_from_lisp_char() {
 
 #[test]
 fn test_from_lisp_char_type_error_on_number() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("first-char", native_first_char)
         .unwrap();
     // Passing a number to a char-expecting function should error
@@ -4803,7 +4871,7 @@ fn test_from_lisp_char_type_error_on_number() {
 
 #[test]
 fn test_from_lisp_char_type_error_on_multi_char() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("first-char", native_first_char)
         .unwrap();
     // A multi-char string should not be extractable as a single char
@@ -4816,7 +4884,7 @@ register_native!(native_to_upper, (c: char) -> char, {
 
 #[test]
 fn test_to_lisp_char() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("to-upper", native_to_upper).unwrap();
     let idx = lisp.eval_to_index("(to-upper (car \"a\"))").unwrap();
     let mut buf = String::new();
@@ -4832,7 +4900,7 @@ fn native_make_greeting(lisp: &dyn LispOps, _args: ArenaIndex) -> ArenaResult<Ar
 
 #[test]
 fn test_native_creates_string() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("greet", native_make_greeting).unwrap();
     let idx = lisp.eval_to_index("(greet)").unwrap();
     let mut buf = String::new();
@@ -4851,7 +4919,7 @@ fn native_define_answer(lisp: &dyn LispOps, _args: ArenaIndex) -> ArenaResult<Ar
 
 #[test]
 fn test_native_define_global() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("define-answer!", native_define_answer)
         .unwrap();
     lisp.eval("(define-answer!)").unwrap();
@@ -4867,7 +4935,7 @@ fn native_check_positive(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<Ar
 
 #[test]
 fn test_native_boolean_method() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("pos?", native_check_positive).unwrap();
     assert_eq!(lisp.eval("(pos? 5)"), Ok(Value::Boolean(true)));
     assert_eq!(lisp.eval("(pos? -1)"), Ok(Value::Boolean(false)));
@@ -4884,7 +4952,7 @@ fn native_nil_if_zero(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<Arena
 
 #[test]
 fn test_native_nil_method() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     lisp.register_native("nil-if-zero", native_nil_if_zero)
         .unwrap();
     assert_eq!(lisp.eval("(nil-if-zero 0)"), Ok(Value::Nil));
@@ -4899,7 +4967,7 @@ fn test_native_nil_method() {
 fn test_nil_environment_is_empty() {
     // The ground environment (slot 5) starts with only builtins.
     // Lookups for unbound names should fail cleanly.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(eval (quote does-not-exist) (make-empty-environment))"),
         Err(ArenaError::UnboundVariable)
@@ -4909,7 +4977,7 @@ fn test_nil_environment_is_empty() {
 #[test]
 fn test_nil_environment_has_no_bindings() {
     // An empty environment created via make-empty-environment has no bindings at all.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     // Attempting to look up any symbol in an empty environment should fail.
     assert_eq!(
         lisp.eval("(eval (quote +) (make-empty-environment))"),
@@ -4924,7 +4992,7 @@ fn test_nil_environment_has_no_bindings() {
 #[test]
 fn test_empty_environment_sandbox_no_builtins() {
     // Sandboxed eval — no access to define!, vau, eval, or anything else.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -4939,7 +5007,7 @@ fn test_empty_environment_sandbox_no_builtins() {
 #[test]
 fn test_empty_environment_sandbox_selective_access() {
     // Selectively expose only certain operations to the sandbox.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -4956,7 +5024,7 @@ fn test_empty_environment_sandbox_selective_access() {
 #[test]
 fn test_empty_environment_is_environment() {
     // make-empty-environment returns a valid environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(environment? (make-empty-environment))"),
         Ok(Value::Boolean(true))
@@ -4966,7 +5034,7 @@ fn test_empty_environment_is_environment() {
 #[test]
 fn test_empty_environment_self_evaluating_values() {
     // Self-evaluating values work even in empty environments.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(eval 42 (make-empty-environment))"),
         Ok(Value::Number(42))
@@ -4979,14 +5047,14 @@ fn test_empty_environment_self_evaluating_values() {
 
 #[test]
 fn test_eval_rejects_non_environment_operand() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(eval 42 99)"), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_define_rejects_duplicate_simple() {
     // define! rejects defining the same variable twice in the same frame.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5001,7 +5069,7 @@ fn test_define_rejects_duplicate_simple() {
 #[test]
 fn test_define_rejects_duplicate_fn() {
     // fn! rejects defining the same function name twice.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5016,7 +5084,7 @@ fn test_define_rejects_duplicate_fn() {
 #[test]
 fn test_define_allows_same_name_in_child_scope() {
     // Defining the same name in a child scope should succeed.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5033,7 +5101,7 @@ fn test_define_allows_same_name_in_child_scope() {
 #[test]
 fn test_define_allows_same_name_in_different_envs() {
     // Different environments can each have the same variable name.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5051,7 +5119,7 @@ fn test_define_allows_same_name_in_different_envs() {
 #[test]
 fn test_set_bang_still_works_for_mutation() {
     // set! is the correct way to update an existing binding.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5067,7 +5135,7 @@ fn test_set_bang_still_works_for_mutation() {
 #[test]
 fn test_fn_bang_basic() {
     // fn! defines a named function.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5082,7 +5150,7 @@ fn test_fn_bang_basic() {
 #[test]
 fn test_fn_bang_multi_body() {
     // fn! supports multiple body expressions.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5099,7 +5167,7 @@ fn test_fn_bang_multi_body() {
 #[test]
 fn test_fn_bang_recursive() {
     // fn! supports recursion.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5115,7 +5183,7 @@ fn test_fn_bang_recursive() {
 #[test]
 fn test_fn_bang_closure() {
     // fn! creates closures over the defining environment.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5132,7 +5200,7 @@ fn test_fn_bang_closure() {
 #[test]
 fn test_fn_bang_returns_inert() {
     // fn! returns #inert.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5145,7 +5213,7 @@ fn test_fn_bang_returns_inert() {
 
 #[test]
 fn test_fn_bang_rejects_invalid_formals_eagerly() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval("(fn! bad (42) 1)"), Err(ArenaError::TypeError));
     assert_eq!(
         lisp.eval("(fn! bad (x x) x)"),
@@ -5155,13 +5223,13 @@ fn test_fn_bang_rejects_invalid_formals_eagerly() {
 
 #[test]
 fn test_fn_bang_requires_symbol_name() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(lisp.eval(r#"(fn! "bad" () 1)"#), Err(ArenaError::TypeError));
 }
 
 #[test]
 fn test_quote_and_current_environment_are_operative_bindings() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(operative? quote current-environment)"),
         Ok(Value::Boolean(true))
@@ -5170,7 +5238,7 @@ fn test_quote_and_current_environment_are_operative_bindings() {
 
 #[test]
 fn test_derived_predicates_and_constructors_are_applicative_bindings() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(applicative? list make-empty-environment not null? boolean? inert? ignore?)"),
         Ok(Value::Boolean(true))
@@ -5179,7 +5247,7 @@ fn test_derived_predicates_and_constructors_are_applicative_bindings() {
 
 #[test]
 fn test_make_empty_environment_rejects_extra_operands() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(make-empty-environment 1)"),
         Err(ArenaError::ArityError)
@@ -5188,7 +5256,7 @@ fn test_make_empty_environment_rejects_extra_operands() {
 
 #[test]
 fn test_make_empty_environment_evaluates_extra_operands_before_arity_error() {
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(make-empty-environment does-not-exist)"),
         Err(ArenaError::UnboundVariable)
@@ -5208,7 +5276,7 @@ fn test_make_empty_environment_evaluates_extra_operands_before_arity_error() {
 fn test_child_env_starts_with_empty_bindings() {
     // A child env created via make-environment starts with no local bindings.
     // Defining in the child doesn't affect the parent, and vice versa after creation.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5226,7 +5294,7 @@ fn test_child_env_starts_with_empty_bindings() {
 fn test_child_env_does_not_copy_parent_bindings() {
     // Bindings added to the parent AFTER child creation are visible in the
     // child (because lookup walks the parent chain, not a snapshot).
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5244,7 +5312,7 @@ fn test_child_env_does_not_copy_parent_bindings() {
 fn test_child_define_does_not_pollute_parent() {
     // Defining a variable in a child env must not create or modify
     // any binding in the parent env.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5260,7 +5328,7 @@ fn test_child_define_does_not_pollute_parent() {
 #[test]
 fn test_grandparent_lookup_chain() {
     // Lookup must traverse multiple levels: child → parent → grandparent.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5278,7 +5346,7 @@ fn test_grandparent_lookup_chain() {
 #[test]
 fn test_child_shadows_parent_binding() {
     // A binding in the child frame shadows the same name in the parent.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5292,7 +5360,7 @@ fn test_child_shadows_parent_binding() {
         Ok(Value::Number(2))
     );
     // Parent still has original value.
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -5310,7 +5378,7 @@ fn test_child_shadows_parent_binding() {
 #[test]
 fn test_let_child_env_does_not_copy() {
     // let creates a child env; bindings defined inside let don't leak out.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5322,7 +5390,7 @@ fn test_let_child_env_does_not_copy() {
         Ok(Value::Number(30))
     );
     // 'inner' is not visible outside let.
-    let lisp2: Lisp<20000> = Lisp::new();
+    let lisp2: Lisp = Lisp::new();
     assert_eq!(
         lisp2.eval(
             r#"
@@ -5339,7 +5407,7 @@ fn test_let_child_env_does_not_copy() {
 fn test_lambda_child_env_inherits_not_copies() {
     // Lambda bodies execute in a child env that inherits from the
     // closure's captured environment via parent chain (not copying).
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5394,7 +5462,7 @@ fn test_lambda_child_env_inherits_not_copies() {
 #[test]
 fn test_sandbox_arithmetic_only() {
     // The sandbox pattern correctly restricts to only exposed operations.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5411,7 +5479,7 @@ fn test_sandbox_arithmetic_only() {
 #[test]
 fn test_sandbox_no_define_access() {
     // The sandbox does not expose define! — it cannot be called by name.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5427,7 +5495,7 @@ fn test_sandbox_no_define_access() {
 #[test]
 fn test_sandbox_no_eval_access() {
     // The sandbox does not expose eval — cannot meta-evaluate.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5443,7 +5511,7 @@ fn test_sandbox_no_eval_access() {
 #[test]
 fn test_sandbox_no_vau_access() {
     // The sandbox does not expose vau — cannot create operatives.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5459,7 +5527,7 @@ fn test_sandbox_no_vau_access() {
 #[test]
 fn test_sandbox_no_lambda_access() {
     // The sandbox does not expose lambda — cannot create closures.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5475,7 +5543,7 @@ fn test_sandbox_no_lambda_access() {
 #[test]
 fn test_sandbox_no_set_bang_access() {
     // The sandbox does not expose set! — cannot mutate bindings.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5492,7 +5560,7 @@ fn test_sandbox_no_set_bang_access() {
 fn test_sandbox_cannot_reach_global() {
     // Code in the sandbox has no path to the global environment.
     // Even if we expose current-environment, it returns safe-env, not global.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5508,7 +5576,7 @@ fn test_sandbox_cannot_reach_global() {
 #[test]
 fn test_sandbox_define_does_not_leak_to_global() {
     // Defining a variable inside the sandbox must not affect the global env.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"
@@ -5525,7 +5593,7 @@ fn test_sandbox_define_does_not_leak_to_global() {
 fn test_sandbox_self_evaluating_values_work() {
     // Self-evaluating values (numbers, booleans) work in any environment,
     // including an empty sandbox.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval("(eval 42 (make-empty-environment))"),
         Ok(Value::Number(42))
@@ -5544,7 +5612,7 @@ fn test_sandbox_self_evaluating_values_work() {
 fn test_sandbox_shared_values_are_immutable() {
     // The + applicative shared between sandbox and global is immutable.
     // Shadowing + in the sandbox does not affect the global +.
-    let lisp: Lisp<20000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     assert_eq!(
         lisp.eval(
             r#"

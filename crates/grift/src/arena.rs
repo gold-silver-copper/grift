@@ -16,80 +16,28 @@
     clippy::iter_filter_is_ok
 )]
 
-//! # Fixed-Size Arena Allocator
+//! Growable, allocator-backed arena storage.
 //!
-//! A minimal `no_std`, `no_alloc` arena allocator with fixed capacity,
-//! designed for embedded and resource-constrained environments where heap
-//! allocation is unavailable or undesirable.
+//! Runtime objects occupy slots in an [`alloc::vec::Vec`]. Stable
+//! [`ArenaIndex`] values address those slots, so growth and vector relocation do
+//! not invalidate language references. Freed slots form a singly linked free
+//! list and are reused before the vector grows.
 //!
-//! ## Features
-//!
-//! - **Fixed-size**: All memory pre-allocated at compile time via const generics
-//! - **No-std, no-alloc**: Works in embedded environments with no heap
-//! - **Generic**: Works with any `Copy` type
-//! - **Interior mutability**: Safe access via `Cell` (no runtime borrow checking overhead)
-//! - **O(1) allocation**: Free-list based allocation and deallocation
-//! - **Mark-and-sweep GC**: Trait-based garbage collection via
-//!   [`crate::arena::Trace`]
-//! - **Zero dependencies**: Only uses `core::cell::Cell`
-//!
-//! ## Safety Guarantees
-//!
-//! This crate uses `#![forbid(unsafe_code)]` — there is no `unsafe` anywhere
-//! in the implementation. Interior mutability is achieved through `Cell<T>`
-//! rather than raw pointers, and all indices are bounds-checked before access.
-//!
-//! ## Example
-//!
-//! ```rust
-//! use grift::arena::{Arena, ArenaIndex};
-//!
-//! #[derive(Clone, Copy, Debug, PartialEq)]
-//! enum Node {
-//!     Leaf(isize),
-//!     Branch(ArenaIndex, ArenaIndex),
-//! }
-//!
-//! let arena: Arena<Node, 1024> = Arena::new(Node::Leaf(0));
-//!
-//! // Allocate nodes
-//! let left = arena.alloc(Node::Leaf(1)).unwrap();
-//! let right = arena.alloc(Node::Leaf(2)).unwrap();
-//! let root = arena.alloc(Node::Branch(left, right)).unwrap();
-//!
-//! // Access nodes
-//! if let Node::Branch(l, r) = arena.get(root).unwrap() {
-//!     println!("Left: {:?}, Right: {:?}", arena.get(l), arena.get(r));
-//! }
-//!
-//! // Free when done
-//! arena.free(root).unwrap();
-//! ```
+//! The arena remains `no_std` and safe Rust. It requires the embedding program
+//! to provide a global allocator through Rust's `alloc` crate.
 
-use core::cell::Cell;
+use alloc::vec::Vec;
+use core::cell::{Cell, RefCell};
 
 // ============================================================================
 // Core Types
 // ============================================================================
 
-/// Index into the arena.
-///
-/// This is a lightweight wrapper around `usize` that directly indexes
-/// the arena's internal array.
-///
-/// # Safety Note
-///
-/// Indices should only be obtained from arena operations (`alloc`, `iter`).
-/// Manually constructing indices bypasses the type system's protection
-/// and should only be used for serialization/deserialization.
+/// Opaque index into an [`Arena`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ArenaIndex(usize);
 
-/// Single source of truth for every well-known arena slot.
-///
-/// Generates [`ArenaIndex`] constants, the singleton root set
-/// ([`ArenaIndex::ROOTS`]), and [`ArenaIndex::FIRST_FREE`] marking
-/// the first user-allocatable slot.
+/// Define every well-known runtime singleton index from one source of truth.
 macro_rules! define_singletons {
     (
         $(
@@ -104,14 +52,10 @@ macro_rules! define_singletons {
                 pub const $name: ArenaIndex = ArenaIndex($idx);
             )*
 
-            /// The first slot available for user allocation.
-            ///
-            /// Singletons occupy slots `0..FIRST_FREE`.  A future compaction
-            /// pass must never move slots below this boundary because their
-            /// [`ArenaIndex`] values are compile-time constants.
+            /// First slot after the fixed runtime singleton layout.
             pub const FIRST_FREE: ArenaIndex = ArenaIndex($first_free);
 
-            /// All singleton slots that must survive every GC cycle.
+            /// Singleton slots retained by every collection.
             pub const ROOTS: &'static [ArenaIndex] = &[
                 $(ArenaIndex($idx),)*
             ];
@@ -120,77 +64,49 @@ macro_rules! define_singletons {
 }
 
 define_singletons! {
-    /// The NIL index - points to slot 0 where `Value::Nil` is pre-allocated.
-    ///
-    /// This constant is useful as:
-    /// - A default/placeholder value in arrays
-    /// - Direct access to the Lisp nil value without needing a `Lisp` reference
-    /// - A sentinel for "empty" or "none" in data structures
-    ///
-    /// Since slot 0 always contains `Value::Nil`, accessing this index via
-    /// `lisp.get(ArenaIndex::NIL)` returns `Value::Nil`.
+    /// Empty list / nil singleton.
     NIL = 0,
-
-    /// The TRUE index - points to slot 1 where `Value::Boolean(true)` is pre-allocated.
+    /// Boolean true singleton.
     TRUE = 1,
-
-    /// The FALSE index - points to slot 2 where `Value::Boolean(false)` is pre-allocated.
+    /// Boolean false singleton.
     FALSE = 2,
-
-    /// The INERT index - points to slot 3 where `Value::Inert` is pre-allocated.
+    /// Inert singleton.
     INERT = 3,
-
-    /// The IGNORE index - points to slot 4 where `Value::Ignore` is pre-allocated.
+    /// Ignore singleton.
     IGNORE = 4,
-
-    /// The GROUND_ENV index - points to slot 5 where the ground (builtin)
-    /// environment is pre-allocated.
+    /// Ground environment singleton.
     GROUND_ENV = 5,
-
-    /// The GLOBAL_ENV index - points to slot 7 where the global/standard
-    /// environment (child of ground) is pre-allocated.  Slot 6 holds the
-    /// parents cons cell linking ground to global.
+    /// Global environment singleton. Slot 6 stores its parent list.
     GLOBAL_ENV = 7,
-
-    /// The GC_ROOTS index - points to slot 8 where the GC root stack head
-    /// is stored.  This is a cons cell whose `car` holds the current head
-    /// of the GC roots linked list and whose `cdr` is always NIL.
+    /// Evaluator GC-root stack anchor.
     GC_ROOTS = 8,
-
-    /// The INTERN_LIST index - points to slot 9 where the symbol intern
-    /// alist head is stored.  This is a cons cell whose `car` holds the
-    /// current head of the intern list and whose `cdr` is always NIL.
+    /// Symbol intern-list anchor.
     INTERN_LIST = 9,
-    ;
-    FIRST_FREE = 10
+    ; FIRST_FREE = 10
 }
 
 impl ArenaIndex {
-    /// Return `ArenaIndex::TRUE` if `b` is true, `ArenaIndex::FALSE` otherwise.
+    /// Return the singleton index for a Rust boolean.
     #[inline]
-    pub const fn from_bool(b: bool) -> ArenaIndex {
-        if b { Self::TRUE } else { Self::FALSE }
+    pub const fn from_bool(value: bool) -> Self {
+        if value { Self::TRUE } else { Self::FALSE }
     }
 
-    /// Create a new arena index with the given slot index.
+    /// Construct a low-level slot index.
     ///
-    /// # Warning
-    ///
-    /// This is a low-level constructor intended for serialization/deserialization.
-    /// For normal use, obtain indices from [`Arena::alloc`] or [`Arena::iter`].
-    /// Fabricating indices manually may lead to undefined behavior if the
-    /// index doesn't correspond to a valid allocation.
+    /// Fabricated indices remain memory-safe but fail arena validation unless
+    /// they identify a currently occupied slot.
     pub const fn new(index: usize) -> Self {
-        ArenaIndex(index)
+        Self(index)
     }
 
-    /// Get the raw slot index value.
+    /// Return the underlying slot number.
     #[inline]
     pub const fn raw(self) -> usize {
         self.0
     }
 
-    /// Check if this is the NIL index (slot 0).
+    /// Return whether this is the nil singleton index.
     #[inline]
     pub const fn is_nil(self) -> bool {
         self.0 == 0
@@ -198,130 +114,104 @@ impl ArenaIndex {
 }
 
 impl Default for ArenaIndex {
-    /// Returns [`ArenaIndex::NIL`] (slot 0).
     fn default() -> Self {
         Self::NIL
     }
 }
 
 impl core::fmt::Display for ArenaIndex {
-    /// Format the index as `@<slot>` for concise debugging output.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "@{}", self.0)
     }
 }
 
-// — ArenaError —
-
-/// Errors that can occur during arena and Lisp operations.
-///
-/// Each variant captures a specific failure mode, enabling precise
-/// diagnostics without heap-allocated error messages.
+/// Errors produced by arena and language operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaError {
-    /// Arena is full, cannot allocate more cells.
+    /// Arena storage reservation failed because of allocator exhaustion or
+    /// a capacity overflow.
     OutOfMemory,
-
-    /// Index exceeds the arena's capacity (>= N).
+    /// A slot index is outside the current logical slot range.
     IndexOutOfBounds,
-
-    /// Index refers to a slot that has been freed or was never allocated.
+    /// A slot exists but is currently vacant.
     IndexNotAllocated,
-
-    /// An argument to an arena operation was invalid.
+    /// Internal storage was borrowed incompatibly, or a mutating traversal
+    /// callback changed the arena before its copied value could be written back.
+    BorrowConflict,
+    /// An argument was invalid.
     InvalidArgument,
-
     /// A form or builtin received the wrong number of operands.
     ArityError,
-
-    /// An error occurred during garbage collection tracing.
-    /// This can happen if the mark stack overflows or roots are invalid.
+    /// Garbage-collector tracing failed.
     TraceError,
-
-    /// Cycle detected during structure traversal (e.g., graph traversal
-    /// or recursive data structure operations).
+    /// A cycle was detected where cycles are invalid.
     Cyclic,
-
-    /// A value had the wrong type for the requested operation
-    /// (e.g., expected a Number but found a Cons).
+    /// A runtime value had the wrong type.
     TypeError,
-
-    /// A parse error occurred while reading an S-expression.
-    ///
-    /// Carries the 1-based line and column where the error was detected.
+    /// Source parsing failed at the given one-based location.
     ParseError {
-        /// 1-based line number in the source text.
+        /// One-based line number.
         line: u32,
-        /// 1-based column number in the source text.
+        /// One-based column number.
         col: u32,
     },
-
-    /// Checked arithmetic overflowed (e.g., addition, negation).
+    /// Checked arithmetic overflowed.
     ArithmeticOverflow,
-
-    /// Division or modulo by zero.
+    /// Division or modulo by zero was requested.
     DivisionByZero,
-
-    /// A variable was not found in the searched environment chain.
+    /// No requested variable binding was found.
     UnboundVariable,
-
-    /// Attempted to apply a value that is not callable.
+    /// A non-callable value was applied.
     NotCallable,
-
-    /// Attempted to mutate an immutable environment (e.g., the ground environment).
+    /// Mutation of an immutable environment was requested.
     ImmutableEnvironment,
-
-    /// Attempted to define a variable that already has a binding in the current frame.
+    /// A same-frame binding already exists.
     AlreadyDefined,
 }
 
 impl ArenaError {
-    /// Get a human-readable description of the error.
+    /// Return a compact human-readable description.
     pub const fn as_str(&self) -> &'static str {
         match self {
-            ArenaError::OutOfMemory => "Arena is full",
-            ArenaError::IndexOutOfBounds => "Index out of bounds",
-            ArenaError::IndexNotAllocated => "Index not allocated",
-            ArenaError::InvalidArgument => "Invalid argument",
-            ArenaError::ArityError => "Arity error",
-            ArenaError::TraceError => "Error during GC tracing",
-            ArenaError::Cyclic => "Cycle detected in evaluation",
-            ArenaError::TypeError => "Type error",
-            ArenaError::ParseError { .. } => "Parse error",
-            ArenaError::ArithmeticOverflow => "Arithmetic overflow",
-            ArenaError::DivisionByZero => "Division by zero",
-            ArenaError::UnboundVariable => "Unbound variable",
-            ArenaError::NotCallable => "Not callable",
-            ArenaError::ImmutableEnvironment => "Attempt to mutate immutable environment",
-            ArenaError::AlreadyDefined => "Variable already defined",
+            Self::OutOfMemory => "Arena storage reservation failed",
+            Self::IndexOutOfBounds => "Index out of bounds",
+            Self::IndexNotAllocated => "Index not allocated",
+            Self::BorrowConflict => "Conflicting arena mutation or storage borrow",
+            Self::InvalidArgument => "Invalid argument",
+            Self::ArityError => "Arity error",
+            Self::TraceError => "Error during GC tracing",
+            Self::Cyclic => "Cycle detected in evaluation",
+            Self::TypeError => "Type error",
+            Self::ParseError { .. } => "Parse error",
+            Self::ArithmeticOverflow => "Arithmetic overflow",
+            Self::DivisionByZero => "Division by zero",
+            Self::UnboundVariable => "Unbound variable",
+            Self::NotCallable => "Not callable",
+            Self::ImmutableEnvironment => "Attempt to mutate immutable environment",
+            Self::AlreadyDefined => "Variable already defined",
         }
     }
 
-    /// Check if this error indicates the arena is full.
+    /// Return whether allocation failed.
     pub const fn is_out_of_memory(&self) -> bool {
-        matches!(self, ArenaError::OutOfMemory)
+        matches!(self, Self::OutOfMemory)
     }
 
-    /// Check if this error indicates an invalid index (out of bounds or not allocated).
+    /// Return whether an index was invalid or vacant.
     pub const fn is_invalid_index(&self) -> bool {
-        matches!(
-            self,
-            ArenaError::IndexOutOfBounds | ArenaError::IndexNotAllocated
-        )
+        matches!(self, Self::IndexOutOfBounds | Self::IndexNotAllocated)
     }
 
-    /// Check if this error is related to garbage collection.
+    /// Return whether tracing failed.
     pub const fn is_trace_error(&self) -> bool {
-        matches!(self, ArenaError::TraceError)
+        matches!(self, Self::TraceError)
     }
 }
 
 impl core::fmt::Display for ArenaError {
-    /// Format the error using its short description, preserving line/column
-    /// details for parse failures.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ArenaError::ParseError { line, col } => {
+            Self::ParseError { line, col } => {
                 write!(f, "Parse error at line {line}, column {col}")
             }
             other => f.write_str(other.as_str()),
@@ -332,20 +222,9 @@ impl core::fmt::Display for ArenaError {
 /// Result type for arena operations.
 pub type ArenaResult<T> = Result<T, ArenaError>;
 
-// — Slot (Internal) —
-
-/// Sentinel value indicating end of free list.
-const FREE_LIST_END: usize = usize::MAX;
-
-/// Internal slot representation for free-list based allocation.
-///
-/// Each slot is either free (storing the next free slot index) or
-/// occupied (storing the actual value).
 #[derive(Clone, Copy)]
 enum Slot<T: Copy> {
-    /// Free slot containing index of the next free slot (or FREE_LIST_END).
-    Free { next_free: usize },
-    /// Occupied slot containing the stored value.
+    Free { next_free: Option<usize> },
     Occupied { value: T },
 }
 
@@ -356,30 +235,26 @@ enum Slot<T: Copy> {
 /// Statistics returned by garbage collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GcStats {
-    /// Number of objects that were marked as reachable.
+    /// Number of reachable objects marked.
     pub marked: usize,
-
-    /// Number of objects that were collected (freed).
+    /// Number of unreachable objects reclaimed.
     pub collected: usize,
-
-    /// Number of objects that existed before collection.
+    /// Number of live objects before collection.
     pub total_before: usize,
 }
 
 impl GcStats {
-    /// Check if any garbage was collected.
+    /// Return whether collection reclaimed anything.
     pub const fn did_collect(&self) -> bool {
         self.collected > 0
     }
 
-    /// Get the number of objects remaining after collection.
+    /// Return the number of live objects after collection.
     pub const fn remaining(&self) -> usize {
         self.total_before - self.collected
     }
 
-    /// Get the collection ratio (0.0 to 1.0).
-    ///
-    /// Returns 0.0 if no objects existed before collection.
+    /// Return the fraction of objects reclaimed.
     pub fn collection_ratio(&self) -> f32 {
         if self.total_before == 0 {
             0.0
@@ -388,9 +263,7 @@ impl GcStats {
         }
     }
 
-    /// Get the survival ratio (0.0 to 1.0).
-    ///
-    /// Returns 1.0 if no objects existed before collection.
+    /// Return the fraction of objects retained.
     pub fn survival_ratio(&self) -> f32 {
         if self.total_before == 0 {
             1.0
@@ -400,48 +273,46 @@ impl GcStats {
     }
 }
 
-/// Statistics about arena usage.
+/// Snapshot of growable arena storage usage.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ArenaStats {
-    /// Total capacity of the arena.
-    pub capacity: usize,
-
-    /// Number of currently allocated cells.
+    /// Logical number of slots, both occupied and vacant.
+    pub slot_count: usize,
+    /// Number of currently occupied slots.
     pub allocated: usize,
-
-    /// Number of free cells.
-    pub free: usize,
-
-    /// Fragmentation ratio (0.0 = not fragmented, 1.0 = highly fragmented).
+    /// Number of vacant slots immediately available for reuse.
+    pub vacant: usize,
+    /// Storage currently reserved by the backing vector.
+    pub reserved_capacity: usize,
+    /// Ratio of discontiguous vacant runs to logical slots.
     pub fragmentation: f32,
 }
 
 impl ArenaStats {
-    /// Get usage as a percentage (0-100).
+    /// Return occupied logical slots as a percentage.
     pub fn usage_percent(&self) -> f32 {
-        if self.capacity == 0 {
+        if self.slot_count == 0 {
             0.0
         } else {
-            (self.allocated as f32 / self.capacity as f32) * 100.0
+            (self.allocated as f32 / self.slot_count as f32) * 100.0
         }
     }
 
-    /// Get free space as a percentage (0-100).
+    /// Return vacant logical slots as a percentage.
     pub fn free_percent(&self) -> f32 {
-        100.0 - self.usage_percent()
+        if self.slot_count == 0 {
+            100.0
+        } else {
+            (self.vacant as f32 / self.slot_count as f32) * 100.0
+        }
     }
 
-    /// Check if the arena is empty.
+    /// Return whether no objects are allocated.
     pub const fn is_empty(&self) -> bool {
         self.allocated == 0
     }
 
-    /// Check if the arena is full.
-    pub const fn is_full(&self) -> bool {
-        self.free == 0
-    }
-
-    /// Check if fragmentation is above a threshold.
+    /// Return whether fragmentation exceeds `threshold`.
     pub fn is_fragmented(&self, threshold: f32) -> bool {
         self.fragmentation > threshold
     }
@@ -451,136 +322,25 @@ impl ArenaStats {
 // Traits
 // ============================================================================
 
-/// Trait for types that can be recursively deleted from the arena.
-///
-/// Implement this for types that contain `ArenaIndex` fields pointing
-/// to other allocations that should be freed together.
-///
-/// # Example
-///
-/// ```rust
-/// use grift::arena::{Arena, ArenaIndex, ArenaDelete, ArenaResult};
-///
-/// #[derive(Clone, Copy)]
-/// enum Tree {
-///     Leaf(isize),
-///     Branch(ArenaIndex, ArenaIndex),
-/// }
-///
-/// impl ArenaDelete<Tree, 100> for Tree {
-///     fn delete_recursive(&self, arena: &Arena<Tree, 100>) -> ArenaResult<()> {
-///         match *self {
-///             Tree::Leaf(_) => Ok(()),
-///             Tree::Branch(left, right) => {
-///                 arena.delete_recursive(left)?;
-///                 arena.delete_recursive(right)?;
-///                 Ok(())
-///             }
-///         }
-///     }
-/// }
-/// ```
-pub trait ArenaDelete<T: Copy, const N: usize> {
-    /// Recursively delete this value and any children from the arena.
-    fn delete_recursive(&self, arena: &Arena<T, N>) -> ArenaResult<()>;
+/// Recursively delete children owned by an arena value.
+pub trait ArenaDelete<T: Copy> {
+    /// Delete children referenced by this value.
+    fn delete_recursive(&self, arena: &Arena<T>) -> ArenaResult<()>;
 }
 
-/// Trait for types that can be deep-copied within the arena.
-///
-/// Implement this for types containing `ArenaIndex` fields that need
-/// to recursively copy their children.
-///
-/// # Example
-///
-/// ```rust
-/// use grift::arena::{Arena, ArenaIndex, ArenaCopy, ArenaResult};
-///
-/// #[derive(Clone, Copy)]
-/// enum Tree {
-///     Leaf(isize),
-///     Branch(ArenaIndex, ArenaIndex),
-/// }
-///
-/// impl ArenaCopy<Tree, 100> for Tree {
-///     fn copy_deep(&self, arena: &Arena<Tree, 100>) -> ArenaResult<Tree> {
-///         match *self {
-///             Tree::Leaf(n) => Ok(Tree::Leaf(n)),
-///             Tree::Branch(left, right) => {
-///                 let new_left = arena.copy_deep(left)?;
-///                 let new_right = arena.copy_deep(right)?;
-///                 Ok(Tree::Branch(new_left, new_right))
-///             }
-///         }
-///     }
-/// }
-/// ```
-pub trait ArenaCopy<T: Copy, const N: usize> {
-    /// Create a deep copy of this value in the arena.
-    fn copy_deep(&self, arena: &Arena<T, N>) -> ArenaResult<T>;
+/// Deep-copy children owned by an arena value.
+pub trait ArenaCopy<T: Copy> {
+    /// Return a copy whose child indices refer to newly allocated values.
+    fn copy_deep(&self, arena: &Arena<T>) -> ArenaResult<T>;
 }
 
-/// Trait for types that can be traced by the garbage collector.
-///
-/// Implement this for types that contain `ArenaIndex` fields. The GC will
-/// call `trace` to discover all reachable objects starting from the roots.
-///
-/// # Example
-///
-/// ```rust
-/// use grift::arena::{Arena, ArenaIndex, Trace};
-///
-/// #[derive(Clone, Copy)]
-/// enum Tree {
-///     Leaf(isize),
-///     Branch(ArenaIndex, ArenaIndex),
-/// }
-///
-/// impl<const N: usize> Trace<Tree, N> for Tree {
-///     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-///         match *self {
-///             Tree::Leaf(_) => {} // No references to trace
-///             Tree::Branch(left, right) => {
-///                 tracer(left);
-///                 tracer(right);
-///             }
-///         }
-///     }
-/// }
-///
-/// let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
-///
-/// // Build a tree
-/// let leaf1 = arena.alloc(Tree::Leaf(1)).unwrap();
-/// let leaf2 = arena.alloc(Tree::Leaf(2)).unwrap();
-/// let root = arena.alloc(Tree::Branch(leaf1, leaf2)).unwrap();
-///
-/// // Also allocate some garbage (unreachable nodes)
-/// let garbage1 = arena.alloc(Tree::Leaf(999)).unwrap();
-/// let garbage2 = arena.alloc(Tree::Leaf(888)).unwrap();
-///
-/// assert_eq!(arena.len(), 5);
-///
-/// // Collect garbage, keeping only objects reachable from `root`
-/// let stats = arena.collect_garbage(&[root]);
-///
-/// assert_eq!(stats.collected, 2); // garbage1 and garbage2 were freed
-/// assert_eq!(arena.len(), 3);     // root, leaf1, leaf2 remain
-/// ```
-pub trait Trace<T: Copy, const N: usize> {
-    /// Trace all `ArenaIndex` references contained in this value.
-    ///
-    /// Call `tracer` once for each `ArenaIndex` field in this value.
-    /// The GC uses this to discover the object graph.
+/// Enumerate arena indices reachable from a value.
+pub trait Trace<T: Copy> {
+    /// Call `tracer` once for every directly referenced arena value.
     fn trace<F: FnMut(ArenaIndex)>(&self, tracer: F);
 
-    /// Trace with arena access for types that store metadata in the arena.
-    ///
-    /// Some types (like arrays/strings that store their length in the arena)
-    /// need to read from the arena during tracing to determine how many
-    /// elements to trace. Override this method for such types.
-    ///
-    /// The default implementation just calls `trace()`.
-    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &Arena<T, N>, tracer: F) {
+    /// Trace with read access to the arena when metadata is stored indirectly.
+    fn trace_with_arena<F: FnMut(ArenaIndex)>(&self, _arena: &Arena<T>, tracer: F) {
         self.trace(tracer);
     }
 }
@@ -589,31 +349,29 @@ pub trait Trace<T: Copy, const N: usize> {
 // Iterator
 // ============================================================================
 
-/// Iterator over allocated cells in the arena.
+/// Copying iterator over the logical slot range that exists when iteration begins.
 ///
-/// Created by [`Arena::iter`]. Visits slots in index order (0..N),
-/// skipping free slots. The iterator borrows the arena immutably, so
-/// allocations and frees must not occur while iterating.
-pub struct ArenaIterator<'a, T: Copy, const N: usize> {
-    arena: &'a Arena<T, N>,
+/// Occupancy and values are observed when each slot is reached. Slots appended
+/// after iterator construction are not visited; slots freed before visitation
+/// are skipped; and a formerly vacant slot allocated before visitation is
+/// yielded. No `RefCell` guard escapes.
+pub struct ArenaIterator<'a, T: Copy> {
+    arena: &'a Arena<T>,
     current: usize,
+    end: usize,
 }
 
-impl<T: Copy, const N: usize> Iterator for ArenaIterator<'_, T, N> {
+impl<T: Copy> Iterator for ArenaIterator<'_, T> {
     type Item = (ArenaIndex, T);
 
-    #[inline]
-    /// Return the next occupied slot in ascending index order.
     fn next(&mut self) -> Option<Self::Item> {
-        while self.current < N {
-            let idx = self.current;
+        while self.current < self.end {
+            let index = ArenaIndex::new(self.current);
             self.current += 1;
-
-            if let Slot::Occupied { value } = self.arena.slots[idx].get() {
-                return Some((ArenaIndex::new(idx), value));
+            if let Ok(value) = self.arena.get(index) {
+                return Some((index, value));
             }
         }
-
         None
     }
 }
@@ -622,736 +380,502 @@ impl<T: Copy, const N: usize> Iterator for ArenaIterator<'_, T, N> {
 // Arena
 // ============================================================================
 
-/// Fixed-size arena allocator with O(1) allocation.
-///
-/// # Type Parameters
-///
-/// - `T`: The type of values stored (must be `Copy` for array initialization)
-/// - `N`: Maximum number of cells (const generic)
-///
-/// # Memory Layout
-///
-/// - `slots`: Array of `Cell<Slot<T>>` (either free with next pointer, or occupied with value)
-/// - `free_head`: Head of the free list
-/// - `len`: Number of currently allocated slots
-///
-/// # O(1) Allocation
-///
-/// Uses a free-list for constant-time allocation and deallocation instead of
-/// scanning a bitmap.
-///
-/// # Garbage Collection
-///
-/// The arena supports mark-and-sweep garbage collection via the
-/// [`crate::arena::Trace`] trait.
-///
-/// # Performance
-///
-/// Uses `Cell` instead of `RefCell` for interior mutability. This eliminates
-/// runtime borrow checking overhead and the risk of borrow panics, while
-/// still maintaining safe Rust guarantees.
-pub struct Arena<T: Copy, const N: usize> {
-    slots: [Cell<Slot<T>>; N],
-    free_head: Cell<usize>,
+/// Growable, index-addressed arena with free-list slot reuse.
+pub struct Arena<T: Copy> {
+    slots: RefCell<Vec<Slot<T>>>,
+    free_head: Cell<Option<usize>>,
     len: Cell<usize>,
+    mutation_epoch: Cell<usize>,
 }
 
-impl<T: Copy, const N: usize> Arena<T, N> {
-    /// Create a new arena.
-    ///
-    /// All slots start as free, linked together in a free list.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift::arena::Arena;
-    ///
-    /// let arena: Arena<isize, 100> = Arena::new(0);
-    /// ```
-    pub fn new(_default_value: T) -> Self {
-        // Initialize all slots as free, linked together
-        // Slot 0 -> 1 -> 2 -> ... -> N-1 -> FREE_LIST_END
-        let slots: [Cell<Slot<T>>; N] = core::array::from_fn(|i| {
-            Cell::new(Slot::Free {
-                next_free: if i + 1 < N { i + 1 } else { FREE_LIST_END },
-            })
-        });
+impl<T: Copy> Default for Arena<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        Arena {
-            slots,
-            free_head: Cell::new(if N > 0 { 0 } else { FREE_LIST_END }),
+impl<T: Copy> Arena<T> {
+    /// Construct an empty arena with no allocation.
+    pub const fn new() -> Self {
+        Self {
+            slots: RefCell::new(Vec::new()),
+            free_head: Cell::new(None),
             len: Cell::new(0),
+            mutation_epoch: Cell::new(0),
         }
     }
 
-    /// Get the maximum capacity of this arena.
-    pub const fn capacity(&self) -> usize {
-        N
+    fn record_mutation(&self) {
+        self.mutation_epoch
+            .set(self.mutation_epoch.get().wrapping_add(1));
     }
 
-    /// Get the number of currently allocated cells.
+    /// Return the number of logical slots, including reusable vacancies.
+    pub fn slot_count(&self) -> usize {
+        self.slots.borrow().len()
+    }
+
+    /// Return the backing vector's reserved storage capacity.
+    pub fn reserved_capacity(&self) -> usize {
+        self.slots.borrow().capacity()
+    }
+
+    /// Return the number of occupied slots.
     #[inline]
     pub fn len(&self) -> usize {
         self.len.get()
     }
 
-    /// Check if the arena is empty (no allocated cells).
+    /// Return whether no slots are occupied.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Check if the arena is full (all cells allocated).
-    #[inline]
-    pub fn is_full(&self) -> bool {
-        self.len() == N
+    /// Return the number of vacant logical slots available for reuse.
+    pub fn vacant(&self) -> usize {
+        self.slot_count() - self.len()
     }
 
-    /// Get the number of free cells.
-    pub fn available(&self) -> usize {
-        N - self.len()
-    }
-
-    /// Allocate a new cell and return its index.
-    ///
-    /// Uses O(1) free-list based allocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ArenaError::OutOfMemory` if the arena is full.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift::arena::Arena;
-    ///
-    /// let arena: Arena<isize, 10> = Arena::new(0);
-    /// let idx = arena.alloc(42).unwrap();
-    /// assert_eq!(arena.get(idx).unwrap(), 42);
-    /// ```
-    #[inline]
-    pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
-        let free_head = self.free_head.get();
-
-        // Check if there's a free slot
-        if free_head == FREE_LIST_END {
-            return Err(ArenaError::OutOfMemory);
+    /// Ensure `additional` allocations can succeed without growing storage.
+    pub fn reserve(&self, additional: usize) -> ArenaResult<()> {
+        let reusable = self.vacant();
+        let needed = additional.saturating_sub(reusable);
+        if needed == 0 {
+            return Ok(());
         }
+        self.slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?
+            .try_reserve(needed)
+            .map_err(|_| ArenaError::OutOfMemory)
+    }
 
-        let idx = free_head;
+    /// Allocate a value, reusing a vacant slot before growing the vector.
+    pub fn alloc(&self, value: T) -> ArenaResult<ArenaIndex> {
+        let new_len = self
+            .len
+            .get()
+            .checked_add(1)
+            .ok_or(ArenaError::OutOfMemory)?;
+        let mut slots = self
+            .slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?;
 
-        // Pop from free list
-        let next_free = match self.slots[idx].get() {
-            Slot::Free { next_free } => next_free,
-            Slot::Occupied { .. } => unreachable!("free_head pointed to occupied slot"),
+        let index = if let Some(index) = self.free_head.get() {
+            let next_free = match slots.get(index).copied() {
+                Some(Slot::Free { next_free }) => next_free,
+                _ => return Err(ArenaError::InvalidArgument),
+            };
+            slots[index] = Slot::Occupied { value };
+            self.free_head.set(next_free);
+            index
+        } else {
+            slots.try_reserve(1).map_err(|_| ArenaError::OutOfMemory)?;
+            let index = slots.len();
+            slots.push(Slot::Occupied { value });
+            index
         };
 
-        // Mark as occupied
-        self.slots[idx].set(Slot::Occupied { value });
-        self.free_head.set(next_free);
-
-        // Increment allocated count
-        self.len.set(self.len.get() + 1);
-
-        Ok(ArenaIndex::new(idx))
+        self.len.set(new_len);
+        self.record_mutation();
+        Ok(ArenaIndex::new(index))
     }
 
-    /// Validate an index: in bounds and occupied.
-    #[inline]
     fn validate_index(&self, index: ArenaIndex) -> ArenaResult<usize> {
-        let idx = index.raw();
-        if idx >= N {
-            return Err(ArenaError::IndexOutOfBounds);
-        }
-        match self.slots[idx].get() {
-            Slot::Occupied { .. } => Ok(idx),
-            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
+        let slots = self
+            .slots
+            .try_borrow()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        match slots.get(index.raw()) {
+            None => Err(ArenaError::IndexOutOfBounds),
+            Some(Slot::Free { .. }) => Err(ArenaError::IndexNotAllocated),
+            Some(Slot::Occupied { .. }) => Ok(index.raw()),
         }
     }
 
-    /// Get a copy of the value at the given index.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ArenaError::IndexOutOfBounds` if the index is out of bounds,
-    /// or `ArenaError::IndexNotAllocated` if the slot is not allocated.
-    #[inline]
+    /// Return a copy of an occupied value.
     pub fn get(&self, index: ArenaIndex) -> ArenaResult<T> {
-        let idx = index.raw();
-        if idx >= N {
-            return Err(ArenaError::IndexOutOfBounds);
-        }
-        match self.slots[idx].get() {
-            Slot::Occupied { value } => Ok(value),
-            Slot::Free { .. } => Err(ArenaError::IndexNotAllocated),
+        let slots = self
+            .slots
+            .try_borrow()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        match slots.get(index.raw()).copied() {
+            None => Err(ArenaError::IndexOutOfBounds),
+            Some(Slot::Free { .. }) => Err(ArenaError::IndexNotAllocated),
+            Some(Slot::Occupied { value }) => Ok(value),
         }
     }
 
-    /// Set the value at the given index.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ArenaError::IndexOutOfBounds` or `ArenaError::IndexNotAllocated`
-    /// if the index is invalid.
-    #[inline]
+    /// Replace an occupied value.
     pub fn set(&self, index: ArenaIndex, value: T) -> ArenaResult<()> {
-        let idx = self.validate_index(index)?;
-
-        self.slots[idx].set(Slot::Occupied { value });
-        Ok(())
+        let mut slots = self
+            .slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        match slots.get_mut(index.raw()) {
+            None => Err(ArenaError::IndexOutOfBounds),
+            Some(Slot::Free { .. }) => Err(ArenaError::IndexNotAllocated),
+            Some(slot @ Slot::Occupied { .. }) => {
+                *slot = Slot::Occupied { value };
+                self.record_mutation();
+                Ok(())
+            }
+        }
     }
 
-    /// Modify a value in place using a closure.
+    /// Modify a copied value and write it back into the occupied slot.
     ///
-    /// With Cell-based storage, this is implemented as get + modify + set.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ArenaError::IndexOutOfBounds` or `ArenaError::IndexNotAllocated`
-    /// if the index is invalid.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift::arena::Arena;
-    ///
-    /// let arena: Arena<isize, 10> = Arena::new(0);
-    /// let idx = arena.alloc(42).unwrap();
-    ///
-    /// arena.modify(idx, |v| *v += 10).unwrap();
-    /// assert_eq!(arena.get(idx).unwrap(), 52);
-    /// ```
+    /// No arena borrow is held while `f` runs. Reentrant reads are supported,
+    /// but if `f` mutates the arena, this method returns
+    /// [`ArenaError::BorrowConflict`] rather than risk overwriting a slot that
+    /// was freed and reused during the callback.
     pub fn modify<F>(&self, index: ArenaIndex, f: F) -> ArenaResult<()>
     where
         F: FnOnce(&mut T),
     {
-        let idx = self.validate_index(index)?;
-        let Slot::Occupied { mut value } = self.slots[idx].get() else {
-            unreachable!("validate_index guarantees slot is Occupied")
-        };
+        let mut value = self.get(index)?;
+        let epoch = self.mutation_epoch.get();
         f(&mut value);
-        self.slots[idx].set(Slot::Occupied { value });
-        Ok(())
+        if self.mutation_epoch.get() != epoch {
+            return Err(ArenaError::BorrowConflict);
+        }
+        self.set(index, value)
     }
 
-    /// Get a value, returning `None` instead of an error if invalid.
-    ///
-    /// This is a convenience method for cases where you expect the index
-    /// might be invalid and want to handle it with `Option` instead of `Result`.
-    #[must_use]
+    /// Return a value when the index is occupied.
     pub fn try_get(&self, index: ArenaIndex) -> Option<T> {
         self.get(index).ok()
     }
 
-    /// Swap the values at two indices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either index is invalid.
+    /// Swap two occupied slots.
     pub fn swap(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<()> {
-        let idx_a = self.validate_index(a)?;
-        let idx_b = self.validate_index(b)?;
-        if idx_a != idx_b {
-            // Both validated as Occupied
-            let val_a = self.get(a)?;
-            let val_b = self.get(b)?;
-            self.slots[idx_a].set(Slot::Occupied { value: val_b });
-            self.slots[idx_b].set(Slot::Occupied { value: val_a });
+        let mut slots = self
+            .slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        for index in [a.raw(), b.raw()] {
+            match slots.get(index) {
+                None => return Err(ArenaError::IndexOutOfBounds),
+                Some(Slot::Free { .. }) => return Err(ArenaError::IndexNotAllocated),
+                Some(Slot::Occupied { .. }) => {}
+            }
         }
+        slots.swap(a.raw(), b.raw());
+        self.record_mutation();
         Ok(())
     }
 
-    /// Replace the value at an index, returning the old value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the index is invalid.
+    /// Replace an occupied value and return its previous value.
     pub fn replace(&self, index: ArenaIndex, value: T) -> ArenaResult<T> {
-        let idx = self.validate_index(index)?;
-        let Slot::Occupied { value: old } = self.slots[idx].get() else {
-            unreachable!("validate_index guarantees slot is Occupied")
-        };
-        self.slots[idx].set(Slot::Occupied { value });
-        Ok(old)
+        let mut slots = self
+            .slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        match slots.get_mut(index.raw()) {
+            None => Err(ArenaError::IndexOutOfBounds),
+            Some(Slot::Free { .. }) => Err(ArenaError::IndexNotAllocated),
+            Some(slot @ Slot::Occupied { .. }) => {
+                let Slot::Occupied { value: old } =
+                    core::mem::replace(slot, Slot::Occupied { value })
+                else {
+                    unreachable!()
+                };
+                self.record_mutation();
+                Ok(old)
+            }
+        }
     }
 
-    /// Free a cell, making it available for reuse.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ArenaError::IndexOutOfBounds` or `ArenaError::IndexNotAllocated`
-    /// if the index is invalid.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift::arena::Arena;
-    ///
-    /// let arena: Arena<isize, 10> = Arena::new(0);
-    /// let idx = arena.alloc(42).unwrap();
-    /// arena.free(idx).unwrap();
-    /// assert_eq!(arena.len(), 0);
-    /// ```
-    #[inline]
+    /// Mark an occupied slot vacant and add it to the free list.
     pub fn free(&self, index: ArenaIndex) -> ArenaResult<()> {
-        let idx = self.validate_index(index)?;
-
-        // Push onto free list
-        let free_head = self.free_head.get();
-        self.slots[idx].set(Slot::Free {
-            next_free: free_head,
-        });
-        self.free_head.set(idx);
-
-        // Decrement allocated count
-        self.len.set(self.len.get() - 1);
-
-        Ok(())
+        let mut slots = self
+            .slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        match slots.get_mut(index.raw()) {
+            None => Err(ArenaError::IndexOutOfBounds),
+            Some(Slot::Free { .. }) => Err(ArenaError::IndexNotAllocated),
+            Some(slot @ Slot::Occupied { .. }) => {
+                *slot = Slot::Free {
+                    next_free: self.free_head.get(),
+                };
+                self.free_head.set(Some(index.raw()));
+                self.len.set(self.len.get() - 1);
+                self.record_mutation();
+                Ok(())
+            }
+        }
     }
 
-    /// Check if an index is currently valid (allocated).
+    /// Return whether an index identifies an occupied slot.
     pub fn is_allocated(&self, index: ArenaIndex) -> bool {
         self.validate_index(index).is_ok()
     }
 
-    /// Clear all allocations, making the entire arena available.
-    ///
-    /// # Warning
-    ///
-    /// This does not call any destructors. Use with caution.
-    pub fn clear(&self) {
-        // Rebuild free list
-        for i in 0..N {
-            self.slots[i].set(Slot::Free {
-                next_free: if i + 1 < N { i + 1 } else { FREE_LIST_END },
-            });
-        }
-
-        self.free_head.set(if N > 0 { 0 } else { FREE_LIST_END });
+    /// Remove all logical slots while retaining vector reservation.
+    pub fn clear(&self) -> ArenaResult<()> {
+        self.slots
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?
+            .clear();
+        self.free_head.set(None);
         self.len.set(0);
+        self.record_mutation();
+        Ok(())
     }
 
-    /// Iterate over all allocated indices and values.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift::arena::Arena;
-    ///
-    /// let arena: Arena<isize, 10> = Arena::new(0);
-    /// arena.alloc(1).unwrap();
-    /// arena.alloc(2).unwrap();
-    /// arena.alloc(3).unwrap();
-    ///
-    /// for (idx, value) in arena.iter() {
-    ///     println!("Index {:?}: {}", idx, value);
-    /// }
-    /// ```
-    pub fn iter(&self) -> ArenaIterator<'_, T, N> {
+    /// Iterate over copied occupied values in slot order.
+    pub fn iter(&self) -> ArenaIterator<'_, T> {
         ArenaIterator {
             arena: self,
             current: 0,
+            end: self.slot_count(),
         }
     }
 
-    /// Get statistics about arena usage.
+    /// Return a usage snapshot.
     pub fn stats(&self) -> ArenaStats {
+        let slots = self.slots.borrow();
+        let slot_count = slots.len();
         let allocated = self.len();
         ArenaStats {
-            capacity: N,
+            slot_count,
             allocated,
-            free: N - allocated,
-            fragmentation: self.calculate_fragmentation(),
+            vacant: slot_count - allocated,
+            reserved_capacity: slots.capacity(),
+            fragmentation: Self::fragmentation(&slots),
         }
     }
 
-    /// Estimate fragmentation as the number of free-space runs divided by the
-    /// total arena capacity.
-    fn calculate_fragmentation(&self) -> f32 {
-        // Count free-space fragments: contiguous runs of free slots.
-        let (fragments, _) = (0..N).fold((0u32, false), |(count, was_free), i| {
-            let is_free = matches!(self.slots[i].get(), Slot::Free { .. });
-            (count + u32::from(is_free && !was_free), is_free)
-        });
-
-        if fragments == 0 {
+    fn fragmentation(slots: &[Slot<T>]) -> f32 {
+        let (fragments, _) = slots
+            .iter()
+            .fold((0usize, false), |(count, was_free), slot| {
+                let is_free = matches!(slot, Slot::Free { .. });
+                (count + usize::from(is_free && !was_free), is_free)
+            });
+        if slots.is_empty() {
             0.0
         } else {
-            fragments as f32 / N as f32
+            fragments as f32 / slots.len() as f32
         }
     }
 
-    /// Validate internal consistency of the arena.
-    ///
-    /// Returns `true` if the arena's internal state is consistent.
-    /// This is useful for debugging and testing.
-    ///
-    /// Checks:
-    /// - Free list integrity (no cycles, correct length)
-    /// - Slot count matches `len`
-    /// - All free slots are in the free list
+    /// Validate live counts, slot kinds, and free-list reachability.
     pub fn validate(&self) -> bool {
-        let free_head = self.free_head.get();
-        let len = self.len.get();
-
-        // Count occupied slots
-        let occupied_count = (0..N)
-            .filter(|&i| matches!(self.slots[i].get(), Slot::Occupied { .. }))
+        let Ok(slots) = self.slots.try_borrow() else {
+            return false;
+        };
+        let occupied = slots
+            .iter()
+            .filter(|slot| matches!(slot, Slot::Occupied { .. }))
             .count();
-        if occupied_count != len {
+        if occupied != self.len() {
             return false;
         }
 
-        // Validate free list
-        let mut free_count = 0;
-        let mut visited = [false; N];
-        let mut current = free_head;
+        let mut visited = Vec::new();
+        if visited.try_reserve_exact(slots.len()).is_err() {
+            return false;
+        }
+        visited.resize(slots.len(), false);
 
-        while current != FREE_LIST_END {
-            if current >= N {
-                return false; // Invalid index
+        let mut free_count = 0usize;
+        let mut current = self.free_head.get();
+        while let Some(index) = current {
+            let Some(slot) = slots.get(index) else {
+                return false;
+            };
+            if visited[index] {
+                return false;
             }
-            if visited[current] {
-                return false; // Cycle detected
-            }
-            visited[current] = true;
-
-            match self.slots[current].get() {
+            visited[index] = true;
+            match slot {
                 Slot::Free { next_free } => {
                     free_count += 1;
-                    current = next_free;
+                    current = *next_free;
                 }
-                Slot::Occupied { .. } => {
-                    return false; // Free list points to occupied slot
-                }
+                Slot::Occupied { .. } => return false,
             }
         }
 
-        // Check that free_count + occupied_count == N
-        if free_count + occupied_count != N {
+        if free_count + occupied != slots.len() {
             return false;
         }
-
-        // Check all free slots are in the free list
-        for (i, &was_visited) in visited.iter().enumerate().take(N) {
-            if matches!(self.slots[i].get(), Slot::Free { .. }) && !was_visited {
-                return false; // Free slot not in free list
-            }
-        }
-
-        true
+        slots
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| !matches!(slot, Slot::Free { .. }) || visited[index])
     }
 
-    /// Check if a slot index is currently occupied.
-    ///
-    /// This is a low-level debugging method. For normal use, prefer [`is_allocated`](Arena::is_allocated).
+    /// Return whether a raw slot number is occupied.
     pub fn is_slot_occupied(&self, slot_index: usize) -> bool {
-        slot_index < N && matches!(self.slots[slot_index].get(), Slot::Occupied { .. })
+        self.slots
+            .try_borrow()
+            .ok()
+            .and_then(|slots| slots.get(slot_index).copied())
+            .is_some_and(|slot| matches!(slot, Slot::Occupied { .. }))
     }
 
-    /// Get indices of all allocated slots.
-    ///
-    /// Returns an array with the first `len()` elements being valid indices.
-    /// The remaining elements are [`ArenaIndex::NIL`].
-    pub fn allocated_indices(&self) -> [ArenaIndex; N] {
-        let mut result = [ArenaIndex::NIL; N];
-        let mut count = 0;
-
-        for idx in 0..N {
-            if let Slot::Occupied { .. } = self.slots[idx].get() {
-                result[count] = ArenaIndex::new(idx);
-                count += 1;
-            }
-        }
-
+    /// Return all occupied indices in slot order.
+    pub fn allocated_indices(&self) -> ArenaResult<Vec<ArenaIndex>> {
+        let mut result = Vec::new();
         result
+            .try_reserve_exact(self.len())
+            .map_err(|_| ArenaError::OutOfMemory)?;
+        result.extend(self.iter().map(|(index, _)| index));
+        Ok(result)
     }
 
-    /// Apply a function to all allocated values.
-    ///
-    /// This is useful for bulk reads without the overhead of iteration.
+    /// Visit copied occupied values without retaining an arena borrow.
     pub fn for_each<F>(&self, mut f: F)
     where
         F: FnMut(ArenaIndex, &T),
     {
-        self.iter().for_each(|(idx, val)| f(idx, &val));
+        self.iter().for_each(|(index, value)| f(index, &value));
     }
 
-    /// Apply a mutating function to all allocated values.
-    pub fn for_each_mut<F>(&self, mut f: F)
+    /// Visit copied occupied values and write each result back.
+    ///
+    /// Reentrant reads are supported. If `f` mutates the arena, traversal
+    /// stops with [`ArenaError::BorrowConflict`] before writing back the copied
+    /// value for that iteration.
+    pub fn for_each_mut<F>(&self, mut f: F) -> ArenaResult<()>
     where
         F: FnMut(ArenaIndex, &mut T),
     {
-        for idx in 0..N {
-            if let Slot::Occupied { mut value } = self.slots[idx].get() {
-                f(ArenaIndex::new(idx), &mut value);
-                self.slots[idx].set(Slot::Occupied { value });
+        let end = self.slot_count();
+        for raw in 0..end {
+            let index = ArenaIndex::new(raw);
+            if let Ok(mut value) = self.get(index) {
+                let epoch = self.mutation_epoch.get();
+                f(index, &mut value);
+                if self.mutation_epoch.get() != epoch {
+                    return Err(ArenaError::BorrowConflict);
+                }
+                self.set(index, value)?;
             }
         }
+        Ok(())
     }
 
-    /// Count values matching a predicate.
+    /// Count occupied values matching a predicate.
     pub fn count_where<F>(&self, predicate: F) -> usize
     where
         F: Fn(&T) -> bool,
     {
-        self.iter().filter(|(_, v)| predicate(v)).count()
+        self.iter().filter(|(_, value)| predicate(value)).count()
     }
 
-    /// Find the first value matching a predicate.
+    /// Find the first occupied value matching a predicate.
     pub fn find<F>(&self, predicate: F) -> Option<(ArenaIndex, T)>
     where
         F: Fn(&T) -> bool,
     {
-        self.iter().find(|(_, v)| predicate(v))
+        self.iter().find(|(_, value)| predicate(value))
     }
 
-    /// Check if any allocated value matches a predicate.
+    /// Return whether any occupied value matches a predicate.
     pub fn any<F>(&self, predicate: F) -> bool
     where
         F: Fn(&T) -> bool,
     {
-        self.iter().any(|(_, v)| predicate(&v))
+        self.iter().any(|(_, value)| predicate(&value))
     }
 
-    /// Check if all allocated values match a predicate.
-    ///
-    /// Returns `true` if the arena is empty.
+    /// Return whether every occupied value matches a predicate.
     pub fn all<F>(&self, predicate: F) -> bool
     where
         F: Fn(&T) -> bool,
     {
-        self.iter().all(|(_, v)| predicate(&v))
+        self.iter().all(|(_, value)| predicate(&value))
     }
 
-    /// Delete a value and recursively delete any children.
-    ///
-    /// This requires `T: ArenaDelete<T, N>`.
+    /// Recursively delete a value and its owned children.
     pub fn delete_recursive(&self, index: ArenaIndex) -> ArenaResult<()>
     where
-        T: ArenaDelete<T, N>,
+        T: ArenaDelete<T>,
     {
         let value = self.get(index)?;
         value.delete_recursive(self)?;
-        self.free(index)?;
-        Ok(())
+        self.free(index)
     }
 
-    /// Create a deep copy of a value and its children.
-    ///
-    /// This requires `T: ArenaCopy<T, N>`.
+    /// Deep-copy a value and its owned children.
     pub fn copy_deep(&self, index: ArenaIndex) -> ArenaResult<ArenaIndex>
     where
-        T: ArenaCopy<T, N>,
+        T: ArenaCopy<T>,
     {
-        let value = self.get(index)?;
-        let copied = value.copy_deep(self)?;
+        let copied = self.get(index)?.copy_deep(self)?;
         self.alloc(copied)
     }
-}
 
-// ============================================================================
-// Garbage Collection
-// ============================================================================
-
-impl<T: Copy, const N: usize> Arena<T, N> {
-    /// Initialize roots into the mark stack.
-    fn initialize_roots(
-        &self,
-        roots: &[ArenaIndex],
-        marked: &mut [bool; N],
-        mark_stack: &mut [usize; N],
-        stack_len: &mut usize,
-    ) {
-        for &root in roots {
-            if self.is_allocated(root) {
-                let idx = root.raw();
-                if idx < N && !marked[idx] {
-                    marked[idx] = true;
-                    if *stack_len < N {
-                        mark_stack[*stack_len] = idx;
-                        *stack_len += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Process the mark stack using depth-first traversal.
-    ///
-    /// This iteratively processes children in batches to avoid stack overflow
-    /// when objects have many children. Uses iterative batching to ensure all
-    /// children are processed even when there are more than 16 per object.
-    fn process_mark_stack(
-        &self,
-        marked: &mut [bool; N],
-        mark_stack: &mut [usize; N],
-        stack_len: &mut usize,
-    ) where
-        T: Trace<T, N>,
-    {
-        while *stack_len > 0 {
-            *stack_len -= 1;
-            let current_idx = mark_stack[*stack_len];
-
-            if let Slot::Occupied { value } = self.slots[current_idx].get() {
-                loop {
-                    let mut batch = [0usize; 16];
-                    let mut batch_count = 0usize;
-                    let mut has_more = false;
-
-                    value.trace_with_arena(self, |child_index| {
-                        let idx = child_index.raw();
-                        if idx < N && !marked[idx] {
-                            if batch_count < 16 {
-                                batch[batch_count] = idx;
-                                batch_count += 1;
-                            } else {
-                                has_more = true;
-                            }
-                        }
-                    });
-
-                    if batch_count == 0 {
-                        break;
-                    }
-
-                    for &idx in batch.iter().take(batch_count) {
-                        if !marked[idx] {
-                            marked[idx] = true;
-                            if *stack_len < N {
-                                mark_stack[*stack_len] = idx;
-                                *stack_len += 1;
-                            }
-                        }
-                    }
-
-                    if !has_more {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Sweep phase: free all unmarked but allocated slots in a single pass.
-    fn sweep_unmarked(&self, marked: &[bool; N]) -> usize {
-        (0..N)
-            .filter(|&idx| !marked[idx] && matches!(self.slots[idx].get(), Slot::Occupied { .. }))
-            .map(|idx| self.free(ArenaIndex::new(idx)))
-            .filter(core::result::Result::is_ok)
-            .count()
-    }
-
-    /// Shared mark-and-sweep implementation.
-    fn mark_and_sweep(
-        &self,
-        marked: &mut [bool; N],
-        mark_stack: &mut [usize; N],
-        stack_len: &mut usize,
-    ) -> GcStats
+    /// Perform mark-and-sweep collection from one root set.
+    pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> ArenaResult<GcStats>
     where
-        T: Trace<T, N>,
-    {
-        let total_before = self.len();
-
-        self.process_mark_stack(marked, mark_stack, stack_len);
-
-        let marked_count = marked.iter().filter(|&&m| m).count();
-        let collected = self.sweep_unmarked(marked);
-
-        GcStats {
-            marked: marked_count,
-            collected,
-            total_before,
-        }
-    }
-
-    /// Perform mark-and-sweep garbage collection.
-    ///
-    /// Starting from the given `roots`, marks all reachable objects by
-    /// following `ArenaIndex` references (via the `Trace` trait), then
-    /// frees all unmarked (unreachable) objects.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. **Mark phase**: Starting from roots, recursively mark all reachable
-    ///    objects. Handles cycles correctly by checking if already marked.
-    /// 2. **Sweep phase**: Iterate through all slots and free any that are
-    ///    allocated but not marked.
-    ///
-    /// # Returns
-    ///
-    /// Returns `GcStats` with information about what was collected.
-    ///
-    /// # Complexity
-    ///
-    /// - Time: O(reachable + N) where N is arena capacity
-    /// - Space: O(N) for the mark bitmap
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use grift::arena::{Arena, ArenaIndex, Trace};
-    ///
-    /// #[derive(Clone, Copy)]
-    /// struct Node {
-    ///     value: isize,
-    ///     next: Option<ArenaIndex>,
-    /// }
-    ///
-    /// impl<const N: usize> Trace<Node, N> for Node {
-    ///     fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
-    ///         if let Some(next) = self.next {
-    ///             tracer(next);
-    ///         }
-    ///     }
-    /// }
-    ///
-    /// let arena: Arena<Node, 10> = Arena::new(Node { value: 0, next: None });
-    ///
-    /// // Create a linked list: root -> n1 -> n2
-    /// let n2 = arena.alloc(Node { value: 3, next: None }).unwrap();
-    /// let n1 = arena.alloc(Node { value: 2, next: Some(n2) }).unwrap();
-    /// let root = arena.alloc(Node { value: 1, next: Some(n1) }).unwrap();
-    ///
-    /// // Create some garbage
-    /// let _garbage = arena.alloc(Node { value: -1, next: None }).unwrap();
-    ///
-    /// // Collect with root as the only GC root
-    /// let stats = arena.collect_garbage(&[root]);
-    ///
-    /// assert_eq!(stats.collected, 1);
-    /// assert_eq!(arena.len(), 3);
-    /// ```
-    pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats
-    where
-        T: Trace<T, N>,
+        T: Trace<T>,
     {
         self.collect_garbage_multi(&[roots])
     }
 
-    /// Perform garbage collection with multiple root sets.
-    ///
-    /// This iterates through all provided root sets and marks objects
-    /// reachable from any of them.
-    ///
-    /// # Note
-    ///
-    /// For no-alloc compatibility, this method iterates through root sets
-    /// sequentially rather than flattening them. This has the same effect
-    /// but uses constant stack space.
-    pub fn collect_garbage_multi(&self, root_sets: &[&[ArenaIndex]]) -> GcStats
+    /// Perform mark-and-sweep collection from multiple root sets.
+    pub fn collect_garbage_multi(&self, root_sets: &[&[ArenaIndex]]) -> ArenaResult<GcStats>
     where
-        T: Trace<T, N>,
+        T: Trace<T>,
     {
-        let mut marked = [false; N];
-        let mut mark_stack = [0usize; N];
-        let mut stack_len = 0usize;
+        let slot_count = self.slot_count();
+        let total_before = self.len();
 
-        for root_set in root_sets {
-            self.initialize_roots(root_set, &mut marked, &mut mark_stack, &mut stack_len);
+        let mut marked = Vec::new();
+        marked
+            .try_reserve_exact(slot_count)
+            .map_err(|_| ArenaError::OutOfMemory)?;
+        marked.resize(slot_count, false);
+
+        let mut mark_stack = Vec::new();
+        mark_stack
+            .try_reserve_exact(slot_count)
+            .map_err(|_| ArenaError::OutOfMemory)?;
+
+        for roots in root_sets {
+            for &root in *roots {
+                let index = root.raw();
+                if index < slot_count && !marked[index] && self.is_allocated(root) {
+                    marked[index] = true;
+                    mark_stack.push(index);
+                }
+            }
         }
-        self.mark_and_sweep(&mut marked, &mut mark_stack, &mut stack_len)
+
+        while let Some(raw) = mark_stack.pop() {
+            let Ok(value) = self.get(ArenaIndex::new(raw)) else {
+                continue;
+            };
+            value.trace_with_arena(self, |child| {
+                let index = child.raw();
+                if index < slot_count && !marked[index] && self.is_allocated(child) {
+                    marked[index] = true;
+                    mark_stack.push(index);
+                }
+            });
+        }
+
+        let marked_count = marked.iter().filter(|&&value| value).count();
+        let mut collected = 0usize;
+        for (raw, is_marked) in marked.iter().copied().enumerate() {
+            let index = ArenaIndex::new(raw);
+            if !is_marked && self.is_allocated(index) {
+                self.free(index)?;
+                collected += 1;
+            }
+        }
+
+        Ok(GcStats {
+            marked: marked_count,
+            collected,
+            total_before,
+        })
     }
 }

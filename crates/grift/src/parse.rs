@@ -114,22 +114,22 @@ impl CharSource for SliceSource<'_> {
 // ── ChainSource ───────────────────────────────────────────────────
 
 /// Character source backed by an arena `CharPair` chain.
-pub(crate) struct ChainSource<'a, const N: usize> {
-    arena: &'a Arena<Value, N>,
+pub(crate) struct ChainSource<'a> {
+    arena: &'a Arena<Value>,
     cursor: ArenaIndex,
 }
 
-impl<'a, const N: usize> ChainSource<'a, N> {
+impl<'a> ChainSource<'a> {
     /// Create a source that reads characters from an arena `CharPair` chain.
     ///
     /// This is used by raw read helpers such as `raw-read-string`, where the
     /// source text already exists as a Lisp string in the arena.
-    pub fn new(arena: &'a Arena<Value, N>, cursor: ArenaIndex) -> Self {
+    pub fn new(arena: &'a Arena<Value>, cursor: ArenaIndex) -> Self {
         ChainSource { arena, cursor }
     }
 }
 
-impl<const N: usize> CharSource for ChainSource<'_, N> {
+impl CharSource for ChainSource<'_> {
     /// Read and consume the next character from the current `CharPair` node.
     fn read_char(&mut self) -> Option<char> {
         if self.cursor.is_nil() {
@@ -170,7 +170,7 @@ fn is_delimiter(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '(' | ')' | '"' | ';')
 }
 
-impl<const N: usize> Lisp<N> {
+impl Lisp {
     /// Parse one required s-expression from a character source.
     ///
     /// End-of-input after whitespace/comments is a parse error.

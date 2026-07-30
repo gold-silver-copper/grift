@@ -7,8 +7,7 @@
 //!
 //! ## Overview
 //!
-//! - [`LispOps`] — trait exposing the subset of `Lisp<N>` methods that native
-//!   functions need, erasing the const generic `N`.
+//! - [`LispOps`] — trait exposing the capabilities native functions need.
 //! - [`NativeFn`] — type alias for the native function pointer signature.
 //! - [`FromLisp`] / [`ToLisp`] — conversion traits between Rust and Lisp types.
 //! - [`extract_arg`] — extract a typed argument from an argument list.
@@ -24,7 +23,7 @@
 //!     a + b + c
 //! });
 //!
-//! let lisp: Lisp<20000> = Lisp::new();
+//! let lisp: Lisp = Lisp::new();
 //! lisp.register_native("add3", native_add3).unwrap();
 //! assert_eq!(lisp.eval("(add3 1 2 3)"), Ok(Value::Number(6)));
 //! ```
@@ -37,16 +36,16 @@ use crate::value::Value;
 ///
 /// A native function receives a [`LispOps`] trait object and a cons-list of
 /// already-evaluated arguments, and returns an arena-allocated result.
-/// The function pointer carries no const generic, so it can be stored
-/// directly inside [`Value::Native`].
+/// The trait-object boundary keeps native functions decoupled from the
+/// concrete interpreter representation.
 pub type NativeFn = fn(&dyn LispOps, ArenaIndex) -> ArenaResult<ArenaIndex>;
 
 /// Trait that exposes the full public API of [`Lisp`](crate::Lisp) through
-/// a trait object, erasing the const-generic arena size `N`.
+/// a trait object.
 ///
 /// All user-registered native functions receive `&dyn LispOps` instead of
-/// `&Lisp<N>`, which allows [`NativeFn`] (and therefore [`Value::Native`])
-/// to be independent of `N`.
+/// the concrete [`Lisp`](crate::Lisp) type, preserving a small capability
+/// boundary for [`NativeFn`] values.
 pub trait LispOps {
     /// Allocate a number value.
     fn number(&self, n: isize) -> ArenaResult<ArenaIndex>;
@@ -113,9 +112,9 @@ pub trait LispOps {
     /// Return arena allocation statistics.
     fn stats(&self) -> ArenaStats;
     /// Return the baseline allocation count.
-    fn baseline_allocated(&self) -> usize;
+    fn baseline_allocated(&self) -> ArenaResult<usize>;
     /// Run mark-and-sweep garbage collection with the given roots.
-    fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats;
+    fn collect_garbage(&self, roots: &[ArenaIndex]) -> ArenaResult<GcStats>;
     /// Write a machine-readable representation of the value at `idx`.
     ///
     /// This matches [`crate::Lisp::write_value`], including validation of
@@ -253,7 +252,7 @@ impl ToLisp for char {
 /// ```rust
 /// use grift::{Lisp, ArenaIndex, extract_arg};
 ///
-/// let lisp: Lisp<20000> = Lisp::new();
+/// let lisp: Lisp = Lisp::new();
 /// let idx = lisp.eval_to_index("(list 42 #t)").unwrap();
 /// let (n, rest): (isize, ArenaIndex) = extract_arg(&lisp, idx).unwrap();
 /// assert_eq!(n, 42);

@@ -2,7 +2,7 @@ use grift::arena::*;
 
 #[test]
 fn test_basic_allocation() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     let idx1 = arena.alloc(42).unwrap();
     let idx2 = arena.alloc(43).unwrap();
@@ -14,7 +14,7 @@ fn test_basic_allocation() {
 
 #[test]
 fn test_free_and_reuse() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     let idx1 = arena.alloc(42).unwrap();
     assert_eq!(arena.len(), 1);
@@ -28,18 +28,20 @@ fn test_free_and_reuse() {
 }
 
 #[test]
-fn test_out_of_memory() {
-    let arena: Arena<isize, 3> = Arena::new(0);
+fn test_growth_has_no_configured_limit() {
+    let arena: Arena<isize> = Arena::new();
 
     assert!(arena.alloc(1).is_ok());
     assert!(arena.alloc(2).is_ok());
     assert!(arena.alloc(3).is_ok());
-    assert_eq!(arena.alloc(4), Err(ArenaError::OutOfMemory));
+    assert!(arena.alloc(4).is_ok());
+    assert_eq!(arena.len(), 4);
+    assert_eq!(arena.slot_count(), 4);
 }
 
 #[test]
 fn test_invalid_index() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     let idx = arena.alloc(42).unwrap();
     arena.free(idx).unwrap();
@@ -50,7 +52,7 @@ fn test_invalid_index() {
 
 #[test]
 fn test_free_list_o1_allocation() {
-    let arena: Arena<isize, 5> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     // Allocate all slots
     let idx0 = arena.alloc(0).unwrap();
@@ -59,7 +61,7 @@ fn test_free_list_o1_allocation() {
     let idx3 = arena.alloc(3).unwrap();
     let idx4 = arena.alloc(4).unwrap();
 
-    assert!(arena.is_full());
+    assert!(arena.vacant() == 0);
 
     // Free some slots in non-sequential order
     arena.free(idx2).unwrap();
@@ -67,7 +69,7 @@ fn test_free_list_o1_allocation() {
     arena.free(idx4).unwrap();
 
     assert_eq!(arena.len(), 2);
-    assert_eq!(arena.available(), 3);
+    assert_eq!(arena.vacant(), 3);
 
     // Allocate again - should reuse freed slots (LIFO order from free list)
     let new1 = arena.alloc(100).unwrap();
@@ -88,18 +90,18 @@ fn test_free_list_o1_allocation() {
 
 #[test]
 fn test_clear_invalidates_all_indices() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     let idx1 = arena.alloc(1).unwrap();
     let idx2 = arena.alloc(2).unwrap();
     let idx3 = arena.alloc(3).unwrap();
 
-    arena.clear();
+    arena.clear().unwrap();
 
     // All old indices should be invalid
-    assert_eq!(arena.get(idx1), Err(ArenaError::IndexNotAllocated));
-    assert_eq!(arena.get(idx2), Err(ArenaError::IndexNotAllocated));
-    assert_eq!(arena.get(idx3), Err(ArenaError::IndexNotAllocated));
+    assert_eq!(arena.get(idx1), Err(ArenaError::IndexOutOfBounds));
+    assert_eq!(arena.get(idx2), Err(ArenaError::IndexOutOfBounds));
+    assert_eq!(arena.get(idx3), Err(ArenaError::IndexOutOfBounds));
 
     // New allocations should work
     let new_idx = arena.alloc(42).unwrap();
@@ -108,21 +110,22 @@ fn test_clear_invalidates_all_indices() {
 
 #[test]
 fn test_stats() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
 
     let stats = arena.stats();
-    assert_eq!(stats.capacity, 10);
+    assert_eq!(stats.slot_count, 2);
     assert_eq!(stats.allocated, 2);
-    assert_eq!(stats.free, 8);
-    assert_eq!(stats.usage_percent(), 20.0);
+    assert_eq!(stats.vacant, 0);
+    assert!(stats.reserved_capacity >= stats.slot_count);
+    assert_eq!(stats.usage_percent(), 100.0);
 }
 
 #[test]
 fn test_clear() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     arena.alloc(1).unwrap();
     arena.alloc(2).unwrap();
@@ -130,7 +133,7 @@ fn test_clear() {
 
     assert_eq!(arena.len(), 3);
 
-    arena.clear();
+    arena.clear().unwrap();
 
     assert_eq!(arena.len(), 0);
     assert!(arena.is_empty());
@@ -143,8 +146,8 @@ enum Tree {
     Branch(ArenaIndex, ArenaIndex),
 }
 
-impl ArenaDelete<Tree, 100> for Tree {
-    fn delete_recursive(&self, arena: &Arena<Tree, 100>) -> ArenaResult<()> {
+impl ArenaDelete<Tree> for Tree {
+    fn delete_recursive(&self, arena: &Arena<Tree>) -> ArenaResult<()> {
         match *self {
             Tree::Leaf(_) => Ok(()),
             Tree::Branch(left, right) => {
@@ -156,8 +159,8 @@ impl ArenaDelete<Tree, 100> for Tree {
     }
 }
 
-impl ArenaCopy<Tree, 100> for Tree {
-    fn copy_deep(&self, arena: &Arena<Tree, 100>) -> ArenaResult<Tree> {
+impl ArenaCopy<Tree> for Tree {
+    fn copy_deep(&self, arena: &Arena<Tree>) -> ArenaResult<Tree> {
         match *self {
             Tree::Leaf(n) => Ok(Tree::Leaf(n)),
             Tree::Branch(left, right) => {
@@ -171,7 +174,7 @@ impl ArenaCopy<Tree, 100> for Tree {
 
 #[test]
 fn test_recursive_delete() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
+    let arena: Arena<Tree> = Arena::new();
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -186,7 +189,7 @@ fn test_recursive_delete() {
 
 #[test]
 fn test_deep_copy() {
-    let arena: Arena<Tree, 100> = Arena::new(Tree::Leaf(0));
+    let arena: Arena<Tree> = Arena::new();
 
     let left = arena.alloc(Tree::Leaf(1)).unwrap();
     let right = arena.alloc(Tree::Leaf(2)).unwrap();
@@ -208,7 +211,7 @@ fn test_deep_copy() {
 
 #[test]
 fn test_set() {
-    let arena: Arena<isize, 10> = Arena::new(0);
+    let arena: Arena<isize> = Arena::new();
 
     let idx = arena.alloc(42).unwrap();
     assert_eq!(arena.get(idx).unwrap(), 42);

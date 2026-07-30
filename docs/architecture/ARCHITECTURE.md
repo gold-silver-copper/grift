@@ -23,12 +23,15 @@ The primary conformance sources for this document are:
 ## 1. Top-Level Shape
 
 Grift is a `#![no_std]`, `#![forbid(unsafe_code)]`, arena-allocated Lisp
-interpreter with Kernel-style operative/applicative semantics.
+interpreter with Kernel-style operative/applicative semantics. It uses Rust's
+`alloc` crate and therefore requires the embedding program to provide a global
+allocator, but the library does not depend on `std`.
 
 The important implementation choices are:
 
-- all runtime objects live in a fixed-capacity `Arena<Value, N>`
-- there is no heap allocation and no `alloc` dependency in the interpreter
+- all runtime objects live in a growable `Arena<Value>` backed by `Vec`
+- runtime references are stable `ArenaIndex` handles, never vector references
+- vacant slots are reused before object storage grows
 - strings are linked `CharPair` chains, not heap-backed buffers
 - symbols are interned and compare by arena identity
 - environments are first-class linked objects
@@ -36,11 +39,11 @@ The important implementation choices are:
 - applicatives are explicit wrappers around other callable values
 - evaluation uses a trampoline instead of recursive host-language calls in tail
   position
-- garbage collection is mark-and-sweep and is normally triggered only after
-  `OutOfMemory`
+- garbage collection is mark-and-sweep and is normally triggered only after a
+  storage reservation reports `OutOfMemory`
 
-The library entry point is [`Lisp`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/lisp.rs).
-The optional binary in [`main.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/main.rs)
+The library entry point is [`Lisp`](../../crates/grift/src/lisp.rs).
+The optional binary in [`main.rs`](../../crates/grift/src/main.rs)
 constructs one `Lisp` instance and reuses it across a file run or REPL session,
 so top-level state persists across inputs.
 
@@ -48,22 +51,22 @@ so top-level state persists across inputs.
 
 The runtime is split into a small set of modules with fairly sharp boundaries:
 
-- [`arena.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/arena.rs):
-  fixed-size free-list allocator, `ArenaIndex`, tracing, and mark/sweep GC
-- [`value.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/value.rs):
+- [`arena.rs`](../../crates/grift/src/arena.rs): growable `Vec` slot storage,
+  free-list reuse, `ArenaIndex`, tracing, and mark/sweep GC
+- [`value.rs`](../../crates/grift/src/value.rs):
   `Value` enum and low-level runtime categories
-- [`lisp.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/lisp.rs):
+- [`lisp.rs`](../../crates/grift/src/lisp.rs):
   interpreter object, symbol interning, environment operations, formatting,
   and public API
-- [`parse.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/parse.rs):
+- [`parse.rs`](../../crates/grift/src/parse.rs):
   recursive-descent reader shared by byte-oriented source text and runtime
   string chains
-- [`eval.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/eval.rs):
+- [`eval.rs`](../../crates/grift/src/eval.rs):
   evaluator, builtin registration, operative/applicative dispatch, TCO, and GC
   retry logic
-- [`native.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/native.rs):
+- [`native.rs`](../../crates/grift/src/native.rs):
   host-function registration and `LispOps` abstraction
-- [`prelude.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/prelude.rs):
+- [`prelude.rs`](../../crates/grift/src/prelude.rs):
   bundled prelude source and lazy prelude binding helpers
 
 ## 3. Startup and Reserved Slots
@@ -90,6 +93,25 @@ constants throughout the runtime:
 `ArenaIndex::ROOTS` includes all singleton slots above, so they always survive
 collection.
 
+The arena stores `Slot<Value>` entries in `RefCell<Vec<_>>`. Each operation
+uses a short lexical borrow and copies `Value` out before evaluator, tracing,
+formatting, or native code can run. Consequently vector relocation cannot
+invalidate an index, and no vector reference or borrow guard crosses a callback
+boundary. Traversal copies occupied values one at a time rather than exposing a
+borrowing slice or iterator.
+
+The free-list head and each vacant slot use `Option<usize>` links. Allocation
+pops a vacant slot first; otherwise it calls `Vec::try_reserve(1)` and appends a
+slot. `OutOfMemory` therefore means storage reservation failed because of
+allocator exhaustion or capacity overflow, not that a configured object count
+was reached. Arena statistics distinguish logical slot count, live allocation
+count, vacant reusable slots, and the vector's reserved capacity; reserved
+capacity is not a semantic maximum.
+
+Language-level proper lists and dotted pairs are still represented by linked
+`Value::Cons` cells. The backing `Vec` stores runtime objects and does not
+replace Lisp list structure.
+
 Initialization order in `Lisp::new()` is:
 
 1. allocate singleton values and fixed environments
@@ -101,7 +123,7 @@ Initialization order in `Lisp::new()` is:
 ## 4. Runtime Value Model
 
 The runtime data model is exactly the `Value` enum in
-[`value.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/value.rs):
+[`value.rs`](../../crates/grift/src/value.rs):
 
 ```rust
 enum Value {
@@ -230,13 +252,13 @@ Only two user-visible operations mutate environments:
 ## 6. Reader Architecture
 
 The parser in
-[`parse.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/parse.rs)
+[`parse.rs`](../../crates/grift/src/parse.rs)
 is a single recursive-descent implementation over a small `CharSource` trait.
 
 There are two concrete sources:
 
 - `SliceSource<'a>`: reads external source text one byte at a time
-- `ChainSource<'a, N>`: reads characters from an existing `CharPair` chain
+- `ChainSource<'a>`: reads characters from an existing `CharPair` chain
 
 This distinction matters:
 
@@ -264,7 +286,7 @@ Unknown string escapes raise `InvalidArgument`, not `ParseError`.
 ## 7. Evaluation Architecture
 
 The evaluator in
-[`eval.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/eval.rs)
+[`eval.rs`](../../crates/grift/src/eval.rs)
 uses a trampoline centered on `eval_expr` and `eval_step`.
 
 At a high level:
@@ -347,16 +369,20 @@ On `OutOfMemory`:
    - the current `expr`
    - the current `env`
    - anything on the temporary GC root stack
-3. retry the evaluation step
+3. retry the evaluation step once, and only if collection reclaimed a reusable
+   slot
 
-If collection frees nothing, `OutOfMemory` propagates.
+The mark bitmap and iterative worklist are dynamically sized from the current
+logical slot count and reserved fallibly. If GC scratch reservation fails, or
+if collection frees nothing, `OutOfMemory` propagates instead of retrying
+indefinitely.
 
 `(gc-collect)` bypasses the OOM trigger and forces an unconditional collection.
 
 ## 8. Builtin and Prelude Installation
 
 Builtin registration is generated by the `define_builtins!` macro in
-[`eval.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/eval.rs).
+[`eval.rs`](../../crates/grift/src/eval.rs).
 
 The macro defines:
 
@@ -419,13 +445,12 @@ comments.
 ## 10. Host Integration
 
 Host functions use the interface in
-[`native.rs`](/Users/kisaczka/Desktop/code/pwn_arena/crates/grift/src/native.rs).
+[`native.rs`](../../crates/grift/src/native.rs).
 
 Important pieces:
 
 - `NativeFn`: erased function pointer type
-- `LispOps`: trait object exposing the public interpreter surface without the
-  arena-size const generic
+- `LispOps`: trait object exposing the native-function capability boundary
 - `FromLisp` / `ToLisp`: host conversion traits
 - `register_native!`: macro for ergonomic native bindings
 

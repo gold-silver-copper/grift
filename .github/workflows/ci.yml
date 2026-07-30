@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, pure]
 
 permissions:
   contents: read
@@ -13,21 +13,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Verify that core crates are truly no_std and no_alloc by building against
-  # a bare-metal target that has no std or alloc support. This catches any
-  # transitive dependency that pulls in std or alloc.
+  # Verify that the library remains no_std while using the alloc crate. Final
+  # embedded binaries are responsible for supplying a global allocator.
   no-std-check:
-    name: no_std / no_alloc verification
+    name: no_std + alloc verification
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv6m-none-eabi
-      - name: Build core crates for bare-metal target (no std, no alloc)
+      - name: Build Grift library for a bare-metal target
         run: >
           cargo build --target thumbv6m-none-eabi
-          -p grift_arena
+          -p grift --lib --no-default-features
 
   # Verify the workspace builds against the Minimum Supported Rust Version.
   msrv:

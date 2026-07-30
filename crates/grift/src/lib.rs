@@ -26,15 +26,17 @@
 
 //! # Grift
 //!
-//! A `no_std`, `no_alloc` Lisp interpreter built on top of [`arena`],
+//! A `no_std` Lisp interpreter built on top of a growable, allocator-backed
+//! [`arena`],
 //! implementing Kernel-style vau calculus (fexprs).
 //!
 //! ## Features
 //!
-//! - **No-std, no-alloc**: Works in embedded environments with no heap.
-//!   Only `core::` types are used; the crate compiles for bare-metal targets.
-//! - **Arena-allocated**: All values live in a fixed-size [`Arena`](arena::Arena)
-//!   with const-generic capacity. No `Vec`, `String`, or `Box`.
+//! - **No-std + alloc**: The library does not depend on `std`, but the final
+//!   program must provide a global allocator.
+//! - **Arena-allocated**: Runtime values live in a growable, `Vec`-backed
+//!   [`Arena`](arena::Arena). Stable indices survive vector reallocation, and
+//!   vacant slots are reused before storage grows.
 //! - **Simple API**: Parse and evaluate Lisp expressions in one call via [`Lisp::eval`].
 //! - **Tail-call optimization**: Unbounded recursion in tail position without
 //!   growing the Rust call stack, implemented via a trampoline loop.
@@ -60,12 +62,14 @@
 //! ```rust
 //! use grift::{Lisp, Value};
 //!
-//! let lisp: Lisp<20000> = Lisp::new();
+//! let lisp: Lisp = Lisp::new();
 //! let three = lisp.eval("(+ 1 2)");
 //! assert_eq!(three, Ok(Value::Number(3)));
 //! ```
 
-/// Fixed-size arena allocator with free-list and mark-and-sweep GC.
+extern crate alloc;
+
+/// Growable arena storage with free-list reuse and mark-and-sweep GC.
 pub mod arena;
 mod eval;
 mod lisp;

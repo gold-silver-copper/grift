@@ -20,8 +20,9 @@
 //!
 //! Garbage collection is **demand-driven**: it is triggered only when an
 //! allocation returns [`ArenaError::OutOfMemory`]. On OOM the evaluator
-//! restores the GC root stack, runs a collection cycle, and retries.
-//! If the collection frees no memory, the OOM error propagates.
+//! restores the GC root stack, runs a collection cycle, and retries that
+//! evaluator step once. If collection frees no memory or the retry also runs
+//! out of memory, the error propagates.
 //!
 //! ## Builtin Registration
 //!
@@ -138,7 +139,7 @@ macro_rules! define_builtins {
         // — ID constants (single shared u8 space) —
         define_builtins!(@ids 0u8; $($op_id,)* $($bi_id,)*);
 
-        impl<const N: usize> Lisp<N> {
+        impl Lisp {
             /// Register all builtins in the ground environment.
             pub(crate) fn init_builtins(&self) {
                 $( self.bind_builtin($op_name, $op_id, false); )*
@@ -236,7 +237,7 @@ define_builtins! {
     }
 }
 
-impl<const N: usize> Lisp<N> {
+impl Lisp {
     /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.
     fn bind_builtin(&self, name: &str, id: BuiltinId, wrap: bool) {
         let Ok(sym) = self.symbol(name) else {
@@ -301,7 +302,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Trigger garbage collection using all known live roots. Used for OOM collections.
     #[cold]
-    fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
+    fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<GcStats> {
         self.collect_with_roots(&[expr, env])
     }
 
@@ -310,7 +311,7 @@ impl<const N: usize> Lisp<N> {
     /// This is used by the `gc-collect` builtin, which should force a
     /// collection cycle even when the evaluator is not currently handling OOM.
     #[cold]
-    fn eval_collect_garbage_unconditional(&self) -> GcStats {
+    fn eval_collect_garbage_unconditional(&self) -> ArenaResult<GcStats> {
         self.collect_with_roots(&[])
     }
 
@@ -322,23 +323,33 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Garbage collection is triggered only on allocation failure (OOM):
     /// when any operation returns `OutOfMemory`, the evaluator restores
-    /// the GC root stack, collects garbage, and retries.
+    /// the GC root stack, collects garbage, and retries that evaluator step
+    /// once. A second allocation failure propagates instead of looping if the
+    /// retry merely recreates the same garbage.
     pub(crate) fn eval_expr(
         &self,
         mut expr: ArenaIndex,
         mut env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
+        let mut retried_after_collection = false;
         loop {
             let saved_gc_roots = self.gc_roots_head();
             match self.eval_step(&mut expr, &mut env) {
                 Ok(Some(result)) => return Ok(result),
-                Ok(None) => continue,
+                Ok(None) => {
+                    retried_after_collection = false;
+                    continue;
+                }
                 Err(ArenaError::OutOfMemory) => {
                     self.set_gc_roots_head(saved_gc_roots);
-                    let stats = self.eval_collect_garbage(expr, env);
+                    if retried_after_collection {
+                        return Err(ArenaError::OutOfMemory);
+                    }
+                    let stats = self.eval_collect_garbage(expr, env)?;
                     if !stats.did_collect() {
                         return Err(ArenaError::OutOfMemory);
                     }
+                    retried_after_collection = true;
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -1153,7 +1164,7 @@ impl<const N: usize> Lisp<N> {
     /// Returns the number of objects collected. Always runs unconditionally
     /// (ignores the gc-enabled flag), since the user explicitly requested it.
     fn builtin_gc_collect(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stats = self.eval_collect_garbage_unconditional();
+        let stats = self.eval_collect_garbage_unconditional()?;
         self.number(stats.collected as isize)
     }
 
