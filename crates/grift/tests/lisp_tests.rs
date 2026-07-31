@@ -3090,6 +3090,20 @@ fn test_watermark_gc_preserves_computed_set_environment() {
 }
 
 #[test]
+fn test_watermark_gc_preserves_named_let_parameters() {
+    let lisp: Lisp = Lisp::new();
+    lisp.set_gc_threshold(lisp.stats().slot_count);
+
+    let mut source = String::from("(let loop (");
+    for index in 0..400 {
+        source.push_str(&format!("(x{index} {index})"));
+    }
+    source.push_str(") x0)");
+
+    assert_eq!(lisp.eval(&source), Ok(Value::Number(0)));
+}
+
+#[test]
 fn test_eval_with_roots_preserves_host_retained_index() {
     let lisp: Lisp = Lisp::new();
     let retained = lisp.eval_to_index("(list 91 92 93)").unwrap();

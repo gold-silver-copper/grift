@@ -869,6 +869,7 @@ impl Lisp {
 
                 let local_env = self.make_child_env(*env)?;
 
+                self.push_root(params)?;
                 self.push_root(local_env)?;
 
                 // Evaluate init values in the OUTER env
@@ -889,7 +890,7 @@ impl Lisp {
                 // the list as a function call, producing a NotCallable error.
                 let inner = self.unwrap_applicative(func)?;
                 let (body_expr, op_env) = self.invoke_operative(inner, evaled_inits, local_env)?;
-                self.pop_roots(2);
+                self.pop_roots(3);
                 *env = op_env;
                 *expr = body_expr;
                 Ok(())
