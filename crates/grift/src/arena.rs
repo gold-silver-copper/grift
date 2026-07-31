@@ -18,10 +18,13 @@
 
 //! Growable, allocator-backed arena storage.
 //!
-//! Runtime objects occupy slots in an [`alloc::vec::Vec`]. Stable
-//! [`ArenaIndex`] values address those slots, so growth and vector relocation do
-//! not invalidate language references. Freed slots form a singly linked free
-//! list and are reused before the vector grows.
+//! Runtime objects occupy slots in an [`alloc::vec::Vec`]. [`ArenaIndex`] values
+//! address those slots, so growth and vector relocation do not invalidate live
+//! language references. Freed slots form a singly linked free list and are
+//! reused before the vector grows. Marking storage and the iterative GC
+//! worklist are retained between collections and reserved before the logical
+//! slot range grows, so collection can normally run without asking the
+//! allocator for more memory.
 //!
 //! The arena remains `no_std` and safe Rust. It requires the embedding program
 //! to provide a global allocator through Rust's `alloc` crate.
@@ -192,7 +195,7 @@ impl ArenaError {
         }
     }
 
-    /// Return whether allocation failed.
+    /// Return whether backing storage allocation failed.
     pub const fn is_out_of_memory(&self) -> bool {
         matches!(self, Self::OutOfMemory)
     }
@@ -226,6 +229,43 @@ pub type ArenaResult<T> = Result<T, ArenaError>;
 enum Slot<T: Copy> {
     Free { next_free: Option<usize> },
     Occupied { value: T },
+}
+
+struct GcScratch {
+    marked: Vec<bool>,
+    mark_stack: Vec<usize>,
+}
+
+impl GcScratch {
+    const MIN_CAPACITY: usize = 16;
+
+    const fn new() -> Self {
+        Self {
+            marked: Vec::new(),
+            mark_stack: Vec::new(),
+        }
+    }
+
+    fn ensure_vec_capacity<U>(values: &mut Vec<U>, required: usize) -> ArenaResult<()> {
+        if values.capacity() >= required {
+            return Ok(());
+        }
+
+        let target = required
+            .max(values.capacity().saturating_mul(2))
+            .max(Self::MIN_CAPACITY);
+        let additional = target
+            .checked_sub(values.len())
+            .ok_or(ArenaError::OutOfMemory)?;
+        values
+            .try_reserve_exact(additional)
+            .map_err(|_| ArenaError::OutOfMemory)
+    }
+
+    fn ensure_capacity(&mut self, required: usize) -> ArenaResult<()> {
+        Self::ensure_vec_capacity(&mut self.marked, required)?;
+        Self::ensure_vec_capacity(&mut self.mark_stack, required)
+    }
 }
 
 // ============================================================================
@@ -383,6 +423,7 @@ impl<T: Copy> Iterator for ArenaIterator<'_, T> {
 /// Growable, index-addressed arena with free-list slot reuse.
 pub struct Arena<T: Copy> {
     slots: RefCell<Vec<Slot<T>>>,
+    gc_scratch: RefCell<GcScratch>,
     free_head: Cell<Option<usize>>,
     len: Cell<usize>,
     mutation_epoch: Cell<usize>,
@@ -399,6 +440,7 @@ impl<T: Copy> Arena<T> {
     pub const fn new() -> Self {
         Self {
             slots: RefCell::new(Vec::new()),
+            gc_scratch: RefCell::new(GcScratch::new()),
             free_head: Cell::new(None),
             len: Cell::new(0),
             mutation_epoch: Cell::new(0),
@@ -437,6 +479,13 @@ impl<T: Copy> Arena<T> {
         self.slot_count() - self.len()
     }
 
+    fn ensure_gc_scratch_capacity(&self, required: usize) -> ArenaResult<()> {
+        self.gc_scratch
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?
+            .ensure_capacity(required)
+    }
+
     /// Ensure `additional` allocations can succeed without growing storage.
     pub fn reserve(&self, additional: usize) -> ArenaResult<()> {
         let reusable = self.vacant();
@@ -444,6 +493,11 @@ impl<T: Copy> Arena<T> {
         if needed == 0 {
             return Ok(());
         }
+        let required_slots = self
+            .slot_count()
+            .checked_add(needed)
+            .ok_or(ArenaError::OutOfMemory)?;
+        self.ensure_gc_scratch_capacity(required_slots)?;
         self.slots
             .try_borrow_mut()
             .map_err(|_| ArenaError::BorrowConflict)?
@@ -472,6 +526,8 @@ impl<T: Copy> Arena<T> {
             self.free_head.set(next_free);
             index
         } else {
+            let required_slots = slots.len().checked_add(1).ok_or(ArenaError::OutOfMemory)?;
+            self.ensure_gc_scratch_capacity(required_slots)?;
             slots.try_reserve(1).map_err(|_| ArenaError::OutOfMemory)?;
             let index = slots.len();
             slots.push(Slot::Occupied { value });
@@ -828,16 +884,15 @@ impl<T: Copy> Arena<T> {
         let slot_count = self.slot_count();
         let total_before = self.len();
 
-        let mut marked = Vec::new();
-        marked
-            .try_reserve_exact(slot_count)
-            .map_err(|_| ArenaError::OutOfMemory)?;
+        self.ensure_gc_scratch_capacity(slot_count)?;
+        let mut scratch = self
+            .gc_scratch
+            .try_borrow_mut()
+            .map_err(|_| ArenaError::BorrowConflict)?;
+        let GcScratch { marked, mark_stack } = &mut *scratch;
+        marked.clear();
         marked.resize(slot_count, false);
-
-        let mut mark_stack = Vec::new();
-        mark_stack
-            .try_reserve_exact(slot_count)
-            .map_err(|_| ArenaError::OutOfMemory)?;
+        mark_stack.clear();
 
         for roots in root_sets {
             for &root in *roots {
@@ -872,10 +927,54 @@ impl<T: Copy> Arena<T> {
             }
         }
 
-        Ok(GcStats {
+        let stats = GcStats {
             marked: marked_count,
             collected,
             total_before,
-        })
+        };
+        marked.clear();
+        mark_stack.clear();
+        Ok(stats)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct Link(Option<ArenaIndex>);
+
+    impl Trace<Link> for Link {
+        fn trace<F: FnMut(ArenaIndex)>(&self, mut tracer: F) {
+            if let Some(next) = self.0 {
+                tracer(next);
+            }
+        }
+    }
+
+    #[test]
+    fn collection_reuses_scratch_reserved_with_slots() {
+        let arena = Arena::new();
+        let mut head = None;
+        for _ in 0..128 {
+            head = Some(arena.alloc(Link(head)).unwrap());
+        }
+
+        let capacity_before = {
+            let scratch = arena.gc_scratch.borrow();
+            (scratch.marked.capacity(), scratch.mark_stack.capacity())
+        };
+        assert!(capacity_before.0 >= arena.slot_count());
+        assert!(capacity_before.1 >= arena.slot_count());
+
+        let stats = arena.collect_garbage(&[head.unwrap()]).unwrap();
+        let capacity_after = {
+            let scratch = arena.gc_scratch.borrow();
+            (scratch.marked.capacity(), scratch.mark_stack.capacity())
+        };
+
+        assert_eq!(stats.collected, 0);
+        assert_eq!(capacity_after, capacity_before);
     }
 }

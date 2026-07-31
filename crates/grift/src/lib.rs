@@ -40,8 +40,9 @@
 //! - **Simple API**: Parse and evaluate Lisp expressions in one call via [`Lisp::eval`].
 //! - **Tail-call optimization**: Unbounded recursion in tail position without
 //!   growing the Rust call stack, implemented via a trampoline loop.
-//! - **Mark-and-sweep GC**: Automatic garbage collection triggered on OOM,
-//!   with explicit collection available via `(gc-collect)`.
+//! - **Mark-and-sweep GC**: Evaluation collects at a soft logical-slot
+//!   watermark, retains a true-OOM fallback, and supports explicit collection
+//!   via `(gc-collect)`.
 //! - **No unsafe code**: `#![forbid(unsafe_code)]` is enforced crate-wide.
 //!
 //! ## Architecture

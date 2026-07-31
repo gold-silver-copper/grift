@@ -30,7 +30,8 @@ allocator, but the library does not depend on `std`.
 The important implementation choices are:
 
 - all runtime objects live in a growable `Arena<Value>` backed by `Vec`
-- runtime references are stable `ArenaIndex` handles, never vector references
+- runtime references are relocation-stable `ArenaIndex` handles while their
+  slots remain live, never vector references
 - vacant slots are reused before object storage grows
 - strings are linked `CharPair` chains, not heap-backed buffers
 - symbols are interned and compare by arena identity
@@ -39,8 +40,8 @@ The important implementation choices are:
 - applicatives are explicit wrappers around other callable values
 - evaluation uses a trampoline instead of recursive host-language calls in tail
   position
-- garbage collection is mark-and-sweep and is normally triggered only after a
-  storage reservation reports `OutOfMemory`
+- garbage collection is mark-and-sweep and normally runs when evaluation
+  reaches a soft logical-slot watermark
 
 The library entry point is [`Lisp`](../../crates/grift/src/lisp.rs).
 The optional binary in [`main.rs`](../../crates/grift/src/main.rs)
@@ -107,6 +108,18 @@ allocator exhaustion or capacity overflow, not that a configured object count
 was reached. Arena statistics distinguish logical slot count, live allocation
 count, vacant reusable slots, and the vector's reserved capacity; reserved
 capacity is not a semantic maximum.
+
+`Lisp` adds policy above this generic arena. Before an evaluator step starts
+without reusable vacancies at the instance's soft slot watermark, it collects
+with that step's roots. `Lisp::set_gc_threshold` can request earlier collection,
+but it does not impose a fixed capacity.
+
+Vector relocation does not invalidate a live `ArenaIndex`, but collection may
+reclaim an unreachable slot and the free list may later reuse that numeric
+index. Host code that retains indices across another evaluation passes them to
+`Lisp::eval_with_roots` or `Lisp::eval_to_index_with_roots`. Those roots remain
+protected for the duration of that call and must be supplied again on later
+calls for as long as the host retains them.
 
 Language-level proper lists and dotted pairs are still represented by linked
 `Value::Cons` cells. The backing `Vec` stores runtime objects and does not
@@ -361,23 +374,31 @@ Validation checks:
 The evaluator uses a temporary root stack stored behind `ArenaIndex::GC_ROOTS`.
 During evaluation, important intermediate values are pushed onto that list.
 
-On `OutOfMemory`:
+Before an evaluator step starts with no vacancies at or beyond
+`Lisp::gc_threshold()`:
 
-1. restore the saved GC root stack head for the current evaluation step
-2. collect garbage using:
+1. collect garbage using:
    - `ArenaIndex::ROOTS`
    - the current `expr`
    - the current `env`
    - anything on the temporary GC root stack
-3. retry the evaluation step once, and only if collection reclaimed a reusable
-   slot
+2. start the evaluation step with any reclaimed slots available for reuse
+3. if every slot was live, raise the watermark geometrically before starting
+   the step so the working set can grow
 
-The mark bitmap and iterative worklist are dynamically sized from the current
-logical slot count and reserved fallibly. If GC scratch reservation fails, or
-if collection frees nothing, `OutOfMemory` propagates instead of retrying
-indefinitely.
+The arena retains its mark bitmap and iterative worklist between cycles. Their
+capacity is reserved fallibly before the logical slot range grows, so a
+pressure-triggered collection normally needs no new allocation. Running it at
+an evaluator-step boundary also avoids replaying native calls or language side
+effects merely because the soft watermark was reached.
 
-`(gc-collect)` bypasses the OOM trigger and forces an unconditional collection.
+A true allocator `OutOfMemory` remains a separate fallback. The evaluator
+restores its roots, collects, and retries the current step only once and only
+when collection reclaimed a slot. Failure after that retry propagates instead
+of looping while recreating the same garbage.
+
+`(gc-collect)` bypasses the automatic trigger and forces an unconditional
+collection.
 
 ## 8. Builtin and Prelude Installation
 
@@ -453,6 +474,8 @@ Important pieces:
 - `LispOps`: trait object exposing the native-function capability boundary
 - `FromLisp` / `ToLisp`: host conversion traits
 - `register_native!`: macro for ergonomic native bindings
+- `eval_with_roots` / `eval_to_index_with_roots`: evaluation entry points that
+  preserve host-retained arena handles during automatic GC
 
 Registered natives are stored as `Native` values wrapped in an
 `Applicative`, then defined in `GLOBAL_ENV`.
@@ -470,7 +493,7 @@ least these architectural facts:
 - eager formal-parameter validation
 - depth-first multi-parent lookup
 - trampoline-style tail execution
-- OOM-driven GC retry behavior
+- soft-watermark GC with a one-retry allocator-failure fallback
 - reparsed prelude function calls
 
 ## 12. Confirmed Oddities

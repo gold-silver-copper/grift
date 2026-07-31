@@ -18,11 +18,10 @@
 //!
 //! ## GC Integration
 //!
-//! Garbage collection is **demand-driven**: it is triggered only when an
-//! allocation returns [`ArenaError::OutOfMemory`]. On OOM the evaluator
-//! restores the GC root stack, runs a collection cycle, and retries that
-//! evaluator step once. If collection frees no memory or the retry also runs
-//! out of memory, the error propagates.
+//! Garbage collection is **pressure-driven**: before an evaluator step runs
+//! without reusable slots at the soft watermark, it collects with the current
+//! roots. A fully live working set raises the watermark geometrically. A real
+//! [`ArenaError::OutOfMemory`] still gets one last collection-and-retry cycle.
 //!
 //! ## Builtin Registration
 //!
@@ -243,7 +242,7 @@ impl Lisp {
         let Ok(sym) = self.symbol(name) else {
             return;
         };
-        let Ok(mut val) = self.arena.alloc(id.into()) else {
+        let Ok(mut val) = self.alloc_value(id.into()) else {
             return;
         };
         if wrap {
@@ -287,9 +286,22 @@ impl Lisp {
         Ok(())
     }
 
+    /// Protect each index for the duration of a host-driven evaluation.
+    pub(crate) fn push_roots(&self, roots: &[ArenaIndex]) -> ArenaResult<usize> {
+        let mut pushed = 0usize;
+        for &root in roots {
+            if let Err(error) = self.push_root(root) {
+                self.pop_roots(pushed);
+                return Err(error);
+            }
+            pushed += 1;
+        }
+        Ok(pushed)
+    }
+
     /// Pop `n` values from the GC root stack.
     #[inline]
-    fn pop_roots(&self, n: usize) {
+    pub(crate) fn pop_roots(&self, n: usize) {
         for _ in 0..n {
             let head = self.gc_roots_head();
             debug_assert!(!head.is_nil(), "GC root stack underflow");
@@ -300,7 +312,7 @@ impl Lisp {
         }
     }
 
-    /// Trigger garbage collection using all known live roots. Used for OOM collections.
+    /// Trigger garbage collection using all known live evaluator roots.
     #[cold]
     fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> ArenaResult<GcStats> {
         self.collect_with_roots(&[expr, env])
@@ -321,38 +333,51 @@ impl Lisp {
     /// `Operative` (compound fexpr), `Applicative` (wrapper that evals args),
     /// and `Builtin` (primitive operative).
     ///
-    /// Garbage collection is triggered only on allocation failure (OOM):
-    /// when any operation returns `OutOfMemory`, the evaluator restores
-    /// the GC root stack, collects garbage, and retries that evaluator step
-    /// once. A second allocation failure propagates instead of looping if the
-    /// retry merely recreates the same garbage.
+    /// Before starting a step without reusable slots at the Lisp instance's
+    /// soft watermark, the evaluator collects with the current roots. If every
+    /// slot is live, the watermark grows geometrically so the working set can
+    /// still make progress. Collection happens at the step boundary, so a
+    /// pressure cycle never replays native calls or other side effects.
+    ///
+    /// A real allocator `OutOfMemory` remains a last-resort collection path.
+    /// It is retried only once so recreating the same garbage cannot loop.
     pub(crate) fn eval_expr(
         &self,
         mut expr: ArenaIndex,
         mut env: ArenaIndex,
     ) -> ArenaResult<ArenaIndex> {
-        let mut retried_after_collection = false;
+        let mut retried_after_oom_collection = false;
         loop {
+            if self.gc_watermark_reached() {
+                let stats = self.eval_collect_garbage(expr, env)?;
+                if !stats.did_collect() {
+                    self.raise_gc_threshold()?;
+                }
+            }
+
             let saved_gc_roots = self.gc_roots_head();
             match self.eval_step(&mut expr, &mut env) {
                 Ok(Some(result)) => return Ok(result),
                 Ok(None) => {
-                    retried_after_collection = false;
+                    retried_after_oom_collection = false;
                     continue;
                 }
                 Err(ArenaError::OutOfMemory) => {
                     self.set_gc_roots_head(saved_gc_roots);
-                    if retried_after_collection {
+                    if retried_after_oom_collection {
                         return Err(ArenaError::OutOfMemory);
                     }
                     let stats = self.eval_collect_garbage(expr, env)?;
                     if !stats.did_collect() {
                         return Err(ArenaError::OutOfMemory);
                     }
-                    retried_after_collection = true;
+                    retried_after_oom_collection = true;
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(error) => {
+                    self.set_gc_roots_head(saved_gc_roots);
+                    return Err(error);
+                }
             }
         }
     }
@@ -374,11 +399,19 @@ impl Lisp {
                 self.push_root(*env)?;
 
                 let func_val = self.eval_expr(car, *env)?;
+                self.push_root(func_val)?;
 
-                match self.get(func_val)? {
+                let func = match self.get(func_val) {
+                    Ok(func) => func,
+                    Err(error) => {
+                        self.pop_roots(3);
+                        return Err(error);
+                    }
+                };
+                match func {
                     Value::Builtin(id) => {
                         let action = self.apply_operative_builtin(id, cdr, expr, env);
-                        self.pop_roots(2);
+                        self.pop_roots(3);
                         match action {
                             TailAction::Return(val) => val.map(Some),
                             TailAction::Continue => Ok(None),
@@ -386,65 +419,66 @@ impl Lisp {
                     }
 
                     Value::Operative { .. } => {
-                        let (body, op_env) = self.invoke_operative(func_val, cdr, *env)?;
-                        self.pop_roots(2);
+                        let invocation = self.invoke_operative(func_val, cdr, *env);
+                        self.pop_roots(3);
+                        let (body, op_env) = invocation?;
                         *env = op_env;
                         *expr = body;
                         Ok(None)
                     }
 
                     Value::Prelude(prelude) => {
-                        let real = self.eval_prelude_source(prelude)?;
-                        let (body, op_env) = self.invoke_operative(real, cdr, *env)?;
-                        self.pop_roots(2);
+                        let invocation = self
+                            .eval_prelude_source(prelude)
+                            .and_then(|real| self.invoke_operative(real, cdr, *env));
+                        self.pop_roots(3);
+                        let (body, op_env) = invocation?;
                         *env = op_env;
                         *expr = body;
                         Ok(None)
                     }
 
                     Value::Applicative(inner) => {
-                        let evaled_args = self.eval_args(cdr, *env)?;
+                        let evaled_args = match self.eval_args(cdr, *env) {
+                            Ok(evaled_args) => evaled_args,
+                            Err(error) => {
+                                self.pop_roots(3);
+                                return Err(error);
+                            }
+                        };
                         self.push_root(evaled_args)?;
 
-                        match self.get(inner)? {
-                            Value::Operative { .. } => {
-                                self.pop_roots(3);
-                                let (body, op_env) =
-                                    self.invoke_operative(inner, evaled_args, *env)?;
-                                *env = op_env;
-                                *expr = body;
-                                Ok(None)
-                            }
+                        let result = self.get(inner).and_then(|inner_value| match inner_value {
+                            Value::Operative { .. } => self
+                                .invoke_operative(inner, evaled_args, *env)
+                                .map(|(body, op_env)| {
+                                    *env = op_env;
+                                    *expr = body;
+                                    None
+                                }),
                             Value::Builtin(id) => {
-                                self.pop_roots(3);
-                                Ok(Some(self.apply_builtin_value(id, evaled_args, *env)?))
+                                self.apply_builtin_value(id, evaled_args, *env).map(Some)
                             }
                             Value::Applicative(_) => {
-                                self.pop_roots(3);
-                                Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
+                                self.apply_combiner(inner, evaled_args, *env).map(Some)
                             }
-                            Value::Prelude(prelude) => {
-                                let real = self.eval_prelude_source(prelude)?;
-                                self.pop_roots(3);
-                                let (body, op_env) =
-                                    self.invoke_operative(real, evaled_args, *env)?;
-                                *env = op_env;
-                                *expr = body;
-                                Ok(None)
-                            }
-                            Value::Native(f) => {
-                                self.pop_roots(3);
-                                Ok(Some(self.call_native(f, evaled_args)?))
-                            }
-                            _ => {
-                                self.pop_roots(3);
-                                Err(ArenaError::NotCallable)
-                            }
-                        }
+                            Value::Prelude(prelude) => self
+                                .eval_prelude_source(prelude)
+                                .and_then(|real| self.invoke_operative(real, evaled_args, *env))
+                                .map(|(body, op_env)| {
+                                    *env = op_env;
+                                    *expr = body;
+                                    None
+                                }),
+                            Value::Native(f) => self.call_native(f, evaled_args).map(Some),
+                            _ => Err(ArenaError::NotCallable),
+                        });
+                        self.pop_roots(4);
+                        result
                     }
 
                     _ => {
-                        self.pop_roots(2);
+                        self.pop_roots(3);
                         Err(ArenaError::NotCallable)
                     }
                 }
@@ -712,7 +746,10 @@ impl Lisp {
 
             debug_assert!(target_env != ArenaIndex::GROUND_ENV, "set! in ground env");
 
-            let val = self.eval_expr(val_expr, *env)?;
+            self.push_root(target_env)?;
+            let val_result = self.eval_expr(val_expr, *env);
+            self.pop_roots(1);
+            let val = val_result?;
             // set! only supports a single symbol formal.
             if !matches!(self.get(definiend)?, Value::Symbol(_)) {
                 return Err(ArenaError::TypeError);
@@ -975,7 +1012,7 @@ impl Lisp {
             && cdr.is_nil()
         {
             self.validate_char_chain(b)?;
-            return self.arena.alloc(Value::CharPair { ch, cdr: b });
+            return self.alloc_value(Value::CharPair { ch, cdr: b });
         }
         self.cons(a, b)
     }

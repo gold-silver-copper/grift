@@ -3036,21 +3036,92 @@ fn test_gc_collect_with_garbage() {
 }
 
 #[test]
-fn test_repeated_eval_grows_without_fixed_limit() {
-    // Repeated evaluation can grow object storage without a configured slot
-    // ceiling; explicit GC still reclaims the resulting temporary objects.
+fn test_repeated_eval_collects_at_soft_watermark() {
     let lisp: Lisp = Lisp::new();
     let initial_slots = lisp.stats().slot_count;
+    let watermark = initial_slots + 64;
+    lisp.set_gc_threshold(watermark);
+
     for i in 0..200 {
         let result = lisp.eval("(+ 1 2)");
         assert_eq!(
             result,
             Ok(Value::Number(3)),
-            "eval iteration {i} should succeed while arena storage grows"
+            "eval iteration {i} should succeed across automatic collections"
         );
     }
-    assert!(lisp.stats().slot_count > initial_slots);
-    assert!(lisp.collect_garbage(&[]).unwrap().collected > 0);
+
+    let stats = lisp.stats();
+    assert!(
+        stats.slot_count <= watermark + 32,
+        "temporary evaluation objects should be reused near the soft watermark: \
+         slots = {}, watermark = {}",
+        stats.slot_count,
+        watermark
+    );
+}
+
+#[test]
+fn test_watermark_gc_preserves_computed_combiner() {
+    let lisp: Lisp = Lisp::new();
+    lisp.set_gc_threshold(lisp.stats().slot_count + 32);
+
+    for iteration in 0..100 {
+        assert_eq!(
+            lisp.eval("(((lambda () (lambda (x) x))) 42)"),
+            Ok(Value::Number(42)),
+            "computed combiner must survive collection on iteration {iteration}"
+        );
+    }
+}
+
+#[test]
+fn test_watermark_gc_preserves_computed_set_environment() {
+    let lisp: Lisp = Lisp::new();
+    lisp.set_gc_threshold(lisp.stats().slot_count + 32);
+
+    for iteration in 0..100 {
+        assert_eq!(
+            lisp.eval("(set! ((lambda () (define! x 0) (current-environment))) x (+ 1 2))"),
+            Ok(Value::Inert),
+            "computed target environment must survive collection on iteration {iteration}"
+        );
+    }
+}
+
+#[test]
+fn test_eval_with_roots_preserves_host_retained_index() {
+    let lisp: Lisp = Lisp::new();
+    let retained = lisp.eval_to_index("(list 91 92 93)").unwrap();
+    lisp.set_gc_threshold(lisp.stats().slot_count + 32);
+
+    let ops: &dyn grift::LispOps = &lisp;
+    for iteration in 0..200 {
+        assert_eq!(
+            ops.eval_with_roots("(+ 1 2)", &[retained]),
+            Ok(Value::Number(3)),
+            "rooted host handle must survive evaluation {iteration}"
+        );
+    }
+
+    let mut rendered = String::new();
+    lisp.write_value(retained, &mut rendered).unwrap();
+    assert_eq!(rendered, "(91 92 93)");
+}
+
+#[test]
+fn test_eval_with_roots_cleans_up_after_error() {
+    let lisp: Lisp = Lisp::new();
+    let retained = lisp.eval_to_index("(list 91 92 93)").unwrap();
+    lisp.set_gc_threshold(lisp.stats().slot_count + 32);
+
+    assert_eq!(
+        lisp.eval_with_roots("(+ missing-root-cleanup-value)", &[retained]),
+        Err(ArenaError::UnboundVariable)
+    );
+
+    lisp.collect_garbage(&[]).unwrap();
+    assert_eq!(lisp.get(retained), Err(ArenaError::IndexNotAllocated));
 }
 
 // ============================================================================

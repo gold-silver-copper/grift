@@ -107,8 +107,16 @@ pub trait LispOps {
     ) -> ArenaResult<(ArenaIndex, ArenaIndex, ArenaIndex, ArenaIndex)>;
     /// Parse and evaluate Lisp expression(s) in a string.
     fn eval(&self, input: &str) -> Result<Value, ArenaError>;
+    /// Evaluate while protecting host-retained arena indices for the call.
+    fn eval_with_roots(&self, input: &str, roots: &[ArenaIndex]) -> Result<Value, ArenaError>;
     /// Parse and evaluate Lisp expression(s), returning the arena index.
     fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError>;
+    /// Evaluate to an index while protecting host-retained indices for the call.
+    fn eval_to_index_with_roots(
+        &self,
+        input: &str,
+        roots: &[ArenaIndex],
+    ) -> Result<ArenaIndex, ArenaError>;
     /// Return arena allocation statistics.
     fn stats(&self) -> ArenaStats;
     /// Return the baseline allocation count.

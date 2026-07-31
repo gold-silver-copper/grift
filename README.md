@@ -13,8 +13,8 @@ must provide a global allocator.
 
 - `#![no_std]`, `alloc`, `#![forbid(unsafe_code)]`
 - Growable `Vec`-backed arena with free-list slot reuse
-- Mark-and-sweep garbage collection, triggered on OOM and available explicitly
-  via `(gc-collect)`
+- Mark-and-sweep garbage collection at a configurable soft slot watermark,
+  with allocator-failure fallback and explicit collection via `(gc-collect)`
 - Kernel-style operative/applicative model
 - First-class mutable environments with lexical parent lists
 - Tail-call optimization via a trampoline evaluator
@@ -63,7 +63,9 @@ assert_eq!(lisp.eval("(car (cons 1 2))"), Ok(Value::Number(1)));
 ```
 
 Arena capacity is no longer selected at compile time. Object storage grows as
-needed, subject to the allocator supplied by the embedding program.
+needed, subject to the allocator supplied by the embedding program. Evaluation
+collects near a soft logical-slot watermark; the watermark increases when the
+reachable working set needs more room.
 
 Native Rust functions can be exposed as Lisp applicatives:
 
@@ -127,12 +129,14 @@ assert_eq!(lisp.eval("(double 21)"), Ok(grift::Value::Number(42)));
 ## Runtime Model
 
 Every runtime value lives inside `Arena<Value>`, whose authoritative slot store
-is an allocator-backed `Vec`. Runtime references are stable `ArenaIndex`
-handles rather than vector references, so vector reallocation does not
-invalidate them. Freed slots are reused before the vector grows. The runtime
-also keeps a small set of reserved singleton slots for values such as `NIL`,
-booleans, `#inert`, `#ignore`, the ground environment, the global environment,
-GC roots, and the symbol intern list.
+is an allocator-backed `Vec`. Runtime references are `ArenaIndex` handles
+rather than vector references, so vector reallocation does not invalidate live
+objects. Garbage collection can reclaim an unreachable slot and later reuse
+its index. Rust code retaining an index across another evaluation must pass it
+to `eval_with_roots` or `eval_to_index_with_roots`. The runtime also keeps a
+small set of reserved singleton slots for values such as `NIL`, booleans,
+`#inert`, `#ignore`, the ground environment, the global environment, GC roots,
+and the symbol intern list.
 
 Current implementation details that matter:
 
@@ -142,8 +146,8 @@ Current implementation details that matter:
 - empty string is represented internally as `NIL`
 - user code runs in the global environment, which is a child of the builtin
   ground environment
-- GC is currently demand-driven: the evaluator collects when additional arena
-  storage cannot be reserved, and can also be invoked explicitly
+- GC runs near a configurable soft slot watermark, retains an
+  allocator-failure fallback, and can also be invoked explicitly
 
 More detail is in [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md).
 

@@ -29,6 +29,10 @@ use crate::arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcSta
 use crate::native::{LispOps, NativeFn};
 use crate::parse::SliceSource;
 use crate::value::Value;
+use core::cell::Cell;
+
+const MIN_GC_THRESHOLD: usize = 1_024;
+const MIN_GC_GROWTH: usize = 64;
 
 /// A minimalistic Lisp interpreter backed by a growable arena.
 ///
@@ -43,6 +47,7 @@ use crate::value::Value;
 /// ```
 pub struct Lisp {
     pub(crate) arena: Arena<Value>,
+    gc_threshold: Cell<usize>,
 }
 
 impl Default for Lisp {
@@ -80,6 +85,24 @@ impl Lisp {
     /// require space for prelude bindings.
     pub fn new_without_prelude() -> Self {
         Self::new_inner(false)
+    }
+
+    /// Return the soft logical-slot watermark for automatic evaluator GC.
+    ///
+    /// Before an evaluator step starts without reusable slots at or beyond this
+    /// watermark, Grift collects with the current roots. If every object is
+    /// live, the watermark grows geometrically and evaluation continues.
+    pub fn gc_threshold(&self) -> usize {
+        self.gc_threshold.get()
+    }
+
+    /// Set the soft logical-slot watermark for automatic evaluator GC.
+    ///
+    /// This is not a hard capacity. Setting a small value requests earlier
+    /// collection; when a collection finds everything reachable, Grift raises
+    /// the watermark and continues growing.
+    pub fn set_gc_threshold(&self, slot_count: usize) {
+        self.gc_threshold.set(slot_count);
     }
 
     fn new_inner(load_prelude: bool) -> Self {
@@ -120,7 +143,10 @@ impl Lisp {
             "GROUND_ENV must be slot 5"
         );
 
-        let lisp = Lisp { arena };
+        let lisp = Lisp {
+            arena,
+            gc_threshold: Cell::new(usize::MAX),
+        };
 
         // Global env is a child of the ground env.
         let parents = lisp
@@ -174,7 +200,30 @@ impl Lisp {
             lisp.init_prelude();
         }
 
+        let initial_threshold = lisp
+            .arena
+            .slot_count()
+            .saturating_mul(2)
+            .max(MIN_GC_THRESHOLD);
+        lisp.gc_threshold.set(initial_threshold);
         lisp
+    }
+
+    pub(crate) fn raise_gc_threshold(&self) -> ArenaResult<()> {
+        let current = self.gc_threshold.get();
+        let base = current.max(self.arena.slot_count());
+        let growth = base.max(MIN_GC_GROWTH);
+        let next = base.checked_add(growth).ok_or(ArenaError::OutOfMemory)?;
+        self.gc_threshold.set(next);
+        Ok(())
+    }
+
+    pub(crate) fn alloc_value(&self, value: Value) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(value)
+    }
+
+    pub(crate) fn gc_watermark_reached(&self) -> bool {
+        self.arena.vacant() == 0 && self.arena.slot_count() >= self.gc_threshold.get()
     }
 
     /// Bind the bundled prelude in the global environment.
@@ -198,8 +247,7 @@ impl Lisp {
                 let name =
                     extract_binding_name(form_source).expect("lazy prelude form missing name");
                 let prelude_idx = self
-                    .arena
-                    .alloc(Value::Prelude(Prelude::new(form_source)))
+                    .alloc_value(Value::Prelude(Prelude::new(form_source)))
                     .expect("allocator failed while creating prelude");
                 let sym = self
                     .symbol(name)
@@ -207,8 +255,7 @@ impl Lisp {
                 let binding = if is_operative {
                     prelude_idx
                 } else {
-                    self.arena
-                        .alloc(Value::Applicative(prelude_idx))
+                    self.alloc_value(Value::Applicative(prelude_idx))
                         .expect("allocator failed while creating prelude")
                 };
                 self.env_define(ArenaIndex::GLOBAL_ENV, sym, binding)
@@ -285,7 +332,7 @@ impl Lisp {
     /// ```
     pub fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
         let sym = self.symbol(name)?;
-        let native_val = self.arena.alloc(Value::Native(f))?;
+        let native_val = self.alloc_value(Value::Native(f))?;
         let wrapped = self.wrap(native_val)?;
         self.env_define(ArenaIndex::GLOBAL_ENV, sym, wrapped)
     }
@@ -320,7 +367,7 @@ impl Lisp {
     /// Allocate a number.
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(n.into())
+        self.alloc_value(n.into())
     }
 
     /// Return the `ArenaIndex` for a boolean (`#t` or `#f`).
@@ -342,12 +389,12 @@ impl Lisp {
     /// Allocate a cons cell.
     #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Cons { car, cdr })
+        self.alloc_value(Value::Cons { car, cdr })
     }
 
     /// Allocate a character (one-element string).
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair {
+        self.alloc_value(Value::CharPair {
             ch: c,
             cdr: ArenaIndex::NIL,
         })
@@ -369,7 +416,7 @@ impl Lisp {
 
         // Not found — allocate new symbol and prepend to intern list
         let char_head = self.alloc_string(name)?;
-        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let sym_idx = self.alloc_value(Value::Symbol(char_head))?;
         let new_head = self.cons(sym_idx, intern_head)?;
 
         // Update the intern list head in place
@@ -402,7 +449,7 @@ impl Lisp {
 
         // Build the linked list in reverse so the first char is at the head.
         for c in s.chars().rev() {
-            let node = self.arena.alloc(Value::CharPair { ch: c, cdr: data })?;
+            let node = self.alloc_value(Value::CharPair { ch: c, cdr: data })?;
             data = node;
         }
 
@@ -507,7 +554,7 @@ impl Lisp {
     /// [`reverse_chain`](Self::reverse_chain) to flip into
     /// forward order.
     pub(crate) fn prepend_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair { ch, cdr: head })
+        self.alloc_value(Value::CharPair { ch, cdr: head })
     }
 
     /// Reverse a singly-linked chain (Cons list or CharPair string)
@@ -557,7 +604,7 @@ impl Lisp {
         }
 
         // Not found — create new symbol with the existing chain
-        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let sym_idx = self.alloc_value(Value::Symbol(char_head))?;
         let new_head = self.cons(sym_idx, intern_head)?;
 
         let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
@@ -646,7 +693,7 @@ impl Lisp {
     pub fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(idx)? {
             Value::Cons { car, .. } => Ok(car),
-            Value::CharPair { ch, .. } => self.arena.alloc(Value::CharPair {
+            Value::CharPair { ch, .. } => self.alloc_value(Value::CharPair {
                 ch,
                 cdr: ArenaIndex::NIL,
             }),
@@ -710,7 +757,7 @@ impl Lisp {
 
     /// Wrap a combiner in an Applicative.
     pub fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Applicative(combiner))
+        self.alloc_value(Value::Applicative(combiner))
     }
 
     /// Unwrap an Applicative to get the inner combiner.
@@ -745,7 +792,7 @@ impl Lisp {
     ) -> ArenaResult<ArenaIndex> {
         let params_envparam = self.cons(params, env_param)?;
         let body_env = self.cons(body, env)?;
-        self.arena.alloc(Value::Operative {
+        self.alloc_value(Value::Operative {
             params_envparam,
             body_env,
         })
@@ -773,7 +820,7 @@ impl Lisp {
     /// Create a new environment with a parents list (cons-list of parent
     /// environments, or NIL for a root environment).
     pub(crate) fn make_env(&self, parents: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Environment {
+        self.alloc_value(Value::Environment {
             bindings: ArenaIndex::NIL,
             parents,
         })
@@ -1057,7 +1104,17 @@ impl Lisp {
     /// assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
     /// ```
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
-        let idx = self.eval_to_index(input)?;
+        self.eval_with_roots(input, &[])
+    }
+
+    /// Parse and evaluate while protecting host-retained arena indices.
+    ///
+    /// Every index in `roots` remains reachable through parsing and automatic
+    /// collection for this call. Use this when Rust code keeps an
+    /// [`ArenaIndex`] returned by an earlier operation across another
+    /// evaluation.
+    pub fn eval_with_roots(&self, input: &str, roots: &[ArenaIndex]) -> Result<Value, ArenaError> {
+        let idx = self.eval_to_index_with_roots(input, roots)?;
         self.arena.get(idx)
     }
 
@@ -1065,6 +1122,10 @@ impl Lisp {
     ///
     /// Use with [`write_value`](Self::write_value) to properly display the
     /// result, including walking symbol names, string contents, and lists.
+    /// An index that is not reachable from the Lisp environment is not
+    /// implicitly kept alive across later evaluation calls; pass it to
+    /// [`eval_to_index_with_roots`](Self::eval_to_index_with_roots) when it
+    /// must survive one.
     ///
     /// # Errors
     ///
@@ -1082,6 +1143,27 @@ impl Lisp {
     /// assert_eq!(buf, "30");
     /// ```
     pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index_with_roots(input, &[])
+    }
+
+    /// Parse and evaluate while protecting host-retained arena indices.
+    ///
+    /// This is the index-returning counterpart to
+    /// [`eval_with_roots`](Self::eval_with_roots). The supplied roots are
+    /// protected only for this call; pass them again to each later evaluation
+    /// for as long as the host retains them.
+    pub fn eval_to_index_with_roots(
+        &self,
+        input: &str,
+        roots: &[ArenaIndex],
+    ) -> Result<ArenaIndex, ArenaError> {
+        let pushed = self.push_roots(roots)?;
+        let result = self.eval_source_to_index(input);
+        self.pop_roots(pushed);
+        result
+    }
+
+    fn eval_source_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut src = SliceSource::new(input);
 
         let mut result_idx = ArenaIndex::INERT;
@@ -1395,9 +1477,23 @@ impl LispOps for Lisp {
         self.eval(input)
     }
     #[inline]
+    /// Delegate to [`Lisp::eval_with_roots`].
+    fn eval_with_roots(&self, input: &str, roots: &[ArenaIndex]) -> Result<Value, ArenaError> {
+        self.eval_with_roots(input, roots)
+    }
+    #[inline]
     /// Delegate to [`Lisp::eval_to_index`].
     fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         self.eval_to_index(input)
+    }
+    #[inline]
+    /// Delegate to [`Lisp::eval_to_index_with_roots`].
+    fn eval_to_index_with_roots(
+        &self,
+        input: &str,
+        roots: &[ArenaIndex],
+    ) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index_with_roots(input, roots)
     }
     #[inline]
     /// Delegate to [`Lisp::stats`].
@@ -1523,6 +1619,7 @@ impl Trace<Value> for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::fmt::Write;
     extern crate std;
     use std::string::String;
 
@@ -1584,5 +1681,34 @@ mod tests {
     fn raw_prelude_type_name_matches_predicates() {
         let prelude = crate::Prelude::new("(define! x (vau #ignore #ignore ()))");
         assert_eq!(Value::Prelude(prelude).type_name(), "prelude");
+    }
+
+    #[test]
+    fn evaluation_raises_watermark_when_every_slot_is_live() {
+        let lisp = Lisp::new_without_prelude();
+        lisp.collect_garbage(&[]).unwrap();
+
+        let mut suffix = 0usize;
+        while lisp.arena.vacant() > 0 {
+            let mut name = String::from("persistent-");
+            write!(&mut name, "{suffix}").unwrap();
+            lisp.symbol(&name).unwrap();
+            suffix += 1;
+        }
+
+        let one = lisp.number(1).unwrap();
+        let two = lisp.number(2).unwrap();
+        let args = lisp
+            .cons(one, lisp.cons(two, ArenaIndex::NIL).unwrap())
+            .unwrap();
+        let expr = lisp.cons(lisp.symbol("cons").unwrap(), args).unwrap();
+        assert_eq!(lisp.arena.vacant(), 0);
+
+        let watermark = lisp.arena.slot_count();
+        lisp.set_gc_threshold(watermark);
+        let result = lisp.eval_expr(expr, ArenaIndex::GLOBAL_ENV).unwrap();
+
+        assert!(matches!(lisp.get(result), Ok(Value::Cons { .. })));
+        assert!(lisp.gc_threshold() > watermark);
     }
 }
