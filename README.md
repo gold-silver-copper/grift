@@ -2,19 +2,19 @@
 
 Grift is a small Kernel-inspired Lisp interpreter for constrained Rust
 environments. It implements first-class operatives (`vau`), applicatives,
-first-class environments, and tail-call optimization on top of a fixed-size
-arena with no heap allocation and no `unsafe` code.
+first-class environments, and tail-call optimization on top of a growable
+arena with stable handles and no `unsafe` code.
 
-The project is aimed at embedded or resource-bounded settings where a normal
-allocator-backed Lisp runtime would be a poor fit, while still preserving a
-substantial part of the vau-calculus execution model.
+The library remains suitable for `no_std` environments, while using Rust's
+`alloc` crate for growable object storage. The final binary or embedded runtime
+must provide a global allocator.
 
 ## Highlights
 
-- `#![no_std]`, `no_alloc`, `#![forbid(unsafe_code)]`
-- Fixed-capacity arena with free-list allocation
-- Mark-and-sweep garbage collection, triggered on OOM and available explicitly
-  via `(gc-collect)`
+- `#![no_std]`, `alloc`, `#![forbid(unsafe_code)]`
+- Growable `Vec`-backed arena with free-list slot reuse
+- Mark-and-sweep garbage collection at a configurable soft slot watermark,
+  with allocator-failure fallback and explicit collection via `(gc-collect)`
 - Kernel-style operative/applicative model
 - First-class mutable environments with lexical parent lists
 - Tail-call optimization via a trampoline evaluator
@@ -56,15 +56,16 @@ builtin operatives such as `if`.
 ```rust
 use grift::{Lisp, Value};
 
-let lisp: Lisp<20_000> = Lisp::new();
+let lisp = Lisp::new();
 
 assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
 assert_eq!(lisp.eval("(car (cons 1 2))"), Ok(Value::Number(1)));
 ```
 
-The const generic parameter sets the arena capacity in slots. A larger value
-gives the interpreter more space for code, data, environments, temporary
-evaluation state, and garbage-collector working room.
+Arena capacity is no longer selected at compile time. Object storage grows as
+needed, subject to the allocator supplied by the embedding program. Evaluation
+collects near a soft logical-slot watermark; the watermark increases when the
+reachable working set needs more room.
 
 Native Rust functions can be exposed as Lisp applicatives:
 
@@ -76,7 +77,7 @@ fn double(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
     lisp.number(n * 2)
 }
 
-let lisp: Lisp<20_000> = Lisp::new();
+let lisp = Lisp::new();
 lisp.register_native("double", double).unwrap();
 
 assert_eq!(lisp.eval("(double 21)"), Ok(grift::Value::Number(42)));
@@ -127,19 +128,26 @@ assert_eq!(lisp.eval("(double 21)"), Ok(grift::Value::Number(42)));
 
 ## Runtime Model
 
-Every runtime value lives inside `Arena<Value, N>`. The evaluator does not rely
-on heap allocation, and the runtime keeps a small set of reserved singleton
-slots for values such as `NIL`, booleans, `#inert`, `#ignore`, the ground
-environment, the global environment, GC roots, and the symbol intern list.
+Every runtime value lives inside `Arena<Value>`, whose authoritative slot store
+is an allocator-backed `Vec`. Runtime references are `ArenaIndex` handles
+rather than vector references, so vector reallocation does not invalidate live
+objects. Garbage collection can reclaim an unreachable slot and later reuse
+its index. Rust code retaining an index across another evaluation must pass it
+to `eval_with_roots` or `eval_to_index_with_roots`. The runtime also keeps a
+small set of reserved singleton slots for values such as `NIL`, booleans,
+`#inert`, `#ignore`, the ground environment, the global environment, GC roots,
+and the symbol intern list.
 
 Current implementation details that matter:
 
 - strings are stored as linked `CharPair` chains rather than contiguous buffers
+- language-level lists remain linked `Cons` cells; the storage migration does
+  not change proper-list or dotted-pair semantics
 - empty string is represented internally as `NIL`
 - user code runs in the global environment, which is a child of the builtin
   ground environment
-- GC is currently demand-driven: the evaluator collects when allocation hits
-  `OutOfMemory`
+- GC runs near a configurable soft slot watermark, retains an
+  allocator-failure fallback, and can also be invoked explicitly
 
 More detail is in [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md).
 

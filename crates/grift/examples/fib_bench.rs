@@ -33,12 +33,7 @@ struct BenchResult {
 }
 
 /// Run a single benchmark, returning its result.
-fn bench<const N: usize>(
-    lisp: &Lisp<N>,
-    name: &'static str,
-    program: &str,
-    expected: Option<Value>,
-) -> BenchResult {
+fn bench(lisp: &Lisp, name: &'static str, program: &str, expected: Option<Value>) -> BenchResult {
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut min_elapsed = std::time::Duration::MAX;
     let mut max_elapsed = std::time::Duration::ZERO;
@@ -169,7 +164,7 @@ fn print_report(results: &[BenchResult]) {
 // ── Benchmark Suite ──────────────────────────────────────────────────────────
 
 fn run_benchmarks() {
-    let lisp: Lisp<500000> = Lisp::new();
+    let lisp: Lisp = Lisp::new();
     let mut results: Vec<BenchResult> = Vec::new();
 
     // ── 1. Naive recursive Fibonacci ─────────────────────────────────────

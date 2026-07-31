@@ -100,7 +100,7 @@ pub enum Value {
     Prelude(Prelude),
     /// User-registered native function (Rust function pointer).
     /// Always wrapped in an `Applicative` when registered. The function
-    /// pointer is stored directly, with no const generic dependency.
+    /// pointer is stored directly, independent of arena storage details.
     Native(NativeFn),
 }
 

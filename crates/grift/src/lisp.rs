@@ -1,7 +1,7 @@
 //! The `Lisp` struct: arena wrapper with symbol interning and convenience methods.
 //!
 //! [`Lisp`] is the top-level entry point for the interpreter. It owns the
-//! fixed-size [`Arena`](crate::arena::Arena), pre-allocates singleton values
+//! growable [`Arena`](crate::arena::Arena), pre-allocates singleton values
 //! and environments, manages symbol interning, and exposes the public
 //! [`eval`](Lisp::eval) API.
 //!
@@ -29,25 +29,28 @@ use crate::arena::{Arena, ArenaError, ArenaIndex, ArenaResult, ArenaStats, GcSta
 use crate::native::{LispOps, NativeFn};
 use crate::parse::SliceSource;
 use crate::value::Value;
+use core::cell::Cell;
 
-/// A minimalistic Lisp interpreter backed by a fixed-size arena.
-///
-/// The const generic `N` controls the arena capacity (number of slots).
+const MIN_GC_THRESHOLD: usize = 1_024;
+const MIN_GC_GROWTH: usize = 64;
+
+/// A minimalistic Lisp interpreter backed by a growable arena.
 ///
 /// # Example
 ///
 /// ```rust
 /// use grift::{Lisp, Value};
 ///
-/// let lisp: Lisp<20000> = Lisp::new();
+/// let lisp: Lisp = Lisp::new();
 /// let result = lisp.eval("(+ 1 2)");
 /// assert_eq!(result, Ok(Value::Number(3)));
 /// ```
-pub struct Lisp<const N: usize> {
-    pub(crate) arena: Arena<Value, N>,
+pub struct Lisp {
+    pub(crate) arena: Arena<Value>,
+    gc_threshold: Cell<usize>,
 }
 
-impl<const N: usize> Default for Lisp<N> {
+impl Default for Lisp {
     /// Construct a fresh interpreter with the default singleton layout,
     /// builtin set, and prelude bindings.
     fn default() -> Self {
@@ -55,7 +58,7 @@ impl<const N: usize> Default for Lisp<N> {
     }
 }
 
-impl<const N: usize> Lisp<N> {
+impl Lisp {
     /// Create a new Lisp interpreter.
     ///
     /// Slots 0–9 are pre-allocated for `Nil`, `#t`, `#f`, `#inert`,
@@ -65,9 +68,8 @@ impl<const N: usize> Lisp<N> {
     ///
     /// # Panics
     ///
-    /// Panics if `N < 10` or if the arena is too small to hold the
-    /// singleton values, builtin bindings, and standard library entries.
-    /// In practice `N` should be at least a few hundred.
+    /// Panics if the allocator cannot hold the singleton values, builtin
+    /// bindings, and bundled prelude entries.
     pub fn new() -> Self {
         Self::new_inner(true)
     }
@@ -85,23 +87,44 @@ impl<const N: usize> Lisp<N> {
         Self::new_inner(false)
     }
 
+    /// Return the soft logical-slot watermark for automatic evaluator GC.
+    ///
+    /// Before an evaluator step starts without reusable slots at or beyond this
+    /// watermark, Grift collects with the current roots. If every object is
+    /// live, the watermark grows geometrically and evaluation continues.
+    pub fn gc_threshold(&self) -> usize {
+        self.gc_threshold.get()
+    }
+
+    /// Set the soft logical-slot watermark for automatic evaluator GC.
+    ///
+    /// This is not a hard capacity. Setting a small value requests earlier
+    /// collection; when a collection finds everything reachable, Grift raises
+    /// the watermark and continues growing.
+    pub fn set_gc_threshold(&self, slot_count: usize) {
+        self.gc_threshold.set(slot_count);
+    }
+
     fn new_inner(load_prelude: bool) -> Self {
-        let arena = Arena::new(Value::Nil);
+        let arena = Arena::new();
+        arena
+            .reserve(ArenaIndex::FIRST_FREE.raw())
+            .expect("allocator failed while reserving singleton slots");
         let nil_idx = arena
             .alloc(Value::Nil)
-            .expect("arena too small for singletons");
+            .expect("allocator failed while creating singletons");
         let true_idx = arena
             .alloc(Value::Boolean(true))
-            .expect("arena too small for singletons");
+            .expect("allocator failed while creating singletons");
         let false_idx = arena
             .alloc(Value::Boolean(false))
-            .expect("arena too small for singletons");
+            .expect("allocator failed while creating singletons");
         let inert_idx = arena
             .alloc(Value::Inert)
-            .expect("arena too small for singletons");
+            .expect("allocator failed while creating singletons");
         let ignore_idx = arena
             .alloc(Value::Ignore)
-            .expect("arena too small for singletons");
+            .expect("allocator failed while creating singletons");
         assert!(nil_idx == ArenaIndex::NIL, "NIL must be slot 0");
         assert!(true_idx == ArenaIndex::TRUE, "TRUE must be slot 1");
         assert!(false_idx == ArenaIndex::FALSE, "FALSE must be slot 2");
@@ -114,25 +137,28 @@ impl<const N: usize> Lisp<N> {
                 bindings: ArenaIndex::NIL,
                 parents: ArenaIndex::NIL,
             })
-            .expect("arena too small for environments");
+            .expect("allocator failed while creating environments");
         assert!(
             ground_idx == ArenaIndex::GROUND_ENV,
             "GROUND_ENV must be slot 5"
         );
 
-        let lisp = Lisp { arena };
+        let lisp = Lisp {
+            arena,
+            gc_threshold: Cell::new(usize::MAX),
+        };
 
         // Global env is a child of the ground env.
         let parents = lisp
             .cons(ArenaIndex::GROUND_ENV, ArenaIndex::NIL)
-            .expect("arena too small for environments");
+            .expect("allocator failed while creating environments");
         let global_idx = lisp
             .arena
             .alloc(Value::Environment {
                 bindings: ArenaIndex::NIL,
                 parents,
             })
-            .expect("arena too small for environments");
+            .expect("allocator failed while creating environments");
         assert!(
             global_idx == ArenaIndex::GLOBAL_ENV,
             "GLOBAL_ENV must be slot 7"
@@ -146,7 +172,7 @@ impl<const N: usize> Lisp<N> {
                 car: ArenaIndex::NIL,
                 cdr: ArenaIndex::NIL,
             })
-            .expect("arena too small for gc_roots");
+            .expect("allocator failed while creating gc_roots");
         assert!(
             gc_roots_idx == ArenaIndex::GC_ROOTS,
             "GC_ROOTS must be slot 8"
@@ -160,7 +186,7 @@ impl<const N: usize> Lisp<N> {
                 car: ArenaIndex::NIL,
                 cdr: ArenaIndex::NIL,
             })
-            .expect("arena too small for intern_list");
+            .expect("allocator failed while creating intern_list");
         assert!(
             intern_idx == ArenaIndex::INTERN_LIST,
             "INTERN_LIST must be slot 9"
@@ -174,7 +200,30 @@ impl<const N: usize> Lisp<N> {
             lisp.init_prelude();
         }
 
+        let initial_threshold = lisp
+            .arena
+            .slot_count()
+            .saturating_mul(2)
+            .max(MIN_GC_THRESHOLD);
+        lisp.gc_threshold.set(initial_threshold);
         lisp
+    }
+
+    pub(crate) fn raise_gc_threshold(&self) -> ArenaResult<()> {
+        let current = self.gc_threshold.get();
+        let base = current.max(self.arena.slot_count());
+        let growth = base.max(MIN_GC_GROWTH);
+        let next = base.checked_add(growth).ok_or(ArenaError::OutOfMemory)?;
+        self.gc_threshold.set(next);
+        Ok(())
+    }
+
+    pub(crate) fn alloc_value(&self, value: Value) -> ArenaResult<ArenaIndex> {
+        self.arena.alloc(value)
+    }
+
+    pub(crate) fn gc_watermark_reached(&self) -> bool {
+        self.arena.vacant() == 0 && self.arena.slot_count() >= self.gc_threshold.get()
     }
 
     /// Bind the bundled prelude in the global environment.
@@ -187,7 +236,7 @@ impl<const N: usize> Lisp<N> {
             let start = src.offset();
             let Some(expr) = self
                 .parse_optional_expr(&mut src)
-                .expect("arena too small for prelude")
+                .expect("allocator failed while creating prelude")
             else {
                 break;
             };
@@ -198,19 +247,19 @@ impl<const N: usize> Lisp<N> {
                 let name =
                     extract_binding_name(form_source).expect("lazy prelude form missing name");
                 let prelude_idx = self
-                    .arena
-                    .alloc(Value::Prelude(Prelude::new(form_source)))
-                    .expect("arena too small for prelude");
-                let sym = self.symbol(name).expect("arena too small for prelude");
+                    .alloc_value(Value::Prelude(Prelude::new(form_source)))
+                    .expect("allocator failed while creating prelude");
+                let sym = self
+                    .symbol(name)
+                    .expect("allocator failed while creating prelude");
                 let binding = if is_operative {
                     prelude_idx
                 } else {
-                    self.arena
-                        .alloc(Value::Applicative(prelude_idx))
-                        .expect("arena too small for prelude")
+                    self.alloc_value(Value::Applicative(prelude_idx))
+                        .expect("allocator failed while creating prelude")
                 };
                 self.env_define(ArenaIndex::GLOBAL_ENV, sym, binding)
-                    .expect("arena too small for prelude");
+                    .expect("allocator failed while creating prelude");
             } else {
                 self.eval_expr(expr, ArenaIndex::GLOBAL_ENV)
                     .expect("invalid bundled prelude");
@@ -277,13 +326,13 @@ impl<const N: usize> Lisp<N> {
     ///     lisp.number(a * 2)
     /// }
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// lisp.register_native("double", my_double).unwrap();
     /// assert_eq!(lisp.eval("(double 21)"), Ok(Value::Number(42)));
     /// ```
     pub fn register_native(&self, name: &str, f: NativeFn) -> ArenaResult<()> {
         let sym = self.symbol(name)?;
-        let native_val = self.arena.alloc(Value::Native(f))?;
+        let native_val = self.alloc_value(Value::Native(f))?;
         let wrapped = self.wrap(native_val)?;
         self.env_define(ArenaIndex::GLOBAL_ENV, sym, wrapped)
     }
@@ -303,7 +352,7 @@ impl<const N: usize> Lisp<N> {
     /// ```rust
     /// use grift::{Lisp, Value, LispOps};
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// let sym = lisp.symbol("my-const").unwrap();
     /// let val = lisp.number(42).unwrap();
     /// lisp.define_global(sym, val).unwrap();
@@ -318,7 +367,7 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a number.
     #[inline]
     pub fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(n.into())
+        self.alloc_value(n.into())
     }
 
     /// Return the `ArenaIndex` for a boolean (`#t` or `#f`).
@@ -340,12 +389,12 @@ impl<const N: usize> Lisp<N> {
     /// Allocate a cons cell.
     #[inline]
     pub fn cons(&self, car: ArenaIndex, cdr: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Cons { car, cdr })
+        self.alloc_value(Value::Cons { car, cdr })
     }
 
     /// Allocate a character (one-element string).
     pub fn char_val(&self, c: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair {
+        self.alloc_value(Value::CharPair {
             ch: c,
             cdr: ArenaIndex::NIL,
         })
@@ -367,7 +416,7 @@ impl<const N: usize> Lisp<N> {
 
         // Not found — allocate new symbol and prepend to intern list
         let char_head = self.alloc_string(name)?;
-        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let sym_idx = self.alloc_value(Value::Symbol(char_head))?;
         let new_head = self.cons(sym_idx, intern_head)?;
 
         // Update the intern list head in place
@@ -387,21 +436,20 @@ impl<const N: usize> Lisp<N> {
     /// with the final character's `cdr` pointing to `NIL`.
     /// An empty string is represented as `NIL`.
     pub fn alloc_string(&self, s: &str) -> ArenaResult<ArenaIndex> {
-        // Pre-check: ensure enough free slots for all chars.
+        // Reserve up front so a partially built string cannot be exposed if
+        // the backing vector needs to grow and reservation fails.
         let char_count = if s.is_ascii() {
             s.len()
         } else {
             s.chars().count()
         };
-        if self.arena.available() < char_count {
-            return Err(ArenaError::OutOfMemory);
-        }
+        self.arena.reserve(char_count)?;
 
         let mut data = ArenaIndex::NIL;
 
         // Build the linked list in reverse so the first char is at the head.
         for c in s.chars().rev() {
-            let node = self.arena.alloc(Value::CharPair { ch: c, cdr: data })?;
+            let node = self.alloc_value(Value::CharPair { ch: c, cdr: data })?;
             data = node;
         }
 
@@ -506,7 +554,7 @@ impl<const N: usize> Lisp<N> {
     /// [`reverse_chain`](Self::reverse_chain) to flip into
     /// forward order.
     pub(crate) fn prepend_char(&self, head: ArenaIndex, ch: char) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::CharPair { ch, cdr: head })
+        self.alloc_value(Value::CharPair { ch, cdr: head })
     }
 
     /// Reverse a singly-linked chain (Cons list or CharPair string)
@@ -556,7 +604,7 @@ impl<const N: usize> Lisp<N> {
         }
 
         // Not found — create new symbol with the existing chain
-        let sym_idx = self.arena.alloc(Value::Symbol(char_head))?;
+        let sym_idx = self.alloc_value(Value::Symbol(char_head))?;
         let new_head = self.cons(sym_idx, intern_head)?;
 
         let Value::Cons { cdr, .. } = self.arena.get(ArenaIndex::INTERN_LIST)? else {
@@ -645,7 +693,7 @@ impl<const N: usize> Lisp<N> {
     pub fn car_char(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
         match self.arena.get(idx)? {
             Value::Cons { car, .. } => Ok(car),
-            Value::CharPair { ch, .. } => self.arena.alloc(Value::CharPair {
+            Value::CharPair { ch, .. } => self.alloc_value(Value::CharPair {
                 ch,
                 cdr: ArenaIndex::NIL,
             }),
@@ -709,7 +757,7 @@ impl<const N: usize> Lisp<N> {
 
     /// Wrap a combiner in an Applicative.
     pub fn wrap(&self, combiner: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Applicative(combiner))
+        self.alloc_value(Value::Applicative(combiner))
     }
 
     /// Unwrap an Applicative to get the inner combiner.
@@ -744,7 +792,7 @@ impl<const N: usize> Lisp<N> {
     ) -> ArenaResult<ArenaIndex> {
         let params_envparam = self.cons(params, env_param)?;
         let body_env = self.cons(body, env)?;
-        self.arena.alloc(Value::Operative {
+        self.alloc_value(Value::Operative {
             params_envparam,
             body_env,
         })
@@ -772,7 +820,7 @@ impl<const N: usize> Lisp<N> {
     /// Create a new environment with a parents list (cons-list of parent
     /// environments, or NIL for a root environment).
     pub(crate) fn make_env(&self, parents: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.arena.alloc(Value::Environment {
+        self.alloc_value(Value::Environment {
             bindings: ArenaIndex::NIL,
             parents,
         })
@@ -1043,7 +1091,8 @@ impl<const N: usize> Lisp<N> {
     /// - [`ParseError`](ArenaError::ParseError) — malformed S-expression.
     /// - [`UnboundVariable`](ArenaError::UnboundVariable) — undefined symbol.
     /// - [`TypeError`](ArenaError::TypeError) — wrong type for an operation.
-    /// - [`OutOfMemory`](ArenaError::OutOfMemory) — arena exhausted even after GC.
+    /// - [`OutOfMemory`](ArenaError::OutOfMemory) — storage reservation failed
+    ///   even after GC.
     /// - [`ArithmeticOverflow`](ArenaError::ArithmeticOverflow) — integer overflow.
     ///
     /// # Example
@@ -1051,11 +1100,21 @@ impl<const N: usize> Lisp<N> {
     /// ```rust
     /// use grift::{Lisp, Value};
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
     /// ```
     pub fn eval(&self, input: &str) -> Result<Value, ArenaError> {
-        let idx = self.eval_to_index(input)?;
+        self.eval_with_roots(input, &[])
+    }
+
+    /// Parse and evaluate while protecting host-retained arena indices.
+    ///
+    /// Every index in `roots` remains reachable through parsing and automatic
+    /// collection for this call. Use this when Rust code keeps an
+    /// [`ArenaIndex`] returned by an earlier operation across another
+    /// evaluation.
+    pub fn eval_with_roots(&self, input: &str, roots: &[ArenaIndex]) -> Result<Value, ArenaError> {
+        let idx = self.eval_to_index_with_roots(input, roots)?;
         self.arena.get(idx)
     }
 
@@ -1063,6 +1122,10 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Use with [`write_value`](Self::write_value) to properly display the
     /// result, including walking symbol names, string contents, and lists.
+    /// An index that is not reachable from the Lisp environment is not
+    /// implicitly kept alive across later evaluation calls; pass it to
+    /// [`eval_to_index_with_roots`](Self::eval_to_index_with_roots) when it
+    /// must survive one.
     ///
     /// # Errors
     ///
@@ -1073,13 +1136,34 @@ impl<const N: usize> Lisp<N> {
     /// ```rust
     /// use grift::Lisp;
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// let idx = lisp.eval_to_index("(+ 10 20)").unwrap();
     /// let mut buf = String::new();
     /// lisp.write_value(idx, &mut buf).unwrap();
     /// assert_eq!(buf, "30");
     /// ```
     pub fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index_with_roots(input, &[])
+    }
+
+    /// Parse and evaluate while protecting host-retained arena indices.
+    ///
+    /// This is the index-returning counterpart to
+    /// [`eval_with_roots`](Self::eval_with_roots). The supplied roots are
+    /// protected only for this call; pass them again to each later evaluation
+    /// for as long as the host retains them.
+    pub fn eval_to_index_with_roots(
+        &self,
+        input: &str,
+        roots: &[ArenaIndex],
+    ) -> Result<ArenaIndex, ArenaError> {
+        let pushed = self.push_roots(roots)?;
+        let result = self.eval_source_to_index(input);
+        self.pop_roots(pushed);
+        result
+    }
+
+    fn eval_source_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         let mut src = SliceSource::new(input);
 
         let mut result_idx = ArenaIndex::INERT;
@@ -1098,9 +1182,9 @@ impl<const N: usize> Lisp<N> {
     /// ```rust
     /// use grift::Lisp;
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// let stats = lisp.stats();
-    /// assert_eq!(stats.capacity, 20000);
+    /// assert!(stats.slot_count >= stats.allocated);
     /// assert!(stats.allocated > 0); // singletons + builtins
     /// ```
     pub fn stats(&self) -> ArenaStats {
@@ -1117,9 +1201,9 @@ impl<const N: usize> Lisp<N> {
     ///
     /// Useful for computing test budgets: `baseline + constant` rather
     /// than a magic number.
-    pub fn baseline_allocated(&self) -> usize {
-        let _ = self.collect_garbage(&[]);
-        self.stats().allocated
+    pub fn baseline_allocated(&self) -> ArenaResult<usize> {
+        self.collect_garbage(&[])?;
+        Ok(self.stats().allocated)
     }
 
     /// Run mark-and-sweep garbage collection with the given roots.
@@ -1131,18 +1215,18 @@ impl<const N: usize> Lisp<N> {
     /// ```rust
     /// use grift::Lisp;
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// lisp.eval("(define! x 42)").unwrap();
-    /// let stats = lisp.collect_garbage(&[]);
+    /// let stats = lisp.collect_garbage(&[]).unwrap();
     /// assert!(stats.marked > 0);
     /// ```
-    pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
+    pub fn collect_garbage(&self, roots: &[ArenaIndex]) -> ArenaResult<GcStats> {
         self.collect_with_roots(roots)
     }
 
     /// Collect garbage, always protecting the macro-generated singleton
     /// root set plus any caller-supplied `extra_roots`.
-    pub(crate) fn collect_with_roots(&self, extra_roots: &[ArenaIndex]) -> GcStats {
+    pub(crate) fn collect_with_roots(&self, extra_roots: &[ArenaIndex]) -> ArenaResult<GcStats> {
         self.arena
             .collect_garbage_multi(&[ArenaIndex::ROOTS, extra_roots])
     }
@@ -1160,7 +1244,7 @@ impl<const N: usize> Lisp<N> {
     /// ```rust
     /// use grift::Lisp;
     ///
-    /// let lisp: Lisp<20000> = Lisp::new();
+    /// let lisp: Lisp = Lisp::new();
     /// let idx = lisp.eval_to_index("(list 1 2 3)").unwrap();
     /// let mut buf = String::new();
     /// lisp.write_value(idx, &mut buf).unwrap();
@@ -1289,10 +1373,10 @@ impl<const N: usize> Lisp<N> {
 }
 
 // ============================================================================
-// LispOps trait implementation — delegates to inherent methods to erase `N`
+// LispOps trait implementation — native-function capability boundary
 // ============================================================================
 
-impl<const N: usize> LispOps for Lisp<N> {
+impl LispOps for Lisp {
     #[inline]
     /// Delegate to [`Lisp::number`].
     fn number(&self, n: isize) -> ArenaResult<ArenaIndex> {
@@ -1393,9 +1477,23 @@ impl<const N: usize> LispOps for Lisp<N> {
         self.eval(input)
     }
     #[inline]
+    /// Delegate to [`Lisp::eval_with_roots`].
+    fn eval_with_roots(&self, input: &str, roots: &[ArenaIndex]) -> Result<Value, ArenaError> {
+        self.eval_with_roots(input, roots)
+    }
+    #[inline]
     /// Delegate to [`Lisp::eval_to_index`].
     fn eval_to_index(&self, input: &str) -> Result<ArenaIndex, ArenaError> {
         self.eval_to_index(input)
+    }
+    #[inline]
+    /// Delegate to [`Lisp::eval_to_index_with_roots`].
+    fn eval_to_index_with_roots(
+        &self,
+        input: &str,
+        roots: &[ArenaIndex],
+    ) -> Result<ArenaIndex, ArenaError> {
+        self.eval_to_index_with_roots(input, roots)
     }
     #[inline]
     /// Delegate to [`Lisp::stats`].
@@ -1404,12 +1502,12 @@ impl<const N: usize> LispOps for Lisp<N> {
     }
     #[inline]
     /// Delegate to [`Lisp::baseline_allocated`].
-    fn baseline_allocated(&self) -> usize {
+    fn baseline_allocated(&self) -> ArenaResult<usize> {
         self.baseline_allocated()
     }
     #[inline]
     /// Delegate to [`Lisp::collect_garbage`].
-    fn collect_garbage(&self, roots: &[ArenaIndex]) -> GcStats {
+    fn collect_garbage(&self, roots: &[ArenaIndex]) -> ArenaResult<GcStats> {
         self.collect_garbage(roots)
     }
     #[inline]
@@ -1444,15 +1542,15 @@ impl<const N: usize> LispOps for Lisp<N> {
 /// Characters are prepended (building in reverse order) during writing.
 /// [`finish`](Self::finish) calls `reverse_chain` to produce
 /// the correctly ordered chain.
-pub(crate) struct ArenaWriter<'a, const N: usize> {
-    lisp: &'a Lisp<N>,
+pub(crate) struct ArenaWriter<'a> {
+    lisp: &'a Lisp,
     head: ArenaIndex,
     error: Option<ArenaError>,
 }
 
-impl<'a, const N: usize> ArenaWriter<'a, N> {
+impl<'a> ArenaWriter<'a> {
     /// Create an empty arena-backed string builder.
-    pub(crate) fn new(lisp: &'a Lisp<N>) -> Self {
+    pub(crate) fn new(lisp: &'a Lisp) -> Self {
         ArenaWriter {
             lisp,
             head: ArenaIndex::NIL,
@@ -1470,7 +1568,7 @@ impl<'a, const N: usize> ArenaWriter<'a, N> {
     }
 }
 
-impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
+impl core::fmt::Write for ArenaWriter<'_> {
     /// Append text by allocating one `CharPair` per character into the arena.
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         if self.error.is_some() {
@@ -1491,7 +1589,7 @@ impl<const N: usize> core::fmt::Write for ArenaWriter<'_, N> {
     }
 }
 
-impl<const N: usize> Trace<Value, N> for Value {
+impl Trace<Value> for Value {
     /// Visit every direct `ArenaIndex` child reachable from this value.
     ///
     /// The tracer intentionally skips inline scalars and singleton variants
@@ -1521,12 +1619,13 @@ impl<const N: usize> Trace<Value, N> for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::fmt::Write;
     extern crate std;
     use std::string::String;
 
     #[test]
     fn malformed_string_write_and_display_error() {
-        let lisp: Lisp<20000> = Lisp::new();
+        let lisp: Lisp = Lisp::new();
         let tail = lisp.number(42).unwrap();
         let bad = lisp
             .arena
@@ -1540,7 +1639,7 @@ mod tests {
 
     #[test]
     fn malformed_string_lispops_write_and_display_error() {
-        let lisp: Lisp<20000> = Lisp::new();
+        let lisp: Lisp = Lisp::new();
         let ops: &dyn crate::native::LispOps = &lisp;
         let tail = lisp.number(42).unwrap();
         let bad = lisp
@@ -1555,7 +1654,7 @@ mod tests {
 
     #[test]
     fn malformed_string_raw_helpers_error() {
-        let lisp: Lisp<20000> = Lisp::new();
+        let lisp: Lisp = Lisp::new();
         let tail = lisp.number(42).unwrap();
         let bad = lisp
             .arena
@@ -1582,5 +1681,34 @@ mod tests {
     fn raw_prelude_type_name_matches_predicates() {
         let prelude = crate::Prelude::new("(define! x (vau #ignore #ignore ()))");
         assert_eq!(Value::Prelude(prelude).type_name(), "prelude");
+    }
+
+    #[test]
+    fn evaluation_raises_watermark_when_every_slot_is_live() {
+        let lisp = Lisp::new_without_prelude();
+        lisp.collect_garbage(&[]).unwrap();
+
+        let mut suffix = 0usize;
+        while lisp.arena.vacant() > 0 {
+            let mut name = String::from("persistent-");
+            write!(&mut name, "{suffix}").unwrap();
+            lisp.symbol(&name).unwrap();
+            suffix += 1;
+        }
+
+        let one = lisp.number(1).unwrap();
+        let two = lisp.number(2).unwrap();
+        let args = lisp
+            .cons(one, lisp.cons(two, ArenaIndex::NIL).unwrap())
+            .unwrap();
+        let expr = lisp.cons(lisp.symbol("cons").unwrap(), args).unwrap();
+        assert_eq!(lisp.arena.vacant(), 0);
+
+        let watermark = lisp.arena.slot_count();
+        lisp.set_gc_threshold(watermark);
+        let result = lisp.eval_expr(expr, ArenaIndex::GLOBAL_ENV).unwrap();
+
+        assert!(matches!(lisp.get(result), Ok(Value::Cons { .. })));
+        assert!(lisp.gc_threshold() > watermark);
     }
 }
